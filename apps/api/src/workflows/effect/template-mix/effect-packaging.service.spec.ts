@@ -48,7 +48,7 @@ function harness() {
     updateCheckpoint: vi.fn(),
     list: vi.fn().mockResolvedValue([]),
     create: vi.fn().mockResolvedValue('new-run'),
-    db: { effectPackagingRun: { findUnique: vi.fn().mockResolvedValue(null) } },
+    db: { effectPackagingRun: { findUnique: vi.fn().mockResolvedValue(null) }, effectVoicePreview: { findFirst: vi.fn().mockResolvedValue(null) } },
   };
   const service = new EffectPackagingService(
     repo as unknown as EffectPackagingRepository,
@@ -111,7 +111,7 @@ describe('packaging service output boundary', () => {
       captions: [{ id: 'a', text: '第一句', start: 0, end: 2 }, { id: 'b', text: '编辑字幕', start: 3.2, end: 4.2 }],
       music: { fileObjectId: 'bgm', start: 1, duration: 5, volume: .1, offset: 2 },
     };
-    mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't', workspace: { variants: [variant] } }] } });
+    mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't', workspace: { template: {}, variants: [variant] } }] } });
     repo.list.mockResolvedValue([{ items: [{ variantId: 'v', sourceTimelineHash: hash, snapshot: frozen, checkpoint: cp }] }]);
     vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
     const snap = vi.spyOn(packagingDomain, 'packagingSnapshot').mockReturnValue(frozen);
@@ -119,10 +119,26 @@ describe('packaging service output boundary', () => {
       await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'k', variantId: 'v', component: 'VOICE', slotId: 'a' });
       const next = repo.create.mock.calls[0]![0];
       expect(next.snapshots[0].redoSlotId).toBe('a');
+      expect(next.snapshots[0].voiceProfile).toMatchObject({ id: 'vivi', speaker: 'zh_female_vv_uranus_bigtts' });
       expect(next.checkpoints[0].script).toEqual([cp.script![1]]);
       expect(next.checkpoints[0].voices).toEqual({ b: cp.voices!.b });
       expect(next.checkpoints[0].captions).toEqual([cp.captions![1]]);
       expect(next.checkpoints[0].music).toEqual(cp.music);
+    } finally { snap.mockRestore(); }
+  });
+  it.each(['MUSIC', 'CAPTIONS'] as const)('redo %s preserves the original voice despite the new template choice', async (component) => {
+    const { service, repo, mix } = harness();
+    const variant = { ...v, slots: [{ id: 'a', duration: 3 }], bindings: { a: '1' } } as unknown as EffectTemplateMixVariant;
+    const sourceTimelineHash = visualHash(variant);
+    const oldVoice = { id: 'old', name: '旧音色', gender: 'MALE' as const, description: '', version: 'old', speaker: 'old', resourceId: 'seed-tts-2.0' };
+    const frozen = { ...completedItem().snapshot, variant, sourceTimelineHash, narrationLayoutVersion: 'SLOT_V1' as const, voiceProfile: oldVoice };
+    mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't', workspace: { template: { voiceProfileId: 'unavailable-new-choice' }, variants: [variant] } }] } });
+    repo.list.mockResolvedValue([{ items: [{ variantId: 'v', sourceTimelineHash, snapshot: frozen, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } }] }]);
+    vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
+    const snap = vi.spyOn(packagingDomain, 'packagingSnapshot').mockReturnValue({ ...frozen, voiceProfile: undefined } as never);
+    try {
+      await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'k', variantId: 'v', component });
+      expect(repo.create.mock.calls[0]![0].snapshots[0].voiceProfile).toEqual(oldVoice);
     } finally { snap.mockRestore(); }
   });
   it('recovers missing entries without retrying an unrelated completed stale entry', async () => {

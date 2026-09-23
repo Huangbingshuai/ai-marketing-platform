@@ -5,6 +5,7 @@ import type {
   EffectTemplateMixCaption,
   EffectTemplateMixClassificationPool,
   EffectTemplateMixDraft,
+  EffectTemplateMixDetachedAudio,
   EffectTemplateMixMaterial,
   EffectTemplateMixRole,
   EffectTemplateMixSlot,
@@ -20,6 +21,7 @@ import type {
 import {
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
+  PACKAGING_AUDIO_GAIN_CEILING,
   packagingAudioFade,
   packagingAudioFromDb,
   packagingAudioToDb,
@@ -87,6 +89,9 @@ import { effectTemplateMixTransitionPresentation } from './effect-template-mix-t
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
+import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
+import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
+import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
 
 const props = defineProps<{
@@ -169,21 +174,26 @@ const auditionTime = ref(0);
 const playing = ref(false);
 /** Player-owned track controls mirror the timeline header buttons. */
 const videoTrackMuted = ref(false);
-const voiceTrackMuted = ref(false);
-const musicTrackMuted = ref(false);
+const audioTrackMuted = ref(false);
 const videoTrackVisible = ref(true);
 const captionTrackVisible = ref(true);
-const setTimelineTrackMute = (track: 'MUSIC' | 'VIDEO' | 'VOICE', muted: boolean): void => {
+const setTimelineTrackMute = (track: 'AUDIO' | 'VIDEO', muted: boolean): void => {
   if (track === 'VIDEO') videoTrackMuted.value = muted;
-  else if (track === 'VOICE') voiceTrackMuted.value = muted;
-  else musicTrackMuted.value = muted;
+  else {
+    audioTrackMuted.value = muted;
+    syncDetachedAudio(true);
+  }
 };
 const setTimelineTrackVisibility = (track: 'CAPTION' | 'VIDEO', visible: boolean): void => {
   if (track === 'VIDEO') videoTrackVisible.value = visible;
   else captionTrackVisible.value = visible;
 };
 const playhead = ref(0);
+const playbackSeekVersion = ref(0);
 const playerPanel = ref<HTMLElement | null>(null);
+const playerScrubber = ref<HTMLInputElement | null>(null);
+const playerScrubberFill = ref<HTMLElement | null>(null);
+const playerScrubberThumb = ref<HTMLElement | null>(null);
 const stageElement = ref<HTMLElement | null>(null);
 /** The render burns captions at roughly 1/22 of the video width, so the preview matches. */
 const stageCaptionFontSize = ref(14);
@@ -201,6 +211,7 @@ const displayedTimelineSlotId = ref('');
 const playerUnavailableSlotId = ref('');
 const transitionFrame = ref('');
 const timelinePlayers = new Map<string, HTMLVideoElement>();
+const detachedAudioPlayers = new Map<string, HTMLAudioElement>();
 let primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 let positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 const workbenchMain = ref<HTMLElement | null>(null);
@@ -249,8 +260,12 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSave: Promise<boolean> | undefined;
 let playbackAnimationFrame: number | undefined;
+let playerScrubberAnimations: Animation[] = [];
 let playbackAnchorMilliseconds = 0;
 let playbackAnchorSeconds = 0;
+let lastUiPlaybackMilliseconds = 0;
+let playbackSyncBoundaries: number[] = [];
+let nextPlaybackBoundaryIndex = 0;
 let activePlaybackSlotId = '';
 let activeTransitionSignature = '';
 let pendingSeekSyncFrame: number | undefined;
@@ -550,6 +565,63 @@ const previewDuration = computed(() =>
 const previewIsPlaying = computed(() =>
   auditionMaterial.value ? auditionPlaying.value : playing.value,
 );
+const setPlayerScrubber = (seconds: number): void => {
+  const scrubber = playerScrubber.value;
+  if (!scrubber) return;
+  const duration = Math.max(previewDuration.value, 0.001);
+  const safeSeconds = Math.max(0, Math.min(duration, seconds));
+  const progress = safeSeconds / duration;
+  scrubber.max = String(duration);
+  scrubber.value = String(safeSeconds);
+  if (playerScrubberFill.value) {
+    playerScrubberFill.value.style.transform = `scaleX(${progress})`;
+  }
+  if (playerScrubberThumb.value) {
+    playerScrubberThumb.value.style.transform = `translate3d(${progress * scrubber.clientWidth}px, 0, 0)`;
+  }
+};
+const stopPlayerScrubberMotion = (seconds = previewCurrentTime.value): void => {
+  for (const animation of playerScrubberAnimations) animation.cancel();
+  playerScrubberAnimations = [];
+  setPlayerScrubber(seconds);
+};
+const startPlayerScrubberMotion = (startSeconds: number): void => {
+  const scrubber = playerScrubber.value;
+  const fill = playerScrubberFill.value;
+  const thumb = playerScrubberThumb.value;
+  if (!scrubber || !fill || !thumb) return;
+  stopPlayerScrubberMotion(startSeconds);
+  const duration = Math.max(previewDuration.value, 0.001);
+  const safeStart = Math.max(0, Math.min(duration, startSeconds));
+  if (safeStart >= duration) return;
+  const startProgress = safeStart / duration;
+  const width = scrubber.clientWidth;
+  const timing: KeyframeAnimationOptions = {
+    duration: (duration - safeStart) * 1000,
+    easing: 'linear',
+    fill: 'both',
+  };
+  playerScrubberAnimations = [
+    fill.animate(
+      [{ transform: `scaleX(${startProgress})` }, { transform: 'scaleX(1)' }],
+      timing,
+    ),
+    thumb.animate(
+      [
+        { transform: `translate3d(${startProgress * width}px, 0, 0)` },
+        { transform: `translate3d(${width}px, 0, 0)` },
+      ],
+      timing,
+    ),
+  ];
+};
+watch(
+  [previewCurrentTime, previewDuration, previewIsPlaying],
+  () => {
+    if (!previewIsPlaying.value) stopPlayerScrubberMotion(previewCurrentTime.value);
+  },
+  { flush: 'post' },
+);
 const previewHasPackagingAudio = computed(() => {
   if (auditionMaterial.value) return false;
   const current = previewCurrentTime.value;
@@ -566,22 +638,26 @@ const previewHasPackagingAudio = computed(() => {
         audio.volume > 0 &&
         current >= audio.start &&
         current < audio.start + audio.duration,
-    );
-  if (hasPackagedAudio) {
-    const voice = !voiceTrackMuted.value && Object.values(checkpoint?.voices ?? {}).some(active);
-    const music = !musicTrackMuted.value && active(checkpoint?.music);
-    return voice || music;
-  }
-  return (
-    (!voiceTrackMuted.value && active(selectedVariant.value?.voice)) ||
-    (!musicTrackMuted.value && active(selectedVariant.value?.bgm))
   );
+  if (hasPackagedAudio) {
+    const voice = !audioTrackMuted.value && Object.values(checkpoint?.voices ?? {}).some(active);
+    const music = !audioTrackMuted.value && active(checkpoint?.music);
+    const detached = !audioTrackMuted.value &&
+      (selectedVariant.value?.detachedAudios?.some((audio) => active(audio)) ?? false);
+    return voice || music || detached;
+  }
+  const detached = selectedVariant.value?.detachedAudios?.some((audio) =>
+    active(audio),
+  ) ?? false;
+  return !audioTrackMuted.value &&
+    (detached || active(selectedVariant.value?.voice) || active(selectedVariant.value?.bgm));
 });
 const previewHasAudibleTrack = computed(() =>
   Boolean(
     previewIsPlaying.value &&
       ((!videoTrackMuted.value &&
         stageMaterial.value &&
+        !slotHasDetachedAudio(displayedTimelineSlotId.value) &&
         materialAudioPresence[stageMaterial.value.id]) ||
         previewHasPackagingAudio.value),
   ),
@@ -1084,6 +1160,19 @@ const bump = (): void => {
   if (workspace.value) workspace.value.editVersion += 1;
   scheduleSave();
 };
+const selectVoiceProfile = (id: string): void => {
+  if (!workspace.value || workspace.value.template.voiceProfileId === id) return;
+  workspace.value.template.voiceProfileId = id;
+  bump();
+};
+const pauseForVoiceAudition = (): void => {
+  closeMaterialPreview();
+  playing.value = false;
+  pauseTimelinePlayers();
+  packagingPanel.value?.stopPlaybackAudio();
+  syncDetachedAudio();
+  stopPlaybackClock();
+};
 
 /**
  * Packaging audio lives on the server-owned checkpoint, so edits are diffed
@@ -1280,7 +1369,21 @@ const editPackagingAudio = (mutate: (checkpoint: PackagingCheckpoint) => void): 
   mutate(item.checkpoint);
   scheduleAudioEdit();
 };
+const editDetachedAudio = (
+  clipId: string,
+  mutate: (audio: EffectTemplateMixDetachedAudio, variant: EffectTemplateMixVariant) => void,
+): boolean => {
+  if (!clipId.startsWith('detached:')) return false;
+  const variant = selectedVariant.value;
+  const audio = variant?.detachedAudios?.find(({ id }) => `detached:${id}` === clipId);
+  if (!variant || !audio) return true;
+  rememberTimelineEdit();
+  mutate(audio, variant);
+  bump();
+  return true;
+};
 const movePackagingAudio = (clipId: string, start: number): void => {
+  if (editDetachedAudio(clipId, (audio) => (audio.start = start))) return;
   const target = packagingAudioTarget(clipId);
   if (!target) return;
   editPackagingAudio((checkpoint) => {
@@ -1305,6 +1408,11 @@ const resizePackagingAudio = (
   offset: number,
   duration: number,
 ): void => {
+  if (editDetachedAudio(clipId, (audio) => {
+    audio.start = start;
+    audio.offset = offset;
+    audio.duration = duration;
+  })) return;
   const target = packagingAudioTarget(clipId);
   if (!target) return;
   editPackagingAudio((checkpoint) => {
@@ -1325,6 +1433,7 @@ const resizePackagingAudio = (
   });
 };
 const changePackagingAudioVolume = (clipId: string, volume: number): void => {
+  if (editDetachedAudio(clipId, (audio) => (audio.volume = volume))) return;
   const target = packagingAudioTarget(clipId);
   if (!target || target.kind === 'CAPTION') return;
   editPackagingAudio((checkpoint) => {
@@ -1359,8 +1468,115 @@ const selectedAudioClipIds = ref<string[]>([]);
 const onAudioClipsSelected = (clipIds: string[]): void => {
   selectedAudioClipIds.value = clipIds;
 };
+const separatingAudioSlots = new Set<string>();
+const probeMaterialAudio = async (material: EffectTemplateMixMaterial): Promise<boolean> => {
+  const known = materialAudioPresence[material.id];
+  if (typeof known === 'boolean') return known;
+  const player = document.createElement('video') as AudioDetectableVideo;
+  player.muted = true;
+  player.preload = 'auto';
+  player.playsInline = true;
+  player.src = material.contentUrl;
+  const timeout = (delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay));
+  try {
+    await Promise.race([
+      new Promise<void>((resolve, reject) => {
+        if (player.readyState >= HTMLMediaElement.HAVE_METADATA) return resolve();
+        player.addEventListener('loadedmetadata', () => resolve(), { once: true });
+        player.addEventListener('error', () => reject(new Error('素材读取失败')), { once: true });
+      }),
+      timeout(8000).then(() => { throw new Error('素材读取超时'); }),
+    ]);
+    if (typeof player.mozHasAudio === 'boolean') {
+      materialAudioPresence[material.id] = player.mozHasAudio;
+      return player.mozHasAudio;
+    }
+    if (player.audioTracks) {
+      materialAudioPresence[material.id] = player.audioTracks.length > 0;
+      return materialAudioPresence[material.id]!;
+    }
+    player.currentTime = Math.min(0.25, Math.max(0, material.duration / 4));
+    await player.play();
+    await timeout(850);
+    const present = (player.webkitAudioDecodedByteCount ?? 0) > 0;
+    materialAudioPresence[material.id] = present;
+    return present;
+  } catch {
+    return false;
+  } finally {
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
+  }
+};
+const removeDetachedAudioForSlot = (slotId: string): void => {
+  const variant = selectedVariant.value;
+  if (!variant?.detachedAudios?.some((audio) => audio.sourceSlotId === slotId)) return;
+  rememberTimelineEdit();
+  clearDetachedAudioForSlots(variant, [slotId]);
+  bump();
+};
+const clearDetachedAudioForSlots = (variant: EffectTemplateMixVariant, slotIds: string[]): void => {
+  const removedIds = new Set(
+    (variant.detachedAudios ?? [])
+      .filter((audio) => slotIds.includes(audio.sourceSlotId))
+      .map(({ id }) => id),
+  );
+  if (!removedIds.size) return;
+  variant.detachedAudios = (variant.detachedAudios ?? []).filter((audio) => !removedIds.has(audio.id));
+  selectedAudioClipIds.value = selectedAudioClipIds.value.filter(
+    (clipId) => !removedIds.has(clipId.slice('detached:'.length)),
+  );
+};
+const separateAudioForSlot = async (slotId: string): Promise<void> => {
+  const variant = selectedVariant.value;
+  const slot = variant?.slots.find(({ id }) => id === slotId);
+  const material = slot ? materialForSlot(slotId, variant) : null;
+  if (!variant || !slot || !material || separatingAudioSlots.has(slotId)) return;
+  if (variant.detachedAudios?.some((audio) => audio.sourceSlotId === slotId)) {
+    removeDetachedAudioForSlot(slotId);
+    showNotice('已恢复视频素材原声', 'success');
+    return;
+  }
+  separatingAudioSlots.add(slotId);
+  try {
+    if (!(await probeMaterialAudio(material))) {
+      showNotice('这段视频素材没有可分离的音轨', 'warning');
+      return;
+    }
+    if (
+      selectedVariant.value !== variant ||
+      variant.bindings[slotId] !== material.id ||
+      variant.detachedAudios?.some((audio) => audio.sourceSlotId === slotId)
+    ) return;
+    const start = currentTiming.value.slots.find(({ id }) => id === slotId)?.start ?? 0;
+    const audio: EffectTemplateMixDetachedAudio = {
+      id: crypto.randomUUID(),
+      sourceSlotId: slotId,
+      fileObjectId: material.fileObjectId,
+      name: `${material.code} 分离音频`,
+      start,
+      duration: slot.duration,
+      offset: Math.max(0, variant.offsets[slotId] ?? 0),
+      volume: 1,
+    };
+    rememberTimelineEdit();
+    variant.detachedAudios = [...(variant.detachedAudios ?? []), audio];
+    selectedAudioClipIds.value = [`detached:${audio.id}`];
+    bump();
+    resetTimelinePlayerState();
+    showNotice('音频已分离到音频轨道', 'success');
+  } finally {
+    separatingAudioSlots.delete(slotId);
+  }
+};
 /** The timeline owns its own selection, so clearing it from out here needs its own handle. */
-const timelineRef = ref<{ clearSelection: () => void } | null>(null);
+const timelineRef = ref<{
+  clearSelection: () => void;
+  setPlaybackNeedle: (seconds: number) => void;
+  startPlaybackNeedle: (startSeconds: number, endSeconds?: number) => void;
+  stopPlaybackNeedle: (seconds: number) => void;
+} | null>(null);
 /**
  * Clicking anywhere in the player other than the picture itself clears the selection, the way a
  * blank click does in the timeline. The picture is exempt: it is the material, not empty space.
@@ -1462,6 +1678,7 @@ const audioParamItems = computed<ParameterAdjustItem[]>(() => {
       max: PACKAGING_AUDIO_DB_CEILING,
       step: 1,
       default: 0,
+      floorLabel: '-∞',
       marks: [
         { value: AUDIO_DB_FLOOR, label: '-∞' },
         { value: 0, label: '0dB' },
@@ -1846,12 +2063,20 @@ const setTimelinePlayer = (slotId: string, element: unknown): void => {
     timelinePlayers.set(slotId, element);
   } else timelinePlayers.delete(slotId);
 };
+const setDetachedAudioPlayer = (clipId: string, element: unknown): void => {
+  if (element instanceof HTMLAudioElement) detachedAudioPlayers.set(clipId, element);
+  else detachedAudioPlayers.delete(clipId);
+};
 const resetTimelinePlayerState = (): void => {
   primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   activePlaybackSlotId = '';
   activeTransitionSignature = '';
   for (const video of timelinePlayers.values()) video.pause();
+  for (const player of detachedAudioPlayers.values()) {
+    player.pause();
+    player.dataset.timelineActive = 'false';
+  }
 };
 type AudioDetectableVideo = HTMLVideoElement & {
   audioTracks?: { length: number };
@@ -1876,11 +2101,51 @@ const detectMaterialAudio = (
     materialAudioPresence[material.id] = true;
     return;
   }
-  if (player.currentTime >= 0.35 && player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA)
-    materialAudioPresence[material.id] = false;
+  // No decoded bytes at one arbitrary frame is inconclusive for sources with sparse audio.
 };
 const activeTimelinePlayer = (): HTMLVideoElement | null =>
   previewSlot.value ? (timelinePlayers.get(previewSlot.value.id) ?? null) : null;
+const slotHasDetachedAudio = (slotId: string): boolean =>
+  Boolean(selectedVariant.value?.detachedAudios?.some((audio) => audio.sourceSlotId === slotId));
+const syncDetachedAudio = (forceSeek = false): void => {
+  const rows = selectedVariant.value?.detachedAudios ?? [];
+  const activeIds = new Set(rows.map(({ id }) => id));
+  for (const [id, player] of detachedAudioPlayers) {
+    const row = rows.find((audio) => audio.id === id);
+    if (!row || !activeIds.has(id)) {
+      player.pause();
+      player.dataset.timelineActive = 'false';
+      player.dataset.timelineStarting = 'false';
+      continue;
+    }
+    const localTime = playhead.value - row.start;
+    const active = playing.value && !audioTrackMuted.value && localTime >= 0 && localTime < row.duration;
+    if (!active) {
+      player.pause();
+      player.dataset.timelineActive = 'false';
+      player.dataset.timelineStarting = 'false';
+      continue;
+    }
+    const sourceTime = Math.max(0, row.offset + localTime);
+    const entering = player.dataset.timelineActive !== 'true';
+    if (forceSeek || entering) {
+      try {
+        player.currentTime = sourceTime;
+      } catch {
+        // The browser retries the source position once its audio metadata is ready.
+      }
+    }
+    player.volume = Math.max(0, Math.min(1, row.volume));
+    player.dataset.timelineActive = 'true';
+    if (player.paused && player.dataset.timelineStarting !== 'true') {
+      player.dataset.timelineStarting = 'true';
+      void player.play().catch(() => undefined).finally(() => {
+        player.dataset.timelineStarting = 'false';
+        if (player.dataset.timelineActive !== 'true') player.pause();
+      });
+    }
+  }
+};
 // A centered transition starts the incoming media before its nominal cut. Keep
 // that same origin after the transition so the native video clock never jumps
 // back to the clip's first frame when the transition layer is removed.
@@ -2118,6 +2383,10 @@ const moveMaterialToSlot = (material: EffectTemplateMixMaterial, targetSlotId: s
     if (variant.bindingMetadata) delete variant.bindingMetadata[sourceSlot.id];
     variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== sourceSlot.id);
   }
+  clearDetachedAudioForSlots(
+    variant,
+    [targetSlot.id, ...(sourceSlot ? [sourceSlot.id] : [])],
+  );
   variant.bindings[targetSlot.id] = material.id;
   variant.bindingRevisions[targetSlot.id] = material.artifactRevision;
   variant.offsets[targetSlot.id] = 0;
@@ -2160,6 +2429,7 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
     return;
   }
   rememberTimelineEdit();
+  clearDetachedAudioForSlots(variant, [slot.id]);
   variant.bindings[slot.id] = material.id;
   variant.bindingRevisions[slot.id] = material.artifactRevision;
   variant.offsets[slot.id] = 0;
@@ -2180,6 +2450,7 @@ const removeMaterialFromSlot = (slotId: string): void => {
   const slot = variant?.slots.find(({ id }) => id === slotId);
   if (!variant || !slot || !variant.bindings[slot.id]) return;
   rememberTimelineEdit();
+  clearDetachedAudioForSlots(variant, [slot.id]);
   delete variant.bindings[slot.id];
   delete variant.bindingRevisions[slot.id];
   delete variant.offsets[slot.id];
@@ -2681,6 +2952,18 @@ const removeTransitionFromSlot = (slotId: string): void => {
 const deleteSelectedTimelineItem = (): void => {
   const variant = selectedVariant.value;
   if (!variant) return;
+  const detachedIds = new Set(
+    selectedAudioClipIds.value
+      .filter((clipId) => clipId.startsWith('detached:'))
+      .map((clipId) => clipId.slice('detached:'.length)),
+  );
+  if (detachedIds.size && variant.detachedAudios?.some((audio) => detachedIds.has(audio.id))) {
+    rememberTimelineEdit();
+    variant.detachedAudios = variant.detachedAudios.filter((audio) => !detachedIds.has(audio.id));
+    selectedAudioClipIds.value = [];
+    bump();
+    return;
+  }
   const transitionSlotId = activeTransitionSlotId.value;
   const transitionSlot = variant.slots.find(({ id }) => id === transitionSlotId);
   if (transitionSlot && transitionSlot.transition !== '硬切') {
@@ -2860,16 +3143,83 @@ const removeCaption = (id: string): void => {
 };
 const quantizeTimelineTime = (raw: number): number =>
   Math.round(Math.max(0, Math.min(currentDuration.value, raw)) * TIMELINE_FPS) / TIMELINE_FPS;
-const stopPlaybackClock = (): void => {
+const stopPlaybackClock = (
+  resumeBackgroundMediaWork = true,
+  freezeVisualClock = true,
+): void => {
   if (playbackAnimationFrame !== undefined) cancelAnimationFrame(playbackAnimationFrame);
   playbackAnimationFrame = undefined;
+  if (freezeVisualClock) {
+    timelineRef.value?.stopPlaybackNeedle(playhead.value);
+    stopPlayerScrubberMotion(playhead.value);
+  }
   activePlaybackSlotId = '';
   activeTransitionSignature = '';
+  if (resumeBackgroundMediaWork) {
+    pauseEffectTemplateMixThumbnailCapture(false);
+    pauseEffectTemplateMixWaveformDecoding(false);
+  }
 };
 const resetPlaybackClock = (): void => {
   playbackAnchorMilliseconds = performance.now();
   playbackAnchorSeconds = playhead.value;
 };
+const collectPlaybackSyncBoundaries = (): number[] => {
+  const values = new Set<number>([0, currentDuration.value]);
+  const variant = selectedVariant.value;
+  const ranges = currentTiming.value.slots;
+  for (const range of ranges) {
+    values.add(range.start);
+    values.add(range.end);
+  }
+  if (variant) {
+    for (let index = 1; index < variant.slots.length; index += 1) {
+      const incoming = variant.slots[index]!;
+      if (incoming.transition === '硬切') continue;
+      const outgoing = variant.slots[index - 1]!;
+      const range = ranges.find(({ id }) => id === incoming.id);
+      if (!range) continue;
+      const duration = effectTemplateMixTransitionDuration(incoming, outgoing);
+      values.add(Math.max(0, range.start - duration / 2));
+      values.add(Math.min(currentDuration.value, range.start + duration / 2));
+    }
+    for (const caption of selectedPackaging.value?.checkpoint.captions ?? variant.captions) {
+      values.add(caption.start);
+      values.add(caption.end);
+    }
+    for (const audio of variant.detachedAudios ?? []) {
+      values.add(audio.start);
+      values.add(audio.start + audio.duration);
+    }
+  }
+  const checkpoint = selectedPackaging.value?.checkpoint;
+  for (const audio of Object.values(checkpoint?.voices ?? {})) {
+    values.add(audio.start);
+    values.add(audio.start + audio.duration);
+  }
+  if (checkpoint?.music) {
+    values.add(checkpoint.music.start);
+    values.add(checkpoint.music.start + checkpoint.music.duration);
+  }
+  return [...values]
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= currentDuration.value)
+    .sort((left, right) => left - right);
+};
+const resetPlaybackSyncBoundaries = (): void => {
+  playbackSyncBoundaries = collectPlaybackSyncBoundaries();
+  nextPlaybackBoundaryIndex = playbackSyncBoundaries.findIndex(
+    (value) => value > playhead.value + 1 / (TIMELINE_FPS * 2),
+  );
+  if (nextPlaybackBoundaryIndex < 0) nextPlaybackBoundaryIndex = playbackSyncBoundaries.length;
+};
+const currentPlaybackClockSeconds = (): number =>
+  Math.max(
+    0,
+    Math.min(
+      currentDuration.value,
+      playbackAnchorSeconds + (performance.now() - playbackAnchorMilliseconds) / 1000,
+    ),
+  );
 const syncPlayingVideoFrame = (): void => {
   const transition = activeTransitionPreview.value;
   if (transition) {
@@ -2956,16 +3306,44 @@ const updatePlaybackFrame = (now: number): void => {
     playhead.value = currentDuration.value;
     playing.value = false;
     pauseTimelinePlayers();
+    syncDetachedAudio();
     stopPlaybackClock();
     return;
   }
-  playhead.value = next;
-  syncPlayingVideoFrame();
+  // The playhead and player progress are compositor animations. This RAF only updates business
+  // state and clip switching, so a busy Vue render cannot make the visual clock stutter.
+  // Keep the native video clock smooth and the needle on its own RAF transform. Full timeline
+  // reactivity is intentionally lower-rate so the large editor tree cannot starve compositor frames.
+  const nextBoundary = playbackSyncBoundaries[nextPlaybackBoundaryIndex];
+  const crossedBoundary = nextBoundary !== undefined && next >= nextBoundary;
+  if (crossedBoundary) {
+    while (
+      nextPlaybackBoundaryIndex < playbackSyncBoundaries.length &&
+      next >= playbackSyncBoundaries[nextPlaybackBoundaryIndex]!
+    ) {
+      nextPlaybackBoundaryIndex += 1;
+    }
+  }
+  if (crossedBoundary || now - lastUiPlaybackMilliseconds >= 1000) {
+    lastUiPlaybackMilliseconds = now;
+    playhead.value = next;
+    syncPlayingVideoFrame();
+    syncDetachedAudio();
+  }
   playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame);
 };
 const startPlaybackClock = (): void => {
-  stopPlaybackClock();
+  stopPlaybackClock(false, false);
+  pauseEffectTemplateMixThumbnailCapture(true);
+  pauseEffectTemplateMixWaveformDecoding(true);
   resetPlaybackClock();
+  resetPlaybackSyncBoundaries();
+  timelineRef.value?.startPlaybackNeedle(playhead.value, currentDuration.value);
+  startPlayerScrubberMotion(playhead.value);
+  // `performance.now()` is already much larger than one second. Starting from zero made the
+  // very first RAF publish a full-page reactive playhead update immediately, which could keep
+  // the main thread busy long enough for the pause pointer event to feel delayed.
+  lastUiPlaybackMilliseconds = performance.now();
   playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame);
 };
 const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
@@ -3041,7 +3419,16 @@ const scheduleSeekSync = (): void => {
 const seek = (raw: number): void => {
   closeMaterialPreview();
   playhead.value = quantizeTimelineTime(raw);
-  if (playing.value) resetPlaybackClock();
+  timelineRef.value?.setPlaybackNeedle(playhead.value);
+  setPlayerScrubber(playhead.value);
+  playbackSeekVersion.value += 1;
+  if (playing.value) {
+    resetPlaybackClock();
+    resetPlaybackSyncBoundaries();
+    timelineRef.value?.startPlaybackNeedle(playhead.value, currentDuration.value);
+    startPlayerScrubberMotion(playhead.value);
+  }
+  syncDetachedAudio(playing.value);
   scheduleSeekSync();
 };
 const seekPreview = (raw: number): void => {
@@ -3057,9 +3444,15 @@ const togglePlay = async (): Promise<void> => {
   if (!selectedVariant.value) return;
   closeMaterialPreview();
   if (playing.value) {
+    const pausedAt = currentPlaybackClockSeconds();
+    // Invalidate a pending async seek/play request before it can resume a video after pause.
+    seekSyncRequestId++;
+    playing.value = false;
+    playhead.value = pausedAt;
+    stopPlaybackClock(false);
     pauseTimelinePlayers();
     packagingPanel.value?.stopPlaybackAudio();
-    playing.value = false;
+    syncDetachedAudio();
     stopPlaybackClock();
     return;
   }
@@ -3068,6 +3461,7 @@ const togglePlay = async (): Promise<void> => {
   // Start packaged audio before the async video seek so the browser still treats it as the
   // player's user gesture. The child continues syncing it to the shared playhead afterwards.
   packagingPanel.value?.startPlaybackAudio();
+  syncDetachedAudio(true);
   startPlaybackClock();
   await syncPlayerToPlayhead(true);
 };
@@ -3099,21 +3493,33 @@ const onTimelinePlayerTimeUpdate = (slotId: string): void => {
 };
 const onAuditionTime = (): void => {
   auditionTime.value = auditionPlayer.value?.currentTime ?? 0;
+  setPlayerScrubber(auditionTime.value);
   detectMaterialAudio(auditionMaterial.value, auditionPlayer.value);
 };
 const onAuditionEnded = (): void => {
   auditionPlaying.value = false;
+  stopPlayerScrubberMotion(auditionPlayer.value?.duration ?? auditionTime.value);
+};
+const onAuditionPlay = (): void => {
+  auditionPlaying.value = true;
+  startPlayerScrubberMotion(auditionPlayer.value?.currentTime ?? auditionTime.value);
+};
+const onAuditionPause = (): void => {
+  auditionPlaying.value = false;
+  stopPlayerScrubberMotion(auditionPlayer.value?.currentTime ?? auditionTime.value);
 };
 const toggleAuditionPlayback = async (): Promise<void> => {
   const video = auditionPlayer.value;
   if (!video) return;
   if (!video.paused) {
+    onAuditionPause();
     video.pause();
     return;
   }
   if (video.currentTime >= video.duration - 0.04) video.currentTime = 0;
   try {
     await video.play();
+    onAuditionPlay();
   } catch {
     showNotice('浏览器未能开始播放，请再次点击', 'warning');
   }
@@ -3121,6 +3527,16 @@ const toggleAuditionPlayback = async (): Promise<void> => {
 const togglePreviewPlayback = (): void => {
   if (auditionMaterial.value) void toggleAuditionPlayback();
   else void togglePlay();
+};
+const onPreviewPlaybackPointerDown = (event: PointerEvent): void => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  togglePreviewPlayback();
+};
+const onPreviewPlaybackClick = (event: MouseEvent): void => {
+  // Mouse/touch already toggles on pointer-down for editor-grade pause latency.
+  // A synthetic keyboard click has detail 0 and still needs the normal button action.
+  if (event.detail === 0) togglePreviewPlayback();
 };
 const togglePlayerMenu = (menu: 'DISPLAY'): void => {
   playerMenu.value = playerMenu.value === menu ? null : menu;
@@ -3307,7 +3723,9 @@ onBeforeUnmount(() => {
   stopPaneResize();
   stopEditorHeightResize();
   pauseTimelinePlayers();
+  for (const player of detachedAudioPlayers.values()) player.pause();
   timelinePlayers.clear();
+  detachedAudioPlayers.clear();
   removeMaterialPointerListeners();
   materialPointerDrag.value = null;
   materialDragGhost?.remove();
@@ -3545,7 +3963,6 @@ defineExpose({ flushPendingEdits });
                 <Clapperboard :size="14" />素材</button
               ><button
                 :class="{ active: resourceTab === 'AUDIO' }"
-                :disabled="!selectedVariant"
                 @click="selectResourceTab('AUDIO')"
               >
                 <AudioLines :size="14" />音频</button
@@ -3763,10 +4180,12 @@ defineExpose({ flushPendingEdits });
                 </div>
               </div></template
             >
-            <div v-else class="resource-empty">
-              <Music2 :size="28" /><b>项目音频库尚未接入</b
-              ><span>这里不会生成假 BGM、假口播或假卡点结果。</span>
-            </div>
+            <EffectVoiceLibrary
+              v-else-if="resourceTab === 'AUDIO'"
+              :project-id="props.projectId" :workflow-run-id="props.workflowRunId" :template-id="activeTemplateId"
+              :selected-id="workspace.template.voiceProfileId" :playing="previewIsPlaying"
+              @select="selectVoiceProfile" @audition="pauseForVoiceAudition"
+            />
           </aside>
           <div
             class="pane-resizer pane-resizer-left"
@@ -3817,8 +4236,8 @@ defineExpose({ flushPendingEdits });
                   draggable="false"
                   @ended="onAuditionEnded"
                   @loadedmetadata="onAuditionTime"
-                  @pause="auditionPlaying = false"
-                  @play="auditionPlaying = true"
+                  @pause="onAuditionPause"
+                  @play="onAuditionPlay"
                   @timeupdate="onAuditionTime"
                 />
                 <template v-for="slot in selectedVariant?.slots ?? []" :key="`player:${slot.id}`">
@@ -3837,7 +4256,7 @@ defineExpose({ flushPendingEdits });
                         : (selectedVariant?.originalVolume ?? 1)
                     "
                     playsinline
-                    :muted="videoTrackMuted"
+                    :muted="videoTrackMuted || slotHasDetachedAudio(slot.id)"
                     preload="metadata"
                     draggable="false"
                     @canplay="onTimelinePlayerReady(slot.id)"
@@ -3847,6 +4266,14 @@ defineExpose({ flushPendingEdits });
                     @error="onTimelinePlayerError(slot.id)"
                   />
                 </template>
+                <audio
+                  v-for="audio in selectedVariant?.detachedAudios ?? []"
+                  :key="`detached-player:${audio.id}`"
+                  :ref="(element) => setDetachedAudioPlayer(audio.id, element)"
+                  :src="workspace.materials.find((item) => item.fileObjectId === audio.fileObjectId)?.contentUrl"
+                  preload="auto"
+                  @loadedmetadata="syncDetachedAudio(true)"
+                />
                 <div
                   v-if="activeTransitionPreview && transitionOverlayStyle"
                   class="player-transition-overlay"
@@ -3900,7 +4327,12 @@ defineExpose({ flushPendingEdits });
               </div>
             </div>
             <footer class="player-controls" @click.stop>
+              <div class="player-scrubber-visual" aria-hidden="true">
+                <i ref="playerScrubberFill" />
+                <b ref="playerScrubberThumb" />
+              </div>
               <input
+                ref="playerScrubber"
                 class="player-scrubber"
                 type="range"
                 min="0"
@@ -3957,7 +4389,8 @@ defineExpose({ flushPendingEdits });
                       ? '暂停成片'
                       : '播放成片'
                 "
-                @click="togglePreviewPlayback"
+                @pointerdown="onPreviewPlaybackPointerDown"
+                @click="onPreviewPlaybackClick"
               >
                 <Pause v-if="auditionMaterial ? auditionPlaying : playing" :size="19" />
                 <Play v-else :size="19" />
@@ -4093,6 +4526,12 @@ defineExpose({ flushPendingEdits });
               <article
                 v-for="(variant, index) in workspace.variants"
                 :key="variant.id"
+                v-memo="[
+                  workspace.editVersion,
+                  variant,
+                  variant.id === selectedVariant?.id,
+                  packagingReady,
+                ]"
                 :class="{ active: variant.id === selectedVariant?.id }"
                 :title="`${variantDisplayName(variant, index)} · ${variantDuration(variant).toFixed(1)}s · ${
                   variant.conflictSlotIds.length
@@ -4245,9 +4684,9 @@ defineExpose({ flushPendingEdits });
             :selected-variant-id="selectedVariant?.id ?? ''"
             :prepare="preparePackaging"
             :playhead="playhead"
+            :seek-version="playbackSeekVersion"
             :playing="playing"
-            :voice-muted="voiceTrackMuted"
-            :music-muted="musicTrackMuted"
+            :audio-muted="audioTrackMuted"
             @selected="onPackagingSelected"
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
@@ -4340,19 +4779,20 @@ defineExpose({ flushPendingEdits });
           :height="timelineHeight"
           :materials="workspace.materials"
           :playhead="playhead"
+          :playing="playing"
           :project-id="projectId"
-          :voice-muted="voiceTrackMuted"
-          :music-muted="musicTrackMuted"
+          :audio-muted="audioTrackMuted"
           :video-muted="videoTrackMuted"
           :video-visible="videoTrackVisible"
           :caption-visible="captionTrackVisible"
           :selected-audio-clip-id="
-            selectedCaptionId ? `caption:${selectedCaptionId}` : null
+            selectedCaptionId ? `caption:${selectedCaptionId}` : selectedAudioClipIds[0] ?? null
           "
           :selected-slot-id="selectedSlot?.id ?? ''"
           :variant="selectedVariant"
           @reorder-slot="moveProjectSlot"
           @change-audio-volume="changePackagingAudioVolume"
+          @separate-audio="separateAudioForSlot"
           @move-audio-clip="movePackagingAudio"
           @resize-audio-clip="resizePackagingAudio"
           @move-clip="moveTimelineClip"
@@ -5948,14 +6388,46 @@ button:disabled {
 }
 .player-scrubber {
   position: absolute;
-  z-index: 2;
-  top: -3px;
+  z-index: 3;
+  top: -9px;
   left: 0;
   width: 100%;
-  height: 6px;
+  height: 18px;
   margin: 0;
-  accent-color: #2563eb;
+  opacity: 0;
   cursor: pointer;
+}
+.player-scrubber-visual {
+  height: 4px;
+  position: absolute;
+  z-index: 2;
+  top: -2px;
+  right: 0;
+  left: 0;
+  overflow: visible;
+  background: #cbd7e8;
+  pointer-events: none;
+}
+.player-scrubber-visual i {
+  position: absolute;
+  inset: 0;
+  background: #2563eb;
+  transform: scaleX(0);
+  transform-origin: left center;
+  will-change: transform;
+}
+.player-scrubber-visual b {
+  width: 14px;
+  height: 14px;
+  position: absolute;
+  top: -5px;
+  left: -7px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #64748b;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.35);
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
 }
 .player-control-left,
 .player-control-right {
@@ -6519,20 +6991,43 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The list owns the interaction and its own structure; this only feeds it the palette and room. */
+/* Keep the three controls on one line, but size them like editing controls rather than distributing
+   them across the full inspector width. The shared component still owns their interaction. */
 .audio-edit-params {
-  flex: 1;
+  flex: none;
+  width: fit-content;
+  max-width: calc(100% - 92px);
   min-width: 0;
   --parameter-accent: #2563eb;
-  --parameter-field-border: 1px solid #a9c3dd;
-  --parameter-field-background: #fff;
-  --parameter-label-width: 2.4em;
-  --parameter-row-gap: 10px;
-  --parameter-column-gap: 5px;
-  --parameter-slider-height: 14px;
-  --parameter-input-width: 3em;
-  --parameter-step-width: 14px;
-  --parameter-step-height: 9px;
+  --parameter-field-border: 1px solid #c7d6e6;
+  --parameter-field-background: #ffffff;
+  --parameter-field-height: 24px;
+  --parameter-field-radius: 6px;
+  --parameter-row-flex: 0 1 auto;
+  --parameter-row-width: clamp(150px, 16vw, 218px);
+  --parameter-label-width: 2.8em;
+  --parameter-row-gap: 16px;
+  --parameter-column-gap: 7px;
+  --parameter-slider-height: 16px;
+  --parameter-track-height: 2px;
+  --parameter-track-fill: #2563eb;
+  --parameter-track-rest: #cbd5e1;
+  --parameter-thumb-width: 10px;
+  --parameter-thumb-height: 14px;
+  --parameter-thumb-radius: 4px;
+  --parameter-thumb-border: 0;
+  --parameter-thumb-background: #2563eb;
+  --parameter-thumb-shadow: 0 1px 2px rgb(15 23 42 / 16%);
+  --parameter-mark-size: 8px;
+  --parameter-mark-color: #2563eb;
+  --parameter-mark-height: 7px;
+  --parameter-mark-label-display: none;
+  --parameter-input-width: 3.5em;
+  --parameter-input-align: center;
+  --parameter-step-divider: 1px solid #dce6f0;
+  --parameter-step-background: #f5f8fc;
+  --parameter-step-width: 15px;
+  --parameter-step-height: 11px;
   --parameter-step-font-size: 6px;
   --parameter-mark-font-size: 8px;
   font-variant-numeric: tabular-nums;

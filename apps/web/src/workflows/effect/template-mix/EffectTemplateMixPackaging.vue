@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   AlertCircle,
   ArrowLeft,
@@ -11,12 +11,17 @@ import {
   packagingProgress,
   packagingStageDetails,
   packagingStageState,
+  packagingItemStageState,
+  packagingItemStageLabels,
+  currentPackagingRun,
 } from './effect-packaging-progress';
+import { createPackagingPoller } from './effect-packaging-poller';
 import type { PackagingStage } from './effect-packaging-progress';
 import { packagingPlaybackError } from './effect-packaging-audio';
 import {
   PACKAGING_STAGES,
   PACKAGING_STAGE_LABELS,
+  packagingAudioFade,
   packagingVisualTimeline,
   packagingSlotBoundaryError,
 } from '@ai-marketing/contracts';
@@ -38,10 +43,10 @@ const props = defineProps<{
   selectedVariantId: string;
   prepare: () => Promise<number | null>;
   playhead: number;
+  seekVersion: number;
   playing: boolean;
-  /** Shared with the two independent timeline audio-track controls. */
-  voiceMuted: boolean;
-  musicMuted: boolean;
+  /** Shared with the workbench's single audio track control. */
+  audioMuted: boolean;
 }>();
 const emit = defineEmits<{ selected: [item: PackagingItem | null]; preview: [enabled: boolean]; ready: [ready: boolean] }>();
 const dialog = ref<HTMLDialogElement | null>(null);
@@ -54,17 +59,15 @@ const requestError = ref(''),
   previewError = ref('');
 const error = computed(() => requestError.value || loadError.value || previewError.value);
 const message = ref(''),
-  runs = ref<PackagingRun[]>([]),
-  chosenRun = ref('');
+  runs = ref<PackagingRun[]>([]);
+const refreshing = ref(false), lastReadAt = ref('');
 const selectedStage = ref<PackagingStage | null>(null);
 const detailId = ref('');
-let controller: AbortController | null = null,
-  timer: ReturnType<typeof setTimeout> | null = null;
 let generation = 0;
 let pendingCreate: { fingerprint: string; key: string } | null = null;
 const base = computed(() => `/projects/${props.projectId}/workflows/effect/template-mix`);
 const run = computed(() => {
-  const value = runs.value.find((r) => r.id === chosenRun.value) ?? runs.value[0];
+  const value = currentPackagingRun(runs.value);
   return value ? { ...value, items: value.items.map(currentItem) } : undefined;
 });
 const completeCount = computed(
@@ -73,7 +76,7 @@ const completeCount = computed(
 );
 const active = computed(() => runs.value.some((r) => ['QUEUED', 'RUNNING'].includes(r.status)));
 const progressRun = computed(
-  () => runs.value.find((r) => ['QUEUED', 'RUNNING'].includes(r.status)) ?? runs.value[0],
+  () => currentPackagingRun(runs.value),
 );
 const progress = computed(() => progressRun.value?.execution?.progressPercent ?? packagingProgress(progressRun.value));
 const executionSummary = computed(() => {
@@ -92,17 +95,14 @@ const progressSummary = computed(() => {
   const item = value.items.find((i) => i.status === 'RUNNING');
   return `智能成片包装 · ${item ? PACKAGING_STAGE_LABELS[item.stage] : statusLabel[value.status]} · 阶段进度 ${progress.value}%`;
 });
-const stageState = (stage: PackagingStage) => packagingStageState(run.value?.items ?? [], stage);
-const stageItems = computed(() =>
-  !selectedStage.value
-    ? []
-    : (run.value?.items.filter(
-        (item) =>
-          item.stage === selectedStage.value ||
-          item.status === 'COMPLETED' ||
-          PACKAGING_STAGES.indexOf(item.stage) > PACKAGING_STAGES.indexOf(selectedStage.value!),
-      ) ?? []),
-);
+const stageStates = computed(() => Object.fromEntries(
+  PACKAGING_STAGES.map((stage) => [stage, packagingStageState(run.value?.items ?? [], stage)]),
+) as Record<PackagingStage, ReturnType<typeof packagingStageState>>);
+const stageState = (stage: PackagingStage) => stageStates.value[stage];
+const stageItems = computed(() => run.value?.items ?? []);
+const batchCreatedAt = computed(() => run.value
+  ? new Date(run.value.createdAt).toLocaleString('zh-CN', { hour12: false }) : '');
+const staleCount = computed(() => run.value?.items.filter((item) => item.stale).length ?? 0);
 const shardStates = computed(() =>
   [...new Set(run.value?.items.map((i) => i.shardIndex) ?? [])].map((index) => {
     const items = run.value!.items.filter((i) => i.shardIndex === index);
@@ -159,31 +159,32 @@ const allReady = computed(() => !active.value && !loadError.value && props.varia
 }));
 watch(allReady, (ready) => emit('ready', ready), { immediate: true });
 
-async function refresh() {
-  const version = generation;
-  controller?.abort();
-  controller = new AbortController();
-  if (timer) clearTimeout(timer);
-  loading.value = !runs.value.length;
-  try {
+const poller = createPackagingPoller({
+  async read(signal) {
     const response = await requestJson<ApiResponse<PackagingRun[]>>(
       `${base.value}/templates/${props.templateId}/packaging-runs?workflowRunId=${props.workflowRunId}`,
-      { signal: controller.signal, operation: '读取包装任务' },
+      { signal, operation: '读取包装任务' },
     );
-    if (version !== generation) return;
-    runs.value = response.data;
+    return response.data;
+  },
+  onData(data) {
+    runs.value = data;
     loadError.value = '';
-    if (!response.data.some((r) => r.id === chosenRun.value))
-      chosenRun.value = response.data[0]?.id ?? '';
-  } catch (reason) {
-    if (version === generation && !(reason instanceof DOMException && reason.name === 'AbortError'))
-      loadError.value = reason instanceof Error ? reason.message : '读取包装失败';
-  } finally {
-    if (version === generation) {
-      loading.value = false;
-      if (visible.value || active.value) timer = setTimeout(() => void refresh(), 4000);
-    }
-  }
+    lastReadAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  },
+  onError(reason) {
+    loadError.value = reason instanceof Error ? reason.message : '读取包装失败';
+  },
+  onLoading(value) {
+    refreshing.value = value;
+    loading.value = value && !runs.value.length;
+  },
+  // Discover tasks started in another session even when this workspace is idle.
+  interval: () => visible.value || active.value || loadError.value ? 4000 : 30_000,
+});
+const refresh = () => poller.refresh();
+function refreshOnReturn() {
+  if (props.templateId && document.visibilityState === 'visible') void refresh();
 }
 async function open(mode: 'ACTION' | 'WORKFLOW') {
   if (mode === 'ACTION') {
@@ -195,7 +196,6 @@ async function open(mode: 'ACTION' | 'WORKFLOW') {
     await create();
     return;
   }
-  chosenRun.value = progressRun.value?.id ?? '';
   selectedStage.value = null;
   visible.value = true;
   message.value = '';
@@ -261,7 +261,7 @@ async function create(variantId?: string, component: PackagingComponent = 'ALL',
       );
       if (context.generation !== generation) return;
       pendingCreate = null;
-      chosenRun.value = response.data.id;
+      poller.stop();
       runs.value = [response.data, ...runs.value.filter((r) => r.id !== response.data.id)];
     });
   } finally {
@@ -314,12 +314,17 @@ type PreviewAudio = {
   start: number;
   volume: number;
   offset?: number;
+  fadeIn?: number;
+  fadeOut?: number;
 };
 const currentVoice = computed<PreviewAudio | undefined>(() => {
   if (!previewAvailable.value) return undefined;
-  const slotVoice = Object.values(selected.value?.checkpoint.voices ?? {}).find(
-    (audio) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
+  const voices = Object.values(selected.value?.checkpoint.voices ?? {}).sort(
+    (left, right) => left.start - right.start,
   );
+  const slotVoice =
+    voices.find((audio) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration) ??
+    voices.find((audio) => audio.start > props.playhead);
   if (slotVoice) return slotVoice;
   // Legacy packaging stored one whole-film voice on the variant instead of a slot-keyed
   // checkpoint. Keep that already-generated audio playable while the user repackages it.
@@ -327,6 +332,18 @@ const currentVoice = computed<PreviewAudio | undefined>(() => {
     return selectedVariant.value?.voice as EffectTemplateMixAudio | undefined;
   }
   return undefined;
+});
+const nextVoice = computed<PreviewAudio | undefined>(() => {
+  if (!previewAvailable.value) return undefined;
+  const voices = Object.values(selected.value?.checkpoint.voices ?? {}).sort(
+    (left, right) => left.start - right.start,
+  );
+  const currentIndex = voices.findIndex(
+    (audio) => audio.fileObjectId === currentVoice.value?.fileObjectId,
+  );
+  return currentIndex >= 0
+    ? voices[currentIndex + 1]
+    : voices.find((audio) => audio.start > props.playhead);
 });
 const currentMusic = computed<PreviewAudio | undefined>(() => {
   if (!previewAvailable.value) return undefined;
@@ -336,32 +353,76 @@ const currentMusic = computed<PreviewAudio | undefined>(() => {
   }
   return undefined;
 });
-function syncAudio(forcePlayback = false) {
+function syncAudio(forceSeek = false) {
   for (const [kind, element, audio, muted] of [
-    ['VOICE', voiceElement.value, currentVoice.value, props.voiceMuted],
-    ['MUSIC', musicElement.value, currentMusic.value, props.musicMuted],
+    ['VOICE', voiceElement.value, currentVoice.value, props.audioMuted],
+    ['MUSIC', musicElement.value, currentMusic.value, props.audioMuted],
   ] as const) {
-    if (!element || !audio || playbackBlocked[kind] || (!props.playing && !forcePlayback)) {
+    if (!element || !audio || playbackBlocked[kind] || !props.playing) {
       element?.pause();
+      if (element) {
+        element.dataset.timelineActive = 'false';
+        element.dataset.timelineStarting = 'false';
+        element.dataset.timelineEntryKey = '';
+      }
       continue;
     }
     element.muted = muted;
     if (muted) {
       element.pause();
+      element.dataset.timelineActive = 'false';
+      element.dataset.timelineStarting = 'false';
+      element.dataset.timelineEntryKey = '';
       continue;
     }
     const timelineTime = props.playhead - audio.start;
     if (timelineTime < 0 || timelineTime >= audio.duration) {
+      if (timelineTime < 0 && element.dataset.timelinePriming === audio.fileObjectId) continue;
       element.pause();
+      element.dataset.timelineActive = 'false';
+      element.dataset.timelineStarting = 'false';
+      element.dataset.timelineEntryKey = '';
       continue;
     }
     const time = timelineTime + Math.max(0, audio.offset ?? 0);
-    if (Math.abs(element.currentTime - time) > 0.2) element.currentTime = time;
-    element.volume = Math.max(0, Math.min(1, audio.volume));
-    if (element.paused) {
+    const fadeIn = packagingAudioFade(audio, kind, 'fadeIn');
+    const fadeOut = packagingAudioFade(audio, kind, 'fadeOut');
+    const fadeInGain = fadeIn > 0 ? Math.min(1, Math.max(0, timelineTime / fadeIn)) : 1;
+    const fadeOutGain = fadeOut > 0
+      ? Math.min(1, Math.max(0, (audio.duration - timelineTime) / fadeOut))
+      : 1;
+    element.volume = Math.max(0, Math.min(1, audio.volume * Math.min(fadeInGain, fadeOutGain)));
+    if (element.readyState < HTMLMediaElement.HAVE_METADATA) {
+      if (element.dataset.timelinePriming === audio.fileObjectId) continue;
+      element.pause();
+      element.dataset.timelineActive = 'false';
+      element.dataset.timelineStarting = 'false';
+      continue;
+    }
+    const entryKey = `${audio.fileObjectId}:${audio.start}:${audio.offset ?? 0}`;
+    if (forceSeek || element.dataset.timelineEntryKey !== entryKey) {
+      try {
+        element.currentTime = time;
+      } catch {
+        // The active source is switching; the next media readiness event retries this seek.
+        element.dataset.timelineActive = 'false';
+        continue;
+      }
+      element.dataset.timelineEntryKey = entryKey;
+    }
+    // Do not start from the beginning while the requested seek is still being decoded.
+    // `seeked` and `canplay` call this again once the browser can output the right samples.
+    if (element.seeking || element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if (element.dataset.timelinePriming === audio.fileObjectId) continue;
+      element.dataset.timelineActive = 'false';
+      continue;
+    }
+    element.dataset.timelineActive = 'true';
+    if (element.paused && element.dataset.timelineStarting !== 'true') {
       const version = generation;
       const fileId = audio.fileObjectId;
       const isMusic = element === musicElement.value;
+      element.dataset.timelineStarting = 'true';
       void element.play().catch((reason: unknown) => {
         const current = isMusic ? currentMusic.value : currentVoice.value;
         const bound = isMusic ? musicElement.value : voiceElement.value;
@@ -376,6 +437,9 @@ function syncAudio(forcePlayback = false) {
         if (!warning) return;
         playbackBlocked[kind] = true;
         previewError.value = warning;
+      }).finally(() => {
+        element.dataset.timelineStarting = 'false';
+        if (element.dataset.timelineActive !== 'true') element.pause();
       });
     }
   }
@@ -386,32 +450,85 @@ function startPlaybackAudio() {
   playbackBlocked.VOICE = false;
   previewError.value = '';
   syncAudio(true);
+  // A narration line may begin well after the play button's user gesture. Prime the
+  // persistent voice element silently now so the browser won't reject its later play().
+  const audio = currentVoice.value;
+  const element = voiceElement.value;
+  if (audio && element && props.playhead < audio.start) {
+    const fileId = audio.fileObjectId;
+    const originalVolume = element.volume;
+    element.dataset.timelinePriming = fileId;
+    element.dataset.timelinePrimeVolume = String(originalVolume);
+    element.volume = 0;
+    element.muted = false;
+    try {
+      void element.play().catch(() => undefined).finally(() => {
+        const ownsPrime = element.dataset.timelinePriming === fileId;
+        if (ownsPrime && element.dataset.timelineActive !== 'true') {
+          element.pause();
+          try {
+            element.currentTime = 0;
+          } catch {
+            // A source reload can temporarily make the current position unavailable.
+          }
+        }
+        const savedVolume = Number(element.dataset.timelinePrimeVolume);
+        element.volume = Number.isFinite(savedVolume) ? savedVolume : originalVolume;
+        element.dataset.timelinePrimeVolume = '';
+        element.muted = props.audioMuted;
+        if (ownsPrime) element.dataset.timelinePriming = '';
+        if (element.dataset.timelineActive !== 'true') element.pause();
+      });
+    } catch {
+      element.dataset.timelinePriming = '';
+      element.volume = originalVolume;
+      element.dataset.timelinePrimeVolume = '';
+      element.muted = props.audioMuted;
+    }
+  }
 }
 function stopPlaybackAudio() {
   voiceElement.value?.pause();
   musicElement.value?.pause();
+  if (voiceElement.value) {
+    voiceElement.value.dataset.timelineActive = 'false';
+    voiceElement.value.dataset.timelineStarting = 'false';
+    voiceElement.value.dataset.timelinePriming = '';
+    const primeVolume = Number(voiceElement.value.dataset.timelinePrimeVolume);
+    if (Number.isFinite(primeVolume)) voiceElement.value.volume = primeVolume;
+    voiceElement.value.dataset.timelinePrimeVolume = '';
+  }
+  if (musicElement.value) {
+    musicElement.value.dataset.timelineActive = 'false';
+    musicElement.value.dataset.timelineStarting = 'false';
+  }
 }
 watch(
   () => [
     props.playhead,
     props.playing,
-    props.voiceMuted,
-    props.musicMuted,
+    props.audioMuted,
     playbackBlocked.VOICE,
     playbackBlocked.MUSIC,
     currentVoice.value?.fileObjectId,
+    currentVoice.value?.volume,
+    currentVoice.value?.fadeIn,
+    currentVoice.value?.fadeOut,
     currentMusic.value?.fileObjectId,
+    currentMusic.value?.volume,
+    currentMusic.value?.fadeIn,
+    currentMusic.value?.fadeOut,
   ],
-  () => void nextTick(syncAudio),
+  () => void nextTick(() => syncAudio()),
 );
+watch(() => props.seekVersion, () => void nextTick(() => syncAudio(true)));
 watch(
   () => [props.projectId, props.workflowRunId, props.templateId],
   () => {
     generation++;
-    controller?.abort();
-    if (timer) clearTimeout(timer);
+    poller.stop();
     runs.value = [];
-    chosenRun.value = '';
+    lastReadAt.value = '';
     pendingCreate = null;
     requestError.value = '';
     loadError.value = '';
@@ -425,10 +542,15 @@ watch(
   },
   { immediate: true },
 );
+onMounted(() => {
+  window.addEventListener('focus', refreshOnReturn);
+  document.addEventListener('visibilitychange', refreshOnReturn);
+});
 onBeforeUnmount(() => {
   generation++;
-  controller?.abort();
-  if (timer) clearTimeout(timer);
+  poller.stop();
+  window.removeEventListener('focus', refreshOnReturn);
+  document.removeEventListener('visibilitychange', refreshOnReturn);
   voiceElement.value?.pause();
   musicElement.value?.pause();
 });
@@ -454,11 +576,19 @@ onBeforeUnmount(() => {
   </div>
   <audio
     v-if="currentVoice"
-    :key="currentVoice.fileObjectId"
     ref="voiceElement"
     :src="fileUrl(currentVoice.fileObjectId)"
     preload="auto"
     @loadedmetadata="syncAudio()"
+    @seeked="syncAudio()"
+    @canplay="syncAudio()"
+  />
+  <audio
+    v-if="nextVoice"
+    :key="`prefetch:${nextVoice.fileObjectId}`"
+    :src="fileUrl(nextVoice.fileObjectId)"
+    preload="auto"
+    aria-hidden="true"
   />
   <audio
     v-if="currentMusic"
@@ -467,6 +597,8 @@ onBeforeUnmount(() => {
     :src="fileUrl(currentMusic.fileObjectId)"
     preload="auto"
     @loadedmetadata="syncAudio()"
+    @seeked="syncAudio()"
+    @canplay="syncAudio()"
   />
   <dialog
     ref="dialog"
@@ -490,6 +622,16 @@ onBeforeUnmount(() => {
       }}<button :disabled="busy" @click="refresh">重新读取</button>
     </div>
     <div v-if="message" class="notice success" role="status">{{ message }}</div>
+    <section class="packaging-run-summary" aria-label="当前包装批次">
+      <div v-if="run">
+        <strong>{{ statusLabel[run.status] }} · {{ run.counts.completed }} / {{ run.counts.total }} 条完成</strong>
+        <p>{{ executionSummary }} · 失败 {{ run.counts.failed }}<template v-if="staleCount"> · 来源待更新 {{ staleCount }}</template></p>
+        <small>本批创建于 {{ batchCreatedAt }} · {{ loadError ? '同步中断，以下为上次读取结果' : '最后读取 ' + lastReadAt }}</small>
+      </div>
+      <p v-else role="status">{{ loading ? '正在读取包装任务…' : loadError ? '暂时无法读取包装任务' : '尚未创建包装任务' }}</p>
+      <button :disabled="refreshing" @click="refresh">{{ refreshing ? '读取中…' : '刷新状态' }}</button>
+      <p class="packaging-parallel-hint">以下按成片汇总各阶段，不同成片并行推进；部分失败不会阻止其他成片继续。连线表示单条成片的处理顺序。</p>
+    </section>
     <main class="workflow-graph-content">
       <div class="workflow-graph-canvas" aria-label="智能成片包装执行图">
         <template v-for="(stage, index) in PACKAGING_STAGES" :key="stage">
@@ -508,8 +650,9 @@ onBeforeUnmount(() => {
                 >{{ packagingStageDetails[stage].description
                 }}<template v-if="run">
                   · {{ stageState(stage).completed }} / {{ run.items.length }} 完成</template
-                ></small
-              ></span
+                ></small>
+                <small v-if="stageState(stage).summary" class="packaging-stage-counts">{{ stageState(stage).summary }}</small>
+              </span
             >
             <em>{{ stageState(stage).label }}</em>
           </button>
@@ -560,9 +703,7 @@ onBeforeUnmount(() => {
                 ><span>{{
                   item.stale
                     ? '已过期'
-                    : item.stage === selectedStage
-                      ? statusLabel[item.status]
-                      : '本阶段已完成'
+                    : packagingItemStageLabels[packagingItemStageState(item, selectedStage)]
                 }}</span
                 ><small v-if="item.stage === selectedStage && item.errorMessage" class="error">{{
                   item.errorMessage
@@ -633,6 +774,12 @@ onBeforeUnmount(() => {
           <div v-for="line in detail.checkpoint.script" :key="line.id" class="line">
             <strong v-if="line.slotId">{{ detail.sourceVisualTimeline.slots.find(s => s.id === line.slotId)?.label }} · {{ line.start }}–{{ line.end }}s</strong>
             <p>{{ line.text }}</p>
+            <small v-if="line.slotId && detail.checkpoint.narrationMetrics?.[line.slotId]">
+              {{ detail.checkpoint.narrationMetrics[line.slotId]!.characters }} 字 / 目标 {{ detail.checkpoint.narrationMetrics[line.slotId]!.targetCharacters }} 字 ·
+              配音 {{ detail.checkpoint.narrationMetrics[line.slotId]!.audioSeconds.toFixed(1) }}s / 槽位 {{ detail.checkpoint.narrationMetrics[line.slotId]!.slotSeconds.toFixed(1) }}s ·
+              利用率 {{ (detail.checkpoint.narrationMetrics[line.slotId]!.utilization * 100).toFixed(0) }}%
+            </small>
+            <small>音色：{{ detail.checkpoint.voices?.[line.id]?.voiceProfile?.name || '历史默认音色' }}</small>
             <button v-if="line.slotId" :disabled="busy || active || detail.stale" @click="create(detail.variantId, 'VOICE', line.slotId)">重做此槽位口播</button>
             <small>引用 {{ line.factIds.length }} 条确认事实</small
             ><audio
@@ -867,6 +1014,20 @@ time {
   margin: 8px 12px;
   flex-shrink: 0;
 }
+.packaging-run-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 14px 20px 0;
+  font-size: 12px;
+}
+.packaging-run-summary > div { flex: 1; min-width: 200px; }
+.packaging-run-summary p { margin: 4px 0; }
+.packaging-run-summary small,
+.packaging-parallel-hint { color: #718096; font-size: 11px; }
+.packaging-parallel-hint { flex-basis: 100%; }
+.workflow-graph-node small.packaging-stage-counts { color: #435b7d; }
 .packaging-dialog {
   max-width: calc(100vw - 32px);
 }

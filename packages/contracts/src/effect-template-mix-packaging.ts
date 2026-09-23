@@ -1,4 +1,9 @@
-import type { EffectTemplateMixCaption, EffectTemplateMixVariant } from './effect-template-mix';
+import type { EffectVoiceSelection, SlotNarrationMetrics } from './effect-voice';
+import type {
+  EffectTemplateMixCaption,
+  EffectTemplateMixDetachedAudio,
+  EffectTemplateMixVariant,
+} from './effect-template-mix';
 
 export const PACKAGING_STAGES = [
   'SNAPSHOT',
@@ -35,8 +40,12 @@ export type PackagingClip = {
   prompt: string;
   transition: string;
   transitionDuration: number;
+  /** The source audio is represented by a separate timeline clip. */
+  originalAudioDetached?: boolean;
 };
 export type PackagingAudio = {
+  /** Absent on historical audio; do not infer its speaker from current settings. */
+  voiceProfile?: EffectVoiceSelection;
   fileObjectId: string;
   duration: number;
   start: number;
@@ -149,6 +158,7 @@ export type PackagingLine = {
   factIds: string[];
 };
 export type PackagingCheckpoint = {
+  narrationMetrics?: Record<string, SlotNarrationMetrics>;
   /** Bounded item recovery budget, retained across worker restarts. */
   automaticRetries?: number;
   narrationLayoutVersion?: 'SLOT_V1';
@@ -171,12 +181,16 @@ export type PackagingCheckpoint = {
   captionBoxes?: Record<string, PackagingCaptionBox>;
 };
 export type PackagingSnapshot = {
+  /** Optional only for pre-library tasks. New jobs freeze the server-selected profile. */
+  voiceProfile?: EffectVoiceSelection;
   narrationLayoutVersion?: 'SLOT_V1';
   redoSlotId?: string;
   sourceTimelineHash: string;
   duration: number;
   variant: EffectTemplateMixVariant;
   clips: PackagingClip[];
+  /** Optional for historical snapshots created before source-audio separation. */
+  detachedAudios?: EffectTemplateMixDetachedAudio[];
   facts: PackagingFact[];
   dependencies: {
     artifactId: string;
@@ -273,6 +287,13 @@ export function packagingVisualTimeline(variant: EffectTemplateMixVariant) {
     videoLanes: Object.fromEntries(
       Object.entries(variant.videoLanes ?? {}).filter(([, lane]) => lane !== 0),
     ),
+    ...((variant.detachedAudios?.length ?? 0) > 0
+      ? {
+          detachedAudios: [...variant.detachedAudios!].sort(
+            (left, right) => left.start - right.start || left.id.localeCompare(right.id),
+          ),
+        }
+      : {}),
   };
 }
 export function packagingVisualVariant(variant: EffectTemplateMixVariant) {

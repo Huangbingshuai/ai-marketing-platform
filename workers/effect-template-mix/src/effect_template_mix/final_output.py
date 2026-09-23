@@ -157,7 +157,8 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
             if float(info['format']['duration']) + .05 < offset + end - start:
                 raise PackagingError('源视频真实时长不足，禁止补黑伪装完成')
             args += ['-ss', str(offset), '-i', str(files[clip['fileObjectId']])]
-            has_audio = any(s['codec_type'] == 'audio' for s in info['streams'])
+            has_audio = not clip.get('originalAudioDetached', False) and any(
+                s['codec_type'] == 'audio' for s in info['streams'])
         else:
             args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r=30']
             has_audio = False
@@ -194,6 +195,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         current = f'join{index}'
     original_volume = max(0, min(1, float(snapshot['originalVolume'])))
     filters += [''.join(f'[{index}:a]' for index in range(len(segments))) + f'concat=n={len(segments)}:v=0:a=1,volume={original_volume}[original]']
+    detached = list(timeline.get('detachedAudios', []))
     # Editor edits may trim the source head (`offset`) and move clips along the timeline;
     # pipeline writes stay canonical, so absent keys mean the frozen timeline geometry.
     voices = list(cp['voices'].values())
@@ -220,6 +222,26 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
             f',afade=t=out:st={start + length - fade_out}:d={fade_out}' if fade_out > 0 else '')
         filters += [f'[{len(segments) + index}:a]aresample=48000,atrim=start={offset}:duration={length},'
             f'asetpts=PTS-STARTPTS,volume={voice["volume"]},adelay={round(start * 1000)}:all=1{fades}[voice{index}]']
+    for index, audio in enumerate(detached):
+        file_id = str(audio['fileObjectId'])
+        info = media[file_id]
+        actual = float(info['format']['duration'])
+        offset = float(audio['offset'])
+        start = float(audio['start'])
+        length = float(audio['duration'])
+        volume = float(audio.get('volume', 1.0))
+        if (not any(s['codec_type'] == 'audio' for s in info['streams'])
+                or not math.isfinite(offset) or offset < 0
+                or not math.isfinite(start) or start < 0
+                or not math.isfinite(length) or length <= 0
+                or not math.isfinite(volume) or volume < 0 or volume > 10
+                or offset + length > actual + .05
+                or start + length > duration + .001):
+            raise PackagingError('分离音频源轨道或时间范围无效')
+        inputs += ['-i', str(files[file_id])]
+        source_index = len(segments) + len(voices) + index
+        filters += [f'[{source_index}:a]aresample=48000,atrim=start={offset}:duration={length},'
+            f'asetpts=PTS-STARTPTS,volume={volume},adelay={round(start * 1000)}:all=1[detached{index}]']
     music = cp['music']
     music_offset = float(music.get('offset', 0.0))
     music_start = float(music.get('start', 0.0))
@@ -231,7 +253,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     inputs += ['-stream_loop', '-1', '-i', str(files[music['fileObjectId']])]
     # Time-window ducking is deterministic, including silent PCM and gaps.
     windows = '+'.join(f'between(t,{float(v["start"])},{float(v["start"]) + float(v["duration"])})' for v in voices) or '0'
-    music_index = len(segments) + len(voices)
+    music_index = len(segments) + len(voices) + len(detached)
     # Ducking and fades run after `adelay`, so their time coordinates are timeline seconds.
     # The 0.5s easing is the pipeline default: a checkpoint the editor never touched has no fade
     # keys, and the fallback keeps its rendered audio identical to the pre-fade pipeline.
@@ -243,7 +265,10 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     filters += [f"[{music_index}:a]aresample=48000,atrim=start={music_offset},asetpts=PTS-STARTPTS,atrim=duration={music_length},"
         f"adelay={round(music_start * 1000)}:all=1,volume='{music['volume']}*if(gt({windows},0),0.35,1)':eval=frame,"
         f"afade=t=in:st={music_start}:d={fade_in},afade=t=out:st={music_start + music_length - fade_out}:d={fade_out}[music]",
-        '[original][music]' + ''.join(f'[voice{i}]' for i in range(len(voices))) + f'amix=inputs={2 + len(voices)}:normalize=0:duration=longest,alimiter=limit=0.95,atrim=duration={duration}[audio]']
+        '[original][music]' + ''.join(f'[voice{i}]' for i in range(len(voices))) +
+        ''.join(f'[detached{i}]' for i in range(len(detached))) +
+        f'amix=inputs={2 + len(voices) + len(detached)}:normalize=0:duration=longest,'
+        f'alimiter=limit=0.95,atrim=duration={duration}[audio]']
     (directory / 'captions.ass').write_text(
         captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes')), encoding='utf-8')
     filters += [f'[{current}]subtitles=captions.ass,format=yuv420p[video]']

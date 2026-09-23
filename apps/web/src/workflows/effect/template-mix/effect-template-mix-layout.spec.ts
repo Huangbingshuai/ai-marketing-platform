@@ -643,6 +643,15 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain("unit: 'dB'");
     expect(pageSource).toContain("label: '淡入'");
     expect(pageSource).toContain("label: '淡出'");
+    expect(pageSource).toContain('--parameter-row-flex: 0 1 auto;');
+    expect(pageSource).toContain('--parameter-row-width: clamp(150px, 16vw, 218px);');
+    expect(pageSource).toContain('--parameter-mark-label-display: none;');
+    expect(pageSource).toContain('--parameter-input-align: center;');
+    expect(pageSource).toContain('--parameter-track-fill: #2563eb;');
+    expect(pageSource).toContain('--parameter-track-rest: #cbd5e1;');
+    expect(pageSource).toContain('--parameter-thumb-width: 10px;');
+    expect(pageSource).toContain('--parameter-thumb-height: 14px;');
+    expect(pageSource).toContain('--parameter-thumb-radius: 4px;');
     expect(pageSource).toContain("unit: 's'");
     // A fade can never outlast its own clip, so the row's 6.1s top end is also capped by the room the
     // other edge leaves — the server rejects a pair whose sum exceeds the clip.
@@ -655,14 +664,15 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const audioToDb = packagingAudioToDb;');
     expect(pageSource).toContain('const audioFromDb = packagingAudioFromDb;');
     expect(pageSource).toContain('max: PACKAGING_AUDIO_DB_CEILING,');
+    expect(pageSource).toContain("floorLabel: '-∞',");
     // The scale's two reference points: the bottom is silence, and unity is what an editor aims at.
     expect(pageSource).toContain("marks: [");
     expect(pageSource).toContain("{ value: AUDIO_DB_FLOOR, label: '-∞' },");
     expect(pageSource).toContain("{ value: 0, label: '0dB' },");
     // The row is one line, so the three numbers cost no more height than the caption stepper it swaps
     // with.
-    expect(pageSource).toContain('--parameter-row-gap: 10px;');
-    expect(pageSource).toContain('--parameter-label-width: 2.4em;');
+    expect(pageSource).toContain('--parameter-row-gap: 16px;');
+    expect(pageSource).toContain('--parameter-label-width: 2.8em;');
     expect(pageSource).toContain(
       "const audioStandard = computed<{ kind: 'MUSIC' | 'VOICE'; audio: PackagingAudio } | null>",
     );
@@ -705,7 +715,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain("audioEdit(current.music, 'MUSIC')");
     // The palette is handed in, so the list itself stays free of colour and placement.
     expect(pageSource).toContain('--parameter-accent: #2563eb;');
-    expect(pageSource).toContain('--parameter-field-background: #fff;');
+    expect(pageSource).toContain('--parameter-field-background: #ffffff;');
   });
   it('keeps a stale packaging on the timeline instead of wiping its captions and audio', () => {
     // Nulling the prop on staleness is what used to empty the caption and audio lanes the moment a

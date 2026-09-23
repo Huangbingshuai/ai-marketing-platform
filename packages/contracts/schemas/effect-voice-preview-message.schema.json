@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EffectVoicePreviewMessage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "taskType", "projectId", "runId", "requestId"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 2 },
+    "taskType": { "type": "string", "const": "VOICE_PREVIEW" },
+    "projectId": { "type": "string", "format": "uuid" },
+    "runId": { "type": "string", "format": "uuid" },
+    "requestId": { "type": "string", "format": "uuid" }
+  }
+}

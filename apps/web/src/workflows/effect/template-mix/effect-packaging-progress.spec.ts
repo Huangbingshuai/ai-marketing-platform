@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
-import { packagingProgress, packagingStageState } from './effect-packaging-progress';
+import { currentPackagingRun, packagingItemStageState, packagingProgress, packagingStageState } from './effect-packaging-progress';
+import { PACKAGING_STAGES } from '@ai-marketing/contracts';
 import component from './EffectTemplateMixPackaging.vue?raw';
 import page from './EffectTemplateMixNodePage.vue?raw';
 
@@ -44,6 +45,35 @@ describe('packaging workflow progress', () => {
     const items = Array.from({ length: 100 }, () => item('READY', 'COMPLETED'));
     expect(packagingProgress(run(items))).toBe(100);
     expect(packagingStageState(items, 'READY')).toMatchObject({ completed: 100, tone: 'success' });
+    for (const stage of PACKAGING_STAGES)
+      expect(packagingStageState(items, stage)).toMatchObject({ completed: 100, failed: 0, running: 0, label: '已完成' });
+  });
+  it('shows parallel execution and failure counts without declaring the whole stage failed', () => {
+    const items = [item('SCRIPT', 'FAILED'), item('SCRIPT', 'RUNNING'), item('VOICE', 'RUNNING'), item('VISION', 'RUNNING')];
+    expect(packagingStageState(items, 'SCRIPT')).toMatchObject({
+      completed: 1, running: 1, failed: 1, waiting: 1, tone: 'running', label: '执行中 · 1 条失败',
+    });
+    expect(packagingStageState(items, 'VOICE')).toMatchObject({ completed: 0, running: 1, blocked: 1, waiting: 2 });
+    expect(packagingItemStageState(items[0]!, 'VOICE')).toBe('blocked');
+  });
+  it('clears old failures when persisted retry results complete', () => {
+    const items = [item('VISION', 'FAILED'), item('SCRIPT', 'FAILED'), item('MUSIC', 'RUNNING')];
+    expect(packagingStageState(items, 'VISION').failed).toBe(1);
+    for (const value of items) { value.status = 'COMPLETED'; value.stage = 'READY'; }
+    for (const stage of PACKAGING_STAGES)
+      expect(packagingStageState(items, stage)).toMatchObject({ failed: 0, completed: 3, tone: 'success' });
+  });
+  it('distinguishes completed execution from invalidated source', () => {
+    const value = { ...item('READY', 'COMPLETED'), stale: true };
+    expect(packagingStageState([value], 'VOICE')).toMatchObject({ completed: 1, stale: 1, label: '来源待更新' });
+  });
+  it('uses the same latest or active batch instead of pinning a historical failure', () => {
+    const old = { id: 'old', status: 'PARTIAL' } as PackagingRun;
+    const latest = { id: 'new', status: 'COMPLETED' } as PackagingRun;
+    expect(currentPackagingRun([latest, old])).toBe(latest);
+    const running = { id: 'active', status: 'RUNNING' } as PackagingRun;
+    expect(currentPackagingRun([latest, running, old])).toBe(running);
+    expect(currentPackagingRun([])).toBeUndefined();
   });
   it('shares the fill progress component and graph styling with separate actions', () => {
     expect(component).toContain('WorkflowRunProgress');

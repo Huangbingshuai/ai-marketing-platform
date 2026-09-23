@@ -21,9 +21,11 @@ const retryAfter = new Map<string, number>();
 const failureCounts = new Map<string, number>();
 const jobs = new Map<string, ThumbnailJob>();
 const queue: ThumbnailJob[] = [];
+const activeCaptures = new Map<string, () => void>();
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let diskCache: Promise<Cache | null> | undefined;
 let persistedWrites = 0;
+let capturesPaused = false;
 
 const thumbnailKey = (source: string, time: number, version = ''): string =>
   `${source}::${version}::${Math.max(0, time).toFixed(2)}`;
@@ -118,11 +120,20 @@ const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
   const settle = (callback: () => void): void => {
     if (completed) return;
     completed = true;
+    activeCaptures.delete(key);
     callback();
     cleanup();
     finishJob(key);
   };
   const fail = (): void => settle(() => markFailure(key));
+  activeCaptures.set(key, () =>
+    settle(() => {
+      if (pinCounts.has(key) && !thumbnailUrls.has(key) && !queuedKeys.has(key)) {
+        queuedKeys.add(key);
+        queue.unshift(jobs.get(key) ?? { key, source, time, version: '' });
+      }
+    }),
+  );
   const capture = (): void => {
     if (
       completed ||
@@ -192,6 +203,7 @@ const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
 };
 
 function drainQueue(): void {
+  if (capturesPaused) return;
   while (runningKeys.size < MAX_CONCURRENT_CAPTURES && queue.length) {
     const job = queue.shift();
     if (!job) return;
@@ -205,6 +217,15 @@ function drainQueue(): void {
     captureThumbnail(job);
   }
 }
+
+/** Give foreground timeline video playback priority over background frame extraction. */
+export const pauseEffectTemplateMixThumbnailCapture = (paused: boolean): void => {
+  if (capturesPaused === paused) return;
+  capturesPaused = paused;
+  if (paused) {
+    for (const cancel of [...activeCaptures.values()]) cancel();
+  } else drainQueue();
+};
 
 const restoreOrCapture = async (job: ThumbnailJob): Promise<void> => {
   restoringKeys.add(job.key);

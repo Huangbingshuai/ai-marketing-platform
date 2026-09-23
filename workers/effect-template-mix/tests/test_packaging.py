@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import io
@@ -193,7 +194,7 @@ def script_snapshot() -> dict[str, Any]:
 
 def plan_result(**updates: Any) -> NarrationPlan:
     return NarrationPlan.model_validate({'lines': [{'id': 'line-1', 'slotId': 's1',
-        'text': '已确认事实', 'factIds': ['facts:0'], **updates}], 'musicBrief': '轻快纯器乐'})
+        'text': '依据已确认商品信息，结合当前画面自然讲解。', 'factIds': ['facts:0'], **updates}], 'musicBrief': '轻快纯器乐'})
 
 
 def test_narration_window_materialization_has_no_model_timing_or_order_dependency() -> None:
@@ -405,6 +406,7 @@ async def test_one_consumer_routes_legacy_and_packaging_without_cross_claims() -
     api = AsyncMock(spec=InternalApi)
     api.claim.return_value = SimpleNamespace(terminal=True)
     packaging = AsyncMock(spec=PackagingHandler)
+    packaging.requests = asyncio.Semaphore(2)
     final_output = AsyncMock()
     worker = Consumer('amqp://test', 'effect.template-mix.requested', api, AsyncMock(spec=ArkProvider), 1000, 10, 16000, 8192, 2, packaging, final_output)
     legacy = AsyncMock()

@@ -53,12 +53,12 @@ const props = withDefaults(
     height?: number;
     materials: EffectTemplateMixMaterial[];
     playhead: number;
+    playing?: boolean;
     projectId?: string;
     /** Set when the preview selects a caption, so both views show the same clip. */
     selectedAudioClipId?: string | null;
     /** Track controls are owned by the workbench player, not by this view. */
-    voiceMuted?: boolean;
-    musicMuted?: boolean;
+    audioMuted?: boolean;
     videoMuted?: boolean;
     videoVisible?: boolean;
     captionVisible?: boolean;
@@ -71,9 +71,9 @@ const props = withDefaults(
     canUndo: false,
     fps: 30,
     height: 260,
+    playing: false,
     selectedAudioClipId: null,
-    voiceMuted: false,
-    musicMuted: false,
+    audioMuted: false,
     videoMuted: false,
     videoVisible: true,
     captionVisible: true,
@@ -106,22 +106,23 @@ const emit = defineEmits<{
   ];
   seek: [seconds: number];
   selectAudioClip: [clipId: string | null];
-  toggleAudioMute: [kind: TimelineAudioKind | 'VIDEO', muted: boolean];
+  toggleAudioMute: [kind: 'AUDIO' | 'VIDEO', muted: boolean];
   toggleTrackVisibility: [track: 'CAPTION' | 'VIDEO', visible: boolean];
   /** The whole caption selection, so the editor can move and scale a group as one. */
   selectCaptionClips: [captionIds: string[]];
   /** The whole voice/music selection, so the editor can retune a group from one standard clip. */
   selectAudioClips: [clipIds: string[]];
   selectSlot: [slotId: string];
+  separateAudio: [slotId: string];
   trimSlot: [slotId: string, trimStartSeconds: number];
   previewTransitionDuration: [slotId: string, duration: number];
   updateTransitionDuration: [slotId: string, duration: number];
   undo: [];
 }>();
 
-type VisibleTrack = 'CAPTION' | 'MUSIC' | 'VIDEO' | 'VOICE';
-type TimelineAudioKind = 'MUSIC' | 'VOICE';
-/** One voiceover, BGM or caption block on the audio/caption lanes. */
+type VisibleTrack = 'AUDIO' | 'CAPTION' | 'VIDEO';
+type TimelineAudioKind = 'DETACHED' | 'MUSIC' | 'VOICE';
+/** One audio clip or caption block; kind affects its colour, not its track. */
 type TimelineAudio = {
   /** Namespaced selection id: `voice:<lineId>`, `music`, `voice`, or `caption:<id>`. */
   id: string;
@@ -238,7 +239,7 @@ type TransitionDragState = {
 };
 
 const trackOrder = ref<VisibleTrack[]>(['CAPTION', 'VIDEO']);
-const audioTracks: TimelineAudioKind[] = ['VOICE', 'MUSIC'];
+const audioTracks: VisibleTrack[] = ['AUDIO'];
 /** CapCut-like lane geometry: audio lanes stay tall, subtitle lanes are slim strips. */
 const AUDIO_LANE_HEIGHT = 50;
 const AUDIO_CLIP_HEIGHT = 44;
@@ -251,9 +252,9 @@ const viewport = ref<HTMLElement | null>(null);
 const canvas = ref<HTMLElement | null>(null);
 const videoTrack = ref<HTMLElement | null>(null);
 const captionTrack = ref<HTMLElement | null>(null);
-const voiceTrack = ref<HTMLElement | null>(null);
-const musicTrack = ref<HTMLElement | null>(null);
+const audioTrack = ref<HTMLElement | null>(null);
 const timelineShell = ref<HTMLElement | null>(null);
+const playheadElement = ref<HTMLElement | null>(null);
 const pixelsPerSecond = ref(52);
 const viewportWidth = ref(0);
 const trackHeaderWidth = ref(120);
@@ -271,12 +272,12 @@ const materialDropSlotId = ref('');
 const selectedClipIds = ref<string[]>([]);
 const selectedAudioIds = ref<string[]>([]);
 const audioDrag = ref<AudioDragState | null>(null);
+const clipContextMenu = ref<{ slotId: string; left: number; top: number } | null>(null);
 const trackHeaders = ref<HTMLElement | null>(null);
 const trackLocked = reactive<Record<VisibleTrack, boolean>>({
+  AUDIO: false,
   CAPTION: false,
-  MUSIC: false,
   VIDEO: false,
-  VOICE: false,
 });
 let resizeObserver: ResizeObserver | null = null;
 
@@ -343,7 +344,40 @@ const timelineDuration = computed(() =>
 const canvasWidth = computed(() =>
   Math.max(viewportWidth.value, timelineDuration.value * pixelsPerSecond.value + 96),
 );
-const playheadLeft = computed(() => props.playhead * pixelsPerSecond.value);
+let playbackNeedleAnimation: Animation | undefined;
+let playbackNeedleStartSeconds = 0;
+const setPlaybackNeedle = (seconds = props.playhead): void => {
+  if (!playheadElement.value) return;
+  const left = Math.max(0, seconds) * pixelsPerSecond.value;
+  playheadElement.value.style.transform = `translate3d(${left}px, 0, 0)`;
+};
+const stopPlaybackNeedle = (seconds = props.playhead): void => {
+  playbackNeedleAnimation?.cancel();
+  playbackNeedleAnimation = undefined;
+  setPlaybackNeedle(seconds);
+};
+const startPlaybackNeedle = (startSeconds: number, endSeconds = props.duration): void => {
+  const element = playheadElement.value;
+  if (!element) return;
+  stopPlaybackNeedle(startSeconds);
+  const safeStart = Math.max(0, Math.min(endSeconds, startSeconds));
+  const safeEnd = Math.max(safeStart, endSeconds);
+  playbackNeedleStartSeconds = safeStart;
+  if (safeEnd <= safeStart) return;
+  playbackNeedleAnimation = element.animate(
+    [
+      { transform: `translate3d(${safeStart * pixelsPerSecond.value}px, 0, 0)` },
+      { transform: `translate3d(${safeEnd * pixelsPerSecond.value}px, 0, 0)` },
+    ],
+    {
+      duration: (safeEnd - safeStart) * 1000,
+      easing: 'linear',
+      fill: 'both',
+    },
+  );
+};
+const animatedNeedleSeconds = (): number =>
+  playbackNeedleStartSeconds + Number(playbackNeedleAnimation?.currentTime ?? 0) / 1000;
 const timelineShellStyle = computed(() => ({
   '--timeline-height': `${props.height}px`,
   '--track-header-width': `${trackHeaderWidth.value}px`,
@@ -493,7 +527,7 @@ const timelineAudios = computed<TimelineAudio[]>(() => {
           editable: audioEditable.value,
         }]
       : [];
-    return [...voices, ...music];
+    return [...voices, ...music, ...detachedAudioRows()];
   }
   // Legacy variant audio has no slot-keyed packaging checkpoint, so it stays read-only.
   const legacy = (id: string, kind: TimelineAudioKind, audio: EffectTemplateMixAudio) => ({
@@ -515,26 +549,44 @@ const timelineAudios = computed<TimelineAudio[]>(() => {
   return [
     ...(props.variant?.voice ? [legacy('voice', 'VOICE', props.variant.voice)] : []),
     ...(props.variant?.bgm ? [legacy('music', 'MUSIC', props.variant.bgm)] : []),
+    ...detachedAudioRows(),
   ];
 });
+const detachedAudioRows = (): TimelineAudio[] =>
+  (props.variant?.detachedAudios ?? []).flatMap((audio) => {
+    const material = props.materials.find(({ fileObjectId }) => fileObjectId === audio.fileObjectId);
+    if (!material) return [];
+    const offset = Math.max(0, audio.offset);
+    return [{
+      id: `detached:${audio.id}`,
+      kind: 'DETACHED',
+      label: audio.name,
+      start: audio.start,
+      duration: audio.duration,
+      offset,
+      sourceDuration: material.duration,
+      volume: audio.volume,
+      fadeIn: 0,
+      fadeOut: 0,
+      sourceUrl: material.contentUrl,
+      editable: true,
+    }];
+  });
 // Captions are their own cards, so they carry no waveform and no audio geometry.
 const timelineCaptionEntries = computed(() =>
   timelineCaptions.value.map((caption) => ({ caption, id: `caption:${caption.id}` })),
 );
-const audioLaneByKind = (kind: TimelineAudioKind): Map<string, number> =>
+const audioLaneById = computed(() =>
   assignIntervalLanes(
-    timelineAudios.value.filter((audio) => audio.kind === kind).map((audio) => ({
+    timelineAudios.value.map((audio) => ({
       id: audio.id,
       start: Math.max(0, audio.start),
       end: Math.max(audio.start, audio.start + audio.duration),
     })),
-  );
-const voiceLaneById = computed(() => audioLaneByKind('VOICE'));
-const musicLaneById = computed(() => audioLaneByKind('MUSIC'));
-const audioLaneCount = (kind: TimelineAudioKind): number => {
-  const lanes = kind === 'VOICE' ? voiceLaneById.value : musicLaneById.value;
-  return Math.max(1, lanes.size ? Math.max(...lanes.values()) + 1 : 1);
-};
+  ),
+);
+const audioLaneCount = (): number =>
+  Math.max(1, audioLaneById.value.size ? Math.max(...audioLaneById.value.values()) + 1 : 1);
 
 /** One head or tail, tagged with the block it belongs to so a drag can skip its own. */
 type SnapEdge = { ownerId: string; time: number };
@@ -609,7 +661,7 @@ const trackHeight = (track: VisibleTrack): number =>
     ? videoLaneCount.value * 70 + 6
     : (track === 'CAPTION'
         ? captionLaneCount.value * CAPTION_LANE_HEIGHT
-        : audioLaneCount(track) * AUDIO_LANE_HEIGHT) + 6;
+        : audioLaneCount() * AUDIO_LANE_HEIGHT) + 6;
 const orderedTracks = computed<VisibleTrack[]>(() => {
   return [...trackOrder.value, ...audioTracks];
 });
@@ -628,12 +680,11 @@ const setCaptionTrackElement = (element: unknown): void => {
     candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ??
     null;
 };
-const setAudioTrackElement = (kind: TimelineAudioKind, element: unknown): void => {
+const setAudioTrackElement = (_kind: VisibleTrack, element: unknown): void => {
   const candidates = Array.isArray(element) ? element : [element];
   const target =
     candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ?? null;
-  if (kind === 'VOICE') voiceTrack.value = target;
-  else musicTrack.value = target;
+  audioTrack.value = target;
 };
 
 const rangeForSlot = (slotId: string): { start: number; end: number } | null =>
@@ -757,7 +808,7 @@ const audioClipStyle = (audio: TimelineAudio): Record<string, string> => {
   return {
     height: `${AUDIO_CLIP_HEIGHT}px`,
     left: `${Math.max(0, start) * pixelsPerSecond.value}px`,
-    top: `${AUDIO_CLIP_INSET + ((audio.kind === 'VOICE' ? voiceLaneById.value : musicLaneById.value).get(audio.id) ?? 0) * AUDIO_LANE_HEIGHT}px`,
+    top: `${AUDIO_CLIP_INSET + (audioLaneById.value.get(audio.id) ?? 0) * AUDIO_LANE_HEIGHT}px`,
     width: `${Math.max(14, duration * pixelsPerSecond.value)}px`,
   };
 };
@@ -1102,6 +1153,31 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
   };
   addWindowPointerListeners();
 };
+const onVideoClipContextMenu = (event: MouseEvent, slotId: string): void => {
+  if (!materialForSlot(slotId)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  selectedAudioIds.value = [];
+  setSelection([slotId]);
+  clipContextMenu.value = {
+    slotId,
+    left: Math.min(event.clientX, window.innerWidth - 208),
+    top: Math.min(event.clientY, window.innerHeight - 54),
+  };
+};
+const contextAudioDetached = (): boolean =>
+  Boolean(
+    clipContextMenu.value &&
+      props.variant?.detachedAudios?.some(
+        (audio) => audio.sourceSlotId === clipContextMenu.value?.slotId,
+      ),
+  );
+const runClipContextAction = (): void => {
+  const slotId = clipContextMenu.value?.slotId;
+  if (!slotId) return;
+  clipContextMenu.value = null;
+  emit('separateAudio', slotId);
+};
 
 const beginTrim = (event: PointerEvent, slotId: string): void => {
   if (event.button !== 0 || trackLocked.VIDEO) return;
@@ -1206,7 +1282,7 @@ const audioEdgeHandleDisabled = (event: PointerEvent): boolean => {
 };
 
 const onAudioPointerDown = (event: PointerEvent, audio: TimelineAudio): void => {
-  if (event.button !== 0 || trackLocked[audio.kind]) return;
+  if (event.button !== 0 || trackLocked.AUDIO) return;
   if (audioEdgeHandleDisabled(event)) {
     event.preventDefault();
     event.stopPropagation();
@@ -1239,7 +1315,7 @@ const beginAudioTrim = (
   audio: AudioDragTarget,
   side: 'LEFT' | 'RIGHT',
 ): void => {
-  if (event.button !== 0 || trackLocked[audio.kind]) return;
+  if (event.button !== 0 || trackLocked.AUDIO) return;
   event.preventDefault();
   event.stopPropagation();
   selectAudio(audio.id);
@@ -1247,7 +1323,7 @@ const beginAudioTrim = (
 };
 
 const beginAudioVolume = (event: PointerEvent, audio: TimelineAudio): void => {
-  if (event.button !== 0 || trackLocked[audio.kind]) return;
+  if (event.button !== 0 || trackLocked.AUDIO) return;
   event.preventDefault();
   event.stopPropagation();
   // Volume is the audio counterpart of a caption's size, so a set takes one level together.
@@ -1332,7 +1408,20 @@ const clearSelection = (): void => {
   selectedClipIds.value = [];
   selectedAudioIds.value = [];
 };
-defineExpose({ clearSelection });
+watch(
+  [() => props.playhead, () => props.playing],
+  () => {
+    if (!props.playing) stopPlaybackNeedle();
+    else if (!playbackNeedleAnimation) startPlaybackNeedle(props.playhead);
+  },
+  { flush: 'post' },
+);
+watch(pixelsPerSecond, () => {
+  if (props.playing && playbackNeedleAnimation) {
+    startPlaybackNeedle(animatedNeedleSeconds());
+  } else setPlaybackNeedle();
+});
+defineExpose({ clearSelection, setPlaybackNeedle, startPlaybackNeedle, stopPlaybackNeedle });
 
 /**
  * Anything on the timeline that is not the material itself clears the selection. The ruler and the
@@ -1340,6 +1429,7 @@ defineExpose({ clearSelection });
  * is selected. A block is the material, and clicking it is how you pick it in the first place.
  */
 const onShellPointerDown = (event: PointerEvent): void => {
+  clipContextMenu.value = null;
   const target = event.target;
   if (!(target instanceof Element)) return;
   const keep = target.closest(
@@ -1357,7 +1447,7 @@ const onTrackPointerDown = (event: PointerEvent, track: VisibleTrack): void => {
   selectedAudioIds.value = [];
   seekFromClientX(event.clientX);
   // Every lane marquees, and each one only ever picks the blocks that live on it.
-  if (track === 'VIDEO' || track === 'CAPTION' || track === 'VOICE' || track === 'MUSIC') {
+  if (track === 'VIDEO' || track === 'CAPTION' || track === 'AUDIO') {
     marquee.value = {
       currentClientX: event.clientX,
       currentClientY: event.clientY,
@@ -1416,10 +1506,8 @@ const updateMarqueeSelection = (): void => {
   const track =
     box?.track === 'CAPTION'
       ? captionTrack.value
-      : box?.track === 'VOICE'
-        ? voiceTrack.value
-        : box?.track === 'MUSIC'
-          ? musicTrack.value
+      : box?.track === 'AUDIO'
+        ? audioTrack.value
         : videoTrack.value;
   if (!box || !element || !track) return;
   const clear = (): void => {
@@ -1439,7 +1527,7 @@ const updateMarqueeSelection = (): void => {
   const right =
     Math.max(box.startClientX, box.currentClientX) - viewportBounds.left + element.scrollLeft;
   // Captions and voice/BGM blocks share one selection list, so both lanes write to it.
-  if (box.track === 'CAPTION' || box.track === 'VOICE' || box.track === 'MUSIC') {
+  if (box.track === 'CAPTION' || box.track === 'AUDIO') {
     const entries =
       box.track === 'CAPTION'
         ? timelineCaptionEntries.value.map((entry) => ({
@@ -1447,9 +1535,7 @@ const updateMarqueeSelection = (): void => {
             start: entry.caption.start,
             end: entry.caption.end,
           }))
-        : timelineAudios.value
-            .filter((audio) => audio.kind === box.track)
-            .map((audio) => ({
+        : timelineAudios.value.map((audio) => ({
               id: audio.id,
               start: audio.start,
               end: audio.start + audio.duration,
@@ -1808,6 +1894,10 @@ const updateViewportWidth = (): void => {
 };
 
 const onTimelineKeydown = (event: KeyboardEvent): void => {
+  if (event.key === 'Escape' && clipContextMenu.value) {
+    clipContextMenu.value = null;
+    return;
+  }
   if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
   event.preventDefault();
   event.stopPropagation();
@@ -1874,6 +1964,7 @@ watch(
 );
 
 onMounted(() => {
+  setPlaybackNeedle();
   updateViewportWidth();
   resizeObserver = new ResizeObserver(updateViewportWidth);
   if (viewport.value) resizeObserver.observe(viewport.value);
@@ -1881,6 +1972,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  playbackNeedleAnimation?.cancel();
   resizeObserver?.disconnect();
   removeWindowPointerListeners();
 });
@@ -1899,6 +1991,19 @@ onBeforeUnmount(() => {
     @keydown="onTimelineKeydown"
     @pointerdown="onShellPointerDown"
   >
+    <Teleport to="body">
+      <div
+        v-if="clipContextMenu"
+        class="clip-context-menu"
+        role="menu"
+        :style="{ left: `${clipContextMenu.left}px`, top: `${clipContextMenu.top}px` }"
+        @pointerdown.stop
+      >
+        <button type="button" role="menuitem" @click="runClipContextAction">
+          {{ contextAudioDetached() ? '恢复视频原声' : '分离音频' }}
+        </button>
+      </div>
+    </Teleport>
     <header class="timeline-toolstrip">
       <div class="timeline-tools">
         <button
@@ -1981,16 +2086,13 @@ onBeforeUnmount(() => {
             <div class="track-name">
               <Film v-if="track === 'VIDEO'" :size="14" />
               <Captions v-else-if="track === 'CAPTION'" :size="14" />
-              <Volume2 v-else-if="track === 'VOICE'" :size="14" />
-              <Music2 v-else :size="14" />
+              <Volume2 v-else :size="14" />
               <span>{{
                 track === 'VIDEO'
                   ? '主视频'
                   : track === 'CAPTION'
                     ? '字幕'
-                    : track === 'VOICE'
-                      ? '口播'
-                      : '纯音乐'
+                    : '音频'
               }}</span>
             </div>
             <div class="track-actions">
@@ -2012,13 +2114,13 @@ onBeforeUnmount(() => {
                 <EyeOff v-else :size="12" />
               </button>
               <button
-                v-if="track === 'VIDEO' || track === 'VOICE' || track === 'MUSIC'"
+                v-if="track === 'VIDEO' || track === 'AUDIO'"
                 type="button"
-                :title="(track === 'VIDEO' ? props.videoMuted : track === 'VOICE' ? props.voiceMuted : props.musicMuted) ? '取消静音' : '静音轨道'"
-                :aria-label="`${(track === 'VIDEO' ? props.videoMuted : track === 'VOICE' ? props.voiceMuted : props.musicMuted) ? '取消' : ''}${track === 'VIDEO' ? '视频' : track === 'VOICE' ? '口播' : '纯音乐'}轨道静音`"
-                @click="emit('toggleAudioMute', track, !(track === 'VIDEO' ? props.videoMuted : track === 'VOICE' ? props.voiceMuted : props.musicMuted))"
+                :title="(track === 'VIDEO' ? props.videoMuted : props.audioMuted) ? '取消静音' : '静音轨道'"
+                :aria-label="`${(track === 'VIDEO' ? props.videoMuted : props.audioMuted) ? '取消' : ''}${track === 'VIDEO' ? '视频' : '音频'}轨道静音`"
+                @click="emit('toggleAudioMute', track, !(track === 'VIDEO' ? props.videoMuted : props.audioMuted))"
               >
-                <VolumeX v-if="track === 'VIDEO' ? props.videoMuted : track === 'VOICE' ? props.voiceMuted : props.musicMuted" :size="12" />
+                <VolumeX v-if="track === 'VIDEO' ? props.videoMuted : props.audioMuted" :size="12" />
                 <Volume2 v-else :size="12" />
               </button>
             </div>
@@ -2141,6 +2243,7 @@ onBeforeUnmount(() => {
                   }"
                   :data-slot-id="slot.id"
                   @pointerdown="onClipPointerDown($event, slot.id)"
+                  @contextmenu="onVideoClipContextMenu($event, slot.id)"
                 >
                   <template v-if="materialForSlot(slot.id)">
                     <div class="clip-mini-preview" aria-hidden="true">
@@ -2166,6 +2269,7 @@ onBeforeUnmount(() => {
                       >
                     </div>
                     <EffectTemplateMixWaveform
+                      v-if="!variant.detachedAudios?.some((audio) => audio.sourceSlotId === slot.id)"
                       :bar-count="waveformBarCount(slot)"
                       :duration="activeSlotDuration(slot.id)"
                       :gain="variant.originalVolume ?? 1"
@@ -2260,18 +2364,18 @@ onBeforeUnmount(() => {
             :key="`canvas:${track}`"
             :ref="(element) => setAudioTrackElement(track, element)"
             class="timeline-track audio-track"
-            :class="[`audio-track-${track.toLowerCase()}`, { 'is-locked': trackLocked[track] }]"
+            :class="['audio-track-audio', { 'is-locked': trackLocked.AUDIO }]"
             :style="{ height: `${trackHeight(track)}px` }"
             @pointerdown="onTrackPointerDown($event, track)"
           >
             <div
-              v-for="audio in timelineAudios.filter((item) => item.kind === track)"
+              v-for="audio in timelineAudios"
               :key="audio.id"
               class="audio-clip"
               :class="[
-                  audio.kind === 'VOICE' ? 'voice-clip' : 'bgm-clip',
-                  {
-                    'is-muted': audio.kind === 'VOICE' ? props.voiceMuted : props.musicMuted,
+                audio.kind === 'VOICE' ? 'voice-clip' : audio.kind === 'DETACHED' ? 'detached-audio-clip' : 'bgm-clip',
+                {
+                  'is-muted': props.audioMuted,
                   'is-selected': selectedAudioIds.includes(audio.id),
                   'is-dragging': audioDrag?.id === audio.id && audioDrag.mode === 'MOVE',
                   'is-stale': packagingStale,
@@ -2285,7 +2389,7 @@ onBeforeUnmount(() => {
               <EffectTemplateMixWaveform
                 v-if="audio.sourceUrl"
                 layout="fill"
-                :tone="audio.kind === 'VOICE' ? 'VOICE' : 'MUSIC'"
+                :tone="audio.kind"
                 :bar-count="audioWaveformBarCount(audio.duration)"
                 :duration="audio.duration"
                 :fade-in="audio.fadeIn"
@@ -2307,7 +2411,7 @@ onBeforeUnmount(() => {
                 aria-hidden="true"
               />
               <span class="audio-clip-label">
-                <Volume2 v-if="audio.kind === 'VOICE'" :size="13" />
+                <Volume2 v-if="audio.kind !== 'MUSIC'" :size="13" />
                 <Music2 v-else :size="13" />
                 {{ audio.label }}
               </span>
@@ -2356,8 +2460,8 @@ onBeforeUnmount(() => {
             :style="marqueeStyle"
           />
           <div
+            ref="playheadElement"
             class="timeline-playhead"
-            :style="{ transform: `translate3d(${playheadLeft}px, 0, 0)` }"
           >
             <button
               class="playhead-handle"
@@ -2533,16 +2637,14 @@ onBeforeUnmount(() => {
   color: #65758d;
   font-size: 11px;
 }
-.track-header.track-voice,
-.track-header.track-music {
+.track-header.track-audio {
   cursor: default;
 }
 .track-header.track-video {
   height: 76px;
   color: #263b59;
 }
-.track-header.track-voice,
-.track-header.track-music {
+.track-header.track-audio {
   height: 76px;
   color: #263b59;
 }
@@ -3020,6 +3122,31 @@ onBeforeUnmount(() => {
   font-size: 10px;
   cursor: grab;
 }
+.clip-context-menu {
+  min-width: 192px;
+  position: fixed;
+  z-index: 10000;
+  padding: 5px;
+  border: 1px solid #d4dce8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+}
+.clip-context-menu button {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #17345d;
+  text-align: left;
+  cursor: pointer;
+}
+.clip-context-menu button:hover,
+.clip-context-menu button:focus-visible {
+  outline: none;
+  background: #edf4ff;
+}
 .caption-clip.is-selected,
 .audio-clip.is-selected {
   border-color: #2563eb;
@@ -3077,6 +3204,11 @@ onBeforeUnmount(() => {
   border-color: #7d4f9c;
   background: #5b3a75;
   color: #f4e9fb;
+}
+.audio-clip.detached-audio-clip {
+  border-color: #b27a35;
+  background: #79501f;
+  color: #fff3d7;
 }
 .audio-clip.is-muted {
   opacity: 0.42;

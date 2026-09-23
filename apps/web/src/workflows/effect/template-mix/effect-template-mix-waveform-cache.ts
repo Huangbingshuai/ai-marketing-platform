@@ -13,8 +13,15 @@ const SAMPLES_PER_SECOND = 64;
 const MAX_SAMPLES = 1_600;
 const waveformCache = reactive(new Map<string, EffectTemplateMixWaveform>());
 const queue: WaveformJob[] = [];
+const pendingResults = new Map<string, EffectTemplateMixWaveform>();
 const queuedSources = new Set<string>();
 const runningSources = new Set<string>();
+let decodingPaused = false;
+
+const setWaveform = (source: string, waveform: EffectTemplateMixWaveform): void => {
+  if (decodingPaused) pendingResults.set(source, waveform);
+  else waveformCache.set(source, waveform);
+};
 
 const finishJob = (source: string): void => {
   runningSources.delete(source);
@@ -23,7 +30,7 @@ const finishJob = (source: string): void => {
 
 const decodeWaveform = async (source: string): Promise<void> => {
   runningSources.add(source);
-  waveformCache.set(source, { duration: 0, samples: [], status: 'LOADING' });
+  setWaveform(source, { duration: 0, samples: [], status: 'LOADING' });
   try {
     const response = await fetch(source, { credentials: 'include' });
     if (!response.ok) throw new Error(`视频读取失败：${response.status}`);
@@ -52,19 +59,20 @@ const decodeWaveform = async (source: string): Promise<void> => {
       referencePeak > 0
         ? samples.map((sample) => Math.max(0, Math.min(1, sample / referencePeak)))
         : [];
-    waveformCache.set(source, {
+    setWaveform(source, {
       duration: audio.duration,
       samples: normalized,
       status: 'READY',
     });
   } catch {
-    waveformCache.set(source, { duration: 0, samples: [], status: 'FAILED' });
+    setWaveform(source, { duration: 0, samples: [], status: 'FAILED' });
   } finally {
     finishJob(source);
   }
 };
 
 function drainQueue(): void {
+  if (decodingPaused) return;
   while (runningSources.size < MAX_CONCURRENT_DECODES && queue.length) {
     const job = queue.shift();
     if (!job) return;
@@ -73,6 +81,17 @@ function drainQueue(): void {
     void decodeWaveform(job.source);
   }
 }
+
+/** Defer background waveform work and cache notifications while foreground video is playing. */
+export const pauseEffectTemplateMixWaveformDecoding = (paused: boolean): void => {
+  if (decodingPaused === paused) return;
+  decodingPaused = paused;
+  if (!paused) {
+    for (const [source, waveform] of pendingResults) waveformCache.set(source, waveform);
+    pendingResults.clear();
+    drainQueue();
+  }
+};
 
 export const requestEffectTemplateMixWaveform = (source: string): void => {
   if (

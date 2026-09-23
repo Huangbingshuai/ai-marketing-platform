@@ -13,7 +13,7 @@ const props = withDefaults(
     source: string;
     trimStart: number;
     /** Bar colour family; `VIDEO` keeps the original teal strip. */
-    tone?: 'VIDEO' | 'VOICE' | 'MUSIC';
+    tone?: 'VIDEO' | 'VOICE' | 'MUSIC' | 'DETACHED';
     /** `fill` paints over the whole audio clip instead of a bottom strip. */
     layout?: 'strip' | 'fill';
     /** Effective fade at the clip head, in seconds; the bars ramp up across it. */
@@ -132,6 +132,15 @@ watch(source, (nextSource) => requestEffectTemplateMixWaveform(nextSource), { im
   --wave-line: #b98fd0;
   --wave-line-solid: #d4a8ee;
   --wave-bar: #e0b6f5;
+}
+.clip-waveform.is-tone-detached {
+  --wave-border: #c99650;
+  --wave-border-solid: #a76c20;
+  --wave-bg: #f8efdE;
+  --wave-bg-solid: #79501f;
+  --wave-line: #c99650;
+  --wave-line-solid: #f0bd69;
+  --wave-bar: #ffd78f;
 }
 .clip-waveform::after {
   height: 1px;

@@ -18,6 +18,7 @@ from .reliability import classification_chunks
 from .video import sample_frames
 from .packaging import PackagingHandler
 from .final_output import FinalOutputHandler
+from .voice_preview import VoicePreviewHandler
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -49,6 +50,7 @@ class Consumer:
         ai_max_concurrency: int,
         packaging: PackagingHandler | None = None,
         final_output: FinalOutputHandler | None = None,
+        voice_preview: VoicePreviewHandler | None = None,
     ) -> None:
         self.rabbitmq_url = rabbitmq_url
         self.queue = queue
@@ -61,12 +63,16 @@ class Consumer:
         self.ai_max_concurrency = ai_max_concurrency
         self.packaging = packaging
         self.final_output = final_output
+        self.voice_preview = voice_preview
+        self.long_task = asyncio.Semaphore(1)
+        self.request_slots = packaging.requests if packaging else asyncio.Semaphore(ai_max_concurrency)
         self.connection: AbstractRobustConnection | None = None
 
     async def run(self) -> None:
         self.connection = await aio_pika.connect_robust(self.rabbitmq_url)
         channel = await self.connection.channel()
-        await channel.set_qos(prefetch_count=1)
+        # At most one long job plus one preview; long-job execution remains serialized.
+        await channel.set_qos(prefetch_count=2)
         queue = await channel.declare_queue(self.queue, durable=True)
         await queue.consume(self.handle)
         await self.connection.ready()
@@ -77,6 +83,21 @@ class Consumer:
             await self.connection.close()
 
     async def handle(self, message: AbstractIncomingMessage) -> None:
+        try:
+            envelope = json.loads(message.body)
+        except (ValueError, UnicodeDecodeError):
+            await message.ack()
+            return
+        if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'VOICE_PREVIEW':
+            if self.voice_preview is None:
+                await message.nack(requeue=False)
+            else:
+                await self.voice_preview.handle(message, envelope)
+            return
+        async with self.long_task:
+            await self.handle_work(message)
+
+    async def handle_work(self, message: AbstractIncomingMessage) -> None:
         try:
             envelope = json.loads(message.body)
         except (ValueError, UnicodeDecodeError):
@@ -147,7 +168,7 @@ class Consumer:
                     max_output_tokens=self.classification_max_output_tokens,
                     max_input_tokens=self.classification_input_token_budget,
                 )
-                semaphore = asyncio.Semaphore(self.ai_max_concurrency)
+                semaphore = self.request_slots
 
                 async def classify_batch(batch: list[Material]) -> list[Classification]:
                     nonlocal heartbeat_progress
@@ -214,7 +235,7 @@ class Consumer:
                 )
             with tempfile.TemporaryDirectory(prefix="effect-template-mix-") as directory:
                 root = Path(directory)
-                trim_semaphore = asyncio.Semaphore(self.ai_max_concurrency)
+                trim_semaphore = self.request_slots
 
                 async def trim_selection(index: int, selection: Selection) -> None:
                     nonlocal heartbeat_progress

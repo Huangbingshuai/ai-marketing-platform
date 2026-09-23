@@ -43,33 +43,48 @@ export const packagingStageDetails: Record<
   },
 };
 
-export function packagingStageState(items: PackagingItem[], stage: PackagingStage) {
+/** API returns newest first. The graph and its summary must follow the same current run. */
+export function currentPackagingRun(runs: PackagingRun[]) {
+  return runs.find((run) => ['QUEUED', 'RUNNING'].includes(run.status)) ?? runs[0];
+}
+
+export function packagingItemStageState(item: PackagingItem, stage: PackagingStage) {
   const index = PACKAGING_STAGES.indexOf(stage);
-  const completed = items.filter(
-    (i) => i.status === 'COMPLETED' || PACKAGING_STAGES.indexOf(i.stage) > index,
-  ).length;
-  const failed = items.filter((i) => i.stage === stage && i.status === 'FAILED').length;
-  const running = items.filter((i) => i.stage === stage && i.status === 'RUNNING').length;
-  const cancelled = items.filter((i) => i.stage === stage && i.status === 'CANCELLED').length;
-  const tone = failed
-    ? 'danger'
-    : running
-      ? 'running'
-      : items.length && completed === items.length
-        ? 'success'
-        : 'waiting';
-  const label = failed
-    ? '有失败'
-    : running
-      ? '执行中'
-      : tone === 'success'
-        ? '已完成'
-        : cancelled
-          ? '已取消'
-          : completed
-            ? '部分完成'
-            : '等待中';
-  return { completed, failed, running, cancelled, tone, label };
+  const itemIndex = PACKAGING_STAGES.indexOf(item.stage);
+  if (item.status === 'COMPLETED' || itemIndex > index) return 'completed';
+  if (itemIndex < index) {
+    return ['FAILED', 'PARTIAL', 'CANCELLED'].includes(item.status) ? 'blocked' : 'waiting';
+  }
+  // `PARTIAL` is a run-level rollup the API never writes onto an item, but `PackagingStatus`
+  // carries it, so it has to land somewhere: an item that did not reach COMPLETED reads as a
+  // problem at its own stage rather than as still-waiting.
+  return (
+    { RUNNING: 'running', FAILED: 'failed', PARTIAL: 'failed', CANCELLED: 'cancelled', QUEUED: 'waiting' } as const
+  )[item.status];
+}
+
+export const packagingItemStageLabels = {
+  completed: '本阶段已完成', running: '本阶段执行中', failed: '本阶段失败',
+  cancelled: '本阶段已取消', blocked: '前序未完成', waiting: '等待本阶段',
+};
+
+export function packagingStageState(items: PackagingItem[], stage: PackagingStage) {
+  const counts = { completed: 0, failed: 0, running: 0, cancelled: 0, blocked: 0, waiting: 0 };
+  for (const item of items) counts[packagingItemStageState(item, stage)]++;
+  const { completed, failed, running, cancelled, blocked, waiting } = counts;
+  const stale = items.filter((item) => item.stale).length;
+  const tone = running ? 'running' : failed || stale ? 'danger'
+    : items.length && completed === items.length ? 'success' : 'waiting';
+  const label = running ? (failed ? `执行中 · ${failed} 条失败` : '执行中')
+    : failed ? `${failed} 条失败` : stale ? '来源待更新'
+      : tone === 'success' ? '已完成' : cancelled ? '已取消'
+        : blocked && !waiting ? '前序受阻' : completed ? '部分完成' : '等待中';
+  const summary = [
+    running && `执行中 ${running}`, failed && `失败 ${failed}`,
+    waiting && `等待 ${waiting}`, blocked && `前序受阻 ${blocked}`,
+    cancelled && `取消 ${cancelled}`, stale && `来源待更新 ${stale}`,
+  ].filter(Boolean).join(' · ');
+  return { ...counts, stale, tone, label, summary };
 }
 
 /** Mechanical phase completion only; never estimate model time or advance on a timer. */

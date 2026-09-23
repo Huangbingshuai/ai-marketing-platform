@@ -63,6 +63,8 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
         Number.isInteger(workspace?.editVersion) &&
         typeof template?.name === 'string' &&
         Number.isInteger(template.editVersion) &&
+        (template.voiceProfileId === undefined ||
+          (typeof template.voiceProfileId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(template.voiceProfileId))) &&
         Array.isArray(template.slots) &&
         Array.isArray(workspace?.variants) &&
         workspace.variants.length <= 100 &&
@@ -76,7 +78,24 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
             object(variant.offsets) !== null &&
             Array.isArray(variant.manualSlotIds) &&
             Array.isArray(variant.conflictSlotIds) &&
-            Array.isArray(variant.captions)
+            Array.isArray(variant.captions) &&
+            (variant.detachedAudios === undefined ||
+              (Array.isArray(variant.detachedAudios) &&
+                variant.detachedAudios.length <= variant.slots.length &&
+                variant.detachedAudios.every((rawAudio) => {
+                  const audio = object(rawAudio);
+                  return Boolean(
+                    audio &&
+                      typeof audio.id === 'string' &&
+                      typeof audio.sourceSlotId === 'string' &&
+                      typeof audio.fileObjectId === 'string' &&
+                      typeof audio.name === 'string' &&
+                      Number.isFinite(audio.start) &&
+                      Number.isFinite(audio.duration) &&
+                      Number.isFinite(audio.offset) &&
+                      Number.isFinite(audio.volume),
+                  );
+                })))
           );
         })
       );

@@ -24,6 +24,7 @@ import { packagingVisualTimeline } from '@ai-marketing/contracts';
 import { packagingExecution } from './effect-packaging.metrics';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectTemplateMixService } from './effect-template-mix.service';
+import { EffectVoiceCatalogService } from './effect-voice.catalog';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
@@ -63,7 +64,7 @@ function fadeFields(
   };
 }
 
-async function wavDuration(path: string, size: number): Promise<number> {
+export async function wavDuration(path: string, size: number): Promise<number> {
   const handle = await open(path, 'r');
   try {
     const buffer = Buffer.alloc(Math.min(size, 65_536));
@@ -79,12 +80,13 @@ async function wavDuration(path: string, size: number): Promise<number> {
           buffer.readUInt16LE(pos + 8) !== 1 ||
           buffer.readUInt16LE(pos + 10) !== 1 ||
           buffer.readUInt32LE(pos + 12) !== 24_000 ||
+          buffer.readUInt16LE(pos + 20) !== 2 ||
           buffer.readUInt16LE(pos + 22) !== 16
         )
           throw new BadRequestException('包装音频编码无效');
         bytesPerSecond = buffer.readUInt32LE(pos + 16);
       }
-      if (name === 'data' && bytesPerSecond === 48_000 && length > 0 && pos + 8 + length <= size)
+      if (name === 'data' && bytesPerSecond === 48_000 && length > 0 && length % 2 === 0 && pos + 8 + length <= size)
         return length / bytesPerSecond;
       pos += 8 + length + (length % 2);
     }
@@ -101,6 +103,7 @@ export class EffectPackagingService {
     @Inject(EffectTemplateMixService) readonly mix: EffectTemplateMixService,
     @Inject(WorkflowWorkingService) readonly working: WorkflowWorkingService,
     @Inject(STORAGE_PORT) readonly storage: StoragePort,
+    @Inject(EffectVoiceCatalogService) readonly voiceCatalog: EffectVoiceCatalogService = new EffectVoiceCatalogService(),
   ) {}
 
   async create(projectId: string, templateId: string, body: CreatePackagingRequest) {
@@ -134,6 +137,17 @@ export class EffectPackagingService {
       await this.working.listArtifacts(projectId, { workflowRunId: body.workflowRunId })
     ).items;
     const snapshots = variants.map((v) => packagingSnapshot(v, workspace.materials, artifacts));
+    if (!body.component || body.component === 'ALL' || body.component === 'VOICE') {
+      const voiceProfile = this.voiceCatalog.selection(entry.workspace.template.voiceProfileId);
+      const revoked = await this.repo.db.effectVoicePreview.findFirst({ where: {
+        errorCode: 'UNAUTHORIZED', AND: [
+          { snapshot: { path: ['profile', 'id'], equals: voiceProfile.id } },
+          { snapshot: { path: ['profile', 'version'], equals: voiceProfile.version } },
+        ],
+      }, select: { id: true } });
+      if (revoked) throw new BadRequestException('所选音色未获授权，请重新选择已验证音色');
+      for (const snapshot of snapshots) snapshot.voiceProfile = voiceProfile;
+    }
     const checkpoints: PackagingCheckpoint[] = snapshots.map(() => ({ narrationLayoutVersion: 'SLOT_V1' }));
     const history = await this.repo.list(projectId, body.workflowRunId, templateId);
     const visionCache = new Map(history.flatMap((r) => r.items).flatMap((i) =>
@@ -166,6 +180,10 @@ export class EffectPackagingService {
       // Keep legacy file lineage for semantically identical frozen visuals.
       snapshots[0]!.sourceTimelineHash = previous.sourceTimelineHash;
       snapshots[0]!.variant = (previous.snapshot as unknown as PackagingSnapshot).variant;
+      if (body.component !== 'VOICE') {
+        const frozenVoice = (previous.snapshot as unknown as PackagingSnapshot).voiceProfile;
+        if (frozenVoice) snapshots[0]!.voiceProfile = frozenVoice;
+      }
       // A previous run may carry editor-edited geometry; restore pipeline-canonical
       // audio before the worker write path re-validates it strictly.
       const cp = body.slotId ? structuredClone(previous.checkpoint) as PackagingCheckpoint : canonicalizeCheckpoint(
@@ -173,6 +191,7 @@ export class EffectPackagingService {
       delete cp.automaticRetries; // A user-requested component redo is a new task, not a resume.
       if (body.component === 'VOICE') {
         if (body.slotId) {
+          if (cp.narrationMetrics) delete cp.narrationMetrics[body.slotId];
           if (cp.voiceFitAttempts) delete cp.voiceFitAttempts[body.slotId];
           snapshots[0]!.redoSlotId = body.slotId;
           const removed = new Set(cp.script?.filter((s) => s.slotId === body.slotId).map((s) => s.id));
@@ -180,6 +199,7 @@ export class EffectPackagingService {
           cp.voices = Object.fromEntries(Object.entries(cp.voices ?? {}).filter(([id]) => !removed.has(id)));
           cp.captions = (cp.captions ?? []).filter((c) => !removed.has(c.id));
         } else {
+          delete cp.narrationMetrics;
           delete cp.voiceFitAttempts;
           delete cp.script;
           delete cp.voices;
@@ -528,6 +548,7 @@ export class EffectPackagingService {
         const lineId = role.slice('voice-'.length);
         const line = cp.script?.find((line) => line.id === lineId);
         const audio = {
+          ...(role !== 'music' && snapshot.voiceProfile ? { voiceProfile: snapshot.voiceProfile } : {}),
           fileObjectId: created.id,
           duration,
           start: role === 'music' ? 0 : (line?.start ?? -1),

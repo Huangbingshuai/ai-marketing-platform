@@ -108,8 +108,45 @@ export function packagingSnapshot(
       transitionDuration:
         slot.transitionDuration ??
         (slot.transition === '硬切' ? 0 : EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION),
+      originalAudioDetached: (variant.detachedAudios ?? []).some(
+        (audio) => audio.sourceSlotId === slot.id,
+      ),
     };
   });
+  const timelineDuration = packagingTimelineDuration(variant);
+  const detachedAudios = variant.detachedAudios ?? [];
+  if (
+    detachedAudios.length > variant.slots.length ||
+    new Set(detachedAudios.map(({ id }) => id)).size !== detachedAudios.length ||
+    new Set(detachedAudios.map(({ sourceSlotId }) => sourceSlotId)).size !== detachedAudios.length ||
+    detachedAudios.some((audio) => {
+      const material = materials.find((item) => item.fileObjectId === audio.fileObjectId);
+      return (
+        !audio.id ||
+        !variant.slots.some((slot) => slot.id === audio.sourceSlotId) ||
+        !material?.available ||
+        !Number.isFinite(audio.start) ||
+        audio.start < 0 ||
+        !Number.isFinite(audio.duration) ||
+        audio.duration <= 0 ||
+        audio.start + audio.duration > timelineDuration + 0.001 ||
+        !Number.isFinite(audio.offset) ||
+        audio.offset < 0 ||
+        audio.offset + audio.duration > material.duration + 0.05 ||
+        !Number.isFinite(audio.volume) ||
+        audio.volume < 0 ||
+        audio.volume > PACKAGING_AUDIO_GAIN_CEILING
+      );
+    })
+  )
+    throw new BadRequestException('分离音频片段来源、时长或时间范围无效');
+  for (const audio of detachedAudios) {
+    const slot = variant.slots.find(({ id }) => id === audio.sourceSlotId)!;
+    const material = materials.find(({ fileObjectId }) => fileObjectId === audio.fileObjectId)!;
+    if (variant.bindings[slot.id] !== material.id)
+      throw new BadRequestException('分离音频必须对应其原视频素材');
+    visit(material.artifactId);
+  }
   const facts = [...used.values()]
     .filter((a) => a.artifactKey.startsWith('marketing-insight:'))
     .flatMap((a) => {
@@ -133,9 +170,10 @@ export function packagingSnapshot(
   return {
     narrationLayoutVersion: 'SLOT_V1',
     sourceTimelineHash: visualHash(variant),
-    duration: packagingTimelineDuration(variant),
+    duration: timelineDuration,
     variant,
     clips,
+    ...(detachedAudios.length ? { detachedAudios } : {}),
     facts,
     dependencies: [...used.values()].map((a) => ({
       artifactId: a.id,
@@ -204,13 +242,24 @@ export function validatePackagingCheckpoint(
           'captionBoxes',
           'musicTaskId',
           'musicSubmissionPending',
-          'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'automaticRetries',
+          'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'automaticRetries', 'narrationMetrics',
         ].includes(k),
     )
   )
     fail();
   if (checkpoint.automaticRetries !== undefined &&
       (!Number.isInteger(checkpoint.automaticRetries) || checkpoint.automaticRetries < 0 || checkpoint.automaticRetries > 2)) fail();
+  if (checkpoint.narrationMetrics) {
+    for (const [slotId, row] of Object.entries(checkpoint.narrationMetrics)) {
+      const clip = snapshot.clips.find((c) => c.slotId === slotId);
+      if (!clip || !row || Object.keys(row).length !== 7 ||
+        !['characters', 'minCharacters', 'targetCharacters', 'maxCharacters', 'slotSeconds', 'audioSeconds', 'utilization'].every(
+          (key) => Number.isFinite(row[key as keyof typeof row]) && row[key as keyof typeof row] >= 0) ||
+        row.minCharacters > row.targetCharacters || row.targetCharacters > row.maxCharacters ||
+        Math.abs(row.slotSeconds - clip.duration) > .001 || row.audioSeconds > row.slotSeconds + .001 ||
+        Math.abs(row.utilization - row.audioSeconds / row.slotSeconds) > .001) fail();
+    }
+  }
   if (checkpoint.slotVision) {
     for (const [slotId, row] of Object.entries(checkpoint.slotVision))
       if (!snapshot.clips.some((c) => c.slotId === slotId) || !row ||

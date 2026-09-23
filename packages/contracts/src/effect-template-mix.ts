@@ -80,6 +80,17 @@ export type EffectTemplateMixAudio = {
   offset: number;
   volume: number;
 };
+/** Audio detached from a bound video clip; it continues to reference the confirmed source file. */
+export type EffectTemplateMixDetachedAudio = {
+  id: string;
+  sourceSlotId: string;
+  fileObjectId: string;
+  name: string;
+  duration: number;
+  start: number;
+  offset: number;
+  volume: number;
+};
 export type EffectTemplateMixBindingMetadata = {
   source: 'AI' | 'MANUAL';
   matchScore?: number;
@@ -108,6 +119,8 @@ export type EffectTemplateMixVariant = {
   subtitleStyle: 'standard' | 'bold' | 'yellow';
   bgm: EffectTemplateMixAudio | null;
   voice: EffectTemplateMixAudio | null;
+  /** Optional for historical schema-v1 drafts. */
+  detachedAudios?: EffectTemplateMixDetachedAudio[];
   originalVolume: number;
 };
 export type EffectTemplateMixAiRunStatus =
@@ -142,6 +155,8 @@ export type EffectTemplateMixTemplate = {
   name: string;
   editVersion: number;
   slots: EffectTemplateMixSlot[];
+  /** Applies only to future packaging/voice redos, not existing audio. */
+  voiceProfileId?: string;
 };
 export type EffectTemplateMixWorkspace = {
   editVersion: number;

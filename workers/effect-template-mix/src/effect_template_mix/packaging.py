@@ -228,8 +228,11 @@ def narration_windows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         previous_end = start + duration
         role = roles[clip['slotId']]
         budget = math.floor((duration - .5) * 3)
+        brief = role in ('HOOK', 'END')
         result.append({'slotId': clip['slotId'], 'start': start, 'end': previous_end,
-            'role': role, 'maxCharacters': min(budget, 15) if role in ('HOOK', 'END') else budget})
+            'role': role, 'maxCharacters': budget,
+            'targetCharacters': max(1, math.floor(budget * (.75 if brief else .85))),
+            'minCharacters': max(1, math.floor(budget * (.55 if brief else .65))) if duration >= 6 else 1})
     if len({r['slotId'] for r in result}) != len(result):
         raise PackagingError('槽位编号重复')
     return result
@@ -277,12 +280,16 @@ def script_structure_issues(script: ScriptOutput, snapshot: dict[str, Any]) -> l
     return sorted(issues)
 
 
-def speech_capacity_issues(script: ScriptOutput, duration: float) -> list[str]:
+def speech_capacity_issues(script: ScriptOutput, duration: float,
+                           windows: list[dict[str, Any]] | None = None) -> list[str]:
     # New planning budget only. Saved audio is validated by its measured duration instead.
     for line in script.lines:
         next_start = line.end
-        if math.isfinite(next_start - line.start) and len(line.text) > max(0, math.floor((next_start - line.start - .5) * 3)):
+        if math.isfinite(next_start - line.start) and len(line.text.strip()) > max(0, math.floor((next_start - line.start - .5) * 3)):
             return ['SPEECH_CAPACITY']
+        window = next((row for row in windows or [] if row['slotId'] == line.slotId), None)
+        if window and len(line.text.strip()) < window['minCharacters']:
+            return ['SPEECH_UTILIZATION']
     return []
 
 
@@ -296,9 +303,10 @@ async def plan_script(ark: ArkProvider, snapshot: dict[str, Any], vision: Any,
             '每句必须绑定至少一个 confirmedFacts 的原样完整 id，不可缩写、编造或留空。不要生成无事实关联的泛泛套话。',
             '每个 narrationWindows 的 slotId 必须恰好一条，不能遗漏重复。返回原样 slotId，不自行设置时间；id 使用 line-1 等唯一 ASCII ID。',
             '每秒最多约三字，预留约20%静默，少讲几个事实也不能捏造或挤满时间。',
-            '每句 text 总字符数（含标点）不超过所选窗口的 maxCharacters，建议再少三字，不拼接多个长句，不强行堆叠事实。',
-            '每条只属于自己的素材画面，不引用相邻槽位画面、不承接前句的半句话。每槽位一句完整自然口播。',
-            'HOOK 写短小抓注意力的句子，不做完整产品介绍；END 短收束。其它角色根据各自素材画面及确认事实写口播。',
+            '每条 text 去首尾空白后的总字符数（含标点）落在 minCharacters 与 maxCharacters 内，尽量接近 targetCharacters。',
+            '长槽位需要充分自然表达，可用完整句群；不能只留短口号，不能用重复、无关套话或编造事实凑长度。',
+            '每条只属于自己的素材画面，不引用相邻槽位画面、不承接前句的半句话。每槽位恰好一条完整自然口播。',
+            'HOOK 抓注意力，不做完整产品介绍；END 自然收束。二者简洁程度仍应符合本槽位目标容量。其它角色根据各自素材画面及确认事实写口播。',
             '不得把推荐吃法写成镜头已实际呈现，不把画面内容当作产品功效证明。',
             '不要额外添加确认事实没有的绝对化、效果承诺或口感评价；不要为每个镜头强造一个商品卖点。',
             'musicBrief 用中文写纯器乐曲风、乐器、情绪与节奏，无歌词、无人声、不仿制音乐人，不指定时长。',
@@ -319,19 +327,20 @@ async def plan_script(ark: ArkProvider, snapshot: dict[str, Any], vision: Any,
             feedback = {'issues': issues, 'instruction': '每个槽位必须恰好一句，原样返回 slotId，不能遗漏重复或越界。',
                         'previousDraft': plan.model_dump()}
             continue
-        issues = script_structure_issues(result, snapshot) + speech_capacity_issues(result, snapshot['duration'])
+        issues = script_structure_issues(result, snapshot) + speech_capacity_issues(result, snapshot['duration'], windows)
         if not issues:
             return result
         LOGGER.info('packaging script rejected attempt=%s codes=%s', attempt + 1, ','.join(issues))
-        feedback = {'instruction': '仅依据确认事实修复全部问题，不能删除槽位。每槽位恰好一句完整短句，严格缩短到自身 maxCharacters 内。',
+        feedback = {'instruction': '仅依据确认事实修复全部问题，不能删除槽位。SPEECH_UTILIZATION 表示过短，需自然扩展到目标容量；SPEECH_CAPACITY 表示过长，需缩短。不得跨素材或凑字。',
                     'issues': issues, 'previousDraft': plan.model_dump(),
                     'timeConstraints': {'duration': snapshot['duration'], 'mustBeSorted': True, 'overlapAllowed': False,
-                        'windows': [{'id': line.id, 'start': line.start, 'end': line.end} for line in result.lines]}}
+                        'windows': windows}}
     labels = {
         'FACT_REFERENCE': '事实引用缺失或无效', 'TIME_BOUNDARY': '口播时间越界或重叠',
         'LINE_ID': '句子编号无效', 'LINE_COUNT': '句子数量无效',
         'LINE_TEXT': '句子内容结构无效', 'MUSIC_BRIEF': '音乐描述结构无效',
         'SPEECH_CAPACITY': '口播文字超过预留朗读容量',
+        'SPEECH_UTILIZATION': '长槽位口播明显过短，请补充可支撑的自然表达',
         'WINDOW_INDEX': '口播窗口编号重复或越界',
         'SLOT_COVERAGE': '槽位口播缺失、重复或无效',
     }
@@ -504,13 +513,31 @@ class PackagingHandler:
                         line['id'] = 'slot-' + hashlib.sha256(line['slotId'].encode()).hexdigest()[:24]
                 await save('VOICE', {'script': lines, 'musicBrief': cp.get('musicBrief') or script_result.musicBrief, 'timings': timings})
             voices = cp.get('voices', {})
+            windows = {row['slotId']: row for row in narration_windows(snapshot)}
+
+            async def voice_pcm(text: str) -> bytes:
+                profile = snapshot.get('voiceProfile')
+                if profile:
+                    return await self.provider.voice(text, speaker=profile['speaker'], resource_id=profile['resourceId'])
+                return await self.provider.voice(text)
 
             async def synthesize(index: int, line: dict[str, Any]) -> None:
                 if line['id'] in voices:
+                    # Upload is atomic at the API. Recover diagnostics after a crash
+                    # between a successful upload and the next checkpoint, without re-TTS.
+                    if snapshot.get('voiceProfile') and line['slotId'] not in cp.get('narrationMetrics', {}):
+                        window = windows[line['slotId']]
+                        audio_seconds = voices[line['id']]['duration']
+                        metric = {key: window[key] for key in ('minCharacters', 'targetCharacters', 'maxCharacters')}
+                        metric.update(characters=len(line['text'].strip()), audioSeconds=audio_seconds,
+                            slotSeconds=line['end'] - line['start'], utilization=audio_seconds / (line['end'] - line['start']))
+                        metrics = cp.setdefault('narrationMetrics', {})
+                        metrics[line['slotId']] = metric
+                        await save('VOICE', {'narrationMetrics': metrics})
                     return
                 await guard()
                 async with paid_request(line['slotId'], 'voiceSeconds'):
-                    data, duration = pcm_wav(await self.provider.voice(line['text']))
+                    data, duration = pcm_wav(await voice_pcm(line['text']))
                 # Never truncate spoken words to force fit. A long sentence remains a failed draft.
                 limit = line['end']
                 if line['start'] + duration > limit:
@@ -529,12 +556,19 @@ class PackagingHandler:
                         cp['script'] = revised_lines
                     await guard()
                     async with paid_request(line['slotId'], 'voiceSeconds'):
-                        data, duration = pcm_wav(await self.provider.voice(line['text']))
+                        data, duration = pcm_wav(await voice_pcm(line['text']))
                     if line['start'] + duration > limit:
                         raise PackagingError('真实配音缩句一次后仍超出可用时间，请重做本条口播')
                 file_id = await upload('voice-' + line['id'], data)
                 voices[line['id']] = {'fileObjectId': file_id, 'start': line['start'], 'duration': duration, 'volume': 1}
-                await save('VOICE', {'voices': {line['id']: voices[line['id']]}, 'timings': timings})
+                if snapshot.get('voiceProfile'):
+                    voices[line['id']]['voiceProfile'] = snapshot['voiceProfile']
+                window = windows[line['slotId']]
+                metrics = cp.setdefault('narrationMetrics', {})
+                metrics[line['slotId']] = {key: window[key] for key in ('minCharacters', 'targetCharacters', 'maxCharacters')}
+                metrics[line['slotId']].update(characters=len(line['text'].strip()), audioSeconds=duration,
+                    slotSeconds=line['end'] - line['start'], utilization=duration / (line['end'] - line['start']))
+                await save('VOICE', {'voices': {line['id']: voices[line['id']]}, 'timings': timings, 'narrationMetrics': metrics})
 
             # Gather preserves successful siblings' checkpoints when one slot fails.
             outcomes = await asyncio.gather(*(synthesize(i, line) for i, line in enumerate(cp['script'])), return_exceptions=True)

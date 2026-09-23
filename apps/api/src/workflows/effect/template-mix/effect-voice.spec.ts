@@ -1,0 +1,196 @@
+import { describe, expect, it, vi } from 'vitest';
+import { validate } from 'class-validator';
+import { EffectVoiceCatalogService, readVoiceCatalog } from './effect-voice.catalog';
+import { EffectVoiceRepository } from './effect-voice.repository';
+import { EffectVoiceService, VOICE_PREVIEW_TEXT } from './effect-voice.service';
+import { CreateVoicePreviewDto } from './effect-voice.controller';
+import type { PrismaService } from '../../../database/prisma.service';
+import type { EffectTemplateMixService } from './effect-template-mix.service';
+import type { StoragePort } from '../../../platform/file/storage.port';
+
+const profile = new EffectVoiceCatalogService().selection();
+const snapshot = { profile, sampleText: VOICE_PREVIEW_TEXT };
+const row = {
+  id: 'preview',
+  projectId: 'p',
+  workflowRunId: 'w',
+  templateId: 't',
+  status: 'QUEUED',
+  snapshot,
+  fileObjectId: null,
+  errorMessage: null,
+};
+function database() {
+  const db = {
+    effectVoicePreview: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn().mockResolvedValue(row),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    effectVoicePreviewRequest: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+    jobOutbox: { upsert: vi.fn() },
+    $executeRaw: vi.fn(),
+    $transaction: vi.fn(),
+  };
+  db.$transaction.mockImplementation((action) => action(db));
+  return db;
+}
+const input = {
+  projectId: 'p',
+  workflowRunId: 'w',
+  templateId: 't',
+  cacheKey: 'hash',
+  idempotencyKey: 'click',
+  requestHash: 'request',
+  snapshot,
+};
+
+describe('curated voice catalog', () => {
+  it('only exposes verified enabled voices and no provider configuration', () => {
+    const catalog = new EffectVoiceCatalogService();
+    expect(catalog.publicCatalog().profiles[0]).not.toHaveProperty('speaker');
+    expect(catalog.publicCatalog(new Set([`${profile.id}:${profile.version}`])).profiles).toEqual(
+      [],
+    );
+    expect(() => readVoiceCatalog(JSON.stringify([{ ...profile, enabled: true }]))).toThrow(
+      '验证记录',
+    );
+    expect(() => catalog.selection('not-authorized')).toThrow('未验证');
+    expect(readVoiceCatalog('[]')).toEqual([]);
+  });
+  it('rejects arbitrary prompt/provider input at the DTO boundary', async () => {
+    const dto = Object.assign(new CreateVoicePreviewDto(), {
+      workflowRunId: '00000000-0000-4000-8000-000000000000',
+      voiceProfileId: 'vivi',
+      idempotencyKey: 'click',
+      sampleText: 'injected',
+      speaker: 'custom',
+    });
+    const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+    expect(errors.map((e) => e.property)).toEqual(
+      expect.arrayContaining(['sampleText', 'speaker']),
+    );
+  });
+});
+
+describe('preview persistence', () => {
+  it('registers cached request aliases without enqueuing new paid work', async () => {
+    const db = database();
+    db.effectVoicePreview.findFirst.mockResolvedValue({
+      ...row,
+      status: 'COMPLETED',
+      fileObjectId: 'file',
+    });
+    const repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    await repo.create(input);
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+    expect(db.effectVoicePreviewRequest.create).toHaveBeenCalledWith({
+      data: {
+        projectId: 'p',
+        idempotencyKey: 'click',
+        requestHash: 'request',
+        previewId: 'preview',
+      },
+    });
+    expect(db.effectVoicePreview.findFirst.mock.calls[0]![0].where).toMatchObject({
+      projectId: 'p',
+      workflowRunId: 'w',
+      templateId: 't',
+    });
+  });
+  it('creates one outbox message and rejects changed idempotent requests', async () => {
+    const db = database(),
+      repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    await repo.create(input);
+    expect(db.jobOutbox.upsert.mock.calls[0]![0].create.payload).toMatchObject({
+      schemaVersion: 2,
+      taskType: 'VOICE_PREVIEW',
+      runId: row.id,
+    });
+    db.effectVoicePreviewRequest.findUnique.mockResolvedValue({
+      requestHash: 'different',
+      preview: row,
+    });
+    await expect(repo.create(input)).rejects.toThrow('幂等键');
+    expect(db.effectVoicePreview.create).toHaveBeenCalledTimes(1);
+  });
+  it('fences repeat paid submission and old/cancelled attempts', async () => {
+    const db = database(),
+      repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    await repo.submit('p', 'preview', 'new-token');
+    expect(db.effectVoicePreview.updateMany.mock.calls[0]![0].where).toMatchObject({
+      projectId: 'p',
+      attemptToken: 'new-token',
+      status: 'RUNNING',
+      submittedAt: null,
+    });
+    db.effectVoicePreview.updateMany.mockResolvedValue({ count: 0 });
+    await expect(repo.submit('p', 'preview', 'old-token')).rejects.toThrow('重复付费');
+    await expect(repo.heartbeat('p', 'preview', 'old-token')).rejects.toThrow('租约失效');
+    await expect(repo.fail('p', 'preview', 'old-token', 'INVALID_AUDIO')).rejects.toThrow(
+      '租约失效',
+    );
+  });
+  it('recovers pre-submit crashes but never resubmits ambiguous paid work', async () => {
+    const db = database(),
+      repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    db.effectVoicePreview.findMany.mockResolvedValue([
+      { ...row, id: 'not-submitted', submittedAt: null },
+      { ...row, id: 'submitted', submittedAt: new Date() },
+    ]);
+    await repo.recoverExpired();
+    expect(db.effectVoicePreview.updateMany.mock.calls.map((call) => call[0].data.status)).toEqual([
+      'QUEUED',
+      'FAILED',
+    ]);
+    expect(db.jobOutbox.upsert).toHaveBeenCalledTimes(1);
+    expect(db.effectVoicePreview.updateMany.mock.calls[1]![0].data.errorCode).toBe(
+      'SUBMISSION_UNKNOWN',
+    );
+  });
+});
+
+describe('preview service', () => {
+  it('freezes fixed sample and provider selection; rejects wrong template before querying records', async () => {
+    const db = database(),
+      repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    const mix = { workspace: vi.fn().mockResolvedValue({ draft: { templates: [{ id: 't' }] } }) };
+    const service = new EffectVoiceService(
+      repo,
+      new EffectVoiceCatalogService(),
+      mix as unknown as EffectTemplateMixService,
+      {} as StoragePort,
+    );
+    await service.create('p', 't', {
+      workflowRunId: 'w',
+      voiceProfileId: profile.id,
+      idempotencyKey: 'click',
+    });
+    expect(db.effectVoicePreview.create.mock.calls[0]![0].data.snapshot).toEqual(snapshot);
+    expect(mix.workspace).toHaveBeenCalledWith('p', 'w');
+    await expect(service.list('p', 'different-template', 'w')).rejects.toThrow('模板不存在');
+    expect(service.present(row as never)).not.toHaveProperty('snapshot');
+  });
+  it('replays an already accepted request even if catalog permissions changed', async () => {
+    const db = database(),
+      repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    const replay = vi.spyOn(repo, 'replay').mockResolvedValue(row as never);
+    const mix = { workspace: vi.fn().mockResolvedValue({ draft: { templates: [{ id: 't' }] } }) };
+    const service = new EffectVoiceService(
+      repo,
+      new EffectVoiceCatalogService(),
+      mix as unknown as EffectTemplateMixService,
+      {} as StoragePort,
+    );
+    expect(
+      await service.create('p', 't', {
+        workflowRunId: 'w',
+        voiceProfileId: profile.id,
+        idempotencyKey: 'click',
+      }),
+    ).toMatchObject({ id: 'preview' });
+    expect(replay).toHaveBeenCalledOnce();
+    expect(db.effectVoicePreview.create).not.toHaveBeenCalled();
+  });
+});

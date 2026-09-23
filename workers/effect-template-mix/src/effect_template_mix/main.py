@@ -8,6 +8,7 @@ from .provider import ArkProvider
 from .packaging import PackagingHandler
 from .packaging_provider import PackagingProvider
 from .final_output import FinalOutputHandler
+from .voice_preview import VoicePreviewHandler
 
 
 async def serve() -> None:
@@ -23,6 +24,7 @@ async def serve() -> None:
     )
     packaging_provider = PackagingProvider(settings.tts_api_key.get_secret_value(), settings.tts_speaker,
         settings.tts_resource_id, settings.music_access_key.get_secret_value(), settings.music_secret_key.get_secret_value(), settings.music_action)
+    packaging = PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes, settings.ai_max_concurrency)
     consumer = Consumer(
         settings.rabbitmq_url.get_secret_value(),
         settings.queue_name,
@@ -33,8 +35,9 @@ async def serve() -> None:
         settings.classification_input_token_budget,
         settings.ark_max_output_tokens,
         settings.ai_max_concurrency,
-        PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes, settings.ai_max_concurrency),
+        packaging,
         FinalOutputHandler(api, settings.max_video_bytes),
+        VoicePreviewHandler(api, packaging_provider, packaging.requests),
     )
     try:
         await consumer.run()

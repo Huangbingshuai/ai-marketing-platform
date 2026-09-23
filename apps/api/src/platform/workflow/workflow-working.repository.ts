@@ -842,7 +842,7 @@ export class WorkflowWorkingRepository {
         const fileObjectIds = record.files.map((item) => item.fileObjectId);
         if (fileObjectIds.length)
           await transaction.fileObject.updateMany({
-            where: { projectId, id: { in: fileObjectIds }, packagingFiles: { none: {} }, finalOutputItems: { none: {} } },
+            where: { projectId, id: { in: fileObjectIds }, packagingFiles: { none: {} }, finalOutputItems: { none: {} }, voicePreviews: { none: {} } },
             data: { status: 'ORPHANED', orphanedAt: new Date() },
           });
       }

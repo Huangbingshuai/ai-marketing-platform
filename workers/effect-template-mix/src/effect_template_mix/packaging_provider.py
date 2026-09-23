@@ -50,6 +50,10 @@ def signed_headers(action: str, body: bytes, access_key: str, secret_key: str,
     return headers
 
 
+class VoicePermissionError(PackagingError):
+    pass
+
+
 class PackagingProvider:
     def __init__(self, tts_key: str, speaker: str, resource_id: str, access_key: str,
                  secret_key: str, music_action: str, client: httpx.AsyncClient | None = None,
@@ -64,17 +68,24 @@ class PackagingProvider:
         self._music_next_request = 0.0
 
     def require_configuration(self) -> None:
-        if not self.tts_key or not self.speaker:
-            raise PackagingError('未配置豆包配音 API Key 或音色，包装未执行')
+        self.require_tts_configuration()
         if not self.access_key or not self.secret_key:
             raise PackagingError('未配置火山纯音乐服务 AK/SK，包装未执行')
 
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def voice(self, text: str) -> bytes:
-        headers = {'X-Api-Key': self.tts_key, 'X-Api-Resource-Id': self.resource_id, 'X-Api-Request-Id': str(uuid4())}
-        payload = {'user': {'uid': 'effect-template-mix'}, 'req_params': {'text': text, 'speaker': self.speaker,
+    def require_tts_configuration(self) -> None:
+        if not self.tts_key:
+            raise PackagingError('未配置豆包配音 API Key')
+
+    async def voice(self, text: str, *, speaker: str | None = None, resource_id: str | None = None) -> bytes:
+        self.require_tts_configuration()
+        selected, resource = speaker or self.speaker, resource_id or self.resource_id
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,120}', selected) or resource not in ('seed-tts-2.0', 'seed-tts-1.0', 'seed-tts-1.0-concurr'):
+            raise PackagingError('配音音色或资源配置无效')
+        headers = {'X-Api-Key': self.tts_key, 'X-Api-Resource-Id': resource, 'X-Api-Request-Id': str(uuid4())}
+        payload = {'user': {'uid': 'effect-template-mix'}, 'req_params': {'text': text, 'speaker': selected,
                    'audio_params': {'format': 'pcm', 'sample_rate': 24000}}}
         chunks: list[bytes] = []
         size = 0
@@ -82,6 +93,8 @@ class PackagingProvider:
         async with self.client.stream('POST', 'https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse',
                                       headers=headers, json=payload) as response:
             if response.is_error:
+                if response.status_code in (401, 403):
+                    raise VoicePermissionError('当前火山音色未获授权')
                 if response.status_code == 429 or response.status_code >= 500:
                     raise PackagingTransientError('豆包配音暂时限流或不可用，正在自动恢复')
                 raise PackagingError('豆包配音请求失败，请检查服务权限和音色配置')
@@ -93,6 +106,8 @@ class PackagingProvider:
                     complete = True
                     break
                 if row.get('code') != 0:
+                    if 'speaker permission' in str(row.get('message', '')).lower():
+                        raise VoicePermissionError('当前火山音色未获授权')
                     raise PackagingError('豆包配音合成失败')
                 if row.get('data'):
                     chunk = base64.b64decode(row['data'], validate=True)

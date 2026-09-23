@@ -24,6 +24,8 @@ export type ParameterAdjustItem = {
   precision?: number;
   /** Used when the bound record has no value for this key yet. Falls back to `min`. */
   default?: number;
+  /** Label shown at the minimum, e.g. `-∞` when the floor means silence. */
+  floorLabel?: string;
   /** Ticks to draw on the track, e.g. the 0 dB reference on a level control. */
   marks?: ParameterAdjustMark[];
 };
@@ -73,8 +75,12 @@ const values = computed<Record<string, number>>(() =>
  * snaps back to the normalized number.
  */
 const drafts = ref<Record<string, string>>({});
-const textOf = (item: ParameterAdjustItem): string =>
-  drafts.value[item.key] ?? format(item, valueOf(item));
+const textOf = (item: ParameterAdjustItem): string => {
+  const draft = drafts.value[item.key];
+  if (draft !== undefined) return draft;
+  const value = valueOf(item);
+  return item.floorLabel && value <= item.min ? item.floorLabel : format(item, value);
+};
 const commit = (item: ParameterAdjustItem, value: number): void => {
   if (!Number.isFinite(value)) return;
   const next = normalize(item, value);
@@ -97,9 +103,19 @@ const onTyped = (item: ParameterAdjustItem, event: Event): void => {
 const onBlur = (item: ParameterAdjustItem): void => {
   delete drafts.value[item.key];
 };
+const onFocus = (item: ParameterAdjustItem, event: FocusEvent): void => {
+  if (item.floorLabel && valueOf(item) <= item.min)
+    (event.target as HTMLInputElement).select();
+};
 const onSlider = (item: ParameterAdjustItem, event: Event): void => {
   delete drafts.value[item.key];
   commit(item, Number((event.target as HTMLInputElement).value));
+};
+/** The native range cannot colour its completed segment consistently, so expose the current stop. */
+const sliderStyle = (item: ParameterAdjustItem): Record<string, string> => {
+  const span = item.max - item.min;
+  const ratio = span > 0 ? (valueOf(item) - item.min) / span : 0;
+  return { '--parameter-value-position': `${Math.min(1, Math.max(0, ratio)) * 100}%` };
 };
 /** A mark's place along the track, as a percentage of the range. */
 const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record<string, string> => {
@@ -127,6 +143,7 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
           :max="item.max"
           :min="item.min"
           :step="item.step"
+          :style="sliderStyle(item)"
           :value="valueOf(item)"
           @input="onSlider(item, $event)"
         />
@@ -143,12 +160,19 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
       <span class="parameter-adjust-field">
         <input
           class="parameter-adjust-input"
-          type="number"
+          type="text"
+          inputmode="decimal"
+          role="spinbutton"
           :aria-label="`${item.label}数值`"
+          :aria-valuemax="item.max"
+          :aria-valuemin="item.min"
+          :aria-valuenow="valueOf(item)"
+          :aria-valuetext="`${textOf(item)}${item.unit ? ` ${item.unit}` : ''}`"
           :disabled="disabled"
           :step="item.step"
           :value="textOf(item)"
           @blur="onBlur(item)"
+          @focus="onFocus(item, $event)"
           @input="onTyped(item, $event)"
         />
         <span v-if="item.unit" class="parameter-adjust-unit">{{ item.unit }}</span>
@@ -193,7 +217,8 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
 }
 .parameter-adjust-row {
   display: flex;
-  flex: 1;
+  flex: var(--parameter-row-flex, 1 1 0);
+  width: var(--parameter-row-width, auto);
   min-width: 0;
   align-items: center;
   gap: var(--parameter-column-gap, 8px);
@@ -210,26 +235,76 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
   display: block;
   flex: 1;
   min-width: 0;
-  /* Anchors the marks, which are placed by percentage of the range. */
+  /* Anchors the marks, which are placed by percentage of the range. Tall enough that a mark's caption
+     stays inside the row instead of hanging past its border. */
   position: relative;
+  height: calc(var(--parameter-slider-height, 18px) + var(--parameter-mark-height, 10px));
 }
 .parameter-adjust-slider {
   display: block;
   width: 100%;
   height: var(--parameter-slider-height, 18px);
   margin: 0;
-  /* The track and thumb are left to the host: only the box is laid out here. */
+  appearance: none;
   background: transparent;
-  accent-color: var(--parameter-accent, currentColor);
   cursor: pointer;
+}
+.parameter-adjust-slider::-webkit-slider-runnable-track {
+  height: var(--parameter-track-height, 3px);
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--parameter-track-fill, currentColor) 0,
+    var(--parameter-track-fill, currentColor) var(--parameter-value-position, 0%),
+    var(--parameter-track-rest, currentColor) var(--parameter-value-position, 0%),
+    var(--parameter-track-rest, currentColor) 100%
+  );
+}
+.parameter-adjust-slider::-webkit-slider-thumb {
+  width: var(--parameter-thumb-width, 10px);
+  height: var(--parameter-thumb-height, 14px);
+  margin-top: calc(
+    (var(--parameter-track-height, 3px) - var(--parameter-thumb-height, 14px)) / 2
+  );
+  border: var(--parameter-thumb-border, 1px solid currentColor);
+  border-radius: var(--parameter-thumb-radius, 4px);
+  appearance: none;
+  background: var(--parameter-thumb-background, Canvas);
+  box-shadow: var(--parameter-thumb-shadow, none);
+}
+.parameter-adjust-slider::-moz-range-track {
+  height: var(--parameter-track-height, 3px);
+  border: 0;
+  border-radius: 999px;
+  background: var(--parameter-track-rest, currentColor);
+}
+.parameter-adjust-slider::-moz-range-progress {
+  height: var(--parameter-track-height, 3px);
+  border-radius: 999px;
+  background: var(--parameter-track-fill, currentColor);
+}
+.parameter-adjust-slider::-moz-range-thumb {
+  width: var(--parameter-thumb-width, 10px);
+  height: var(--parameter-thumb-height, 14px);
+  border: var(--parameter-thumb-border, 1px solid currentColor);
+  border-radius: var(--parameter-thumb-radius, 4px);
+  background: var(--parameter-thumb-background, Canvas);
+  box-shadow: var(--parameter-thumb-shadow, none);
+}
+.parameter-adjust-slider:focus-visible {
+  outline: 2px solid var(--parameter-accent, currentColor);
+  outline-offset: 2px;
 }
 .parameter-adjust-slider:disabled {
   cursor: not-allowed;
+  opacity: 0.5;
 }
 .parameter-adjust-mark {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: calc(
+    (var(--parameter-slider-height, 18px) - var(--parameter-mark-size, 9px)) / 2
+  );
+  height: var(--parameter-mark-size, 9px);
   width: 0;
   /* A reference, not a control: it must never swallow a click meant for the slider under it. */
   pointer-events: none;
@@ -239,10 +314,11 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
   display: block;
   width: 1px;
   height: 100%;
-  background: currentColor;
+  background: var(--parameter-mark-color, currentColor);
   opacity: var(--parameter-mark-opacity, 0.5);
 }
 .parameter-adjust-mark b {
+  display: var(--parameter-mark-label-display, block);
   position: absolute;
   top: 100%;
   left: 50%;
@@ -258,6 +334,8 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
   flex: none;
   align-items: center;
   gap: 2px;
+  min-height: var(--parameter-field-height, 24px);
+  overflow: hidden;
   border: var(--parameter-field-border, 1px solid currentColor);
   border-radius: var(--parameter-field-radius, 4px);
   background: var(--parameter-field-background, transparent);
@@ -270,7 +348,7 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
   background: transparent;
   color: inherit;
   font: inherit;
-  text-align: right;
+  text-align: var(--parameter-input-align, right);
   /* Spinners would sit beside our own steppers; the host can turn them back on if it wants them. */
   appearance: textfield;
 }
@@ -289,6 +367,9 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
   display: flex;
   flex: none;
   flex-direction: column;
+  align-self: stretch;
+  border-left: var(--parameter-step-divider, 0);
+  background: var(--parameter-step-background, transparent);
 }
 .parameter-adjust-step {
   display: grid;
