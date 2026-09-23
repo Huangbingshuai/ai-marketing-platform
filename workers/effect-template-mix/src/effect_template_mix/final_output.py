@@ -7,8 +7,9 @@ import tempfile
 import unicodedata
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from aio_pika.abc import AbstractIncomingMessage
@@ -46,8 +47,73 @@ async def command(program: str, args: list[str], timeout: float = 900, cwd: Path
 
 
 async def probe(path: Path) -> dict[str, Any]:
-    result: dict[str, Any] = json.loads(await command('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)], 30))
-    return result
+    result = json.loads(await command('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)], 30))
+    return cast(dict[str, Any], result)
+
+
+def stream_duration(stream: dict[str, Any]) -> float | None:
+    """Read a track's own duration; the container duration may be audio-led."""
+    raw_duration = stream.get('duration')
+    if raw_duration not in (None, 'N/A'):
+        try:
+            duration = float(str(raw_duration))
+            if math.isfinite(duration) and duration >= 0:
+                return duration
+        except (TypeError, ValueError):
+            pass
+    duration_ts, time_base = stream.get('duration_ts'), stream.get('time_base')
+    if duration_ts not in (None, 'N/A') and time_base not in (None, 'N/A'):
+        try:
+            duration = float(str(duration_ts)) * float(Fraction(str(time_base)))
+            if math.isfinite(duration) and duration >= 0:
+                return duration
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    return None
+
+
+def video_stream(info: dict[str, Any]) -> dict[str, Any]:
+    stream = next((row for row in info.get('streams', []) if row.get('codec_type') == 'video'), None)
+    if stream is None:
+        raise PackagingError('视频素材没有可用的画面轨')
+    return cast(dict[str, Any], stream)
+
+
+def frame_tolerance(stream: dict[str, Any], output_frame_rate: int) -> float:
+    tolerances = [1 / output_frame_rate]
+    for key in ('avg_frame_rate', 'r_frame_rate'):
+        try:
+            source_rate = float(Fraction(str(stream.get(key, '0/1'))))
+            if math.isfinite(source_rate) and source_rate > 0:
+                tolerances.append(1 / source_rate)
+                break
+        except (ValueError, ZeroDivisionError):
+            continue
+    return max(tolerances) + .002
+
+
+def validate_video_interval(
+    info: dict[str, Any], offset: float, length: float, output_frame_rate: int,
+) -> None:
+    stream = video_stream(info)
+    duration = stream_duration(stream)
+    try:
+        start = float(stream.get('start_time', 0) or 0)
+    except (TypeError, ValueError):
+        start = 0
+    if duration is None or not math.isfinite(start):
+        raise PackagingError('无法确认源视频画面轨的真实时长，已停止导出')
+    tolerance = frame_tolerance(stream, output_frame_rate)
+    available_end = start + duration
+    if offset < start - tolerance or offset + length > available_end + tolerance:
+        raise PackagingError('源视频画面轨时长不足，不能用尾帧冻结补足成片')
+
+
+def validate_rendered_video_duration(info: dict[str, Any], expected: float, output_frame_rate: int) -> None:
+    stream = video_stream(info)
+    duration = stream_duration(stream)
+    if duration is None or duration + frame_tolerance(stream, output_frame_rate) < expected:
+        raise PackagingError('片段画面轨提前结束，不能用尾帧冻结补足成片')
 
 
 async def encode(args: list[str], cwd: Path) -> None:
@@ -154,8 +220,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         if clip:
             info = media[clip['fileObjectId']]
             offset = float(clip['offset'] + start - clip['start'])
-            if float(info['format']['duration']) + .05 < offset + end - start:
-                raise PackagingError('源视频真实时长不足，禁止补黑伪装完成')
+            validate_video_interval(info, offset, end - start, 30)
             args += ['-ss', str(offset), '-i', str(files[clip['fileObjectId']])]
             has_audio = not clip.get('originalAudioDetached', False) and any(
                 s['codec_type'] == 'audio' for s in info['streams'])
@@ -167,8 +232,9 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         args += ['-map', '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0', '-t', str(end - start),
             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30',
             '-af', 'aresample=48000,apad', '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
-            '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-threads', '1', str(target)]
+            '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-threads', '1', '-shortest', str(target)]
         await encode(args, directory)
+        validate_rendered_video_duration(await probe(target), end - start, 30)
         segments.append(target)
         await progress(10 + round(35 * (index + 1) / len(intervals)))
     # Center transitions on the cut, as in the editor. Padding supplies handles
@@ -274,7 +340,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     filters += [f'[{current}]subtitles=captions.ass,format=yuv420p[video]']
     output = directory / 'final.mp4'
     await progress(50)
-    await encode([*inputs, '-filter_complex', ';'.join(filters), '-map', '[video]', '-map', '[audio]', '-t', str(duration),
+    await encode([*inputs, '-filter_complex', ';'.join(filters), '-map', '[video]', '-map', '[audio]', '-shortest', '-t', str(duration),
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-threads', '1', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(output)], directory)
     result = await probe(output)
     if abs(float(result['format']['duration']) - duration) > .1:

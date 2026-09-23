@@ -67,6 +67,43 @@ def test_caption_box_never_leaves_the_frame() -> None:
     assert 0 <= bottom <= 1280
 
 
+def test_stream_duration_falls_back_to_duration_ticks() -> None:
+    assert final_output.stream_duration({'duration_ts': '1500', 'time_base': '1/1000'}) == 1.5
+
+
+async def test_audio_led_container_cannot_hide_a_short_video_track(tmp_path: Path, monkeypatch: Any) -> None:
+    async def fake_probe(path: Path) -> dict[str, Any]:
+        if path.name == 'a.mp4':
+            return {'format': {'duration': '5.0'}, 'streams': [
+                {'codec_type': 'video', 'duration': '3.0', 'avg_frame_rate': '30/1'},
+                {'codec_type': 'audio', 'duration': '5.0'},
+            ]}
+        return {'format': {'duration': '4.0'}, 'streams': [
+            {'codec_type': 'audio', 'duration': '4.0'},
+        ]}
+
+    encode_mock = AsyncMock()
+    monkeypatch.setattr(final_output, 'probe', fake_probe)
+    monkeypatch.setattr(final_output, 'encode', encode_mock)
+    snapshot = {
+        'timeline': {'duration': 4, 'clips': [
+            {'fileObjectId': 'a', 'start': 0, 'duration': 4, 'offset': 0, 'lane': 0},
+        ]},
+        'aspectRatio': '4:3', 'originalVolume': .15,
+        'packaging': {
+            'voices': {},
+            'music': {'fileObjectId': 'music', 'duration': 4, 'volume': .12},
+            'captions': [],
+        },
+    }
+
+    with pytest.raises(PackagingError, match='源视频画面轨时长不足'):
+        await render(snapshot, {
+            'a': tmp_path / 'a.mp4', 'music': tmp_path / 'music.wav',
+        }, tmp_path, AsyncMock())
+    encode_mock.assert_not_awaited()
+
+
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
 @pytest.mark.parametrize('transition', ['硬切', *final_output.TRANSITIONS, '六镜头混合'])
 async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_path: Path, monkeypatch: Any, transition: str) -> None:
