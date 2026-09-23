@@ -11,8 +11,6 @@ import {
   packagingProgress,
   packagingStageDetails,
   packagingStageState,
-  packagingItemStageState,
-  packagingItemStageLabels,
   currentPackagingRun,
 } from './effect-packaging-progress';
 import { createPackagingPoller } from './effect-packaging-poller';
@@ -29,7 +27,6 @@ import type {
   ApiResponse,
   EffectTemplateMixAudio,
   EffectTemplateMixVariant,
-  PackagingComponent,
   PackagingItem,
   PackagingRun,
 } from '@ai-marketing/contracts';
@@ -58,11 +55,8 @@ const requestError = ref(''),
   loadError = ref(''),
   previewError = ref('');
 const error = computed(() => requestError.value || loadError.value || previewError.value);
-const message = ref(''),
-  runs = ref<PackagingRun[]>([]);
-const refreshing = ref(false), lastReadAt = ref('');
+const runs = ref<PackagingRun[]>([]);
 const selectedStage = ref<PackagingStage | null>(null);
-const detailId = ref('');
 let generation = 0;
 let pendingCreate: { fingerprint: string; key: string } | null = null;
 const base = computed(() => `/projects/${props.projectId}/workflows/effect/template-mix`);
@@ -99,21 +93,6 @@ const stageStates = computed(() => Object.fromEntries(
   PACKAGING_STAGES.map((stage) => [stage, packagingStageState(run.value?.items ?? [], stage)]),
 ) as Record<PackagingStage, ReturnType<typeof packagingStageState>>);
 const stageState = (stage: PackagingStage) => stageStates.value[stage];
-const stageItems = computed(() => run.value?.items ?? []);
-const batchCreatedAt = computed(() => run.value
-  ? new Date(run.value.createdAt).toLocaleString('zh-CN', { hour12: false }) : '');
-const staleCount = computed(() => run.value?.items.filter((item) => item.stale).length ?? 0);
-const shardStates = computed(() =>
-  [...new Set(run.value?.items.map((i) => i.shardIndex) ?? [])].map((index) => {
-    const items = run.value!.items.filter((i) => i.shardIndex === index);
-    return {
-      index,
-      total: items.length,
-      completed: items.filter((i) => i.status === 'COMPLETED').length,
-      failed: items.filter((i) => i.status === 'FAILED').length,
-    };
-  }),
-);
 const statusLabel: Record<string, string> = {
   QUEUED: '排队中',
   RUNNING: '处理中',
@@ -147,9 +126,6 @@ const boundaryError = computed(() => {
   const variant = props.variants.find((v) => v.id === props.selectedVariantId);
   return variant ? packagingSlotBoundaryError(variant) : null;
 });
-const detail = computed(
-  () => run.value?.items.find((i) => i.id === detailId.value) ?? run.value?.items[0],
-);
 const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
 watch(selected, (item) => emit('selected', item), { immediate: true });
 const allReady = computed(() => !active.value && !loadError.value && props.variants.length > 0 && props.variants.every((v) => {
@@ -170,13 +146,11 @@ const poller = createPackagingPoller({
   onData(data) {
     runs.value = data;
     loadError.value = '';
-    lastReadAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   },
   onError(reason) {
     loadError.value = reason instanceof Error ? reason.message : '读取包装失败';
   },
   onLoading(value) {
-    refreshing.value = value;
     loading.value = value && !runs.value.length;
   },
   // Discover tasks started in another session even when this workspace is idle.
@@ -198,7 +172,6 @@ async function open(mode: 'ACTION' | 'WORKFLOW') {
   }
   selectedStage.value = null;
   visible.value = true;
-  message.value = '';
   await nextTick();
   dialog.value?.showModal();
   void refresh();
@@ -222,7 +195,6 @@ async function execute(action: () => Promise<unknown>) {
   const version = generation;
   busy.value = true;
   requestError.value = '';
-  message.value = '';
   try {
     await action();
     if (version === generation) await refresh();
@@ -233,7 +205,7 @@ async function execute(action: () => Promise<unknown>) {
     if (version === generation) busy.value = false;
   }
 }
-async function create(variantId?: string, component: PackagingComponent = 'ALL', slotId?: string) {
+async function create() {
   if (busy.value) return;
   const context = {
     generation,
@@ -247,7 +219,7 @@ async function create(variantId?: string, component: PackagingComponent = 'ALL',
       const expectedRevision = await props.prepare();
       if (context.generation !== generation) return;
       if (expectedRevision === null) throw new Error('请先保存时间轴草稿');
-      const body = { workflowRunId: context.workflowRunId, expectedRevision, variantId, component, slotId };
+      const body = { workflowRunId: context.workflowRunId, expectedRevision, component: 'ALL' as const };
       const fingerprint = JSON.stringify(body);
       if (pendingCreate?.fingerprint !== fingerprint)
         pendingCreate = { fingerprint, key: crypto.randomUUID() };
@@ -528,7 +500,6 @@ watch(
     generation++;
     poller.stop();
     runs.value = [];
-    lastReadAt.value = '';
     pendingCreate = null;
     requestError.value = '';
     loadError.value = '';
@@ -611,7 +582,7 @@ onBeforeUnmount(() => {
       <div class="workflow-graph-title">
         <span>SMART PACKAGING WORKFLOW</span>
         <h2 id="packaging-title">智能成片包装工作流</h2>
-        <p>查看本次视觉理解、口播策划、配音、音乐和字幕的真实执行状态。</p>
+        <p>点击节点查看本阶段的输入与输出结果。</p>
       </div>
       <button class="workflow-graph-close" aria-label="关闭包装工作流" @click="close">
         <X :size="18" />
@@ -621,17 +592,6 @@ onBeforeUnmount(() => {
       <AlertCircle :size="16" />{{ error
       }}<button :disabled="busy" @click="refresh">重新读取</button>
     </div>
-    <div v-if="message" class="notice success" role="status">{{ message }}</div>
-    <section class="packaging-run-summary" aria-label="当前包装批次">
-      <div v-if="run">
-        <strong>{{ statusLabel[run.status] }} · {{ run.counts.completed }} / {{ run.counts.total }} 条完成</strong>
-        <p>{{ executionSummary }} · 失败 {{ run.counts.failed }}<template v-if="staleCount"> · 来源待更新 {{ staleCount }}</template></p>
-        <small>本批创建于 {{ batchCreatedAt }} · {{ loadError ? '同步中断，以下为上次读取结果' : '最后读取 ' + lastReadAt }}</small>
-      </div>
-      <p v-else role="status">{{ loading ? '正在读取包装任务…' : loadError ? '暂时无法读取包装任务' : '尚未创建包装任务' }}</p>
-      <button :disabled="refreshing" @click="refresh">{{ refreshing ? '读取中…' : '刷新状态' }}</button>
-      <p class="packaging-parallel-hint">以下按成片汇总各阶段，不同成片并行推进；部分失败不会阻止其他成片继续。连线表示单条成片的处理顺序。</p>
-    </section>
     <main class="workflow-graph-content">
       <div class="workflow-graph-canvas" aria-label="智能成片包装执行图">
         <template v-for="(stage, index) in PACKAGING_STAGES" :key="stage">
@@ -660,8 +620,8 @@ onBeforeUnmount(() => {
       </div>
       <aside class="workflow-node-detail" aria-live="polite">
         <div v-if="!selectedStage" class="workflow-node-detail-empty">
-          <Workflow :size="30" /><strong>选择节点查看真实状态</strong>
-          <p>点击左侧节点查看本阶段输入、输出和各成片执行情况。</p>
+          <Workflow :size="30" /><strong>选择节点查看输入与输出</strong>
+          <p>点击左侧节点，查看该阶段接收什么、产出什么。</p>
         </div>
         <template v-else>
           <header class="workflow-node-detail-header">
@@ -669,18 +629,6 @@ onBeforeUnmount(() => {
               <span>NODE DETAIL</span><strong>{{ PACKAGING_STAGE_LABELS[selectedStage] }}</strong>
             </div>
           </header>
-          <div class="workflow-node-detail-status">
-            <em :class="`is-${stageState(selectedStage).tone}`">{{
-              stageState(selectedStage).label
-            }}</em
-            ><span
-              ><small>本阶段完成</small
-              ><b>{{ stageState(selectedStage).completed }} / {{ run?.items.length ?? 0 }}</b></span
-            >
-          </div>
-          <p class="workflow-node-summary">
-            {{ packagingStageDetails[selectedStage].description }}
-          </p>
           <section class="workflow-detail-block is-input">
             <span>INPUT</span><strong>本阶段输入</strong>
             <p>{{ packagingStageDetails[selectedStage].input }}</p>
@@ -688,125 +636,13 @@ onBeforeUnmount(() => {
           <section class="workflow-detail-block is-output">
             <span>OUTPUT</span><strong>本阶段输出</strong>
             <p>{{ packagingStageDetails[selectedStage].output }}</p>
-          </section>
-          <section v-if="run" class="workflow-detail-block">
-            <span>EXECUTION</span><strong>成片执行情况</strong>
-            <p>
-              执行中 {{ stageState(selectedStage).running }} · 失败
-              {{ stageState(selectedStage).failed }} · 取消
-              {{ stageState(selectedStage).cancelled }}
-            </p>
-            <p v-if="!stageItems.length">本阶段尚未执行。</p>
-            <ul class="stage-items">
-              <li v-for="item in stageItems" :key="item.id">
-                <b>{{ item.name }}</b
-                ><span>{{
-                  item.stale
-                    ? '已过期'
-                    : packagingItemStageLabels[packagingItemStageState(item, selectedStage)]
-                }}</span
-                ><small v-if="item.stage === selectedStage && item.errorMessage" class="error">{{
-                  item.errorMessage
-                }}</small>
-              </li>
-            </ul>
+            <p v-if="run" role="status">{{ stageState(selectedStage).label }} · 已产出 {{ stageState(selectedStage).completed }} / {{ run.items.length }} 条</p>
+            <p v-else role="status">{{ loading ? '正在读取结果…' : loadError ? '暂时无法读取结果' : '尚未生成结果' }}</p>
           </section>
         </template>
       </aside>
     </main>
-    <details v-if="run" class="packaging-results">
-      <summary>成片结果与分片进度 · {{ run.items.length }} 条成片</summary>
-      <p>{{ executionSummary }}</p>
-      <div v-if="run.execution?.performance" class="shard-list">
-        <span>视觉缓存 {{ run.execution.performance.cacheHits }}/{{ run.execution.performance.cacheLookups }} 命中</span>
-        <span v-for="(stage, name) in run.execution.performance.stages" :key="name">
-          {{ ({ preprocessingSeconds: '媒体读取与预处理', visionSeconds: '视觉请求（槽位分摊）', scriptSeconds: '策划请求', voiceSeconds: '配音及缩句请求', musicWaitSeconds: '音乐提交与供应商等待', localQueueSeconds: '本地并发排队' } as Record<string, string>)[name] }}
-          · P50 {{ stage.p50Seconds.toFixed(1) }}s / P95 {{ stage.p95Seconds.toFixed(1) }}s
-        </span>
-      </div>
-      <div class="shard-list">
-        <span v-for="shard in shardStates" :key="shard.index"
-          >分片 {{ shard.index + 1 }} · 完成 {{ shard.completed }}/{{ shard.total }} · 失败
-          {{ shard.failed }}</span
-        >
-      </div>
-      <div class="results">
-        <div class="item-list">
-          <button
-            v-for="item in run.items"
-            :key="item.id"
-            :class="{ selected: detail?.id === item.id }"
-            @click="detailId = item.id"
-          >
-            <strong>{{ item.name }}</strong
-            ><small
-              >分片 {{ item.shardIndex + 1 }} ·
-              {{ item.stale ? '已过期' : statusLabel[item.status] }} ·
-              {{ PACKAGING_STAGE_LABELS[item.stage] }}</small
-            >
-          </button>
-        </div>
-        <section v-if="detail" class="detail">
-          <h3>{{ detail.name }}</h3>
-          <p v-if="detail.errorMessage" class="error" role="alert">{{ detail.errorMessage }}</p>
-          <p v-if="detail.stale" class="error">来源已变更，请重新生成；旧包装不可确认或输出。</p>
-          <div class="actions">
-            <button :disabled="busy || active" @click="create(detail.variantId)">重做整条</button
-            ><button
-              v-for="entry in [
-                ['VOICE', '口播'],
-                ['MUSIC', '音乐'],
-                ['CAPTIONS', '字幕'],
-              ] as const"
-              :key="entry[0]"
-              :disabled="
-                busy ||
-                active ||
-                detail.stale ||
-                detail.checkpoint.narrationLayoutVersion !== 'SLOT_V1' ||
-                !['COMPLETED', 'FAILED', 'CANCELLED'].includes(detail.status)
-              "
-              @click="create(detail.variantId, entry[0])"
-            >
-              重做{{ entry[1] }}
-            </button>
-          </div>
-          <div v-for="line in detail.checkpoint.script" :key="line.id" class="line">
-            <strong v-if="line.slotId">{{ detail.sourceVisualTimeline.slots.find(s => s.id === line.slotId)?.label }} · {{ line.start }}–{{ line.end }}s</strong>
-            <p>{{ line.text }}</p>
-            <small v-if="line.slotId && detail.checkpoint.narrationMetrics?.[line.slotId]">
-              {{ detail.checkpoint.narrationMetrics[line.slotId]!.characters }} 字 / 目标 {{ detail.checkpoint.narrationMetrics[line.slotId]!.targetCharacters }} 字 ·
-              配音 {{ detail.checkpoint.narrationMetrics[line.slotId]!.audioSeconds.toFixed(1) }}s / 槽位 {{ detail.checkpoint.narrationMetrics[line.slotId]!.slotSeconds.toFixed(1) }}s ·
-              利用率 {{ (detail.checkpoint.narrationMetrics[line.slotId]!.utilization * 100).toFixed(0) }}%
-            </small>
-            <small>音色：{{ detail.checkpoint.voices?.[line.id]?.voiceProfile?.name || '历史默认音色' }}</small>
-            <button v-if="line.slotId" :disabled="busy || active || detail.stale" @click="create(detail.variantId, 'VOICE', line.slotId)">重做此槽位口播</button>
-            <small>引用 {{ line.factIds.length }} 条确认事实</small
-            ><audio
-              v-if="detail.checkpoint.voices?.[line.id]"
-              controls
-              preload="none"
-              :src="fileUrl(detail.checkpoint.voices[line.id]!.fileObjectId)"
-            />
-          </div>
-          <div v-if="detail.checkpoint.music" class="line">
-            <strong>专属纯音乐</strong
-            ><audio controls preload="none" :src="fileUrl(detail.checkpoint.music.fileObjectId)" />
-          </div>
-          <div v-if="detail.checkpoint.captions?.length" class="captions">
-            <h4>同步字幕</h4>
-            <p v-for="c in detail.checkpoint.captions" :key="c.id">
-              <time>{{ c.start.toFixed(2) }}–{{ c.end.toFixed(2) }}s</time>{{ c.text }}
-            </p>
-          </div>
-          <small class="hint">全部成片就绪后，在节点底部统一完成校验并进入成片输出。</small>
-        </section>
-      </div>
-    </details>
     <footer>
-      <span><i class="running" />执行中</span><span><i class="success" />已完成</span
-      ><span><i />等待中</span><span><i class="danger" />失败</span>
-      <span class="workflow-edge-count">6 条执行边</span>
       <button
         v-if="run && ['QUEUED', 'RUNNING'].includes(run.status)"
         :disabled="busy"
@@ -847,14 +683,9 @@ button:disabled {
   cursor: not-allowed;
 }
 button:focus-visible,
-select:focus-visible {
+button:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 3px;
-}
-.primary {
-  background: #2563eb;
-  color: white;
-  border-color: #2563eb;
 }
 .packaging-dialog {
   width: min(1060px, 94vw);
@@ -880,9 +711,6 @@ h2 {
   margin: 5px 0;
   font-size: 23px;
 }
-h3 {
-  margin: 0 0 12px;
-}
 p {
   line-height: 1.7;
 }
@@ -890,11 +718,6 @@ p {
   margin: 6px 0 0;
   font-size: 13px;
   color: #6881a6;
-}
-.packaging-dialog > header small {
-  color: #7190b7;
-  letter-spacing: 1px;
-  font-size: 10px;
 }
 .notice {
   display: flex;
@@ -907,105 +730,7 @@ p {
 .error {
   color: #b83448;
 }
-.success {
-  background: #f0fbf5;
-  color: #238055;
-}
-.summary {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  padding: 14px 20px 0;
-}
-select {
-  padding: 8px;
-  border: 1px solid #dbe5f4;
-  border-radius: 6px;
-  background: white;
-  color: #33567f;
-  max-width: 100%;
-}
-.results {
-  display: grid;
-  grid-template-columns: 235px minmax(0, 1fr);
-  gap: 18px;
-  border-top: 1px solid #e3ebf5;
-  padding-top: 18px;
-}
-.item-list {
-  max-height: 440px;
-  overflow: auto;
-}
-.item-list button {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  width: 100%;
-  margin-bottom: 7px;
-  text-align: left;
-}
-.item-list small {
-  color: #7a91b1;
-  font-size: 11px;
-}
-.item-list .selected {
-  background: #edf4ff;
-  border-color: #92b6fa;
-}
-.detail {
-  max-height: 500px;
-  overflow: auto;
-  padding-right: 6px;
-}
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  font-size: 12px;
-}
-.line {
-  padding: 10px 0;
-  border-bottom: 1px solid #edf1f7;
-}
-.line p {
-  margin: 3px 0;
-}
-.line small,
-.hint {
-  color: #7d92ac;
-  font-size: 11px;
-}
-audio {
-  display: block;
-  width: 100%;
-  height: 34px;
-  margin-top: 7px;
-}
-.captions {
-  font-size: 12px;
-}
-time {
-  margin-right: 12px;
-  color: #7b94b4;
-}
-.hint {
-  display: block;
-  margin-top: 8px;
-}
-.empty {
-  padding: 50px 10px;
-  text-align: center;
-  color: #8295af;
-}
 @media (max-width: 700px) {
-  .results {
-    grid-template-columns: 1fr;
-  }
-  .item-list {
-    max-height: 150px;
-  }
   .packaging-dialog > header {
     padding: 14px;
   }
@@ -1014,19 +739,6 @@ time {
   margin: 8px 12px;
   flex-shrink: 0;
 }
-.packaging-run-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  padding: 14px 20px 0;
-  font-size: 12px;
-}
-.packaging-run-summary > div { flex: 1; min-width: 200px; }
-.packaging-run-summary p { margin: 4px 0; }
-.packaging-run-summary small,
-.packaging-parallel-hint { color: #718096; font-size: 11px; }
-.packaging-parallel-hint { flex-basis: 100%; }
 .workflow-graph-node small.packaging-stage-counts { color: #435b7d; }
 .packaging-dialog {
   max-width: calc(100vw - 32px);
@@ -1035,59 +747,6 @@ time {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-}
-.packaging-results {
-  margin: 0 20px 16px;
-  border: 1px solid #dbe4f6;
-  border-radius: 12px;
-  background: white;
-}
-.packaging-results > summary {
-  cursor: pointer;
-  padding: 14px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #33415a;
-}
-.packaging-results > .results {
-  margin: 0 14px 14px;
-}
-.shard-list {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 0 14px 14px;
-  font-size: 11px;
-  color: #60708a;
-}
-.shard-list span {
-  padding: 6px 9px;
-  background: #f4f8ff;
-  border-radius: 6px;
-}
-.stage-items {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  max-height: 190px;
-  overflow: auto;
-}
-.stage-items li {
-  display: flex;
-  align-items: start;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 8px 0;
-  border-bottom: 1px solid #edf1f7;
-  font-size: 10px;
-}
-.stage-items li b {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.stage-items li small {
-  flex-basis: 100%;
 }
 </style>
 <style scoped src="./effect-template-mix-workflow.css"></style>

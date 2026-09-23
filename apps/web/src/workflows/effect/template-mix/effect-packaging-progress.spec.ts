@@ -88,4 +88,17 @@ describe('packaging workflow progress', () => {
     );
     expect(component).toContain('@click="selectedStage = stage"');
   });
+  it('shows only node inputs and outputs in the packaging workflow', () => {
+    expect(component).toContain('class="workflow-graph-canvas"');
+    expect(component).toContain('class="workflow-detail-block is-input"');
+    expect(component).toContain('class="workflow-detail-block is-output"');
+    expect(component).toContain('已产出 {{ stageState(selectedStage).completed }} / {{ run.items.length }} 条');
+    expect(component).not.toContain('class="packaging-run-summary"');
+    expect(component).not.toContain('class="packaging-results"');
+    expect(component).not.toContain('成片结果与分片进度');
+    expect(component).not.toContain('class="stage-items"');
+    expect(component).not.toContain('成片执行情况');
+    expect(component).not.toContain('重做此槽位口播');
+    expect(component).not.toContain('批量重做字幕');
+  });
 });
