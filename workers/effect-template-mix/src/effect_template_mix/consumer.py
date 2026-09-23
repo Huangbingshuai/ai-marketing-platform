@@ -3,9 +3,9 @@ import json
 import logging
 import tempfile
 from collections.abc import Awaitable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TypeVar
+from typing import Iterator, TypeVar
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
@@ -22,6 +22,21 @@ from .voice_preview import VoicePreviewHandler
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
+
+
+@contextmanager
+def temporary_video_directory() -> Iterator[Path]:
+    temporary = tempfile.TemporaryDirectory(prefix="effect-template-mix-")
+    try:
+        yield Path(temporary.name)
+    except BaseException:
+        try:
+            temporary.cleanup()
+        except OSError as cleanup_error:
+            LOGGER.warning("temporary video cleanup failed errno=%s", cleanup_error.errno)
+        raise
+    else:
+        temporary.cleanup()
 
 
 async def gather_cancel_on_error(calls: list[Awaitable[T]]) -> list[T]:
@@ -233,8 +248,7 @@ class Consumer:
                         55 + round(len(restored_trims) / max(1, len(selections)) * 35),
                     ),
                 )
-            with tempfile.TemporaryDirectory(prefix="effect-template-mix-") as directory:
-                root = Path(directory)
+            with temporary_video_directory() as root:
                 trim_semaphore = self.request_slots
 
                 async def trim_selection(index: int, selection: Selection) -> None:

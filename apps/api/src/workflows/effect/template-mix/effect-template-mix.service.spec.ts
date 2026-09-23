@@ -2,6 +2,7 @@ import type { EffectTemplateMixDraft, WorkingArtifact } from '@ai-marketing/cont
 import { describe, expect, it, vi } from 'vitest';
 
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { EffectTemplateMixService } from './effect-template-mix.service';
 import type { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 
@@ -170,9 +171,7 @@ describe('EffectTemplateMixService', () => {
     ]);
     expect(run.stageDetails?.MATCHING).toMatchObject({ completed: 1, total: 1 });
     expect(run.stageDetails?.SAMPLING).toMatchObject({ completed: 1, total: 2 });
-    expect(run.stageDetails?.TRIMMING?.outputSamples).toEqual([
-      'R-1 · 素材 1 · 从 1.3 秒截取',
-    ]);
+    expect(run.stageDetails?.TRIMMING?.outputSamples).toEqual(['R-1 · 素材 1 · 从 1.3 秒截取']);
     expect(run.stageDetails?.COMPLETED).toMatchObject({ completed: 0, total: 1 });
   });
 
@@ -186,7 +185,9 @@ describe('EffectTemplateMixService', () => {
     unchanged.templates[0]!.workspace.template.name = '更新名称';
     await expect(service.saveDraft('project', 'run', 7, unchanged)).resolves.toBeDefined();
     unchanged.templates[0]!.workspace.template.slots[0]!.label = '新钩子';
-    await expect(service.saveDraft('project', 'run', 7, unchanged)).rejects.toMatchObject({ status: 400 });
+    await expect(service.saveDraft('project', 'run', 7, unchanged)).rejects.toMatchObject({
+      status: 400,
+    });
   });
 
   it('allows the first 4-second draft without a previous node state', async () => {
@@ -299,9 +300,7 @@ describe('EffectTemplateMixService', () => {
       getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
       listArtifacts: vi.fn().mockResolvedValue({ items: [prompt, render], total: 2 }),
     };
-    const service = new EffectTemplateMixService(
-      working as unknown as WorkflowWorkingService,
-    );
+    const service = new EffectTemplateMixService(working as unknown as WorkflowWorkingService);
 
     const result = await service.workspace('project', 'run');
 
@@ -466,8 +465,61 @@ describe('EffectTemplateMixService', () => {
 
     const snapshot = create.mock.calls[0]![0].snapshot;
     expect(snapshot.materials[0]).toMatchObject({ prompt: '原始画面 Prompt 0' });
+    expect(snapshot.workspaceHash).toBe(workflowStateHash(state.templates[0]!.workspace));
     expect(JSON.stringify(snapshot)).not.toContain('primaryPurpose');
     expect(JSON.stringify(snapshot)).not.toContain('compatiblePurposes');
+
+    const legacySnapshot = { ...snapshot };
+    delete legacySnapshot.workspaceHash;
+    const scores = Object.fromEntries(roles.map((role) => [role, 0.8]));
+    const classifications = clips.map((clip) => ({ materialId: clip.id, scores, reasons: {} }));
+    const selections = clips.map((clip, index) => ({
+      variantIndex: 0,
+      slotId: `slot-${index}`,
+      materialId: clip.id,
+      duration: 4,
+      matchScore: 0.8,
+      matchLevel: 'HIGH',
+      classificationReason: '匹配',
+    }));
+    const trims = clips.map((clip, index) => ({
+      variantIndex: 0,
+      slotId: `slot-${index}`,
+      materialId: clip.id,
+      trimStartSeconds: 0,
+      trimReason: '动作完整',
+    }));
+    aiRepository.listRecent.mockResolvedValue([
+      {
+        status: 'FAILED',
+        templateId,
+        inputSnapshot: legacySnapshot,
+        classificationResult: classifications,
+        selectionResult: selections,
+        trimResult: trims.slice(0, 1),
+      },
+      {
+        status: 'FAILED',
+        templateId,
+        inputSnapshot: legacySnapshot,
+        classificationResult: classifications,
+        selectionResult: selections,
+        trimResult: trims,
+      },
+    ]);
+    const updatedState = JSON.parse(JSON.stringify(state)) as EffectTemplateMixDraft;
+    updatedState.templates.push({
+      id: 'other-template',
+      workspace: JSON.parse(JSON.stringify(state.templates[0]!.workspace)),
+    });
+    working.getNodeState.mockResolvedValue({ revision: 8, state: updatedState });
+
+    await service.createAiRun('project', 'run', templateId, 8, 'new-key');
+
+    const resumed = create.mock.calls[1]![0];
+    expect(resumed.initialClassifications).toHaveLength(6);
+    expect(resumed.initialSelections).toHaveLength(6);
+    expect(resumed.initialTrims).toHaveLength(6);
   });
 
   it('persists a partial Prompt-classification shard for lease-safe resume', async () => {
@@ -531,7 +583,9 @@ describe('EffectTemplateMixService', () => {
         attemptToken: 'attempt-token',
         selectionResult: [{ materialId }],
       }),
-      saveSamplingCheckpoint: vi.fn().mockResolvedValue({ kind: 'SAVED', materialIds: [materialId] }),
+      saveSamplingCheckpoint: vi
+        .fn()
+        .mockResolvedValue({ kind: 'SAVED', materialIds: [materialId] }),
     };
     const service = new EffectTemplateMixService(
       {} as unknown as WorkflowWorkingService,

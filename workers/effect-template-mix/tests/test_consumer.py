@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from effect_template_mix.api import InternalApi
+from effect_template_mix.consumer import temporary_video_directory
 from effect_template_mix.models import Material, Runtime, SamplingCheckpoint
+from effect_template_mix.provider import ProviderError
 from effect_template_mix.reliability import (
     classification_chunks,
     classification_output_token_budget,
@@ -40,6 +42,20 @@ def test_classification_chunks_preserve_every_material_once() -> None:
     assert [item.id for batch in batches for item in batch] == [item.id for item in source]
 
 
+def test_cleanup_error_does_not_mask_retryable_provider_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Temporary:
+        name = '/tmp/temporary-video-test'
+
+        def cleanup(self) -> None:
+            raise OSError(39, 'Directory not empty')
+
+    monkeypatch.setattr('effect_template_mix.consumer.tempfile.TemporaryDirectory', lambda **_kwargs: Temporary())
+    with pytest.raises(ProviderError) as caught:
+        with temporary_video_directory():
+            raise ProviderError('temporary', retryable=True)
+    assert caught.value.retryable
+
+
 def test_classification_chunks_split_large_prompt_by_input_budget() -> None:
     source = [
         material(index).model_copy(update={"prompt": "长提示词" * 2_000})
@@ -58,16 +74,16 @@ def test_classification_chunks_split_large_prompt_by_input_budget() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sampling_checkpoint_uses_the_run_lease_and_selected_material_ids() -> None:
+async def test_sampling_checkpoint_uses_the_run_lease_and_selected_material_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     api = InternalApi("http://test", "token", 1)
-    api.request = AsyncMock()
-    api.request.return_value = {"materialIds": ["material-1"]}
+    request = AsyncMock(return_value={"materialIds": ["material-1"]})
+    monkeypatch.setattr(api, "request", request)
     runtime = Runtime(project_id="project-1", run_id="run-1", attempt_token="lease-1")
 
     result = await api.checkpoint_sampling(runtime, ["material-1"])
 
     assert isinstance(result, SamplingCheckpoint)
-    api.request.assert_awaited_once_with(
+    request.assert_awaited_once_with(
         "PUT",
         "internal/workers/effect-template-mix/runs/run-1/sampling/checkpoint",
         headers={"x-attempt-token": "lease-1"},

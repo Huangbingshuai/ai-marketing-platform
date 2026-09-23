@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -11,13 +12,20 @@ async def sample_frames(path: Path, duration: float, count: int = 12) -> list[tu
     timestamps = uniform_timestamps(duration, count)
 
     async def extract(index: int, timestamp: float) -> tuple[float, bytes]:
-        output = path.with_name(f"frame-{index:02d}.jpg")
+        output = path.with_name(f"{path.stem}-frame-{index:02d}.jpg")
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(timestamp), "-i", str(path),
             "-frames:v", "1", "-vf", "scale=512:-2", "-q:v", "4", "-y", str(output),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
         )
-        _, error = await process.communicate()
+        try:
+            _, error = await process.communicate()
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                await process.communicate()
+            raise
         if process.returncode != 0 or not output.exists():
             raise RuntimeError("FFmpeg 抽帧失败：" + error.decode("utf-8", errors="ignore")[:120])
         return timestamp, output.read_bytes()

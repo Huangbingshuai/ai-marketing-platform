@@ -142,6 +142,11 @@ class ArkProvider:
                     LOGGER.info('packaging model stage=%s status=%s elapsed=%.3f request_id=%s',
                         name, response.status_code, time.monotonic() - started, request_id)
                 if response.is_error:
+                    request_id = response.headers.get('x-request-id', '')
+                    if not re.fullmatch(r'[a-zA-Z0-9_.:-]{0,160}', request_id):
+                        request_id = 'redacted'
+                    LOGGER.warning('model request failed stage=%s status=%s request_id=%s',
+                        name, response.status_code, request_id)
                     raise ProviderError("AI 服务暂时不可用", retryable=response.status_code >= 500 or response.status_code == 429)
                 response_payload = response.json()
                 if response_payload.get("status") == "incomplete":

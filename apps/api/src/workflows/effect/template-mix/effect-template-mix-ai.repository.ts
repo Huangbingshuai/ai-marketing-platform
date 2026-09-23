@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 import { Inject, Injectable } from '@nestjs/common';
+import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
 import type { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
+import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import {
   EFFECT_TEMPLATE_MIX_JOB_TYPE,
   EFFECT_TEMPLATE_MIX_QUEUE,
@@ -443,6 +445,8 @@ export class EffectTemplateMixAiRepository {
     draft: unknown,
     draftContentHash: string,
     expectedDraftRevision: number,
+    templateId?: string,
+    expectedWorkspaceHash?: string,
     now = new Date(),
   ) {
     return this.prisma.$transaction(async (transaction) => {
@@ -456,6 +460,13 @@ export class EffectTemplateMixAiRepository {
         },
       });
       if (!run) return 'LEASE_CONFLICT' as const;
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "workflow_node_states"
+        WHERE "projectId" = ${projectId}::uuid
+          AND "workflowRunId" = ${run.workflowRunId}::uuid
+          AND "nodeId" = 'TEMPLATE_MIX'
+        FOR UPDATE
+      `;
       const nodeState = await transaction.workflowNodeState.findUnique({
         where: {
           projectId_workflowRunId_nodeId: {
@@ -465,14 +476,38 @@ export class EffectTemplateMixAiRepository {
           },
         },
       });
-      if (!nodeState || nodeState.revision !== expectedDraftRevision)
+      if (!nodeState) return 'DRAFT_CONFLICT' as const;
+      let nextDraft = draft;
+      let nextContentHash = draftContentHash;
+      if (expectedWorkspaceHash && templateId) {
+        const current = nodeState.state as unknown as EffectTemplateMixDraft;
+        const updated = draft as EffectTemplateMixDraft;
+        if (!Array.isArray(current?.templates) || !Array.isArray(updated?.templates))
+          return 'DRAFT_CONFLICT' as const;
+        const currentEntry = current.templates?.find((entry) => entry.id === templateId);
+        const updatedEntry = updated.templates?.find((entry) => entry.id === templateId);
+        if (
+          !currentEntry ||
+          !updatedEntry ||
+          workflowStateHash(currentEntry.workspace) !== expectedWorkspaceHash
+        )
+          return 'DRAFT_CONFLICT' as const;
+        nextDraft = {
+          ...current,
+          templates: current.templates.map((entry) =>
+            entry.id === templateId ? updatedEntry : entry,
+          ),
+        };
+        nextContentHash = workflowStateHash(nextDraft);
+      } else if (nodeState.revision !== expectedDraftRevision) {
         return 'DRAFT_CONFLICT' as const;
-      if (nodeState.contentHash !== draftContentHash) {
+      }
+      if (nodeState.contentHash !== nextContentHash) {
         await transaction.workflowNodeState.update({
           where: { id: nodeState.id },
           data: {
-            state: json(draft),
-            contentHash: draftContentHash,
+            state: json(nextDraft),
+            contentHash: nextContentHash,
             schemaVersion: 1,
             revision: { increment: 1 },
             savedAt: now,
