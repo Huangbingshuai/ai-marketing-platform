@@ -9,6 +9,7 @@ import {
 import { WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   packagingProgress,
+  packagingStageSamples,
   packagingStageDetails,
   packagingStageState,
   currentPackagingRun,
@@ -93,6 +94,11 @@ const stageStates = computed(() => Object.fromEntries(
   PACKAGING_STAGES.map((stage) => [stage, packagingStageState(run.value?.items ?? [], stage)]),
 ) as Record<PackagingStage, ReturnType<typeof packagingStageState>>);
 const stageState = (stage: PackagingStage) => stageStates.value[stage];
+const selectedStageSamples = computed(() =>
+  selectedStage.value && run.value
+    ? packagingStageSamples(run.value.items, selectedStage.value)
+    : { inputSamples: [], outputSamples: [] },
+);
 const statusLabel: Record<string, string> = {
   QUEUED: '排队中',
   RUNNING: '处理中',
@@ -630,12 +636,24 @@ onBeforeUnmount(() => {
             </div>
           </header>
           <section class="workflow-detail-block is-input">
-            <span>INPUT</span><strong>本阶段输入</strong>
+            <span>INPUT</span><strong>本阶段输入示例（最多 4 项）</strong>
             <p>{{ packagingStageDetails[selectedStage].input }}</p>
+            <ul v-if="selectedStageSamples.inputSamples.length">
+              <li v-for="(sample, index) in selectedStageSamples.inputSamples" :key="`input-${index}`">
+                {{ sample }}
+              </li>
+            </ul>
+            <p v-else class="workflow-detail-empty-samples">{{ run ? '当前阶段暂无已保存的输入样例' : '读取任务后显示实际输入样例' }}</p>
           </section>
           <section class="workflow-detail-block is-output">
-            <span>OUTPUT</span><strong>本阶段输出</strong>
+            <span>OUTPUT</span><strong>本阶段结果示例（最多 4 项）</strong>
             <p>{{ packagingStageDetails[selectedStage].output }}</p>
+            <ul v-if="selectedStageSamples.outputSamples.length">
+              <li v-for="(sample, index) in selectedStageSamples.outputSamples" :key="`output-${index}`">
+                {{ sample }}
+              </li>
+            </ul>
+            <p v-else class="workflow-detail-empty-samples">{{ run ? '当前阶段暂无已保存的结果样例' : '读取任务后显示实际结果样例' }}</p>
             <p v-if="run" role="status">{{ stageState(selectedStage).label }} · 已产出 {{ stageState(selectedStage).completed }} / {{ run.items.length }} 条</p>
             <p v-else role="status">{{ loading ? '正在读取结果…' : loadError ? '暂时无法读取结果' : '尚未生成结果' }}</p>
           </section>

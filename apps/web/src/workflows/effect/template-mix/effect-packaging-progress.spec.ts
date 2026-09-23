@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
-import { currentPackagingRun, packagingItemStageState, packagingProgress, packagingStageState } from './effect-packaging-progress';
+import { currentPackagingRun, packagingItemStageState, packagingProgress, packagingStageSamples, packagingStageState } from './effect-packaging-progress';
 import { PACKAGING_STAGES } from '@ai-marketing/contracts';
 import component from './EffectTemplateMixPackaging.vue?raw';
 import page from './EffectTemplateMixNodePage.vue?raw';
@@ -75,6 +75,53 @@ describe('packaging workflow progress', () => {
     expect(currentPackagingRun([latest, running, old])).toBe(running);
     expect(currentPackagingRun([])).toBeUndefined();
   });
+  it('shows up to four real, human-readable examples from packaging checkpoints', () => {
+    const source = {
+      slots: [{ id: 'slot-1', label: '产品展示', duration: 8 }],
+      bindings: { 'slot-1': 'material-1' },
+    };
+    const actual = {
+      name: '成片 01',
+      stale: false,
+      status: 'COMPLETED',
+      sourceVisualTimeline: source,
+      checkpoint: {
+        vision: [{ slotId: 'slot-1', start: 0, end: 8, description: '木勺将食材放入盘中' }],
+        script: [{ id: 'line-1', slotId: 'slot-1', text: '把美味轻松端上桌。', start: 0, end: 3, factIds: [] }],
+        voices: { 'line-1': { fileObjectId: 'private-id', duration: 2.4, start: 0, volume: 1 } },
+        musicBrief: '轻快温暖的纯音乐',
+        music: { fileObjectId: 'private-id', duration: 8, start: 0, volume: 0.2 },
+        captions: [{ id: 'caption-1', text: '把美味轻松端上桌。', start: 0.1, end: 2.4 }],
+      },
+    } as unknown as PackagingItem;
+    expect(packagingStageSamples([actual], 'VISION')).toEqual({
+      inputSamples: ['成片 01 · 产品展示 · 8 秒画面'],
+      outputSamples: ['成片 01 · 产品展示：木勺将食材放入盘中'],
+    });
+    expect(packagingStageSamples([actual], 'SCRIPT').outputSamples).toEqual([
+      '成片 01 · 产品展示：把美味轻松端上桌。',
+    ]);
+    expect(packagingStageSamples([actual], 'VOICE').outputSamples).toEqual([
+      '成片 01 · 产品展示 · 配音 2.4 秒',
+    ]);
+    expect(packagingStageSamples([actual], 'CAPTIONS').outputSamples).toEqual([
+      '成片 01 · 把美味轻松端上桌。 · 0.1–2.4 秒',
+    ]);
+    expect(JSON.stringify(packagingStageSamples([actual], 'VOICE'))).not.toContain('private-id');
+  });
+  it('caps examples and hides samples whose source timeline is stale', () => {
+    const slots = Array.from({ length: 7 }, (_, index) => ({ id: `slot-${index}`, label: `镜头 ${index}`, duration: 2 }));
+    const current = {
+      name: '成片样例', stale: false, status: 'RUNNING',
+      sourceVisualTimeline: { slots, bindings: Object.fromEntries(slots.map((slot) => [slot.id, slot.id])) },
+      checkpoint: { vision: slots.map((slot) => ({ slotId: slot.id, start: 0, end: 2, description: '画面内容' })) },
+    } as unknown as PackagingItem;
+    const stale = { ...current, stale: true };
+    const samples = packagingStageSamples([current, stale], 'VISION');
+    expect(samples.inputSamples).toHaveLength(4);
+    expect(samples.outputSamples).toHaveLength(4);
+    expect(samples.inputSamples.every((sample) => sample.startsWith('成片样例'))).toBe(true);
+  });
   it('shares the fill progress component and graph styling with separate actions', () => {
     expect(component).toContain('WorkflowRunProgress');
     expect(component).toContain('action-label="查看当前工作流"');
@@ -92,6 +139,9 @@ describe('packaging workflow progress', () => {
     expect(component).toContain('class="workflow-graph-canvas"');
     expect(component).toContain('class="workflow-detail-block is-input"');
     expect(component).toContain('class="workflow-detail-block is-output"');
+    expect(component).toContain('packagingStageSamples(run.value.items, selectedStage.value)');
+    expect(component).toContain('本阶段输入示例（最多 4 项）');
+    expect(component).toContain('本阶段结果示例（最多 4 项）');
     expect(component).toContain('已产出 {{ stageState(selectedStage).completed }} / {{ run.items.length }} 条');
     expect(component).not.toContain('class="packaging-run-summary"');
     expect(component).not.toContain('class="packaging-results"');

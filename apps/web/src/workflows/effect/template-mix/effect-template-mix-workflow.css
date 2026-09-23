@@ -263,6 +263,9 @@
   font-size: 9px;
   line-height: 1.65;
 }
+.workflow-detail-empty-samples {
+  color: #8a96a9;
+}
 .workflow-detail-block ul {
   display: grid;
   margin: 7px 0 0;

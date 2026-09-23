@@ -2,6 +2,90 @@ import { PACKAGING_STAGES } from '@ai-marketing/contracts';
 import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
 
 export type PackagingStage = (typeof PACKAGING_STAGES)[number];
+
+const MAX_STAGE_SAMPLES = 4;
+const sampleText = (value: string, maxLength = 140) => {
+  const text = value.replace(/\s+/g, ' ').trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+};
+
+/** Build concise, user-facing examples only from persisted packaging inputs/checkpoints. */
+export function packagingStageSamples(items: PackagingItem[], stage: PackagingStage) {
+  const inputSamples: string[] = [];
+  const outputSamples: string[] = [];
+  const append = (target: string[], item: PackagingItem, text: string) => {
+    if (!text || target.length >= MAX_STAGE_SAMPLES) return;
+    target.push(`${item.name} · ${sampleText(text)}`);
+  };
+
+  for (const item of items) {
+    if (item.stale) continue;
+    const checkpoint = item.checkpoint;
+    const slotLabel = (slotId?: string) =>
+      item.sourceVisualTimeline.slots.find((slot) => slot.id === slotId)?.label ?? '镜头';
+    const vision = checkpoint.vision ?? [];
+    const script = checkpoint.script ?? [];
+    const captions = checkpoint.captions ?? [];
+
+    switch (stage) {
+      case 'SNAPSHOT': {
+        const boundSlots = item.sourceVisualTimeline.slots.filter(
+          (slot) => item.sourceVisualTimeline.bindings[slot.id],
+        );
+        append(inputSamples, item, `画面时间轴包含 ${boundSlots.length} 个已绑定镜头`);
+        append(outputSamples, item, `已冻结 ${item.sourceVisualTimeline.slots.length} 个镜头的时间轴`);
+        break;
+      }
+      case 'VISION': {
+        const clips = item.sourceVisualTimeline.slots.filter(
+          (slot) => item.sourceVisualTimeline.bindings[slot.id],
+        );
+        for (const slot of clips) append(inputSamples, item, `${slot.label} · ${slot.duration} 秒画面`);
+        for (const result of vision) append(outputSamples, item, `${slotLabel(result.slotId)}：${result.description}`);
+        break;
+      }
+      case 'SCRIPT': {
+        for (const result of vision) append(inputSamples, item, `${slotLabel(result.slotId)}：${result.description}`);
+        for (const line of script) append(outputSamples, item, `${slotLabel(line.slotId)}：${line.text}`);
+        break;
+      }
+      case 'VOICE': {
+        for (const line of script) append(inputSamples, item, `${slotLabel(line.slotId)}：${line.text}`);
+        for (const line of script) {
+          const audio = checkpoint.voices?.[line.id];
+          if (audio) append(outputSamples, item, `${slotLabel(line.slotId)} · 配音 ${audio.duration.toFixed(1)} 秒`);
+        }
+        break;
+      }
+      case 'MUSIC': {
+        if (checkpoint.musicBrief) append(inputSamples, item, checkpoint.musicBrief);
+        else if (item.sourceVisualTimeline.slots.length) {
+          append(inputSamples, item, `按成片画面与总时长 ${item.sourceVisualTimeline.slots.reduce((sum, slot) => sum + slot.duration, 0).toFixed(1)} 秒生成配乐`);
+        }
+        if (checkpoint.music) append(outputSamples, item, `纯音乐已生成 · ${checkpoint.music.duration.toFixed(1)} 秒`);
+        break;
+      }
+      case 'CAPTIONS': {
+        for (const line of script) {
+          const audio = checkpoint.voices?.[line.id];
+          if (audio) append(inputSamples, item, `${line.text} · 配音 ${audio.duration.toFixed(1)} 秒`);
+        }
+        for (const caption of captions) append(outputSamples, item, `${caption.text} · ${caption.start.toFixed(1)}–${caption.end.toFixed(1)} 秒`);
+        break;
+      }
+      case 'READY': {
+        if (script.length) append(inputSamples, item, `${script.length} 条口播${checkpoint.music ? ' · 纯音乐已就绪' : ''} · ${captions.length} 条字幕`);
+        if (item.status === 'COMPLETED') append(outputSamples, item, '包装草稿已就绪，可试听和检查');
+        break;
+      }
+    }
+
+    if (inputSamples.length >= MAX_STAGE_SAMPLES && outputSamples.length >= MAX_STAGE_SAMPLES) break;
+  }
+
+  return { inputSamples, outputSamples };
+}
+
 export const packagingStageDetails: Record<
   PackagingStage,
   { description: string; input: string; output: string }
