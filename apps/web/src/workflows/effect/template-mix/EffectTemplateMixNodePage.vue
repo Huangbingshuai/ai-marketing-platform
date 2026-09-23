@@ -60,7 +60,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from '@lucide/vue';
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue';
 
 import {
   applyEffectTemplateMixVariant,
@@ -98,6 +98,12 @@ const props = defineProps<{
   products: EffectImportProduct[];
   projectId: string;
   workflowRunId: string;
+  previewTarget?: {
+    projectId: string;
+    workflowRunId: string;
+    templateId: string;
+    variantId: string;
+  } | null;
 }>();
 const emit = defineEmits<{ back: []; next: [] }>();
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
@@ -775,6 +781,13 @@ const pendingCount = computed(
 );
 const variantDisplayName = (_variant: EffectTemplateMixVariant, index: number): string =>
   `成片 ${String(index + 1).padStart(2, '0')}`;
+const selectedVariantDisplayName = computed(() => {
+  if (!selectedVariant.value || !workspace.value) return '尚未生成成片工程';
+  return variantDisplayName(
+    selectedVariant.value,
+    workspace.value.variants.findIndex(({ id }) => id === selectedVariant.value?.id),
+  );
+});
 const variantTemplateLabel = computed(() => workspace.value?.template.name?.trim() || '当前模板');
 const complete = computed(
   () =>
@@ -821,18 +834,18 @@ const aiStageDescriptions: Record<EffectTemplateMixAiRun['stage'], string> = {
   COMPLETED: '按模板顺序把六个片段写入当前工程的视频轨。',
 };
 const aiStageInputs: Record<EffectTemplateMixAiRun['stage'], string> = {
-  CLASSIFYING: '六槽位定义、素材编号，以及每条素材对应的原始 Prompt 正文。',
-  MATCHING: '上一阶段的六槽位评分、模板槽位时长与跨工程使用记录。',
-  SAMPLING: '服务端选出的六条不同视频素材及其精确素材版本。',
-  TRIMMING: '带时间戳的关键帧、原始 Prompt、槽位语义与模板目标时长。',
-  COMPLETED: '六条素材绑定、AI 截取起点、模板顺序与转场配置。',
+  CLASSIFYING: '实际参与比对的视频创意主线、视频时长，以及模板六个槽位的名称与目标时长。',
+  MATCHING: '每条视频对不同槽位的评分和理由，并结合成片之间的素材复用情况确定匹配。',
+  SAMPLING: '已经匹配到槽位的视频片段、片段长度，以及该槽位需要呈现的内容和时长。',
+  TRIMMING: '实际抽出的关键画面时间点、视频创意主线、槽位内容和目标片段时长。',
+  COMPLETED: '已选镜头、截取起止时间、槽位顺序与模板转场配置。',
 };
 const aiStageOutputs: Record<EffectTemplateMixAiRun['stage'], string> = {
-  CLASSIFYING: '每条素材针对六个槽位的匹配分和简短分类理由。',
-  MATCHING: '六个槽位各自唯一的素材绑定，以及低匹配补位标记。',
-  SAMPLING: '每条选中视频最多 12 张带真实时间戳的关键帧。',
-  TRIMMING: '每个槽位的截取起点与理由；结束时间由模板时长自动计算。',
-  COMPLETED: '自动铺好六个片段、可继续人工精修的时间轴工程草稿。',
+  CLASSIFYING: '各视频最适合的槽位、匹配度和简要理由。',
+  MATCHING: '最终选中的视频、目标槽位、匹配度和选择理由。',
+  SAMPLING: '实际抽取的关键画面时间点，以及这些画面如何支持最终截取选择。',
+  TRIMMING: '实际截取的时间范围和画面选择理由。',
+  COMPLETED: '已按模板顺序生成的成片镜头组合，可继续人工精修。',
 };
 const workflowRunForDisplay = computed(
   () =>
@@ -843,7 +856,7 @@ const workflowRunForDisplay = computed(
 );
 const workflowStageState = (
   stage: EffectTemplateMixAiRun['stage'],
-): 'done' | 'failed' | 'pending' | 'running' => {
+): 'done' | 'failed' | 'incomplete' | 'pending' | 'running' => {
   const run = workflowRunForDisplay.value;
   if (!run) return 'pending';
   const stageIndex = aiStageOrder.indexOf(stage);
@@ -851,7 +864,11 @@ const workflowStageState = (
   if (run.status === 'FAILED' && stageIndex === currentIndex) return 'failed';
   const detail = run.stageDetails?.[stage];
   const complete = Boolean(detail && detail.total > 0 && detail.completed >= detail.total);
-  if (run.status === 'COMPLETED' || complete) return 'done';
+  if (complete) return 'done';
+  // Do not let a terminal run hide an incomplete persisted stage (e.g. old runs whose
+  // sampling checkpoint was absent). The API repairs provable legacy sampling from trims;
+  // anything still incomplete must remain visible as a data issue, not green success.
+  if (run.status === 'COMPLETED') return 'incomplete';
   if (run.status === 'FAILED' && stageIndex < currentIndex) return 'failed';
   if ((run.status === 'QUEUED' || run.status === 'RUNNING') && stageIndex <= currentIndex)
     return 'running';
@@ -861,18 +878,27 @@ const workflowStageStatusLabel = (stage: EffectTemplateMixAiRun['stage']): strin
   ({
     done: '已完成',
     failed: '失败',
+    incomplete: '记录不完整',
     pending: '等待中',
     running: '进行中',
   })[workflowStageState(stage)];
 const workflowStageTone = (stage: EffectTemplateMixAiRun['stage']): string =>
-  ({ done: 'success', failed: 'danger', pending: 'pending', running: 'running' })[
+  ({ done: 'success', failed: 'danger', incomplete: 'danger', pending: 'pending', running: 'running' })[
     workflowStageState(stage)
   ];
 const workflowStageDetail = (stage: EffectTemplateMixAiRun['stage']) =>
   workflowRunForDisplay.value?.stageDetails?.[stage] ?? null;
 const workflowStageProgress = (stage: EffectTemplateMixAiRun['stage']): string => {
   const detail = workflowStageDetail(stage);
-  return detail && detail.total > 0 ? `${detail.completed}/${detail.total}` : '—';
+  if (!detail || detail.total <= 0) return '暂无处理记录';
+  const unit = {
+    CLASSIFYING: '已分析素材',
+    MATCHING: '完成匹配批次',
+    SAMPLING: '已抽帧视频',
+    TRIMMING: '已选截取区间',
+    COMPLETED: '已生成时间轴工程',
+  }[stage];
+  return `${unit} ${Math.min(detail.completed, detail.total)}/${detail.total}`;
 };
 const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
   notice.value = { text, kind };
@@ -1132,6 +1158,7 @@ const load = async (): Promise<void> => {
       resetWorkbenchDefaults();
       view.value = 'EDITOR';
     }
+    applyPreviewTarget();
     for (const run of running ?? []) void pollAiRun(run.id);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -2333,6 +2360,33 @@ const selectVariant = (id: string): void => {
   playhead.value = 0;
   clearTimelineHistory();
   void syncPlayerToPlayhead(false);
+};
+let lastPreviewTarget: typeof props.previewTarget = null;
+const applyPreviewTarget = (): void => {
+  const target = props.previewTarget;
+  if (
+    !target || target === lastPreviewTarget || pageState.value !== 'READY' ||
+    target.projectId !== props.projectId || target.workflowRunId !== props.workflowRunId
+  ) return;
+  lastPreviewTarget = target;
+  const entry = catalog.value.find(({ id }) => id === target.templateId);
+  if (!entry || !entry.workspace.variants.some(({ id }) => id === target.variantId)) {
+    showNotice('这条成片工程已不在当前混剪草稿中，无法预览', 'warning');
+    return;
+  }
+  activeTemplateId.value = target.templateId;
+  resetWorkbenchDefaults();
+  view.value = 'EDITOR';
+  selectVariant(target.variantId);
+  if (committedVersions[target.templateId] !== entry.workspace.editVersion)
+    showNotice('当前混剪草稿已变化，播放器展示的是最新草稿画面', 'warning');
+};
+const returnToFinalOutput = (): void => {
+  playing.value = false;
+  pauseTimelinePlayers();
+  stopPlaybackClock();
+  packagingPanel.value?.stopPlaybackAudio();
+  emit('next');
 };
 const leaveEditor = (): void => {
   playing.value = false;
@@ -3580,7 +3634,7 @@ const validateDraft = async (): Promise<void> => {
       completionKey.key,
     );
     committedVersions[activeEntry.value.id] = activeEntry.value.workspace.editVersion;
-    showNotice('全部视觉与包装已提交，正在进入成片输出');
+    showNotice('全部视觉与包装已提交，已进入成片待渲染区');
     emit('next');
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '提交失败', 'error');
@@ -3666,6 +3720,7 @@ watch(
   () => [props.projectId, props.workflowRunId],
   () => void load(),
 );
+watch(() => props.previewTarget, applyPreviewTarget);
 watch([() => previewSlot.value?.id, () => previewMaterial.value?.id], () => {
   if (!auditionMaterial.value) void syncPlayerToPlayhead(playing.value);
 });
@@ -3724,6 +3779,13 @@ onMounted(() => {
   window.addEventListener('keydown', onEditorKeydown);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   void load();
+});
+onActivated(applyPreviewTarget);
+onDeactivated(() => {
+  playing.value = false;
+  pauseTimelinePlayers();
+  stopPlaybackClock();
+  packagingPanel.value?.stopPlaybackAudio();
 });
 onBeforeUnmount(() => {
   stopPlaybackClock();
@@ -3913,7 +3975,7 @@ defineExpose({ flushPendingEdits });
             <div><strong>成片精修工作台</strong><small>修改自动保存到当前模板工程</small></div>
           </div>
           <div class="current">
-            <b>{{ selectedVariant?.name ?? '尚未生成成片工程' }}</b
+            <b>{{ selectedVariantDisplayName }}</b
             ><span
               >{{ workspace.template.name }} · 模板时长 {{ currentDuration.toFixed(1) }} 秒</span
             >
@@ -3944,6 +4006,12 @@ defineExpose({ flushPendingEdits });
             >
               <Workflow :size="14" />查看工作流
             </button>
+            <button
+              v-if="previewTarget?.projectId === projectId && previewTarget?.workflowRunId === workflowRunId"
+              class="button"
+              type="button"
+              @click="returnToFinalOutput"
+            >返回成片输出</button>
             <button class="button" @click="leaveEditor">返回模板配置</button
             ><button class="button" :disabled="mutating || !selectedVariant" @click="openOverwrite">
               更新模板配置

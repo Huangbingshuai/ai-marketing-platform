@@ -3,12 +3,16 @@ import type {
   EffectTemplateMixAiClassification,
   EffectTemplateMixSamplingCheckpoint,
   EffectTemplateMixAiTrim,
+  EffectTemplateMixSampledMaterial,
 } from '@ai-marketing/contracts';
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsObject,
   IsOptional,
   IsString,
@@ -17,6 +21,7 @@ import {
   MaxLength,
   Min,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 
 export class EffectTemplateMixWorkspaceQueryDto {
@@ -66,8 +71,20 @@ export class EffectTemplateMixWorkerClassificationDto extends EffectTemplateMixW
   @IsArray() classifications!: EffectTemplateMixAiClassification[];
 }
 
+export class EffectTemplateMixWorkerSampledMaterialDto implements EffectTemplateMixSampledMaterial {
+  @IsUUID('4') materialId!: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(12) @Type(() => Number)
+  @IsNumber({}, { each: true }) frameTimestampsSeconds!: number[];
+}
+
 export class EffectTemplateMixWorkerSamplingDto extends EffectTemplateMixWorkerProjectDto {
-  @IsArray() @IsUUID('4', { each: true }) materialIds!: EffectTemplateMixSamplingCheckpoint['materialIds'];
+  /** Current worker payload, with the actual source times of extracted frames. */
+  @IsOptional() @IsArray() @ArrayMaxSize(1000) @ValidateNested({ each: true })
+  @Type(() => EffectTemplateMixWorkerSampledMaterialDto)
+  samples?: EffectTemplateMixSamplingCheckpoint['samples'];
+  /** Legacy rolling-deploy payload; new workers must send samples instead. */
+  @IsOptional() @IsArray() @IsUUID('4', { each: true })
+  materialIds?: EffectTemplateMixSamplingCheckpoint['materialIds'];
 }
 
 export class EffectTemplateMixWorkerCompleteDto extends EffectTemplateMixWorkerProjectDto {

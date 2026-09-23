@@ -26,6 +26,7 @@ class Material(BaseModel):
     duration: float = Field(gt=0)
     promptId: str
     prompt: str
+    promptSummary: str | None = None
     artifactId: str
     artifactKey: str
     artifactRevision: int
@@ -79,8 +80,14 @@ class ClassificationCheckpoint(BaseModel):
     progress: int = Field(ge=10, le=30)
 
 
+class SampledMaterial(BaseModel):
+    materialId: str
+    frameTimestampsSeconds: list[float] = Field(min_length=1, max_length=12)
+
+
 class SamplingCheckpoint(BaseModel):
-    materialIds: list[str]
+    materialIds: list[str] = Field(default_factory=list)
+    samples: list[SampledMaterial] = Field(default_factory=list)
 
 
 class TrimCheckpoint(BaseModel):

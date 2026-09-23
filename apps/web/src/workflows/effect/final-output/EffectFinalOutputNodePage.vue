@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, onActivated, onDeactivated, onBeforeUnmount, ref, watch } from 'vue';
-import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw } from '@lucide/vue';
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Clapperboard, Download, Film, Layers, LoaderCircle, Play, RefreshCw } from '@lucide/vue';
 import type { ApiResponse, FinalOutputResolution, FinalOutputRun } from '@ai-marketing/contracts';
 import { apiUrl, requestJson } from '../../../api/http-client';
+import EffectTemplateMixThumbnail from '../template-mix/EffectTemplateMixThumbnail.vue';
 
 const props = defineProps<{ projectId: string; workflowRunId: string }>();
-defineEmits<{ back: [] }>();
-const showDemoAction = import.meta.env.DEV;
+const emit = defineEmits<{
+  back: [];
+  preview: [selection: { templateId: string; variantId: string }];
+}>();
 const OUTPUT_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const;
 const runs = ref<FinalOutputRun[]>([]),
   selectedTemplateId = ref(''),
@@ -18,7 +21,6 @@ const runs = ref<FinalOutputRun[]>([]),
   settingsByTemplate = ref(new Map<string, { resolution: FinalOutputResolution; frameRate: 24 | 25 | 30 | 50 | 60 }>());
 const loading = ref(true),
   busy = ref(false),
-  demoMode = ref(false),
   error = ref('');
 const templates = computed(() => {
   const latestByTemplate = new Map<string, FinalOutputRun>();
@@ -33,6 +35,13 @@ const run = computed(() => templateRuns.value.find((r) => r.id === selectedRunId
 const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.status));
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
 const items = computed(() => run.value?.items.slice((page.value - 1) * pageSize.value, page.value * pageSize.value) ?? []);
+const displayName = (item: FinalOutputRun['items'][number]) => {
+  const index = run.value?.items.findIndex(({ variantId }) => variantId === item.variantId) ?? -1;
+  return index < 0 ? '成片' : `成片 ${String(index + 1).padStart(2, '0')}`;
+};
+const previewItem = (variantId: string) => {
+  if (run.value) emit('preview', { templateId: run.value.templateId, variantId });
+};
 const progress = computed(() =>
   run.value?.items.length
     ? Math.floor(
@@ -56,16 +65,12 @@ const statusTone = (status: string) => {
   return 'pending';
 };
 const base = computed(() => `/projects/${props.projectId}/workflows/effect/final-output`);
-const fileUrl = (id: string) =>
-  demoMode.value && id === 'mock-video'
-    ? '/tests/manual/fixtures/effect-final-output-demo.mp4'
-    : apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
+const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
 let timer: ReturnType<typeof setTimeout> | undefined;
 let controller: AbortController | undefined;
 let generation = 0,
   mounted = true;
 async function refresh() {
-  if (demoMode.value) return;
   const current = ++generation;
   controller?.abort();
   controller = new AbortController();
@@ -104,50 +109,6 @@ async function refresh() {
 }
 async function command(action: 'retry' | 'cancel') {
   if (!run.value || busy.value) return;
-  if (demoMode.value) {
-    const targetRunId = run.value.id;
-    if (action === 'retry') {
-      runs.value = runs.value.map((currentRun) =>
-        currentRun.id === targetRunId
-          ? {
-              ...currentRun,
-              status: 'COMPLETED',
-              items: currentRun.items.map((item) => ({
-                ...item,
-                status: 'COMPLETED',
-                progress: 100,
-                fileObjectId: item.fileObjectId ?? 'mock-video',
-                errorMessage: null,
-              })),
-              counts: {
-                total: currentRun.counts.total,
-                queued: 0,
-                running: 0,
-                completed: currentRun.counts.total,
-                failed: 0,
-              },
-            }
-          : currentRun,
-      );
-    } else {
-      runs.value = runs.value.map((currentRun) => currentRun.id === targetRunId
-        ? {
-            ...currentRun,
-            status: 'CANCELLED',
-            items: currentRun.items.map((item) => item.status === 'COMPLETED'
-              ? item
-              : { ...item, status: 'CANCELLED', errorMessage: '演示已取消' }),
-            counts: {
-              ...currentRun.counts,
-              queued: 0,
-              running: 0,
-              failed: currentRun.counts.total - currentRun.counts.completed,
-            },
-          }
-        : currentRun);
-    }
-    return;
-  }
   busy.value = true;
   try {
     await requestJson(`${base.value}/${run.value.id}/${action}`, {
@@ -163,19 +124,6 @@ async function command(action: 'retry' | 'cancel') {
 }
 async function startRender() {
   if (!run.value || run.value.status !== 'PENDING_RENDER' || busy.value) return;
-  if (demoMode.value) {
-    runs.value = runs.value.map((currentRun) => currentRun.id === run.value?.id
-      ? {
-          ...currentRun,
-          status: 'RUNNING',
-          resolution: resolution.value,
-          frameRate: frameRate.value,
-          items: currentRun.items.map((item) => ({ ...item, status: 'RUNNING', progress: 8 })),
-          counts: { total: currentRun.counts.total, queued: 0, running: currentRun.counts.total, completed: 0, failed: 0 },
-        }
-      : currentRun);
-    return;
-  }
   busy.value = true;
   try {
     await requestJson(`${base.value}/${run.value.id}/render`, {
@@ -196,99 +144,9 @@ function stop() {
   controller?.abort();
   clearTimeout(timer);
 }
-function loadDemoData() {
-  if (!showDemoAction) return;
-  demoMode.value = true;
-  ++generation;
-  controller?.abort();
-  controller = undefined;
-  clearTimeout(timer);
-  const createdAt = new Date().toISOString();
-  const names = [
-    '开场产品展示',
-    '包装细节特写',
-    '使用动作演示',
-    '质地近景镜头',
-    '生活场景切换',
-    '多角度产品展示',
-    '使用前准备',
-    '镜头缓慢推进',
-    '桌面陈列画面',
-    '产品收尾镜头',
-    '创意版本 A',
-    '创意版本 B',
-  ];
-  const items: FinalOutputRun['items'] = names.map((name, index) => {
-    const status =
-      index < 6 ? 'COMPLETED' : index < 8 ? 'RUNNING' : index < 11 ? 'QUEUED' : 'FAILED';
-    return {
-      id: `demo-item-${index + 1}`,
-      variantId: `demo-variant-${index + 1}`,
-      name: `成片 ${String(index + 1).padStart(2, '0')} · ${name}`,
-      status,
-      duration: 4,
-      fileObjectId: status === 'COMPLETED' ? 'mock-video' : null,
-      assetId: null,
-      errorMessage: status === 'FAILED' ? '演示失败：可恢复，已完成项目会保留' : null,
-      progress: status === 'COMPLETED' ? 100 : status === 'RUNNING' ? 50 : 0,
-    };
-  });
-  runs.value = [
-    {
-      id: 'demo-final-output',
-      workflowRunId: props.workflowRunId,
-      templateId: 'demo-template',
-      templateName: '夏日冰饮模板',
-      resolution: '720p',
-      frameRate: 30,
-      status: 'PARTIAL',
-      createdAt,
-      items,
-      counts: { total: 12, queued: 3, running: 2, completed: 6, failed: 1 },
-    },
-    {
-      id: 'demo-final-output-pending',
-      workflowRunId: props.workflowRunId,
-      templateId: 'demo-template-pending',
-      templateName: '厨房料理模板',
-      resolution: '720p',
-      frameRate: 30,
-      status: 'PENDING_RENDER',
-      createdAt,
-      items: names.slice(0, 6).map((name, index) => ({
-        id: `demo-pending-${index + 1}`,
-        variantId: `demo-pending-variant-${index + 1}`,
-        name: `成片 ${String(index + 1).padStart(2, '0')} · ${name}`,
-        status: 'PENDING_RENDER',
-        duration: 4,
-        fileObjectId: null,
-        assetId: null,
-        errorMessage: null,
-        progress: 0,
-      })),
-      counts: { total: 6, queued: 0, running: 0, completed: 0, failed: 0 },
-    },
-  ];
-  selectedTemplateId.value = 'demo-template-pending';
-  selectedRunId.value = 'demo-final-output-pending';
-  page.value = 1;
-  loading.value = false;
-  error.value = '';
-}
-function exitDemoMode() {
-  demoMode.value = false;
-  runs.value = [];
-  selectedTemplateId.value = '';
-  selectedRunId.value = '';
-  settingsByTemplate.value = new Map();
-  page.value = 1;
-  loading.value = true;
-  void refresh();
-}
 watch(
   () => [props.projectId, props.workflowRunId],
   () => {
-    demoMode.value = false;
     runs.value = [];
     selectedTemplateId.value = '';
     selectedRunId.value = '';
@@ -349,11 +207,6 @@ onBeforeUnmount(stop);
       </button>
     </div>
 
-    <div v-if="demoMode" class="demo-notice" role="status">
-      <span><strong>演示数据</strong> · 以下内容仅供界面预览，不来自项目数据，也不会写入项目</span>
-      <button class="secondary-button" type="button" @click="exitDemoMode">退出演示</button>
-    </div>
-
     <section v-if="loading" class="page-state" role="status">
       <span class="state-icon loading-icon"><Film :size="24" /></span>
       <h3>正在读取成片输出</h3>
@@ -365,14 +218,6 @@ onBeforeUnmount(stop);
       <p>每个模板完成校验后会独立进入此处；选择模板并点击“导出成片”后，才开始渲染该模板下的全部成片。</p>
       <button class="secondary-button" type="button" @click="$emit('back')">
         <ArrowLeft :size="14" />返回模板混剪
-      </button>
-      <button
-        v-if="showDemoAction"
-        class="primary-button"
-        type="button"
-        @click="loadDemoData"
-      >
-        <Film :size="14" />加载演示数据
       </button>
     </section>
 
@@ -485,8 +330,8 @@ onBeforeUnmount(stop);
       <section class="output-workspace" aria-labelledby="output-list-title">
         <header class="workspace-heading">
           <div>
-            <h3 id="output-list-title">成片列表</h3>
-            <p>在左侧选择模板，查看并播放该模板输出的成片</p>
+            <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' ? '待渲染成片' : '成片列表' }}</h3>
+            <p>{{ run.status === 'PENDING_RENDER' ? '当前模板已完成校验，点击导出后渲染此模板的全部成片' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
           </div>
           <span class="result-count">第 {{ page }} / {{ pageCount }} 页 · 共 {{ run.counts.total }} 条</span>
         </header>
@@ -503,25 +348,42 @@ onBeforeUnmount(stop);
                 :src="fileUrl(item.fileObjectId)"
                 controls
                 preload="metadata"
-                :aria-label="`${item.name} 成片播放`"
+                :aria-label="`${displayName(item)} 成片播放`"
               />
               <template v-else>
-                <Film :size="25" />
-                <span>{{ labels[item.status] }}</span>
+                <button
+                  class="preview-trigger"
+                  :class="{ 'has-cover': Boolean(item.cover) }"
+                  type="button"
+                  :aria-label="`预览${displayName(item)}`"
+                  title="在混剪工作台预览这条成片的时间轴与包装"
+                  @click="previewItem(item.variantId)"
+                >
+                  <span v-if="item.cover" class="preview-cover">
+                    <EffectTemplateMixThumbnail
+                      :source="fileUrl(item.cover.fileObjectId)"
+                      :time="item.cover.time"
+                      :version="item.cover.contentHash"
+                      :alt="`${displayName(item)} 封面`"
+                    />
+                  </span>
+                  <Clapperboard v-else :size="25" />
+                  <span class="preview-label">预览成片</span>
+                </button>
                 <small v-if="run.status !== 'PENDING_RENDER'">{{ item.progress }}%</small>
                 <small v-else>等待导出</small>
               </template>
             </div>
             <div class="output-info">
               <div class="output-card__title">
-                <h4 :title="`${item.name}.mp4`">{{ item.name }}.mp4</h4>
+                <h4 :title="displayName(item)">{{ displayName(item) }}</h4>
                 <span class="status-pill" :class="statusTone(item.status)">
                   {{ labels[item.status] }}
                 </span>
               </div>
-              <p class="output-meta">{{ item.duration.toFixed(1) }} 秒 · H.264 / AAC · 内嵌字幕</p>
+              <p class="output-meta">{{ run.status === 'PENDING_RENDER' ? `预计 ${item.duration.toFixed(1)} 秒 · 待导出` : `${item.duration.toFixed(1)} 秒 · H.264 / AAC · 内嵌字幕` }}</p>
               <div v-if="run.status !== 'PENDING_RENDER'" class="item-progress">
-                <progress :value="item.progress" max="100" :aria-label="`${item.name} 进度`" />
+                <progress :value="item.progress" max="100" :aria-label="`${displayName(item)} 进度`" />
                 <strong>{{ item.progress }}%</strong>
               </div>
               <p v-if="item.errorMessage" class="item-error" role="status">
@@ -531,7 +393,7 @@ onBeforeUnmount(stop);
                 v-if="item.fileObjectId"
                 class="download-button"
                 :href="fileUrl(item.fileObjectId) + '?download=true'"
-                :download="`${item.name}.mp4`"
+                :download="`${displayName(item)}.mp4`"
               ><Download :size="14" />下载成片</a>
             </div>
           </article>
@@ -814,22 +676,6 @@ select:disabled {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.demo-notice {
-  display: flex;
-  margin-bottom: 14px;
-  padding: 11px 14px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #526078;
-  background: #fffaf0;
-  border: 1px solid #f0dfbd;
-  border-radius: 10px;
-  font-size: 11px;
-}
-.demo-notice strong {
-  color: #a66b16;
-}
 progress {
   width: 100%;
   height: 8px;
@@ -1043,6 +889,7 @@ progress {
   overflow-y: auto;
   padding: 12px;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-auto-rows: max-content;
   gap: 11px;
 }
 .output-card {
@@ -1066,7 +913,7 @@ progress {
   display: flex;
   width: 100%;
   aspect-ratio: 9 / 16;
-  max-height: 310px;
+  max-height: 180px;
   min-height: 155px;
   align-items: center;
   justify-content: center;
@@ -1091,6 +938,59 @@ progress {
   height: 100%;
   object-fit: contain;
   background: #111827;
+}
+.preview-trigger {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 12px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.preview-trigger.has-cover::after {
+  position: absolute;
+  inset: 40% 0 0;
+  background: linear-gradient(transparent, #11182799);
+  content: '';
+  pointer-events: none;
+}
+.preview-cover {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.preview-cover :deep(img),
+.preview-cover :deep(.thumbnail-loading) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.preview-trigger > svg,
+.preview-label {
+  position: relative;
+  z-index: 1;
+}
+.preview-trigger.has-cover .preview-label {
+  align-self: flex-end;
+  padding: 5px 8px;
+  background: #111827aa;
+  border-radius: 7px;
+}
+.preview-trigger:hover,
+.preview-trigger:focus-visible {
+  background: #ffffff24;
+  outline: 2px solid #ffffffaa;
+  outline-offset: 2px;
 }
 .output-preview small {
   position: absolute;
@@ -1355,10 +1255,6 @@ progress {
   .notice {
     align-items: flex-start;
     flex-wrap: wrap;
-  }
-  .demo-notice {
-    align-items: flex-start;
-    flex-direction: column;
   }
   .notice .secondary-button {
     margin-left: 25px;

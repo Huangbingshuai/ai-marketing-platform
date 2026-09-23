@@ -144,7 +144,16 @@ export type EffectTemplateMixAiStageDetail = {
   inputSamples: string[];
   outputSamples: string[];
 };
-export type EffectTemplateMixSamplingCheckpoint = { materialIds: string[] };
+export type EffectTemplateMixSampledMaterial = {
+  materialId: string;
+  /** Actual source-video positions successfully decoded as preview keyframes, in seconds. */
+  frameTimestampsSeconds: number[];
+};
+export type EffectTemplateMixSamplingCheckpoint = {
+  samples?: EffectTemplateMixSampledMaterial[];
+  /** Legacy worker payload retained for rolling deployment compatibility. */
+  materialIds?: string[];
+};
 export type EffectTemplateMixAiRun = {
   id: string;
   templateId: string;

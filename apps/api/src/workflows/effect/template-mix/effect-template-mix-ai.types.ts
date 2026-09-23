@@ -40,6 +40,8 @@ export type EffectTemplateMixAiSnapshot = {
     duration: number;
     promptId: string;
     prompt: string;
+    /** User-facing creative core, distinct from the private full Prompt body. */
+    promptSummary?: string;
     artifactId: string;
     artifactKey: string;
     artifactRevision: number;

@@ -1,13 +1,27 @@
 import type {
   PackagingCheckpoint,
   PackagingSnapshot,
-  PackagingStatus,
 } from './effect-template-mix-packaging';
+export const FINAL_OUTPUT_RESOLUTIONS = ['480p', '720p', '1080p', '2K', '4K'] as const;
+export type FinalOutputResolution = (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
+
+export type FinalOutputStatus =
+  | 'PENDING_RENDER'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'PARTIAL'
+  | 'FAILED'
+  | 'CANCELLED';
 
 export type CompleteEffectPackagingRequest = {
   workflowRunId: string;
   expectedRevision: number;
   idempotencyKey: string;
+};
+export type StartFinalOutputRequest = {
+  resolution: FinalOutputResolution;
+  frameRate: 24 | 25 | 30 | 50 | 60;
 };
 export type FinalOutputDependency = {
   artifactId: string;
@@ -20,12 +34,16 @@ export type FinalOutputSnapshot = {
   dependencies: FinalOutputDependency[];
   aspectRatio: string;
   originalVolume: number;
+  resolution: FinalOutputResolution;
+  frameRate: 24 | 25 | 30 | 50 | 60;
 };
 export type FinalOutputItem = {
   id: string;
   variantId: string;
   name: string;
-  status: PackagingStatus;
+  /** First frame source from the frozen timeline; used only as a preview cover. */
+  cover?: { fileObjectId: string; time: number; contentHash: string } | null;
+  status: FinalOutputStatus;
   duration: number;
   fileObjectId: string | null;
   assetId: string | null;
@@ -36,7 +54,10 @@ export type FinalOutputRun = {
   id: string;
   workflowRunId: string;
   templateId: string;
-  status: PackagingStatus;
+  templateName: string;
+  resolution: FinalOutputResolution;
+  frameRate: 24 | 25 | 30 | 50 | 60;
+  status: FinalOutputStatus;
   createdAt: string;
   items: FinalOutputItem[];
   counts: { total: number; queued: number; running: number; completed: number; failed: number };

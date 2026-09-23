@@ -77,7 +77,7 @@ function harness(count = 1) {
     projectId: 'p',
     templateId: 't',
     workflowRunId: 'w',
-    status: 'QUEUED',
+    status: 'PENDING_RENDER',
     createdAt: new Date(),
     items: [] as unknown[],
   };
@@ -93,13 +93,21 @@ function harness(count = 1) {
       findUnique: vi.fn().mockResolvedValue(null),
       findFirst: vi.fn().mockResolvedValue(outputRun),
       create: vi.fn().mockImplementation(({ data }) => {
+        outputRun.status = data.status;
         outputRun.items = data.items.create;
         return { id: 'out' };
       }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      update: vi.fn(),
+      update: vi.fn().mockImplementation(({ data }) => Object.assign(outputRun, data)),
     },
-    effectFinalOutputItem: { updateMany: vi.fn() },
+    effectFinalOutputItem: {
+      updateMany: vi.fn(),
+      update: vi.fn().mockImplementation(({ where, data }) => {
+        const item = outputRun.items.find((entry) => (entry as { id: string }).id === where.id) as Record<string, unknown> | undefined;
+        if (item) Object.assign(item, data);
+        return data;
+      }),
+    },
     jobOutbox: { upsert: vi.fn() },
     workflowRun: { updateMany: vi.fn() },
   };
@@ -136,15 +144,18 @@ const request = { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'key'
 
 describe('atomic full packaging completion', () => {
   it.each([1, 10, 100])(
-    'commits all %i visuals and packages with one output/outbox',
+    'commits all %i visuals and packages as an isolated pending template output',
     async (count) => {
       const { service, db, working, outputRun } = harness(count);
       await service.complete('p', 't', request);
       expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalledTimes(count + 1);
       expect(db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
-      expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+      expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+      expect(outputRun.status).toBe('PENDING_RENDER');
       expect(outputRun.items).toHaveLength(count);
+      expect((outputRun.items[0] as { status: string }).status).toBe('PENDING_RENDER');
       const snapshot = (outputRun.items[0] as { snapshot: FinalOutputSnapshot }).snapshot;
+      expect(snapshot).toMatchObject({ resolution: '720p', frameRate: 30 });
       expect(snapshot.dependencies).toContainEqual(
         expect.objectContaining({ artifactId: 'timeline-project:t:v0', revision: 2 }),
       );
@@ -221,6 +232,22 @@ describe('atomic full packaging completion', () => {
     const { service, db } = harness();
     db.effectFinalOutputRun.findUnique.mockResolvedValue({ id: 'out', requestHash: 'other' });
     await expect(service.complete('p', 't', request)).rejects.toThrow('幂等');
+  });
+  it('freezes resolution and frame rate and enqueues only after explicit export', async () => {
+    const { service, db, outputRun } = harness();
+    await service.complete('p', 't', request);
+    await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
+    expect(db.effectFinalOutputRun.update).toHaveBeenCalledWith({
+      where: { id: 'out' }, data: { status: 'QUEUED' },
+    });
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'QUEUED', snapshot: expect.objectContaining({ resolution: '1080p', frameRate: 50 }) }),
+    }));
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    expect(outputRun.status).toBe('QUEUED');
+    await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    await expect(service.start('p', 'out', { resolution: '480p', frameRate: 24 })).rejects.toThrow('不能修改');
   });
   it('old attempt tokens cannot renew or write progress', async () => {
     const { service, db } = harness();

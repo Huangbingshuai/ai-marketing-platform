@@ -121,11 +121,16 @@ async def encode(args: list[str], cwd: Path) -> None:
         '-filter_complex_threads', '1', '-filter_threads', '1', *args], cwd=cwd)
 
 
-def output_size(ratio: str) -> tuple[int, int]:
-    sizes = {'9:16': (720, 1280), '16:9': (1280, 720), '3:4': (720, 960), '4:3': (960, 720), '1:1': (720, 720), '21:9': (1260, 540)}
-    if ratio not in sizes:
+def output_size(ratio: str, resolution: str = '720p') -> tuple[int, int]:
+    if ratio not in {'9:16', '16:9', '3:4', '4:3', '1:1', '21:9'}:
         raise PackagingError('不支持的工程画幅，请检查已确认渲染配置')
-    return sizes[ratio]
+    short_edge = {'480p': 480, '720p': 720, '1080p': 1080, '2K': 1440, '4K': 2160}.get(resolution)
+    if short_edge is None:
+        raise PackagingError('不支持的输出分辨率')
+    first, second = (int(part) for part in ratio.split(':'))
+    if first >= second:
+        return round(short_edge * first / second / 2) * 2, short_edge
+    return short_edge, round(short_edge * second / first / 2) * 2
 
 
 def ass_time(value: float) -> str:
@@ -209,7 +214,11 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
                  progress: Callable[[int], Awaitable[None]]) -> Path:
     timeline, cp = snapshot['timeline'], snapshot['packaging']
     duration = float(timeline['duration'])
-    width, height = output_size(snapshot['aspectRatio'])
+    resolution = snapshot.get('resolution', '720p')
+    frame_rate = int(snapshot.get('frameRate', 30))
+    if frame_rate not in {24, 25, 30, 50, 60}:
+        raise PackagingError('不支持的输出帧率')
+    width, height = output_size(snapshot['aspectRatio'], resolution)
     intervals = visible_intervals(timeline)
     segments: list[Path] = []
     media = {file_id: await probe(path) for file_id, path in files.items()}
@@ -220,21 +229,21 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         if clip:
             info = media[clip['fileObjectId']]
             offset = float(clip['offset'] + start - clip['start'])
-            validate_video_interval(info, offset, end - start, 30)
+            validate_video_interval(info, offset, end - start, frame_rate)
             args += ['-ss', str(offset), '-i', str(files[clip['fileObjectId']])]
             has_audio = not clip.get('originalAudioDetached', False) and any(
                 s['codec_type'] == 'audio' for s in info['streams'])
         else:
-            args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r=30']
+            args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r={frame_rate}']
             has_audio = False
         if not has_audio:
             args += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
         args += ['-map', '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0', '-t', str(end - start),
-            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30',
+            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={frame_rate}',
             '-af', 'aresample=48000,apad', '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
             '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-threads', '1', '-shortest', str(target)]
         await encode(args, directory)
-        validate_rendered_video_duration(await probe(target), end - start, 30)
+        validate_rendered_video_duration(await probe(target), end - start, frame_rate)
         segments.append(target)
         await progress(10 + round(35 * (index + 1) / len(intervals)))
     # Center transitions on the cut, as in the editor. Padding supplies handles
@@ -249,12 +258,12 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         previous_clip = intervals[index - 1][2]
         transition = clip.get('transition', '硬切') if previous_clip and clip and clip['start'] == start else '硬切'
         length = min(float(clip.get('transitionDuration', 0)) if clip else 0, end - start, intervals[index - 1][1] - intervals[index - 1][0], 5)
-        if transition != '硬切' and length >= 1 / 30:
+        if transition != '硬切' and length >= 1 / frame_rate:
             if transition not in TRANSITIONS:
                 raise PackagingError('不支持的转场类型')
             # FFmpeg 7 tpad/concat can clear frame_rate (1/0); xfade requires CFR.
-            filters += [f'[{current}]fps=30,tpad=stop_mode=clone:stop_duration={length / 2},fps=30,settb=AVTB[pad{index}]',
-                f'[v{index}]fps=30,tpad=start_mode=clone:start_duration={length / 2},fps=30,settb=AVTB[incoming{index}]',
+            filters += [f'[{current}]fps={frame_rate},tpad=stop_mode=clone:stop_duration={length / 2},fps={frame_rate},settb=AVTB[pad{index}]',
+                f'[v{index}]fps={frame_rate},tpad=start_mode=clone:start_duration={length / 2},fps={frame_rate},settb=AVTB[incoming{index}]',
                 f'[pad{index}][incoming{index}]xfade=transition={TRANSITIONS[transition]}:duration={length}:offset={start - length / 2}[join{index}]']
         else:
             filters += [f'[{current}][v{index}]concat=n=2:v=1:a=0[join{index}]']
@@ -345,8 +354,13 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     result = await probe(output)
     if abs(float(result['format']['duration']) - duration) > .1:
         raise PackagingError('最终视频时长与时间轴不一致')
-    if any(abs(float(s.get('duration', 0)) - duration) > .1 for s in result['streams'] if s.get('codec_type') == 'video'):
+    video_streams = [s for s in result['streams'] if s.get('codec_type') == 'video']
+    if any(abs(float(s.get('duration', 0)) - duration) > .1 for s in video_streams):
         raise PackagingError('画面轨道提前结束，禁止用音频时长伪装完整成片')
+    if any(s.get('width') != width or s.get('height') != height for s in video_streams):
+        raise PackagingError('最终视频分辨率与所选设置不一致')
+    if any(Fraction(str(s.get('avg_frame_rate', '0/1'))) != frame_rate for s in video_streams):
+        raise PackagingError('最终视频帧率与所选设置不一致')
     if not any(s.get('codec_name') == 'h264' for s in result['streams']) or not any(s.get('codec_name') == 'aac' for s in result['streams']):
         raise PackagingError('最终视频编码校验失败')
     await progress(95)
@@ -354,11 +368,13 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
 
 
 class FinalOutputHandler:
-    def __init__(self, api: InternalApi, max_video_bytes: int) -> None:
+    def __init__(self, api: InternalApi, max_video_bytes: int, max_concurrency: int = 2) -> None:
         self.api, self.max_video_bytes = api, max_video_bytes
+        self.max_concurrency = max_concurrency
 
     async def handle(self, message: AbstractIncomingMessage, request: dict[str, Any]) -> None:
         tasks: list[asyncio.Task[None]] = []
+        claimed = False
         try:
             project_id, run_id = str(UUID(request['projectId'])), str(UUID(request['runId']))
             root = f'{self.api.ROOT}/final-output-runs/{run_id}'
@@ -367,6 +383,10 @@ class FinalOutputHandler:
                 await message.ack()
                 return
             headers = {'x-attempt-token': claim['attemptToken']}
+            # A 100-item batch can outlive RabbitMQ's delivery acknowledgement window.
+            # The persisted API lease and recovery scanner own redelivery after this point.
+            await message.ack()
+            claimed = True
             async def heartbeat() -> None:
                 while True:
                     await self.api.request('PUT', f'{root}/heartbeat', headers=headers, json={'projectId': project_id})
@@ -378,7 +398,10 @@ class FinalOutputHandler:
                 try:
                     await progress(1)
                     snapshot = item['snapshot']
-                    ids = {c['fileObjectId'] for c in snapshot['timeline']['clips']} | {v['fileObjectId'] for v in snapshot['packaging']['voices'].values()} | {snapshot['packaging']['music']['fileObjectId']}
+                    ids = ({c['fileObjectId'] for c in snapshot['timeline']['clips']}
+                        | {a['fileObjectId'] for a in snapshot['timeline'].get('detachedAudios', [])}
+                        | {v['fileObjectId'] for v in snapshot['packaging']['voices'].values()}
+                        | {snapshot['packaging']['music']['fileObjectId']})
                     with tempfile.TemporaryDirectory(prefix='effect-output-') as temporary:
                         directory = Path(temporary)
                         paths: dict[str, Path] = {}
@@ -414,18 +437,21 @@ class FinalOutputHandler:
                         except TimeoutError:
                             await self.api.request('PUT', f"{root}/items/{item['id']}/progress", headers=headers,
                                 json={'projectId': project_id, 'progress': 0, 'errorMessage': '单条成片输出超过 40 分钟，已停止并保留其他成功结果'})
+                # 4K jobs need much more decoded-frame memory than smaller exports.
+                concurrency = min(self.max_concurrency,
+                    1 if any(i['snapshot'].get('resolution') == '4K' for i in claim['items']) else self.max_concurrency)
                 async with asyncio.TaskGroup() as group:
-                    for _ in range(2):
+                    for _ in range(concurrency):
                         group.create_task(consume())
                 await self.api.request('POST', f'{root}/finish', headers=headers, json={'projectId': project_id})
             tasks = [asyncio.create_task(heartbeat()), asyncio.create_task(work())]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-            await message.ack()
         except Exception as exc:
             LOGGER.warning('final output interrupted type=%s', type(exc).__name__)
-            await message.nack(requeue=not message.redelivered)
+            if not claimed:
+                await message.nack(requeue=not message.redelivered)
         finally:
             for task in tasks:
                 task.cancel()

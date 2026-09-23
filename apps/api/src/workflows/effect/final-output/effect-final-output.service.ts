@@ -14,7 +14,9 @@ import type {
   FinalOutputSnapshot,
   PackagingCheckpoint,
   PackagingSnapshot,
+  StartFinalOutputRequest,
 } from '@ai-marketing/contracts';
+import { FINAL_OUTPUT_RESOLUTIONS } from '@ai-marketing/contracts';
 import { PrismaService } from '../../../database/prisma.service';
 import type { Prisma } from '../../../generated/prisma/client';
 import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
@@ -195,6 +197,7 @@ export class EffectFinalOutputService {
             rows.flatMap((r) => [
               ...audioIds(r.checkpoint),
               ...r.snapshot.clips.map((c) => c.fileObjectId),
+              ...(r.snapshot.detachedAudios ?? []).map((a) => a.fileObjectId),
             ]),
           ),
         ];
@@ -297,10 +300,13 @@ export class EffectFinalOutputService {
               workspace.materials.find((m) => m.fileObjectId === firstClip.fileObjectId)?.ratio ??
               '9:16',
             originalVolume: 0.15,
+            resolution: '720p',
+            frameRate: 30,
           };
           outputRows.push({
             variantId: row.item.variantId,
             name: row.item.name,
+            status: 'PENDING_RENDER',
             snapshot: json(snapshot),
           });
         }
@@ -312,10 +318,10 @@ export class EffectFinalOutputService {
             idempotencyKey: body.idempotencyKey,
             requestHash,
             inputHash,
+            status: 'PENDING_RENDER',
             items: { create: outputRows },
           },
         });
-        await this.enqueue(tx, projectId, run.id);
         await tx.workflowRun.updateMany({
           where: { id: body.workflowRunId, projectId },
           data: { currentNodeId: 'FINAL_OUTPUT' },
@@ -327,12 +333,53 @@ export class EffectFinalOutputService {
     return this.get(projectId, runId);
   }
 
-  async get(projectId: string, id: string): Promise<FinalOutputRun> {
-    const run = await this.db.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
-    if (!run) throw new NotFoundException('成片输出任务不存在');
+  async start(projectId: string, id: string, settings: StartFinalOutputRequest) {
+    if (
+      !FINAL_OUTPUT_RESOLUTIONS.includes(settings.resolution) ||
+      !([24, 25, 30, 50, 60] as const).includes(settings.frameRate)
+    )
+      throw new BadRequestException('分辨率或帧率设置无效');
+    await this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+      const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
+      if (!run) throw new NotFoundException('成片输出任务不存在');
+      if (run.status !== 'PENDING_RENDER') {
+        const sameSettings = run.items.every((item) => {
+          const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+          return snapshot.resolution === settings.resolution && snapshot.frameRate === settings.frameRate;
+        });
+        if (sameSettings && ['QUEUED', 'RUNNING', 'PARTIAL', 'FAILED', 'CANCELLED', 'COMPLETED'].includes(run.status))
+          return;
+        throw new ConflictException('该模板已开始渲染，不能修改本批输出规格');
+      }
+      for (const item of run.items) {
+        const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+        await tx.effectFinalOutputItem.update({
+          where: { id: item.id },
+          data: {
+            status: 'QUEUED',
+            progress: 0,
+            errorMessage: null,
+            snapshot: json({ ...snapshot, resolution: settings.resolution, frameRate: settings.frameRate }),
+          },
+        });
+      }
+      await tx.effectFinalOutputRun.update({ where: { id }, data: { status: 'QUEUED' } });
+      await this.enqueue(tx, projectId, id);
+    });
+    return this.get(projectId, id);
+  }
+
+  private toDto(
+    run: Prisma.EffectFinalOutputRunGetPayload<{ include: typeof include }>,
+    templateName?: string,
+  ): FinalOutputRun {
     return {
-      id,
+      id: run.id,
       templateId: run.templateId,
+      templateName: templateName || `模板 ${run.templateId.slice(0, 8)}`,
+      resolution: (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.resolution ?? '720p',
+      frameRate: (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.frameRate ?? 30,
       workflowRunId: run.workflowRunId,
       status: run.status as FinalOutputRun['status'],
       createdAt: run.createdAt.toISOString(),
@@ -341,33 +388,57 @@ export class EffectFinalOutputService {
           (a, b) =>
             a.name.localeCompare(b.name, 'zh-CN', { numeric: true }) || a.id.localeCompare(b.id),
         )
-        .map((i) => ({
-          id: i.id,
-          variantId: i.variantId,
-          name: i.name,
-          status: i.status as FinalOutputRun['status'],
-          duration: (i.snapshot as unknown as FinalOutputSnapshot).timeline.duration,
-          progress: i.progress,
-          errorMessage: i.errorMessage,
-          fileObjectId: i.fileObjectId,
-          assetId: i.assetId,
-        })),
+        .map((i) => {
+          const snapshot = i.snapshot as unknown as FinalOutputSnapshot;
+          const firstClip = [...snapshot.timeline.clips].sort((a, b) => a.start - b.start)[0];
+          return {
+            id: i.id,
+            variantId: i.variantId,
+            name: i.name,
+            cover: firstClip ? {
+              fileObjectId: firstClip.fileObjectId,
+              time: firstClip.offset + Math.min(0.12, firstClip.duration / 2),
+              contentHash: firstClip.contentHash,
+            } : null,
+            status: i.status as FinalOutputRun['status'],
+            duration: snapshot.timeline.duration,
+            progress: i.progress,
+            errorMessage: i.errorMessage,
+            fileObjectId: i.fileObjectId,
+            assetId: i.assetId,
+          };
+        }),
       counts: {
         total: run.items.length,
-        queued: run.items.filter((i) => i.status === 'QUEUED').length,
+        queued: run.items.filter((i) => ['PENDING_RENDER', 'QUEUED'].includes(i.status)).length,
         running: run.items.filter((i) => i.status === 'RUNNING').length,
         completed: run.items.filter((i) => i.status === 'COMPLETED').length,
         failed: run.items.filter((i) => ['FAILED', 'CANCELLED'].includes(i.status)).length,
       },
     };
   }
+
+  async get(projectId: string, id: string): Promise<FinalOutputRun> {
+    const run = await this.db.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
+    if (!run) throw new NotFoundException('成片输出任务不存在');
+    const workspace = await this.mix.workspace(projectId, run.workflowRunId);
+    const templateName = workspace.draft?.templates.find((entry) => entry.id === run.templateId)
+      ?.workspace.template.name;
+    return this.toDto(run, templateName);
+  }
   async list(projectId: string, workflowRunId: string) {
     const runs = await this.db.effectFinalOutputRun.findMany({
       where: { projectId, workflowRunId },
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take: 100,
+      include,
     });
-    return Promise.all(runs.map((r) => this.get(projectId, r.id)));
+    if (!runs.length) return [];
+    const workspace = await this.mix.workspace(projectId, workflowRunId);
+    const templateNames = new Map(
+      workspace.draft?.templates.map((entry) => [entry.id, entry.workspace.template.name]) ?? [],
+    );
+    return runs.map((run) => this.toDto(run, templateNames.get(run.templateId)));
   }
   async claim(projectId: string, id: string) {
     return this.db.$transaction(async (tx) => {
@@ -459,6 +530,7 @@ export class EffectFinalOutputService {
     const ids = [
       ...new Set([
         ...snapshot.timeline.clips.map((c) => c.fileObjectId),
+        ...(snapshot.timeline.detachedAudios ?? []).map((a) => a.fileObjectId),
         ...audioIds(snapshot.packaging),
       ]),
     ];
@@ -485,6 +557,7 @@ export class EffectFinalOutputService {
     if (
       ![
         ...snapshot.timeline.clips.map((c) => c.fileObjectId),
+        ...(snapshot.timeline.detachedAudios ?? []).map((a) => a.fileObjectId),
         ...audioIds(snapshot.packaging),
       ].includes(fileId)
     )

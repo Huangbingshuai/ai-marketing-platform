@@ -118,3 +118,46 @@ describe('EffectTemplateMixAiRepository.completeWithDraft', () => {
     expect(transaction.workflowNodeState.update).not.toHaveBeenCalled();
   });
 });
+
+describe('EffectTemplateMixAiRepository.saveSamplingCheckpoint', () => {
+  it('merges per-video timestamps while preserving prior legacy checkpoints', async () => {
+    const now = new Date('2026-09-23T04:00:00.000Z');
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      effectTemplateMixAiRun: {
+        findFirst: vi.fn().mockResolvedValue({
+          selectionResult: [{ materialId: 'legacy-video' }, { materialId: 'new-video' }],
+          samplingResult: ['legacy-video'],
+        }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+    };
+    const prisma = {
+      $transaction: (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction),
+    };
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+
+    await expect(
+      repository.saveSamplingCheckpoint(
+        'project',
+        'run',
+        'attempt',
+        [{ materialId: 'new-video', frameTimestampsSeconds: [0.5, 2.25] }],
+        now,
+      ),
+    ).resolves.toEqual({
+      kind: 'SAVED',
+      materialIds: ['legacy-video', 'new-video'],
+      samples: [{ materialId: 'new-video', frameTimestampsSeconds: [0.5, 2.25] }],
+    });
+    expect(transaction.effectTemplateMixAiRun.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          samplingResult: ['legacy-video', { materialId: 'new-video', frameTimestampsSeconds: [0.5, 2.25] }],
+          heartbeatAt: now,
+          leaseExpiresAt: expect.any(Date),
+        },
+      }),
+    );
+  });
+});

@@ -43,6 +43,7 @@ class Settings(BaseSettings):
         le=4,
     )
     max_video_bytes: int = Field(default=512 * 1024 * 1024, alias="TEMPLATE_MIX_MAX_VIDEO_BYTES", ge=1)
+    final_output_max_concurrency: int = Field(default=2, alias="FINAL_OUTPUT_MAX_CONCURRENCY", ge=1, le=4)
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     tts_api_key: SecretStr = Field(default=SecretStr(''), alias='VOLC_TTS_API_KEY')
     tts_speaker: str = Field(default='', alias='VOLC_TTS_SPEAKER')

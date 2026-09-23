@@ -6,6 +6,7 @@ describe('WorkflowRunProgress', () => {
   it('provides one accessible and reusable workflow progress layout', () => {
     expect(componentSource).toContain('role="progressbar"');
     expect(componentSource).toContain(':aria-valuenow="normalizedProgress"');
+    expect(componentSource).toContain('{{ normalizedProgress }}%');
     expect(componentSource).toContain("actionLabel: '查看节点进度'");
     expect(componentSource).toContain("emit('showDetails', $event)");
     expect(componentSource).toContain('Math.min(100, Math.max(0, props.progress))');

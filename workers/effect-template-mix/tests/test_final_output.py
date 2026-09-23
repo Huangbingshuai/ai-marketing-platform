@@ -1,14 +1,26 @@
 import array
 import asyncio
+import math
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 import pytest
 from effect_template_mix import final_output
 from effect_template_mix.final_output import captions_ass, command, encode, probe, render, FinalOutputHandler
-from effect_template_mix.api import InternalApi
+from effect_template_mix.api import ApiError, InternalApi
 from effect_template_mix.packaging_provider import PackagingError
+
+
+@pytest.mark.parametrize(('ratio', 'resolution', 'expected'), [
+    ('9:16', '480p', (480, 854)), ('16:9', '720p', (1280, 720)),
+    ('4:3', '1080p', (1440, 1080)), ('16:9', '2K', (2560, 1440)),
+    ('16:9', '4K', (3840, 2160)), ('9:16', '2K', (1440, 2560)),
+    ('1:1', '480p', (480, 480)),
+])
+def test_output_resolution_preserves_aspect_ratio(ratio: str, resolution: str, expected: tuple[int, int]) -> None:
+    assert final_output.output_size(ratio, resolution) == expected
 
 
 def test_caption_escaping_and_bounds() -> None:
@@ -107,7 +119,7 @@ async def test_audio_led_container_cannot_hide_a_short_video_track(tmp_path: Pat
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
 @pytest.mark.parametrize('transition', ['硬切', *final_output.TRANSITIONS, '六镜头混合'])
 async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_path: Path, monkeypatch: Any, transition: str) -> None:
-    monkeypatch.setattr(final_output, 'output_size', lambda _: (160, 120))
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
     async def diagnostic_command(program: str, args: list[str], timeout: float = 900, cwd: Path | None = None) -> bytes:
         try:
             return await command(program, args, timeout, cwd)
@@ -120,7 +132,7 @@ async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_
     monkeypatch.setattr(final_output, 'command', diagnostic_command)
     a, b, voice, music = [tmp_path / name for name in ('a.mp4', 'b.mp4', 'voice.wav', 'music.wav')]
     await encode(['-f', 'lavfi', '-i', 'color=red:s=160x120:r=30:d=2', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', str(a)], tmp_path)
-    await encode(['-f', 'lavfi', '-i', 'color=blue:s=160x120:r=30:d=2', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(b)], tmp_path)
+    await encode(['-f', 'lavfi', '-i', 'testsrc2=s=160x120:r=30:d=2', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(b)], tmp_path)
     for target, length, frequency in [(voice, .5, 440), (music, 4, 110)]:
         await encode(['-f', 'lavfi', '-i', f'sine=frequency={frequency}:duration={length}', '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', str(target)], tmp_path)
     clips = [{'fileObjectId': 'a', 'start': 0, 'duration': 2, 'offset': 0, 'lane': 0, 'transition': '硬切', 'transitionDuration': 0},
@@ -131,6 +143,7 @@ async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_
                  for i, kind in enumerate(['硬切', '硬切', '叠化', '左滑', '硬切', '闪白'])]
     duration = len(clips) * 2
     snapshot = {'timeline': {'duration': duration, 'clips': clips}, 'aspectRatio': '4:3', 'originalVolume': .15,
+        'resolution': '480p', 'frameRate': 25,
         'packaging': {'voices': {'line': {'fileObjectId': 'voice', 'start': .3, 'duration': .5, 'volume': 1}},
             'music': {'fileObjectId': 'music', 'volume': .12}, 'captions': [{'text': '本地测试字幕', 'start': .3, 'end': .8}]}}
     progress = AsyncMock()
@@ -138,12 +151,101 @@ async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_
     metadata = await probe(result)
     assert abs(float(metadata['format']['duration']) - duration) < .1
     assert {s['codec_name'] for s in metadata['streams']} == {'h264', 'aac'}
+    assert metadata['streams'][0]['r_frame_rate'] == '25/1'
     pcm = await command('ffmpeg', ['-v', 'error', '-i', str(result), '-ss', '0.35', '-t', '0.2', '-vn', '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'])
     samples = array.array('h', pcm)
     assert max(abs(x) for x in samples) > 100
     frame = await command('ffmpeg', ['-v', 'error', '-ss', str(duration - .1), '-i', str(result), '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])
-    assert len(frame) == 3 and frame[2] > 150 and frame[0] < 50  # Last real blue frame, not black.
+    earlier_tail_frame = await command('ffmpeg', ['-v', 'error', '-ss', str(duration - .6), '-i', str(result), '-frames:v', '1', '-vf', 'scale=16:16', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])
+    latest_tail_frame = await command('ffmpeg', ['-v', 'error', '-ss', str(duration - .1), '-i', str(result), '-frames:v', '1', '-vf', 'scale=16:16', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])
+    assert len(frame) == 3  # A real encoded tail frame is present.
+    assert earlier_tail_frame != latest_tail_frame  # The last clip keeps moving through the end.
     assert progress.call_args.args == (95,)
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+@pytest.mark.parametrize('frame_rate', [24, 60])
+async def test_confirmed_six_slot_package_renders_complete_timeline(
+    tmp_path: Path, monkeypatch: Any, frame_rate: int,
+) -> None:
+    """Exercise the actual six-slot shape, including per-slot voice, captions and detached Foley."""
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    files: dict[str, Path] = {}
+    clips = []
+    voices = {}
+    captions = []
+    script = []
+    transitions = ['硬切', '叠化', '左滑', '硬切', '闪白', '圆形展开']
+    colors = ['red', 'green', 'blue', 'yellow', 'magenta', 'cyan']
+    for index in range(6):
+        clip_id, voice_id, line_id = f'clip-{index}', f'voice-{index}', f'line-{index}'
+        clip_path = tmp_path / f'{clip_id}.mp4'
+        await encode(['-f', 'lavfi', '-i', f'color=c={colors[index]}:s=160x120:r=30:d=5',
+            '-f', 'lavfi', '-i', f'sine=frequency={220 + index * 80}:duration=5',
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', str(clip_path)], tmp_path)
+        files[clip_id] = clip_path
+        voice_path = tmp_path / f'{voice_id}.wav'
+        await encode(['-f', 'lavfi', '-i', 'sine=frequency=700:duration=1',
+            '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', str(voice_path)], tmp_path)
+        files[voice_id] = voice_path
+        start = index * 4
+        clips.append({'slotId': f'slot-{index}', 'fileObjectId': clip_id, 'start': start,
+            'duration': 4, 'offset': .25, 'lane': 0, 'transition': transitions[index],
+            'transitionDuration': 0 if transitions[index] == '硬切' else 1,
+            'originalAudioDetached': index == 2})
+        script.append({'id': line_id, 'slotId': f'slot-{index}', 'text': '商品，真好',
+            'start': start, 'end': start + 4, 'factIds': ['fact']})
+        voices[line_id] = {'fileObjectId': voice_id, 'start': start, 'duration': 1,
+            'segmentFrames': [12000, 12000], 'volume': 1}
+        captions.extend([{'id': f'{line_id}-0', 'voiceLineId': line_id, 'segmentIndex': 0,
+            'segmentCount': 2, 'text': '商品', 'start': start, 'end': start + .5},
+            {'id': f'{line_id}-1', 'voiceLineId': line_id, 'segmentIndex': 1,
+            'segmentCount': 2, 'text': '真好', 'start': start + .5, 'end': start + 1}])
+    music_path = tmp_path / 'music.wav'
+    await encode(['-f', 'lavfi', '-i', 'sine=frequency=110:duration=24', '-ac', '1',
+        '-ar', '24000', '-c:a', 'pcm_s16le', str(music_path)], tmp_path)
+    files['music'] = music_path
+    variant = {'id': 'variant', 'name': '六槽位成片', 'appliedTemplateVersion': 1,
+        'slots': [{'id': f'slot-{index}', 'label': f'槽位 {index + 1}',
+            'role': 'PRODUCT', 'purpose': 'PRODUCT_DISPLAY', 'duration': 4,
+            'transition': transitions[index],
+            'transitionDuration': 0 if transitions[index] == '硬切' else 1}
+            for index in range(6)],
+        'bindings': {f'slot-{index}': f'material-{index}' for index in range(6)},
+        'bindingRevisions': {f'slot-{index}': 1 for index in range(6)},
+        'offsets': {f'slot-{index}': .25 for index in range(6)},
+        'manualSlotIds': [], 'conflictSlotIds': [], 'status': 'CURRENT',
+        'captions': [], 'subtitleStyle': 'standard', 'bgm': None, 'voice': None,
+        'originalVolume': .15}
+    snapshot = {'timeline': {'sourceTimelineHash': 'test', 'duration': 24,
+        'variant': variant, 'clips': clips,
+        'detachedAudios': [{'id': 'detached', 'sourceSlotId': 'slot-2', 'fileObjectId': 'clip-2',
+            'name': '动作声', 'start': 8, 'offset': .25, 'duration': 4, 'volume': .4}],
+        'facts': [{'id': 'fact', 'text': '已确认商品信息', 'artifactId': 'fact-source',
+            'revision': 1}], 'dependencies': []},
+        'aspectRatio': '4:3', 'resolution': '1080p', 'frameRate': frame_rate,
+        'originalVolume': .15,
+        'packaging': {'narrationLayoutVersion': 'SLOT_V1', 'captionLayoutVersion': 'SEGMENT_V3',
+            'vision': [{'start': index * 4, 'end': index * 4 + 4,
+                'description': '产品动作'} for index in range(6)],
+            'script': script, 'voices': voices, 'captions': captions,
+            'music': {'fileObjectId': 'music', 'start': 0, 'duration': 24, 'volume': .12}}}
+    output = await render(snapshot, files, tmp_path, AsyncMock())
+    info = await probe(output)
+    assert abs(float(info['format']['duration']) - 24) < .1
+    assert {(stream['codec_type'], stream['codec_name']) for stream in info['streams']} == {
+        ('video', 'h264'), ('audio', 'aac')}
+    video = final_output.video_stream(info)
+    assert video['width'] == 160 and video['height'] == 120
+    assert final_output.Fraction(video['avg_frame_rate']) == frame_rate
+    # Slot 3 detaches its natural sound from the video track. After its one-second
+    # narration ends, the 380 Hz source tone must still be present in the final mix.
+    pcm = await command('ffmpeg', ['-v', 'error', '-ss', '9.5', '-i', str(output),
+        '-t', '0.2', '-vn', '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'])
+    samples = array.array('h', pcm)
+    detached_tone = abs(sum(sample * math.sin(2 * math.pi * 380 * i / 24000)
+        for i, sample in enumerate(samples))) / len(samples)
+    assert detached_tone > 100
 
 
 async def test_completed_output_is_not_rendered_again() -> None:
@@ -154,6 +256,83 @@ async def test_completed_output_is_not_rendered_again() -> None:
     await FinalOutputHandler(api, 1000).handle(message, {'projectId': '11111111-1111-4111-8111-111111111111', 'runId': '22222222-2222-4222-8222-222222222222'})
     message.ack.assert_awaited_once()
     assert not any('/video' in call.args[1] for call in api.request.call_args_list)
+
+
+@pytest.mark.parametrize(('resolution', 'limit'), [('1080p', 2), ('4K', 1)])
+async def test_hundred_outputs_are_bounded_and_acknowledged_after_claim(
+    monkeypatch: Any, resolution: str, limit: int,
+) -> None:
+    project_id = '11111111-1111-4111-8111-111111111111'
+    run_id = '22222222-2222-4222-8222-222222222222'
+    items = [{'id': str(index), 'status': 'QUEUED', 'snapshot': {
+        'resolution': resolution,
+        'timeline': {'clips': [{'fileObjectId': 'clip'}]},
+        'packaging': {'voices': {}, 'music': {'fileObjectId': 'music'}},
+    }} for index in range(100)]
+    api = AsyncMock(spec=InternalApi)
+    api.ROOT = 'internal/workers/effect-template-mix'
+    api.request.side_effect = lambda method, path, **_: (
+        {'terminal': False, 'attemptToken': 'token', 'items': items} if path.endswith('/claim') else None)
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        async def aiter_bytes(self):
+            yield b'media'
+
+    class Stream:
+        async def __aenter__(self) -> Response:
+            return Response()
+
+        async def __aexit__(self, *_: Any) -> None:
+            pass
+
+    api.client = SimpleNamespace(stream=lambda *_args, **_kwargs: Stream())
+    message = AsyncMock()
+    active = 0
+    peak = 0
+    rendered = 0
+
+    async def fake_render(_snapshot: Any, _paths: Any, directory: Path, _progress: Any) -> Path:
+        nonlocal active, peak, rendered
+        message.ack.assert_awaited_once()
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.001)
+        rendered += 1
+        active -= 1
+        output = directory / 'final.mp4'
+        output.write_bytes(b'fake video')
+        return output
+
+    monkeypatch.setattr(final_output, 'render', fake_render)
+    await FinalOutputHandler(api, 1000).handle(message, {'projectId': project_id, 'runId': run_id})
+    assert rendered == 100
+    assert peak == limit
+    assert message.ack.await_count == 1
+    message.nack.assert_not_awaited()
+    assert any(call.args[1].endswith('/finish') for call in api.request.call_args_list)
+
+
+async def test_claimed_batch_failure_waits_for_lease_recovery() -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.ROOT = 'internal/workers/effect-template-mix'
+    claim = {'terminal': False, 'attemptToken': 'token', 'items': [{'id': 'item', 'status': 'QUEUED',
+            'snapshot': {'resolution': '720p', 'timeline': {'clips': [{'fileObjectId': 'clip'}]},
+                'packaging': {'voices': {}, 'music': {'fileObjectId': 'music'}}}}]}
+
+    async def unavailable(_method: str, path: str, **_kwargs: Any) -> Any:
+        if path.endswith('/claim'):
+            return claim
+        raise ApiError('temporary', retryable=True)
+
+    api.request.side_effect = unavailable
+    message = AsyncMock()
+    await FinalOutputHandler(api, 1000).handle(message, {'projectId': '11111111-1111-4111-8111-111111111111',
+        'runId': '22222222-2222-4222-8222-222222222222'})
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
 
 
 def snapshot_with_audio(voices: dict[str, Any], music: dict[str, Any]) -> dict[str, Any]:
@@ -169,8 +348,9 @@ def capture_filters(monkeypatch: Any) -> list[str]:
         if '-filter_complex' in args:
             captured.extend(args[args.index('-filter_complex') + 1].split(';'))
     async def fake_probe(path: Path) -> dict[str, Any]:
+        width, height = final_output.output_size('4:3', '720p')
         return {'format': {'duration': '4.0'}, 'streams': [
-            {'codec_type': 'video', 'codec_name': 'h264', 'duration': '4.0'},
+            {'codec_type': 'video', 'codec_name': 'h264', 'duration': '4.0', 'width': width, 'height': height, 'avg_frame_rate': '30/1'},
             {'codec_type': 'audio', 'codec_name': 'aac', 'duration': '4.0'}]}
     monkeypatch.setattr(final_output, 'encode', fake_encode)
     monkeypatch.setattr(final_output, 'probe', fake_probe)

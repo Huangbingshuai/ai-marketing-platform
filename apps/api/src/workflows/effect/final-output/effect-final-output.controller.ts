@@ -15,7 +15,8 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { FINAL_OUTPUT_RESOLUTIONS } from '@ai-marketing/contracts';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
 import { RawResponse } from '../../../common/raw-response.decorator';
@@ -31,6 +32,10 @@ import { EffectFinalOutputService } from './effect-final-output.service';
 
 export class CompletePackagingDto extends EffectTemplateMixRevisionDto {
   @IsString() @MinLength(1) @MaxLength(500) idempotencyKey!: string;
+}
+export class StartFinalOutputDto {
+  @IsIn(FINAL_OUTPUT_RESOLUTIONS) resolution!: (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
+  @IsIn([24, 25, 30, 50, 60]) frameRate!: 24 | 25 | 30 | 50 | 60;
 }
 export class OutputProgressDto extends EffectTemplateMixWorkerProjectDto {
   @IsInt() @Min(0) @Max(99) progress!: number;
@@ -59,6 +64,14 @@ export class EffectFinalOutputController {
   @Get('final-output/:runId')
   get(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {
     return this.service.get(projectId, runId);
+  }
+  @Post('final-output/:runId/render')
+  render(
+    @Param('projectId', uuid) projectId: string,
+    @Param('runId', uuid) runId: string,
+    @Body() body: StartFinalOutputDto,
+  ) {
+    return this.service.start(projectId, runId, body);
   }
   @Post('final-output/:runId/retry')
   retry(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {

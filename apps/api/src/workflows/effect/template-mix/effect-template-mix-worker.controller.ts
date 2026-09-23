@@ -88,7 +88,10 @@ export class EffectTemplateMixWorkerController {
     @Headers('x-attempt-token') attemptToken: string,
     @Body() body: EffectTemplateMixWorkerSamplingDto,
   ) {
-    return this.service.checkpointAiSampling(body.projectId, runId, attemptToken, body.materialIds);
+    return this.service.checkpointAiSampling(body.projectId, runId, attemptToken, {
+      ...(body.samples ? { samples: body.samples } : {}),
+      ...(body.materialIds ? { materialIds: body.materialIds } : {}),
+    });
   }
 
   @Put('runs/:runId/trims/checkpoint')

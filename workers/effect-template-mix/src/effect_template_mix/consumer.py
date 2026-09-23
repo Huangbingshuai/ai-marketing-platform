@@ -12,7 +12,7 @@ from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
 from pydantic import ValidationError
 
 from .api import ApiError, InternalApi
-from .models import Classification, Material, QueueMessage, Runtime, Selection, TrimOutput
+from .models import Classification, Material, QueueMessage, Runtime, SampledMaterial, Selection, TrimOutput
 from .provider import ArkProvider, ProviderError
 from .reliability import classification_chunks
 from .video import sample_frames
@@ -260,7 +260,13 @@ class Consumer:
                         path = root / f"{selection.variantIndex:02d}-{index:03d}.mp4"
                         path.write_bytes(data)
                         frames = await sample_frames(path, material.duration)
-                        await self.api.checkpoint_sampling(runtime, [material.id])
+                        await self.api.checkpoint_sampling(
+                            runtime,
+                            [SampledMaterial(
+                                materialId=material.id,
+                                frameTimestampsSeconds=[timestamp for timestamp, _ in frames],
+                            )],
+                        )
                         choice = None
                         max_start = max(0.0, material.duration - slot.duration)
                         for attempt in range(2):

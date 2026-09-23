@@ -201,6 +201,9 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             });
             const run = await service.complete(projectId, templateId, body);
             expect(run.items).toHaveLength(100);
+            expect(run.status).toBe('PENDING_RENDER');
+            expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(0);
+            await service.start(projectId, run.id, { resolution: '720p', frameRate: 30 });
             const replay = await service.complete(projectId, templateId, body);
             expect(replay.id).toBe(run.id);
             expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(1);

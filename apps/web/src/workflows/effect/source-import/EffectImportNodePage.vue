@@ -114,6 +114,12 @@ const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | n
 const promptGenerationNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const segmentRenderNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const templateMixNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
+const mixPreviewTarget = ref<{
+  projectId: string;
+  workflowRunId: string;
+  templateId: string;
+  variantId: string;
+} | null>(null);
 const effectWorkflowNodeIds = [
   'SOURCE_IMPORT',
   'INFORMATION_EXTRACTION',
@@ -1374,6 +1380,7 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
     const nodeId = effectWorkflowNodeIds[step];
     if (!workflowRunId || !nodeId) return;
     activeStep.value = step;
+    if (step !== 4) mixPreviewTarget.value = null;
     window.scrollTo({ top: 0, behavior: 'smooth' });
     enqueueWorkflowNodeActivation(loadedProjectId.value, workflowRunId, nodeId);
     scheduleAdjacentWorkspacePrefetch();
@@ -1381,6 +1388,18 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
     pendingStep.value = null;
     endTransition();
   }
+};
+
+const previewFinalOutputItem = async (selection: { templateId: string; variantId: string }): Promise<void> => {
+  const workflowRunId = workspace.value?.workflowRunId;
+  if (!currentProjectId.value || !workflowRunId) return;
+  mixPreviewTarget.value = {
+    projectId: currentProjectId.value,
+    workflowRunId,
+    ...selection,
+  };
+  await selectWorkflowStep(4);
+  if (activeStep.value !== 4) mixPreviewTarget.value = null;
 };
 
 const enterPromptBoundary = (): void => void selectWorkflowStep(2);
@@ -1547,6 +1566,7 @@ onBeforeUnmount(() => {
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
           :products="products"
+          :preview-target="mixPreviewTarget"
           @back="selectWorkflowStep(3)"
           @next="selectWorkflowStep(5)"
         />
@@ -1556,6 +1576,7 @@ onBeforeUnmount(() => {
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
           @back="selectWorkflowStep(4)"
+          @preview="previewFinalOutputItem"
         />
       </KeepAlive>
 

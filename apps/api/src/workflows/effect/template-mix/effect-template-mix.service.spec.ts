@@ -125,8 +125,10 @@ describe('EffectTemplateMixService', () => {
         id: `material-${index + 1}`,
         code: `R-${index + 1}`,
         name: `素材 ${index + 1}`,
+        duration: 15,
+        promptSummary: index === 0 ? '木勺将刚出锅的酱汁淋在脆皮鸡块上，突出酥脆与多汁口感' : undefined,
       })),
-      template: { slots: [{ id: slotId, label: '片头钩子' }] },
+      template: { name: '跑量模板', slots: [{ id: slotId, label: '片头钩子', duration: 4 }] },
     };
     const repository = {
       find: vi.fn().mockResolvedValue({
@@ -143,16 +145,26 @@ describe('EffectTemplateMixService', () => {
         updatedAt: now,
         inputSnapshot,
         classificationResult: [
-          { materialId: 'material-1' },
-          { materialId: 'material-2' },
-          { materialId: 'material-3' },
+          {
+            materialId: 'material-1',
+            scores: { HOOK: 0.91, PAIN_POINT: 0.2, PRODUCT: 0.8 },
+            reasons: { HOOK: '酱汁淋下的动作开场醒目，能快速抓住注意力' },
+          },
+          { materialId: 'material-2', scores: { HOOK: 0.4 }, reasons: { HOOK: '画面信息较少' } },
+          { materialId: 'material-3', scores: { PRODUCT: 0.75 }, reasons: { PRODUCT: '主体产品清晰' } },
         ],
         selectionResult: [
-          { materialId: 'material-1', slotId },
-          { materialId: 'material-2', slotId },
+          {
+            materialId: 'material-1', slotId, role: 'HOOK', matchScore: 0.91,
+            matchLevel: 'NORMAL', classificationReason: '酱汁淋下的开场动作最醒目', duration: 4,
+          },
+          {
+            materialId: 'material-2', slotId, role: 'HOOK', matchScore: 0.4,
+            matchLevel: 'LOW_MATCH', classificationReason: '缺少更合适的钩子素材', duration: 4,
+          },
         ],
-        samplingResult: ['material-1'],
-        trimResult: [{ materialId: 'material-1', trimStartSeconds: 1.25 }],
+        samplingResult: [{ materialId: 'material-1', frameTimestampsSeconds: [0, 1.2, 3.8] }],
+        trimResult: [{ materialId: 'material-1', slotId, trimStartSeconds: 1.25, trimReason: '勺子落下并带出酱汁的瞬间，产品状态最清楚' }],
       }),
     };
     const service = new EffectTemplateMixService(
@@ -163,16 +175,67 @@ describe('EffectTemplateMixService', () => {
     const run = await service.aiRun('project', 'run-id');
 
     expect(run.stageDetails?.CLASSIFYING).toMatchObject({ completed: 3, total: 5 });
-    expect(run.stageDetails?.CLASSIFYING?.inputSamples).toEqual([
-      'R-1 · 素材 1',
-      'R-2 · 素材 2',
-      'R-3 · 素材 3',
-      'R-4 · 素材 4',
-    ]);
+    expect(run.stageDetails?.CLASSIFYING?.inputSamples[0]).toContain('创意主线：木勺将刚出锅的酱汁');
+    expect(run.stageDetails?.CLASSIFYING?.outputSamples[0]).toContain('片头钩子 91%');
+    expect(run.stageDetails?.CLASSIFYING?.outputSamples[0]).toContain('快速抓住注意力');
     expect(run.stageDetails?.MATCHING).toMatchObject({ completed: 1, total: 1 });
+    expect(run.stageDetails?.MATCHING?.outputSamples[0]).toContain('匹配度 91%');
+    expect(run.stageDetails?.MATCHING?.outputSamples[1]).toContain('备选补位');
     expect(run.stageDetails?.SAMPLING).toMatchObject({ completed: 1, total: 2 });
-    expect(run.stageDetails?.TRIMMING?.outputSamples).toEqual(['R-1 · 素材 1 · 从 1.3 秒截取']);
+    expect(run.stageDetails?.SAMPLING?.outputSamples[0]).toContain('抽取 3 张关键帧（0.0 秒、1.2 秒、3.8 秒）');
+    expect(run.stageDetails?.TRIMMING?.outputSamples[0]).toContain('截取 1.3–5.3 秒');
+    expect(run.stageDetails?.TRIMMING?.outputSamples[0]).toContain('勺子落下并带出酱汁');
     expect(run.stageDetails?.COMPLETED).toMatchObject({ completed: 0, total: 1 });
+  });
+
+  it('uses completed trim results as proof of frame extraction for historical runs', async () => {
+    const now = new Date('2026-09-23T04:00:00.000Z');
+    const repository = {
+      find: vi.fn().mockResolvedValue({
+        id: 'run-id', templateId, targetVariantId: null, outputVariantId: null,
+        status: 'COMPLETED', stage: 'COMPLETED', progress: 100,
+        errorCode: null, errorMessage: null, createdAt: now, updatedAt: now,
+        inputSnapshot: {
+          materials: [{ id: 'material-1', code: 'R-1', name: '钩子镜头', duration: 15 }],
+          template: { name: '跑量模板', slots: [{ id: slotId, label: '片头钩子', duration: 4 }] },
+        },
+        classificationResult: [],
+        selectionResult: [{ materialId: 'material-1', slotId, role: 'HOOK', variantIndex: 0, duration: 4 }],
+        samplingResult: [],
+        trimResult: [{ materialId: 'material-1', slotId, trimStartSeconds: 2, trimReason: '动作完整' }],
+      }),
+    };
+    const service = new EffectTemplateMixService(
+      {} as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
+    const run = await service.aiRun('project', 'run-id');
+    expect(run.stageDetails?.SAMPLING).toMatchObject({ completed: 1, total: 1 });
+    expect(run.stageDetails?.SAMPLING?.outputSamples[0]).toContain('旧任务记录由截取结果确认');
+  });
+
+  it('counts frame extraction by distinct source videos rather than repeated timeline placements', async () => {
+    const now = new Date('2026-09-23T04:00:00.000Z');
+    const repository = {
+      find: vi.fn().mockResolvedValue({
+        id: 'run-id', templateId, targetVariantId: null, outputVariantId: null,
+        status: 'RUNNING', stage: 'SAMPLING', progress: 55,
+        errorCode: null, errorMessage: null, createdAt: now, updatedAt: now,
+        inputSnapshot: { materials: [{ id: 'material-1', code: 'R-1', name: '钩子镜头', duration: 15 }], template: { slots: [{ id: slotId, label: '片头钩子', duration: 4 }] } },
+        selectionResult: [
+          { materialId: 'material-1', slotId, variantIndex: 0, role: 'HOOK', duration: 4 },
+          { materialId: 'material-1', slotId, variantIndex: 1, role: 'HOOK', duration: 4 },
+        ],
+        samplingResult: [{ materialId: 'material-1', frameTimestampsSeconds: [0.2, 1.5] }],
+        classificationResult: [], trimResult: [],
+      }),
+    };
+    const service = new EffectTemplateMixService(
+      {} as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
+    const run = await service.aiRun('project', 'run-id');
+    expect(run.stageDetails?.SAMPLING).toMatchObject({ completed: 1, total: 1 });
   });
 
   it('preserves untouched legacy 3-second slots while rejecting newly edited ones', async () => {
@@ -581,11 +644,15 @@ describe('EffectTemplateMixService', () => {
       find: vi.fn().mockResolvedValue({
         status: 'RUNNING',
         attemptToken: 'attempt-token',
-        selectionResult: [{ materialId }],
+        inputSnapshot: { materials: [{ id: materialId, duration: 10 }] },
+        selectionResult: [{ materialId, duration: 4 }],
       }),
       saveSamplingCheckpoint: vi
         .fn()
-        .mockResolvedValue({ kind: 'SAVED', materialIds: [materialId] }),
+        .mockResolvedValue({
+          kind: 'SAVED', materialIds: [materialId],
+          samples: [{ materialId, frameTimestampsSeconds: [0.2, 5.5] }],
+        }),
     };
     const service = new EffectTemplateMixService(
       {} as unknown as WorkflowWorkingService,
@@ -593,16 +660,21 @@ describe('EffectTemplateMixService', () => {
     );
 
     await expect(
-      service.checkpointAiSampling('project', 'run', 'attempt-token', [materialId]),
-    ).resolves.toEqual({ materialIds: [materialId] });
+      service.checkpointAiSampling('project', 'run', 'attempt-token', {
+        samples: [{ materialId, frameTimestampsSeconds: [0.2, 5.5] }],
+      }),
+    ).resolves.toEqual({
+      materialIds: [materialId],
+      samples: [{ materialId, frameTimestampsSeconds: [0.2, 5.5] }],
+    });
     expect(aiRepository.saveSamplingCheckpoint).toHaveBeenCalledWith(
       'project',
       'run',
       'attempt-token',
-      [materialId],
+      [{ materialId, frameTimestampsSeconds: [0.2, 5.5] }],
     );
     await expect(
-      service.checkpointAiSampling('project', 'run', 'attempt-token', ['unselected']),
+      service.checkpointAiSampling('project', 'run', 'attempt-token', { materialIds: ['unselected'] }),
     ).rejects.toThrow('关键帧进度分片无效');
   });
 

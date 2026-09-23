@@ -3,6 +3,7 @@ import type {
   EffectTemplateMixClassificationPool,
   EffectTemplateMixAiRun,
   EffectTemplateMixAiSelection,
+  EffectTemplateMixSampledMaterial,
   EffectTemplateMixAiTrim,
   EffectTemplateMixDraft,
   EffectTemplateMixMaterial,
@@ -334,77 +335,222 @@ const toAiRun = (run: {
   updatedAt: Date;
 }): EffectTemplateMixAiRun => {
   const snapshot = object(run.inputSnapshot) as {
-    materials?: Array<{ id?: string; code?: string; name?: string }>;
-    template?: { slots?: Array<{ id?: string; label?: string }> };
+    materials?: Array<{
+      id?: string;
+      code?: string;
+      name?: string;
+      duration?: number;
+      promptSummary?: string;
+    }>;
+    template?: { name?: string; slots?: Array<{ id?: string; label?: string; duration?: number }> };
   } | null;
   const materials = Array.isArray(snapshot?.materials) ? snapshot.materials : [];
   const materialById = new Map(materials.map((item) => [item.id ?? '', item]));
   const slots = Array.isArray(snapshot?.template?.slots) ? snapshot.template.slots : [];
   const slotById = new Map(slots.map((item) => [item.id ?? '', item]));
   const classifications = Array.isArray(run.classificationResult)
-    ? (run.classificationResult as Array<{ materialId?: string }>)
+    ? (run.classificationResult as Array<{
+        materialId?: string;
+        scores?: Partial<Record<EffectTemplateMixRole, number>>;
+        reasons?: Partial<Record<EffectTemplateMixRole, string>>;
+      }>)
     : [];
   const selections = Array.isArray(run.selectionResult)
-    ? (run.selectionResult as Array<{ materialId?: string; slotId?: string }>)
-    : [];
-  const sampledMaterialIds = Array.isArray(run.samplingResult)
-    ? run.samplingResult.filter((id): id is string => typeof id === 'string')
+    ? (run.selectionResult as Array<{
+        materialId?: string;
+        slotId?: string;
+        role?: EffectTemplateMixRole;
+        variantIndex?: number;
+        matchScore?: number;
+        matchLevel?: 'NORMAL' | 'LOW_MATCH';
+        classificationReason?: string;
+      }>)
     : [];
   const trims = Array.isArray(run.trimResult)
-    ? (run.trimResult as Array<{ materialId?: string; trimStartSeconds?: number }>)
+    ? (run.trimResult as Array<{
+        materialId?: string;
+        slotId?: string;
+        variantIndex?: number;
+        trimStartSeconds?: number;
+        trimReason?: string;
+      }>)
     : [];
+  const sampledById = new Map<string, { timestamps: number[]; inferredFromTrim: boolean }>();
+  const selectedMaterialIds = new Set(selections.map((item) => item.materialId).filter(Boolean));
+  for (const entry of Array.isArray(run.samplingResult) ? run.samplingResult : []) {
+    if (typeof entry === 'string') {
+      if (selectedMaterialIds.has(entry))
+        sampledById.set(entry, { timestamps: [], inferredFromTrim: false });
+      continue;
+    }
+    const value = object(entry);
+    const materialId = typeof value?.materialId === 'string' ? value.materialId : '';
+    const timestamps = Array.isArray(value?.frameTimestampsSeconds)
+      ? value.frameTimestampsSeconds.filter(
+          (timestamp): timestamp is number => typeof timestamp === 'number' && Number.isFinite(timestamp),
+        )
+      : [];
+    if (materialId && selectedMaterialIds.has(materialId))
+      sampledById.set(materialId, { timestamps, inferredFromTrim: false });
+  }
+  // Older workers persisted trim choices before sampling checkpoints existed. A valid
+  // trim could only be produced after keyframes had been extracted, so use it as proof
+  // for those historical materials instead of presenting a contradictory 0/N completed run.
+  for (const trim of trims) {
+    if (trim.materialId && selectedMaterialIds.has(trim.materialId) && !sampledById.has(trim.materialId))
+      sampledById.set(trim.materialId, { timestamps: [], inferredFromTrim: true });
+  }
   const limit = 4;
+  const sampleText = (value: unknown, maxLength = 150) => {
+    if (typeof value !== 'string') return '';
+    const text = value.replace(/\s+/gu, ' ').trim();
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+  };
   const materialLabel = (id?: string): string => {
     const item = materialById.get(id ?? '');
-    return item ? [item.code, item.name].filter(Boolean).join(' · ') : '素材';
+    if (!item) return '视频素材';
+    const core = sampleText(item.promptSummary, 82);
+    return `${[item.code, item.name].filter(Boolean).join(' · ')}${
+      typeof item.duration === 'number' ? ` · ${item.duration.toFixed(1)} 秒视频` : ''
+    }${core ? ` · 创意主线：${core}` : ''}`;
   };
+  const roleLabels: Record<EffectTemplateMixRole, string> = {
+    HOOK: '片头钩子',
+    PAIN_POINT: '痛点唤醒',
+    PRODUCT: '产品展示',
+    SELLING_POINT: '卖点讲解',
+    TRANSFORMATION: '效果呈现',
+    END: '片尾转化',
+  };
+  const roleLabel = (role?: string) =>
+    role && role in roleLabels ? roleLabels[role as EffectTemplateMixRole] : '模板槽位';
+  const bestRole = (item: (typeof classifications)[number]) =>
+    (Object.entries(item.scores ?? {}) as [EffectTemplateMixRole, number][])
+      .filter(([, score]) => typeof score === 'number' && Number.isFinite(score))
+      .sort((left, right) => right[1] - left[1])[0];
+  const scorePercent = (score?: number) =>
+    typeof score === 'number' && Number.isFinite(score) ? `${Math.round(score * 100)}%` : '—';
+  const selectedByMaterial = new Map(selections.map((item) => [item.materialId ?? '', item]));
+  const selectionKey = (item: { materialId?: string; slotId?: string; variantIndex?: number }) =>
+    `${item.variantIndex ?? 0}:${item.materialId ?? ''}:${item.slotId ?? ''}`;
+  const trimBySelection = new Map(trims.map((item) => [selectionKey(item), item]));
+  const uniqueMaterialSelections = [...new Map(selections.map((item) => [item.materialId ?? '', item])).values()];
+  const timestampSamples = (timestamps: number[]) =>
+    timestamps.length
+      ? timestamps.slice(0, 4).map((value) => `${value.toFixed(1)} 秒`).join('、')
+      : '';
+  const trimRange = (trim: (typeof trims)[number], selection: (typeof selections)[number]) => {
+    const slot = slotById.get(trim.slotId ?? selection.slotId ?? '');
+    const start = Number(trim.trimStartSeconds ?? 0);
+    const end = start + Number(slot?.duration ?? 0);
+    return `${start.toFixed(1)}–${end.toFixed(1)} 秒`;
+  };
+  const byVariant = new Map<number, typeof selections>();
+  for (const selection of selections) {
+    const index = selection.variantIndex ?? 0;
+    byVariant.set(index, [...(byVariant.get(index) ?? []), selection]);
+  }
+  const completedInputSamples: string[] = [];
+  const completedOutputSamples: string[] = [];
+  for (const [index, variantSelections] of byVariant) {
+    if (completedInputSamples.length >= limit && completedOutputSamples.length >= limit) break;
+    const sorted = [...variantSelections].sort(
+      (left, right) => slots.findIndex(({ id }) => id === left.slotId) - slots.findIndex(({ id }) => id === right.slotId),
+    );
+    const clips = sorted.map((selection) => {
+      const slot = slotById.get(selection.slotId ?? '');
+      const trim = trimBySelection.get(selectionKey(selection));
+      return `${slot?.label ?? roleLabel(selection.role)} ${materialById.get(selection.materialId ?? '')?.code ?? '素材'}${
+        trim ? `（${trimRange(trim, selection)}）` : ''
+      }`;
+    });
+    const variantName = `第 ${index + 1} 条成片`;
+    completedInputSamples.push(`${variantName} · ${clips.join('；')}`);
+    if (run.status === 'COMPLETED')
+      completedOutputSamples.push(`${variantName} · ${clips.length} 个镜头已写入「${snapshot?.template?.name ?? '当前'}」时间轴`);
+  }
   const stageDetails: NonNullable<EffectTemplateMixAiRun['stageDetails']> = {
     CLASSIFYING: {
       completed: Math.min(classifications.length, materials.length),
       total: materials.length,
       inputSamples: materials
         .slice(0, limit)
-        .map((item) => [item.code, item.name].filter(Boolean).join(' · ')),
+        .map((item) => {
+          const target = slots.map(({ label, duration }) => `${label}（${duration} 秒）`).join('、');
+          return `${materialLabel(item.id)} · 对比模板目标：${target}`;
+        }),
       outputSamples: classifications
         .slice(0, limit)
-        .map((item) => `${materialLabel(item.materialId)} · 已完成归槽评分`),
+        .map((item) => {
+          const top = bestRole(item);
+          if (!top) return `${materialLabel(item.materialId)} · 暂无有效匹配评分`;
+          const reason = sampleText(item.reasons?.[top[0]], 72);
+          return `${materialLabel(item.materialId)} → ${roleLabels[top[0]]} ${scorePercent(top[1])}${reason ? ` · ${reason}` : ''}`;
+        }),
     },
     MATCHING: {
       completed: selections.length ? 1 : 0,
       total: 1,
-      inputSamples: classifications.slice(0, limit).map((item) => materialLabel(item.materialId)),
+      inputSamples: classifications.slice(0, limit).map((item) => {
+        const top = bestRole(item);
+        const reason = top ? sampleText(item.reasons?.[top[0]], 72) : '';
+        return `${materialLabel(item.materialId)} · 优先考虑 ${roleLabel(top?.[0])} ${scorePercent(top?.[1])}${reason ? `（${reason}）` : ''}`;
+      }),
       outputSamples: selections.slice(0, limit).map((item) => {
         const slot = slotById.get(item.slotId ?? '');
-        return `${materialLabel(item.materialId)} → ${slot?.label ?? '目标槽位'}`;
+        const reason = sampleText(item.classificationReason, 72);
+        return `${materialLabel(item.materialId)} → ${slot?.label ?? roleLabel(item.role)} · 匹配度 ${scorePercent(item.matchScore)}${
+          item.matchLevel === 'LOW_MATCH' ? ' · 备选补位' : ''
+        }${reason ? ` · ${reason}` : ''}`;
       }),
     },
     SAMPLING: {
-      completed: Math.min(sampledMaterialIds.length, selections.length),
-      total: selections.length,
-      inputSamples: selections.slice(0, limit).map((item) => materialLabel(item.materialId)),
-      outputSamples: sampledMaterialIds
+      completed: Math.min(sampledById.size, uniqueMaterialSelections.length),
+      total: uniqueMaterialSelections.length,
+      inputSamples: uniqueMaterialSelections.slice(0, limit).map((item) => {
+        const slot = slotById.get(item.slotId ?? '');
+        return `${materialLabel(item.materialId)} · 候选镜头：${slot?.label ?? roleLabel(item.role)}（${slot?.duration ?? 0} 秒）`;
+      }),
+      outputSamples: uniqueMaterialSelections
         .slice(0, limit)
-        .map((id) => `${materialLabel(id)} · 关键帧已抽取`),
+        .flatMap((item) => {
+          const id = item.materialId ?? '';
+          const sampled = sampledById.get(id);
+          if (!sampled) return [];
+          const selection = selectedByMaterial.get(id);
+          const trim = selection ? trimBySelection.get(selectionKey(selection)) : undefined;
+          const frameInfo = sampled.timestamps.length
+            ? `抽取 ${sampled.timestamps.length} 张关键帧（${timestampSamples(sampled.timestamps)}${sampled.timestamps.length > 4 ? '…' : ''}）`
+            : '已抽取关键帧';
+          const visualReason = trim ? sampleText(trim.trimReason, 76) : '';
+          return [`${materialLabel(id)} · ${frameInfo}${
+            sampled.inferredFromTrim ? '，旧任务记录由截取结果确认' : ''
+          }${visualReason ? ` · 画面选择依据：${visualReason}` : ''}`];
+        }),
     },
     TRIMMING: {
       completed: Math.min(trims.length, selections.length),
       total: selections.length,
       inputSamples: selections.slice(0, limit).map((item) => {
         const slot = slotById.get(item.slotId ?? '');
-        return `${materialLabel(item.materialId)} · ${slot?.label ?? '目标槽位'}`;
+        const sampled = sampledById.get(item.materialId ?? '');
+        const frames = sampled?.timestamps.length ? ` · 已抽取关键帧：${timestampSamples(sampled.timestamps)}` : '';
+        return `${materialLabel(item.materialId)} · ${slot?.label ?? roleLabel(item.role)}（目标 ${slot?.duration ?? 0} 秒）${frames}`;
       }),
       outputSamples: trims
         .slice(0, limit)
-        .map(
-          (item) =>
-            `${materialLabel(item.materialId)} · 从 ${Number(item.trimStartSeconds ?? 0).toFixed(1)} 秒截取`,
-        ),
+        .map((item) => {
+          const selection = selectedByMaterial.get(item.materialId ?? '') ?? item;
+          const slot = slotById.get(item.slotId ?? selection.slotId ?? '');
+          const reason = sampleText(item.trimReason, 96);
+          return `${materialLabel(item.materialId)} → ${slot?.label ?? roleLabel('')} · 截取 ${trimRange(item, selection)}${reason ? ` · ${reason}` : ''}`;
+        }),
     },
     COMPLETED: {
       completed: run.status === 'COMPLETED' ? 1 : 0,
       total: 1,
-      inputSamples: trims.slice(0, limit).map((item) => materialLabel(item.materialId)),
-      outputSamples: run.status === 'COMPLETED' ? ['时间轴工程草稿已生成'] : [],
+      inputSamples: completedInputSamples.slice(0, limit),
+      outputSamples: completedOutputSamples.slice(0, limit),
     },
   };
   return {
@@ -591,15 +737,24 @@ export class EffectTemplateMixService {
     );
     const promptById = new Map<
       string,
-      { prompt: string; artifact: (typeof promptArtifacts)[number] }
+      { prompt: string; promptSummary?: string; artifact: (typeof promptArtifacts)[number] }
     >();
     for (const artifact of promptArtifacts) {
       const items = object(artifact.payload)?.items;
       if (!Array.isArray(items)) continue;
       for (const raw of items) {
         const item = object(raw);
-        if (typeof item?.id === 'string' && typeof item.content === 'string' && item.content.trim())
-          promptById.set(item.id, { prompt: item.content, artifact });
+        if (typeof item?.id === 'string' && typeof item.content === 'string' && item.content.trim()) {
+          const promptSummary =
+            typeof item.creativeCore === 'string' && item.creativeCore.trim()
+              ? item.creativeCore.trim()
+              : undefined;
+          promptById.set(item.id, {
+            prompt: item.content,
+            ...(promptSummary ? { promptSummary } : {}),
+            artifact,
+          });
+        }
       }
     }
     const renderArtifacts = artifacts.filter(
@@ -637,6 +792,7 @@ export class EffectTemplateMixService {
         duration,
         promptId,
         prompt: prompt.prompt,
+        ...(prompt.promptSummary ? { promptSummary: prompt.promptSummary } : {}),
         artifactId: artifact.id,
         artifactKey: artifact.artifactKey,
         artifactRevision: artifact.revision,
@@ -1011,28 +1167,57 @@ export class EffectTemplateMixService {
     projectId: string,
     runId: string,
     attemptToken: string,
-    materialIds: string[],
-  ): Promise<{ materialIds: string[] }> {
+    checkpoint: {
+      samples?: EffectTemplateMixSampledMaterial[];
+      materialIds?: string[];
+    },
+  ): Promise<{ materialIds: string[]; samples: EffectTemplateMixSampledMaterial[] }> {
     const run = await this.aiRuns!.find(projectId, runId);
     if (!run || run.status !== 'RUNNING' || run.attemptToken !== attemptToken)
       throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
     const selections = Array.isArray(run.selectionResult)
       ? (run.selectionResult as EffectTemplateMixAiSelection[])
       : [];
+    const snapshotMaterials = object(run.inputSnapshot)?.materials;
+    const materialById = new Map(
+      Array.isArray(snapshotMaterials)
+        ? snapshotMaterials
+            .map((value) => object(value))
+            .filter((value): value is Record<string, unknown> => typeof value?.id === 'string')
+            .map((value) => [value.id as string, value])
+        : [],
+    );
+    const samples = checkpoint.samples ?? [];
+    const materialIds = checkpoint.samples?.map(({ materialId }) => materialId) ?? checkpoint.materialIds ?? [];
     const selectedIds = new Set(selections.map(({ materialId }) => materialId));
     if (
       !Array.isArray(materialIds) ||
       materialIds.length < 1 ||
       materialIds.length > selections.length ||
       new Set(materialIds).size !== materialIds.length ||
-      materialIds.some((id) => !selectedIds.has(id))
+      materialIds.some((id) => !selectedIds.has(id)) ||
+      samples.some((sample) => {
+        const sourceDuration = Number(materialById.get(sample.materialId)?.duration);
+        return (
+          !Number.isFinite(sourceDuration) ||
+          sourceDuration <= 0 ||
+          !sample.frameTimestampsSeconds.length ||
+          sample.frameTimestampsSeconds.some(
+            (timestamp, index, timestamps) =>
+              !Number.isFinite(timestamp) ||
+              timestamp < 0 ||
+              timestamp >= sourceDuration ||
+              (index > 0 && timestamp <= timestamps[index - 1]!)
+          )
+        );
+      })
     )
       throw new ApiHttpException('关键帧进度分片无效', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
     const saved = await this.aiRuns!.saveSamplingCheckpoint(
       projectId,
       runId,
       attemptToken,
-      materialIds,
+      samples.length ? samples : materialIds,
     );
     if (saved.kind === 'LEASE_CONFLICT')
       throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
@@ -1042,7 +1227,7 @@ export class EffectTemplateMixService {
         HttpStatus.BAD_REQUEST,
         'VALIDATION_ERROR',
       );
-    return { materialIds: saved.materialIds };
+    return { materialIds: saved.materialIds, samples: saved.samples };
   }
 
   async checkpointAiTrims(

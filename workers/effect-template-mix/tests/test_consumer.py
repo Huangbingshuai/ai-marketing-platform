@@ -4,7 +4,7 @@ import pytest
 
 from effect_template_mix.api import InternalApi
 from effect_template_mix.consumer import temporary_video_directory
-from effect_template_mix.models import Material, Runtime, SamplingCheckpoint
+from effect_template_mix.models import Material, Runtime, SampledMaterial, SamplingCheckpoint
 from effect_template_mix.provider import ProviderError
 from effect_template_mix.reliability import (
     classification_chunks,
@@ -74,19 +74,20 @@ def test_classification_chunks_split_large_prompt_by_input_budget() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sampling_checkpoint_uses_the_run_lease_and_selected_material_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_sampling_checkpoint_uses_the_run_lease_and_persists_frame_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
     api = InternalApi("http://test", "token", 1)
-    request = AsyncMock(return_value={"materialIds": ["material-1"]})
+    sample = SampledMaterial(materialId="material-1", frameTimestampsSeconds=[0.5, 1.5])
+    request = AsyncMock(return_value={"materialIds": ["material-1"], "samples": [sample.model_dump()]})
     monkeypatch.setattr(api, "request", request)
     runtime = Runtime(project_id="project-1", run_id="run-1", attempt_token="lease-1")
 
-    result = await api.checkpoint_sampling(runtime, ["material-1"])
+    result = await api.checkpoint_sampling(runtime, [sample])
 
     assert isinstance(result, SamplingCheckpoint)
     request.assert_awaited_once_with(
         "PUT",
         "internal/workers/effect-template-mix/runs/run-1/sampling/checkpoint",
         headers={"x-attempt-token": "lease-1"},
-        json={"projectId": "project-1", "materialIds": ["material-1"]},
+        json={"projectId": "project-1", "samples": [sample.model_dump()]},
     )
     await api.close()

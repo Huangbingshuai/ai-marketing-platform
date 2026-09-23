@@ -36,7 +36,10 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
       <span :style="{ width: `${normalizedProgress}%` }" />
     </div>
     <p>
-      <span>{{ summary }}</span>
+      <span class="workflow-run-progress__summary">
+        <span>{{ summary }}</span>
+        <strong>{{ normalizedProgress }}%</strong>
+      </span>
       <small v-if="attemptLabel">{{ attemptLabel }}</small>
       <em v-if="warning">{{ warning }}</em>
     </p>
@@ -75,6 +78,17 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
   display: grid;
   margin: 0;
   gap: 2px;
+}
+.workflow-run-progress__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.workflow-run-progress__summary strong {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 .workflow-run-progress p small {
   color: #2563eb;

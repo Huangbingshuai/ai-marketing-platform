@@ -8,6 +8,7 @@ from .models import (
     Classification,
     ClassificationCheckpoint,
     Runtime,
+    SampledMaterial,
     SamplingCheckpoint,
     Selection,
     TrimCheckpoint,
@@ -134,12 +135,12 @@ class InternalApi:
         )
         return TrimCheckpoint.model_validate(value)
 
-    async def checkpoint_sampling(self, runtime: Runtime, material_ids: list[str]) -> SamplingCheckpoint:
+    async def checkpoint_sampling(self, runtime: Runtime, samples: list[SampledMaterial]) -> SamplingCheckpoint:
         value = await self.request(
             "PUT",
             f"{self.ROOT}/runs/{runtime.run_id}/sampling/checkpoint",
             headers=self.headers(runtime),
-            json={"projectId": runtime.project_id, "materialIds": material_ids},
+            json={"projectId": runtime.project_id, "samples": [item.model_dump() for item in samples]},
         )
         return SamplingCheckpoint.model_validate(value)
 

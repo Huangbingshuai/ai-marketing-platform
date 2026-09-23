@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 import { Inject, Injectable } from '@nestjs/common';
-import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
+import type {
+  EffectTemplateMixDraft,
+  EffectTemplateMixSampledMaterial,
+} from '@ai-marketing/contracts';
 import type { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
@@ -344,7 +347,7 @@ export class EffectTemplateMixAiRepository {
     projectId: string,
     runId: string,
     attemptToken: string,
-    materialIds: string[],
+    samplesOrIds: EffectTemplateMixSampledMaterial[] | string[],
     now = new Date(),
   ) {
     return this.prisma.$transaction(async (transaction) => {
@@ -369,12 +372,33 @@ export class EffectTemplateMixAiRepository {
               .filter((id): id is string => typeof id === 'string')
           : [],
       );
+      const samples = samplesOrIds.every((item) => typeof item === 'string')
+        ? []
+        : (samplesOrIds as EffectTemplateMixSampledMaterial[]);
+      const materialIds = samples.length
+        ? samples.map(({ materialId }) => materialId)
+        : (samplesOrIds as string[]);
       if (materialIds.some((id) => !selectedIds.has(id)))
         return { kind: 'INVALID_MATERIAL' as const };
-      const existing = Array.isArray(run.samplingResult)
-        ? (run.samplingResult as unknown[]).filter((id): id is string => typeof id === 'string')
-        : [];
-      const merged = [...new Set([...existing, ...materialIds])];
+      const existing = Array.isArray(run.samplingResult) ? (run.samplingResult as unknown[]) : [];
+      const byMaterialId = new Map<string, unknown>();
+      for (const item of [...existing, ...(samples.length ? samples : materialIds)]) {
+        const materialId =
+          typeof item === 'string'
+            ? item
+            : typeof (item as { materialId?: unknown })?.materialId === 'string'
+              ? (item as { materialId: string }).materialId
+              : null;
+        if (materialId) byMaterialId.set(materialId, item);
+      }
+      const merged = [...byMaterialId.values()];
+      const mergedSamples = merged.filter(
+        (item): item is EffectTemplateMixSampledMaterial =>
+          typeof item === 'object' && item !== null &&
+          typeof (item as { materialId?: unknown }).materialId === 'string' &&
+          Array.isArray((item as { frameTimestampsSeconds?: unknown }).frameTimestampsSeconds),
+      );
+      const mergedIds = [...byMaterialId.keys()];
       await transaction.effectTemplateMixAiRun.update({
         where: { projectId_id: { projectId, id: runId } },
         data: {
@@ -383,7 +407,7 @@ export class EffectTemplateMixAiRepository {
           leaseExpiresAt: leaseUntil(now),
         },
       });
-      return { kind: 'SAVED' as const, materialIds: merged };
+      return { kind: 'SAVED' as const, materialIds: mergedIds, samples: mergedSamples };
     });
   }
 
