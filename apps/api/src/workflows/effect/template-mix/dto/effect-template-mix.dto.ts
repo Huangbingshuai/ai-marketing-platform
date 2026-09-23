@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import type {
   EffectTemplateMixAiClassification,
+  EffectTemplateMixSamplingCheckpoint,
   EffectTemplateMixAiTrim,
 } from '@ai-marketing/contracts';
 import {
@@ -63,6 +64,10 @@ export class EffectTemplateMixWorkerProgressDto extends EffectTemplateMixWorkerP
 
 export class EffectTemplateMixWorkerClassificationDto extends EffectTemplateMixWorkerProjectDto {
   @IsArray() classifications!: EffectTemplateMixAiClassification[];
+}
+
+export class EffectTemplateMixWorkerSamplingDto extends EffectTemplateMixWorkerProjectDto {
+  @IsArray() @IsUUID('4', { each: true }) materialIds!: EffectTemplateMixSamplingCheckpoint['materialIds'];
 }
 
 export class EffectTemplateMixWorkerCompleteDto extends EffectTemplateMixWorkerProjectDto {

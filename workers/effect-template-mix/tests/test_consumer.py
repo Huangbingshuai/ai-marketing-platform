@@ -1,4 +1,9 @@
-from effect_template_mix.models import Material
+from unittest.mock import AsyncMock
+
+import pytest
+
+from effect_template_mix.api import InternalApi
+from effect_template_mix.models import Material, Runtime, SamplingCheckpoint
 from effect_template_mix.reliability import (
     classification_chunks,
     classification_output_token_budget,
@@ -50,3 +55,22 @@ def test_classification_chunks_split_large_prompt_by_input_budget() -> None:
 
     assert [len(batch) for batch in batches] == [1, 1, 1]
     assert classification_output_token_budget(batches[0]) == 1_205
+
+
+@pytest.mark.asyncio
+async def test_sampling_checkpoint_uses_the_run_lease_and_selected_material_ids() -> None:
+    api = InternalApi("http://test", "token", 1)
+    api.request = AsyncMock()
+    api.request.return_value = {"materialIds": ["material-1"]}
+    runtime = Runtime(project_id="project-1", run_id="run-1", attempt_token="lease-1")
+
+    result = await api.checkpoint_sampling(runtime, ["material-1"])
+
+    assert isinstance(result, SamplingCheckpoint)
+    api.request.assert_awaited_once_with(
+        "PUT",
+        "internal/workers/effect-template-mix/runs/run-1/sampling/checkpoint",
+        headers={"x-attempt-token": "lease-1"},
+        json={"projectId": "project-1", "materialIds": ["material-1"]},
+    )
+    await api.close()

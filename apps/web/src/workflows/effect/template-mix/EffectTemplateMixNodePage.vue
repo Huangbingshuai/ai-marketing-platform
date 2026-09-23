@@ -849,9 +849,12 @@ const workflowStageState = (
   const stageIndex = aiStageOrder.indexOf(stage);
   const currentIndex = aiStageOrder.indexOf(run.stage);
   if (run.status === 'FAILED' && stageIndex === currentIndex) return 'failed';
-  if ((run.status === 'QUEUED' || run.status === 'RUNNING') && stageIndex === currentIndex)
+  const detail = run.stageDetails?.[stage];
+  const complete = Boolean(detail && detail.total > 0 && detail.completed >= detail.total);
+  if (run.status === 'COMPLETED' || complete) return 'done';
+  if (run.status === 'FAILED' && stageIndex < currentIndex) return 'failed';
+  if ((run.status === 'QUEUED' || run.status === 'RUNNING') && stageIndex <= currentIndex)
     return 'running';
-  if (run.status === 'COMPLETED' || stageIndex < currentIndex) return 'done';
   return 'pending';
 };
 const workflowStageStatusLabel = (stage: EffectTemplateMixAiRun['stage']): string =>
@@ -869,7 +872,7 @@ const workflowStageDetail = (stage: EffectTemplateMixAiRun['stage']) =>
   workflowRunForDisplay.value?.stageDetails?.[stage] ?? null;
 const workflowStageProgress = (stage: EffectTemplateMixAiRun['stage']): string => {
   const detail = workflowStageDetail(stage);
-  return detail ? `${detail.completed}/${detail.total}` : '—';
+  return detail && detail.total > 0 ? `${detail.completed}/${detail.total}` : '—';
 };
 const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
   notice.value = { text, kind };
@@ -5053,7 +5056,9 @@ defineExpose({ flushPendingEdits });
                   <span>
                     <strong>{{ aiStageLabels[stage] }}</strong>
                     <small>{{ aiStageDescriptions[stage] }}</small>
-                    <small class="workflow-node-progress">处理进度 {{ workflowStageProgress(stage) }}</small>
+                    <small class="workflow-node-progress">
+                      处理进度 {{ workflowStageProgress(stage) }}
+                    </small>
                   </span>
                   <em>{{ workflowStageStatusLabel(stage) }}</em>
                 </button>
@@ -5092,7 +5097,12 @@ defineExpose({ flushPendingEdits });
                   <strong>本阶段实际输入（最多展示 4 项）</strong>
                   <p>{{ aiStageInputs[selectedWorkflowStage] }}</p>
                   <ul v-if="workflowStageDetail(selectedWorkflowStage)?.inputSamples.length">
-                    <li v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.inputSamples" :key="`input-${sampleIndex}`">{{ sample }}</li>
+                    <li
+                      v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.inputSamples"
+                      :key="`input-${sampleIndex}`"
+                    >
+                      {{ sample }}
+                    </li>
                   </ul>
                 </section>
                 <section class="workflow-detail-block is-output">
@@ -5100,7 +5110,12 @@ defineExpose({ flushPendingEdits });
                   <strong>本阶段实际结果（最多展示 4 项）</strong>
                   <p>{{ aiStageOutputs[selectedWorkflowStage] }}</p>
                   <ul v-if="workflowStageDetail(selectedWorkflowStage)?.outputSamples.length">
-                    <li v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.outputSamples" :key="`output-${sampleIndex}`">{{ sample }}</li>
+                    <li
+                      v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.outputSamples"
+                      :key="`output-${sampleIndex}`"
+                    >
+                      {{ sample }}
+                    </li>
                   </ul>
                 </section>
                 <section class="workflow-detail-block is-boundary">

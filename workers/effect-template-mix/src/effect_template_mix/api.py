@@ -8,6 +8,7 @@ from .models import (
     Classification,
     ClassificationCheckpoint,
     Runtime,
+    SamplingCheckpoint,
     Selection,
     TrimCheckpoint,
     TrimOutput,
@@ -132,6 +133,15 @@ class InternalApi:
             },
         )
         return TrimCheckpoint.model_validate(value)
+
+    async def checkpoint_sampling(self, runtime: Runtime, material_ids: list[str]) -> SamplingCheckpoint:
+        value = await self.request(
+            "PUT",
+            f"{self.ROOT}/runs/{runtime.run_id}/sampling/checkpoint",
+            headers=self.headers(runtime),
+            json={"projectId": runtime.project_id, "materialIds": material_ids},
+        )
+        return SamplingCheckpoint.model_validate(value)
 
     async def complete(self, runtime: Runtime, trims: list[TrimOutput]) -> None:
         await self.request(

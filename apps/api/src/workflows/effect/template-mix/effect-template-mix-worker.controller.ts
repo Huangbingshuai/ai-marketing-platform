@@ -24,6 +24,7 @@ import {
   EffectTemplateMixWorkerFailDto,
   EffectTemplateMixWorkerProgressDto,
   EffectTemplateMixWorkerProjectDto,
+  EffectTemplateMixWorkerSamplingDto,
 } from './dto/effect-template-mix.dto';
 import { EffectTemplateMixService } from './effect-template-mix.service';
 import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard';
@@ -79,6 +80,15 @@ export class EffectTemplateMixWorkerController {
       attemptToken,
       body.classifications,
     );
+  }
+
+  @Put('runs/:runId/sampling/checkpoint')
+  checkpointSampling(
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Headers('x-attempt-token') attemptToken: string,
+    @Body() body: EffectTemplateMixWorkerSamplingDto,
+  ) {
+    return this.service.checkpointAiSampling(body.projectId, runId, attemptToken, body.materialIds);
   }
 
   @Put('runs/:runId/trims/checkpoint')

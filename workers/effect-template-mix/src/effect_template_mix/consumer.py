@@ -246,6 +246,7 @@ class Consumer:
                         path = root / f"{selection.variantIndex:02d}-{index:03d}.mp4"
                         path.write_bytes(data)
                         frames = await sample_frames(path, material.duration)
+                        await self.api.checkpoint_sampling(runtime, [material.id])
                         choice = None
                         max_start = max(0.0, material.duration - slot.duration)
                         for attempt in range(2):

@@ -338,6 +338,53 @@ export class EffectTemplateMixAiRepository {
     });
   }
 
+  async saveSamplingCheckpoint(
+    projectId: string,
+    runId: string,
+    attemptToken: string,
+    materialIds: string[],
+    now = new Date(),
+  ) {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_template_mix_ai_runs"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${runId}::uuid FOR UPDATE
+      `;
+      const run = await transaction.effectTemplateMixAiRun.findFirst({
+        where: {
+          projectId,
+          id: runId,
+          status: 'RUNNING',
+          attemptToken,
+          leaseExpiresAt: { gt: now },
+        },
+      });
+      if (!run) return { kind: 'LEASE_CONFLICT' as const };
+      const selectedIds = new Set(
+        Array.isArray(run.selectionResult)
+          ? (run.selectionResult as Array<{ materialId?: unknown }>)
+              .map(({ materialId }) => materialId)
+              .filter((id): id is string => typeof id === 'string')
+          : [],
+      );
+      if (materialIds.some((id) => !selectedIds.has(id)))
+        return { kind: 'INVALID_MATERIAL' as const };
+      const existing = Array.isArray(run.samplingResult)
+        ? (run.samplingResult as unknown[]).filter((id): id is string => typeof id === 'string')
+        : [];
+      const merged = [...new Set([...existing, ...materialIds])];
+      await transaction.effectTemplateMixAiRun.update({
+        where: { projectId_id: { projectId, id: runId } },
+        data: {
+          samplingResult: json(merged),
+          heartbeatAt: now,
+          leaseExpiresAt: leaseUntil(now),
+        },
+      });
+      return { kind: 'SAVED' as const, materialIds: merged };
+    });
+  }
+
   async saveTrimCheckpoint(
     projectId: string,
     runId: string,

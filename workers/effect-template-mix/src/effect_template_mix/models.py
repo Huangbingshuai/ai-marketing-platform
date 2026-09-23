@@ -79,6 +79,10 @@ class ClassificationCheckpoint(BaseModel):
     progress: int = Field(ge=10, le=30)
 
 
+class SamplingCheckpoint(BaseModel):
+    materialIds: list[str]
+
+
 class TrimCheckpoint(BaseModel):
     trims: list["TrimOutput"]
     progress: int = Field(ge=55, le=90)
