@@ -249,6 +249,7 @@ export class EffectPackagingService {
       const checkpoint = { ...(i.checkpoint as PackagingCheckpoint) };
       delete checkpoint.musicTaskId;
       delete checkpoint.musicSubmissionPending;
+      const referencedFactIds = new Set((checkpoint.script ?? []).flatMap(({ factIds }) => factIds));
       return {
         id: i.id,
         runId: run.id,
@@ -257,6 +258,25 @@ export class EffectPackagingService {
         shardIndex: i.shardIndex,
         sourceTimelineHash: i.sourceTimelineHash,
         sourceVisualTimeline: packagingVisualTimeline(snapshot.variant),
+        sourceClips: (snapshot.clips ?? []).map((clip) => {
+          const slot = snapshot.variant.slots.find(({ id }) => id === clip.slotId);
+          const material = (workspace.materials ?? []).find(({ id }) => id === clip.materialId);
+          const materialName = [clip.materialCode, clip.materialName].filter(Boolean).join(' · ') ||
+            (material ? [material.code, material.name].filter(Boolean).join(' · ') : '来源视频素材');
+          return {
+            slotLabel: slot?.label ?? '镜头',
+            materialName,
+            sourceOffset: clip.offset,
+            timelineStart: clip.start,
+            duration: clip.duration,
+            transition: clip.transition,
+            transitionDuration: clip.transitionDuration,
+            originalAudioDetached: clip.originalAudioDetached ?? false,
+          };
+        }),
+        sourceFacts: (snapshot.facts ?? [])
+          .filter(({ id }) => referencedFactIds.has(id))
+          .map(({ id, text }) => ({ id, text })),
         stage: i.stage as PackagingStage,
         status: i.status as PackagingRun['status'],
         checkpoint,

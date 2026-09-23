@@ -98,6 +98,57 @@ function completedRun() {
   return { id: 'run', workflowRunId: 'w', templateId: 't', items: [completedItem()] };
 }
 describe('packaging service output boundary', () => {
+  it('projects frozen clip and confirmed-fact examples without exposing file identifiers or raw prompts', async () => {
+    const { service, repo, mix } = harness();
+    const timelineVariant = {
+      ...v,
+      slots: [{ id: 'slot-product', label: '产品展示', role: 'PRODUCT', purpose: 'PRODUCT', duration: 8, transition: '叠化', transitionDuration: 0.5 }],
+      bindings: { 'slot-product': 'material-1' },
+      bindingRevisions: { 'slot-product': 3 },
+      offsets: { 'slot-product': 1.25 },
+      timelineStarts: { 'slot-product': 2 },
+    } as unknown as EffectTemplateMixVariant;
+    const sourceTimelineHash = visualHash(timelineVariant);
+    const clip = {
+      slotId: 'slot-product', materialId: 'material-1', fileObjectId: 'secret-file-id',
+      contentHash: 'hash', start: 2, duration: 8, offset: 1.25, lane: 0,
+      prompt: '不应透出的完整 Prompt 正文', transition: '叠化', transitionDuration: 0.5,
+      originalAudioDetached: true,
+    };
+    mix.workspace.mockResolvedValue({
+      draftRevision: 1,
+      draft: { templates: [{ id: 't', workspace: { variants: [timelineVariant] } }] },
+      materials: [{ id: 'material-1', code: 'R-06', name: '腊肠煎制' }],
+    });
+    repo.get.mockResolvedValue({
+      id: 'run', workflowRunId: 'w', templateId: 't', status: 'COMPLETED',
+      createdAt: new Date('2026-09-23T04:00:00.000Z'), startedAt: null, completedAt: null,
+      items: [{
+        id: 'item', variantId: 'v', name: '成片 01', shardIndex: 0,
+        sourceTimelineHash, snapshot: {
+          sourceTimelineHash, duration: 10, variant: timelineVariant, clips: [clip],
+          facts: [{ id: 'fact-1', text: '广式腊肠采用传统风干工艺', artifactId: 'artifact', revision: 2 }],
+          dependencies: [],
+        }, checkpoint: {
+          narrationLayoutVersion: 'SLOT_V1',
+          script: [{ id: 'line-1', slotId: 'slot-product', text: '依据商品事实组织的文案', start: 2, end: 10, factIds: ['fact-1'] }],
+        }, status: 'COMPLETED', stage: 'READY',
+        errorMessage: null, startedAt: null, completedAt: null,
+        updatedAt: new Date('2026-09-23T04:00:00.000Z'),
+      }],
+    } as never);
+
+    const result = await service.get('project', 'run');
+    expect(result.items[0]?.sourceClips).toEqual([{
+      slotLabel: '产品展示', materialName: 'R-06 · 腊肠煎制', sourceOffset: 1.25,
+      timelineStart: 2, duration: 8, transition: '叠化', transitionDuration: 0.5,
+      originalAudioDetached: true,
+    }]);
+    expect(result.items[0]?.sourceFacts).toEqual([{ id: 'fact-1', text: '广式腊肠采用传统风干工艺' }]);
+    expect(JSON.stringify(result.items[0]?.sourceClips)).not.toContain('secret-file-id');
+    expect(JSON.stringify(result.items[0])).not.toContain('完整 Prompt 正文');
+  });
+
   it('allows only the current item’s archived voice for subtitle-only redo', async () => {
     const { service, repo, working } = harness();
     const run = completedRun(), item = run.items[0]!;

@@ -13,6 +13,7 @@ const sampleText = (value: string, maxLength = 140) => {
 export function packagingStageSamples(items: PackagingItem[], stage: PackagingStage) {
   const inputSamples: string[] = [];
   const outputSamples: string[] = [];
+  const audioPreviews: Array<{ label: string; fileObjectId: string }> = [];
   const append = (target: string[], item: PackagingItem, text: string) => {
     if (!text || target.length >= MAX_STAGE_SAMPLES) return;
     target.push(`${item.name} · ${sampleText(text)}`);
@@ -26,56 +27,101 @@ export function packagingStageSamples(items: PackagingItem[], stage: PackagingSt
     const vision = checkpoint.vision ?? [];
     const script = checkpoint.script ?? [];
     const captions = checkpoint.captions ?? [];
-
+    const sourceFacts = item.sourceFacts ?? [];
+    const factsById = new Map(sourceFacts.map((fact) => [fact.id, fact.text]));
+    const sourceClips = item.sourceClips ?? item.sourceVisualTimeline.slots.map((slot) => ({
+      slotLabel: slot.label,
+      materialName: '来源视频素材',
+      sourceOffset: item.sourceVisualTimeline.offsets?.[slot.id] ?? 0,
+      timelineStart: item.sourceVisualTimeline.timelineStarts?.[slot.id] ?? 0,
+      duration: slot.duration,
+      transition: slot.transition,
+      transitionDuration: slot.transitionDuration ?? 0,
+      originalAudioDetached: item.sourceVisualTimeline.detachedAudios?.some(
+        (audio) => audio.sourceSlotId === slot.id,
+      ) ?? false,
+    }));
+    const clipContext = (clip: (typeof sourceClips)[number]) =>
+      `${clip.slotLabel} · ${clip.materialName} · 原片 ${clip.sourceOffset.toFixed(1)}–${(clip.sourceOffset + clip.duration).toFixed(1)} 秒 · 成片 ${clip.timelineStart.toFixed(1)}–${(clip.timelineStart + clip.duration).toFixed(1)} 秒`;
+    const lineFacts = (line: (typeof script)[number]) => line.factIds
+      .map((id) => factsById.get(id))
+      .filter((text): text is string => Boolean(text));
     switch (stage) {
       case 'SNAPSHOT': {
-        const boundSlots = item.sourceVisualTimeline.slots.filter(
-          (slot) => item.sourceVisualTimeline.bindings[slot.id],
-        );
-        append(inputSamples, item, `画面时间轴包含 ${boundSlots.length} 个已绑定镜头`);
-        append(outputSamples, item, `已冻结 ${item.sourceVisualTimeline.slots.length} 个镜头的时间轴`);
+        for (const clip of sourceClips) append(inputSamples, item, clipContext(clip));
+        for (const clip of sourceClips) {
+          const fade = clip.transitionDuration > 0 ? `，${clip.transition} ${clip.transitionDuration.toFixed(1)} 秒` : `，${clip.transition}`;
+          append(outputSamples, item, `已固定${clip.slotLabel}「${clip.materialName}」在成片 ${clip.timelineStart.toFixed(1)} 秒开始${fade}${clip.originalAudioDetached ? '，原声已分离' : ''}`);
+        }
         break;
       }
       case 'VISION': {
-        const clips = item.sourceVisualTimeline.slots.filter(
-          (slot) => item.sourceVisualTimeline.bindings[slot.id],
-        );
-        for (const slot of clips) append(inputSamples, item, `${slot.label} · ${slot.duration} 秒画面`);
+        for (const clip of sourceClips) append(inputSamples, item, `分析${clipContext(clip)}中的实际画面动作`);
         for (const result of vision) append(outputSamples, item, `${slotLabel(result.slotId)}：${result.description}`);
         break;
       }
       case 'SCRIPT': {
-        for (const result of vision) append(inputSamples, item, `${slotLabel(result.slotId)}：${result.description}`);
-        for (const line of script) append(outputSamples, item, `${slotLabel(line.slotId)}：${line.text}`);
+        for (const line of script) {
+          const visual = vision.find((result) => result.slotId === line.slotId)?.description;
+          const facts = lineFacts(line);
+          append(inputSamples, item, `${slotLabel(line.slotId)}画面：${visual || '等待视觉理解结果'}${facts.length ? `；已确认商品依据：${facts.join('；')}` : ''}`);
+        }
+        for (const line of script) {
+          const facts = lineFacts(line);
+          append(outputSamples, item, `${slotLabel(line.slotId)}口播：「${line.text}」${facts.length ? `；依据：${facts.join('；')}` : ''}`);
+        }
         break;
       }
       case 'VOICE': {
-        for (const line of script) append(inputSamples, item, `${slotLabel(line.slotId)}：${line.text}`);
+        for (const line of script) append(inputSamples, item, `${slotLabel(line.slotId)}待配音文案：「${line.text}」`);
         for (const line of script) {
           const audio = checkpoint.voices?.[line.id];
-          if (audio) append(outputSamples, item, `${slotLabel(line.slotId)} · 配音 ${audio.duration.toFixed(1)} 秒`);
+          if (audio) {
+            append(outputSamples, item, `${slotLabel(line.slotId)}「${line.text}」${audio.voiceProfile?.name ? ` · ${audio.voiceProfile.name}` : ''} · 配音已生成，${audio.duration.toFixed(1)} 秒`);
+            if (audioPreviews.length < MAX_STAGE_SAMPLES && audio.fileObjectId)
+              audioPreviews.push({ label: `${item.name} · ${slotLabel(line.slotId)}配音试听`, fileObjectId: audio.fileObjectId });
+          }
         }
         break;
       }
       case 'MUSIC': {
         if (checkpoint.musicBrief) append(inputSamples, item, checkpoint.musicBrief);
-        else if (item.sourceVisualTimeline.slots.length) {
-          append(inputSamples, item, `按成片画面与总时长 ${item.sourceVisualTimeline.slots.reduce((sum, slot) => sum + slot.duration, 0).toFixed(1)} 秒生成配乐`);
+        else if (sourceClips.length) {
+          append(inputSamples, item, `根据${sourceClips.slice(0, 3).map((clip) => `${clip.slotLabel}「${clip.materialName}」`).join('、')}的画面节奏制作配乐`);
         }
-        if (checkpoint.music) append(outputSamples, item, `纯音乐已生成 · ${checkpoint.music.duration.toFixed(1)} 秒`);
+        if (checkpoint.music) {
+          append(outputSamples, item, `纯音乐已生成${checkpoint.musicBrief ? ` · 配乐方向：「${checkpoint.musicBrief}」` : ''} · 覆盖成片 ${checkpoint.music.duration.toFixed(1)} 秒`);
+          if (audioPreviews.length < MAX_STAGE_SAMPLES && checkpoint.music.fileObjectId)
+            audioPreviews.push({ label: `${item.name} · 纯音乐试听`, fileObjectId: checkpoint.music.fileObjectId });
+        }
         break;
       }
       case 'CAPTIONS': {
         for (const line of script) {
           const audio = checkpoint.voices?.[line.id];
-          if (audio) append(inputSamples, item, `${line.text} · 配音 ${audio.duration.toFixed(1)} 秒`);
+          if (audio) append(inputSamples, item, `口播「${line.text}」· 实际配音 ${audio.start.toFixed(1)}–${(audio.start + audio.duration).toFixed(1)} 秒`);
         }
         for (const caption of captions) append(outputSamples, item, `${caption.text} · ${caption.start.toFixed(1)}–${caption.end.toFixed(1)} 秒`);
         break;
       }
       case 'READY': {
-        if (script.length) append(inputSamples, item, `${script.length} 条口播${checkpoint.music ? ' · 纯音乐已就绪' : ''} · ${captions.length} 条字幕`);
-        if (item.status === 'COMPLETED') append(outputSamples, item, '包装草稿已就绪，可试听和检查');
+        for (const line of script) {
+          const audio = checkpoint.voices?.[line.id];
+          const caption = captions.find((entry) => entry.voiceLineId === line.id || entry.id === line.id);
+          append(inputSamples, item, `口播「${line.text}」${audio ? ` · 配音 ${audio.duration.toFixed(1)} 秒` : ''}${caption ? ` · 字幕「${caption.text}」` : ''}`);
+          if (audio && audioPreviews.length < MAX_STAGE_SAMPLES && audio.fileObjectId)
+            audioPreviews.push({ label: `${item.name} · ${slotLabel(line.slotId)}配音试听`, fileObjectId: audio.fileObjectId });
+        }
+        if (checkpoint.music) {
+          append(inputSamples, item, `纯音乐已就绪${checkpoint.musicBrief ? ` · ${checkpoint.musicBrief}` : ''}`);
+          if (audioPreviews.length < MAX_STAGE_SAMPLES && checkpoint.music.fileObjectId)
+            audioPreviews.push({ label: `${item.name} · 纯音乐试听`, fileObjectId: checkpoint.music.fileObjectId });
+        }
+        if (item.status === 'COMPLETED') {
+          const line = script[0];
+          const caption = captions[0];
+          append(outputSamples, item, `「${item.name}」包装草稿已就绪${line ? ` · 口播：「${line.text}」` : ''}${caption ? ` · 字幕：「${caption.text}」` : ''}${checkpoint.music ? ' · 含纯音乐' : ''}，可试听和检查`);
+        }
         break;
       }
     }
@@ -83,7 +129,7 @@ export function packagingStageSamples(items: PackagingItem[], stage: PackagingSt
     if (inputSamples.length >= MAX_STAGE_SAMPLES && outputSamples.length >= MAX_STAGE_SAMPLES) break;
   }
 
-  return { inputSamples, outputSamples };
+  return { inputSamples, outputSamples, audioPreviews };
 }
 
 export const packagingStageDetails: Record<

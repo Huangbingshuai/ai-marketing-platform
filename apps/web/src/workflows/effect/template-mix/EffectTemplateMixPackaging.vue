@@ -97,7 +97,7 @@ const stageState = (stage: PackagingStage) => stageStates.value[stage];
 const selectedStageSamples = computed(() =>
   selectedStage.value && run.value
     ? packagingStageSamples(run.value.items, selectedStage.value)
-    : { inputSamples: [], outputSamples: [] },
+    : { inputSamples: [], outputSamples: [], audioPreviews: [] },
 );
 const statusLabel: Record<string, string> = {
   QUEUED: '排队中',
@@ -654,7 +654,13 @@ onBeforeUnmount(() => {
               </li>
             </ul>
             <p v-else class="workflow-detail-empty-samples">{{ run ? '当前阶段暂无已保存的结果样例' : '读取任务后显示实际结果样例' }}</p>
-            <p v-if="run" role="status">{{ stageState(selectedStage).label }} · 已产出 {{ stageState(selectedStage).completed }} / {{ run.items.length }} 条</p>
+            <div v-if="selectedStageSamples.audioPreviews.length" class="workflow-audio-previews">
+              <label v-for="(preview, index) in selectedStageSamples.audioPreviews" :key="`audio-${index}`">
+                <span>{{ preview.label }}</span>
+                <audio controls preload="none" :src="fileUrl(preview.fileObjectId)">{{ preview.label }}</audio>
+              </label>
+            </div>
+            <p v-if="run" role="status">阶段状态：{{ stageState(selectedStage).label }}</p>
             <p v-else role="status">{{ loading ? '正在读取结果…' : loadError ? '暂时无法读取结果' : '尚未生成结果' }}</p>
           </section>
         </template>
@@ -758,6 +764,9 @@ p {
   flex-shrink: 0;
 }
 .workflow-graph-node small.packaging-stage-counts { color: #435b7d; }
+.workflow-audio-previews { display: grid; margin-top: 8px; gap: 8px; }
+.workflow-audio-previews label { display: grid; gap: 4px; color: #52617a; font-size: 9px; }
+.workflow-audio-previews audio { width: 100%; height: 32px; }
 .packaging-dialog {
   max-width: calc(100vw - 32px);
 }

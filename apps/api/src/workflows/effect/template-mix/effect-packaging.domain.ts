@@ -97,6 +97,8 @@ export function packagingSnapshot(
     return {
       slotId: slot.id,
       materialId: m.id,
+      materialCode: m.code,
+      materialName: m.name,
       fileObjectId: m.fileObjectId,
       contentHash: m.contentHash,
       start,

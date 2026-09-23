@@ -31,6 +31,9 @@ export type PackagingFact = { id: string; text: string; artifactId: string; revi
 export type PackagingClip = {
   slotId: string;
   materialId: string;
+  /** Frozen user-facing source label; optional on historical snapshots. */
+  materialCode?: string;
+  materialName?: string;
   fileObjectId: string;
   contentHash: string;
   start: number;
@@ -214,6 +217,19 @@ export type PackagingItem = {
   shardIndex: number;
   sourceTimelineHash: string;
   sourceVisualTimeline: ReturnType<typeof packagingVisualTimeline>;
+  /** Safe, user-facing projection of frozen source clips; never includes file or material IDs. */
+  sourceClips?: Array<{
+    slotLabel: string;
+    materialName: string;
+    sourceOffset: number;
+    timelineStart: number;
+    duration: number;
+    transition: string;
+    transitionDuration: number;
+    originalAudioDetached: boolean;
+  }>;
+  /** Confirmed product facts used by this package, for explanatory node examples. */
+  sourceFacts?: Array<{ id: string; text: string }>;
   status: PackagingStatus;
   stage: PackagingStage;
   checkpoint: PackagingCheckpoint;

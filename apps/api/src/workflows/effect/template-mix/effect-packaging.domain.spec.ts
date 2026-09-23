@@ -51,6 +51,8 @@ const variant = (): EffectTemplateMixVariant => ({
 const materials = [
   {
     id: 'clip',
+    code: 'R-06',
+    name: '腊肠煎制',
     artifactId: 'clip',
     fileObjectId: 'video',
     duration: 15,
@@ -168,6 +170,11 @@ describe('slot-bound narration layout', () => {
   it.each([4, 15])('accepts %s-second slots', (duration) => {
     const v = variant(); v.slots[0]!.duration = duration;
     expect(packagingSnapshot(v, materials, sources()).clips[0]!.duration).toBe(duration);
+  });
+  it('freezes safe source names in the packaging snapshot without replacing the private prompt field', () => {
+    const clip = packagingSnapshot(variant(), materials, sources()).clips[0]!;
+    expect(clip).toMatchObject({ materialCode: 'R-06', materialName: '腊肠煎制' });
+    expect(clip.prompt).toBe('镜头原始Prompt');
   });
   it.each([3.99, 15.01, NaN])('rejects %s-second slots before paid work', (duration) => {
     const v = variant(); v.slots[0]!.duration = duration;

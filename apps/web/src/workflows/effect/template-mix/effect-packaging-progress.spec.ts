@@ -84,10 +84,16 @@ describe('packaging workflow progress', () => {
       name: '成片 01',
       stale: false,
       status: 'COMPLETED',
-      sourceVisualTimeline: source,
+      sourceVisualTimeline: { ...source, offsets: { 'slot-1': 1.25 }, timelineStarts: { 'slot-1': 2 } },
+      sourceClips: [{
+        slotLabel: '产品展示', materialName: 'R-06 · 腊肠煎制', sourceOffset: 1.25,
+        timelineStart: 2, duration: 8, transition: '叠化', transitionDuration: 0.5,
+        originalAudioDetached: true,
+      }],
+      sourceFacts: [{ id: 'fact-1', text: '广式腊肠采用传统风干工艺' }],
       checkpoint: {
         vision: [{ slotId: 'slot-1', start: 0, end: 8, description: '木勺将食材放入盘中' }],
-        script: [{ id: 'line-1', slotId: 'slot-1', text: '把美味轻松端上桌。', start: 0, end: 3, factIds: [] }],
+        script: [{ id: 'line-1', slotId: 'slot-1', text: '把美味轻松端上桌。', start: 0, end: 3, factIds: ['fact-1'] }],
         voices: { 'line-1': { fileObjectId: 'private-id', duration: 2.4, start: 0, volume: 1 } },
         musicBrief: '轻快温暖的纯音乐',
         music: { fileObjectId: 'private-id', duration: 8, start: 0, volume: 0.2 },
@@ -95,19 +101,35 @@ describe('packaging workflow progress', () => {
       },
     } as unknown as PackagingItem;
     expect(packagingStageSamples([actual], 'VISION')).toEqual({
-      inputSamples: ['成片 01 · 产品展示 · 8 秒画面'],
+      inputSamples: ['成片 01 · 分析产品展示 · R-06 · 腊肠煎制 · 原片 1.3–9.3 秒 · 成片 2.0–10.0 秒中的实际画面动作'],
       outputSamples: ['成片 01 · 产品展示：木勺将食材放入盘中'],
+      audioPreviews: [],
     });
+    expect(packagingStageSamples([actual], 'SNAPSHOT').outputSamples[0]).toContain(
+      '已固定产品展示「R-06 · 腊肠煎制」在成片 2.0 秒开始，叠化 0.5 秒，原声已分离',
+    );
+    expect(packagingStageSamples([actual], 'SCRIPT').inputSamples[0]).toContain(
+      '已确认商品依据：广式腊肠采用传统风干工艺',
+    );
     expect(packagingStageSamples([actual], 'SCRIPT').outputSamples).toEqual([
-      '成片 01 · 产品展示：把美味轻松端上桌。',
+      '成片 01 · 产品展示口播：「把美味轻松端上桌。」；依据：广式腊肠采用传统风干工艺',
     ]);
     expect(packagingStageSamples([actual], 'VOICE').outputSamples).toEqual([
-      '成片 01 · 产品展示 · 配音 2.4 秒',
+      '成片 01 · 产品展示「把美味轻松端上桌。」 · 配音已生成，2.4 秒',
     ]);
+    expect(packagingStageSamples([actual], 'VOICE').audioPreviews).toEqual([
+      { label: '成片 01 · 产品展示配音试听', fileObjectId: 'private-id' },
+    ]);
+    expect(packagingStageSamples([actual], 'MUSIC').outputSamples[0]).toContain(
+      '纯音乐已生成 · 配乐方向：「轻快温暖的纯音乐」',
+    );
     expect(packagingStageSamples([actual], 'CAPTIONS').outputSamples).toEqual([
       '成片 01 · 把美味轻松端上桌。 · 0.1–2.4 秒',
     ]);
-    expect(JSON.stringify(packagingStageSamples([actual], 'VOICE'))).not.toContain('private-id');
+    expect(packagingStageSamples([actual], 'READY').outputSamples[0]).toContain(
+      '口播：「把美味轻松端上桌。」 · 字幕：「把美味轻松端上桌。」 · 含纯音乐',
+    );
+    expect(JSON.stringify(packagingStageSamples([actual], 'VOICE').outputSamples)).not.toContain('private-id');
   });
   it('caps examples and hides samples whose source timeline is stale', () => {
     const slots = Array.from({ length: 7 }, (_, index) => ({ id: `slot-${index}`, label: `镜头 ${index}`, duration: 2 }));
@@ -142,7 +164,8 @@ describe('packaging workflow progress', () => {
     expect(component).toContain('packagingStageSamples(run.value.items, selectedStage.value)');
     expect(component).toContain('本阶段输入示例（最多 4 项）');
     expect(component).toContain('本阶段结果示例（最多 4 项）');
-    expect(component).toContain('已产出 {{ stageState(selectedStage).completed }} / {{ run.items.length }} 条');
+    expect(component).toContain('阶段状态：{{ stageState(selectedStage).label }}');
+    expect(component).toContain('selectedStageSamples.audioPreviews');
     expect(component).not.toContain('class="packaging-run-summary"');
     expect(component).not.toContain('class="packaging-results"');
     expect(component).not.toContain('成片结果与分片进度');
