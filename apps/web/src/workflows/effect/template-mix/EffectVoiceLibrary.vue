@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { AudioLines, Check, LoaderCircle, Play, RefreshCw } from '@lucide/vue';
+import { AudioLines, Check, LoaderCircle, RefreshCw } from '@lucide/vue';
 import type {
   ApiResponse,
   EffectVoiceCatalog,
@@ -25,6 +25,7 @@ const loading = ref(true),
 const selectedId = computed(() => props.selectedId || catalog.value.defaultId);
 const player = ref<HTMLAudioElement | null>(null);
 const audition = ref<EffectVoicePreview | null>(null);
+const playAfterGenerationId = ref('');
 let generation = 0,
   timer: ReturnType<typeof setTimeout> | undefined,
   controller: AbortController | undefined;
@@ -53,6 +54,18 @@ const audioUrl = computed(() =>
 function stop() {
   player.value?.pause();
 }
+async function playPreview(row: EffectVoicePreview) {
+  if (!row.fileObjectId) return;
+  stop();
+  audition.value = row;
+  await nextTick();
+  const audio = player.value;
+  if (!audio) return;
+  audio.currentTime = 0;
+  await audio.play().catch(() => {
+    error.value = '浏览器未能播放音色，请再次点击该音色重播';
+  });
+}
 function stopPolling() {
   clearTimeout(timer);
   controller?.abort();
@@ -75,7 +88,22 @@ async function refresh(initial = false) {
     catalog.value = voices.data;
     previews.value = rows.data;
     error.value = '';
-    if (rows.data.some(isActive)) timer = setTimeout(() => void refresh(), 1500);
+    const pendingProfileId = playAfterGenerationId.value;
+    if (pendingProfileId) {
+      const profile = voices.data.profiles.find((item) => item.id === pendingProfileId);
+      const row = profile && rows.data.find(
+        (item) => item.voiceProfileId === profile.id && item.version === profile.version,
+      );
+      if (row?.status === 'COMPLETED' && row.fileObjectId) {
+        playAfterGenerationId.value = '';
+        if (selectedId.value === pendingProfileId) await playPreview(row);
+      } else if (row && ['FAILED', 'CANCELLED'].includes(row.status)) {
+        playAfterGenerationId.value = '';
+      }
+    }
+    if (rows.data.some(isActive) || playAfterGenerationId.value) {
+      timer = setTimeout(() => void refresh(), 1500);
+    }
   } catch (reason) {
     if (current === generation && !read.signal.aborted) {
       error.value = reason instanceof Error ? reason.message : '音色库读取失败';
@@ -85,22 +113,19 @@ async function refresh(initial = false) {
     if (current === generation) loading.value = false;
   }
 }
-async function listen(profile: EffectVoiceProfile) {
+async function selectAndPlay(profile: EffectVoiceProfile) {
+  emit('select', profile.id);
+  emit('audition');
   if (busyId.value) return;
   const cached = previewFor(profile);
   if (cached?.status === 'COMPLETED' && cached.fileObjectId) {
-    stop();
-    emit('audition');
-    audition.value = cached;
-    await nextTick();
-    await player.value?.play().catch(() => {
-      error.value = '请点击下方播放器播放试听';
-    });
+    await playPreview(cached);
     return;
   }
   if (isActive(cached)) return;
   const current = generation;
   busyId.value = profile.id;
+  playAfterGenerationId.value = profile.id;
   error.value = '';
   // Keep the key on an uncertain network response; a repeat click safely replays that request.
   const key = pendingKeys.get(profile.id) ?? crypto.randomUUID();
@@ -117,21 +142,10 @@ async function listen(profile: EffectVoiceProfile) {
     await refresh();
   } catch (reason) {
     if (current === generation)
-      error.value = reason instanceof Error ? reason.message : '试听生成失败';
+      error.value = reason instanceof Error ? reason.message : '音色播放失败';
+    if (current === generation) playAfterGenerationId.value = '';
   } finally {
     if (current === generation) busyId.value = '';
-  }
-}
-async function cancel(row: EffectVoicePreview) {
-  const current = generation;
-  try {
-    await requestJson(root() + `/voice-previews/${row.id}/cancel`, {
-      method: 'POST',
-      operation: '取消试听',
-    });
-    if (current === generation) await refresh();
-  } catch (reason) {
-    if (current === generation) error.value = reason instanceof Error ? reason.message : '取消失败';
   }
 }
 watch(
@@ -147,6 +161,7 @@ watch(
     stopPolling();
     stop();
     audition.value = null;
+    playAfterGenerationId.value = '';
     pendingKeys.clear();
     previews.value = [];
     catalog.value = { profiles: [], defaultId: null };
@@ -164,17 +179,18 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="voice-library" aria-label="火山音色库">
-    <header>
-      <div><strong>火山音色库</strong><span>选择后用于下一次包装或重做口播</span></div>
-      <button aria-label="刷新音色库" @click="refresh(true)"><RefreshCw :size="15" /></button>
-    </header>
+  <section class="voice-library" aria-label="音色选择">
+    <div class="voice-toolbar">
+      <span v-if="error" class="voice-error" role="alert">{{ error }}</span>
+      <button aria-label="刷新音色" title="刷新音色" @click="refresh(true)">
+        <RefreshCw :size="15" />
+      </button>
+    </div>
     <p v-if="loading" class="voice-state" role="status">
       <LoaderCircle class="spin" :size="17" />正在读取音色…
     </p>
-    <p v-if="error" class="voice-error" role="alert">{{ error }}</p>
     <p v-if="!loading && !catalog.profiles.length && !error" class="voice-state">
-      暂无已验证音色，请先配置火山音色库。
+      暂无可用音色
     </p>
     <p
       v-if="
@@ -186,76 +202,36 @@ onBeforeUnmount(() => {
     </p>
     <p v-if="unavailableFailure" class="voice-error" role="alert">{{ unavailableFailure }}</p>
     <div class="voice-cards">
-      <article
+      <button
         v-for="profile in catalog.profiles"
         :key="profile.id"
         class="voice-card"
         :class="{ selected: selectedId === profile.id }"
+        :disabled="isActive(previewFor(profile))"
+        :aria-pressed="selectedId === profile.id"
+        :aria-label="`选择并播放 ${profile.name}`"
+        @click="selectAndPlay(profile)"
       >
-        <button
-          class="voice-select"
-          :aria-pressed="selectedId === profile.id"
-          :aria-label="`选择音色 ${profile.name}`"
-          @click="emit('select', profile.id)"
-        >
-          <span class="voice-avatar"><AudioLines :size="23" /></span>
-          <span class="voice-copy"
-            ><b
-              >{{ profile.name }}
-              <small>{{ profile.gender === 'FEMALE' ? '女声' : '男声' }}</small></b
-            ><span>{{ profile.description }}</span></span
-          >
-          <Check v-if="selectedId === profile.id" :size="17" />
-        </button>
-        <div class="voice-actions">
-          <button :disabled="!!busyId || isActive(previewFor(profile))" @click="listen(profile)">
-            <LoaderCircle
-              v-if="busyId === profile.id || isActive(previewFor(profile))"
-              class="spin"
-              :size="13"
-            /><Play v-else :size="13" />
-            {{
-              isActive(previewFor(profile))
-                ? previewFor(profile)?.status === 'QUEUED'
-                  ? '排队中'
-                  : '生成中'
-                : previewFor(profile)?.status === 'COMPLETED'
-                  ? '试听'
-                  : ['FAILED', 'CANCELLED'].includes(previewFor(profile)?.status ?? '')
-                    ? '重新生成试听'
-                    : '生成试听'
-            }}
-          </button>
-          <button v-if="isActive(previewFor(profile))" @click="cancel(previewFor(profile)!)">
-            取消
-          </button>
-          <small v-else>{{
-            previewFor(profile)?.status === 'COMPLETED'
-              ? '已缓存，可重复播放'
-              : previewFor(profile)?.status === 'CANCELLED'
-                ? '已取消，可重新生成'
-                : '首次试听调用火山配音'
-          }}</small>
-        </div>
-        <p v-if="previewFor(profile)?.errorMessage" class="voice-error">
+        <span class="voice-card-name">{{ profile.name }}</span>
+        <span class="voice-card-meta">{{ profile.gender === 'FEMALE' ? '女声' : '男声' }}</span>
+        <span v-if="busyId === profile.id || isActive(previewFor(profile))" class="voice-card-state">
+          <LoaderCircle class="spin" :size="13" />
+          {{ previewFor(profile)?.status === 'QUEUED' ? '排队中' : '生成中' }}
+        </span>
+        <AudioLines v-else-if="selectedId === profile.id" class="voice-card-selected" :size="16" />
+        <Check v-else class="voice-card-check" :size="15" />
+        <span v-if="previewFor(profile)?.errorMessage" class="voice-error">
           {{ previewFor(profile)?.errorMessage }}
-        </p>
-      </article>
+        </span>
+      </button>
     </div>
-    <footer v-if="audioUrl">
-      <span
-        >{{ catalog.profiles.find((p) => p.id === audition?.voiceProfileId)?.name }} ·
-        音色试听</span
-      >
-      <audio
-        ref="player"
-        :src="audioUrl"
-        controls
-        preload="none"
-        @play="emit('audition')"
-        @error="error = '试听音频读取失败，请刷新后重试'"
-      />
-    </footer>
+    <audio
+      v-if="audioUrl"
+      ref="player"
+      :src="audioUrl"
+      preload="none"
+      @error="error = '音色音频读取失败，请刷新后重试'"
+    />
   </section>
 </template>
 
@@ -264,36 +240,22 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: auto;
   flex: 1;
-  padding: 14px;
+  padding: 12px;
   color: #29476c;
   background: #f8faff;
 }
-header,
-.voice-actions,
-.voice-select,
 .voice-state {
   display: flex;
   align-items: center;
   gap: 9px;
 }
-header {
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-header div,
-.voice-copy {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-header strong {
-  font-size: 14px;
-}
-header span,
-.voice-actions small,
-.voice-copy > span {
-  font-size: 11px;
-  color: #7486a0;
+.voice-toolbar {
+  min-height: 28px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 button {
   cursor: pointer;
@@ -316,53 +278,57 @@ button:disabled {
 }
 .voice-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+  gap: 8px;
 }
 .voice-card {
+  position: relative;
+  min-height: 82px;
+  padding: 12px 8px 10px;
   border: 1px solid #dce5f1;
   background: #fff;
-  border-radius: 9px;
-  padding: 10px;
+  border-radius: 10px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 5px;
+  color: #29476c;
+  text-align: center;
+  white-space: normal;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
 }
 .voice-card.selected {
-  border-color: #71a1ff;
-  background: #eff5ff;
+  border-color: #477eff;
+  background: #edf4ff;
+  box-shadow: inset 0 0 0 1px #477eff;
 }
-.voice-select {
-  padding: 0;
-  width: 100%;
-  text-align: left;
-  border: 0;
-  background: transparent;
+.voice-card:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
-.voice-copy {
-  flex: 1;
+.voice-card-name {
+  overflow: hidden;
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.voice-copy b {
-  font-size: 13px;
+.voice-card-meta {
+  color: #8292aa;
+  font-size: 10px;
 }
-.voice-copy small {
+.voice-card-selected,
+.voice-card-check {
+  color: #2563eb;
+}
+.voice-card-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   color: #8292aa;
-  font-weight: 400;
-}
-.voice-avatar {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  flex: none;
-  background: #e8f0ff;
-  color: #2563eb;
-  border-radius: 8px;
-}
-.voice-actions {
-  margin-top: 12px;
-  flex-wrap: wrap;
-}
-.voice-actions button {
-  font-size: 11px;
 }
 .voice-error {
   color: #b54736;
@@ -374,20 +340,8 @@ button:disabled {
   font-size: 12px;
   padding: 15px 0;
 }
-footer {
-  position: sticky;
-  bottom: -14px;
-  margin: 14px -14px -14px;
-  padding: 10px 14px;
-  border-top: 1px solid #dce5f1;
-  background: #fff;
-  display: grid;
-  gap: 7px;
-  font-size: 11px;
-}
 audio {
-  width: 100%;
-  height: 34px;
+  display: none;
 }
 .spin {
   animation: rotate 1s linear infinite;

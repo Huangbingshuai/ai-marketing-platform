@@ -22,15 +22,21 @@ describe('voice library UI boundaries', () => {
     expect(source).toContain('pendingKeys.get(profile.id)');
     expect(source).toContain('isActive(cached)');
   });
-  it('plays cached audio, reports real states and stops audition on main playback', () => {
+  it('plays a voice when its card is selected and replays cached audio on another click', () => {
     expect(source).toContain("cached?.status === 'COMPLETED'");
+    expect(source).toContain('async function selectAndPlay(profile: EffectVoiceProfile)');
+    expect(source).toContain('emit(\'select\', profile.id)');
+    expect(source).toContain('await playPreview(cached)');
+    expect(source).toContain('playAfterGenerationId.value = profile.id');
+    expect(source).toContain('audio.currentTime = 0');
+    expect(source).toContain('aria-label="音色选择"');
+    expect(source).not.toContain('试听</button>');
+    expect(source).not.toContain('controls');
     expect(source).toMatch(/watch\(\s*\(\) => props\.playing/);
     expect(source).toContain('if (playing) stop()');
-    expect(source).toContain('row.id}/cancel');
-    expect(source).toContain('首次试听调用火山配音');
-    expect(source).toContain('暂无已验证音色');
     expect(source).toContain('role="alert"');
     expect(source).toContain('aria-pressed');
     expect(source).not.toContain('openspeech.bytedance.com');
+    expect(source).not.toContain('火山音色库');
   });
 });
