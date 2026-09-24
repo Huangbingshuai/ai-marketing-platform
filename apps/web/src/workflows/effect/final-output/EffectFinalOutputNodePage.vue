@@ -9,6 +9,7 @@ import type {
   FinalOutputRun,
 } from '@ai-marketing/contracts';
 import { apiUrl, requestJson } from '../../../api/http-client';
+import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import EffectTemplateMixThumbnail from '../template-mix/EffectTemplateMixThumbnail.vue';
 
 const props = defineProps<{ projectId: string; workflowRunId: string }>();
@@ -46,6 +47,7 @@ const runs = ref<FinalOutputRun[]>([]),
 const loading = ref(true),
   mixLoading = ref(true),
   busy = ref(false),
+  itemRerenderingId = ref(''),
   playingItemId = ref(''),
   error = ref(''),
   mixError = ref('');
@@ -299,12 +301,24 @@ async function command(action: 'retry' | 'cancel') {
   }
 }
 async function startRender() {
-  if (!run.value || run.value.status !== 'PENDING_RENDER' || busy.value) return;
+  if (!run.value || busy.value || active.value) return;
+  const rerender = run.value.status !== 'PENDING_RENDER';
+  if (rerender) {
+    const confirmed = await requestActionConfirmation({
+      eyebrow: '重新导出成片',
+      title: `重新导出 ${run.value.counts.total} 条成片？`,
+      description:
+        '将用当前选择的分辨率与帧率覆盖本批全部成片，渲染期间原有成片仍可下载。',
+      confirmLabel: '确认重新导出',
+      tone: 'warning',
+    });
+    if (!confirmed) return;
+  }
   busy.value = true;
   try {
     await requestJson(`${base.value}/${run.value.id}/render`, {
       method: 'POST',
-      operation: '开始导出成片',
+      operation: rerender ? '重新导出成片' : '开始导出成片',
       body: { resolution: resolution.value, frameRate: frameRate.value },
     });
     await refresh();
@@ -312,6 +326,29 @@ async function startRender() {
     error.value = reason instanceof Error ? reason.message : '启动成片渲染失败';
   } finally {
     busy.value = false;
+  }
+}
+async function rerenderItem(item: FinalOutputRun['items'][number]) {
+  if (!run.value || busy.value || active.value || itemRerenderingId.value) return;
+  const confirmed = await requestActionConfirmation({
+    eyebrow: '重新渲染成片',
+    title: `重新渲染「${displayName(item)}」？`,
+    description: '将按这条成片已保存的分辨率与帧率重新渲染，完成后覆盖原有成片。',
+    confirmLabel: '确认重新渲染',
+    tone: 'warning',
+  });
+  if (!confirmed) return;
+  itemRerenderingId.value = item.id;
+  try {
+    await requestJson(`${base.value}/${run.value.id}/items/${item.id}/render`, {
+      method: 'POST',
+      operation: '重新渲染成片',
+    });
+    await refresh();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '重新渲染成片失败';
+  } finally {
+    itemRerenderingId.value = '';
   }
 }
 function stop() {
@@ -356,15 +393,13 @@ watch(() => run.value?.id, () => {
   selectedItemIds.value = new Set();
   selectionMode.value = false;
   if (run.value) {
-    const saved = run.value.status === 'PENDING_RENDER'
-      ? settingsByTemplate.value.get(run.value.templateId)
-      : undefined;
+    const saved = settingsByTemplate.value.get(run.value.templateId);
     resolution.value = saved?.resolution ?? run.value.resolution;
     frameRate.value = saved?.frameRate ?? run.value.frameRate;
   }
 });
 watch([resolution, frameRate], ([nextResolution, nextFrameRate]) => {
-  if (run.value?.status !== 'PENDING_RENDER') return;
+  if (!run.value) return;
   settingsByTemplate.value.set(run.value.templateId, {
     resolution: nextResolution,
     frameRate: nextFrameRate,
@@ -451,13 +486,14 @@ onBeforeUnmount(stop);
               </option>
             </select>
           </label>
-      <section v-if="run.status === 'PENDING_RENDER' || active" class="render-settings" aria-label="成片输出设置">
+      <section class="render-settings" aria-label="成片输出设置">
         <div class="render-settings__copy">
           <span class="settings-icon"><Film :size="18" /></span>
           <div>
             <h3>成片输出设置</h3>
             <p v-if="run.status === 'PENDING_RENDER'">设置仅作用于左侧选中的模板；导出后将渲染 {{ run.counts.total }} 条成片</p>
-            <p v-else>正在渲染所选模板的成片，参数已冻结</p>
+            <p v-else-if="active">正在渲染所选模板的成片，渲染期间不可修改</p>
+            <p v-else>可随时调整分辨率与帧率，重新导出会按新规格覆盖本批全部成片</p>
           </div>
         </div>
         <label>
@@ -475,11 +511,9 @@ onBeforeUnmount(stop);
         </label>
         <button class="primary-button export-button" type="button" :disabled="busy || active" @click="startRender">
           <LoaderCircle v-if="busy || active" class="spin" :size="15" />
-          <Play v-else :size="15" />{{ busy ? '正在创建任务…' : active ? `渲染中 ${run.counts.completed}/${run.counts.total}` : `导出成片（${run.counts.total}）` }}
+          <RefreshCw v-else-if="run.status !== 'PENDING_RENDER'" :size="15" />
+          <Play v-else :size="15" />{{ busy ? '正在创建任务…' : active ? `渲染中 ${run.counts.completed}/${run.counts.total}` : run.status !== 'PENDING_RENDER' ? `重新导出成片（${run.counts.total}）` : `导出成片（${run.counts.total}）` }}
         </button>
-      </section>
-      <section v-else class="frozen-settings" aria-label="当前渲染规格">
-        <span>输出规格：<strong>{{ run.resolution }} · {{ run.frameRate }} fps</strong></span>
       </section>
       <section v-if="run.status !== 'PENDING_RENDER' && run.status !== 'COMPLETED'" class="batch-panel" aria-label="批次输出进度">
         <div class="batch-panel__heading">
@@ -636,6 +670,17 @@ onBeforeUnmount(stop);
                 :href="fileUrl(item.fileObjectId) + '?download=true'"
                 :download="`${displayName(item)}.mp4`"
               ><Download :size="14" />下载成片</a>
+              <button
+                v-if="run.status !== 'PENDING_RENDER'"
+                class="item-rerender-button"
+                type="button"
+                :disabled="busy || active || Boolean(itemRerenderingId)"
+                title="按这条成片已保存的规格重新渲染"
+                @click="rerenderItem(item)"
+              >
+                <LoaderCircle v-if="itemRerenderingId === item.id" class="spin" :size="14" />
+                <RefreshCw v-else :size="14" />{{ itemRerenderingId === item.id ? '重新渲染中…' : '重新渲染' }}
+              </button>
             </div>
           </article>
         </div>
@@ -993,8 +1038,7 @@ progress {
   border: 1px solid #dce6f5;
   border-radius: 16px;
 }
-.render-settings,
-.frozen-settings {
+.render-settings {
   display: flex;
   margin-bottom: 14px;
   padding: 16px;
@@ -1036,13 +1080,6 @@ progress {
 }
 .render-settings select { width: 100%; min-height: 38px; padding: 0 10px; }
 .export-button { min-width: 152px; min-height: 40px; }
-.frozen-settings {
-  min-height: 48px;
-  align-items: center;
-  color: #718096;
-  font-size: 11px;
-}
-.frozen-settings strong { color: #34445c; }
 .batch-panel__heading {
   justify-content: space-between;
   gap: 12px;
@@ -1410,6 +1447,27 @@ progress {
   border-radius: 9px;
   font-size: 11px;
 }
+.item-rerender-button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 32px;
+  margin-top: 6px;
+  padding: 0 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #42526a;
+  background: #fff;
+  border: 1px solid #e2e8f3;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+.item-rerender-button:hover:not(:disabled) {
+  color: #2563eb;
+  border-color: #a9c1ef;
+}
 .list-empty {
   display: flex;
   min-height: 180px;
@@ -1530,7 +1588,6 @@ progress {
   .render-settings__copy { flex-basis: 100%; }
   .render-settings label { flex: 1; }
   .export-button { flex: 1 1 100%; }
-  .frozen-settings { align-items: flex-start; flex-direction: column; }
   .batch-panel__heading {
     align-items: flex-start;
   }
