@@ -343,15 +343,15 @@ export class EffectFinalOutputService {
       await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
       const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
       if (!run) throw new NotFoundException('成片输出任务不存在');
-      if (run.status !== 'PENDING_RENDER') {
-        const sameSettings = run.items.every((item) => {
-          const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
-          return snapshot.resolution === settings.resolution && snapshot.frameRate === settings.frameRate;
-        });
-        if (sameSettings && ['QUEUED', 'RUNNING', 'PARTIAL', 'FAILED', 'CANCELLED', 'COMPLETED'].includes(run.status))
-          return;
+      // Export and re-export share one path: the first call starts a PENDING_RENDER batch, later
+      // calls re-render a finished one. Only an in-flight batch is off limits.
+      if (run.status === 'QUEUED' || run.status === 'RUNNING')
         throw new ConflictException('该模板已开始渲染，不能修改本批输出规格');
-      }
+      // A re-export must prove the upstream package is still current before it re-queues the whole
+      // batch -- otherwise every item fails asynchronously instead of returning one actionable 409.
+      if (run.status !== 'PENDING_RENDER')
+        for (const item of run.items)
+          await this.current(tx, projectId, run.workflowRunId, run.templateId, item.snapshot as unknown as FinalOutputSnapshot);
       for (const item of run.items) {
         const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
         await tx.effectFinalOutputItem.update({
@@ -364,9 +364,13 @@ export class EffectFinalOutputService {
           },
         });
       }
-      await tx.effectFinalOutputRun.update({ where: { id }, data: { status: 'QUEUED' } });
+      await tx.effectFinalOutputRun.update({
+        where: { id },
+        data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null, completedAt: null },
+      });
       await this.enqueue(tx, projectId, id);
-    }, { timeout: 60_000 });
+      // 100 items x upstream validation is the same order of work as complete().
+    }, { timeout: 120_000 });
     return this.get(projectId, id);
   }
 
@@ -632,8 +636,10 @@ export class EffectFinalOutputService {
         originalFileName,
       },
     });
+    let previousStorageKey: string | null = null;
+    let unchanged = false;
     try {
-      return await this.db.$transaction(
+      const uploaded = await this.db.$transaction(
         async (tx) => {
           await this.heartbeat(projectId, runId, token, tx);
           await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${item.run.workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR SHARE`;
@@ -656,6 +662,12 @@ export class EffectFinalOutputService {
               sha256,
             },
           });
+          // 先释放旧产物，好让 artifact commit 的孤儿守卫（finalOutputItems: { none: {} }）能认出旧 blob。
+          if (latest.fileObjectId)
+            await tx.effectFinalOutputItem.update({
+              where: { id: itemId },
+              data: { fileObjectId: null },
+            });
           const [result] = await this.working.commitValidatedArtifactsInTransaction(
             tx,
             projectId,
@@ -704,35 +716,87 @@ export class EffectFinalOutputService {
               },
             ],
           );
-          const asset = await tx.asset.create({
-            data: {
-              projectId,
-              name: item.name,
-              directory: 'FINAL_VIDEOS',
-              type: 'FINAL_VIDEO',
-              originalFileName,
-              mimeType: 'video/mp4',
-              sizeBytes: file.size,
-              storageKey: stored.key,
-              sourceNode: 'FINAL_OUTPUT',
-              sourceRunId: item.run.workflowRunId,
-              sourceArtifactId: result!.record.id,
-              idempotencyKey: `final-output:${itemId}`,
-              versions: {
-                create: {
+          // 重渲染出来的字节与上一版逐字节相同（同规格重渲染是确定性的）：artifact 会短路成
+          // unchanged，此时它仍指着旧 blob，绝不能让下面的 enqueueCleanup 删掉活文件。
+          // 条目恢复原状，顺手清掉这次多建的 fileObject。
+          if (result!.unchanged) {
+            unchanged = true;
+            await tx.fileObject.delete({ where: { id: fileObject.id } });
+            await tx.effectFinalOutputItem.update({
+              where: { id: itemId },
+              data: {
+                status: 'COMPLETED',
+                progress: 100,
+                errorMessage: null,
+                fileObjectId: latest.fileObjectId,
+                assetId: latest.assetId,
+              },
+            });
+            return { fileObjectId: latest.fileObjectId };
+          }
+          // 重渲染就地覆盖：asset 行不动（idempotencyKey 保留 → 不会二次插入撞唯一约束），
+          // 只把内容与单条 v1 兼容行换新，照 AssetRepository.recreateCurrent 的先例。
+          const asset = latest.assetId
+            ? await (async () => {
+                await tx.assetVersion.deleteMany({ where: { projectId, assetId: latest.assetId! } });
+                const replaced = await tx.asset.update({
+                  where: { id: latest.assetId! },
+                  data: {
+                    name: item.name,
+                    originalFileName,
+                    sizeBytes: file.size,
+                    storageKey: stored.key,
+                    sourceArtifactId: result!.record.id,
+                    currentVersion: 1,
+                    status: 'AVAILABLE',
+                  },
+                });
+                await tx.assetVersion.create({
+                  data: {
+                    projectId,
+                    assetId: replaced.id,
+                    version: 1,
+                    changeNote: '智能成片重新输出',
+                    status: 'AVAILABLE',
+                    qualityStatus: 'AVAILABLE',
+                    originalFileName,
+                    mimeType: 'video/mp4',
+                    sizeBytes: file.size,
+                    storageKey: stored.key,
+                  },
+                });
+                return replaced;
+              })()
+            : await tx.asset.create({
+                data: {
                   projectId,
-                  version: 1,
-                  changeNote: '智能成片输出',
-                  status: 'AVAILABLE',
-                  qualityStatus: 'AVAILABLE',
+                  name: item.name,
+                  directory: 'FINAL_VIDEOS',
+                  type: 'FINAL_VIDEO',
                   originalFileName,
                   mimeType: 'video/mp4',
                   sizeBytes: file.size,
                   storageKey: stored.key,
+                  sourceNode: 'FINAL_OUTPUT',
+                  sourceRunId: item.run.workflowRunId,
+                  sourceArtifactId: result!.record.id,
+                  idempotencyKey: `final-output:${itemId}`,
+                  versions: {
+                    create: {
+                      projectId,
+                      version: 1,
+                      changeNote: '智能成片输出',
+                      status: 'AVAILABLE',
+                      qualityStatus: 'AVAILABLE',
+                      originalFileName,
+                      mimeType: 'video/mp4',
+                      sizeBytes: file.size,
+                      storageKey: stored.key,
+                    },
+                  },
                 },
-              },
-            },
-          });
+              });
+          previousStorageKey = result!.previousStorageKey;
           await tx.effectFinalOutputItem.update({
             where: { id: itemId },
             data: {
@@ -747,6 +811,15 @@ export class EffectFinalOutputService {
         },
         { timeout: 30_000 },
       );
+      // 未变更时 artifact 没换 blob，这次上传的副本是多余的，直接删掉。
+      if (unchanged) {
+        await this.storage.delete(stored.key).catch(() => undefined);
+        return uploaded;
+      }
+      // 事务提交后再排清理：旧 blob 此刻才真正成为孤儿，回滚时这一步不该发生。
+      if (previousStorageKey)
+        await this.working.enqueueCleanup(projectId, previousStorageKey, 'FINAL_OUTPUT_REPLACED');
+      return uploaded;
     } catch (error) {
       await this.storage.delete(stored.key).catch(() => undefined);
       throw error;
@@ -819,6 +892,42 @@ export class EffectFinalOutputService {
       },
       { timeout: 30_000 },
     );
+  }
+  /** Re-renders one already-exported item against its own stored snapshot; the batch spec is untouched. */
+  async renderItem(projectId: string, id: string, itemId: string) {
+    await this.db.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+        const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
+        if (!run) throw new NotFoundException('成片输出任务不存在');
+        if (run.status === 'QUEUED' || run.status === 'RUNNING')
+          throw new ConflictException('该模板正在渲染，请等待本批完成后重试');
+        if (run.status === 'PENDING_RENDER')
+          throw new ConflictException('该模板尚未导出，请先导出成片');
+        const item = run.items.find((entry) => entry.id === itemId);
+        if (!item) throw new NotFoundException('成片条目不存在');
+        await this.current(
+          tx,
+          projectId,
+          run.workflowRunId,
+          run.templateId,
+          item.snapshot as unknown as FinalOutputSnapshot,
+        );
+        // Only this item goes back to QUEUED; claim() hands the worker exactly the non-COMPLETED
+        // items, so the rest of the batch is left alone.
+        await tx.effectFinalOutputItem.update({
+          where: { id: itemId },
+          data: { status: 'QUEUED', progress: 0, errorMessage: null },
+        });
+        await tx.effectFinalOutputRun.update({
+          where: { id },
+          data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null, completedAt: null },
+        });
+        await this.enqueue(tx, projectId, id);
+      },
+      { timeout: 30_000 },
+    );
+    return this.get(projectId, id);
   }
   async recoverExpired() {
     const rows = await this.db.effectFinalOutputRun.findMany({

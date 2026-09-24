@@ -73,6 +73,14 @@ export class EffectFinalOutputController {
   ) {
     return this.service.start(projectId, runId, body);
   }
+  @Post('final-output/:runId/items/:itemId/render')
+  renderItem(
+    @Param('projectId', uuid) projectId: string,
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+  ) {
+    return this.service.renderItem(projectId, runId, itemId);
+  }
   @Post('final-output/:runId/retry')
   retry(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {
     return this.service.retry(projectId, runId);
