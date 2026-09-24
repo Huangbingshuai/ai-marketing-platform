@@ -74,7 +74,6 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
             /^[a-zA-Z0-9_-]{1,80}$/.test(template.voiceProfileId))) &&
         Array.isArray(template.slots) &&
         Array.isArray(workspace?.variants) &&
-        workspace.variants.length <= 100 &&
         workspace.variants.every((rawVariant) => {
           const variant = object(rawVariant);
           return (
@@ -683,10 +682,11 @@ export class EffectTemplateMixService {
     value: unknown,
   ): Promise<EffectTemplateMixWorkspaceData> {
     const draft = draftOf(value);
-    const [previousState, lockedTemplateIds, packagingLockedIds, recentAiRuns] = await Promise.all([
+    const [previousState, lockedTemplateIds, packagingLockedIds, activePackagingIds, recentAiRuns] = await Promise.all([
       this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+      this.aiRuns?.activePackagingTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     const previous = previousState ? draftOf(previousState.state) : emptyDraft();
@@ -698,24 +698,42 @@ export class EffectTemplateMixService {
       );
     const activeSet = new Set(lockedTemplateIds);
     const packagingSet = new Set(packagingLockedIds);
-    for (const templateId of new Set([...activeSet, ...packagingSet])) {
+    const activePackagingSet = new Set(activePackagingIds);
+    for (const templateId of new Set([...activeSet, ...packagingSet, ...activePackagingSet])) {
       const before = previous.templates.find((entry) => entry.id === templateId);
       const next = draft.templates.find((entry) => entry.id === templateId);
+      const workspaceChanged = Boolean(
+        before && next && workflowStateHash(before.workspace) !== workflowStateHash(next.workspace),
+      );
+      const templateChanged = Boolean(
+        before && next && workflowStateHash(before.workspace.template) !== workflowStateHash(next.workspace.template),
+      );
+      const removedExistingVariant = Boolean(
+        before && next && before.workspace.variants.some(
+          (variant) => !next.workspace.variants.some((candidate) => candidate.id === variant.id),
+        ),
+      );
       if (
         !before ||
         !next ||
-        workflowStateHash(before.workspace) !== workflowStateHash(next.workspace)
+        ((activeSet.has(templateId) || activePackagingSet.has(templateId)) && workspaceChanged) ||
+        (packagingSet.has(templateId) && (templateChanged || removedExistingVariant))
       ) {
         throw new ApiHttpException(
-          packagingSet.has(templateId)
-            ? '智能成片包装已开始，此模板不能再修改'
+          packagingSet.has(templateId) || activePackagingSet.has(templateId)
+            ? templateChanged
+              ? '智能成片包装已开始，模板配置不能再修改'
+              : activePackagingSet.has(templateId)
+                ? '智能成片包装正在执行，暂不能修改成片工程'
+                : '智能成片包装后不能删除既有成片工程'
             : '智能填充正在运行，此模板暂时不能修改',
           HttpStatus.CONFLICT,
           'CONFLICT',
         );
       }
       next.aiFillLocked = activeSet.has(templateId);
-      next.packagingLocked = packagingSet.has(templateId) || Boolean(before.packagingLocked);
+      // Once a packaging run starts, the template and smart-fill configuration stay locked.
+      next.packagingLocked = packagingSet.has(templateId);
     }
     const currentSlotsValid = (
       slots: EffectTemplateMixSlot[],
@@ -750,7 +768,7 @@ export class EffectTemplateMixService {
     for (const entry of draft.templates) {
       const before = previous.templates.find((candidate) => candidate.id === entry.id);
       entry.aiFillLocked = activeSet.has(entry.id);
-      entry.packagingLocked = packagingSet.has(entry.id) || Boolean(before?.packagingLocked);
+      entry.packagingLocked = packagingSet.has(entry.id);
       const untrustedEntry = { ...entry };
       delete untrustedEntry.filledTemplateHash;
       const filledTemplateHash = this.filledHashForEntry(before ?? untrustedEntry, recentAiRuns);
@@ -806,12 +824,6 @@ export class EffectTemplateMixService {
       ? entry!.workspace.variants.find(({ id }) => id === targetVariantId)
       : undefined;
     if (targetVariantId && !target) this.notFound('当前成片工程不存在');
-    if (!target && entry!.workspace.variants.length >= 100)
-      throw new ApiHttpException(
-        '当前模板已达 100 条成片工程上限',
-        HttpStatus.BAD_REQUEST,
-        'VALIDATION_ERROR',
-      );
     if (entry!.packagingLocked)
       throw new ApiHttpException(
         '智能成片包装已开始，此模板不能重新智能填充',
@@ -1707,13 +1719,6 @@ export class EffectTemplateMixService {
           HttpStatus.BAD_REQUEST,
           'VALIDATION_ERROR',
         );
-      if (workspace.variants.length >= 100) {
-        throw new ApiHttpException(
-          '单个模板最多保留 100 个成片工程',
-          HttpStatus.BAD_REQUEST,
-          'VALIDATION_ERROR',
-        );
-      }
       const variant = createVariant(workspace);
       workspace.variants.push(variant);
       workspace.editVersion += 1;
@@ -1733,16 +1738,9 @@ export class EffectTemplateMixService {
           HttpStatus.BAD_REQUEST,
           'VALIDATION_ERROR',
         );
-      if (workspace.variants.length >= 100) {
-        throw new ApiHttpException(
-          '单个模板最多保留 100 个成片工程',
-          HttpStatus.BAD_REQUEST,
-          'VALIDATION_ERROR',
-        );
-      }
       workspace.variants.push(createEmptyVariant(workspace));
       workspace.editVersion += 1;
-    });
+    }, { allowPackagingLocked: true });
   }
 
   async refillVariant(
@@ -1811,8 +1809,7 @@ export class EffectTemplateMixService {
       !template.name.trim() ||
       template.name.length > 40 ||
       !slotsValid(template.slots, 4) ||
-      variants.length < 1 ||
-      variants.length > 100
+      variants.length < 1
     ) {
       throw new ApiHttpException(
         '请完善模板名称、槽位和成片工程',
@@ -2030,6 +2027,7 @@ export class EffectTemplateMixService {
     expectedRevision: number,
     templateId: string,
     mutation: (workspace: EffectTemplateMixWorkspace) => void,
+    options: { allowPackagingLocked?: boolean } = {},
   ): Promise<EffectTemplateMixWorkspaceData> {
     const [
       nodeState,
@@ -2056,7 +2054,10 @@ export class EffectTemplateMixService {
     const draft = draftOf(nodeState.state);
     const entry = draft.templates.find(({ id }) => id === templateId);
     if (!entry) this.notFound('当前混剪模板不存在');
-    if (lockedTemplateIds.includes(templateId) || packagingLockedIds.includes(templateId))
+    if (
+      lockedTemplateIds.includes(templateId) ||
+      (!options.allowPackagingLocked && packagingLockedIds.includes(templateId))
+    )
       throw new ApiHttpException(
         packagingLockedIds.includes(templateId)
           ? '智能成片包装已开始，此模板不能再修改'
@@ -2108,7 +2109,7 @@ export class EffectTemplateMixService {
       ...draft,
       templates: draft.templates.map((entry) => {
         const filledTemplateHash = this.filledHashForEntry(entry, aiRunRecords);
-        const packagingLocked = packagedSet.has(entry.id) || Boolean(entry.packagingLocked);
+        const packagingLocked = packagedSet.has(entry.id);
         const aiFillLocked = lockedSet.has(entry.id);
         const needsAiFill = this.needsRefill(entry, filledTemplateHash);
         return {

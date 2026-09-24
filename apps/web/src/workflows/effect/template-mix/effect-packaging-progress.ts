@@ -178,6 +178,30 @@ export function currentPackagingRun(runs: PackagingRun[]) {
   return runs.find((run) => ['QUEUED', 'RUNNING'].includes(run.status)) ?? runs[0];
 }
 
+/** Keep the persistent template lock, while describing the actual packaging-run state. */
+export function packagingLockMessage(status: PackagingRun['status'] | null) {
+  switch (status) {
+    case 'QUEUED':
+      return '智能成片包装已排队，模板配置和成片工程暂时锁定；新建空成片不会加入本次任务。';
+    case 'RUNNING':
+      return '智能成片包装正在进行，模板配置和成片工程暂时锁定；新建空成片不会加入本次任务。';
+    case 'COMPLETED':
+      return '智能成片包装已完成，模板配置和智能填充已锁定；仍可新建并手工精修成片。';
+    case 'PARTIAL':
+      return '智能成片包装部分完成，模板配置和智能填充已锁定；可恢复失败项或继续精修成片。';
+    case 'FAILED':
+      return '智能成片包装已失败，模板配置和智能填充已锁定；可查看失败原因并继续精修成片。';
+    case 'CANCELLED':
+      return '智能成片包装已取消，模板配置和智能填充已锁定；可查看任务状态并继续精修成片。';
+    default:
+      return '模板配置和智能填充已锁定，正在读取包装状态…';
+  }
+}
+
+export function packagingActionText(ready: boolean, status: PackagingRun['status'] | null) {
+  return ready || status === 'COMPLETED' ? '重新成片包装' : '智能成片包装';
+}
+
 export function packagingItemStageState(item: PackagingItem, stage: PackagingStage) {
   const index = PACKAGING_STAGES.indexOf(stage);
   const itemIndex = PACKAGING_STAGES.indexOf(item.stage);

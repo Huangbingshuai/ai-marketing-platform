@@ -46,6 +46,7 @@ const emit = defineEmits<{
   preview: [enabled: boolean];
   ready: [ready: boolean];
   started: [];
+  status: [status: PackagingRun['status'] | null];
 }>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const visible = ref(false),
@@ -71,6 +72,11 @@ const completeCount = computed(
 );
 const active = computed(() => runs.value.some((r) => ['QUEUED', 'RUNNING'].includes(r.status)));
 const progressRun = computed(() => currentPackagingRun(runs.value));
+watch(
+  progressRun,
+  (value) => emit('status', value?.status ?? null),
+  { immediate: true },
+);
 const progress = computed(
   () => progressRun.value?.execution?.progressPercent ?? packagingProgress(progressRun.value),
 );
@@ -142,12 +148,18 @@ const boundaryError = computed(() => {
 });
 const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
 watch(selected, (item) => emit('selected', item), { immediate: true });
+const packageableVariants = computed(() =>
+  props.variants.filter(
+    (variant) =>
+      variant.slots.length > 0 && variant.slots.every((slot) => Boolean(variant.bindings[slot.id])),
+  ),
+);
 const allReady = computed(
   () =>
     !active.value &&
     !loadError.value &&
-    props.variants.length > 0 &&
-    props.variants.every((v) => {
+    packageableVariants.value.length > 0 &&
+    packageableVariants.value.every((v) => {
       const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === v.id);
       return (
         item &&

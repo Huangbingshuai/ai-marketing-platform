@@ -17,6 +17,7 @@ import type {
   PackagingCaptionBox,
   PackagingCheckpoint,
   PackagingItem,
+  PackagingRun,
 } from '@ai-marketing/contracts';
 import {
   PACKAGING_AUDIO_DB_CEILING,
@@ -102,6 +103,7 @@ import {
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
+import { packagingActionText, packagingLockMessage } from './effect-packaging-progress';
 import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
@@ -131,6 +133,11 @@ const packagingPanel = ref<InstanceType<typeof EffectTemplateMixPackaging> | nul
 const selectedPackaging = ref<PackagingItem | null>(null);
 const packagingPreviewEnabled = ref(false);
 const packagingReady = ref(false);
+const packagingRunStatus = ref<PackagingRun['status'] | null>(null);
+const packagingLockNotice = computed(() => packagingLockMessage(packagingRunStatus.value));
+const packagingActionLabel = computed(() =>
+  packagingActionText(packagingReady.value, packagingRunStatus.value),
+);
 let completionKey: { signature: string; key: string } | null = null;
 const committedVersions = reactive<Record<string, number>>({});
 const uiByTemplate = reactive<Record<string, TemplateUi>>({});
@@ -328,13 +335,17 @@ const activeEntry = computed(
   () => catalog.value.find(({ id }) => id === activeTemplateId.value) ?? null,
 );
 const packagingLocked = computed(() => Boolean(activeEntry.value?.packagingLocked));
-const templateEditLocked = computed(() =>
+const projectEditLocked = computed(() =>
   Boolean(
     activeEntry.value?.aiFillLocked ||
-    activeAiRun.value ||
-    fillStartPending.value ||
-    packagingLocked.value,
+      activeAiRun.value ||
+      fillStartPending.value ||
+      (packagingLocked.value &&
+        (!packagingRunStatus.value || ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value))),
   ),
+);
+const templateEditLocked = computed(() =>
+  projectEditLocked.value || packagingLocked.value,
 );
 const workspace = computed(() => activeEntry.value?.workspace ?? null);
 const activeUi = computed(() =>
@@ -1269,7 +1280,7 @@ const persist = async (keepalive = false): Promise<boolean> => {
   }
 };
 const scheduleSave = (): void => {
-  if (templateEditLocked.value) {
+  if (projectEditLocked.value) {
     clearTimeout(saveTimer);
     saveState.value = 'saved';
     if (!fillStartPending.value) void load();
@@ -1760,7 +1771,7 @@ const captionBox = (id: string): PackagingCaptionBox =>
  * matches the timeline — a stale checkpoint is shown on the timeline but never written to.
  */
 const captionEditable = computed(
-  () => selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale && !templateEditLocked.value,
+  () => selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale && !projectEditLocked.value,
 );
 /** The caption the font stepper reads its current size from: the lone one, or the set's first. */
 const captionScaleTarget = computed(() => {
@@ -3265,7 +3276,7 @@ const preparePackaging = async (): Promise<number | null> =>
   (await flushPendingEdits()) ? draftRevision.value : null;
 const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<void> => {
   if (packagingLocked.value) {
-    showNotice('智能成片包装已开始，此模板不能重新智能填充', 'error');
+    showNotice('智能成片包装已启动或完成，此模板不能重新智能填充', 'error');
     return;
   }
   if (!workspace.value || mutating.value || activeAiRun.value) return;
@@ -3805,7 +3816,7 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     return;
   const key = event.key.toLocaleLowerCase();
   if (
-    templateEditLocked.value &&
+    projectEditLocked.value &&
     (((event.ctrlKey || event.metaKey) && ['z', 'y'].includes(key)) ||
       key === 'delete' ||
       key === 'backspace')
@@ -4113,7 +4124,7 @@ defineExpose({ flushPendingEdits });
             </button>
           </footer>
           <p v-if="packagingLocked" class="template-lock-banner" role="status">
-            <Lock :size="15" />智能成片包装已开始，此模板不能再修改或重新智能填充。
+            <Lock :size="15" />模板配置和智能填充已锁定；仍可新建空成片并精修未包装工程。
           </p>
           <p v-else-if="templateEditLocked" class="template-lock-banner" role="status">
             <Lock :size="15" />智能填充正在运行，模板暂时锁定；任务结束后可修改。
@@ -4184,7 +4195,7 @@ defineExpose({ flushPendingEdits });
           </div>
         </header>
         <div v-if="packagingLocked" class="template-lock-banner" role="status">
-          <Lock :size="15" />智能成片包装已开始，模板和成片工程均已锁定；不能修改或重新智能填充。
+          <Lock :size="15" />{{ packagingLockNotice }}
         </div>
         <div v-else-if="templateEditLocked" class="template-lock-banner" role="status">
           <Lock :size="15" />智能填充正在运行，模板和成片工程暂时锁定。
@@ -4269,10 +4280,10 @@ defineExpose({ flushPendingEdits });
                   :class="{
                     selected: auditionMaterial?.id === material.id,
                     used: materialUsageLabel(material.id),
-                    disabled: !selectedVariant || templateEditLocked,
+                    disabled: !selectedVariant || projectEditLocked,
                     dragging: draggingMaterialId === material.id,
                   }"
-                  :draggable="Boolean(selectedVariant) && !templateEditLocked"
+                  :draggable="Boolean(selectedVariant) && !projectEditLocked"
                   @click="onMaterialCardClick(material)"
                   @pointerdown="beginMaterialPointerDrag($event, material)"
                   @dragstart="beginMaterialDrag($event, material)"
@@ -4341,7 +4352,7 @@ defineExpose({ flushPendingEdits });
             <template v-else-if="resourceTab === 'TEXT' && selectedVariant"
               ><header>
                 <strong>字幕</strong
-                ><button class="button compact" :disabled="templateEditLocked" @click="addCaption">
+                ><button class="button compact" :disabled="projectEditLocked" @click="addCaption">
                   <Plus :size="13" />添加
                 </button>
               </header>
@@ -4349,7 +4360,7 @@ defineExpose({ flushPendingEdits });
                 >字幕样式
                 <select
                   v-model="selectedVariant.subtitleStyle"
-                  :disabled="templateEditLocked"
+                  :disabled="projectEditLocked"
                   @change="bump"
                 >
                   <option value="standard">标准白字</option>
@@ -4362,12 +4373,12 @@ defineExpose({ flushPendingEdits });
                   <input
                     v-model="caption.text"
                     maxlength="120"
-                    :disabled="templateEditLocked"
+                    :disabled="projectEditLocked"
                     @input="bump"
                   /><small
                     >{{ formatEffectTemplateMixTime(caption.start) }} —
                     {{ formatEffectTemplateMixTime(caption.end) }}</small
-                  ><button :disabled="templateEditLocked" @click="removeCaption(caption.id)">
+                  ><button :disabled="projectEditLocked" @click="removeCaption(caption.id)">
                     <X :size="14" />
                   </button>
                 </article>
@@ -4436,8 +4447,8 @@ defineExpose({ flushPendingEdits });
                       class="transition-card"
                       :class="{ active: item.id === selectedSlot?.transition }"
                       type="button"
-                      :disabled="templateEditLocked"
-                      :draggable="!templateEditLocked"
+                      :disabled="projectEditLocked"
+                      :draggable="!projectEditLocked"
                       @dragstart="beginTransitionDrag($event, item.id)"
                       @click="changeTransition(item.id)"
                     >
@@ -4778,14 +4789,14 @@ defineExpose({ flushPendingEdits });
                   @click="openPackaging('ACTION')"
                 >
                   <LoaderCircle
-                    v-if="packagingPanel?.busy || packagingPanel?.active || packagingPanel?.loading"
+                    v-if="packagingPanel?.busy || packagingPanel?.active"
                     class="spin"
                     :size="13"
                   />
-                  <RefreshCw v-else :size="13" />{{
-                    packagingPanel?.busy || packagingPanel?.active || packagingPanel?.loading
+                  {{
+                    packagingPanel?.busy || packagingPanel?.active
                       ? '成片包装中…'
-                      : '智能成片包装'
+                      : packagingActionLabel
                   }}
                 </button>
                 <button
@@ -4799,7 +4810,7 @@ defineExpose({ flushPendingEdits });
                 <button
                   class="button compact primary"
                   type="button"
-                  :disabled="mutating || templateEditLocked || workspace.variants.length >= 100"
+                  :disabled="mutating || Boolean(activeAiRun)"
                   title="新建一个不包含任何素材的空成片工程"
                   @click="createEmptyVariant"
                 >
@@ -4977,6 +4988,7 @@ defineExpose({ flushPendingEdits });
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
             @started="handlePackagingStarted"
+            @status="packagingRunStatus = $event"
           />
         </div>
         <div v-if="editingCaption" class="caption-text-editor">
@@ -5060,9 +5072,9 @@ defineExpose({ flushPendingEdits });
         <EffectTemplateMixTimeline
           ref="timelineRef"
           :packaging="selectedPackaging"
-          :read-only="templateEditLocked"
-          :can-redo="canRedoTimeline && !templateEditLocked"
-          :can-undo="canUndoTimeline && !templateEditLocked"
+          :read-only="projectEditLocked"
+          :can-redo="canRedoTimeline && !projectEditLocked"
+          :can-undo="canUndoTimeline && !projectEditLocked"
           :duration="currentDuration"
           :height="timelineHeight"
           :materials="workspace.materials"

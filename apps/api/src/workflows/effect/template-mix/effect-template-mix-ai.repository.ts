@@ -47,6 +47,15 @@ export class EffectTemplateMixAiRepository {
     return rows.map(({ templateId }) => templateId);
   }
 
+  async activePackagingTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
+    const rows = await this.prisma.effectPackagingRun.findMany({
+      where: { projectId, workflowRunId, status: { in: ['QUEUED', 'RUNNING'] } },
+      distinct: ['templateId'],
+      select: { templateId: true },
+    });
+    return rows.map(({ templateId }) => templateId);
+  }
+
   find(projectId: string, runId: string) {
     return this.prisma.effectTemplateMixAiRun.findFirst({ where: { projectId, id: runId } });
   }

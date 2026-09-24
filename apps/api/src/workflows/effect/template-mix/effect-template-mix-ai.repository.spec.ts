@@ -161,3 +161,29 @@ describe('EffectTemplateMixAiRepository.saveSamplingCheckpoint', () => {
     );
   });
 });
+
+describe('EffectTemplateMixAiRepository.packagedTemplateIds', () => {
+  it('keeps the template locked after any packaging run has started', async () => {
+    const prisma = {
+      effectPackagingRun: {
+        findMany: vi.fn().mockResolvedValue([
+          { templateId: 'running-template' },
+          { templateId: 'completed-template' },
+          { templateId: 'failed-template' },
+        ]),
+      },
+    };
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+
+    await expect(repository.packagedTemplateIds('project', 'run')).resolves.toEqual([
+      'running-template',
+      'completed-template',
+      'failed-template',
+    ]);
+    expect(prisma.effectPackagingRun.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'project', workflowRunId: 'run' },
+      distinct: ['templateId'],
+      select: { templateId: true },
+    });
+  });
+});

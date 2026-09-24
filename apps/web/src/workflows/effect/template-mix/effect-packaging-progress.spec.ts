@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
-import { currentPackagingRun, packagingItemStageState, packagingProgress, packagingStageSamples, packagingStageState } from './effect-packaging-progress';
+import { currentPackagingRun, packagingActionText, packagingItemStageState, packagingLockMessage, packagingProgress, packagingStageSamples, packagingStageState } from './effect-packaging-progress';
 import { PACKAGING_STAGES } from '@ai-marketing/contracts';
 import component from './EffectTemplateMixPackaging.vue?raw';
 import page from './EffectTemplateMixNodePage.vue?raw';
@@ -74,6 +74,25 @@ describe('packaging workflow progress', () => {
     const running = { id: 'active', status: 'RUNNING' } as PackagingRun;
     expect(currentPackagingRun([latest, running, old])).toBe(running);
     expect(currentPackagingRun([])).toBeUndefined();
+  });
+  it('keeps the template locked while reporting the persisted packaging terminal state', () => {
+    expect(packagingLockMessage('RUNNING')).toContain('正在进行');
+    expect(packagingLockMessage('COMPLETED')).toContain('已完成');
+    expect(packagingLockMessage('PARTIAL')).toContain('部分完成');
+    expect(packagingLockMessage('FAILED')).toContain('已失败');
+    expect(packagingLockMessage('CANCELLED')).toContain('已取消');
+    expect(packagingLockMessage('QUEUED')).toContain('已排队');
+    expect(packagingLockMessage(null)).toContain('正在读取');
+    for (const status of ['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'] as const)
+      expect(packagingLockMessage(status)).toContain('锁定');
+    expect(component).toContain("(value) => emit('status', value?.status ?? null)");
+    expect(page).toContain('@status="packagingRunStatus = $event"');
+    expect(page).toContain('{{ packagingLockNotice }}');
+  });
+  it('labels the completed packaging action as a rerun without changing lock state', () => {
+    expect(packagingActionText(false, 'COMPLETED')).toBe('重新成片包装');
+    expect(packagingActionText(true, null)).toBe('重新成片包装');
+    expect(packagingActionText(false, 'RUNNING')).toBe('智能成片包装');
   });
   it('shows up to four real, human-readable examples from packaging checkpoints', () => {
     const source = {

@@ -502,6 +502,70 @@ describe('EffectTemplateMixService', () => {
     expect(created.conflictSlotIds).toEqual([]);
   });
 
+  it('allows adding empty projects beyond 100 after packaging has locked the template', async () => {
+    const { working } = harness();
+    const state = draft();
+    const first = state.templates[0]!.workspace.variants[0]!;
+    state.templates[0]!.workspace.variants = Array.from({ length: 100 }, (_, index) => ({
+      ...(JSON.parse(JSON.stringify(first)) as EffectTemplateMixVariant),
+      id: `variant-${index}`,
+      name: `成片 ${index + 1}`,
+    }));
+    state.templates[0]!.packagingLocked = true;
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    const aiRuns = {
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRuns as unknown as EffectTemplateMixAiRepository,
+    );
+
+    const result = await service.createEmptyVariant('project', 'run', templateId, 7);
+
+    expect(result.draft.templates[0]!.workspace.variants).toHaveLength(101);
+    expect(result.draft.templates[0]!.packagingLocked).toBe(true);
+    expect(result.draft.templates[0]!.workspace.variants.at(-1)!.bindings).toEqual({});
+
+    working.getNodeState.mockResolvedValue({ revision: 8, state: result.draft });
+    const nextResult = await service.createEmptyVariant('project', 'run', templateId, 8);
+    expect(nextResult.draft.templates[0]!.workspace.variants).toHaveLength(102);
+  });
+
+  it('allows project edits after packaging while keeping template configuration locked', async () => {
+    const { working } = harness();
+    const previous = draft();
+    previous.templates[0]!.packagingLocked = true;
+    const edited = JSON.parse(JSON.stringify(previous)) as EffectTemplateMixDraft;
+    edited.templates[0]!.workspace.variants[0]!.offsets[slotId] = 0.5;
+    const afterProjectEdit = JSON.parse(JSON.stringify(edited)) as EffectTemplateMixDraft;
+    working.getNodeStateOrNull
+      .mockResolvedValueOnce({ revision: 7, state: previous })
+      .mockResolvedValueOnce({ revision: 8, state: afterProjectEdit });
+    const aiRuns = {
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+    };
+    const packageLockedService = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRuns as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(packageLockedService.saveDraft('project', 'run', 7, edited)).resolves.toBeDefined();
+    expect(edited.templates[0]!.workspace.variants[0]!.offsets[slotId]).toBe(0.5);
+    edited.templates[0]!.workspace.template.name = '不允许修改的模板名';
+    await expect(packageLockedService.saveDraft('project', 'run', 8, edited)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
   it('rejects a server mutation based on a stale draft revision', async () => {
     const { service, working } = harness();
     await expect(
