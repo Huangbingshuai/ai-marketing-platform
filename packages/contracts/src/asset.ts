@@ -209,6 +209,8 @@ export type Asset = {
   updatedAt: string;
   storageWorkflow?: AssetWorkflow;
   workflowSpace?: AssetWorkflowSpace;
+  /** Workflow file backing this project asset when it was imported for timeline use. */
+  workflowFileObjectId?: string | undefined;
   status?: AssetStatus;
   qualityStatus?: AssetStatus;
   currentVersion?: number;
@@ -287,6 +289,7 @@ export type CreateAssetMetadata = {
   notes?: string | null | undefined;
   storageWorkflow?: AssetWorkflow | undefined;
   workflowSpace?: AssetWorkflowSpace | undefined;
+  workflowRunId?: string | undefined;
 };
 export type ImportAssetsMetadata = {
   workflow: AssetWorkflow;

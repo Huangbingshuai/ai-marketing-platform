@@ -155,7 +155,7 @@ async function refresh() {
     preloadVisiblePage();
   } catch (reason) {
     if (current === generation && !read.signal.aborted) {
-      error.value = reason instanceof Error ? reason.message : '音色库读取失败';
+      error.value = reason instanceof Error ? reason.message : '音色读取失败';
       timer = setTimeout(() => void refresh(), 5000);
     }
   } finally {

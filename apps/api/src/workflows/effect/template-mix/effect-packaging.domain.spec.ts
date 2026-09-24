@@ -98,41 +98,117 @@ const checkpoint = (): PackagingCheckpoint => ({
 });
 
 describe('slot-bound narration layout', () => {
+  it('freezes imported music assets as independent audio-track sources', () => {
+    const v = variant();
+    v.detachedAudios = [
+      {
+        id: 'music-1',
+        sourceAssetId: 'asset-1',
+        fileObjectId: 'file-1',
+        name: '背景音乐',
+        sourceDuration: 32,
+        start: 2,
+        offset: 4,
+        duration: 6,
+        volume: 0.7,
+      },
+    ];
+    const frozen = packagingSnapshot(
+      v,
+      materials,
+      sources(),
+      new Map([['asset-1', { fileObjectId: 'file-1', sourceDuration: 32 }]]),
+    );
+
+    expect(frozen.detachedAudios).toEqual(v.detachedAudios);
+    expect(() => packagingSnapshot(v, materials, sources())).toThrow('分离音频');
+  });
+
   it('accepts a six-slot confirmed package with segmented captions and detached source audio', () => {
     const v = variant();
     v.slots = Array.from({ length: 6 }, (_, index) => ({
-      ...v.slots[0]!, id: `s${index}`, duration: 4,
-      transition: index === 0 ? '硬切' as const : '叠化' as const,
+      ...v.slots[0]!,
+      id: `s${index}`,
+      duration: 4,
+      transition: index === 0 ? ('硬切' as const) : ('叠化' as const),
       transitionDuration: index === 0 ? 0 : 1,
     }));
     v.bindings = Object.fromEntries(v.slots.map((slot, index) => [slot.id, `m${index}`]));
     v.bindingRevisions = Object.fromEntries(v.slots.map((slot) => [slot.id, 1]));
     v.offsets = Object.fromEntries(v.slots.map((slot) => [slot.id, 0.25]));
-    v.detachedAudios = [{ id: 'detached', sourceSlotId: 's2', fileObjectId: 'video2',
-      name: '动作声', start: 8, offset: 0.25, duration: 4, volume: 0.4 }];
-    const clips = Array.from({ length: 6 }, (_, index) => ({ ...materials[0]!,
-      id: `m${index}`, artifactId: `clip${index}`, fileObjectId: `video${index}` }));
+    v.detachedAudios = [
+      {
+        id: 'detached',
+        sourceSlotId: 's2',
+        fileObjectId: 'video2',
+        name: '动作声',
+        start: 8,
+        offset: 0.25,
+        duration: 4,
+        volume: 0.4,
+      },
+    ];
+    const clips = Array.from({ length: 6 }, (_, index) => ({
+      ...materials[0]!,
+      id: `m${index}`,
+      artifactId: `clip${index}`,
+      fileObjectId: `video${index}`,
+    }));
     const artifacts = [
-      ...Array.from({ length: 6 }, (_, index) => artifact(`clip${index}`, `render-clip:${index}`,
-        { promptId: 'p' }, 'prompt')),
+      ...Array.from({ length: 6 }, (_, index) =>
+        artifact(`clip${index}`, `render-clip:${index}`, { promptId: 'p' }, 'prompt'),
+      ),
       ...sources().slice(1),
     ];
     const frozen = packagingSnapshot(v, clips, artifacts);
     const cp: PackagingCheckpoint = {
-      narrationLayoutVersion: 'SLOT_V1', captionLayoutVersion: 'SEGMENT_V3',
-      vision: v.slots.map((_, index) => ({ start: index * 4, end: index * 4 + 4,
-        description: '产品动作' })),
-      script: v.slots.map((slot, index) => ({ id: `line${index}`, slotId: slot.id,
-        text: '商品，真好', start: index * 4, end: index * 4 + 4, factIds: ['facts:0'] })),
-      voices: Object.fromEntries(v.slots.map((_, index) => [`line${index}`, {
-        fileObjectId: `voice${index}`, start: index * 4, duration: 1,
-        segmentFrames: [12000, 12000], volume: 1,
-      }])),
-      captions: v.slots.flatMap((_, index) => [{ id: `c${index}a`, voiceLineId: `line${index}`,
-        segmentIndex: 0, segmentCount: 2, text: '商品', start: index * 4,
-        end: index * 4 + 0.5 }, { id: `c${index}b`, voiceLineId: `line${index}`,
-        segmentIndex: 1, segmentCount: 2, text: '真好', start: index * 4 + 0.5,
-        end: index * 4 + 1 }]),
+      narrationLayoutVersion: 'SLOT_V1',
+      captionLayoutVersion: 'SEGMENT_V3',
+      vision: v.slots.map((_, index) => ({
+        start: index * 4,
+        end: index * 4 + 4,
+        description: '产品动作',
+      })),
+      script: v.slots.map((slot, index) => ({
+        id: `line${index}`,
+        slotId: slot.id,
+        text: '商品，真好',
+        start: index * 4,
+        end: index * 4 + 4,
+        factIds: ['facts:0'],
+      })),
+      voices: Object.fromEntries(
+        v.slots.map((_, index) => [
+          `line${index}`,
+          {
+            fileObjectId: `voice${index}`,
+            start: index * 4,
+            duration: 1,
+            segmentFrames: [12000, 12000],
+            volume: 1,
+          },
+        ]),
+      ),
+      captions: v.slots.flatMap((_, index) => [
+        {
+          id: `c${index}a`,
+          voiceLineId: `line${index}`,
+          segmentIndex: 0,
+          segmentCount: 2,
+          text: '商品',
+          start: index * 4,
+          end: index * 4 + 0.5,
+        },
+        {
+          id: `c${index}b`,
+          voiceLineId: `line${index}`,
+          segmentIndex: 1,
+          segmentCount: 2,
+          text: '真好',
+          start: index * 4 + 0.5,
+          end: index * 4 + 1,
+        },
+      ]),
       music: { fileObjectId: 'music', start: 0, duration: 24, volume: 0.12 },
     };
     expect(frozen.duration).toBe(24);
@@ -167,10 +243,24 @@ describe('slot-bound narration layout', () => {
     cp.captionLayoutVersion = 'SEGMENT_V1';
     cp.script![0]!.text = '第一句，第二句。';
     cp.captions = [
-      { id: 'caption-a', voiceLineId: 'line-1', segmentIndex: 0, segmentCount: 2,
-        text: '第一句', start: 0, end: 1.2 },
-      { id: 'caption-b', voiceLineId: 'line-1', segmentIndex: 1, segmentCount: 2,
-        text: '第二句', start: 1.2, end: 2.4 },
+      {
+        id: 'caption-a',
+        voiceLineId: 'line-1',
+        segmentIndex: 0,
+        segmentCount: 2,
+        text: '第一句',
+        start: 0,
+        end: 1.2,
+      },
+      {
+        id: 'caption-b',
+        voiceLineId: 'line-1',
+        segmentIndex: 1,
+        segmentCount: 2,
+        text: '第二句',
+        start: 1.2,
+        end: 2.4,
+      },
     ];
     return { frozen, cp };
   };
@@ -189,11 +279,21 @@ describe('slot-bound narration layout', () => {
   });
   it('rejects punctuation, missing text, wrong parent, overlap and crossing the voice', () => {
     for (const [index, change] of [
-      (cp: PackagingCheckpoint) => { cp.captions![0]!.text = '第一句，'; },
-      (cp: PackagingCheckpoint) => { cp.captions!.pop(); },
-      (cp: PackagingCheckpoint) => { cp.captions![1]!.voiceLineId = 'unknown'; },
-      (cp: PackagingCheckpoint) => { cp.captions![1]!.start = 1; },
-      (cp: PackagingCheckpoint) => { cp.captions![1]!.end = 2.5; },
+      (cp: PackagingCheckpoint) => {
+        cp.captions![0]!.text = '第一句，';
+      },
+      (cp: PackagingCheckpoint) => {
+        cp.captions!.pop();
+      },
+      (cp: PackagingCheckpoint) => {
+        cp.captions![1]!.voiceLineId = 'unknown';
+      },
+      (cp: PackagingCheckpoint) => {
+        cp.captions![1]!.start = 1;
+      },
+      (cp: PackagingCheckpoint) => {
+        cp.captions![1]!.end = 2.5;
+      },
     ].entries()) {
       const { frozen, cp } = segmented();
       change(cp);
@@ -235,7 +335,8 @@ describe('slot-bound narration layout', () => {
     expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
   });
   it.each([4, 15])('accepts %s-second slots', (duration) => {
-    const v = variant(); v.slots[0]!.duration = duration;
+    const v = variant();
+    v.slots[0]!.duration = duration;
     expect(packagingSnapshot(v, materials, sources()).clips[0]!.duration).toBe(duration);
   });
   it('freezes safe source names in the packaging snapshot without replacing the private prompt field', () => {
@@ -244,25 +345,32 @@ describe('slot-bound narration layout', () => {
     expect(clip.prompt).toBe('镜头原始Prompt');
   });
   it.each([3.99, 15.01, NaN])('rejects %s-second slots before paid work', (duration) => {
-    const v = variant(); v.slots[0]!.duration = duration;
+    const v = variant();
+    v.slots[0]!.duration = duration;
     expect(() => packagingSnapshot(v, materials, sources())).toThrow('4–15');
   });
   it('rejects overlap across different visual lanes', () => {
     const v = variant();
     v.slots.push({ ...v.slots[0]!, id: 's2' });
-    v.timelineStarts = { s: 0, s2: 9 }; v.videoLanes = { s2: 1 };
+    v.timelineStarts = { s: 0, s2: 9 };
+    v.videoLanes = { s2: 1 };
     expect(() => packagingSnapshot(v, materials, sources())).toThrow('槽位口播边界冲突');
   });
   it('requires exactly one valid line per slot at completion', () => {
     const { frozen, cp } = current();
     expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
-    for (const lines of [[], [{ ...cp.script![0]!, slotId: 'unknown' }],
-      [cp.script![0]!, { ...cp.script![0]!, id: 'duplicate' }]])
+    for (const lines of [
+      [],
+      [{ ...cp.script![0]!, slotId: 'unknown' }],
+      [cp.script![0]!, { ...cp.script![0]!, id: 'duplicate' }],
+    ])
       expect(() => requireSlotPackaging(frozen, { ...cp, script: lines })).toThrow();
   });
   it('allows the empty intermediate checkpoint when redoing the only slot, but never ready', () => {
     const { frozen, cp } = current();
-    cp.script = []; cp.voices = {}; cp.captions = [];
+    cp.script = [];
+    cp.voices = {};
+    cp.captions = [];
     expect(() => validatePackagingCheckpoint(frozen, cp)).not.toThrow();
     expect(() => requireSlotPackaging(frozen, cp)).toThrow();
   });
@@ -334,7 +442,10 @@ describe('packaging snapshots and validation', () => {
     const implicit = variant();
     const explicit = { ...variant(), videoLanes: { s: 0 } };
     expect(visualHash(implicit)).toBe(visualHash(explicit));
-    const legacy = workflowStateHash({ ...packagingVisualTimeline(explicit), videoLanes: { s: 0 } });
+    const legacy = workflowStateHash({
+      ...packagingVisualTimeline(explicit),
+      videoLanes: { s: 0 },
+    });
     expect(matchesVisualHash(implicit, legacy, explicit)).toBe(true);
     expect(matchesVisualHash(explicit, legacy, explicit)).toBe(true);
     expect(matchesVisualHash(implicit, 'forged', explicit)).toBe(false);
@@ -446,13 +557,23 @@ describe('packaging snapshots and validation', () => {
       fadeIn: 0.4,
       fadeOut: 0.6,
     };
-    faded.music = { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12, fadeIn: 0.5, fadeOut: 0.5 };
+    faded.music = {
+      fileObjectId: 'music',
+      start: 0,
+      duration: 10,
+      volume: 0.12,
+      fadeIn: 0.5,
+      fadeOut: 0.5,
+    };
     expect(() => validatePackagingCheckpoint(snapshot(), faded, true)).not.toThrow();
     expect(canonicalizeCheckpoint(snapshot(), faded).voices!['line-1']).toMatchObject({
       fadeIn: 0.4,
       fadeOut: 0.6,
     });
-    expect(canonicalizeCheckpoint(snapshot(), faded).music).toMatchObject({ fadeIn: 0.5, fadeOut: 0.5 });
+    expect(canonicalizeCheckpoint(snapshot(), faded).music).toMatchObject({
+      fadeIn: 0.5,
+      fadeOut: 0.5,
+    });
   });
   it('rejects fades that are negative, non-finite or longer than the clip', () => {
     // `fadeIn + fadeOut` is checked against the clip, so the 2.4s narration rejects a pair the
@@ -464,7 +585,13 @@ describe('packaging snapshots and validation', () => {
       { fadeOut: Number.POSITIVE_INFINITY },
     ]) {
       const voice = checkpoint();
-      voice.voices!['line-1'] = { fileObjectId: 'voice', start: 0, duration: 2.4, volume: 1, ...fade };
+      voice.voices!['line-1'] = {
+        fileObjectId: 'voice',
+        start: 0,
+        duration: 2.4,
+        volume: 1,
+        ...fade,
+      };
       expect(() => validatePackagingCheckpoint(snapshot(), voice)).toThrow();
       const music = checkpoint();
       music.music = { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12, ...fade };

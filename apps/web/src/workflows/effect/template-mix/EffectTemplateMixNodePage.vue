@@ -84,6 +84,7 @@ import {
   completeEffectTemplateMixPackaging,
   updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
+import { apiUrl } from '../../../api/http-client';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
   EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY,
@@ -105,6 +106,7 @@ import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
 import { packagingActionText, packagingLockMessage } from './effect-packaging-progress';
 import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
+import EffectMusicLibrary from './EffectMusicLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
@@ -167,7 +169,7 @@ const aiStageLabels: Record<EffectTemplateMixAiRun['stage'], string> = {
   TRIMMING: '大模型选择截取区间',
   COMPLETED: '时间轴已生成',
 };
-const resourceTab = ref<'AUDIO' | 'MATERIAL' | 'TEXT' | 'TRANSITION'>('MATERIAL');
+const resourceTab = ref<'VOICE' | 'MUSIC' | 'MATERIAL' | 'TEXT' | 'TRANSITION'>('MATERIAL');
 const keyword = ref('');
 const transitionKeyword = ref('');
 const activeTransitionSlotId = ref('');
@@ -221,6 +223,7 @@ const playerPanel = ref<HTMLElement | null>(null);
 const playerScrubber = ref<HTMLInputElement | null>(null);
 const playerScrubberFill = ref<HTMLElement | null>(null);
 const playerScrubberThumb = ref<HTMLElement | null>(null);
+const playerTimecode = ref<HTMLSpanElement | null>(null);
 const stageElement = ref<HTMLElement | null>(null);
 /** The render burns captions at roughly 1/22 of the video width, so the preview matches. */
 const stageCaptionFontSize = ref(14);
@@ -777,6 +780,13 @@ const formatPlayerTimecode = (seconds: number): string => {
   return [hours, minutes, wholeSeconds, frames]
     .map((item) => String(item).padStart(2, '0'))
     .join(':');
+};
+// Keep the player timecode frame-accurate without triggering a render of the
+// full editor tree on every playback frame.
+const syncPlayerTimecode = (seconds: number): void => {
+  if (playerTimecode.value) {
+    playerTimecode.value.textContent = formatPlayerTimecode(seconds);
+  }
 };
 const workbenchGridStyle = computed(() =>
   compactWorkbench.value
@@ -1668,7 +1678,7 @@ const removeDetachedAudioForSlot = (slotId: string): void => {
 const clearDetachedAudioForSlots = (variant: EffectTemplateMixVariant, slotIds: string[]): void => {
   const removedIds = new Set(
     (variant.detachedAudios ?? [])
-      .filter((audio) => slotIds.includes(audio.sourceSlotId))
+      .filter((audio) => audio.sourceSlotId && slotIds.includes(audio.sourceSlotId))
       .map(({ id }) => id),
   );
   if (!removedIds.size) return;
@@ -1722,6 +1732,39 @@ const separateAudioForSlot = async (slotId: string): Promise<void> => {
     separatingAudioSlots.delete(slotId);
   }
 };
+const addMusicAssetToTimeline = (music: {
+  assetId: string;
+  fileObjectId: string;
+  name: string;
+  duration: number;
+  start: number;
+}): void => {
+  const variant = selectedVariant.value;
+  if (!variant || projectEditLocked.value || templateEditLocked.value) return;
+  if (!Number.isFinite(music.duration) || music.duration <= 0) return;
+  const start = Math.max(0, Math.min(currentDuration.value, music.start));
+  const duration = Math.min(music.duration, currentDuration.value - start);
+  if (duration < 0.1) {
+    showNotice('请把音乐放到成片时长范围内', 'warning');
+    return;
+  }
+  const audio: EffectTemplateMixDetachedAudio = {
+    id: crypto.randomUUID(),
+    sourceAssetId: music.assetId,
+    fileObjectId: music.fileObjectId,
+    name: music.name,
+    sourceDuration: music.duration,
+    duration,
+    start,
+    offset: 0,
+    volume: 1,
+  };
+  rememberTimelineEdit();
+  variant.detachedAudios = [...(variant.detachedAudios ?? []), audio];
+  selectedAudioClipIds.value = [`detached:${audio.id}`];
+  bump();
+  resetTimelinePlayerState();
+};
 /** The timeline owns its own selection, so clearing it from out here needs its own handle. */
 const timelineRef = ref<{
   clearSelection: () => void;
@@ -1759,8 +1802,8 @@ watch(editingCaption, (caption) => {
   if (!caption) return;
   void nextTick(() => captionTextInput.value?.focus({ preventScroll: true }));
 });
-/** Matches the burned-in default: bottom-centre, wrapping at 90% of the frame width. */
-const DEFAULT_CAPTION_BOX: PackagingCaptionBox = { x: 0.5, y: 0.08, width: 0.9, scale: 1 };
+/** Matches the burned-in default: lower bottom-centre, wrapping at 90% of the frame width. */
+const DEFAULT_CAPTION_BOX: PackagingCaptionBox = { x: 0.5, y: 0.05, width: 0.9, scale: 1 };
 const CAPTION_SNAP = 0.015;
 /** Width of the invisible left/right grab zones that stretch the frame instead of moving it. */
 const CAPTION_EDGE_GRAB = 10;
@@ -2237,6 +2280,16 @@ const setTimelinePlayer = (slotId: string, element: unknown): void => {
 const setDetachedAudioPlayer = (clipId: string, element: unknown): void => {
   if (element instanceof HTMLAudioElement) detachedAudioPlayers.set(clipId, element);
   else detachedAudioPlayers.delete(clipId);
+};
+const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string => {
+  if (audio.sourceAssetId)
+    return apiUrl(
+      `/projects/${encodeURIComponent(props.projectId)}/assets/${encodeURIComponent(audio.sourceAssetId)}/content`,
+    );
+  return (
+    workspace.value?.materials.find((item) => item.fileObjectId === audio.fileObjectId)?.contentUrl ??
+    ''
+  );
 };
 const resetTimelinePlayerState = (): void => {
   primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
@@ -3218,7 +3271,7 @@ const openTransitionPanel = (slotId: string): void => {
   transitionKeyword.value = '';
   resourceTab.value = 'TRANSITION';
 };
-const selectResourceTab = (tab: 'AUDIO' | 'MATERIAL' | 'TEXT' | 'TRANSITION'): void => {
+const selectResourceTab = (tab: 'VOICE' | 'MUSIC' | 'MATERIAL' | 'TEXT' | 'TRANSITION'): void => {
   resourceTab.value = tab;
   if (tab !== 'TRANSITION') {
     activeTransitionSlotId.value = '';
@@ -3352,6 +3405,7 @@ const stopPlaybackClock = (resumeBackgroundMediaWork = true, freezeVisualClock =
   if (freezeVisualClock) {
     timelineRef.value?.stopPlaybackNeedle(playhead.value);
     stopPlayerScrubberMotion(playhead.value);
+    syncPlayerTimecode(playhead.value);
   }
   activePlaybackSlotId = '';
   activeTransitionSignature = '';
@@ -3505,8 +3559,10 @@ const updatePlaybackFrame = (now: number): void => {
     return;
   }
   const next = playbackAnchorSeconds + (now - playbackAnchorMilliseconds) / 1000;
+  syncPlayerTimecode(next);
   if (next >= currentDuration.value) {
     playhead.value = currentDuration.value;
+    syncPlayerTimecode(currentDuration.value);
     playing.value = false;
     pauseTimelinePlayers();
     syncDetachedAudio();
@@ -3540,6 +3596,7 @@ const startPlaybackClock = (): void => {
   pauseEffectTemplateMixThumbnailCapture(true);
   pauseEffectTemplateMixWaveformDecoding(true);
   resetPlaybackClock();
+  syncPlayerTimecode(playhead.value);
   resetPlaybackSyncBoundaries();
   timelineRef.value?.startPlaybackNeedle(playhead.value, currentDuration.value);
   startPlayerScrubberMotion(playhead.value);
@@ -3624,6 +3681,7 @@ const seek = (raw: number): void => {
   closeMaterialPreview();
   stopDissolvePlaybackAnimation();
   playhead.value = quantizeTimelineTime(raw);
+  syncPlayerTimecode(playhead.value);
   timelineRef.value?.setPlaybackNeedle(playhead.value);
   setPlayerScrubber(playhead.value);
   playbackSeekVersion.value += 1;
@@ -3641,6 +3699,7 @@ const seekPreview = (raw: number): void => {
   if (auditionMaterial.value && auditionPlayer.value) {
     auditionPlayer.value.currentTime = value;
     auditionTime.value = value;
+    syncPlayerTimecode(value);
     return;
   }
   seek(value);
@@ -3698,6 +3757,7 @@ const onTimelinePlayerTimeUpdate = (slotId: string): void => {
 };
 const onAuditionTime = (): void => {
   auditionTime.value = auditionPlayer.value?.currentTime ?? 0;
+  syncPlayerTimecode(auditionTime.value);
   setPlayerScrubber(auditionTime.value);
   detectMaterialAudio(auditionMaterial.value, auditionPlayer.value);
 };
@@ -3806,6 +3866,13 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
   )
     return;
   const target = event.target as HTMLElement | null;
+  // The player scrubber keeps focus after seeking. It is a range input, but
+  // Space is still the editor's play/pause shortcut there (unlike text inputs).
+  if (event.code === 'Space' && target === playerScrubber.value) {
+    event.preventDefault();
+    if (!event.repeat) togglePreviewPlayback();
+    return;
+  }
   if (
     target?.matches('input, textarea, select, [contenteditable="true"]') ||
     (target?.matches('button') &&
@@ -3837,7 +3904,7 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
   }
   if (event.code === 'Space') {
     event.preventDefault();
-    togglePreviewPlayback();
+    if (!event.repeat) togglePreviewPlayback();
     return;
   }
   if (event.key === 'Delete' || event.key === 'Backspace') {
@@ -4231,10 +4298,15 @@ defineExpose({ flushPendingEdits });
               >
                 <Clapperboard :size="14" />素材</button
               ><button
-                :class="{ active: resourceTab === 'AUDIO' }"
-                @click="selectResourceTab('AUDIO')"
+                :class="{ active: resourceTab === 'VOICE' }"
+                @click="selectResourceTab('VOICE')"
               >
-                <AudioLines :size="14" />音频</button
+                <AudioLines :size="14" />音色</button
+              ><button
+                :class="{ active: resourceTab === 'MUSIC' }"
+                @click="selectResourceTab('MUSIC')"
+              >
+                <Music2 :size="14" />音乐</button
               ><button
                 :class="{ active: resourceTab === 'TEXT' }"
                 :disabled="!selectedVariant"
@@ -4464,7 +4536,7 @@ defineExpose({ flushPendingEdits });
               </div></template
             >
             <EffectVoiceLibrary
-              v-else-if="resourceTab === 'AUDIO'"
+              v-else-if="resourceTab === 'VOICE'"
               :project-id="props.projectId"
               :workflow-run-id="props.workflowRunId"
               :template-id="activeTemplateId"
@@ -4473,6 +4545,11 @@ defineExpose({ flushPendingEdits });
               :disabled="templateEditLocked"
               @select="selectVoiceProfile"
               @audition="pauseForVoiceAudition"
+            />
+            <EffectMusicLibrary
+              v-else-if="resourceTab === 'MUSIC'"
+              :project-id="props.projectId"
+              :workflow-run-id="props.workflowRunId"
             />
           </aside>
           <div
@@ -4561,10 +4638,7 @@ defineExpose({ flushPendingEdits });
                   v-for="audio in selectedVariant?.detachedAudios ?? []"
                   :key="`detached-player:${audio.id}`"
                   :ref="(element) => setDetachedAudioPlayer(audio.id, element)"
-                  :src="
-                    workspace.materials.find((item) => item.fileObjectId === audio.fileObjectId)
-                      ?.contentUrl
-                  "
+                  :src="detachedAudioSourceUrl(audio)"
                   preload="auto"
                   @loadedmetadata="syncDetachedAudio(true)"
                 />
@@ -4639,7 +4713,7 @@ defineExpose({ flushPendingEdits });
                 @input="seekPreview(Number(($event.target as HTMLInputElement).value))"
               />
               <div class="player-control-left">
-                <span class="player-time current">{{
+                <span ref="playerTimecode" class="player-time current">{{
                   formatPlayerTimecode(previewCurrentTime)
                 }}</span>
                 <span class="player-time-divider">/</span>
@@ -5093,6 +5167,7 @@ defineExpose({ flushPendingEdits });
           @reorder-slot="moveProjectSlot"
           @change-audio-volume="changePackagingAudioVolume"
           @separate-audio="separateAudioForSlot"
+          @add-music-asset="addMusicAssetToTimeline"
           @move-audio-clip="movePackagingAudio"
           @resize-audio-clip="resizePackagingAudio"
           @move-clip="moveTimelineClip"
@@ -5818,7 +5893,8 @@ button:disabled {
   display: flex;
   align-items: stretch;
   justify-content: flex-start;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   border-bottom: 1px solid #e2e8f0;
 }
 .resource-tabs button {

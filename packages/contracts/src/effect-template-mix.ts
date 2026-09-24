@@ -90,12 +90,15 @@ export type EffectTemplateMixAudio = {
   offset: number;
   volume: number;
 };
-/** Audio detached from a bound video clip; it continues to reference the confirmed source file. */
+/** Audio placed on the timeline, either detached from video or imported from the project music library. */
 export type EffectTemplateMixDetachedAudio = {
   id: string;
-  sourceSlotId: string;
+  sourceSlotId?: string | undefined;
+  sourceAssetId?: string | undefined;
   fileObjectId: string;
   name: string;
+  /** Full media length before this timeline clip is trimmed. */
+  sourceDuration?: number | undefined;
   duration: number;
   start: number;
   offset: number;

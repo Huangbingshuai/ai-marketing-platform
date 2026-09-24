@@ -87,19 +87,22 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
             Array.isArray(variant.captions) &&
             (variant.detachedAudios === undefined ||
               (Array.isArray(variant.detachedAudios) &&
-                variant.detachedAudios.length <= variant.slots.length &&
+                variant.detachedAudios.length <= 100 &&
                 variant.detachedAudios.every((rawAudio) => {
                   const audio = object(rawAudio);
+                  const hasVideoSource = typeof audio?.sourceSlotId === 'string';
+                  const hasMusicSource = typeof audio?.sourceAssetId === 'string';
                   return Boolean(
                     audio &&
                     typeof audio.id === 'string' &&
-                    typeof audio.sourceSlotId === 'string' &&
+                    hasVideoSource !== hasMusicSource &&
                     typeof audio.fileObjectId === 'string' &&
                     typeof audio.name === 'string' &&
                     Number.isFinite(audio.start) &&
                     Number.isFinite(audio.duration) &&
                     Number.isFinite(audio.offset) &&
-                    Number.isFinite(audio.volume),
+                    Number.isFinite(audio.volume) &&
+                    (audio.sourceDuration === undefined || Number.isFinite(audio.sourceDuration)),
                   );
                 })))
           );
@@ -806,10 +809,11 @@ export class EffectTemplateMixService {
     idempotencyKey: string,
     targetVariantId?: string,
   ): Promise<EffectTemplateMixAiRun> {
-    const [nodeState, artifacts, previousRuns] = await Promise.all([
+    const [nodeState, artifacts, previousRuns, packagingLockedIds] = await Promise.all([
       this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.aiRuns!.sourceArtifacts(projectId, workflowRunId),
       this.aiRuns!.listRecent(projectId, workflowRunId),
+      this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     if (nodeState.revision !== expectedRevision)
       throw new ApiHttpException(
@@ -820,6 +824,7 @@ export class EffectTemplateMixService {
     const draft = draftOf(nodeState.state);
     const entry = draft.templates.find(({ id }) => id === templateId);
     if (!entry) this.notFound('当前混剪模板不存在');
+    entry!.packagingLocked = packagingLockedIds.includes(templateId);
     const target = targetVariantId
       ? entry!.workspace.variants.find(({ id }) => id === targetVariantId)
       : undefined;
@@ -1844,31 +1849,11 @@ export class EffectTemplateMixService {
           sourceHash: source.contentHash ?? clipHash(source),
         };
       });
-      const promptDependencies = [...sourceIds].flatMap((artifactId) =>
-        (sources.get(artifactId)?.dependencies ?? [])
-          .filter(
-            (dependency) =>
-              dependency.sourceType === 'WORKING_ARTIFACT' &&
-              dependency.sourceNodeId === 'PROMPT_GENERATION' &&
-              dependency.sourceArtifactId,
-          )
-          .map((dependency) => ({
-            sourceType: 'WORKING_ARTIFACT' as const,
-            sourceNodeId: 'PROMPT_GENERATION',
-            sourceArtifactId: dependency.sourceArtifactId,
-            sourceKey: dependency.sourceKey,
-            sourceRevision: dependency.sourceRevision,
-            sourceHash: dependency.sourceHash,
-          })),
-      );
-      return [
-        ...new Map(
-          [...renderDependencies, ...promptDependencies].map((item) => [
-            `${item.sourceNodeId}:${item.sourceKey}:${item.sourceArtifactId}`,
-            item,
-          ]),
-        ).values(),
-      ];
+      // A timeline consumes confirmed rendered clips, not the entire Prompt batch.
+      // The renderer marks only clips whose exact Prompt input changed as stale;
+      // carrying the batch-level dependency here would invalidate every variant
+      // when a single Prompt changes.
+      return renderDependencies;
     };
     inputs.push({
       artifactKey: 'mix-template:' + templateId,
@@ -2054,8 +2039,10 @@ export class EffectTemplateMixService {
     const draft = draftOf(nodeState.state);
     const entry = draft.templates.find(({ id }) => id === templateId);
     if (!entry) this.notFound('当前混剪模板不存在');
+    const addingEmptyProjectAfterPackaging =
+      options.allowPackagingLocked && packagingLockedIds.includes(templateId);
     if (
-      lockedTemplateIds.includes(templateId) ||
+      (lockedTemplateIds.includes(templateId) && !addingEmptyProjectAfterPackaging) ||
       (!options.allowPackagingLocked && packagingLockedIds.includes(templateId))
     )
       throw new ApiHttpException(
@@ -2103,6 +2090,13 @@ export class EffectTemplateMixService {
     lockedTemplateIds: string[] = [],
     packagingLockedIds: string[] = [],
   ): EffectTemplateMixWorkspaceData {
+    const promptSources = promptSourcesFromArtifacts(artifacts);
+    const materials = artifacts
+      .map((artifact) => materialFrom(artifact, promptSources))
+      .filter((item): item is EffectTemplateMixMaterial => Boolean(item));
+    const availableMaterialIds = new Set(
+      materials.filter(({ available }) => available).map(({ id }) => id),
+    );
     const lockedSet = new Set(lockedTemplateIds);
     const packagedSet = new Set(packagingLockedIds);
     const workspaceDraft: EffectTemplateMixDraft = {
@@ -2111,7 +2105,7 @@ export class EffectTemplateMixService {
         const filledTemplateHash = this.filledHashForEntry(entry, aiRunRecords);
         const packagingLocked = packagedSet.has(entry.id);
         const aiFillLocked = lockedSet.has(entry.id);
-        const needsAiFill = this.needsRefill(entry, filledTemplateHash);
+        const needsAiFill = this.needsRefill(entry, filledTemplateHash, availableMaterialIds);
         return {
           ...entry,
           ...(filledTemplateHash ? { filledTemplateHash } : {}),
@@ -2121,10 +2115,6 @@ export class EffectTemplateMixService {
         };
       }),
     };
-    const promptSources = promptSourcesFromArtifacts(artifacts);
-    const materials = artifacts
-      .map((artifact) => materialFrom(artifact, promptSources))
-      .filter((item): item is EffectTemplateMixMaterial => Boolean(item));
     const commits = artifacts
       .filter(
         ({ nodeId, artifactKey }) =>
@@ -2248,12 +2238,19 @@ export class EffectTemplateMixService {
   private needsRefill(
     entry: EffectTemplateMixDraft['templates'][number],
     filledTemplateHash: string | undefined,
+    availableMaterialIds?: ReadonlySet<string>,
   ): boolean {
-    if (!filledTemplateHash) return false;
     const currentHash = templateConfigurationHash(entry.workspace.template);
-    if (currentHash !== filledTemplateHash) return true;
+    if (filledTemplateHash && currentHash !== filledTemplateHash) return true;
     return entry.workspace.variants.some((variant) => {
       if (!Object.values(variant.bindings).some(Boolean)) return false;
+      if (
+        availableMaterialIds &&
+        Object.values(variant.bindings).some(
+          (materialId) => materialId && !availableMaterialIds.has(materialId),
+        )
+      ) return true;
+      if (!filledTemplateHash) return false;
       return variant.appliedTemplateHash
         ? variant.appliedTemplateHash !== currentHash
         : variant.appliedTemplateVersion !== entry.workspace.template.editVersion;
@@ -2293,7 +2290,8 @@ export class EffectTemplateMixService {
         !source ||
         source.availability !== 'AVAILABLE' ||
         source.freshness !== 'CURRENT' ||
-        variant.bindingRevisions[slot.id] !== source.revision ||
+        !Number.isInteger(variant.bindingRevisions[slot.id]) ||
+        variant.bindingRevisions[slot.id]! > source.revision ||
         used.has(source.id) ||
         !Number.isFinite(offset) ||
         offset < 0 ||
@@ -2305,6 +2303,9 @@ export class EffectTemplateMixService {
           'CONFLICT',
         );
       }
+      // A stable render-task artifact may advance after a selective Prompt rerender.
+      // Keep the user's timeline edit, but rebind it to the newly current clip revision.
+      variant.bindingRevisions[slot.id] = source.revision;
       used.add(source.id);
       allSourceIds.add(source.id);
     }

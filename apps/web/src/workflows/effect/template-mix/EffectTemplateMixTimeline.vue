@@ -84,6 +84,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   assignMaterial: [materialId: string, slotId: string];
+  addMusicAsset: [music: MusicAssetDrop & { start: number }];
   applyTransition: [slotId: string, transition: EffectTemplateMixTransition];
   changeAudioVolume: [clipId: string, volume: number];
   moveAudioClip: [clipId: string, start: number];
@@ -124,6 +125,7 @@ const emit = defineEmits<{
 
 type VisibleTrack = 'AUDIO' | 'CAPTION' | 'VIDEO';
 type TimelineAudioKind = 'DETACHED' | 'MUSIC' | 'VOICE';
+type MusicAssetDrop = { assetId: string; fileObjectId: string; name: string; duration: number };
 /** One audio clip or caption block; kind affects its colour, not its track. */
 type TimelineAudio = {
   /** Namespaced selection id: `voice:<lineId>`, `music`, `voice`, or `caption:<id>`. */
@@ -267,6 +269,7 @@ const clipDrag = ref<ClipDragState | null>(null);
 const transitionDrag = ref<TransitionDragState | null>(null);
 const suppressTransitionClick = ref(false);
 const transitionDropSlotId = ref('');
+const musicDropActive = ref(false);
 const trimDrag = ref<TrimDragState | null>(null);
 const edgeTrimDrag = ref<EdgeTrimDragState | null>(null);
 const marquee = ref<MarqueeState | null>(null);
@@ -557,20 +560,26 @@ const timelineAudios = computed<TimelineAudio[]>(() => {
 const detachedAudioRows = (): TimelineAudio[] =>
   (props.variant?.detachedAudios ?? []).flatMap((audio) => {
     const material = props.materials.find(({ fileObjectId }) => fileObjectId === audio.fileObjectId);
-    if (!material) return [];
+    const sourceDuration = audio.sourceDuration ?? material?.duration ?? audio.offset + audio.duration;
+    const sourceUrl = audio.sourceAssetId
+      ? props.projectId
+        ? apiUrl(`/projects/${encodeURIComponent(props.projectId)}/assets/${encodeURIComponent(audio.sourceAssetId)}/content`)
+        : ''
+      : material?.contentUrl ?? '';
+    if (!sourceUrl) return [];
     const offset = Math.max(0, audio.offset);
     return [{
       id: `detached:${audio.id}`,
-      kind: 'DETACHED',
+      kind: audio.sourceAssetId ? 'MUSIC' : 'DETACHED',
       label: audio.name,
       start: audio.start,
       duration: audio.duration,
       offset,
-      sourceDuration: material.duration,
+      sourceDuration,
       volume: audio.volume,
       fadeIn: 0,
       fadeOut: 0,
-      sourceUrl: material.contentUrl,
+      sourceUrl,
       editable: true,
     }];
   });
@@ -934,6 +943,62 @@ const onMaterialDrop = (event: DragEvent): void => {
   if (!slotId || !materialId) return;
   setSelection([slotId]);
   emit('assignMaterial', materialId, slotId);
+};
+
+const acceptsMusicAssetDrag = (event: DragEvent): boolean =>
+  Boolean(
+    props.variant &&
+      !props.readOnly &&
+      !trackLocked.AUDIO &&
+      event.dataTransfer?.types.includes('application/x-effect-template-mix-music'),
+  );
+
+const onMusicTrackDragOver = (event: DragEvent): void => {
+  if (!acceptsMusicAssetDrag(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  musicDropActive.value = true;
+};
+
+const onMusicTrackDragLeave = (event: DragEvent): void => {
+  const current = event.currentTarget;
+  if (
+    current instanceof Node &&
+    event.relatedTarget instanceof Node &&
+    current.contains(event.relatedTarget)
+  )
+    return;
+  musicDropActive.value = false;
+};
+
+const onMusicTrackDrop = (event: DragEvent): void => {
+  if (!acceptsMusicAssetDrag(event)) return;
+  event.preventDefault();
+  musicDropActive.value = false;
+  const viewportElement = viewport.value;
+  if (!viewportElement) return;
+  let data: MusicAssetDrop;
+  try {
+    data = JSON.parse(
+      event.dataTransfer?.getData('application/x-effect-template-mix-music') ?? '',
+    ) as MusicAssetDrop;
+  } catch {
+    return;
+  }
+  if (
+    !data.assetId ||
+    !data.fileObjectId ||
+    !data.name ||
+    !Number.isFinite(data.duration) ||
+    data.duration <= 0
+  )
+    return;
+  const bounds = viewportElement.getBoundingClientRect();
+  const start = Math.max(
+    0,
+    (event.clientX - bounds.left + viewportElement.scrollLeft) / pixelsPerSecond.value,
+  );
+  emit('addMusicAsset', { ...data, start });
 };
 
 const syncTrackScroll = (source: 'HEADERS' | 'VIEWPORT'): void => {
@@ -2371,8 +2436,14 @@ onBeforeUnmount(() => {
             :key="`canvas:${track}`"
             :ref="(element) => setAudioTrackElement(track, element)"
             class="timeline-track audio-track"
-            :class="['audio-track-audio', { 'is-locked': trackLocked.AUDIO }]"
+            :class="[
+              'audio-track-audio',
+              { 'is-locked': trackLocked.AUDIO, 'is-drop-target': musicDropActive },
+            ]"
             :style="{ height: `${trackHeight(track)}px` }"
+            @dragleave="onMusicTrackDragLeave"
+            @dragover="onMusicTrackDragOver"
+            @drop="onMusicTrackDrop"
             @pointerdown="onTrackPointerDown($event, track)"
           >
             <div
@@ -2762,6 +2833,10 @@ onBeforeUnmount(() => {
   height: 76px;
   background: #f7f9fc;
   overflow: hidden;
+}
+.timeline-track.audio-track.is-drop-target {
+  box-shadow: inset 0 0 0 2px #477eff;
+  background: #edf4ff;
 }
 .timeline-track.is-locked {
   cursor: not-allowed;

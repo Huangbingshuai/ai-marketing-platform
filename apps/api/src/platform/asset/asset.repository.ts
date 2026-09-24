@@ -43,6 +43,11 @@ export type CreateAssetRecord = {
   sourceVersion?: number | null;
   importedAt?: Date | null;
   dependencies?: Prisma.InputJsonValue;
+  workflowFile?: {
+    workflowRunId: string;
+    nodeId: string;
+    sha256: string;
+  };
 };
 
 export type UpdateAssetRecord = Pick<
@@ -109,6 +114,30 @@ export class AssetRepository {
     });
   }
 
+  findFileObjectIds(projectId: string, storageKeys: string[]) {
+    if (!storageKeys.length) return Promise.resolve([]);
+    return this.prisma.fileObject.findMany({
+      where: { projectId, storageKey: { in: storageKeys }, status: 'AVAILABLE' },
+      select: { id: true, storageKey: true },
+    });
+  }
+
+  findFileObjectId(projectId: string, storageKey: string) {
+    return this.prisma.fileObject.findFirst({
+      where: { projectId, storageKey, status: 'AVAILABLE' },
+      select: { id: true },
+    });
+  }
+
+  async workflowRunExists(projectId: string, workflowRunId: string): Promise<boolean> {
+    return Boolean(
+      await this.prisma.workflowRun.findFirst({
+        where: { projectId, id: workflowRunId },
+        select: { id: true },
+      }),
+    );
+  }
+
   count(projectId: string, filters: AssetListQuery): Promise<number> {
     return this.prisma.asset.count({ where: filteredWhere(projectId, filters) });
   }
@@ -144,7 +173,7 @@ export class AssetRepository {
           });
         }
       }
-      const { content, businessData, dependencies, ...assetFields } = data;
+      const { content, businessData, dependencies, workflowFile, ...assetFields } = data;
       const asset = await transaction.asset.create({
         data: compact({
           projectId,
@@ -170,6 +199,26 @@ export class AssetRepository {
           storageKey: asset.storageKey,
         }) as Prisma.AssetVersionUncheckedCreateInput,
       });
+      if (workflowFile) {
+        await transaction.fileObject.upsert({
+          where: { projectId_storageKey: { projectId, storageKey: asset.storageKey } },
+          create: {
+            projectId,
+            workflowRunId: workflowFile.workflowRunId,
+            nodeId: workflowFile.nodeId,
+            originalFileName: asset.originalFileName,
+            mimeType: asset.mimeType,
+            sizeBytes: asset.sizeBytes,
+            storageKey: asset.storageKey,
+            sha256: workflowFile.sha256,
+          },
+          update: {
+            status: 'AVAILABLE',
+            orphanedAt: null,
+            sha256: workflowFile.sha256,
+          },
+        });
+      }
       if (operationKey) {
         await transaction.assetOperationReceipt.create({
           data: {

@@ -4,7 +4,7 @@ import {
   ASSET_WORKFLOWS,
   ASSET_WORKFLOW_SPACES,
 } from '@ai-marketing/contracts';
-import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class ImportAssetDto {
   @IsString()
@@ -29,4 +29,8 @@ export class ImportAssetDto {
   @IsOptional()
   @IsIn([...ASSET_WORKFLOW_SPACES])
   workflowSpace?: (typeof ASSET_WORKFLOW_SPACES)[number];
+
+  @IsOptional()
+  @IsUUID('4')
+  workflowRunId?: string;
 }

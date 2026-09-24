@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 
 import {
   ASSET_DIRECTORIES,
@@ -189,7 +190,11 @@ const safeMimeType = (mimeType: string): string => {
   ).slice(0, 120);
 };
 
-const toAsset = (record: AssetRecord, sourceCurrentVersion: number | null = null): Asset => {
+const toAsset = (
+  record: AssetRecord,
+  sourceCurrentVersion: number | null = null,
+  workflowFileObjectId?: string,
+): Asset => {
   const contentPath = `/api/projects/${encodeURIComponent(record.projectId)}/assets/${encodeURIComponent(record.id)}/content`;
   return {
     id: record.id,
@@ -210,6 +215,7 @@ const toAsset = (record: AssetRecord, sourceCurrentVersion: number | null = null
     updatedAt: record.updatedAt.toISOString(),
     storageWorkflow: record.storageWorkflow,
     workflowSpace: record.workflowSpace,
+    ...(workflowFileObjectId ? { workflowFileObjectId } : {}),
     status: record.status,
     qualityStatus: record.qualityStatus,
     currentVersion: record.currentVersion,
@@ -354,10 +360,18 @@ export class AssetService {
     }
   }
 
-  private async present(record: AssetRecord): Promise<Asset> {
-    if (!record.sourceProjectId || !record.sourceAssetId) return toAsset(record);
+  private async present(
+    record: AssetRecord,
+    workflowFileObjectId?: string | null,
+  ): Promise<Asset> {
+    const fileObjectId =
+      workflowFileObjectId === undefined
+        ? (await this.repository.findFileObjectId(record.projectId, record.storageKey))?.id
+        : workflowFileObjectId;
+    if (!record.sourceProjectId || !record.sourceAssetId)
+      return toAsset(record, null, fileObjectId ?? undefined);
     const source = await this.repository.find(record.sourceProjectId, record.sourceAssetId);
-    return toAsset(record, source?.currentVersion ?? null);
+    return toAsset(record, source?.currentVersion ?? null, fileObjectId ?? undefined);
   }
 
   async list(projectId: string, filters: AssetListQuery): Promise<AssetListData> {
@@ -375,8 +389,15 @@ export class AssetService {
     const resolvedTotal = paged ? total : items.length;
     const page = Math.max(1, filters.page ?? 1),
       pageSize = Math.min(96, Math.max(1, filters.pageSize ?? 24));
+    const fileObjects = await this.repository.findFileObjectIds(
+      projectId,
+      items.map(({ storageKey }) => storageKey),
+    );
+    const fileObjectByStorageKey = new Map(fileObjects.map(({ storageKey, id }) => [storageKey, id]));
     return {
-      items: await Promise.all(items.map((item) => this.present(item))),
+      items: await Promise.all(
+        items.map((item) => this.present(item, fileObjectByStorageKey.get(item.storageKey) ?? null)),
+      ),
       total: resolvedTotal,
       facets: buildFacets(facetRecords),
       ...(paged
@@ -411,6 +432,13 @@ export class AssetService {
       const project = await this.projectService.get(projectId);
       assertWorkflowSpace(metadata.storageWorkflow ?? 'EFFECT', metadata.workflowSpace ?? 'EFFECT');
       assertDirectoryType(metadata.directory, metadata.type);
+      if (metadata.workflowRunId && metadata.type !== 'VOICE_AUDIO')
+        throw validationError('只有音频资产可以关联到混剪时间轴');
+      if (
+        metadata.workflowRunId &&
+        !(await this.repository.workflowRunExists(projectId, metadata.workflowRunId))
+      )
+        throw validationError('工作流运行不存在');
       const normalized = {
         name: normalizeName(metadata.name),
         directory: metadata.directory,
@@ -421,6 +449,16 @@ export class AssetService {
         mimeType: safeMimeType(file.mimetype),
         sizeBytes: file.size,
       };
+      let workflowFile: { workflowRunId: string; nodeId: string; sha256: string } | undefined;
+      if (metadata.workflowRunId) {
+        const hash = createHash('sha256');
+        for await (const chunk of createReadStream(file.path)) hash.update(chunk);
+        workflowFile = {
+          workflowRunId: metadata.workflowRunId,
+          nodeId: 'TEMPLATE_MIX',
+          sha256: hash.digest('hex'),
+        };
+      }
 
       let stored;
       try {
@@ -452,6 +490,7 @@ export class AssetService {
             storageKey: stored.key,
             storageWorkflow: metadata.storageWorkflow ?? 'EFFECT',
             workflowSpace: metadata.workflowSpace ?? 'EFFECT',
+            ...(workflowFile ? { workflowFile } : {}),
           }),
         );
       } catch (error) {

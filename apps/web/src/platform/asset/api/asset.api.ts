@@ -155,6 +155,7 @@ export const importAsset = (
   form.set('type', metadata.type);
   form.set('tags', JSON.stringify(metadata.tags));
   if (metadata.notes) form.set('notes', metadata.notes);
+  if (metadata.workflowRunId) form.set('workflowRunId', metadata.workflowRunId);
   return requestJson<ApiResponse<Asset>>(assetBasePath(projectId), {
     method: 'POST',
     body: form,

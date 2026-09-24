@@ -40,6 +40,7 @@ export function packagingSnapshot(
   variant: EffectTemplateMixVariant,
   materials: EffectTemplateMixMaterial[],
   artifacts: WorkingArtifact[],
+  musicSources: ReadonlyMap<string, { fileObjectId: string; sourceDuration: number }> = new Map(),
 ): PackagingSnapshot {
   const boundaryError = packagingSlotBoundaryError(variant);
   if (boundaryError) throw new BadRequestException(boundaryError);
@@ -117,14 +118,38 @@ export function packagingSnapshot(
   });
   const timelineDuration = packagingTimelineDuration(variant);
   const detachedAudios = variant.detachedAudios ?? [];
+  const videoDetachedAudios = detachedAudios.filter((audio) => audio.sourceSlotId);
   if (
-    detachedAudios.length > variant.slots.length ||
+    detachedAudios.length > 100 ||
     new Set(detachedAudios.map(({ id }) => id)).size !== detachedAudios.length ||
-    new Set(detachedAudios.map(({ sourceSlotId }) => sourceSlotId)).size !== detachedAudios.length ||
+    new Set(videoDetachedAudios.map(({ sourceSlotId }) => sourceSlotId)).size !==
+      videoDetachedAudios.length ||
     detachedAudios.some((audio) => {
+      if (audio.sourceAssetId) {
+        const source = musicSources.get(audio.sourceAssetId);
+        return (
+          Boolean(audio.sourceSlotId) ||
+          !source ||
+          source.fileObjectId !== audio.fileObjectId ||
+          !Number.isFinite(audio.sourceDuration) ||
+          Math.abs(source.sourceDuration - (audio.sourceDuration ?? 0)) > 0.05 ||
+          !Number.isFinite(audio.start) ||
+          audio.start < 0 ||
+          !Number.isFinite(audio.duration) ||
+          audio.duration <= 0 ||
+          audio.start + audio.duration > timelineDuration + 0.001 ||
+          !Number.isFinite(audio.offset) ||
+          audio.offset < 0 ||
+          audio.offset + audio.duration > source.sourceDuration + 0.05 ||
+          !Number.isFinite(audio.volume) ||
+          audio.volume < 0 ||
+          audio.volume > PACKAGING_AUDIO_GAIN_CEILING
+        );
+      }
       const material = materials.find((item) => item.fileObjectId === audio.fileObjectId);
       return (
         !audio.id ||
+        !audio.sourceSlotId ||
         !variant.slots.some((slot) => slot.id === audio.sourceSlotId) ||
         !material?.available ||
         !Number.isFinite(audio.start) ||
@@ -143,6 +168,7 @@ export function packagingSnapshot(
   )
     throw new BadRequestException('分离音频片段来源、时长或时间范围无效');
   for (const audio of detachedAudios) {
+    if (audio.sourceAssetId) continue;
     const slot = variant.slots.find(({ id }) => id === audio.sourceSlotId)!;
     const material = materials.find(({ fileObjectId }) => fileObjectId === audio.fileObjectId)!;
     if (variant.bindings[slot.id] !== material.id)

@@ -175,7 +175,61 @@ export class EffectPackagingService {
     const artifacts = (
       await this.working.listArtifacts(projectId, { workflowRunId: body.workflowRunId })
     ).items;
-    const snapshots = variants.map((v) => packagingSnapshot(v, workspace.materials, artifacts));
+    const musicAssetIds = [
+      ...new Set(
+        variants.flatMap((variant) =>
+          (variant.detachedAudios ?? [])
+            .map((audio) => audio.sourceAssetId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ),
+    ];
+    const musicAssets = musicAssetIds.length
+      ? await this.repo.db.asset.findMany({
+          where: {
+            projectId,
+            id: { in: musicAssetIds },
+            directory: 'AUDIO_ASSETS',
+            type: 'VOICE_AUDIO',
+            status: 'AVAILABLE',
+            archivedAt: null,
+            tags: { has: '模板混剪音乐库' },
+          },
+          select: { id: true, storageKey: true, sizeBytes: true, mimeType: true, originalFileName: true },
+        })
+      : [];
+    const musicFileObjects = musicAssets.length
+      ? await this.repo.db.fileObject.findMany({
+          where: {
+            projectId,
+            storageKey: { in: musicAssets.map((asset) => asset.storageKey) },
+            status: 'AVAILABLE',
+          },
+          select: { id: true, storageKey: true, sizeBytes: true, mimeType: true },
+        })
+      : [];
+    const musicFileByStorageKey = new Map(musicFileObjects.map((file) => [file.storageKey, file]));
+    const musicSources = new Map<string, { fileObjectId: string; sourceDuration: number }>();
+    for (const audio of variants.flatMap((variant) => variant.detachedAudios ?? [])) {
+      if (!audio.sourceAssetId) continue;
+      const asset = musicAssets.find(({ id }) => id === audio.sourceAssetId);
+      const file = asset ? musicFileByStorageKey.get(asset.storageKey) : undefined;
+      const audioMime = (asset?.mimeType ?? file?.mimeType ?? '').toLowerCase();
+      const audioExtension = /\.(mp3|wav|m4a|aac|flac|ogg|opus|wma)$/i.test(asset?.originalFileName ?? '');
+      if (
+        !asset ||
+        !file ||
+        file.sizeBytes !== asset.sizeBytes ||
+        (!audioMime.startsWith('audio/') && !audioExtension) ||
+        !Number.isFinite(audio.sourceDuration) ||
+        (audio.fileObjectId !== file.id)
+      )
+        throw new BadRequestException('音乐素材已失效或不属于当前项目，请重新导入');
+      musicSources.set(asset.id, { fileObjectId: file.id, sourceDuration: audio.sourceDuration! });
+    }
+    const snapshots = variants.map((v) =>
+      packagingSnapshot(v, workspace.materials, artifacts, musicSources),
+    );
     if (!body.component || body.component === 'ALL' || body.component === 'VOICE') {
       const voiceProfile = this.voiceCatalog.selection(entry.workspace.template.voiceProfileId);
       const revoked = await this.repo.db.effectVoicePreview.findFirst({
@@ -605,6 +659,7 @@ export class EffectPackagingService {
   async content(projectId: string, runId: string, token: string, itemId: string, fileId: string) {
     const { snapshot, item, run } = await this.workerItem(projectId, runId, token, itemId);
     const sourceVideo = snapshot.clips.some((c) => c.fileObjectId === fileId);
+    const timelineAudio = (snapshot.detachedAudios ?? []).some((audio) => audio.fileObjectId === fileId);
     const savedVoice = Object.values((item.checkpoint as PackagingCheckpoint).voices ?? {}).some(
       (voice) => voice.fileObjectId === fileId,
     );
@@ -624,7 +679,8 @@ export class EffectPackagingService {
           },
         }),
       );
-    if (!sourceVideo && !ownedVoice) throw new NotFoundException('素材不属于当前成片');
+    if (!sourceVideo && !timelineAudio && !ownedVoice)
+      throw new NotFoundException('素材不属于当前成片');
     return this.working.fileObjectContent(projectId, fileId);
   }
   async upload(

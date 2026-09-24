@@ -3,8 +3,10 @@ import source from './EffectVoiceLibrary.vue?raw';
 import page from './EffectTemplateMixNodePage.vue?raw';
 
 describe('voice library UI boundaries', () => {
-  it('uses the audio pane and persists a preference without automatically generating', () => {
+  it('uses the voice pane and persists a preference without automatically generating', () => {
     expect(page).toContain('<EffectVoiceLibrary');
+    expect(page).toContain("selectResourceTab('VOICE')");
+    expect(page).toContain('>音色</button');
     expect(page).toContain(':selected-id="workspace.template.voiceProfileId"');
     const select = page.slice(
       page.indexOf('const selectVoiceProfile'),

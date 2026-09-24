@@ -63,6 +63,9 @@ describe('AssetService', () => {
     list: ReturnType<typeof vi.fn>;
     count: ReturnType<typeof vi.fn>;
     listForFacets: ReturnType<typeof vi.fn>;
+    findFileObjectIds: ReturnType<typeof vi.fn>;
+    findFileObjectId: ReturnType<typeof vi.fn>;
+    workflowRunExists: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     find: ReturnType<typeof vi.fn>;
     findVersion: ReturnType<typeof vi.fn>;
@@ -95,6 +98,9 @@ describe('AssetService', () => {
       list: vi.fn(),
       count: vi.fn(),
       listForFacets: vi.fn(),
+      findFileObjectIds: vi.fn().mockResolvedValue([]),
+      findFileObjectId: vi.fn().mockResolvedValue(null),
+      workflowRunExists: vi.fn().mockResolvedValue(true),
       create: vi.fn(),
       find: vi.fn(),
       findVersion: vi.fn(),
@@ -422,6 +428,52 @@ describe('AssetService', () => {
       ),
     ).rejects.toThrow('database unavailable');
     expect(storage.delete).toHaveBeenCalledWith('assets/new');
+  });
+
+  it('creates timeline-importable music with a workflow FileObject and content hash', async () => {
+    const path = join(temporaryRoot, 'theme.mp3');
+    await writeFile(path, 'audio');
+    storage.put.mockResolvedValue({ key: 'assets/music', sizeBytes: 5 });
+    repository.create.mockResolvedValue({
+      ...record,
+      ...{
+        directory: 'AUDIO_ASSETS',
+        type: 'VOICE_AUDIO',
+        originalFileName: 'theme.mp3',
+        mimeType: 'audio/mpeg',
+        sizeBytes: 5,
+        storageKey: 'assets/music',
+        previewKind: 'AUDIO',
+      },
+    });
+
+    const result = await service.import(
+      record.projectId,
+      {
+        name: 'theme.mp3',
+        directory: 'AUDIO_ASSETS',
+        type: 'VOICE_AUDIO',
+        tags: ['模板混剪音乐库'],
+        workflowRunId: '34726346-e726-463e-921e-6db3e080bf8a',
+      },
+      { path, originalname: 'theme.mp3', mimetype: 'audio/mpeg', size: 5 },
+    );
+
+    expect(repository.workflowRunExists).toHaveBeenCalledWith(
+      record.projectId,
+      '34726346-e726-463e-921e-6db3e080bf8a',
+    );
+    expect(repository.create).toHaveBeenCalledWith(
+      record.projectId,
+      expect.objectContaining({
+        workflowFile: {
+          workflowRunId: '34726346-e726-463e-921e-6db3e080bf8a',
+          nodeId: 'TEMPLATE_MIX',
+          sha256: expect.any(String),
+        },
+      }),
+    );
+    expect(result.previewKind).toBe('AUDIO');
   });
 
   it('validates the final directory/type combination for partial updates', async () => {
