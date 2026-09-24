@@ -49,6 +49,12 @@ export type EffectTemplateMixSlot = {
   transition: EffectTemplateMixTransition;
   /** Seconds of overlap represented by the transition junction; optional for schema-v1 history. */
   transitionDuration?: number;
+  /**
+   * A clip the user dropped onto a track border. It is picture only: it takes part in the visual
+   * timeline (and so covers whatever sits under it) but owns no narration, subtitle or slot
+   * description. Only a variant's own extra slots ever set it — a template never has overlays.
+   */
+  overlay?: boolean;
 };
 export type EffectTemplateMixMaterial = {
   id: string;
@@ -73,6 +79,10 @@ export type EffectTemplateMixMaterial = {
 };
 export type EffectTemplateMixCaption = {
   id: string;
+  /** User-authored subtitle-only clip; it is independent of generated narration. */
+  manual?: boolean;
+  /** User-created captions can own an independent timeline lane; absent is the legacy lane. */
+  trackId?: string;
   /** New segmented captions share one saved narration clip; absent in historical packages. */
   voiceLineId?: string;
   /** Stable order and expected count make a missing subtitle detectable after editor rewording. */
@@ -118,6 +128,11 @@ export type EffectTemplateMixVariant = {
   appliedTemplateVersion: number;
   /** Exact template configuration used by the latest successful smart-fill for this variant. */
   appliedTemplateHash?: string;
+  /**
+   * Template slots followed by the clips the user dropped onto a track border. Those extra slots
+   * belong to this variant alone — the template never sees them — so they must survive a template
+   * resync instead of being dropped on the floor.
+   */
   slots: EffectTemplateMixSlot[];
   bindings: Record<string, string>;
   bindingRevisions: Record<string, number>;
@@ -125,6 +140,13 @@ export type EffectTemplateMixVariant = {
   /** Optional editor layout; absent values use the template's sequential layout. */
   timelineStarts?: Record<string, number>;
   videoLanes?: Record<string, number>;
+  /**
+   * Optional per-clip audio row, keyed by timeline clip id (`voice:<lineId>`, `music`,
+   * `detached:<uuid>`). Audio rows carry no meaning — every one of them is just 音频 and clips
+   * differ only by colour — so this is pure editor arrangement: absent values fall back to the
+   * kind's default row, and moving a clip between rows never changes what the worker renders.
+   */
+  audioLanes?: Record<string, number>;
   /** Optional for schema-v1 compatibility; missing values are historical/manual bindings. */
   bindingMetadata?: Record<string, EffectTemplateMixBindingMetadata>;
   manualSlotIds: string[];
@@ -137,6 +159,23 @@ export type EffectTemplateMixVariant = {
   /** Optional for historical schema-v1 drafts. */
   detachedAudios?: EffectTemplateMixDetachedAudio[];
   originalVolume: number;
+};
+/**
+ * Re-syncs a variant's slots with the template while keeping the variant's own extra slots, in the
+ * template's order followed by the extras. A template edit means "these six slots changed", not
+ * "delete every clip I placed on its own track", so a wholesale replace would silently lose them.
+ * Bindings, lanes and starts are keyed by slot id and therefore survive untouched.
+ */
+export const syncEffectTemplateMixVariantSlots = (
+  templateSlots: readonly EffectTemplateMixSlot[],
+  variantSlots: readonly EffectTemplateMixSlot[],
+): EffectTemplateMixSlot[] => {
+  const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+  const templateIds = new Set(templateSlots.map(({ id }) => id));
+  return [
+    ...clone(templateSlots),
+    ...variantSlots.filter(({ id }) => !templateIds.has(id)).map(clone),
+  ];
 };
 export type EffectTemplateMixAiRunStatus =
   'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';

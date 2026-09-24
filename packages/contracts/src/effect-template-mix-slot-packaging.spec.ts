@@ -22,4 +22,10 @@ describe('slot packaging boundaries', () => {
     v.videoLanes = { '1': 1 };
     expect(packagingSlotBoundaryError(v)).toContain('边界冲突');
   });
+  it('lets an overlay cover a narrated slot, because it owns no narration line', () => {
+    const v = variant([4, 15]);
+    v.slots[1]!.overlay = true;
+    v.timelineStarts = { '1': 2 };
+    expect(packagingSlotBoundaryError(v)).toBeNull();
+  });
 });

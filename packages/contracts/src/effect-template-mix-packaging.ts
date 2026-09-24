@@ -41,6 +41,8 @@ export type PackagingClip = {
   offset: number;
   lane: number;
   prompt: string;
+  /** Picture-only clip: it renders, but the Worker gives it no narration, subtitle or description. */
+  overlay?: boolean;
   transition: string;
   transitionDuration: number;
   /** The source audio is represented by a separate timeline clip. */
@@ -126,6 +128,9 @@ export type PackagingAudioEdit = {
   fadeIn?: number;
   fadeOut?: number;
 };
+/** Only user-editable caption fields are accepted; segment lineage stays server-owned. */
+export type PackagingCaptionEdit = Pick<EffectTemplateMixCaption, 'id' | 'text' | 'start' | 'end'> &
+  Pick<EffectTemplateMixCaption, 'manual' | 'trackId'>;
 /**
  * Where one caption sits in the frame. Values are normalised so a box survives a change
  * of output size; absent means "pipeline default" (bottom-centred, 40px margins).
@@ -149,9 +154,24 @@ export type UpdatePackagingAudioRequest = {
   voices?: Record<string, PackagingAudioEdit>;
   music?: PackagingAudioEdit;
   /** Full replacement; the server sorts by start and rejects overlaps. */
-  captions?: EffectTemplateMixCaption[];
+  captions?: PackagingCaptionEdit[];
   /** Keyed by caption id; merged into the stored boxes, so only edited ones are sent. */
   boxes?: Record<string, PackagingCaptionBox>;
+  /** Keyed by caption id; only the ones the editor moved or trimmed are sent. */
+  captionVoices?: Record<string, PackagingAudioEdit>;
+  /**
+   * Script line ids whose narration the editor deleted. A voice is an optional overlay on its line,
+   * not a part of it: the line stays, so the subtitle stays too, and the film simply has no speech
+   * there. Re-packaging synthesizes every line again, so a deletion lasts until the next run.
+   */
+  removedVoices?: string[];
+  /**
+   * Caption ids whose generated narration the editor deleted. A caption narration hangs off its
+   * caption and nothing else, so dropping the entry is all a delete is.
+   */
+  removedCaptionVoices?: string[];
+  /** Drop the packaged music bed. The film keeps its length; it simply has no BGM. */
+  removeMusic?: boolean;
 };
 export type PackagingLine = {
   id: string;
@@ -189,6 +209,13 @@ export type PackagingCheckpoint = {
   captions?: EffectTemplateMixCaption[];
   /** Editor-authored caption geometry, keyed by caption id. Untouched by component redos. */
   captionBoxes?: Record<string, PackagingCaptionBox>;
+  /**
+   * Narration the editor generated for one caption, keyed by caption id. It is deliberately not
+   * `voices`: a `voices` key must line up with a `script` line, and a component redo deletes both,
+   * so an entry there would either fail validation or be wiped by a redo. The renderer mixes these
+   * exactly like a narration line — they are the same shape on purpose.
+   */
+  captionVoices?: Record<string, PackagingAudio>;
 };
 export type PackagingSnapshot = {
   /** Optional only for pre-library tasks. New jobs freeze the server-selected profile. */
@@ -278,6 +305,31 @@ export type CreatePackagingRequest = {
   component?: PackagingComponent;
   slotId?: string;
 };
+/**
+ * The editor asks for one caption's text to be spoken again with the template's own voice.
+ *
+ * `text` is an assertion, not the text to speak: synthesis always reads the caption the server has
+ * stored, so a client cannot spend the project's paid voice budget on arbitrary words. Sending the
+ * text the editor is showing makes a caption that is still inside its save debounce fail loudly
+ * instead of quietly being voiced from the previous revision.
+ */
+export type CreatePackagingCaptionVoiceRequest = {
+  captionId: string;
+  text: string;
+};
+/** One caption narration request; the worker synthesizes and posts the audio back. */
+export type PackagingCaptionVoiceQueueMessage = {
+  schemaVersion: 2;
+  taskType: 'CAPTION_VOICE';
+  projectId: string;
+  runId: string;
+  itemId: string;
+  captionId: string;
+  text: string;
+  /** The profile frozen on the snapshot, so the new line matches the item's other narration. */
+  profile: EffectVoiceSelection;
+  requestId: string;
+};
 
 export const PACKAGING_NARRATION_LAYOUT = 'SLOT_V1' as const;
 /** Pure mechanical preflight shared by server and editor. */
@@ -286,7 +338,18 @@ export function packagingSlotBoundaryError(variant: EffectTemplateMixVariant): s
   if (rows.some(({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 4 || slot.duration > 15))
     return '槽位时长必须为 4–15 秒';
   if (new Set(rows.map((r) => r.slot.id)).size !== rows.length) return '槽位编号重复';
-  if (rows.some((r, i) => !Number.isFinite(r.start) || r.start < 0 || (i > 0 && r.start < rows[i - 1]!.end - 0.001)))
+  // Narration is spoken one line at a time, so the slots that own one still may not overlap. An
+  // overlay owns no line: it is a picture layer the user stacked on top, and covering what is under
+  // it is exactly what it is for.
+  const narrated = rows.filter(({ slot }) => slot.overlay !== true);
+  if (
+    narrated.some(
+      (r, i) =>
+        !Number.isFinite(r.start) ||
+        r.start < 0 ||
+        (i > 0 && r.start < narrated[i - 1]!.end - 0.001),
+    )
+  )
     return '槽位口播边界冲突，请调整时间轴';
   return null;
 }
@@ -298,19 +361,62 @@ export type PackagingQueueMessage = {
   requestId: string;
 };
 
-/** Stable visual content; editor selection and audio edits are not visual changes. */
+/**
+ * Stable visual content; editor selection and audio edits are not visual changes.
+ *
+ * An overlay is left out on purpose. It is a picture layer the user stacked on top, and the render
+ * reads it straight from the live variant, so it is not part of what a packaging freezes: adding,
+ * moving or removing one must not restate an already-confirmed package — nor, through that, lock the
+ * captions and audio that were already arranged beside it.
+ *
+ * What is left is the narrated clips, and those never overlap each other, so only their relative
+ * row order can change what the film looks like. Rows are therefore compared by rank rather than by
+ * number, which keeps an overlay's new row from renumbering every narrated clip and restating the
+ * hash behind the user's back.
+ */
 export function packagingVisualTimeline(variant: EffectTemplateMixVariant) {
+  const slots = variant.slots.filter((slot) => slot.overlay !== true);
+  const narrated = new Set(slots.map((slot) => slot.id));
+  const keep = <T>(values: Record<string, T> | undefined): Record<string, T> =>
+    Object.fromEntries(Object.entries(values ?? {}).filter(([id]) => narrated.has(id)));
+  const laneOf = (slotId: string): number =>
+    Math.max(0, Math.round(variant.videoLanes?.[slotId] ?? 0));
+  const ranks = new Map(
+    [...new Set(slots.map((slot) => laneOf(slot.id)))]
+      .sort((left, right) => left - right)
+      .map((lane, index) => [lane, index] as const),
+  );
+  // A start the sequential layout would have produced anyway is not a visual change. The editor
+  // materializes one for every slot on the first trim, and that must not restate the hash of an
+  // already-confirmed package — the same principle as the lane ranks below. So an explicit start is
+  // kept only when it really moves its clip off the cursor. The walk covers every slot, overlays
+  // included, because an overlay still occupies time; only the output is narrowed to narrated slots.
+  const timelineStarts = (() => {
+    let cursor = 0;
+    const starts: Record<string, number> = {};
+    for (const slot of variant.slots) {
+      const explicit = variant.timelineStarts?.[slot.id];
+      const start = explicit ?? cursor;
+      if (explicit !== undefined && explicit !== cursor && narrated.has(slot.id)) {
+        starts[slot.id] = explicit;
+      }
+      cursor = start + slot.duration;
+    }
+    return starts;
+  })();
   return {
     id: variant.id,
-    slots: variant.slots,
-    bindings: variant.bindings,
-    bindingRevisions: variant.bindingRevisions,
-    offsets: variant.offsets,
-    timelineStarts: variant.timelineStarts ?? {},
+    slots,
+    bindings: keep(variant.bindings),
+    bindingRevisions: keep(variant.bindingRevisions),
+    offsets: keep(variant.offsets),
+    timelineStarts,
     // Missing lane and explicit lane 0 render identically. Editor normalization
     // must not invalidate already-paid packaging or confirmed visual sources.
     videoLanes: Object.fromEntries(
-      Object.entries(variant.videoLanes ?? {}).filter(([, lane]) => lane !== 0),
+      slots
+        .map((slot) => [slot.id, ranks.get(laneOf(slot.id)) ?? 0] as const)
+        .filter(([, lane]) => lane !== 0),
     ),
     ...((variant.detachedAudios?.length ?? 0) > 0
       ? {
@@ -321,6 +427,44 @@ export function packagingVisualTimeline(variant: EffectTemplateMixVariant) {
       : {}),
   };
 }
+/**
+ * The narrated slots' explicit starts exactly as the variant stores them, before
+ * {@link packagingVisualTimeline} drops the ones the sequential layout would have produced anyway.
+ *
+ * A package confirmed before that normalization was hashed with them still in place, so reading its
+ * hash back needs this shape — otherwise the normalization itself would read as a visual change and
+ * expire a film whose frames never moved.
+ */
+export function packagingStoredTimelineStarts(
+  variant: EffectTemplateMixVariant,
+): Record<string, number> {
+  const narrated = new Set(
+    variant.slots.filter((slot) => slot.overlay !== true).map((slot) => slot.id),
+  );
+  return Object.fromEntries(
+    Object.entries(variant.timelineStarts ?? {}).filter(([id]) => narrated.has(id)),
+  );
+}
+/**
+ * The overlay layers {@link packagingVisualTimeline} deliberately leaves out, so the places that do
+ * have to notice a picture-only change can still tell two arrangements apart — the render's own
+ * dedupe key, above all, which would otherwise hand back the run it built before the overlay existed.
+ */
+export function packagingOverlayTimeline(variant: EffectTemplateMixVariant) {
+  return variant.slots
+    .filter((slot) => slot.overlay === true)
+    .map((slot) => ({
+      id: slot.id,
+      binding: variant.bindings[slot.id] ?? null,
+      bindingRevision: variant.bindingRevisions[slot.id] ?? null,
+      offset: variant.offsets[slot.id] ?? 0,
+      start: variant.timelineStarts?.[slot.id] ?? null,
+      lane: variant.videoLanes?.[slot.id] ?? 0,
+      duration: slot.duration,
+      transition: slot.transition,
+      transitionDuration: slot.transitionDuration ?? 0,
+    }));
+}
 export function packagingVisualVariant(variant: EffectTemplateMixVariant) {
   // Intentionally omit these fields from the independently versioned visual copy.
   /* eslint-disable @typescript-eslint/no-unused-vars */
@@ -330,6 +474,9 @@ export function packagingVisualVariant(variant: EffectTemplateMixVariant) {
     bgm: _bgm,
     voice: _voice,
     originalVolume: _volume,
+    // Which audio row a clip sits on is editor arrangement, so it must stay out of the visual copy
+    // — otherwise dragging a clip up or down would rewrite an already-confirmed source payload.
+    audioLanes: _audioLanes,
     ...visual
   } = variant;
   /* eslint-enable @typescript-eslint/no-unused-vars */
@@ -343,6 +490,11 @@ export function packagingTimelineClips(variant: EffectTemplateMixVariant) {
     return { slot, start, end: cursor, lane: variant.videoLanes?.[slot.id] ?? 0 };
   });
 }
+/**
+ * The length of the visual timeline: how far the video clips reach. It is the packaging capacity
+ * baseline and the `timeline-project` artifact's own duration, so it deliberately ignores audio and
+ * captions — use {@link effectTemplateMixContentDuration} for the finished film's length.
+ */
 export function packagingTimelineDuration(variant: EffectTemplateMixVariant): number {
   return Math.max(
     0,
@@ -351,6 +503,38 @@ export function packagingTimelineDuration(variant: EffectTemplateMixVariant): nu
       .map((row) => row.end),
   );
 }
+/**
+ * How long the finished film is: the furthest end over everything the editor has placed, not just the
+ * video clips. Dragging an audio or caption clip past the last video clip is how a black tail with
+ * sound is made, so the render length, the editor's playhead range and the server's bounds all have
+ * to follow it. `checkpoint` is optional because the packaging run that produces one does not have it
+ * yet; the captions follow the same precedence the editor uses (checkpoint first, draft second).
+ */
+export function effectTemplateMixContentDuration(
+  variant: EffectTemplateMixVariant,
+  checkpoint?: PackagingCheckpoint | null,
+): number {
+  const ends = [packagingTimelineDuration(variant)];
+  for (const audio of variant.detachedAudios ?? []) ends.push(audio.start + audio.duration);
+  // A generated caption narration is a narration line in every way that matters to the renderer,
+  // including its length, so it counts here too — otherwise a line longer than the picture would
+  // be rejected by the renderer's own bounds check instead of extending the film.
+  for (const voice of [
+    ...Object.values(checkpoint?.voices ?? {}),
+    ...Object.values(checkpoint?.captionVoices ?? {}),
+  ]) {
+    ends.push(voice.start + voice.duration);
+  }
+  if (checkpoint?.music) ends.push(checkpoint.music.start + checkpoint.music.duration);
+  for (const caption of checkpoint?.captions ?? variant.captions ?? []) ends.push(caption.end);
+  return Math.max(0, ...ends);
+}
+/**
+ * The ceiling on a film's length, in seconds. Because the length follows the content, a clip placed
+ * past the end is legal, so this is the only bound left — it keeps a stray drag from asking the
+ * renderer for an unbounded job.
+ */
+export const EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS = 3600;
 
 /** Scheduling groups, not combined model prompts: each item keeps its own token budget. */
 export function packagingShardIndexes(snapshots: PackagingSnapshot[]): number[] {

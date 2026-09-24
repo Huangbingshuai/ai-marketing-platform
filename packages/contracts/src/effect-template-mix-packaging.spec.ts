@@ -4,10 +4,12 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
   EFFECT_TEMPLATE_MIX_MUSIC_FADE_DEFAULT,
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
   PACKAGING_AUDIO_GAIN_CEILING,
+  effectTemplateMixContentDuration,
   packagingAudioFade,
   packagingAudioFromDb,
   packagingAudioLevel,
@@ -16,6 +18,7 @@ import {
   packagingTimelineDuration,
 } from './effect-template-mix-packaging';
 import type { EffectTemplateMixVariant } from './effect-template-mix';
+import type { PackagingCheckpoint } from './effect-template-mix-packaging';
 
 describe('packaging audio fades', () => {
   it('reports the fade the worker will actually render', () => {
@@ -122,5 +125,69 @@ describe('packaging timeline geometry', () => {
     unbound.bindings = { a: 'clip' };
     expect(packagingTimelineDuration(unbound)).toBe(4);
     expect(packagingTimelineDuration({ ...unbound, slots: [] })).toBe(0);
+  });
+});
+
+describe('packaging content duration', () => {
+  const variant = (): EffectTemplateMixVariant =>
+    ({
+      id: 'v',
+      slots: [
+        { id: 'a', duration: 4 },
+        { id: 'b', duration: 6 },
+      ],
+      bindings: { a: 'clip', b: 'clip' },
+      timelineStarts: { b: 5 },
+    }) as unknown as EffectTemplateMixVariant;
+
+  it('is the visual timeline when nothing has been carried past its end', () => {
+    expect(effectTemplateMixContentDuration(variant())).toBe(11);
+    // The frozen snapshot's own length is untouched: it stays the visual timeline's.
+    expect(packagingTimelineDuration(variant())).toBe(11);
+  });
+
+  it('follows a detached track the editor carried past the last clip', () => {
+    const extended = variant();
+    extended.detachedAudios = [
+      { id: 'd1', fileObjectId: 'f', sourceSlotId: 'a', start: 20, duration: 5 },
+    ] as unknown as NonNullable<EffectTemplateMixVariant['detachedAudios']>;
+    expect(packagingTimelineDuration(extended)).toBe(11);
+    expect(effectTemplateMixContentDuration(extended)).toBe(25);
+  });
+
+  it('follows the checkpoint, which is where placed audio and captions live', () => {
+    const checkpoint = {
+      voices: { a: { fileObjectId: 'f', start: 30, duration: 4, volume: 1 } },
+      music: { fileObjectId: 'f', start: 0, duration: 12, volume: 1 },
+      captions: [{ id: 'c', text: 't', start: 40, end: 41 }],
+    } as unknown as PackagingCheckpoint;
+    // The longest of the three wins, not the sum.
+    expect(effectTemplateMixContentDuration(variant(), checkpoint)).toBe(41);
+  });
+
+  it('counts a caption narration the editor generated, which the renderer mixes like any other', () => {
+    const checkpoint = {
+      voices: { a: { fileObjectId: 'f', start: 0, duration: 4, volume: 1 } },
+      captionVoices: { 'caption-1': { fileObjectId: 'g', start: 30, duration: 6, volume: 1 } },
+    } as unknown as PackagingCheckpoint;
+    // A line longer than the picture has to extend the film, or the renderer's own bound check
+    // would reject it instead of rendering a black tail under it.
+    expect(effectTemplateMixContentDuration(variant(), checkpoint)).toBe(36);
+  });
+
+  it('prefers the checkpoint captions over the draft, and tolerates an empty one', () => {
+    const withDraftCaptions = variant();
+    withDraftCaptions.captions = [{ id: 'c', text: 't', start: 50, end: 52 }] as never;
+    // No checkpoint yet: the draft's captions are the only caption source there is.
+    expect(effectTemplateMixContentDuration(withDraftCaptions)).toBe(52);
+    // Once a checkpoint exists its captions are the frozen ones, so the draft's are ignored.
+    expect(
+      effectTemplateMixContentDuration(withDraftCaptions, { captions: [] } as PackagingCheckpoint),
+    ).toBe(11);
+    expect(effectTemplateMixContentDuration({ ...variant(), slots: [] } as never)).toBe(0);
+  });
+
+  it('caps the film an hour out, which is the only bound left once length follows content', () => {
+    expect(EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS).toBe(3600);
   });
 });
