@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type {
-  EffectTemplateMixAudio,
   EffectTemplateMixCaption,
   EffectTemplateMixDetachedAudio,
   EffectTemplateMixMaterial,
@@ -10,6 +9,7 @@ import type {
   PackagingItem,
 } from '@ai-marketing/contracts';
 import {
+  effectTemplateMixContentDuration,
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
   packagingAudioFade,
@@ -17,6 +17,7 @@ import {
   packagingAudioLevel,
 } from '@ai-marketing/contracts';
 import {
+  AudioLines,
   Captions,
   Copy,
   Eye,
@@ -40,6 +41,18 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 
 import { apiUrl } from '../../../api/http-client';
 import {
+  audioRowCount as audioRowCountOf,
+  audioRowKey,
+  audioRowOf as audioRowOfClip,
+  audioRowOfKey,
+  detachedAudioSourceUrl,
+  timelineAudioClipRefs,
+  type AudioClipKind,
+  type AudioClipRef,
+  type AudioRowTrack,
+} from './effect-template-mix-audio-lanes';
+import {
+  assignEffectTemplateMixCaptionLanes,
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
   EFFECT_TEMPLATE_MIX_TRANSITIONS,
   effectTemplateMixTransitionDuration,
@@ -63,7 +76,7 @@ const props = withDefaults(
     /** Set when the preview selects a caption, so both views show the same clip. */
     selectedAudioClipId?: string | null;
     /** Track controls are owned by the workbench player, not by this view. */
-    audioMuted?: boolean;
+    audioRowMuted?: boolean[];
     videoMuted?: boolean;
     videoVisible?: boolean;
     captionVisible?: boolean;
@@ -79,7 +92,7 @@ const props = withDefaults(
     height: 260,
     playing: false,
     selectedAudioClipId: null,
-    audioMuted: false,
+    audioRowMuted: () => [],
     videoMuted: false,
     videoVisible: true,
     captionVisible: true,
@@ -88,10 +101,15 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   assignMaterial: [materialId: string, slotId: string];
-  addMusicAsset: [music: MusicAssetDrop & { start: number }];
+  /** A library clip released on a track border: the row to create and where in time it starts. */
+  insertMaterialTrack: [materialId: string, lane: number, start: number];
+  addMusicAsset: [music: MusicAssetDrop & { row: number; start: number }];
   applyTransition: [slotId: string, transition: EffectTemplateMixTransition];
   changeAudioVolume: [clipId: string, volume: number];
-  moveAudioClip: [clipId: string, start: number];
+  // `row` is the audio row the clip was dropped on; a caption has no row, so it omits the argument
+  // and only its time changes.
+  moveAudioClip: [clipId: string, start: number, row?: number];
+  moveAudioClips: [moves: Array<{ clipId: string; start: number; row?: number }>];
   moveClip: [slotId: string, start: number, lane: number];
   moveClips: [moves: Array<{ slotId: string; start: number; lane: number }>];
   openTransition: [slotId: string];
@@ -113,7 +131,7 @@ const emit = defineEmits<{
   ];
   seek: [seconds: number];
   selectAudioClip: [clipId: string | null];
-  toggleAudioMute: [kind: 'AUDIO' | 'VIDEO', muted: boolean];
+  toggleAudioMute: [track: AudioTrack | 'VIDEO', muted: boolean];
   toggleTrackVisibility: [track: 'CAPTION' | 'VIDEO', visible: boolean];
   /** The whole caption selection, so the editor can move and scale a group as one. */
   selectCaptionClips: [captionIds: string[]];
@@ -121,23 +139,29 @@ const emit = defineEmits<{
   selectAudioClips: [clipIds: string[]];
   selectSlot: [slotId: string];
   separateAudio: [slotId: string];
-  pasteVideoMaterials: [items: Array<{
-    materialId: string;
-    targetSlotId: string;
-    offset: number;
-    duration: number;
-    detachedAudio?: EffectTemplateMixDetachedAudio;
-  }>];
-  pasteAudioMaterial: [audio: {
-    fileObjectId: string;
-    name: string;
-    sourceAssetId?: string;
-    sourceDuration: number;
-    duration: number;
-    start: number;
-    offset: number;
-    volume: number;
-  }];
+  pasteVideoMaterials: [
+    items: Array<{
+      materialId: string;
+      targetSlotId: string;
+      offset: number;
+      duration: number;
+      detachedAudio?: EffectTemplateMixDetachedAudio;
+    }>,
+  ];
+  pasteAudioMaterial: [
+    audio: {
+      fileObjectId: string;
+      name: string;
+      sourceAssetId?: string;
+      sourceDuration: number;
+      duration: number;
+      start: number;
+      offset: number;
+      volume: number;
+      /** The row the paste was asked for; absent when it came from the keyboard, not a row menu. */
+      row?: number;
+    },
+  ];
   requestNotice: [message: string];
   trimSlot: [slotId: string, trimStartSeconds: number];
   previewTransitionDuration: [slotId: string, duration: number];
@@ -145,8 +169,11 @@ const emit = defineEmits<{
   undo: [];
 }>();
 
-type VisibleTrack = 'AUDIO' | 'CAPTION' | 'VIDEO';
-type TimelineAudioKind = 'DETACHED' | 'MUSIC' | 'VOICE';
+/** 音频行是通用轨道，只按行号编号；口播、纯音乐、分离原声只是颜色不同的片段。 */
+type AudioTrack = AudioRowTrack;
+type CaptionTrack = `CAPTION:${number}`;
+type VisibleTrack = 'CAPTION' | CaptionTrack | 'VIDEO' | AudioTrack;
+type TimelineAudioKind = AudioClipKind;
 type MusicAssetDrop = { assetId: string; fileObjectId: string; name: string; duration: number };
 /** One audio clip or caption block; kind affects its colour, not its track. */
 type TimelineAudio = {
@@ -206,6 +233,12 @@ type AudioDragState = {
   startClientY: number;
   volumeTop: number;
   volumeHeight: number;
+  /** The row the grabbed clip rounds to while the pointer moves; unclamped on purpose. */
+  currentRow: number;
+  /** Vertical position of the ghost inside the audio area, in pixels, following the pointer. */
+  ghostTop: number;
+  /** Row each member of the selection started on, so a group rides one shared row delta. */
+  initialRows: Record<string, number>;
 };
 type ClipDragState = {
   currentLane: number;
@@ -265,7 +298,27 @@ type TransitionDragState = {
 };
 
 const trackOrder = ref<VisibleTrack[]>(['CAPTION', 'VIDEO']);
-const audioTracks: VisibleTrack[] = ['AUDIO'];
+/**
+ * A row is named after what it carries, never after its number: every audio row reads as 音频
+ * (口播、纯音乐、分离原声 are told apart by clip colour only) and every caption row as 字幕, because
+ * the lane is a position the user can rearrange rather than an identity. Adding a subtitle from the
+ * library mints its own track, so numbering would also leak the library's bookkeeping into the UI.
+ */
+const AUDIO_TRACK_LABEL = '音频';
+const CAPTION_TRACK_LABEL = '字幕';
+const VIDEO_TRACK_LABEL = '视频';
+const isCaptionTrack = (track: VisibleTrack): track is CaptionTrack | 'CAPTION' =>
+  track === 'CAPTION' || track.startsWith('CAPTION:');
+const captionTrackKey = (lane: number): CaptionTrack => `CAPTION:${lane}`;
+const captionLaneOfTrack = (track: CaptionTrack | 'CAPTION'): number =>
+  track === 'CAPTION' ? 0 : Math.max(0, Number(track.slice('CAPTION:'.length)) || 0);
+const trackLabel = (track: VisibleTrack): string => {
+  if (isCaptionTrack(track)) return CAPTION_TRACK_LABEL;
+  return track === 'VIDEO' ? VIDEO_TRACK_LABEL : AUDIO_TRACK_LABEL;
+};
+/** Every audio row shares one header style, so the row number never reaches a class name. */
+const trackClassName = (track: VisibleTrack): string =>
+  track === 'VIDEO' ? 'video' : isCaptionTrack(track) ? 'caption' : 'audio';
 /** CapCut-like lane geometry: audio lanes stay tall, subtitle lanes are slim strips. */
 const AUDIO_LANE_HEIGHT = 50;
 const AUDIO_CLIP_HEIGHT = 44;
@@ -277,8 +330,9 @@ const AUDIO_MIN_DURATION = 0.1;
 const viewport = ref<HTMLElement | null>(null);
 const canvas = ref<HTMLElement | null>(null);
 const videoTrack = ref<HTMLElement | null>(null);
-const captionTrack = ref<HTMLElement | null>(null);
-const audioTrack = ref<HTMLElement | null>(null);
+const captionTrackElements = new Map<CaptionTrack, HTMLElement>();
+/** One row per audio track, so a marquee only ever measures the lane it began in. */
+const audioTrackElements = new Map<AudioTrack, HTMLElement>();
 const timelineShell = ref<HTMLElement | null>(null);
 const playheadElement = ref<HTMLElement | null>(null);
 const pixelsPerSecond = ref(52);
@@ -291,7 +345,8 @@ const clipDrag = ref<ClipDragState | null>(null);
 const transitionDrag = ref<TransitionDragState | null>(null);
 const suppressTransitionClick = ref(false);
 const transitionDropSlotId = ref('');
-const musicDropActive = ref(false);
+/** Row a library track is hovering over, so only that row highlights as a drop target. */
+const musicDropRow = ref<number | null>(null);
 const trimDrag = ref<TrimDragState | null>(null);
 const edgeTrimDrag = ref<EdgeTrimDragState | null>(null);
 const marquee = ref<MarqueeState | null>(null);
@@ -328,12 +383,14 @@ const clipContextMenu = ref<{
   slotId?: string;
   audioId?: string;
   pasteStart?: number;
+  /** The audio row the menu was opened on, so a paste lands there rather than on a default row. */
+  pasteRow?: number;
   left: number;
   top: number;
 } | null>(null);
 const trackHeaders = ref<HTMLElement | null>(null);
-const trackLocked = reactive<Record<VisibleTrack, boolean>>({
-  AUDIO: false,
+/** Audio rows are numbered at runtime, so their lock flags are written lazily by the header. */
+const trackLocked = reactive<Record<string, boolean>>({
   CAPTION: false,
   VIDEO: false,
 });
@@ -391,11 +448,28 @@ const draggedTimelineEnd = computed(() => {
     }),
   );
 });
+/**
+ * The live audio or caption drag's own end. Both share one drag state, so a single term covers them:
+ * the canvas has to grow under the pointer, otherwise the drag would be fenced by the film's current
+ * length instead of by the pointer, and a clip could never be carried past the last of the material.
+ */
+const draggedAudioEnd = computed(() => {
+  const drag = audioDrag.value;
+  if (drag?.mode !== 'MOVE') return 0;
+  return Math.max(0, drag.currentStart + drag.currentDuration);
+});
+/**
+ * How far the timeline reaches. Audio and captions count as much as the video clips do — a clip
+ * dragged past the last video clip extends the film, and everything it is measured against (the
+ * canvas, the ticks, the playhead range) has to grow with it.
+ */
 const timelineDuration = computed(() =>
   Math.max(
     0.1,
     props.duration,
     draggedTimelineEnd.value,
+    draggedAudioEnd.value,
+    effectTemplateMixContentDuration(props.variant, props.packaging?.checkpoint),
     ...layoutSlots.value.map(({ end }) => end),
   ),
 );
@@ -511,7 +585,9 @@ type TimelineInterval = { end: number; id: string; start: number };
 const assignIntervalLanes = (items: TimelineInterval[]): Map<string, number> => {
   const laneEnds: number[] = [];
   const lanes = new Map<string, number>();
-  for (const item of [...items].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id))) {
+  for (const item of [...items].sort(
+    (left, right) => left.start - right.start || left.id.localeCompare(right.id),
+  )) {
     const lane = laneEnds.findIndex((end) => end <= item.start + 1 / props.fps);
     const nextLane = lane >= 0 ? lane : laneEnds.length;
     laneEnds[nextLane] = item.end;
@@ -519,19 +595,15 @@ const assignIntervalLanes = (items: TimelineInterval[]): Map<string, number> => 
   }
   return lanes;
 };
-const timelineCaptions = computed(() =>
-  props.packaging?.checkpoint.captions ?? props.variant?.captions ?? [],
+const timelineCaptions = computed(
+  () => props.packaging?.checkpoint.captions ?? props.variant?.captions ?? [],
 );
 const captionLaneById = computed(() =>
-  assignIntervalLanes(
-    timelineCaptions.value.map((caption) => ({
-      id: caption.id,
-      start: Math.max(0, caption.start),
-      end: Math.max(caption.start, caption.end),
-    })),
-  ),
+  assignEffectTemplateMixCaptionLanes(timelineCaptions.value, props.fps),
 );
-const captionLaneCount = computed(() => Math.max(1, captionLaneById.value.size ? Math.max(...captionLaneById.value.values()) + 1 : 1));
+const captionLaneCount = computed(() =>
+  Math.max(1, captionLaneById.value.size ? Math.max(...captionLaneById.value.values()) + 1 : 1),
+);
 const fileUrl = (id: string): string =>
   props.projectId ? apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`) : '';
 // Only a finished item can be saved, so unfinished drafts must not offer edit gestures. A stale
@@ -542,115 +614,111 @@ const audioEditable = computed(
 );
 /** Kept on the timeline but marked, so the stale rows read as "out of date", not as "current". */
 const packagingStale = computed(() => Boolean(props.packaging?.stale));
+/**
+ * The clips the audio area draws. Membership comes from the shared clip list rather than being
+ * decided again here, so the row a clip is drawn on cannot drift from the row it is muted by or
+ * the row the workbench persists.
+ */
 const timelineAudios = computed<TimelineAudio[]>(() => {
   const packaged = props.packaging;
-  if (packaged &&
-      (packaged.checkpoint.narrationLayoutVersion === 'SLOT_V1' ||
-        Object.keys(packaged.checkpoint.voices ?? {}).length > 0 ||
-        Boolean(packaged.checkpoint.music))) {
-    const script = packaged.checkpoint.script ?? [];
-    const voices = Object.entries(packaged.checkpoint.voices ?? {}).map(([id, audio]) => {
-      const offset = Math.max(0, audio.offset ?? 0);
-      return {
-        id: `voice:${id}`,
-        kind: 'VOICE' as const,
-        label: '口播草稿',
-        start: audio.start,
-        duration: audio.duration,
-        offset,
-        sourceDuration: offset + audio.duration,
-        volume: audio.volume,
-        fadeIn: packagingAudioFade(audio, 'VOICE', 'fadeIn'),
-        fadeOut: packagingAudioFade(audio, 'VOICE', 'fadeOut'),
-        sourceUrl: fileUrl(audio.fileObjectId),
-        editable: audioEditable.value,
-        text: script.find((line) => line.id === id)?.text,
-      };
-    });
-    const music = packaged.checkpoint.music
-      ? [{
-          id: 'music',
-          kind: 'MUSIC' as const,
-          label: '纯音乐草稿',
-          start: packaged.checkpoint.music.start,
-          duration: packaged.checkpoint.music.duration,
-          offset: Math.max(0, packaged.checkpoint.music.offset ?? 0),
+  const checkpoint = packaged?.checkpoint;
+  const script = checkpoint?.script ?? [];
+  return timelineAudioClipRefs(props.variant, packaged, props.materials, props.projectId).flatMap(
+    (ref): TimelineAudio[] => {
+      if (ref.source === 'PACKAGED' && checkpoint) {
+        const lineId = ref.id.slice('voice:'.length);
+        const audio = ref.kind === 'MUSIC' ? checkpoint.music : checkpoint.voices?.[lineId];
+        if (!audio) return [];
+        const offset = Math.max(0, audio.offset ?? 0);
+        // The packaged branch is only reached for a narration line or the music bed, so the fade
+        // default is resolved against one of those two rather than the detached kind.
+        const fadeKind: 'MUSIC' | 'VOICE' = ref.kind === 'MUSIC' ? 'MUSIC' : 'VOICE';
+        const lineText =
+          ref.kind === 'VOICE' ? script.find((line) => line.id === lineId)?.text : undefined;
+        return [
+          {
+            id: ref.id,
+            kind: ref.kind,
+            label: ref.kind === 'MUSIC' ? '纯音乐草稿' : '口播草稿',
+            start: audio.start,
+            duration: audio.duration,
+            offset,
+            sourceDuration: offset + audio.duration,
+            volume: audio.volume,
+            fadeIn: packagingAudioFade(audio, fadeKind, 'fadeIn'),
+            fadeOut: packagingAudioFade(audio, fadeKind, 'fadeOut'),
+            sourceUrl: fileUrl(audio.fileObjectId),
+            editable: audioEditable.value,
+            ...(lineText === undefined ? {} : { text: lineText }),
+          },
+        ];
+      }
+      if (ref.source === 'LEGACY') {
+        const audio = ref.kind === 'MUSIC' ? props.variant?.bgm : props.variant?.voice;
+        if (!audio) return [];
+        return [
+          {
+            id: ref.id,
+            kind: ref.kind,
+            label: audio.name,
+            start: audio.start,
+            duration: audio.duration,
+            offset: Math.max(0, audio.offset ?? 0),
+            sourceDuration: Math.max(0, audio.offset ?? 0) + audio.duration,
+            volume: audio.volume,
+            // The legacy variant audio predates the fade concept, so its strip keeps a flat envelope
+            // rather than borrowing the packaged pipeline's default and promising an easing nobody applies.
+            fadeIn: 0,
+            fadeOut: 0,
+            sourceUrl: fileUrl(audio.fileObjectId),
+            editable: false,
+          },
+        ];
+      }
+      const audio = (props.variant?.detachedAudios ?? []).find(
+        (row) => `detached:${row.id}` === ref.id,
+      );
+      if (!audio) return [];
+      const material = props.materials.find(
+        ({ fileObjectId }) => fileObjectId === audio.fileObjectId,
+      );
+      return [
+        {
+          id: ref.id,
+          kind: ref.kind,
+          label: audio.name,
+          start: audio.start,
+          duration: audio.duration,
+          offset: Math.max(0, audio.offset),
           sourceDuration:
-            Math.max(0, packaged.checkpoint.music.offset ?? 0) +
-            packaged.checkpoint.music.duration,
-          volume: packaged.checkpoint.music.volume,
-          fadeIn: packagingAudioFade(packaged.checkpoint.music, 'MUSIC', 'fadeIn'),
-          fadeOut: packagingAudioFade(packaged.checkpoint.music, 'MUSIC', 'fadeOut'),
-          sourceUrl: fileUrl(packaged.checkpoint.music.fileObjectId),
-          editable: audioEditable.value,
-        }]
-      : [];
-    return [...voices, ...music, ...detachedAudioRows()];
-  }
-  // Legacy variant audio has no slot-keyed packaging checkpoint, so it stays read-only.
-  const legacy = (id: string, kind: TimelineAudioKind, audio: EffectTemplateMixAudio) => ({
-    id,
-    kind,
-    label: audio.name,
-    start: audio.start,
-    duration: audio.duration,
-    offset: Math.max(0, audio.offset ?? 0),
-    sourceDuration: Math.max(0, audio.offset ?? 0) + audio.duration,
-    volume: audio.volume,
-    // The legacy variant audio predates the fade concept, so its strip keeps a flat envelope
-    // rather than borrowing the packaged pipeline's default and promising an easing nobody applies.
-    fadeIn: 0,
-    fadeOut: 0,
-    sourceUrl: fileUrl(audio.fileObjectId),
-    editable: false,
-  });
-  return [
-    ...(props.variant?.voice ? [legacy('voice', 'VOICE', props.variant.voice)] : []),
-    ...(props.variant?.bgm ? [legacy('music', 'MUSIC', props.variant.bgm)] : []),
-    ...detachedAudioRows(),
-  ];
+            audio.sourceDuration ?? material?.duration ?? audio.offset + audio.duration,
+          volume: audio.volume,
+          fadeIn: 0,
+          fadeOut: 0,
+          sourceUrl: detachedAudioSourceUrl(audio, props.materials, props.projectId),
+          editable: true,
+        },
+      ];
+    },
+  );
 });
-const detachedAudioRows = (): TimelineAudio[] =>
-  (props.variant?.detachedAudios ?? []).flatMap((audio) => {
-    const material = props.materials.find(({ fileObjectId }) => fileObjectId === audio.fileObjectId);
-    const sourceDuration = audio.sourceDuration ?? material?.duration ?? audio.offset + audio.duration;
-    const sourceUrl = audio.sourceAssetId
-      ? props.projectId
-        ? apiUrl(`/projects/${encodeURIComponent(props.projectId)}/assets/${encodeURIComponent(audio.sourceAssetId)}/content`)
-        : ''
-      : (material?.contentUrl ?? fileUrl(audio.fileObjectId));
-    if (!sourceUrl) return [];
-    const offset = Math.max(0, audio.offset);
-    return [{
-      id: `detached:${audio.id}`,
-      kind: audio.sourceAssetId ? 'MUSIC' : 'DETACHED',
-      label: audio.name,
-      start: audio.start,
-      duration: audio.duration,
-      offset,
-      sourceDuration,
-      volume: audio.volume,
-      fadeIn: 0,
-      fadeOut: 0,
-      sourceUrl,
-      editable: true,
-    }];
-  });
 // Captions are their own cards, so they carry no waveform and no audio geometry.
 const timelineCaptionEntries = computed(() =>
   timelineCaptions.value.map((caption) => ({ caption, id: `caption:${caption.id}` })),
 );
-const audioLaneById = computed(() =>
-  assignIntervalLanes(
-    timelineAudios.value.map((audio) => ({
-      id: audio.id,
-      start: Math.max(0, audio.start),
-      end: Math.max(audio.start, audio.start + audio.duration),
-    })),
-  ),
+/**
+ * A clip's row is stored on the variant, so the rows are the user's arrangement rather than
+ * something the packer infers — exactly how video lanes work. `audioRowOf` is the shared
+ * definition, so the row drawn here, the row muted here and the row persisted all agree.
+ */
+const audioRefs = computed<AudioClipRef[]>(() =>
+  timelineAudioClipRefs(props.variant, props.packaging, props.materials, props.projectId),
 );
-const audioLaneCount = (): number =>
-  Math.max(1, audioLaneById.value.size ? Math.max(...audioLaneById.value.values()) + 1 : 1);
+const audioRowOf = (clipId: string): number =>
+  audioRowOfClip(audioRefs.value, props.variant?.audioLanes, clipId);
+const audioRowCount = computed(() => audioRowCountOf(audioRefs.value, props.variant?.audioLanes));
+const audiosForTrack = (track: AudioTrack): TimelineAudio[] =>
+  timelineAudios.value.filter((audio) => audioRowOf(audio.id) === audioRowOfKey(track));
 
 /** One head or tail, tagged with the block it belongs to so a drag can skip its own. */
 type SnapEdge = { ownerId: string; time: number };
@@ -716,39 +784,116 @@ const snapDraggedBlock = (
   return best ? { guide: best.guide, start: best.start } : { guide: null, start: rawStart };
 };
 
-// Keep one baseline caption/audio lane visible like a conventional editor.
-// Additional lanes are added by the interval packer when clips overlap; only
-// those dynamically-created lanes should disappear when no longer occupied.
+/** How close, in px, the pointer must come to a track border before it becomes an insert target. */
+const TRACK_INSERT_THRESHOLD = 6;
+/** Video rows sit on a fixed pitch, and a clip is inset inside its own row. */
+const VIDEO_LANE_PITCH = 70;
+const VIDEO_CLIP_INSET = 7;
+/** One border between two rows, and the video row a drop on it should create. */
+type TrackInsertTarget = { lane: number; top: number };
+const trackInsertTarget = ref<TrackInsertTarget | null>(null);
+/**
+ * Where the guide is drawn, in canvas pixels. Kept as a client-space position and resolved here so
+ * the line stays glued to the border it marks even if the viewport scrolls mid-drag.
+ */
+const trackInsertGuideTop = computed(() => {
+  const target = trackInsertTarget.value;
+  const element = canvas.value;
+  if (!target || !element) return null;
+  return target.top - element.getBoundingClientRect().top;
+});
+/**
+ * The track border the pointer is on, if any. Every video row contributes its top edge plus one
+ * final edge below the last row, so a clip can also be dropped past everything that is there. A
+ * caption row owns no video rows, so both of its edges create the first video row instead.
+ */
+const trackInsertTargetFrom = (clientY: number): TrackInsertTarget | null => {
+  const candidates: TrackInsertTarget[] = [];
+  const videoElement = videoTrack.value;
+  if (videoElement) {
+    const bounds = videoElement.getBoundingClientRect();
+    // The border is the centre of the gap two neighbouring clips leave between them.
+    const first = bounds.top + VIDEO_CLIP_INSET - 4;
+    for (let lane = 0; lane <= videoLaneCount.value; lane += 1) {
+      candidates.push({ lane, top: first + lane * VIDEO_LANE_PITCH });
+    }
+  }
+  for (const element of captionTrackElements.values()) {
+    const bounds = element.getBoundingClientRect();
+    candidates.push({ lane: 0, top: bounds.top }, { lane: 0, top: bounds.bottom });
+  }
+  let best: TrackInsertTarget | null = null;
+  let bestDistance = TRACK_INSERT_THRESHOLD;
+  for (const candidate of candidates) {
+    const distance = Math.abs(candidate.top - clientY);
+    if (distance > bestDistance) continue;
+    best = candidate;
+    bestDistance = distance;
+  }
+  return best;
+};
+/** The drop column as a time, on the same frame and clip-boundary grid a clip move snaps to. */
+const dropTimeFromClientX = (clientX: number): number => {
+  const element = viewport.value;
+  if (!element) return 0;
+  const bounds = element.getBoundingClientRect();
+  return Math.max(
+    0,
+    snapTime((clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value),
+  );
+};
+
+// Keep one baseline caption lane visible, then give every additional lane its own row/header.
 const hasCaptionTrack = computed(() => true);
 const trackHeight = (track: VisibleTrack): number =>
   track === 'VIDEO'
     ? videoLaneCount.value * 70 + 6
-    : (track === 'CAPTION'
-        ? captionLaneCount.value * CAPTION_LANE_HEIGHT
-        : audioLaneCount() * AUDIO_LANE_HEIGHT) + 6;
-const orderedTracks = computed<VisibleTrack[]>(() => {
-  return [...trackOrder.value, ...audioTracks];
-});
-const visiblePrimaryTracks = computed(() =>
-  trackOrder.value.filter((track) => track === 'VIDEO' || hasCaptionTrack.value),
+    : isCaptionTrack(track)
+      ? CAPTION_LANE_HEIGHT
+      : // An audio row is exactly one lane tall on purpose: the drag ghost rounds its vertical
+        // position by dividing by AUDIO_LANE_HEIGHT, so any extra padding here would make the row
+        // it lands on drift away from the row it looks like it is on.
+        AUDIO_LANE_HEIGHT;
+/**
+ * One row per occupied audio lane, plus a baseline row when nothing is on the audio area at all —
+ * the same shape video lanes take. An empty row simply stops existing, so a project that never
+ * separated its original audio never shows a spare track.
+ */
+const audioTracks = computed<AudioTrack[]>(() =>
+  Array.from({ length: audioRowCount.value }, (_, row) => audioRowKey(row)),
 );
+const captionTracks = computed<CaptionTrack[]>(() =>
+  Array.from({ length: captionLaneCount.value }, (_, lane) => captionTrackKey(lane)),
+);
+const expandedPrimaryTracks = computed<VisibleTrack[]>(() =>
+  trackOrder.value.flatMap((track) => (track === 'CAPTION' ? captionTracks.value : [track])),
+);
+const orderedTracks = computed<VisibleTrack[]>(() => [
+  ...expandedPrimaryTracks.value,
+  ...audioTracks.value,
+]);
+const visiblePrimaryTracks = computed(() => expandedPrimaryTracks.value);
 const setVideoTrackElement = (element: unknown): void => {
   const candidates = Array.isArray(element) ? element : [element];
   videoTrack.value =
     candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ??
     null;
 };
-const setCaptionTrackElement = (element: unknown): void => {
-  const candidates = Array.isArray(element) ? element : [element];
-  captionTrack.value =
-    candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ??
-    null;
-};
-const setAudioTrackElement = (_kind: VisibleTrack, element: unknown): void => {
+const setCaptionTrackElement = (track: CaptionTrack, element: unknown): void => {
   const candidates = Array.isArray(element) ? element : [element];
   const target =
-    candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ?? null;
-  audioTrack.value = target;
+    candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ??
+    null;
+  if (target) captionTrackElements.set(track, target);
+  else captionTrackElements.delete(track);
+};
+const setAudioTrackElement = (track: AudioTrack, element: unknown): void => {
+  const candidates = Array.isArray(element) ? element : [element];
+  const target =
+    candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ??
+    null;
+  if (target) audioTrackElements.set(track, target);
+  else audioTrackElements.delete(track);
 };
 
 const rangeForSlot = (slotId: string): { start: number; end: number } | null =>
@@ -795,8 +940,8 @@ const clipStyle = (slot: EffectTemplateMixSlot): Record<string, string> => {
   const start = edgeTrim
     ? edgeTrim.currentStart
     : isDraggedSelection
-    ? Math.max(0, (drag?.initialStarts[slot.id] ?? range?.start ?? 0) + (delta?.start ?? 0))
-    : (range?.start ?? 0);
+      ? Math.max(0, (drag?.initialStarts[slot.id] ?? range?.start ?? 0) + (delta?.start ?? 0))
+      : (range?.start ?? 0);
   const top = isDraggedSelection
     ? 7 + (drag?.initialLanes[slot.id] ?? clipLane(slot.id)) * 70 + (delta?.topPx ?? 0)
     : 7 + clipLane(slot.id) * 70;
@@ -834,8 +979,8 @@ const activeTrimOffset = (slotId: string): number =>
   edgeTrimDrag.value?.slotId === slotId
     ? edgeTrimDrag.value.currentOffset
     : trimDrag.value?.slotId === slotId
-    ? trimDrag.value.currentOffset
-    : (props.variant?.offsets[slotId] ?? 0);
+      ? trimDrag.value.currentOffset
+      : (props.variant?.offsets[slotId] ?? 0);
 
 const activeSlotDuration = (slotId: string): number =>
   edgeTrimDrag.value?.slotId === slotId
@@ -843,9 +988,7 @@ const activeSlotDuration = (slotId: string): number =>
     : (props.variant?.slots.find((slot) => slot.id === slotId)?.duration ?? 0);
 
 const activeClipStart = (slotId: string): number =>
-  edgeTrimDrag.value?.slotId === slotId
-    ? edgeTrimDrag.value.currentStart
-    : clipStart(slotId);
+  edgeTrimDrag.value?.slotId === slotId ? edgeTrimDrag.value.currentStart : clipStart(slotId);
 
 const waveformBarCount = (slot: EffectTemplateMixSlot): number =>
   Math.max(28, Math.min(240, Math.ceil((activeSlotDuration(slot.id) * pixelsPerSecond.value) / 2)));
@@ -868,10 +1011,20 @@ const audioClipStyle = (audio: TimelineAudio): Record<string, string> => {
   const drag = activeAudioDrag(audio.id);
   const start = drag ? drag.currentStart : audio.start;
   const duration = drag ? drag.currentDuration : audio.duration;
+  // A clip is drawn inside its own row, so its vertical travel is measured against the row it
+  // started on: `ghostTop` is the ghost's top in the audio area's own coordinates, and subtracting
+  // the row it started on turns that back into an offset inside that row's element. The ghost is
+  // free to cross the first and last rows — the row it lands on is only decided on release — which
+  // is why this is a pixel distance rather than a row count.
+  const initialRow = drag?.initialRows[audio.id];
+  const top =
+    drag && drag.mode === 'MOVE' && initialRow !== undefined
+      ? drag.ghostTop - initialRow * AUDIO_LANE_HEIGHT
+      : AUDIO_CLIP_INSET;
   return {
     height: `${AUDIO_CLIP_HEIGHT}px`,
     left: `${Math.max(0, start) * pixelsPerSecond.value}px`,
-    top: `${AUDIO_CLIP_INSET + (audioLaneById.value.get(audio.id) ?? 0) * AUDIO_LANE_HEIGHT}px`,
+    top: `${top}px`,
     width: `${Math.max(14, duration * pixelsPerSecond.value)}px`,
   };
 };
@@ -887,10 +1040,7 @@ const audioGain = (audio: TimelineAudio): number => {
   return audioLevel(drag?.currentVolume ?? audio.volume);
 };
 
-const audioFadeStyle = (
-  audio: TimelineAudio,
-  side: 'LEFT' | 'RIGHT',
-): Record<string, string> => {
+const audioFadeStyle = (audio: TimelineAudio, side: 'LEFT' | 'RIGHT'): Record<string, string> => {
   const drag = activeAudioDrag(audio.id);
   const duration = drag?.currentDuration ?? audio.duration;
   const fade = Math.min(side === 'LEFT' ? audio.fadeIn : audio.fadeOut, duration);
@@ -904,6 +1054,10 @@ const toggleTrackVisible = (track: 'CAPTION' | 'VIDEO'): void => {
   emit('toggleTrackVisibility', track, !trackVisible(track));
 };
 
+/** Each audio row owns its mute, so silencing one row leaves every other row playing. */
+const trackMuted = (track: AudioTrack | 'VIDEO'): boolean =>
+  track === 'VIDEO' ? props.videoMuted : (props.audioRowMuted[audioRowOfKey(track)] ?? false);
+
 const captionClipStyle = (caption: EffectTemplateMixCaption): Record<string, string> => {
   const drag = activeAudioDrag(`caption:${caption.id}`);
   const start = drag ? drag.currentStart : caption.start;
@@ -911,7 +1065,7 @@ const captionClipStyle = (caption: EffectTemplateMixCaption): Record<string, str
   return {
     height: `${CAPTION_CLIP_HEIGHT}px`,
     left: `${Math.max(0, start) * pixelsPerSecond.value}px`,
-    top: `${AUDIO_CLIP_INSET + (captionLaneById.value.get(caption.id) ?? 0) * CAPTION_LANE_HEIGHT}px`,
+    top: `${AUDIO_CLIP_INSET}px`,
     width: `${Math.max(14, duration * pixelsPerSecond.value)}px`,
   };
 };
@@ -972,7 +1126,24 @@ const onMaterialDragOver = (event: DragEvent): void => {
   if (!acceptsMaterialDrag(event)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-  materialDropSlotId.value = slotIdFromDragEvent(event);
+  const target = trackInsertTargetFrom(event.clientY);
+  trackInsertTarget.value = target;
+  // A border and a slot are two answers to one gesture, so only ever show one of them.
+  materialDropSlotId.value = target ? '' : slotIdFromDragEvent(event);
+};
+
+/**
+ * A caption row is never a slot, so it accepts a library clip only as an insert target — anywhere
+ * else the drag stays refused and the drop falls through to nothing, as it always did.
+ */
+const onCaptionTrackDragOver = (event: DragEvent): void => {
+  if (!acceptsMaterialDrag(event)) return;
+  const target = trackInsertTargetFrom(event.clientY);
+  trackInsertTarget.value = target;
+  materialDropSlotId.value = '';
+  if (!target) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
 };
 
 const onMaterialDragLeave = (event: DragEvent): void => {
@@ -984,33 +1155,42 @@ const onMaterialDragLeave = (event: DragEvent): void => {
   )
     return;
   materialDropSlotId.value = '';
+  trackInsertTarget.value = null;
 };
 
 const onMaterialDrop = (event: DragEvent): void => {
   if (!acceptsMaterialDrag(event)) return;
   event.preventDefault();
-  const slotId = slotIdFromDragEvent(event) || materialDropSlotId.value;
   const materialId =
     event.dataTransfer?.getData('application/x-effect-template-mix-material') ?? '';
+  const target = trackInsertTarget.value;
+  const slotId = slotIdFromDragEvent(event) || materialDropSlotId.value;
+  trackInsertTarget.value = null;
   materialDropSlotId.value = '';
-  if (!slotId || !materialId) return;
+  if (!materialId) return;
+  if (target) {
+    emit('insertMaterialTrack', materialId, target.lane, dropTimeFromClientX(event.clientX));
+    return;
+  }
+  if (!slotId) return;
   setSelection([slotId]);
   emit('assignMaterial', materialId, slotId);
 };
 
-const acceptsMusicAssetDrag = (event: DragEvent): boolean =>
+const acceptsMusicAssetDrag = (event: DragEvent, track: AudioTrack): boolean =>
   Boolean(
     props.variant &&
-      !props.readOnly &&
-      !trackLocked.AUDIO &&
-      event.dataTransfer?.types.includes('application/x-effect-template-mix-music'),
+    !props.readOnly &&
+    !trackLocked[track] &&
+    event.dataTransfer?.types.includes('application/x-effect-template-mix-music'),
   );
 
-const onMusicTrackDragOver = (event: DragEvent): void => {
-  if (!acceptsMusicAssetDrag(event)) return;
+const onMusicTrackDragOver = (event: DragEvent, track: AudioTrack): void => {
+  // Any audio row takes a library track, so the drop decides the row rather than the clip's kind.
+  if (!acceptsMusicAssetDrag(event, track)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-  musicDropActive.value = true;
+  musicDropRow.value = audioRowOfKey(track);
 };
 
 const onMusicTrackDragLeave = (event: DragEvent): void => {
@@ -1021,13 +1201,13 @@ const onMusicTrackDragLeave = (event: DragEvent): void => {
     current.contains(event.relatedTarget)
   )
     return;
-  musicDropActive.value = false;
+  musicDropRow.value = null;
 };
 
-const onMusicTrackDrop = (event: DragEvent): void => {
-  if (!acceptsMusicAssetDrag(event)) return;
+const onMusicTrackDrop = (event: DragEvent, track: AudioTrack): void => {
+  if (!acceptsMusicAssetDrag(event, track)) return;
   event.preventDefault();
-  musicDropActive.value = false;
+  musicDropRow.value = null;
   const viewportElement = viewport.value;
   if (!viewportElement) return;
   let data: MusicAssetDrop;
@@ -1051,7 +1231,7 @@ const onMusicTrackDrop = (event: DragEvent): void => {
     0,
     (event.clientX - bounds.left + viewportElement.scrollLeft) / pixelsPerSecond.value,
   );
-  emit('addMusicAsset', { ...data, start });
+  emit('addMusicAsset', { ...data, row: audioRowOfKey(track), start });
 };
 
 const syncTrackScroll = (source: 'HEADERS' | 'VIEWPORT'): void => {
@@ -1061,6 +1241,16 @@ const syncTrackScroll = (source: 'HEADERS' | 'VIEWPORT'): void => {
   if (Math.abs(targetElement.scrollTop - sourceElement.scrollTop) > 0.5) {
     targetElement.scrollTop = sourceElement.scrollTop;
   }
+};
+
+/** Brings a newly created row and the clip on it into view, the way a drop should land visibly. */
+const scrollToLane = (lane: number, time: number): void => {
+  const element = viewport.value;
+  if (!element) return;
+  const rowTop = VIDEO_CLIP_INSET + Math.max(0, lane) * VIDEO_LANE_PITCH;
+  element.scrollTop = Math.max(0, rowTop - element.clientHeight / 2 + VIDEO_LANE_PITCH / 2);
+  element.scrollLeft = Math.max(0, time * pixelsPerSecond.value - element.clientWidth / 3);
+  syncTrackScroll('VIEWPORT');
 };
 
 const startTransitionResize = (event: PointerEvent, slotId: string): void => {
@@ -1291,7 +1481,9 @@ const onVideoClipContextMenu = (event: MouseEvent, slotId: string): void => {
     top: Math.min(event.clientY, window.innerHeight - 120),
   };
 };
-const videoClipboardEntries = (slotIds: string[]): NonNullable<Extract<TimelineClipboard, { kind: 'VIDEO' }>['entries']> =>
+const videoClipboardEntries = (
+  slotIds: string[],
+): NonNullable<Extract<TimelineClipboard, { kind: 'VIDEO' }>['entries']> =>
   slotIds.flatMap((slotId) => {
     const slot = props.variant?.slots.find(({ id }) => id === slotId);
     const material = slot ? materialForSlot(slotId) : null;
@@ -1299,13 +1491,15 @@ const videoClipboardEntries = (slotIds: string[]): NonNullable<Extract<TimelineC
     const detachedAudio = props.variant?.detachedAudios?.find(
       (audio) => audio.sourceSlotId === slotId,
     );
-    return [{
-      sourceSlotId: slotId,
-      materialId: material.id,
-      offset: Math.max(0, props.variant?.offsets[slotId] ?? 0),
-      duration: slot.duration,
-      ...(detachedAudio ? { detachedAudio: { ...detachedAudio } } : {}),
-    }];
+    return [
+      {
+        sourceSlotId: slotId,
+        materialId: material.id,
+        offset: Math.max(0, props.variant?.offsets[slotId] ?? 0),
+        duration: slot.duration,
+        ...(detachedAudio ? { detachedAudio: { ...detachedAudio } } : {}),
+      },
+    ];
   });
 const copyVideoSlots = (slotIds: string[]): void => {
   const entries = videoClipboardEntries(slotIds);
@@ -1399,37 +1593,42 @@ const copyAudioClip = (audioId: string): void => {
 const contextAudioDetached = (): boolean =>
   Boolean(
     clipContextMenu.value?.slotId &&
-      props.variant?.detachedAudios?.some(
-        (audio) => audio.sourceSlotId === clipContextMenu.value?.slotId,
-      ),
+    props.variant?.detachedAudios?.some(
+      (audio) => audio.sourceSlotId === clipContextMenu.value?.slotId,
+    ),
   );
 const canPasteAtContext = computed(() =>
   Boolean(
     !props.readOnly &&
-      (((clipContextMenu.value?.kind === 'VIDEO' ||
-        clipContextMenu.value?.kind === 'EMPTY_VIDEO') &&
-        timelineClipboard.value?.kind === 'VIDEO' &&
-        clipContextMenu.value.slotId) ||
-        ((clipContextMenu.value?.kind === 'AUDIO' ||
-          clipContextMenu.value?.kind === 'EMPTY_AUDIO') &&
-          timelineClipboard.value?.kind === 'AUDIO')),
+    (((clipContextMenu.value?.kind === 'VIDEO' || clipContextMenu.value?.kind === 'EMPTY_VIDEO') &&
+      timelineClipboard.value?.kind === 'VIDEO' &&
+      clipContextMenu.value.slotId) ||
+      ((clipContextMenu.value?.kind === 'AUDIO' || clipContextMenu.value?.kind === 'EMPTY_AUDIO') &&
+        timelineClipboard.value?.kind === 'AUDIO')),
   ),
 );
-const openEmptyTrackContextMenu = (event: MouseEvent, kind: 'VIDEO' | 'AUDIO'): void => {
+const openEmptyTrackContextMenu = (event: MouseEvent, kind: 'VIDEO' | AudioTrack): void => {
   if (!timelineClipboard.value || event.target !== event.currentTarget) return;
   event.preventDefault();
   event.stopPropagation();
   timelineShell.value?.focus({ preventScroll: true });
   const bounds = viewport.value?.getBoundingClientRect();
   const time = bounds
-    ? Math.max(0, Math.min(timelineDuration.value, (event.clientX - bounds.left + (viewport.value?.scrollLeft ?? 0)) / pixelsPerSecond.value))
+    ? Math.max(
+        0,
+        Math.min(
+          timelineDuration.value,
+          (event.clientX - bounds.left + (viewport.value?.scrollLeft ?? 0)) / pixelsPerSecond.value,
+        ),
+      )
     : Math.max(0, Math.min(timelineDuration.value, props.playhead));
   const selectedTarget = selectedClipIds.value.at(-1) ?? props.selectedSlotId;
   const missingTarget = props.variant?.slots.find((slot) => !materialForSlot(slot.id))?.id;
-  const targetSlotId = kind === 'VIDEO' ? (selectedTarget || missingTarget || '') : undefined;
+  const targetSlotId = kind === 'VIDEO' ? selectedTarget || missingTarget || '' : undefined;
   clipContextMenu.value = {
     kind: kind === 'VIDEO' ? 'EMPTY_VIDEO' : 'EMPTY_AUDIO',
     ...(targetSlotId ? { slotId: targetSlotId } : {}),
+    ...(kind === 'VIDEO' ? {} : { pasteRow: audioRowOfKey(kind) }),
     pasteStart: time,
     left: Math.min(event.clientX, window.innerWidth - 208),
     top: Math.min(event.clientY, window.innerHeight - 120),
@@ -1444,6 +1643,9 @@ const onAudioClipContextMenu = (event: MouseEvent, audioId: string): void => {
   clipContextMenu.value = {
     kind: 'AUDIO',
     audioId,
+    // A paste on an existing clip's menu continues on that clip's row, so pasting beside a clip
+    // never drops the copy onto a different row.
+    pasteRow: audioRowOf(audioId),
     left: Math.min(event.clientX, window.innerWidth - 208),
     top: Math.min(event.clientY, window.innerHeight - 92),
   };
@@ -1466,7 +1668,7 @@ const pasteVideoSlots = (targetSlotIds: string[]): void => {
     })),
   );
 };
-const pasteClipboard = (targetSlotId?: string, start?: number): void => {
+const pasteClipboard = (targetSlotId?: string, start?: number, row?: number): void => {
   const clipboard = timelineClipboard.value;
   if (props.readOnly || !clipboard) return;
   if (clipboard.kind === 'VIDEO') {
@@ -1488,11 +1690,19 @@ const pasteClipboard = (targetSlotId?: string, start?: number): void => {
       emit('requestNotice', '目标成片没有足够的素材槽位用于粘贴');
       return;
     }
-    pasteVideoSlots(slots.slice(startIndex, startIndex + clipboard.entries.length).map(({ id }) => id));
+    pasteVideoSlots(
+      slots.slice(startIndex, startIndex + clipboard.entries.length).map(({ id }) => id),
+    );
     return;
   }
   const pasteStart = Math.max(0, Math.min(timelineDuration.value, start ?? props.playhead));
-  emit('pasteAudioMaterial', { ...clipboard.audio, start: pasteStart });
+  // No row means the paste was started from the keyboard rather than from a row's menu, so the
+  // workbench decides which row a fresh copy lands on.
+  emit('pasteAudioMaterial', {
+    ...clipboard.audio,
+    start: pasteStart,
+    ...(row === undefined ? {} : { row }),
+  });
 };
 const runClipContextAction = (action: 'COPY' | 'PASTE' | 'SEPARATE'): void => {
   const menu = clipContextMenu.value;
@@ -1508,7 +1718,7 @@ const runClipContextAction = (action: 'COPY' | 'PASTE' | 'SEPARATE'): void => {
     else if (menu.audioId) copyAudioClip(menu.audioId);
     return;
   }
-  pasteClipboard(menu.slotId, menu.pasteStart);
+  pasteClipboard(menu.slotId, menu.pasteStart, menu.pasteRow);
 };
 const onVideoClipDoubleClick = (event: MouseEvent, slotId: string): void => {
   if (props.readOnly || !materialForSlot(slotId)) return;
@@ -1533,11 +1743,7 @@ const beginTrim = (event: PointerEvent, slotId: string): void => {
   addWindowPointerListeners();
 };
 
-const beginEdgeTrim = (
-  event: PointerEvent,
-  slotId: string,
-  side: 'LEFT' | 'RIGHT',
-): void => {
+const beginEdgeTrim = (event: PointerEvent, slotId: string, side: 'LEFT' | 'RIGHT'): void => {
   if (props.readOnly || event.button !== 0 || trackLocked.VIDEO) return;
   const slot = props.variant?.slots.find(({ id }) => id === slotId);
   const material = slot ? materialForSlot(slotId) : null;
@@ -1563,12 +1769,24 @@ const beginEdgeTrim = (
   addWindowPointerListeners();
 };
 
+/** Top of the first audio row in client coordinates; a drag measures its ghost against it. */
+const audioAreaTop = (): number =>
+  audioTrackElements.get(audioRowKey(0))?.getBoundingClientRect().top ?? 0;
+
 const beginAudioDrag = (
   event: PointerEvent,
   target: AudioDragTarget,
   mode: AudioDragMode,
   bounds: DOMRect | null,
 ): void => {
+  // A vertical move carries the whole selection, so every member's starting row is frozen here: the
+  // release applies one shared row delta, which is what keeps a group from bunching up on the row
+  // the pointer happens to be over. Captions are not on an audio row, so they are left out.
+  const initialRows: Record<string, number> = {};
+  if (mode === 'MOVE' && !target.id.startsWith('caption:')) {
+    for (const id of [target.id, ...dragGroupIds(target.id)]) initialRows[id] = audioRowOf(id);
+  }
+  const row = audioRowOf(target.id);
   audioDrag.value = {
     id: target.id,
     kind: target.kind,
@@ -1589,6 +1807,9 @@ const beginAudioDrag = (
     startClientY: event.clientY,
     volumeTop: bounds?.top ?? 0,
     volumeHeight: bounds?.height ?? AUDIO_CLIP_HEIGHT,
+    currentRow: row,
+    ghostTop: AUDIO_CLIP_INSET + row * AUDIO_LANE_HEIGHT,
+    initialRows,
   };
   addWindowPointerListeners();
 };
@@ -1620,8 +1841,12 @@ const audioEdgeHandleDisabled = (event: PointerEvent): boolean => {
   return Boolean(handle?.disabled);
 };
 
+/** A clip is fenced by the row it currently sits on, because locking is a property of the row. */
+const audioRowLocked = (clipId: string): boolean =>
+  Boolean(trackLocked[audioRowKey(audioRowOf(clipId))]);
+
 const onAudioPointerDown = (event: PointerEvent, audio: TimelineAudio): void => {
-  if (event.button !== 0 || trackLocked.AUDIO) return;
+  if (event.button !== 0 || audioRowLocked(audio.id)) return;
   if (audioEdgeHandleDisabled(event)) {
     event.preventDefault();
     event.stopPropagation();
@@ -1654,7 +1879,7 @@ const beginAudioTrim = (
   audio: AudioDragTarget,
   side: 'LEFT' | 'RIGHT',
 ): void => {
-  if (props.readOnly || event.button !== 0 || trackLocked.AUDIO) return;
+  if (props.readOnly || event.button !== 0 || audioRowLocked(audio.id)) return;
   event.preventDefault();
   event.stopPropagation();
   selectAudio(audio.id);
@@ -1662,26 +1887,35 @@ const beginAudioTrim = (
 };
 
 const beginAudioVolume = (event: PointerEvent, audio: TimelineAudio): void => {
-  if (props.readOnly || event.button !== 0 || trackLocked.AUDIO) return;
+  if (props.readOnly || event.button !== 0 || audioRowLocked(audio.id)) return;
   event.preventDefault();
   event.stopPropagation();
   // Volume is the audio counterpart of a caption's size, so a set takes one level together.
   if (!audioGroupIds().includes(audio.id)) selectAudio(audio.id);
   const clip =
-    event.currentTarget instanceof Element
-      ? event.currentTarget.closest('.audio-clip')
-      : null;
+    event.currentTarget instanceof Element ? event.currentTarget.closest('.audio-clip') : null;
   beginAudioDrag(event, audio, 'VOLUME', clip?.getBoundingClientRect() ?? null);
 };
 
-/** Captions move independently, so their neighbours are the only overlap fence. */
+/**
+ * Captions move independently, so their row's neighbours are the only overlap fence. The row is
+ * what makes it a fence rather than an arbitrary one: a card added from the library gets a track of
+ * its own, and two subtitles on different rows are *meant* to overlap in time. Fencing against the
+ * whole timeline instead would pin such a card between the ends of unrelated captions, which reads
+ * as "the drag is stuck". Within one row the lane assignment keeps captions apart, so the sorted
+ * neighbours really are the two cards this one may not cross.
+ */
 const captionBounds = (caption: EffectTemplateMixCaption): { minStart: number; maxEnd: number } => {
-  const rows = [...timelineCaptions.value].sort((left, right) => left.start - right.start);
+  const lane = captionLaneById.value.get(caption.id) ?? 0;
+  const rows = timelineCaptions.value
+    .filter((row) => (captionLaneById.value.get(row.id) ?? 0) === lane)
+    .sort((left, right) => left.start - right.start);
   const index = rows.findIndex((row) => row.id === caption.id);
   return {
     minStart: index > 0 ? rows[index - 1]!.end : 0,
-    maxEnd:
-      index >= 0 && index + 1 < rows.length ? rows[index + 1]!.start : timelineDuration.value,
+    // The last card on a row has nothing to its right, so it is free to travel — that is how a
+    // caption is carried past the last of the material and the film grows a tail.
+    maxEnd: index >= 0 && index + 1 < rows.length ? rows[index + 1]!.start : Number.POSITIVE_INFINITY,
   };
 };
 
@@ -1692,7 +1926,7 @@ const captionDragTarget = (caption: EffectTemplateMixCaption): AudioDragTarget =
   offset: 0,
   duration: Math.max(0, caption.end - caption.start),
   volume: 1,
-  // Captions are pure text, so only the timeline and their neighbours limit them.
+  // Captions are pure text, so only their neighbours limit them — never their own source length.
   sourceDuration: Number.POSITIVE_INFINITY,
   ...captionBounds(caption),
 });
@@ -1706,7 +1940,8 @@ const captionGroupIds = (draggedId: string): string[] => {
   return selected.length > 1 && selected.includes(draggedId) ? selected : [];
 };
 const onCaptionPointerDown = (event: PointerEvent, caption: EffectTemplateMixCaption): void => {
-  if (props.readOnly || event.button !== 0 || trackLocked.CAPTION) return;
+  const lane = captionLaneById.value.get(caption.id) ?? 0;
+  if (props.readOnly || event.button !== 0 || trackLocked[captionTrackKey(lane)]) return;
   if (audioEdgeHandleDisabled(event)) {
     event.preventDefault();
     event.stopPropagation();
@@ -1723,9 +1958,10 @@ const onCaptionPointerDown = (event: PointerEvent, caption: EffectTemplateMixCap
       : [...selected, id];
     return;
   }
-  // Clicking one of several selected cards keeps the group, so the whole set can be dragged.
+  // Clicking one of several selected cards keeps the group, so the whole set can be dragged. The
+  // playhead stays put: picking a card is not a scrub, and moving the needle out from under the user
+  // made every selection look like a seek.
   if (!selectedAudioIds.value.includes(id)) selectAudio(`caption:${caption.id}`);
-  emit('seek', Math.max(0, caption.start));
   if (!audioEditable.value) return;
   beginAudioDrag(event, captionDragTarget(caption), 'MOVE', null);
 };
@@ -1735,7 +1971,8 @@ const beginCaptionTrim = (
   caption: EffectTemplateMixCaption,
   side: 'LEFT' | 'RIGHT',
 ): void => {
-  if (props.readOnly || event.button !== 0 || trackLocked.CAPTION) return;
+  const lane = captionLaneById.value.get(caption.id) ?? 0;
+  if (props.readOnly || event.button !== 0 || trackLocked[captionTrackKey(lane)]) return;
   event.preventDefault();
   event.stopPropagation();
   selectAudio(`caption:${caption.id}`);
@@ -1760,7 +1997,13 @@ watch(pixelsPerSecond, () => {
     startPlaybackNeedle(animatedNeedleSeconds());
   } else setPlaybackNeedle();
 });
-defineExpose({ clearSelection, setPlaybackNeedle, startPlaybackNeedle, stopPlaybackNeedle });
+defineExpose({
+  clearSelection,
+  scrollToLane,
+  setPlaybackNeedle,
+  startPlaybackNeedle,
+  stopPlaybackNeedle,
+});
 
 /**
  * Anything on the timeline that is not the material itself clears the selection. The ruler and the
@@ -1786,17 +2029,15 @@ const onTrackPointerDown = (event: PointerEvent, track: VisibleTrack): void => {
   selectedAudioIds.value = [];
   seekFromClientX(event.clientX);
   // Every lane marquees, and each one only ever picks the blocks that live on it.
-  if (track === 'VIDEO' || track === 'CAPTION' || track === 'AUDIO') {
-    marquee.value = {
-      currentClientX: event.clientX,
-      currentClientY: event.clientY,
-      moved: false,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      track,
-    };
-    addWindowPointerListeners();
-  }
+  marquee.value = {
+    currentClientX: event.clientX,
+    currentClientY: event.clientY,
+    moved: false,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    track,
+  };
+  addWindowPointerListeners();
 };
 
 const updateDragTarget = (clientX: number, clientY: number): void => {
@@ -1842,12 +2083,13 @@ const updateDragTarget = (clientX: number, clientY: number): void => {
 const updateMarqueeSelection = (): void => {
   const box = marquee.value;
   const element = viewport.value;
-  const track =
-    box?.track === 'CAPTION'
-      ? captionTrack.value
-      : box?.track === 'AUDIO'
-        ? audioTrack.value
-        : videoTrack.value;
+  const track = !box
+    ? null
+    : isCaptionTrack(box.track)
+      ? (captionTrackElements.get(box.track === 'CAPTION' ? captionTrackKey(0) : box.track) ?? null)
+      : box.track === 'VIDEO'
+        ? videoTrack.value
+        : (audioTrackElements.get(box.track) ?? null);
   if (!box || !element || !track) return;
   const clear = (): void => {
     if (box.track === 'VIDEO') selectedClipIds.value = [];
@@ -1865,20 +2107,26 @@ const updateMarqueeSelection = (): void => {
     Math.min(box.startClientX, box.currentClientX) - viewportBounds.left + element.scrollLeft;
   const right =
     Math.max(box.startClientX, box.currentClientX) - viewportBounds.left + element.scrollLeft;
-  // Captions and voice/BGM blocks share one selection list, so both lanes write to it.
-  if (box.track === 'CAPTION' || box.track === 'AUDIO') {
-    const entries =
-      box.track === 'CAPTION'
-        ? timelineCaptionEntries.value.map((entry) => ({
+  // Captions and the audio rows share one selection list, so all of them write to it. An audio
+  // row only ever picks the blocks that live on it, so a marquee on 口播 never grabs 纯音乐.
+  if (box.track !== 'VIDEO') {
+    const entries = isCaptionTrack(box.track)
+      ? timelineCaptionEntries.value
+          .filter(
+            (entry) =>
+              (captionLaneById.value.get(entry.caption.id) ?? 0) ===
+              captionLaneOfTrack(box.track as CaptionTrack | 'CAPTION'),
+          )
+          .map((entry) => ({
             id: entry.id,
             start: entry.caption.start,
             end: entry.caption.end,
           }))
-        : timelineAudios.value.map((audio) => ({
-              id: audio.id,
-              start: audio.start,
-              end: audio.start + audio.duration,
-            }));
+      : audiosForTrack(box.track).map((audio) => ({
+          id: audio.id,
+          start: audio.start,
+          end: audio.start + audio.duration,
+        }));
     selectedAudioIds.value = entries
       .filter((entry) => {
         const clipLeft = Math.max(0, entry.start) * pixelsPerSecond.value;
@@ -1964,9 +2212,7 @@ function onWindowPointerMove(event: PointerEvent): void {
     const slot = props.variant?.slots.find(({ id }) => id === drag.slotId);
     const material = slot ? materialForSlot(slot.id) : null;
     if (!slot || !material) return;
-    const delta = quantizeToFrame(
-      (event.clientX - drag.startClientX) / pixelsPerSecond.value,
-    );
+    const delta = quantizeToFrame((event.clientX - drag.startClientX) / pixelsPerSecond.value);
     if (material.duration < 4) return;
     const minimumDuration = 4;
     const sourceEnd = drag.initialOffset + drag.initialDuration;
@@ -1983,10 +2229,7 @@ function onWindowPointerMove(event: PointerEvent): void {
       );
       drag.currentDuration = currentDuration;
       drag.currentOffset = sourceEnd - currentDuration;
-      drag.currentStart = Math.max(
-        0,
-        drag.initialStart + drag.initialDuration - currentDuration,
-      );
+      drag.currentStart = Math.max(0, drag.initialStart + drag.initialDuration - currentDuration);
     } else {
       drag.currentOffset = drag.initialOffset;
       drag.currentDuration = Math.max(
@@ -2003,31 +2246,44 @@ function onWindowPointerMove(event: PointerEvent): void {
     const minimumDuration = Math.min(AUDIO_MIN_DURATION, 1 / props.fps);
     const delta = quantizeToFrame((event.clientX - drag.startClientX) / pixelsPerSecond.value);
     if (drag.mode === 'VOLUME') {
-      const ratio =
-        1 - (event.clientY - drag.volumeTop) / Math.max(1, drag.volumeHeight);
+      const ratio = 1 - (event.clientY - drag.volumeTop) / Math.max(1, drag.volumeHeight);
       // Whole decibels, matching the editor row's step, so the strip and the row agree on the value.
       const db = Math.round(
         PACKAGING_AUDIO_DB_FLOOR + Math.max(0, Math.min(1, ratio)) * audioDbSpan,
       );
       drag.currentVolume = packagingAudioFromDb(db);
     } else if (drag.mode === 'MOVE') {
-      const maxStart = Math.min(
-        drag.maxEnd - drag.initialDuration,
-        Math.max(0, timelineDuration.value - drag.initialDuration),
-      );
+      // The film is as long as its content, so only the clip's own source tail and its neighbours
+      // limit a move — carrying a clip past the last of the material is how the film is extended.
+      const maxStart = Math.max(0, drag.maxEnd - drag.initialDuration);
       const requested = Math.max(drag.minStart, Math.min(maxStart, drag.initialStart + delta));
-      // Captions and voice/BGM share this branch, so lining either up against the other lane — or
-      // against a video slot — is the same gesture, and the guide is what makes it legible.
-      // The dragged block is ignored even when it travels alone, or it would snap to the position
-      // it started from instead of to a neighbour.
-      const snapped = snapDraggedBlock(
-        requested,
-        drag.initialDuration,
-        new Set([drag.id, ...dragGroupIds(drag.id)]),
-        { maxStart, minStart: drag.minStart },
-      );
-      drag.currentStart = snapped.start;
-      snapGuideTime.value = snapped.guide;
+      if (drag.id.startsWith('caption:')) {
+        // Subtitle blocks are positioned by their spoken timing, so magnetic snapping makes small
+        // corrections jump to unrelated audio/video edges. Keep them pixel-following; frame
+        // quantization above still guarantees a valid frame boundary when the edit is saved.
+        drag.currentStart = requested;
+        snapGuideTime.value = null;
+      } else {
+        // Voice/BGM retain magnetic alignment against other timeline edges.
+        const snapped = snapDraggedBlock(
+          requested,
+          drag.initialDuration,
+          new Set([drag.id, ...dragGroupIds(drag.id)]),
+          { maxStart, minStart: drag.minStart },
+        );
+        drag.currentStart = snapped.start;
+        snapGuideTime.value = snapped.guide;
+      }
+      // Free vertical travel, exactly like a video clip: the ghost follows the pointer pixel for
+      // pixel and may cross every existing row, so the row is deliberately not clamped — landing
+      // past the last one is how a new row gets made. It is measured from a row's centre so the row
+      // it rounds to changes in the gap between two rows rather than the instant it leaves one.
+      if (drag.initialRows[drag.id] !== undefined) {
+        const areaTop = audioAreaTop();
+        const pointerTop = event.clientY - areaTop - (AUDIO_CLIP_INSET + AUDIO_CLIP_HEIGHT / 2);
+        drag.ghostTop = AUDIO_CLIP_INSET + pointerTop;
+        drag.currentRow = Math.round(pointerTop / AUDIO_LANE_HEIGHT);
+      }
     } else if (drag.mode === 'LEFT') {
       // The left edge can only reveal source that was trimmed away, or empty timeline.
       const minimumDelta = Math.max(drag.minStart - drag.initialStart, -drag.initialOffset);
@@ -2044,12 +2300,13 @@ function onWindowPointerMove(event: PointerEvent): void {
     } else {
       drag.currentOffset = drag.initialOffset;
       drag.currentStart = drag.initialStart;
+      // Stretching the tail is how a clip is made to reach past the last of the material, so the
+      // film's current length is not a bound here either.
       drag.currentDuration = Math.max(
         minimumDuration,
         Math.min(
           drag.initialSourceDuration - drag.initialOffset,
           drag.maxEnd - drag.initialStart,
-          timelineDuration.value - drag.initialStart,
           drag.initialDuration + delta,
         ),
       );
@@ -2130,18 +2387,33 @@ function onWindowPointerUp(): void {
       else for (const id of group) emit('changeAudioVolume', id, audio.currentVolume);
     } else if (audio.mode === 'MOVE') {
       const delta = audio.currentStart - audio.initialStart;
-      if (!group.length) emit('moveAudioClip', audio.id, audio.currentStart);
-      else if (isCaption) {
+      // Every audio member of the selection rides one shared row delta, so the set keeps its shape
+      // vertically as well as horizontally. A caption has no row, so it only reports its new time.
+      const rowMove = audio.initialRows[audio.id] !== undefined;
+      const rowDelta = rowMove ? audio.currentRow - audio.initialRows[audio.id]! : 0;
+      const rowFor = (id: string): number =>
+        Math.max(0, (audio.initialRows[id] ?? audioRowOf(id)) + rowDelta);
+      if (!group.length) {
+        if (rowMove) emit('moveAudioClip', audio.id, audio.currentStart, rowFor(audio.id));
+        else emit('moveAudioClip', audio.id, audio.currentStart);
+      } else if (isCaption) {
         // A group slides rigidly, so the shared delta is capped by the caption nearest the start
         // instead of letting each one clamp on its own and pull the group apart.
         const earliest = Math.min(
-          ...group.map((id) => timelineCaptionEntries.value.find((e) => e.id === id)?.caption.start ?? 0),
+          ...group.map(
+            (id) => timelineCaptionEntries.value.find((e) => e.id === id)?.caption.start ?? 0,
+          ),
         );
         const shared = Math.max(delta, -earliest);
-        for (const id of group) {
-          const entry = timelineCaptionEntries.value.find((item) => item.id === id);
-          if (entry) emit('moveAudioClip', id, Math.max(0, entry.caption.start + shared));
-        }
+        // One event for the whole gesture, so the workbench records a single undo step instead of
+        // one per caption and the group still lands in the same tick.
+        emit(
+          'moveAudioClips',
+          group.flatMap((id) => {
+            const entry = timelineCaptionEntries.value.find((item) => item.id === id);
+            return entry ? [{ clipId: id, start: Math.max(0, entry.caption.start + shared) }] : [];
+          }),
+        );
       } else {
         // Voice/BGM blocks slide rigidly too: the delta is bounded by whichever block would leave
         // the timeline first, so the set keeps its shape instead of bunching up at the edges.
@@ -2154,7 +2426,13 @@ function onWindowPointerUp(): void {
           Math.max(delta, -earliest),
           timelineDuration.value - latest,
         );
-        for (const clip of clips) emit('moveAudioClip', clip.id, Math.max(0, clip.start + shared));
+        const moves = clips.map((clip) => ({
+          clipId: clip.id,
+          row: rowFor(clip.id),
+          start: Math.max(0, clip.start + shared),
+        }));
+        if (moves.length > 1) emit('moveAudioClips', moves);
+        else if (moves[0]) emit('moveAudioClip', moves[0].clipId, moves[0].start, moves[0].row);
       }
     } else
       emit(
@@ -2253,7 +2531,9 @@ const onTimelineKeydown = (event: KeyboardEvent): void => {
       } else if (selectedAudioIds.value.length > 1) {
         emit('requestNotice', '请一次选择一个音频素材进行复制');
       } else {
-        copyVideoSlots(selectedClipIds.value.length ? selectedClipIds.value : [props.selectedSlotId]);
+        copyVideoSlots(
+          selectedClipIds.value.length ? selectedClipIds.value : [props.selectedSlotId],
+        );
       }
       return;
     }
@@ -2435,8 +2715,9 @@ onBeforeUnmount(() => {
           <Magnet :size="15" />
         </button>
         <span class="timeline-time">{{ formatTimecode(playhead) }}</span>
-          <span class="timeline-hint"
-          >素材可直接拖入 · Ctrl/Cmd+C、V 复制粘贴 · 右键打开操作 · 点击标尺定位 · 拖动片段换位</span
+        <span class="timeline-hint"
+          >素材可直接拖入 · Ctrl/Cmd+C、V 复制粘贴 · 右键打开操作 · 点击标尺定位 ·
+          拖动片段换位</span
         >
       </div>
       <div class="zoom-controls" aria-label="时间轴缩放">
@@ -2476,20 +2757,14 @@ onBeforeUnmount(() => {
         <template v-for="track in orderedTracks" :key="track">
           <div
             class="track-header"
-            :class="`track-${track.toLowerCase()}`"
+            :class="`track-${trackClassName(track)}`"
             :style="{ height: `${trackHeight(track)}px` }"
           >
             <div class="track-name">
               <Film v-if="track === 'VIDEO'" :size="14" />
-              <Captions v-else-if="track === 'CAPTION'" :size="14" />
-              <Volume2 v-else :size="14" />
-              <span>{{
-                track === 'VIDEO'
-                  ? '主视频'
-                  : track === 'CAPTION'
-                    ? '字幕'
-                    : '音频'
-              }}</span>
+              <Captions v-else-if="isCaptionTrack(track)" :size="14" />
+              <AudioLines v-else :size="14" />
+              <span>{{ trackLabel(track) }}</span>
             </div>
             <div class="track-actions">
               <button
@@ -2501,22 +2776,24 @@ onBeforeUnmount(() => {
                 <Unlock v-else :size="12" />
               </button>
               <button
-                v-if="track === 'VIDEO' || track === 'CAPTION'"
+                v-if="track === 'VIDEO' || isCaptionTrack(track)"
                 type="button"
-                :title="trackVisible(track) ? '隐藏轨道' : '显示轨道'"
-                @click="toggleTrackVisible(track)"
+                :title="
+                  trackVisible(track === 'VIDEO' ? 'VIDEO' : 'CAPTION') ? '隐藏轨道' : '显示轨道'
+                "
+                @click="toggleTrackVisible(track === 'VIDEO' ? 'VIDEO' : 'CAPTION')"
               >
-                <Eye v-if="trackVisible(track)" :size="12" />
+                <Eye v-if="trackVisible(track === 'VIDEO' ? 'VIDEO' : 'CAPTION')" :size="12" />
                 <EyeOff v-else :size="12" />
               </button>
               <button
-                v-if="track === 'VIDEO' || track === 'AUDIO'"
+                v-if="!isCaptionTrack(track)"
                 type="button"
-                :title="(track === 'VIDEO' ? props.videoMuted : props.audioMuted) ? '取消静音' : '静音轨道'"
-                :aria-label="`${(track === 'VIDEO' ? props.videoMuted : props.audioMuted) ? '取消' : ''}${track === 'VIDEO' ? '视频' : '音频'}轨道静音`"
-                @click="emit('toggleAudioMute', track, !(track === 'VIDEO' ? props.videoMuted : props.audioMuted))"
+                :title="trackMuted(track) ? '取消静音' : '静音轨道'"
+                :aria-label="`${trackMuted(track) ? '取消' : ''}${trackLabel(track)}轨道静音`"
+                @click="emit('toggleAudioMute', track, !trackMuted(track))"
               >
-                <VolumeX v-if="track === 'VIDEO' ? props.videoMuted : props.audioMuted" :size="12" />
+                <VolumeX v-if="trackMuted(track)" :size="12" />
                 <Volume2 v-else :size="12" />
               </button>
             </div>
@@ -2539,11 +2816,7 @@ onBeforeUnmount(() => {
         <span />
       </div>
 
-      <div
-        ref="viewport"
-        class="timeline-viewport"
-        @scroll="syncTrackScroll('VIEWPORT')"
-      >
+      <div ref="viewport" class="timeline-viewport" @scroll="syncTrackScroll('VIEWPORT')">
         <div ref="canvas" class="timeline-canvas" :style="{ width: `${canvasWidth}px` }">
           <div
             class="time-ruler"
@@ -2565,15 +2838,25 @@ onBeforeUnmount(() => {
 
           <template v-for="track in visiblePrimaryTracks" :key="`canvas:${track}`">
             <div
-              v-if="track === 'CAPTION'"
-              :ref="setCaptionTrackElement"
+              v-if="isCaptionTrack(track)"
+              :ref="
+                (element) =>
+                  setCaptionTrackElement(track === 'CAPTION' ? captionTrackKey(0) : track, element)
+              "
               class="timeline-track caption-track"
-              :style="{ height: `${trackHeight('CAPTION')}px` }"
-              :class="{ 'is-hidden': !props.captionVisible, 'is-locked': trackLocked.CAPTION }"
-              @pointerdown="onTrackPointerDown($event, 'CAPTION')"
+              :style="{ height: `${trackHeight(track)}px` }"
+              :class="{ 'is-hidden': !props.captionVisible, 'is-locked': trackLocked[track] }"
+              @dragleave="onMaterialDragLeave"
+              @dragover="onCaptionTrackDragOver"
+              @drop="onMaterialDrop"
+              @pointerdown="onTrackPointerDown($event, track)"
             >
               <div
-                v-for="entry in timelineCaptionEntries"
+                v-for="entry in timelineCaptionEntries.filter(
+                  (item) =>
+                    (captionLaneById.get(item.caption.id) ?? 0) ===
+                    captionLaneOfTrack(track === 'CAPTION' ? captionTrackKey(0) : track),
+                )"
                 :key="entry.caption.id"
                 class="caption-clip"
                 :class="{
@@ -2583,11 +2866,11 @@ onBeforeUnmount(() => {
                 }"
                 :style="captionClipStyle(entry.caption)"
                 :data-audio-id="entry.id"
-                :title="entry.caption.text"
+                :title="entry.caption.text || '新字幕素材'"
                 @pointerdown="onCaptionPointerDown($event, entry.caption)"
               >
                 <Captions class="caption-clip-icon" :size="13" aria-hidden="true" />
-                <span class="caption-clip-text">{{ entry.caption.text }}</span>
+                <span class="caption-clip-text">{{ entry.caption.text || '新字幕' }}</span>
                 <template v-if="audioEditable && selectedAudioIds.includes(entry.id)">
                   <button
                     class="edge-trim-handle edge-trim-left"
@@ -2667,7 +2950,9 @@ onBeforeUnmount(() => {
                       >
                     </div>
                     <EffectTemplateMixWaveform
-                      v-if="!variant.detachedAudios?.some((audio) => audio.sourceSlotId === slot.id)"
+                      v-if="
+                        !variant.detachedAudios?.some((audio) => audio.sourceSlotId === slot.id)
+                      "
                       :bar-count="waveformBarCount(slot)"
                       :duration="activeSlotDuration(slot.id)"
                       :gain="variant.originalVolume ?? 1"
@@ -2719,8 +3004,8 @@ onBeforeUnmount(() => {
                   />
                   <span v-if="edgeTrimDrag?.slotId === slot.id" class="trim-tooltip">
                     源 {{ edgeTrimDrag.currentOffset.toFixed(2) }}s —
-                    {{ (edgeTrimDrag.currentOffset + edgeTrimDrag.currentDuration).toFixed(2) }}s
-                    · {{ edgeTrimDrag.currentDuration.toFixed(2) }}s
+                    {{ (edgeTrimDrag.currentOffset + edgeTrimDrag.currentDuration).toFixed(2) }}s ·
+                    {{ edgeTrimDrag.currentDuration.toFixed(2) }}s
                   </span>
                 </article>
                 <button
@@ -2761,25 +3046,29 @@ onBeforeUnmount(() => {
             :key="`canvas:${track}`"
             :ref="(element) => setAudioTrackElement(track, element)"
             class="timeline-track audio-track"
-            :class="[
-              'audio-track-audio',
-              { 'is-locked': trackLocked.AUDIO, 'is-drop-target': musicDropActive },
-            ]"
+            :class="{
+              'is-locked': trackLocked[track],
+              'is-drop-target': musicDropRow === audioRowOfKey(track),
+            }"
             :style="{ height: `${trackHeight(track)}px` }"
             @dragleave="onMusicTrackDragLeave"
-            @dragover="onMusicTrackDragOver"
-            @drop="onMusicTrackDrop"
-            @contextmenu="openEmptyTrackContextMenu($event, 'AUDIO')"
+            @dragover="onMusicTrackDragOver($event, track)"
+            @drop="onMusicTrackDrop($event, track)"
+            @contextmenu="openEmptyTrackContextMenu($event, track)"
             @pointerdown="onTrackPointerDown($event, track)"
           >
             <div
-              v-for="audio in timelineAudios"
+              v-for="audio in audiosForTrack(track)"
               :key="audio.id"
               class="audio-clip"
               :class="[
-                audio.kind === 'VOICE' ? 'voice-clip' : audio.kind === 'DETACHED' ? 'detached-audio-clip' : 'bgm-clip',
+                audio.kind === 'VOICE'
+                  ? 'voice-clip'
+                  : audio.kind === 'DETACHED'
+                    ? 'detached-audio-clip'
+                    : 'bgm-clip',
                 {
-                  'is-muted': props.audioMuted,
+                  'is-muted': trackMuted(track),
                   'is-selected': selectedAudioIds.includes(audio.id),
                   'is-dragging': audioDrag?.id === audio.id && audioDrag.mode === 'MOVE',
                   'is-stale': packagingStale,
@@ -2859,15 +3148,18 @@ onBeforeUnmount(() => {
             class="snap-guide"
             :style="{ left: `${snapGuideLeft}px` }"
           />
+          <!-- The border a library clip is hovering; releasing on it adds a video row there. -->
+          <span
+            v-if="trackInsertGuideTop !== null"
+            class="track-insert-guide"
+            :style="{ top: `${trackInsertGuideTop}px` }"
+          />
           <div
             v-if="marqueeStyle && marquee?.moved"
             class="selection-marquee"
             :style="marqueeStyle"
           />
-          <div
-            ref="playheadElement"
-            class="timeline-playhead"
-          >
+          <div ref="playheadElement" class="timeline-playhead">
             <button
               class="playhead-handle"
               type="button"
@@ -3044,12 +3336,10 @@ onBeforeUnmount(() => {
 }
 .track-header.track-audio {
   cursor: default;
-}
-.track-header.track-video {
   height: 76px;
   color: #263b59;
 }
-.track-header.track-audio {
+.track-header.track-video {
   height: 76px;
   color: #263b59;
 }
@@ -3156,10 +3446,20 @@ onBeforeUnmount(() => {
   height: 76px;
   background: #f7f9fc;
 }
+/* No clipping on an audio row: a clip being dragged up or down has to be visible while it crosses
+   its neighbours, exactly like a video clip does on the video track. */
 .timeline-track.audio-track {
   height: 76px;
   background: #f7f9fc;
-  overflow: hidden;
+}
+.timeline-track.caption-track {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    #fbfcfe 0,
+    #fbfcfe calc(34px - 1px),
+    #dde5f0 calc(34px - 1px),
+    #dde5f0 34px
+  );
 }
 .timeline-track.audio-track.is-drop-target {
   box-shadow: inset 0 0 0 2px #477eff;
@@ -3348,7 +3648,9 @@ onBeforeUnmount(() => {
   touch-action: none;
   opacity: 0.5;
   transform: translateY(-50%);
-  transition: opacity 100ms ease, background 100ms ease;
+  transition:
+    opacity 100ms ease,
+    background 100ms ease;
 }
 .edge-trim-handle:hover,
 .video-clip.is-selected .edge-trim-handle,
@@ -3499,6 +3801,17 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 1px #bfdbfe;
   pointer-events: none;
 }
+/* The same guide laid on its side: it marks a row border instead of a column of time. */
+.track-insert-guide {
+  height: 1px;
+  position: absolute;
+  z-index: 17;
+  left: 0;
+  right: 0;
+  background: #2563eb;
+  box-shadow: 0 0 0 1px #bfdbfe;
+  pointer-events: none;
+}
 .caption-clip,
 .audio-clip {
   box-sizing: border-box;
@@ -3561,6 +3874,10 @@ onBeforeUnmount(() => {
 .audio-clip.is-dragging {
   cursor: grabbing;
   opacity: 0.85;
+}
+/* A clip changing rows rides above the rows it crosses rather than sliding underneath them. */
+.audio-clip.is-dragging {
+  z-index: 8;
 }
 /* The checkpoint behind these no longer matches the timeline, so they are dimmed rather than
    hidden: the arrangement stays readable while the packaging panel asks for a fresh run. */

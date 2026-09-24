@@ -7,6 +7,7 @@ import type {
   EffectTemplateMixDraft,
   EffectTemplateMixDetachedAudio,
   EffectTemplateMixMaterial,
+  EffectTemplateMixPurpose,
   EffectTemplateMixRole,
   EffectTemplateMixSlot,
   EffectTemplateMixTemplateEntry,
@@ -20,6 +21,7 @@ import type {
   PackagingRun,
 } from '@ai-marketing/contracts';
 import {
+  effectTemplateMixContentDuration,
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
   PACKAGING_AUDIO_GAIN_CEILING,
@@ -105,6 +107,13 @@ import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
 import { packagingActionText, packagingLockMessage } from './effect-packaging-progress';
+import {
+  audioRowOf as audioRowOfClip,
+  audioRowOfKey,
+  compactAudioLanes,
+  timelineAudioClipRefs,
+  type AudioRowTrack,
+} from './effect-template-mix-audio-lanes';
 import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
 import EffectMusicLibrary from './EffectMusicLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
@@ -203,15 +212,27 @@ const auditionTime = ref(0);
 const playing = ref(false);
 /** Player-owned track controls mirror the timeline header buttons. */
 const videoTrackMuted = ref(false);
-const audioTrackMuted = ref(false);
+/**
+ * One mute per audio row, indexed by row. A row is a position rather than an identity — every
+ * audio row is just 音频 — so the flag belongs to the row number, exactly like the header button
+ * that sets it, and it is not carried along when a clip moves to another row.
+ */
+const audioRowMuted = ref<boolean[]>([]);
 const videoTrackVisible = ref(true);
 const captionTrackVisible = ref(true);
-const setTimelineTrackMute = (track: 'AUDIO' | 'VIDEO', muted: boolean): void => {
-  if (track === 'VIDEO') videoTrackMuted.value = muted;
-  else {
-    audioTrackMuted.value = muted;
-    syncDetachedAudio(true);
+const setTimelineTrackMute = (track: 'VIDEO' | AudioRowTrack, muted: boolean): void => {
+  if (track === 'VIDEO') {
+    videoTrackMuted.value = muted;
+    return;
   }
+  const row = audioRowOfKey(track);
+  const rows = [...audioRowMuted.value];
+  while (rows.length <= row) rows.push(false);
+  rows[row] = muted;
+  audioRowMuted.value = rows;
+  // The detached players are the only ones this page drives itself; packaged audio follows through
+  // the packaging panel, which reads the same per-row flags.
+  syncDetachedAudio(true);
 };
 const setTimelineTrackVisibility = (track: 'CAPTION' | 'VIDEO', visible: boolean): void => {
   if (track === 'VIDEO') videoTrackVisible.value = visible;
@@ -242,10 +263,9 @@ const hasTemplateNameConflict = (name: string, exceptId?: string): boolean => {
   const key = templateNameKey(name);
   return Boolean(
     key &&
-      catalog.value.some(
-        (entry) =>
-          entry.id !== exceptId && templateNameKey(entry.workspace.template.name) === key,
-      ),
+    catalog.value.some(
+      (entry) => entry.id !== exceptId && templateNameKey(entry.workspace.template.name) === key,
+    ),
   );
 };
 const createTemplateNameConflict = computed(() => hasTemplateNameConflict(newTemplateName.value));
@@ -298,7 +318,19 @@ const LEFT_PANE_MIN_WIDTH = 230;
 const LEFT_PANE_MAX_WIDTH = 680;
 const CENTER_PANE_MIN_WIDTH = 380;
 const AUDIO_METER_LEVELS = [2, 4, 3] as const;
+/**
+ * The checkpoint the selected packaging item was showing, so a subtitle edit can be undone. The
+ * timeline writes to two places — rows and video geometry on the variant, everything the packer
+ * produced (subtitles, narration, music, subtitle boxes) on the server-owned checkpoint — so a
+ * snapshot that only carried the variant would restore nothing after a subtitle gesture.
+ */
+type TimelinePackagingSnapshot = {
+  checkpoint: PackagingCheckpoint;
+  itemId: string;
+  updatedAt: string;
+};
 type TimelineEditSnapshot = {
+  packaging: TimelinePackagingSnapshot | null;
   selectedSlotId: string;
   variant: EffectTemplateMixVariant;
 };
@@ -341,15 +373,13 @@ const packagingLocked = computed(() => Boolean(activeEntry.value?.packagingLocke
 const projectEditLocked = computed(() =>
   Boolean(
     activeEntry.value?.aiFillLocked ||
-      activeAiRun.value ||
-      fillStartPending.value ||
-      (packagingLocked.value &&
-        (!packagingRunStatus.value || ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value))),
+    activeAiRun.value ||
+    fillStartPending.value ||
+    (packagingLocked.value &&
+      (!packagingRunStatus.value || ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value))),
   ),
 );
-const templateEditLocked = computed(() =>
-  projectEditLocked.value || packagingLocked.value,
-);
+const templateEditLocked = computed(() => projectEditLocked.value || packagingLocked.value);
 const workspace = computed(() => activeEntry.value?.workspace ?? null);
 const activeUi = computed(() =>
   activeEntry.value ? uiByTemplate[activeEntry.value.id] : undefined,
@@ -360,6 +390,23 @@ const selectedVariant = computed(
     workspace.value?.variants[0] ??
     null,
 );
+/**
+ * Which row each visible audio clip sits on, using the same definition the timeline draws with.
+ * Muting is a property of the row rather than of the clip, so every playback path has to resolve a
+ * clip to its row through here or the row a clip is drawn on and the row that silences it diverge.
+ */
+const audioRowByClipId = computed<Record<string, number>>(() => {
+  const refs = timelineAudioClipRefs(
+    selectedVariant.value,
+    selectedPackaging.value,
+    workspace.value?.materials ?? [],
+    props.projectId,
+  );
+  const lanes = selectedVariant.value?.audioLanes;
+  return Object.fromEntries(refs.map((ref) => [ref.id, audioRowOfClip(refs, lanes, ref.id)]));
+});
+const mutedAudioClip = (clipId: string): boolean =>
+  audioRowMuted.value[audioRowByClipId.value[clipId] ?? 0] ?? false;
 const selectedVariantRefreshSlotIds = computed(() => {
   const variant = selectedVariant.value;
   if (!variant || !workspace.value) return [];
@@ -383,13 +430,18 @@ const clearTimelineHistory = (): void => {
   timelineUndoStack.value = [];
   timelineRedoStack.value = [];
 };
-const captureTimelineSnapshot = (): TimelineEditSnapshot | null =>
-  selectedVariant.value
-    ? {
-        selectedSlotId: activeUi.value?.selectedSlotId ?? '',
-        variant: cloneMix(selectedVariant.value),
-      }
-    : null;
+const captureTimelineSnapshot = (): TimelineEditSnapshot | null => {
+  const variant = selectedVariant.value;
+  if (!variant) return null;
+  const item = selectedPackaging.value;
+  return {
+    packaging: item
+      ? { checkpoint: cloneCheckpoint(item.checkpoint), itemId: item.id, updatedAt: item.updatedAt }
+      : null,
+    selectedSlotId: activeUi.value?.selectedSlotId ?? '',
+    variant: cloneMix(variant),
+  };
+};
 const rememberTimelineEdit = (): void => {
   const snapshot = captureTimelineSnapshot();
   if (!snapshot) return;
@@ -402,6 +454,31 @@ const restoreTimelineSnapshot = (snapshot: TimelineEditSnapshot): void => {
   const index = variants.findIndex(({ id }) => id === snapshot.variant.id);
   if (index < 0) return;
   variants.splice(index, 1, cloneMix(snapshot.variant));
+  // Subtitles and subtitle boxes live on the server-owned checkpoint, so the variant alone is not the
+  // whole story — writing back only the variant would leave the text unchanged and read as "undo did
+  // nothing". `editPackagingAudio`'s baseline rule is reused so the revert is diffed against what the
+  // server actually holds: an edit still inside the debounce window has nothing to send, a saved one
+  // does. A stale item is read-only, so there the local copy is left alone rather than half-restored.
+  const packaging = snapshot.packaging;
+  const item = selectedPackaging.value;
+  if (
+    packaging &&
+    item &&
+    item.id === packaging.itemId &&
+    item.runId &&
+    item.status === 'COMPLETED' &&
+    !item.stale
+  ) {
+    if (audioBaseline?.itemId !== item.id) {
+      audioBaseline = {
+        itemId: item.id,
+        checkpoint: cloneCheckpoint(item.checkpoint),
+        updatedAt: item.updatedAt,
+      };
+    }
+    item.checkpoint = cloneCheckpoint(packaging.checkpoint);
+    scheduleAudioEdit();
+  }
   if (activeUi.value) activeUi.value.selectedSlotId = snapshot.selectedSlotId;
   playhead.value = Math.min(playhead.value, currentDuration.value);
   resetTimelinePlayerState();
@@ -488,10 +565,18 @@ const variantDuration = (variant: EffectTemplateMixVariant): number => {
     .map(({ end }) => end);
   return occupiedEnds.length ? Math.max(...occupiedEnds) : 0;
 };
+/**
+ * The film's length: the furthest end over everything on the timeline, not just the video clips.
+ * An audio or caption clip carried past the last video clip extends the film, so the playhead range,
+ * the seek bounds and the timeline's own scale all follow the furthest piece of content.
+ */
 const currentDuration = computed(() => {
   const variant = selectedVariant.value;
   if (!variant) return templateTiming.value.duration;
-  return variantDuration(variant);
+  return Math.max(
+    variantDuration(variant),
+    effectTemplateMixContentDuration(variant, selectedPackaging.value?.checkpoint),
+  );
 });
 const coverMaterial = (variant: EffectTemplateMixVariant): EffectTemplateMixMaterial | null =>
   variant.slots.map((slot) => materialForSlot(slot.id, variant)).find(Boolean) ?? null;
@@ -633,10 +718,7 @@ const syncDissolvePlaybackAnimation = (
     return;
   }
   const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}`;
-  if (
-    signature === dissolvePlaybackSignature &&
-    dissolvePlaybackAnimation?.playState === 'running'
-  )
+  if (signature === dissolvePlaybackSignature && dissolvePlaybackAnimation?.playState === 'running')
     return;
   stopDissolvePlaybackAnimation();
   const incoming = timelinePlayers.get(transition.incomingSlot.id);
@@ -750,18 +832,28 @@ const previewHasPackagingAudio = computed(() => {
     Boolean(
       audio && audio.volume > 0 && current >= audio.start && current < audio.start + audio.duration,
     );
+  // Every clip is silenced by the row it sits on, so each one is checked against its own row
+  // rather than against a row its kind used to be pinned to.
   if (hasPackagedAudio) {
-    const voice = !audioTrackMuted.value && Object.values(checkpoint?.voices ?? {}).some(active);
-    const music = !audioTrackMuted.value && active(checkpoint?.music);
+    const voice = Object.entries(checkpoint?.voices ?? {}).some(
+      ([lineId, audio]) => !mutedAudioClip(`voice:${lineId}`) && active(audio),
+    );
+    const music = !mutedAudioClip('music') && active(checkpoint?.music);
     const detached =
-      !audioTrackMuted.value &&
-      (selectedVariant.value?.detachedAudios?.some((audio) => active(audio)) ?? false);
+      selectedVariant.value?.detachedAudios?.some(
+        (audio) => !mutedAudioClip(`detached:${audio.id}`) && active(audio),
+      ) ?? false;
     return voice || music || detached;
   }
-  const detached = selectedVariant.value?.detachedAudios?.some((audio) => active(audio)) ?? false;
+  // Legacy variant audio predates the split, so the whole-film narration reads as 口播 and the
+  // bed as 纯音乐 — each still silenced only by its own row.
   return (
-    !audioTrackMuted.value &&
-    (detached || active(selectedVariant.value?.voice) || active(selectedVariant.value?.bgm))
+    (selectedVariant.value?.detachedAudios?.some(
+      (audio) => !mutedAudioClip(`detached:${audio.id}`) && active(audio),
+    ) ??
+      false) ||
+    (!mutedAudioClip('voice') && active(selectedVariant.value?.voice)) ||
+    (!mutedAudioClip('music') && active(selectedVariant.value?.bgm))
   );
 });
 const previewHasAudibleTrack = computed(() =>
@@ -1151,6 +1243,9 @@ const installWorkspaceData = (
     .filter(({ stale }) => !stale)
     .forEach(({ templateId, editVersion }) => (committedVersions[templateId] = editVersion));
   initializeUi();
+  // The rows are compacted against the packaging checkpoint, which only exists for the project the
+  // user is on, so only that one is normalized here.
+  if (selectedVariant.value) normalizeVariantAudioLanes(selectedVariant.value);
   if (detachedTransitionChanged) scheduleSave();
   aiRuns.value = data.aiRuns ?? [];
   classificationPools.value = data.classificationPools ?? [];
@@ -1408,15 +1503,14 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
   const captions =
     JSON.stringify(current.captions ?? []) === JSON.stringify(baseline.captions ?? [])
       ? null
-      : (current.captions ?? []).map(
-          ({ id, voiceLineId, segmentIndex, segmentCount, text, start, end }) => ({
-            id,
-            ...(voiceLineId ? { voiceLineId, segmentIndex, segmentCount } : {}),
-            text,
-            start,
-            end,
-          }),
-        );
+      : (current.captions ?? []).map(({ id, text, start, end, manual, trackId }) => ({
+          id,
+          text,
+          start,
+          end,
+          ...(manual ? { manual: true } : {}),
+          ...(trackId ? { trackId } : {}),
+        }));
   // Only the boxes this editor touched, so an unrelated drag never rewrites the others.
   const boxes: Record<string, PackagingCaptionBox> = {};
   for (const [id, box] of Object.entries(current.captionBoxes ?? {})) {
@@ -1553,10 +1647,29 @@ const editDetachedAudio = (
   bump();
   return true;
 };
-const movePackagingAudio = (clipId: string, start: number): void => {
+/** The caption a `caption:` clip id points at, from whichever source the workbench is editing. */
+const captionStartOf = (clipId: string): number | undefined => {
+  if (!clipId.startsWith('caption:')) return undefined;
+  const id = clipId.slice('caption:'.length);
+  const captions = selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions;
+  return captions?.find((caption) => caption.id === id)?.start;
+};
+/** Where a clip's time lives: a separated clip on the project draft, everything else on the
+ * server-owned checkpoint. Shared by a single move and a group move so both write the same place. */
+const applyAudioStart = (clipId: string, start: number): void => {
   if (editDetachedAudio(clipId, (audio) => (audio.start = start))) return;
   const target = packagingAudioTarget(clipId);
   if (!target) return;
+  // A subtitle carries its own length, so moving it keeps the end exactly as far away as it was.
+  if (target.kind === 'CAPTION' && !selectedPackaging.value) {
+    const caption = selectedVariant.value?.captions.find((item) => item.id === target.key);
+    if (!caption || projectEditLocked.value) return;
+    const length = caption.end - caption.start;
+    caption.start = start;
+    caption.end = start + length;
+    bump();
+    return;
+  }
   editPackagingAudio((checkpoint) => {
     if (target.kind === 'CAPTION') {
       const caption = checkpoint.captions?.find((c) => c.id === target.key);
@@ -1593,6 +1706,8 @@ const resizePackagingAudio = (
     if (target.kind === 'CAPTION') {
       const caption = checkpoint.captions?.find((c) => c.id === target.key);
       if (caption) {
+        // Captured before the trim is written, so undo steps back to the untrimmed caption.
+        rememberTimelineEdit();
         caption.start = start;
         caption.end = start + duration;
       }
@@ -1625,6 +1740,14 @@ const selectedCaptionId = computed(() =>
   selectedCaptionIds.value.length === 1 ? selectedCaptionIds.value[0]! : null,
 );
 const captionTextInput = ref<HTMLInputElement | null>(null);
+const captionItems = computed(() => {
+  const packaging = selectedPackaging.value;
+  if (packaging) return packaging.checkpoint.captions ?? [];
+  return selectedVariant.value?.captions ?? [];
+});
+const canAddCaption = computed(
+  () => !projectEditLocked.value && (!selectedPackaging.value || captionEditable.value),
+);
 const onAudioClipSelected = (clipId: string | null): void => {
   // Captions arrive as a whole set on their own event, so this one only handles voice and music.
   if (clipId?.startsWith('caption:')) return;
@@ -1741,6 +1864,9 @@ const separateAudioForSlot = async (slotId: string): Promise<void> => {
     };
     rememberTimelineEdit();
     variant.detachedAudios = [...(variant.detachedAudios ?? []), audio];
+    // A separated original is a new clip with no row of its own, so it lands below everything else
+    // and the extra row appears only now that there is something to put on it.
+    normalizeVariantAudioLanes(variant);
     selectedAudioClipIds.value = [`detached:${audio.id}`];
     bump();
     resetTimelinePlayerState();
@@ -1755,16 +1881,15 @@ const addMusicAssetToTimeline = (music: {
   name: string;
   duration: number;
   start: number;
+  row: number;
 }): void => {
   const variant = selectedVariant.value;
   if (!variant || projectEditLocked.value || templateEditLocked.value) return;
   if (!Number.isFinite(music.duration) || music.duration <= 0) return;
-  const start = Math.max(0, Math.min(currentDuration.value, music.start));
-  const duration = Math.min(music.duration, currentDuration.value - start);
-  if (duration < 0.1) {
-    showNotice('请把音乐放到成片时长范围内', 'warning');
-    return;
-  }
+  // The film is as long as its content, so a track dropped past the current end extends it rather
+  // than being trimmed back to fit: where it lands is where the user put it.
+  const start = Math.max(0, music.start);
+  const duration = music.duration;
   const audio: EffectTemplateMixDetachedAudio = {
     id: crypto.randomUUID(),
     sourceAssetId: music.assetId,
@@ -1778,6 +1903,11 @@ const addMusicAssetToTimeline = (music: {
   };
   rememberTimelineEdit();
   variant.detachedAudios = [...(variant.detachedAudios ?? []), audio];
+  // The library track lands on the row it was dropped on, not on a row picked for its kind, and
+  // dropping past the last row is how the user opens a new one.
+  variant.audioLanes ??= {};
+  variant.audioLanes[`detached:${audio.id}`] = Math.max(0, Math.round(music.row));
+  normalizeVariantAudioLanes(variant);
   selectedAudioClipIds.value = [`detached:${audio.id}`];
   bump();
   resetTimelinePlayerState();
@@ -1785,6 +1915,7 @@ const addMusicAssetToTimeline = (music: {
 /** The timeline owns its own selection, so clearing it from out here needs its own handle. */
 const timelineRef = ref<{
   clearSelection: () => void;
+  scrollToLane: (lane: number, time: number) => void;
   setPlaybackNeedle: (seconds: number) => void;
   startPlaybackNeedle: (startSeconds: number, endSeconds?: number) => void;
   stopPlaybackNeedle: (seconds: number) => void;
@@ -1801,24 +1932,39 @@ const onPlayerPanelPointerDown = (event: PointerEvent): void => {
 };
 const editingCaption = computed(() => {
   if (!selectedCaptionId.value) return null;
-  const captions =
-    selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
-  return captions.find((caption) => caption.id === selectedCaptionId.value) ?? null;
+  return captionItems.value.find((caption) => caption.id === selectedCaptionId.value) ?? null;
 });
-const changeCaptionText = (event: Event): void => {
-  const value = (event.target as HTMLInputElement).value;
-  const captionId = selectedCaptionId.value;
-  if (!captionId) return;
-  editPackagingAudio((checkpoint) => {
-    const caption = checkpoint.captions?.find((c) => c.id === captionId);
-    if (caption) caption.text = value;
-  });
+const setCaptionText = (captionId: string, value: string): void => {
+  if (selectedPackaging.value) {
+    if (!captionEditable.value) return;
+    editPackagingAudio((checkpoint) => {
+      const caption = checkpoint.captions?.find((item) => item.id === captionId);
+      if (caption) caption.text = value;
+    });
+    return;
+  }
+  const caption = selectedVariant.value?.captions.find((item) => item.id === captionId);
+  if (!caption || projectEditLocked.value) return;
+  caption.text = value;
+  bump();
 };
-// Clicking a caption card opens its text editor, so the caret lands where the user looked.
-watch(editingCaption, (caption) => {
-  if (!caption) return;
-  void nextTick(() => captionTextInput.value?.focus({ preventScroll: true }));
-});
+const changeCaptionText = (event: Event): void => {
+  const captionId = selectedCaptionId.value;
+  if (captionId) setCaptionText(captionId, (event.target as HTMLInputElement).value);
+};
+/**
+ * The text box owns the keyboard only while the pointer is on it. Picking a caption on the timeline
+ * must not pull the caret in — Delete and Ctrl+Z are handed to a focused input, so a box that focused
+ * itself turned "delete this subtitle" into "delete this subtitle's text". The box is focused by
+ * clicking it and only then, and a pointer anywhere else in the workbench takes that focus back: every
+ * timeline gesture calls `preventDefault()` on pointerdown, so the browser never blurs it on its own,
+ * and a card that was already selected changes nothing a watcher could key off.
+ */
+const onWorkbenchPointerDown = (event: PointerEvent): void => {
+  const target = event.target;
+  if (target instanceof Node && captionTextInput.value?.contains(target)) return;
+  if (document.activeElement === captionTextInput.value) captionTextInput.value?.blur();
+};
 /** Matches the burned-in default: lower bottom-centre, wrapping at 90% of the frame width. */
 const DEFAULT_CAPTION_BOX: PackagingCaptionBox = { x: 0.5, y: 0.05, width: 0.9, scale: 1 };
 const CAPTION_SNAP = 0.015;
@@ -1832,6 +1978,9 @@ const captionBox = (id: string): PackagingCaptionBox =>
  */
 const captionEditable = computed(
   () => selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale && !projectEditLocked.value,
+);
+const captionTextEditable = computed(
+  () => !projectEditLocked.value && (!selectedPackaging.value || captionEditable.value),
 );
 /** The caption the font stepper reads its current size from: the lone one, or the set's first. */
 const captionScaleTarget = computed(() => {
@@ -2177,6 +2326,8 @@ const changeCaptionScale = (step: number): void => {
   // A set holds one size, so every selected caption takes the stepped value.
   const ids = selectedCaptionIds.value.length ? selectedCaptionIds.value : [target];
   editPackagingAudio((checkpoint) => {
+    // Captured before the new size is written, so undo steps back to the previous size.
+    rememberTimelineEdit();
     const boxes = { ...(checkpoint.captionBoxes ?? {}) };
     for (const id of ids) boxes[id] = { ...captionBox(id), scale };
     checkpoint.captionBoxes = boxes;
@@ -2304,7 +2455,8 @@ const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string =
       `/projects/${encodeURIComponent(props.projectId)}/assets/${encodeURIComponent(audio.sourceAssetId)}/content`,
     );
   return (
-    workspace.value?.materials.find((item) => item.fileObjectId === audio.fileObjectId)?.contentUrl ??
+    workspace.value?.materials.find((item) => item.fileObjectId === audio.fileObjectId)
+      ?.contentUrl ??
     apiUrl(
       `/projects/${encodeURIComponent(props.projectId)}/file-objects/${encodeURIComponent(audio.fileObjectId)}/content`,
     )
@@ -2362,8 +2514,13 @@ const syncDetachedAudio = (forceSeek = false): void => {
       continue;
     }
     const localTime = playhead.value - row.start;
+    // Each separated or imported clip follows the row it was dropped on, so muting one row no
+    // longer silences every detached clip at once.
     const active =
-      playing.value && !audioTrackMuted.value && localTime >= 0 && localTime < row.duration;
+      playing.value &&
+      !mutedAudioClip(`detached:${row.id}`) &&
+      localTime >= 0 &&
+      localTime < row.duration;
     if (!active) {
       player.pause();
       player.dataset.timelineActive = 'false';
@@ -2727,8 +2884,7 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
   if (
     resolved.some((item) =>
       variant.slots.some(
-        (slot) =>
-          !overwrittenSlots.has(slot.id) && variant.bindings[slot.id] === item!.material.id,
+        (slot) => !overwrittenSlots.has(slot.id) && variant.bindings[slot.id] === item!.material.id,
       ),
     )
   ) {
@@ -2766,7 +2922,8 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
     }
   }
   clearDetachedTransitions(variant);
-  activeUi.value && (activeUi.value.selectedSlotId = resolved.at(-1)?.slot.id ?? activeUi.value.selectedSlotId);
+  activeUi.value &&
+    (activeUi.value.selectedSlotId = resolved.at(-1)?.slot.id ?? activeUi.value.selectedSlotId);
   resetTimelinePlayerState();
   bump();
   showNotice(`已粘贴 ${items.length} 个视频素材`);
@@ -2780,6 +2937,7 @@ const pasteTimelineAudioMaterial = (audio: {
   start: number;
   offset: number;
   volume: number;
+  row?: number;
 }): void => {
   const variant = selectedVariant.value;
   if (!variant) return;
@@ -2810,6 +2968,13 @@ const pasteTimelineAudioMaterial = (audio: {
     volume: audio.volume,
   };
   variant.detachedAudios = [...(variant.detachedAudios ?? []), pasted];
+  // A paste asked for from a row's menu continues on that row; one asked for from the keyboard has
+  // no row, so the clip falls back to the default row for its kind.
+  if (audio.row !== undefined) {
+    variant.audioLanes ??= {};
+    variant.audioLanes[`detached:${pasted.id}`] = Math.max(0, Math.round(audio.row));
+  }
+  normalizeVariantAudioLanes(variant);
   selectedAudioClipIds.value = [`detached:${pasted.id}`];
   resetTimelinePlayerState();
   bump();
@@ -3319,6 +3484,232 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
 };
 const moveTimelineClip = (slotId: string, start: number, lane: number): void =>
   moveTimelineClips([{ slotId, start, lane }]);
+
+/** A dropped clip keeps a role so the timeline still labels it; the template's six roles are hints. */
+const EFFECT_TEMPLATE_MIX_PURPOSE_ROLES: Record<EffectTemplateMixPurpose, EffectTemplateMixRole> = {
+  HOOK: 'HOOK',
+  EFFECT: 'SELLING_POINT',
+  PRODUCT_DISPLAY: 'PRODUCT',
+  END_CONVERSION: 'END',
+};
+/**
+ * Adds a library material as a clip on a new track. The clip is an ordinary variant slot appended
+ * after the template's own, so packaging, narration and rendering already know what to do with it —
+ * the template itself never sees it. The whole picture stays linear: the clip takes the nearest
+ * existing boundary as its start and everything from there shifts right, because the renderer shows
+ * one clip at a time and refuses overlapping ones.
+ */
+const insertMaterialTrack = (materialId: string, lane: number, start: number): void => {
+  const variant = selectedVariant.value;
+  const material = workspace.value?.materials.find(({ id }) => id === materialId);
+  if (!variant || !material) return;
+  if (!material.available) {
+    showNotice('素材已失效，无法新增轨道', 'warning');
+    return;
+  }
+  if (material.duration < 4) {
+    showNotice('素材不足 4 秒，无法新增轨道', 'warning');
+    return;
+  }
+  if (Object.values(variant.bindings).includes(material.id)) {
+    showNotice(`${material.code} 已用于当前成片，同一成片不能重复使用`, 'warning');
+    return;
+  }
+  if (!material.promptText) {
+    showNotice('素材缺少已确认原始 Prompt，无法成片', 'warning');
+    return;
+  }
+  rememberTimelineEdit();
+  const before = currentTiming.value.slots.map((range) => ({ ...range }));
+  variant.timelineStarts ??= {};
+  for (const range of before) variant.timelineStarts[range.id] = range.start;
+  const boundaries = [0];
+  for (const range of before) boundaries.push(range.start, range.end);
+  const insertAt = boundaries.reduce((best, candidate) =>
+    Math.abs(candidate - start) < Math.abs(best - start) ? candidate : best,
+  );
+  const duration = Math.min(
+    Math.min(15, Math.max(4, Math.round(material.duration * 10) / 10)),
+    Math.floor(material.duration * 10) / 10,
+  );
+  for (const range of before) {
+    if (range.start >= insertAt - 1 / TIMELINE_FPS) {
+      variant.timelineStarts[range.id] = range.start + duration;
+    }
+  }
+  const slot: EffectTemplateMixSlot = {
+    id: crypto.randomUUID(),
+    role: EFFECT_TEMPLATE_MIX_PURPOSE_ROLES[material.purpose] ?? 'PRODUCT',
+    purpose: material.purpose,
+    label: material.code,
+    duration,
+    transition: '硬切',
+    transitionDuration: 0,
+  };
+  const insertLane = Math.max(0, Math.round(lane));
+  variant.videoLanes ??= {};
+  for (const candidate of variant.slots) {
+    if (!materialForSlot(candidate.id, variant)) continue;
+    const current = Math.max(0, Math.round(variant.videoLanes[candidate.id] ?? 0));
+    if (current >= insertLane) variant.videoLanes[candidate.id] = current + 1;
+  }
+  variant.slots.push(slot);
+  variant.timelineStarts[slot.id] = insertAt;
+  variant.videoLanes[slot.id] = insertLane;
+  variant.bindings[slot.id] = material.id;
+  variant.bindingRevisions[slot.id] = material.artifactRevision;
+  variant.offsets[slot.id] = 0;
+  variant.bindingMetadata ??= {};
+  variant.bindingMetadata[slot.id] = {
+    source: 'MANUAL',
+    classificationReason: '拖入新轨道',
+  };
+  variant.manualSlotIds.push(slot.id);
+  normalizeVariantVideoLanes(variant);
+  clearDetachedTransitions(variant);
+  if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
+  resetTimelinePlayerState();
+  bump();
+  showNotice(`${material.code} 已放入新轨道`);
+  const compactedLane = variant.videoLanes[slot.id] ?? insertLane;
+  void nextTick().then(() => timelineRef.value?.scrollToLane(compactedLane, insertAt));
+};
+
+/**
+ * Compact the stored rows down to 0..n-1, so a row number means the same thing to the timeline —
+ * which draws rows compacted — as it does to the placement below, which reads lanes raw. Only the
+ * selected project has a packaging checkpoint to list its clips with, so only it is compacted;
+ * `compactAudioLanes` leaves the rows of clips it cannot see alone.
+ */
+const normalizeVariantAudioLanes = (variant: EffectTemplateMixVariant): void => {
+  variant.audioLanes ??= {};
+  compactAudioLanes(
+    variant.audioLanes,
+    timelineAudioClipRefs(
+      variant,
+      selectedPackaging.value,
+      workspace.value?.materials ?? [],
+      props.projectId,
+    ),
+  );
+};
+/** Start and length of every visible audio clip, keyed by the id the shared module produced. */
+const audioClipPlacements = (
+  variant: EffectTemplateMixVariant,
+): Array<{ clipId: string; duration: number; start: number }> => {
+  const checkpoint = selectedPackaging.value?.checkpoint;
+  return timelineAudioClipRefs(
+    variant,
+    selectedPackaging.value,
+    workspace.value?.materials ?? [],
+    props.projectId,
+  ).flatMap((ref) => {
+    if (ref.source === 'PACKAGED') {
+      const audio =
+        ref.kind === 'MUSIC'
+          ? checkpoint?.music
+          : checkpoint?.voices?.[ref.id.slice('voice:'.length)];
+      return audio ? [{ clipId: ref.id, duration: audio.duration, start: audio.start }] : [];
+    }
+    if (ref.source === 'LEGACY') {
+      const audio = ref.kind === 'MUSIC' ? variant.bgm : variant.voice;
+      return audio ? [{ clipId: ref.id, duration: audio.duration, start: audio.start }] : [];
+    }
+    const audio = variant.detachedAudios?.find((row) => `detached:${row.id}` === ref.id);
+    return audio ? [{ clipId: ref.id, duration: audio.duration, start: audio.start }] : [];
+  });
+};
+type AudioRowPlacement = { insertRowAt?: number; row: number };
+/** The audio counterpart of `resolveTimelinePlacement`: same rules, on rows instead of lanes. */
+const resolveAudioPlacement = (
+  rows: Array<{ clipId: string; duration: number; lane: number; start: number }>,
+  requestedStart: number,
+  requestedDuration: number,
+  requestedRow: number,
+  excludedClipIds: ReadonlySet<string>,
+): AudioRowPlacement => {
+  if (requestedRow < 0) return { insertRowAt: 0, row: 0 };
+  const others = rows.filter(({ clipId }) => !excludedClipIds.has(clipId));
+  const isBlocked = (row: number): boolean =>
+    others.some(
+      (other) =>
+        other.lane === row &&
+        overlapsTimelineClip(
+          requestedStart,
+          requestedDuration,
+          other.start,
+          other.start + other.duration,
+        ),
+    );
+  if (!isBlocked(requestedRow)) return { row: requestedRow };
+  // If the user drops onto an occupied clip, prefer an empty row above it.
+  for (let row = requestedRow - 1; row >= 0; row -= 1) if (!isBlocked(row)) return { row };
+  // There is no free row above, so a new row opens where it was asked for and the clips already
+  // there move down rather than being covered.
+  return { insertRowAt: requestedRow, row: requestedRow };
+};
+type TimelineAudioMove = { clipId: string; row?: number; start: number };
+/**
+ * Move audio clips horizontally, vertically, or both. The row lives on the project draft while a
+ * packaged clip's time lives on the server-owned checkpoint, so one gesture writes to two places.
+ */
+const movePackagingAudios = (moves: TimelineAudioMove[]): void => {
+  const variant = selectedVariant.value;
+  if (!variant || !moves.length) return;
+  normalizeVariantAudioLanes(variant);
+  const placements = audioClipPlacements(variant);
+  const laneOf = (clipId: string): number =>
+    Math.max(0, Math.round(variant.audioLanes?.[clipId] ?? 0));
+  const excludedClipIds = new Set(moves.map(({ clipId }) => clipId));
+  const rows = placements.map((placement) => ({ ...placement, lane: laneOf(placement.clipId) }));
+  const durationOf = (clipId: string): number =>
+    placements.find((placement) => placement.clipId === clipId)?.duration ?? 0;
+  let insertRowAt: number | null = null;
+  const rowMoves = moves.flatMap(({ clipId, row, start }) => {
+    if (row === undefined) return [];
+    const requestedRow = Math.max(0, Math.round(row));
+    const requestedStart = Math.max(0, Math.round(start * 30) / 30);
+    const resolved = resolveAudioPlacement(
+      rows,
+      requestedStart,
+      durationOf(clipId),
+      requestedRow,
+      excludedClipIds,
+    );
+    if (resolved.insertRowAt !== undefined) {
+      insertRowAt =
+        insertRowAt === null ? resolved.insertRowAt : Math.min(insertRowAt, resolved.insertRowAt);
+    }
+    const resolvedRow = Math.max(0, Math.round(resolved.row));
+    return resolvedRow === laneOf(clipId) ? [] : [{ clipId, row: resolvedRow }];
+  });
+  const shouldApplyMove =
+    rowMoves.length > 0 ||
+    moves.some(({ clipId, start }) => {
+      // Captions are not audio placements — they live on their own rows in the checkpoint — so
+      // their current time has to be read separately or a caption drag would be dropped here.
+      const placement = placements.find((entry) => entry.clipId === clipId);
+      const current = placement?.start ?? captionStartOf(clipId);
+      return current !== undefined && Math.round(start * 30) / 30 !== Math.round(current * 30) / 30;
+    });
+  if (!shouldApplyMove) return;
+  rememberTimelineEdit();
+  variant.audioLanes ??= {};
+  if (insertRowAt !== null) {
+    for (const placement of placements) {
+      if (excludedClipIds.has(placement.clipId)) continue;
+      const lane = laneOf(placement.clipId);
+      if (lane >= insertRowAt) variant.audioLanes[placement.clipId] = lane + 1;
+    }
+  }
+  for (const move of rowMoves) variant.audioLanes[move.clipId] = move.row;
+  for (const { clipId, start } of moves) applyAudioStart(clipId, Math.max(0, start));
+  normalizeVariantAudioLanes(variant);
+  resetTimelinePlayerState();
+  bump();
+};
+const movePackagingAudio = (clipId: string, start: number, row?: number): void =>
+  movePackagingAudios([row === undefined ? { clipId, start } : { clipId, row, start }]);
 const changeProjectDuration = (raw: string): void => {
   if (!selectedSlot.value || !selectedVariant.value) return;
   const duration = Math.round(Number(raw) * 10) / 10;
@@ -3371,6 +3762,30 @@ const removeTransitionFromSlot = (slotId: string): void => {
   bump();
 };
 const deleteSelectedTimelineItem = (): void => {
+  const selectedCaptions = [...selectedCaptionIds.value];
+  if (selectedCaptions.length) {
+    if (selectedPackaging.value) {
+      if (!captionEditable.value) return;
+      editPackagingAudio((checkpoint) => {
+        // Captured before the captions are removed, so undo brings the selection back.
+        rememberTimelineEdit();
+        checkpoint.captions = (checkpoint.captions ?? []).filter(
+          (caption) => !selectedCaptions.includes(caption.id),
+        );
+      });
+    } else {
+      const variant = selectedVariant.value;
+      if (!variant || projectEditLocked.value) return;
+      rememberTimelineEdit();
+      variant.captions = variant.captions.filter(
+        (caption) => !selectedCaptions.includes(caption.id),
+      );
+      bump();
+    }
+    selectedCaptionIds.value = [];
+    timelineRef.value?.clearSelection();
+    return;
+  }
   const variant = selectedVariant.value;
   if (!variant) return;
   const detachedIds = new Set(
@@ -3548,20 +3963,46 @@ const retryFailedAiRun = (): void => {
   void startAiFill(null);
 };
 const addCaption = (): void => {
-  if (!selectedVariant.value || !selectedSlot.value) return;
-  const range = currentTiming.value.slots.find(({ id }) => id === selectedSlot.value?.id);
-  if (!range) return;
-  selectedVariant.value.captions.push({
+  const packaging = selectedPackaging.value;
+  const variant = selectedVariant.value;
+  // A completed packaging checkpoint is itself an editable caption source. It can remain
+  // selected while the timeline workspace is still loading (or when no variant is selected),
+  // so do not silently require a variant before taking the packaging-edit path below.
+  if (!variant && !packaging) {
+    showNotice('请先打开一条成片，再新增字幕', 'warning');
+    return;
+  }
+  if (!canAddCaption.value) {
+    showNotice('当前包装正在运行或已经过期，暂时不能新增字幕', 'warning');
+    return;
+  }
+  const start = quantizeTimelineTime(playhead.value);
+  const end = quantizeTimelineTime(Math.min(currentDuration.value, start + 3));
+  if (end - start < 1 / TIMELINE_FPS) {
+    showNotice('播放头已到成片末尾，请先移动播放头再新增字幕', 'warning');
+    return;
+  }
+  const caption = {
     id: crypto.randomUUID(),
-    text: '输入字幕',
-    start: range.start,
-    end: range.end,
-  });
-  bump();
-};
-const removeCaption = (id: string): void => {
-  if (!selectedVariant.value) return;
-  selectedVariant.value.captions = selectedVariant.value.captions.filter((item) => item.id !== id);
+    manual: true,
+    trackId: `subtitle-track-${Date.now().toString().padStart(13, '0')}-${crypto.randomUUID()}`,
+    text: '',
+    start,
+    end,
+  };
+  selectedCaptionIds.value = [caption.id];
+  selectedAudioClipIds.value = [];
+  // Captured before the caption lands in either source, so undo removes the one just added.
+  rememberTimelineEdit();
+  if (packaging) {
+    editPackagingAudio((checkpoint) => {
+      checkpoint.captions ??= [];
+      checkpoint.captions.push(caption);
+    });
+    return;
+  }
+  if (!variant) return;
+  variant.captions.push(caption);
   bump();
 };
 const quantizeTimelineTime = (raw: number): number =>
@@ -4041,11 +4482,18 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     if (!event.repeat) togglePreviewPlayback();
     return;
   }
+  // A focused control only owns the keys it can actually act on: a text field takes them all, and a
+  // button takes Space and Enter. Delete and Ctrl+Z mean the same thing everywhere else in the editor,
+  // so a stale focus left on a button must not swallow them — clicking 「添加」 leaves the button
+  // focused, and that is what made "delete this subtitle" and undo go missing.
+  const buttonOwnsKey =
+    Boolean(target?.matches('button')) &&
+    !target?.closest('.transition-junction') &&
+    !activeTransitionSlotId.value &&
+    (event.code === 'Space' || event.key === 'Enter');
   if (
     target?.matches('input, textarea, select, [contenteditable="true"]') ||
-    (target?.matches('button') &&
-      !target.closest('.transition-junction') &&
-      !activeTransitionSlotId.value) ||
+    buttonOwnsKey ||
     target?.closest('[role="dialog"]')
   )
     return;
@@ -4359,7 +4807,9 @@ defineExpose({ flushPendingEdits });
             </button>
           </footer>
           <p v-if="packagingLocked" class="template-lock-banner" role="status">
-            <Lock :size="15" />模板配置和常规智能填充已锁定；上游素材更新时可仅重算受影响素材的截取区间；仍可新建空成片并精修未包装工程。
+            <Lock
+              :size="15"
+            />模板配置和常规智能填充已锁定；上游素材更新时可仅重算受影响素材的截取区间；仍可新建空成片并精修未包装工程。
           </p>
           <p v-else-if="templateEditLocked" class="template-lock-banner" role="status">
             <Lock :size="15" />智能填充正在运行，模板暂时锁定；任务结束后可修改。
@@ -4369,7 +4819,9 @@ defineExpose({ flushPendingEdits });
             class="template-lock-banner warning"
             role="status"
           >
-            <AlertCircle :size="15" />模板已改动，或仍有成片未按当前模板重新填充；请逐条更新后才能开始包装。
+            <AlertCircle
+              :size="15"
+            />模板已改动，或仍有成片未按当前模板重新填充；请逐条更新后才能开始包装。
           </p>
         </div>
       </section>
@@ -4378,6 +4830,7 @@ defineExpose({ flushPendingEdits });
         v-else-if="view === 'EDITOR' && workspace"
         class="panel workbench"
         @dragstart.capture="onNativeImageDragStart"
+        @pointerdown.capture="onWorkbenchPointerDown"
       >
         <header class="workbench-head">
           <div class="brand">
@@ -4396,9 +4849,7 @@ defineExpose({ flushPendingEdits });
               class="button primary"
               type="button"
               :disabled="
-                mutating ||
-                Boolean(activeAiRun) ||
-                selectedVariantRefreshSlotIds.length === 0
+                mutating || Boolean(activeAiRun) || selectedVariantRefreshSlotIds.length === 0
               "
               :title="`保留槽位和其他剪辑，只重新分析 ${selectedVariantRefreshSlotIds.length} 个已更新素材的截取起点`"
               @click="refreshAffectedClips"
@@ -4616,39 +5067,11 @@ defineExpose({ flushPendingEdits });
             <template v-else-if="resourceTab === 'TEXT' && selectedVariant"
               ><header>
                 <strong>字幕</strong
-                ><button class="button compact" :disabled="projectEditLocked" @click="addCaption">
+                ><button class="button compact" :disabled="!canAddCaption" @click="addCaption">
                   <Plus :size="13" />添加
                 </button>
               </header>
-              <label class="subtitle-style"
-                >字幕样式
-                <select
-                  v-model="selectedVariant.subtitleStyle"
-                  :disabled="projectEditLocked"
-                  @change="bump"
-                >
-                  <option value="standard">标准白字</option>
-                  <option value="bold">加粗描边</option>
-                  <option value="yellow">重点黄字</option>
-                </select>
-              </label>
-              <div class="caption-list">
-                <article v-for="caption in selectedVariant.captions" :key="caption.id">
-                  <input
-                    v-model="caption.text"
-                    maxlength="120"
-                    :disabled="projectEditLocked"
-                    @input="bump"
-                  /><small
-                    >{{ formatEffectTemplateMixTime(caption.start) }} —
-                    {{ formatEffectTemplateMixTime(caption.end) }}</small
-                  ><button :disabled="projectEditLocked" @click="removeCaption(caption.id)">
-                    <X :size="14" />
-                  </button>
-                </article>
-                <p v-if="!selectedVariant.captions.length">选择一个槽位后添加字幕。</p>
-              </div></template
-            >
+            </template>
             <template v-else-if="resourceTab === 'TRANSITION' && selectedVariant">
               <div class="transition-browser">
                 <aside class="transition-categories" aria-label="转场分类">
@@ -5249,7 +5672,8 @@ defineExpose({ flushPendingEdits });
             :playhead="playhead"
             :seek-version="playbackSeekVersion"
             :playing="playing"
-            :audio-muted="audioTrackMuted"
+            :audio-row-muted="audioRowMuted"
+            :audio-row-by-clip-id="audioRowByClipId"
             @selected="onPackagingSelected"
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
@@ -5266,7 +5690,7 @@ defineExpose({ flushPendingEdits });
           <input
             ref="captionTextInput"
             :value="editingCaption.text"
-            :disabled="!captionEditable"
+            :disabled="!captionTextEditable"
             maxlength="500"
             placeholder="输入字幕文本"
             aria-label="字幕文本"
@@ -5348,7 +5772,7 @@ defineExpose({ flushPendingEdits });
           :playhead="playhead"
           :playing="playing"
           :project-id="projectId"
-          :audio-muted="audioTrackMuted"
+          :audio-row-muted="audioRowMuted"
           :video-muted="videoTrackMuted"
           :video-visible="videoTrackVisible"
           :caption-visible="captionTrackVisible"
@@ -5365,10 +5789,12 @@ defineExpose({ flushPendingEdits });
           @request-notice="showNotice"
           @add-music-asset="addMusicAssetToTimeline"
           @move-audio-clip="movePackagingAudio"
+          @move-audio-clips="movePackagingAudios"
           @resize-audio-clip="resizePackagingAudio"
           @move-clip="moveTimelineClip"
           @move-clips="moveTimelineClips"
           @assign-material="assignDroppedMaterial"
+          @insert-material-track="insertMaterialTrack"
           @apply-transition="changeTransitionForSlot"
           @open-transition="openTransitionPanel"
           @redo="redoTimelineEdit"
@@ -5445,7 +5871,10 @@ defineExpose({ flushPendingEdits });
           </header>
           <main>
             <label
-              >模板名称<input ref="createNameInput" v-model="newTemplateName" maxlength="40"
+              >模板名称<input
+                ref="createNameInput"
+                v-model="newTemplateName"
+                maxlength="40"
                 :aria-invalid="createTemplateNameConflict"
                 @keydown.enter="submitTemplateOnEnter"
             /></label>
@@ -5913,8 +6342,7 @@ button:disabled {
 .slot-row select,
 .slot-settings input,
 .slot-settings select,
-.modal input,
-.caption-list input {
+.modal input {
   height: 34px;
   padding: 0 9px;
   border: 1px solid #cfd9e8;
@@ -6745,42 +7173,6 @@ button:disabled {
 }
 .transition-duration-control input[type='number'] {
   width: 52px;
-}
-.caption-list {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  overflow: auto;
-  padding: 0 12px;
-}
-.subtitle-style {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 0 12px 8px;
-  color: #64748b;
-  font-size: 11px;
-}
-.subtitle-style select {
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid #dce5f0;
-  border-radius: 6px;
-}
-.caption-list article {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px;
-  padding: 8px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-}
-.caption-list input {
-  grid-column: 1/3;
-}
-.caption-list button {
-  background: none;
-  border: 0;
 }
 .player-panel {
   position: relative;
