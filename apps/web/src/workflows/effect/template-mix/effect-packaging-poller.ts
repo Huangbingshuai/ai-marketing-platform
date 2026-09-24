@@ -1,4 +1,14 @@
+import { isNetworkError } from '../../../api/http-client';
+
 /** One latest, bounded read. A stalled/late response must never freeze or rewind the graph. */
+const MAX_ERROR_BACKOFF_MS = 30_000;
+
+export function packagingPollErrorMessage(error: unknown): string {
+  if (isNetworkError(error))
+    return '网络连接暂时中断，正在稍后重试读取包装状态；时间轴草稿不受影响。';
+  return error instanceof Error ? error.message : '读取包装任务失败，请稍后重试。';
+}
+
 export function createPackagingPoller<T>(options: {
   read: (signal: AbortSignal) => Promise<T>;
   onData: (data: T) => void;
@@ -9,15 +19,19 @@ export function createPackagingPoller<T>(options: {
   let revision = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
-  function stop() {
+  let consecutiveErrors = 0;
+  function stop(resetBackoff = true) {
     revision++;
     clearTimeout(timer);
     abort?.();
     abort = undefined;
+    if (resetBackoff) consecutiveErrors = 0;
     options.onLoading(false);
   }
   async function refresh() {
-    stop();
+    // A new read supersedes the previous one but keeps its consecutive failure
+    // count so repeated network outages back off instead of hammering the API.
+    stop(false);
     const current = revision;
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -35,15 +49,25 @@ export function createPackagingPoller<T>(options: {
     });
     try {
       const data = await Promise.race([options.read(controller.signal), interrupted]);
-      if (current === revision) options.onData(data);
+      if (current === revision) {
+        consecutiveErrors = 0;
+        options.onData(data);
+      }
     } catch (error) {
-      if (current === revision) options.onError(error);
+      if (current === revision) {
+        consecutiveErrors++;
+        options.onError(error);
+      }
     } finally {
       clearTimeout(timeout);
       if (current === revision) {
         abort = undefined;
         options.onLoading(false);
-        timer = setTimeout(() => void refresh(), options.interval());
+        const baseInterval = Math.max(0, options.interval());
+        const backoff = consecutiveErrors
+          ? Math.min(baseInterval * 2 ** (consecutiveErrors - 1), MAX_ERROR_BACKOFF_MS)
+          : baseInterval;
+        timer = setTimeout(() => void refresh(), backoff);
       }
     }
   }

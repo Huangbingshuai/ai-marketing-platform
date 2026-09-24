@@ -190,12 +190,52 @@ const safeMimeType = (mimeType: string): string => {
   ).slice(0, 120);
 };
 
+const MUSIC_LIBRARY_TAG = '模板混剪音乐库';
+
+const assertMusicLibraryMp3 = (
+  directory: AssetDirectory,
+  type: AssetType,
+  tags: string[],
+  originalFileName: string,
+  mimeType: string,
+): void => {
+  if (!tags.includes(MUSIC_LIBRARY_TAG)) return;
+  const normalizedMimeType = safeMimeType(mimeType);
+  if (
+    directory !== 'AUDIO_ASSETS' ||
+    type !== 'VOICE_AUDIO' ||
+    !/\.mp3$/i.test(originalFileName) ||
+    !['audio/mpeg', 'audio/mp3', 'application/octet-stream'].includes(normalizedMimeType)
+  ) {
+    throw validationError('音乐库仅支持导入 MP3 文件');
+  }
+};
+
+const assetMimeType = (
+  type: AssetType,
+  tags: string[],
+  originalFileName: string,
+  mimeType: string,
+): string => {
+  const normalizedMimeType = safeMimeType(mimeType);
+  return tags.includes(MUSIC_LIBRARY_TAG) &&
+    type === 'VOICE_AUDIO' &&
+    /\.mp3$/i.test(originalFileName) &&
+    ['audio/mpeg', 'audio/mp3', 'application/octet-stream'].includes(normalizedMimeType)
+    ? 'audio/mpeg'
+    : normalizedMimeType;
+};
+
+const recordMimeType = (record: Pick<AssetRecord, 'type' | 'tags' | 'originalFileName' | 'mimeType'>) =>
+  assetMimeType(record.type, record.tags, record.originalFileName, record.mimeType);
+
 const toAsset = (
   record: AssetRecord,
   sourceCurrentVersion: number | null = null,
   workflowFileObjectId?: string,
 ): Asset => {
   const contentPath = `/api/projects/${encodeURIComponent(record.projectId)}/assets/${encodeURIComponent(record.id)}/content`;
+  const mimeType = recordMimeType(record);
   return {
     id: record.id,
     projectId: record.projectId,
@@ -205,10 +245,10 @@ const toAsset = (
     tags: record.tags,
     notes: record.notes,
     originalFileName: safeOriginalFileName(record.originalFileName),
-    mimeType: record.mimeType,
+    mimeType,
     sizeBytes: record.sizeBytes,
     hasFile: record.hasFile,
-    previewKind: previewKindForMimeType(record.mimeType),
+    previewKind: previewKindForMimeType(mimeType),
     contentUrl: contentPath,
     downloadUrl: `${contentPath}?download=true`,
     createdAt: record.createdAt.toISOString(),
@@ -439,14 +479,23 @@ export class AssetService {
         !(await this.repository.workflowRunExists(projectId, metadata.workflowRunId))
       )
         throw validationError('工作流运行不存在');
+      const tags = normalizeTags(metadata.tags);
+      const originalFileName = safeOriginalFileName(file.originalname);
+      assertMusicLibraryMp3(
+        metadata.directory,
+        metadata.type,
+        tags,
+        originalFileName,
+        file.mimetype,
+      );
       const normalized = {
         name: normalizeName(metadata.name),
         directory: metadata.directory,
         type: metadata.type,
-        tags: normalizeTags(metadata.tags),
+        tags,
         notes: normalizeNotes(metadata.notes),
-        originalFileName: safeOriginalFileName(file.originalname),
-        mimeType: safeMimeType(file.mimetype),
+        originalFileName,
+        mimeType: assetMimeType(metadata.type, tags, originalFileName, file.mimetype),
         sizeBytes: file.size,
       };
       let workflowFile: { workflowRunId: string; nodeId: string; sha256: string } | undefined;
@@ -538,13 +587,14 @@ export class AssetService {
     const record = await this.repository.find(projectId, assetId);
     if (!record) throw assetNotFound();
     if (!record.hasFile) throw assetNotFound();
-    const previewKind = previewKindForMimeType(record.mimeType);
+    const mimeType = recordMimeType(record);
+    const previewKind = previewKindForMimeType(mimeType);
     const supportsRange = previewKind === 'AUDIO' || previewKind === 'VIDEO';
     const range = supportsRange ? parseRangeHeader(rangeHeader, record.sizeBytes) : undefined;
     const stored = await this.storage.open(record.storageKey, range);
     return {
       ...stored,
-      mimeType: record.mimeType,
+      mimeType,
       originalFileName: safeOriginalFileName(record.originalFileName),
       previewKind,
       partial: range !== undefined,

@@ -55,6 +55,7 @@ export class ValidateEffectTemplateMixDto extends EffectTemplateMixRevisionDto {
 export class CreateEffectTemplateMixAiRunDto extends EffectTemplateMixRevisionDto {
   @IsString() @MaxLength(500) idempotencyKey!: string;
   @IsOptional() @IsUUID('4') targetVariantId?: string;
+  @IsOptional() @IsBoolean() refreshAffectedSlots?: boolean;
 }
 
 export class EffectTemplateMixWorkerProjectDto {
@@ -73,17 +74,26 @@ export class EffectTemplateMixWorkerClassificationDto extends EffectTemplateMixW
 
 export class EffectTemplateMixWorkerSampledMaterialDto implements EffectTemplateMixSampledMaterial {
   @IsUUID('4') materialId!: string;
-  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(12) @Type(() => Number)
-  @IsNumber({}, { each: true }) frameTimestampsSeconds!: number[];
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(12)
+  @Type(() => Number)
+  @IsNumber({}, { each: true })
+  frameTimestampsSeconds!: number[];
 }
 
 export class EffectTemplateMixWorkerSamplingDto extends EffectTemplateMixWorkerProjectDto {
   /** Current worker payload, with the actual source times of extracted frames. */
-  @IsOptional() @IsArray() @ArrayMaxSize(1000) @ValidateNested({ each: true })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(1000)
+  @ValidateNested({ each: true })
   @Type(() => EffectTemplateMixWorkerSampledMaterialDto)
   samples?: EffectTemplateMixSamplingCheckpoint['samples'];
   /** Legacy rolling-deploy payload; new workers must send samples instead. */
-  @IsOptional() @IsArray() @IsUUID('4', { each: true })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
   materialIds?: EffectTemplateMixSamplingCheckpoint['materialIds'];
 }
 

@@ -19,6 +19,7 @@ import type {
   GetEffectSegmentRenderWorkspaceData,
   StartEffectSegmentRenderBatchData,
   ValidateEffectSegmentRenderBatchData,
+  WorkingArtifact,
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
@@ -223,6 +224,7 @@ const summary = (record: EffectSegmentRenderBatchRecord): EffectSegmentRenderSum
 const presentTask = (
   task: EffectSegmentRenderBatchRecord['tasks'][number],
   productName: string,
+  needsUpdate = false,
 ): EffectSegmentRenderTask => {
   const snapshot = requestSnapshot(task.requestSnapshot);
   const status =
@@ -300,6 +302,7 @@ const presentTask = (
     retryCount: task.retryCount,
     maxAutoRetries: task.maxAutoRetries,
     abnormal: task.status === 'FAILED',
+    needsUpdate,
     errorCode: task.errorCode,
     errorMessage: task.errorMessage,
     providerTaskId: task.providerTaskId,
@@ -317,6 +320,23 @@ const presentTask = (
     repair,
     updatedAt: task.updatedAt.toISOString(),
   };
+};
+
+const promptTaskNeedsUpdate = (
+  task: EffectSegmentRenderBatchRecord['tasks'][number],
+  batch: EffectPromptBatchResult | null,
+): boolean => {
+  const snapshot = requestSnapshot(task.requestSnapshot);
+  const prompt = batch?.items.find(({ id }) => id === task.promptId);
+  const sharedPromptHash = batch
+    ? (batch.sharedPrompt?.contentHash ?? batch.renderProfile.sharedConstraints.contentHash)
+    : null;
+  return Boolean(
+    !prompt ||
+      createHash('sha256').update(prompt.content.trim()).digest('hex') !== snapshot.promptContentHash ||
+      prompt.targetDurationSeconds !== snapshot.request.duration ||
+      sharedPromptHash !== snapshot.sharedPromptHash,
+  );
 };
 
 @Injectable()
@@ -394,13 +414,10 @@ export class EffectSegmentRenderService {
         record.productId,
       ),
     ]);
-    const stale = Boolean(
+    const upstreamStale = Boolean(
       !prompt ||
       prompt.freshness !== 'CURRENT' ||
       prompt.availability !== 'AVAILABLE' ||
-      prompt.id !== record.sourcePromptArtifactId ||
-      prompt.revision !== record.sourcePromptRevision ||
-      prompt.contentHash !== record.sourcePromptHash ||
       !sourceSnapshot ||
       !sourcePackage ||
       sourcePackage.freshness !== 'CURRENT' ||
@@ -409,6 +426,16 @@ export class EffectSegmentRenderService {
       sourcePackage.revision !== sourceSnapshot.revision ||
       sourcePackage.contentHash !== sourceSnapshot.contentHash,
     );
+    const latestPromptBatch = prompt ? parseEffectPromptBatchResult(prompt.payload) : null;
+    const taskIdsNeedingUpdate = new Set(
+      record.tasks
+        .filter((task) => upstreamStale || promptTaskNeedsUpdate(task, latestPromptBatch))
+        .map(({ id }) => id),
+    );
+    const currentPromptIds = new Set(latestPromptBatch?.items.map(({ id }) => id) ?? []);
+    const renderedPromptIds = new Set(record.tasks.map(({ promptId }) => promptId));
+    const hasUnrenderedPrompts = [...currentPromptIds].some((id) => !renderedPromptIds.has(id));
+    const hasRemovedPrompts = [...renderedPromptIds].some((id) => !currentPromptIds.has(id));
     const artifact = await this.repository.renderArtifact(
       record.projectId,
       record.workflowRunId,
@@ -418,6 +445,14 @@ export class EffectSegmentRenderService {
     const batchInput = artifacts.find(
       ({ artifactKey }) => artifactKey === 'render-batch:' + record.productId,
     )?.input;
+    const stale = Boolean(
+      upstreamStale || taskIdsNeedingUpdate.size > 0 || artifact?.freshness !== 'CURRENT',
+    );
+    const refreshScope = !stale
+      ? 'NONE'
+      : upstreamStale || !taskIdsNeedingUpdate.size || hasUnrenderedPrompts || hasRemovedPrompts
+        ? 'FULL'
+        : 'SELECTIVE';
     const commitStatus = !artifact
       ? 'UNVALIDATED'
       : stale || artifact.freshness !== 'CURRENT' || artifact.availability !== 'AVAILABLE'
@@ -438,11 +473,14 @@ export class EffectSegmentRenderService {
       },
       status: record.status,
       stale,
+      refreshScope,
       revision: record.revision,
       commitStatus,
       workingArtifactRevision: artifact?.revision ?? null,
       summary: summary(record),
-      tasks: record.tasks.map((task) => presentTask(task, record.product.name)),
+      tasks: record.tasks.map((task) =>
+        presentTask(task, record.product.name, taskIdsNeedingUpdate.has(task.id)),
+      ),
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
     };
@@ -625,6 +663,12 @@ export class EffectSegmentRenderService {
         ...compiled,
         promptCode: item.code,
         promptText: item.content,
+        renderSettings,
+        sourcePrompt: {
+          artifactId: promptArtifact.id,
+          revision: promptArtifact.revision,
+          contentHash: promptArtifact.contentHash,
+        },
         sourcePackage: {
           artifactId: sourcePackage.id,
           revision: sourcePackage.revision,
@@ -721,12 +765,97 @@ export class EffectSegmentRenderService {
       throw badRequest('请选择需要重新生成的视频任务');
     const idempotencyKey = idempotencyKeyValue.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    const record = await this.repository.batch(projectId, batchId);
+    if (!record) throw notFound('视频渲染批次不存在');
+    const [promptArtifact, sourcePackage, settingsNode] = await Promise.all([
+      this.repository.promptArtifact(projectId, record.workflowRunId, record.productId),
+      this.repository.sourcePackageArtifact(projectId, record.workflowRunId, record.productId),
+      this.workingRepository.findNodeState(
+        projectId,
+        record.workflowRunId,
+        effectSegmentRenderSettingsNodeId(record.productId),
+      ),
+    ]);
+    if (
+      !promptArtifact?.payload ||
+      promptArtifact.freshness !== 'CURRENT' ||
+      promptArtifact.availability !== 'AVAILABLE'
+    )
+      throw conflict('当前 Prompt 尚未完成校验');
+    const promptBatch = parseEffectPromptBatchResult(promptArtifact.payload);
+    if (!promptBatch) throw conflict('Prompt 批次结构无效，请重新生成并校验');
+    if (
+      !sourcePackage ||
+      sourcePackage.freshness !== 'CURRENT' ||
+      sourcePackage.availability !== 'AVAILABLE'
+    )
+      throw conflict('产品资料包已更新，请重新创建渲染批次');
+    const currentImages = sourcePackage.files
+      .filter(
+        ({ role, fileObject }) => role === 'PRODUCT_IMAGE' && fileObject.status === 'AVAILABLE',
+      )
+      .map(({ fileObject, sortOrder }) => ({
+        fileObjectId: fileObject.id,
+        originalFileName: fileObject.originalFileName,
+        mimeType: fileObject.mimeType.toLocaleLowerCase('en-US'),
+        sizeBytes: fileObject.sizeBytes,
+        contentHash: fileObject.sha256,
+        sortOrder,
+      }));
+    if (!currentImages.length) throw conflict('产品资料包至少需要一张可用商品图片');
+    const taskSnapshots = Object.fromEntries(
+      taskIdsNormalized.map((taskId) => {
+        const task = record.tasks.find(({ id }) => id === taskId);
+        if (!task) throw notFound('所选视频任务不存在');
+        const item = promptBatch.items.find(({ id }) => id === task.promptId);
+        if (!item) throw conflict('该 Prompt 已从当前批次移除，请创建新渲染批次');
+        const previous = requestSnapshot(task.requestSnapshot);
+        const renderSettings = previous.renderSettings ?? (settingsNode
+          ? this.settingsFromState(settingsNode.state)
+          : this.legacySettings(promptArtifact.payload));
+        if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
+        const compiled = this.compileSeedanceRequest(() =>
+          compileEffectSeedanceRequest(
+            promptBatch,
+            item.id,
+            this.modelFor(renderSettings.capabilityKey),
+            renderSettings,
+          ),
+        );
+        const snapshot: EffectSegmentRenderRequestSnapshot = {
+          ...compiled,
+          promptCode: item.code,
+          promptText: item.content,
+          renderSettings,
+          sourcePrompt: {
+            artifactId: promptArtifact.id,
+            revision: promptArtifact.revision,
+            contentHash: promptArtifact.contentHash,
+          },
+          sourcePackage: {
+            artifactId: sourcePackage.id,
+            revision: sourcePackage.revision,
+            contentHash: sourcePackage.contentHash,
+          },
+          inputImages: currentImages,
+        };
+        return [taskId, snapshot];
+      }),
+    );
     const result = await this.repository.regenerateTasks(
       projectId,
       batchId,
       taskIdsNormalized,
       expectedBatchRevision,
       idempotencyKey,
+      {
+        sourcePrompt: {
+          artifactId: promptArtifact.id,
+          revision: promptArtifact.revision,
+          contentHash: promptArtifact.contentHash,
+        },
+        taskSnapshots,
+      },
     );
     if (result.kind === 'NOT_FOUND') throw notFound('视频渲染批次不存在');
     if (result.kind === 'REVISION_CONFLICT') throw conflict('视频渲染批次已更新，请刷新后重试');
@@ -739,9 +868,9 @@ export class EffectSegmentRenderService {
       throw conflict('所选任务存在待处理的视频返修，请先采用或放弃返修结果');
     if (result.kind === 'ACTIVE_CONFLICT') throw conflict('当前产品已有进行中的视频渲染批次');
     if (result.kind === 'KEY_CONFLICT') throw conflict('幂等键已用于其他视频重生成请求');
-    const record = await this.repository.batch(projectId, batchId);
-    if (!record) throw notFound('视频渲染批次不存在');
-    return { batch: await this.present(record), replayed: result.kind === 'REPLAYED' };
+    const updatedRecord = await this.repository.batch(projectId, batchId);
+    if (!updatedRecord) throw notFound('视频渲染批次不存在');
+    return { batch: await this.present(updatedRecord), replayed: result.kind === 'REPLAYED' };
   }
 
   async importMaterials(
@@ -1641,17 +1770,20 @@ export class EffectSegmentRenderService {
 
   private artifactInputs(
     record: EffectSegmentRenderBatchRecord,
+    existingArtifacts: Array<
+      Pick<WorkingArtifact, 'artifactKey' | 'freshness' | 'availability' | 'payload'>
+    > = [],
   ): Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }> {
     const sourceSnapshot = sourcePackageSnapshot(record.tasks[0]?.requestSnapshot);
-    const dependencies = [
-      {
+    const promptDependency = (sourcePrompt: EffectSegmentRenderRequestSnapshot['sourcePrompt']) => ({
         sourceType: 'WORKING_ARTIFACT' as const,
         sourceNodeId: 'PROMPT_GENERATION',
-        sourceArtifactId: record.sourcePromptArtifactId,
+        sourceArtifactId: sourcePrompt?.artifactId ?? record.sourcePromptArtifactId,
         sourceKey: 'prompt-batch:' + record.productId,
-        sourceRevision: record.sourcePromptRevision,
-        sourceHash: record.sourcePromptHash,
-      },
+        sourceRevision: sourcePrompt?.revision ?? record.sourcePromptRevision,
+        sourceHash: sourcePrompt?.contentHash ?? record.sourcePromptHash,
+      });
+    const sourceDependencies = [
       ...(sourceSnapshot
         ? [
             {
@@ -1693,17 +1825,35 @@ export class EffectSegmentRenderService {
         contentHash: task.outputContentHash!,
       };
     });
+    const existingByKey = new Map(existingArtifacts.map((artifact) => [artifact.artifactKey, artifact]));
     const clipArtifacts = completed.map((task) => {
       const snapshot = requestSnapshot(task.requestSnapshot);
+      const artifactKey = 'render-clip:' + task.id;
+      const payload = clips.find(({ taskId }) => taskId === task.id)!;
+      const existing = existingByKey.get(artifactKey);
+      const existingPayload =
+        existing?.payload && typeof existing.payload === 'object'
+          ? (existing.payload as Record<string, unknown>)
+          : null;
+      const unchangedCurrentClip = Boolean(
+        existing &&
+          existing.freshness === 'CURRENT' &&
+          existing.availability === 'AVAILABLE' &&
+          existingPayload?.fileObjectId === payload.fileObjectId &&
+          existingPayload?.contentHash === payload.contentHash &&
+          existingPayload?.promptContentHash === payload.promptContentHash &&
+          existingPayload?.durationSeconds === payload.durationSeconds,
+      );
+      if (unchangedCurrentClip) return null;
       return {
-        artifactKey: 'render-clip:' + task.id,
+        artifactKey,
         input: {
           kind: 'FILE',
           name: record.product.name + ' ' + task.renderCode + ' 视频片段',
           directory: 'VIDEO_MATERIALS',
           type: 'VIDEO_MATERIAL',
           tags: ['效果类', 'AI视频片段', snapshot.primaryPurpose],
-          payload: clips.find(({ taskId }) => taskId === task.id),
+          payload,
           metadata: { productId: record.productId, taskId: task.id, promptId: task.promptId },
           originalFileName: task.outputFileName!,
           mimeType: task.outputMimeType!,
@@ -1712,10 +1862,14 @@ export class EffectSegmentRenderService {
           fileChecksum: task.outputContentHash!,
           sourceRunId: task.id,
           sourceArtifactId: task.promptId,
-          dependencies,
+          dependencies: [
+            promptDependency(snapshot.sourcePrompt),
+            ...sourceDependencies,
+          ],
         } satisfies WorkingArtifactUpsertInput,
       };
-    });
+    }).filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact));
+    const dependencies = [promptDependency(undefined), ...sourceDependencies];
     const batchArtifact = {
       artifactKey: 'render-batch:' + record.productId,
       input: {
@@ -1778,15 +1932,21 @@ export class EffectSegmentRenderService {
       this.repository.promptArtifact(projectId, record.workflowRunId, record.productId),
       this.repository.sourcePackageArtifact(projectId, record.workflowRunId, record.productId),
     ]);
-    if (
-      !currentPrompt ||
-      currentPrompt.freshness !== 'CURRENT' ||
-      currentPrompt.availability !== 'AVAILABLE' ||
-      currentPrompt.id !== record.sourcePromptArtifactId ||
-      currentPrompt.revision !== record.sourcePromptRevision ||
-      currentPrompt.contentHash !== record.sourcePromptHash
-    )
-      issues.push({ code: 'PROMPT_STALE', message: 'Prompt 批次已更新，请重新创建渲染批次' });
+    const currentPromptBatch = currentPrompt
+      ? parseEffectPromptBatchResult(currentPrompt.payload)
+      : null;
+    const stalePromptCount = record.tasks.filter(
+      (task) =>
+        !currentPrompt ||
+        currentPrompt.freshness !== 'CURRENT' ||
+        currentPrompt.availability !== 'AVAILABLE' ||
+        promptTaskNeedsUpdate(task, currentPromptBatch),
+    ).length;
+    if (stalePromptCount)
+      issues.push({
+        code: 'PROMPT_STALE',
+        message: `${stalePromptCount} 条素材对应的 Prompt 已更新，请先重新生成这些素材`,
+      });
     const sourceSnapshot = sourcePackageSnapshot(record.tasks[0]?.requestSnapshot);
     if (
       !sourceSnapshot ||
@@ -1806,12 +1966,21 @@ export class EffectSegmentRenderService {
         artifacts: [],
         validatedAt: new Date().toISOString(),
       };
+    const existingArtifacts = await this.workingRepository.listArtifacts(projectId, {
+      workflowRunId: record.workflowRunId,
+      nodeId: 'SEGMENT_RENDER',
+    });
     const result = await this.repository.commitValidatedBatch(
       projectId,
       batchId,
       expectedBatchRevision,
+      {
+        artifactId: currentPrompt!.id,
+        revision: currentPrompt!.revision,
+        contentHash: currentPrompt!.contentHash,
+      },
       sourceSnapshot!,
-      this.artifactInputs(record),
+      this.artifactInputs(record, existingArtifacts),
     );
     if (result.kind === 'REVISION_CONFLICT') throw conflict('视频渲染批次已更新，请刷新后重试');
     if (result.kind === 'PROMPT_CONFLICT') throw conflict('Prompt 批次已更新，请重新创建渲染批次');

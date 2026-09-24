@@ -1088,6 +1088,59 @@ describe('EffectPromptService settings contract', () => {
     expect(repository.mutateResult).not.toHaveBeenCalled();
   });
 
+  it('keeps a valid manual edit as a draft until the user completes Prompt validation', async () => {
+    const draftResult = completionGateFixture();
+    const editedResult = {
+      ...draftResult,
+      items: draftResult.items.map((item, index) =>
+        index === 0 ? { ...item, content: `${item.content} 已编辑。` } : item,
+      ),
+    };
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        workflowRunId: 'workflow-a',
+        revision: 1,
+        draftResult,
+      }),
+      mutateResult: vi.fn().mockResolvedValue({
+        kind: 'UPDATED',
+        result: {
+          id: 'result-a',
+          productId: 'product-a',
+          revision: 2,
+          draftResult: editedResult,
+          savedAt: new Date('2026-09-24T00:00:00.000Z'),
+        },
+        draft: editedResult,
+      }),
+      commitValidatedResult: vi.fn(),
+    };
+    const service = new EffectPromptService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+
+    const result = await service.updateItem(
+      'project-a',
+      'result-a',
+      draftResult.items[0]!.id,
+      1,
+      {
+        content: `${draftResult.items[0]!.content} 已编辑。`,
+        creativeCore: draftResult.items[0]!.creativeCore,
+        targetDurationSeconds: draftResult.items[0]!.targetDurationSeconds,
+        dimensions: draftResult.items[0]!.dimensions,
+      },
+    );
+
+    expect(result.revision).toBe(2);
+    expect(repository.mutateResult).toHaveBeenCalledOnce();
+    expect(repository.commitValidatedResult).not.toHaveBeenCalled();
+  });
+
   it('combines multi-keyword search with explicit primary or compatible purpose matching', async () => {
     const timestamp = '2026-08-25T00:00:00.000Z';
     const makeItem = (

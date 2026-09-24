@@ -24,6 +24,9 @@ export type EffectTemplateMixAiSnapshot = {
   /** The selected template workspace at claim time; unrelated templates may be edited. */
   workspaceHash?: string;
   targetVariantId: string | null;
+  /** Targeted source-window update; preserves slot assignments and trims only refreshed clips. */
+  trimOnly?: boolean;
+  refreshBindings?: Array<{ slotId: string; materialId: string; artifactRevision: number }>;
   maxOutputVariants: number;
   lockedBindings: Array<{
     slotId: string;

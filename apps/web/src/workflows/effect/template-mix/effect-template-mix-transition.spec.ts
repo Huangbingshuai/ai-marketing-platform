@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { effectTemplateMixTransitionPresentation } from './effect-template-mix-transition';
+import {
+  effectTemplateMixDissolvePlaybackKeyframes,
+  effectTemplateMixTransitionPresentation,
+} from './effect-template-mix-transition';
 
 describe('effect template mix transition presentation', () => {
   it('fades the incoming clip over an opaque outgoing frame without revealing the stage background', () => {
@@ -8,6 +11,17 @@ describe('effect template mix transition presentation', () => {
       expect(presentation.outgoing.opacity).toBe('1');
       expect(presentation.incoming.opacity).toBe(String(progress));
     }
+  });
+
+  it('starts compositor playback at the precise seek progress and completes to the incoming clip', () => {
+    expect(effectTemplateMixDissolvePlaybackKeyframes(0.375)).toEqual([
+      { opacity: '0.375' },
+      { opacity: '1' },
+    ]);
+    expect(effectTemplateMixDissolvePlaybackKeyframes(-1)).toEqual([
+      { opacity: '0' },
+      { opacity: '1' },
+    ]);
   });
 
   it('keeps directional transitions on two independent layers', () => {

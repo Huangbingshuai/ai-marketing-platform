@@ -76,6 +76,35 @@ const PROMPT_PRODUCT_IMAGE_MIME_TYPES = new Set([
   'application/octet-stream',
 ]);
 
+const promptRenderFingerprints = (value: unknown): Map<string, string> => {
+  const batch = parseEffectPromptBatchResult(value);
+  if (!batch) return new Map();
+  const sharedRenderContext = {
+    sharedPrompt: batch.sharedPrompt ?? null,
+    renderProfile: batch.renderProfile,
+  };
+  return new Map(
+    batch.items.map((item) => [
+      item.id,
+      workflowStateHash({
+        sharedRenderContext,
+        content: item.content.trim(),
+        durationSeconds: item.targetDurationSeconds,
+      }),
+    ]),
+  );
+};
+
+const changedPromptIds = (previous: unknown, next: unknown): Set<string> => {
+  const before = promptRenderFingerprints(previous);
+  const after = promptRenderFingerprints(next);
+  return new Set(
+    [...new Set([...before.keys(), ...after.keys()])].filter(
+      (id) => before.get(id) !== after.get(id),
+    ),
+  );
+};
+
 type PersistedEffectPromptShardPhase = 'BLUEPRINT' | 'PROMPT';
 const persistedShardPhase = (phase: EffectPromptShardPhase): PersistedEffectPromptShardPhase =>
   phase === 'CREATIVE' ? 'BLUEPRINT' : 'PROMPT';
@@ -1720,6 +1749,9 @@ export class EffectPromptRepository {
     expectedRevision: number,
     artifactInput: WorkingArtifactUpsertInput,
   ) {
+    // Draft generation and edits update EffectPromptResult only. Downstream
+    // freshness is evaluated from this confirmed artifact, so publish invalidation
+    // only from this explicit validation/commit boundary.
     return this.prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "effect_prompt_results"
@@ -1775,14 +1807,70 @@ export class EffectPromptRepository {
       )
         return { kind: 'DEPENDENCY_CONFLICT' as const };
       if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+      const artifactKey = `prompt-batch:${result.productId}`;
+      const previousPromptArtifact = await transaction.workingArtifact.findUnique({
+        where: {
+          projectId_workflowRunId_nodeId_artifactKey: {
+            projectId,
+            workflowRunId: result.workflowRunId,
+            nodeId: 'PROMPT_GENERATION',
+            artifactKey,
+          },
+        },
+        select: { payload: true },
+      });
+      const changedIds = changedPromptIds(previousPromptArtifact?.payload, artifactInput.payload);
       const [committed] = await this.workingRepository.commitValidatedArtifactsInTransaction(
         transaction,
         projectId,
         result.workflowRunId,
         'PROMPT_GENERATION',
-        [{ artifactKey: `prompt-batch:${result.productId}`, input: artifactInput }],
+        [{ artifactKey, input: artifactInput, invalidateDependents: false }],
       );
       if (!committed) throw new Error('WORKING_ARTIFACT_COMMIT_FAILED');
+      if (!committed.unchanged) {
+        const [renderBatch, renderClips] = await Promise.all([
+          transaction.workingArtifact.findFirst({
+            where: {
+              projectId,
+              workflowRunId: result.workflowRunId,
+              nodeId: 'SEGMENT_RENDER',
+              artifactKey: `render-batch:${result.productId}`,
+            },
+            select: { id: true },
+          }),
+          changedIds.size
+            ? transaction.workingArtifact.findMany({
+                where: {
+                  projectId,
+                  workflowRunId: result.workflowRunId,
+                  nodeId: 'SEGMENT_RENDER',
+                  artifactKey: { startsWith: 'render-clip:' },
+                },
+                select: { id: true, payload: true, metadata: true },
+              })
+            : Promise.resolve([]),
+        ]);
+        const affectedClipIds = renderClips
+          .filter(({ payload, metadata }) => {
+            const source = jsonRecord(payload);
+            const details = jsonRecord(metadata);
+            const promptId =
+              typeof source?.promptId === 'string'
+                ? source.promptId
+                : typeof details?.promptId === 'string'
+                  ? details.promptId
+                  : '';
+            return changedIds.has(promptId);
+          })
+          .map(({ id }) => id);
+        await this.workingRepository.markArtifactIdsAndDependentsStaleInTransaction(
+          transaction,
+          projectId,
+          result.workflowRunId,
+          [...affectedClipIds, ...(renderBatch ? [renderBatch.id] : [])],
+        );
+      }
       await transaction.effectPromptResult.update({
         where: { projectId_id: { projectId, id: resultId } },
         data: { savedAt: new Date() },

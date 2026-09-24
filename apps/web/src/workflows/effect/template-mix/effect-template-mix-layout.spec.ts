@@ -479,6 +479,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('class="player-caption"');
     expect(pageSource).toContain('stageCaptionFontSize');
     expect(pageSource).toContain('const DEFAULT_CAPTION_BOX: PackagingCaptionBox');
+    expect(pageSource).toContain('y: 0.05, width: 0.9');
     expect(pageSource).toContain('const captionBoxStyle = (id: string)');
     // Clicking a card opens a single-line text editor in the row above the timeline.
     expect(pageSource).toContain('const editingCaption');
@@ -871,6 +872,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('创建模板');
     expect(pageSource).toContain('type="button"');
     expect(pageSource).toContain('var(--blue, #2563eb)');
+    expect(pageSource).toContain('@keydown.enter="submitTemplateOnEnter"');
+    expect(pageSource).toContain('nextAvailableTemplateName');
+    expect(pageSource).toContain(':disabled="!newTemplateName.trim() || createTemplateNameConflict"');
   });
   it('retains real material thumbnails outside the compact timeline', () => {
     expect(pageSource).toContain('EffectTemplateMixThumbnail');

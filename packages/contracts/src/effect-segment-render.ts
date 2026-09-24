@@ -127,6 +127,9 @@ export type EffectSegmentRenderRequestSnapshot = {
   promptContentHash: string;
   sharedPromptHash: string;
   renderSettingsHash: string;
+  /** Exact settings and Prompt-batch version used for this individual task. */
+  renderSettings?: EffectSegmentRenderSettings;
+  sourcePrompt?: EffectSegmentRenderSourcePrompt;
   sourcePackage: EffectSegmentRenderSourcePackage;
   inputImages: EffectSegmentRenderInputImage[];
   inputVideo?: EffectSegmentRenderInputVideo | null;
@@ -183,6 +186,8 @@ export type EffectSegmentRenderTask = {
   retryCount: number;
   maxAutoRetries: number;
   abnormal: boolean;
+  /** Current Prompt content no longer matches this task's frozen render input. */
+  needsUpdate: boolean;
   errorCode: string | null;
   errorMessage: string | null;
   providerTaskId: string | null;
@@ -207,6 +212,7 @@ export type EffectSegmentRenderBatch = {
   sourcePrompt: EffectSegmentRenderSourcePrompt;
   status: EffectSegmentRenderBatchStatus;
   stale: boolean;
+  refreshScope: 'NONE' | 'SELECTIVE' | 'FULL';
   revision: number;
   commitStatus: WorkingArtifactCommitStatus;
   workingArtifactRevision: number | null;

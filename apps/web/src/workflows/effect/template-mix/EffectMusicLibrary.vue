@@ -7,7 +7,7 @@ import { importAsset, listAssets } from '../../../platform/asset/api/asset.api';
 const props = defineProps<{ projectId: string; workflowRunId: string }>();
 
 const MUSIC_LIBRARY_TAG = '模板混剪音乐库';
-const AUDIO_FILE_ACCEPT = 'audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma';
+const MP3_FILE_ACCEPT = 'audio/mpeg,.mp3';
 const PAGE_SIZE = 24;
 const assets = ref<Asset[]>([]);
 const loading = ref(true);
@@ -46,10 +46,11 @@ const progressPercent = computed(() =>
   playerDuration.value > 0 ? Math.min(100, (currentTime.value / playerDuration.value) * 100) : 0,
 );
 
-function isAudioFile(file: File): boolean {
-  return (
-    file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|flac|ogg|opus|wma)$/i.test(file.name)
-  );
+function isMp3File(file: File): boolean {
+  return /\.mp3$/i.test(file.name);
+}
+function isMp3Asset(asset: Asset): boolean {
+  return /\.mp3$/i.test(asset.originalFileName);
 }
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
@@ -98,8 +99,8 @@ async function importMusic(event: Event) {
   const file = target.files?.[0];
   target.value = '';
   if (!file) return;
-  if (!isAudioFile(file)) {
-    error.value = '请选择有效的音频文件';
+  if (!isMp3File(file)) {
+    error.value = '音乐库仅支持导入 MP3 文件';
     return;
   }
   const current = generation;
@@ -154,6 +155,10 @@ async function playSelected() {
     });
 }
 async function toggleAsset(asset: Asset) {
+  if (!isMp3Asset(asset)) {
+    error.value = '该音乐格式暂不支持，请导入 MP3 文件';
+    return;
+  }
   if (selectedAssetId.value === asset.id && playing.value) {
     player.value?.pause();
     playing.value = false;
@@ -184,6 +189,11 @@ function closePlayer() {
 }
 function startMusicDrag(event: DragEvent, asset: Asset) {
   const duration = durations[asset.id];
+  if (!isMp3Asset(asset)) {
+    event.preventDefault();
+    error.value = '音乐库仅支持 MP3 文件';
+    return;
+  }
   if (!event.dataTransfer || !asset.workflowFileObjectId || !duration) {
     event.preventDefault();
     error.value = asset.workflowFileObjectId
@@ -234,6 +244,7 @@ onBeforeUnmount(() => {
   <section class="music-library" aria-label="音乐">
     <header class="music-library-header">
       <strong>音乐</strong>
+      <small class="music-format-note">仅支持 MP3</small>
       <button type="button" class="import-button" :disabled="uploading" @click="openFilePicker">
         <LoaderCircle v-if="uploading" class="spin" :size="14" />
         <Upload v-else :size="14" />
@@ -243,7 +254,7 @@ onBeforeUnmount(() => {
         ref="input"
         class="music-file-input"
         type="file"
-        :accept="AUDIO_FILE_ACCEPT"
+        :accept="MP3_FILE_ACCEPT"
         aria-label="选择要导入的音乐文件"
         @change="importMusic"
       />
@@ -277,9 +288,10 @@ onBeforeUnmount(() => {
           :class="{
             selected: selectedAssetId === asset.id,
             'is-playing': selectedAssetId === asset.id && playing,
+            'is-unsupported': !isMp3Asset(asset),
           }"
-          :draggable="Boolean(asset.workflowFileObjectId && durations[asset.id])"
-          :title="asset.workflowFileObjectId ? '拖动到下方音频轨道' : '请重新导入后添加到时间轴'"
+          :draggable="Boolean(isMp3Asset(asset) && asset.workflowFileObjectId && durations[asset.id])"
+          :title="isMp3Asset(asset) ? (asset.workflowFileObjectId ? '拖动到下方音频轨道' : '请重新导入后添加到时间轴') : '音乐库仅支持 MP3 文件'"
           @click="void toggleAsset(asset)"
           @dragstart="startMusicDrag($event, asset)"
         >
@@ -294,9 +306,10 @@ onBeforeUnmount(() => {
           <span class="music-card-copy">
             <strong :title="asset.name">{{ asset.name }}</strong>
             <small>{{ asset.notes || '项目音乐' }}</small>
-            <em>{{ durations[asset.id] ? formatTime(durations[asset.id]!) : '读取时长…' }}</em>
+            <em>{{ !isMp3Asset(asset) ? '不支持的格式' : durations[asset.id] ? formatTime(durations[asset.id]!) : '读取时长…' }}</em>
           </span>
           <audio
+            v-if="isMp3Asset(asset)"
             class="metadata-probe"
             :src="asset.contentUrl"
             preload="metadata"
@@ -379,6 +392,11 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 10px 12px 7px;
   font-size: 13px;
+}
+.music-format-note {
+  margin-left: auto;
+  color: #7b8eaa;
+  font-size: 10px;
 }
 .import-button,
 .music-filter,

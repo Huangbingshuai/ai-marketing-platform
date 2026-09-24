@@ -109,14 +109,11 @@ def validate_video_interval(
         raise PackagingError('源视频画面轨时长不足，不能用尾帧冻结补足成片')
 
 
-def validate_rendered_video_duration(info: dict[str, Any], expected: float, output_frame_rate: int) -> None:
-    stream = video_stream(info)
-    duration = stream_duration(stream)
-    if duration is None or duration + frame_tolerance(stream, output_frame_rate) < expected:
-        raise PackagingError('片段画面轨提前结束，不能用尾帧冻结补足成片')
-
-
 async def encode(args: list[str], cwd: Path) -> None:
+    # Input/global options only. `-threads` is positional: here it caps the decoder, and the two
+    # filter options cap the filter graph. The encoder is deliberately left uncapped so x264 can
+    # use the machine -- capping it at the output side made a 44s 720p export ~3.5x slower.
+    # Overall parallelism is bounded by FINAL_OUTPUT_MAX_CONCURRENCY, not by per-process threads.
     await command('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-threads', '1',
         '-filter_complex_threads', '1', '-filter_threads', '1', *args], cwd=cwd)
 
@@ -181,7 +178,7 @@ PlayResY: {height}
 WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Noto Sans CJK SC,{max(24, round(width / 22))},&H00FFFFFF,&H00FFFFFF,&H00181818,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,{round(height * .08)},1
+Style: Default,Noto Sans CJK SC,{max(24, round(width / 22))},&H00FFFFFF,&H00FFFFFF,&H00181818,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,{round(height * .05)},1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
@@ -220,40 +217,48 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         raise PackagingError('不支持的输出帧率')
     width, height = output_size(snapshot['aspectRatio'], resolution)
     intervals = visible_intervals(timeline)
-    segments: list[Path] = []
-    media = {file_id: await probe(path) for file_id, path in files.items()}
+    # Every source is probed once, and ffprobe only reads headers, so launch them together: run
+    # serially these 13 process starts cost about as much as the render itself does now.
+    probed = await asyncio.gather(*(probe(path) for path in files.values()))
+    media = dict(zip(files, probed))
     await progress(10)
+    # One pass: each interval is trimmed straight out of its source clip inside the filter graph,
+    # so the timeline is never encoded to intermediate files and decoded a second time.
+    inputs: list[str] = []
+    filters: list[str] = []
+    source_count = 0
     for index, (start, end, clip) in enumerate(intervals):
-        target = directory / f'segment-{index}.mp4'
-        args: list[str] = []
+        length = end - start
         if clip:
             info = media[clip['fileObjectId']]
             offset = float(clip['offset'] + start - clip['start'])
-            validate_video_interval(info, offset, end - start, frame_rate)
-            args += ['-ss', str(offset), '-i', str(files[clip['fileObjectId']])]
+            # The guard the old post-encode segment check performed: the source picture track must
+            # really cover the interval, so a short clip can never be padded out to full length.
+            validate_video_interval(info, offset, length, frame_rate)
+            inputs += ['-ss', str(offset), '-t', str(length), '-i', str(files[clip['fileObjectId']])]
             has_audio = not clip.get('originalAudioDetached', False) and any(
                 s['codec_type'] == 'audio' for s in info['streams'])
         else:
-            args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r={frame_rate}']
+            inputs += ['-f', 'lavfi', '-t', str(length), '-i', f'color=c=black:s={width}x{height}:r={frame_rate}']
             has_audio = False
+        video_index = source_count
+        source_count += 1
         if not has_audio:
-            args += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
-        args += ['-map', '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0', '-t', str(end - start),
-            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={frame_rate}',
-            '-af', 'aresample=48000,apad', '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
-            '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-threads', '1', '-shortest', str(target)]
-        await encode(args, directory)
-        validate_rendered_video_duration(await probe(target), end - start, frame_rate)
-        segments.append(target)
-        await progress(10 + round(35 * (index + 1) / len(intervals)))
+            inputs += ['-f', 'lavfi', '-t', str(length), '-i', 'anullsrc=r=48000:cl=stereo']
+            audio_index = source_count
+            source_count += 1
+        else:
+            audio_index = video_index
+        # `apad` before the trim keeps a source whose audio track ends early from shortening the
+        # interval; the trim then makes every branch exactly `length` so concat stays aligned.
+        filters += [f'[{video_index}:v]trim=duration={length},setpts=PTS-STARTPTS,'
+            f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+            f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={frame_rate},settb=AVTB[v{index}]',
+            f'[{audio_index}:a]aresample=48000,apad,atrim=duration={length},asetpts=PTS-STARTPTS[a{index}]']
     # Center transitions on the cut, as in the editor. Padding supplies handles
     # without shortening the frozen timeline or inventing black frames.
-    inputs = [arg for path in segments for arg in ('-i', str(path))]
-    filters: list[str] = []
-    for index in range(len(segments)):
-        filters.append(f'[{index}:v]settb=AVTB,setpts=PTS-STARTPTS[v{index}]')
     current = 'v0'
-    for index in range(1, len(segments)):
+    for index in range(1, len(intervals)):
         start, end, clip = intervals[index]
         previous_clip = intervals[index - 1][2]
         transition = clip.get('transition', '硬切') if previous_clip and clip and clip['start'] == start else '硬切'
@@ -269,7 +274,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
             filters += [f'[{current}][v{index}]concat=n=2:v=1:a=0[join{index}]']
         current = f'join{index}'
     original_volume = max(0, min(1, float(snapshot['originalVolume'])))
-    filters += [''.join(f'[{index}:a]' for index in range(len(segments))) + f'concat=n={len(segments)}:v=0:a=1,volume={original_volume}[original]']
+    filters += [''.join(f'[a{index}]' for index in range(len(intervals))) + f'concat=n={len(intervals)}:v=0:a=1,volume={original_volume}[original]']
     detached = list(timeline.get('detachedAudios', []))
     # Editor edits may trim the source head (`offset`) and move clips along the timeline;
     # pipeline writes stay canonical, so absent keys mean the frozen timeline geometry.
@@ -295,7 +300,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         # untouched line's filter byte-identical to the pre-fade pipeline.
         fades = (f',afade=t=in:st={start}:d={fade_in}' if fade_in > 0 else '') + (
             f',afade=t=out:st={start + length - fade_out}:d={fade_out}' if fade_out > 0 else '')
-        filters += [f'[{len(segments) + index}:a]aresample=48000,atrim=start={offset}:duration={length},'
+        filters += [f'[{source_count + index}:a]aresample=48000,atrim=start={offset}:duration={length},'
             f'asetpts=PTS-STARTPTS,volume={voice["volume"]},adelay={round(start * 1000)}:all=1{fades}[voice{index}]']
     for index, audio in enumerate(detached):
         file_id = str(audio['fileObjectId'])
@@ -314,7 +319,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
                 or start + length > duration + .001):
             raise PackagingError('分离音频源轨道或时间范围无效')
         inputs += ['-i', str(files[file_id])]
-        source_index = len(segments) + len(voices) + index
+        source_index = source_count + len(voices) + index
         filters += [f'[{source_index}:a]aresample=48000,atrim=start={offset}:duration={length},'
             f'asetpts=PTS-STARTPTS,volume={volume},adelay={round(start * 1000)}:all=1[detached{index}]']
     music = cp['music']
@@ -328,7 +333,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     inputs += ['-stream_loop', '-1', '-i', str(files[music['fileObjectId']])]
     # Time-window ducking is deterministic, including silent PCM and gaps.
     windows = '+'.join(f'between(t,{float(v["start"])},{float(v["start"]) + float(v["duration"])})' for v in voices) or '0'
-    music_index = len(segments) + len(voices) + len(detached)
+    music_index = source_count + len(voices) + len(detached)
     # Ducking and fades run after `adelay`, so their time coordinates are timeline seconds.
     # The 0.5s easing is the pipeline default: a checkpoint the editor never touched has no fade
     # keys, and the fallback keeps its rendered audio identical to the pre-fade pipeline.
@@ -346,14 +351,14 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         f'alimiter=limit=0.95,atrim=duration={duration}[audio]']
     (directory / 'captions.ass').write_text(
         captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes')), encoding='utf-8')
-    # Re-apply the selected constant frame rate after concat/xfade. Individual
-    # segments are CFR, but concat can yield a non-integer average rate when
-    # adjacent slot durations end between frame boundaries.
+    # Re-apply the selected constant frame rate after concat/xfade. Every interval branch is CFR,
+    # but concat can yield a non-integer average rate when adjacent slot durations end between
+    # frame boundaries.
     filters += [f'[{current}]fps={frame_rate},subtitles=captions.ass,format=yuv420p[video]']
     output = directory / 'final.mp4'
     await progress(50)
     await encode([*inputs, '-filter_complex', ';'.join(filters), '-map', '[video]', '-map', '[audio]', '-shortest', '-t', str(duration),
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-threads', '1', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(output)], directory)
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(output)], directory)
     result = await probe(output)
     if abs(float(result['format']['duration']) - duration) > .1:
         raise PackagingError('最终视频时长与时间轴不一致')

@@ -163,13 +163,14 @@ describe('EffectTemplateMixAiRepository.saveSamplingCheckpoint', () => {
 });
 
 describe('EffectTemplateMixAiRepository.packagedTemplateIds', () => {
-  it('keeps the template locked after any packaging run has started', async () => {
+  it('locks active packaging and current package artifacts, but not expired packaging history', async () => {
     const prisma = {
       effectPackagingRun: {
+        findMany: vi.fn().mockResolvedValue([{ templateId: 'running-template' }]),
+      },
+      workingArtifact: {
         findMany: vi.fn().mockResolvedValue([
-          { templateId: 'running-template' },
-          { templateId: 'completed-template' },
-          { templateId: 'failed-template' },
+          { artifactKey: 'timeline-package:completed-template:variant-1' },
         ]),
       },
     };
@@ -178,12 +179,22 @@ describe('EffectTemplateMixAiRepository.packagedTemplateIds', () => {
     await expect(repository.packagedTemplateIds('project', 'run')).resolves.toEqual([
       'running-template',
       'completed-template',
-      'failed-template',
     ]);
     expect(prisma.effectPackagingRun.findMany).toHaveBeenCalledWith({
-      where: { projectId: 'project', workflowRunId: 'run' },
+      where: { projectId: 'project', workflowRunId: 'run', status: { in: ['QUEUED', 'RUNNING'] } },
       distinct: ['templateId'],
       select: { templateId: true },
+    });
+    expect(prisma.workingArtifact.findMany).toHaveBeenCalledWith({
+      where: {
+        projectId: 'project',
+        workflowRunId: 'run',
+        nodeId: 'TEMPLATE_MIX',
+        artifactKey: { startsWith: 'timeline-package:' },
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      },
+      select: { artifactKey: true },
     });
   });
 });

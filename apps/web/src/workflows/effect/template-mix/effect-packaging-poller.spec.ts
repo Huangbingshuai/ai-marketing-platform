@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createPackagingPoller } from './effect-packaging-poller';
+import { createPackagingPoller, packagingPollErrorMessage } from './effect-packaging-poller';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -52,6 +52,41 @@ describe('packaging progress polling', () => {
     await vi.advanceTimersByTimeAsync(4000);
     expect(poller.onData).toHaveBeenCalledWith('real data');
     poller.stop();
+  });
+  it('backs off repeated failures and resets the delay after a successful read', async () => {
+    vi.useFakeTimers();
+    const read = vi.fn()
+      .mockRejectedValueOnce(new TypeError('NetworkError when attempting to fetch resource.'))
+      .mockRejectedValueOnce(new TypeError('NetworkError when attempting to fetch resource.'))
+      .mockResolvedValueOnce('reconnected')
+      .mockResolvedValueOnce('steady');
+    const poller = setup(read);
+    await poller.refresh();
+
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(read).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(poller.onData).toHaveBeenCalledWith('reconnected');
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(read).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(poller.onData).toHaveBeenCalledWith('steady');
+    poller.stop();
+  });
+  it('replaces browser network exceptions with a stable user-facing message', () => {
+    expect(
+      packagingPollErrorMessage(new TypeError('NetworkError when attempting to fetch resource.')),
+    ).toBe('网络连接暂时中断，正在稍后重试读取包装状态；时间轴草稿不受影响。');
+    expect(packagingPollErrorMessage(new Error('读取包装任务失败（HTTP 503）'))).toBe(
+      '读取包装任务失败（HTTP 503）',
+    );
   });
   it('clears all timers and ignores responses after unmount or scope changes', async () => {
     vi.useFakeTimers();

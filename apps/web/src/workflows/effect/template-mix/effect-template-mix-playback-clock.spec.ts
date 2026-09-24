@@ -27,4 +27,23 @@ describe('template mix compositor playback clock', () => {
     expect(pageSource).toContain('seekSyncRequestId++');
     expect(pageSource).toContain('playing.value = false');
   });
+
+  it('updates the player timecode on every animation frame without a full Vue render', () => {
+    expect(pageSource).toContain('const playerTimecode = ref<HTMLSpanElement | null>(null)');
+    expect(pageSource).toContain("playerTimecode.value.textContent = formatPlayerTimecode(seconds)");
+    expect(pageSource).toContain('syncPlayerTimecode(next)');
+    expect(pageSource).toContain('ref="playerTimecode"');
+  });
+
+  it('keeps Space playback available when the player scrubber has focus', () => {
+    const scrubberSpaceHandler = pageSource.indexOf(
+      "if (event.code === 'Space' && target === playerScrubber.value)",
+    );
+    const genericInputGuard = pageSource.indexOf(
+      "target?.matches('input, textarea, select, [contenteditable=\"true\"]')",
+    );
+    expect(scrubberSpaceHandler).toBeGreaterThan(-1);
+    expect(genericInputGuard).toBeGreaterThan(scrubberSpaceHandler);
+    expect(pageSource).toContain('if (!event.repeat) togglePreviewPlayback()');
+  });
 });

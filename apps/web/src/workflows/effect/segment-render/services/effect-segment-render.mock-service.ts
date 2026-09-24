@@ -162,6 +162,7 @@ const createPromptTask = (
     retryCount: 0,
     maxAutoRetries: 2,
     abnormal: false,
+    needsUpdate: false,
     errorMessage: null,
     activeVersion: 1,
     repair: null,

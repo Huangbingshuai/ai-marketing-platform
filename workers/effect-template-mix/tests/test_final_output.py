@@ -30,6 +30,13 @@ def test_caption_escaping_and_bounds() -> None:
         captions_ass([{'text': '商品', 'start': .2, 'end': 1.2}], 720, 960, 1)
 
 
+def test_default_caption_position_uses_lower_five_percent_bottom_margin() -> None:
+    ass = captions_ass([{'text': '默认位置', 'start': .2, 'end': .9}], 720, 960, 1)
+    style = next(line for line in ass.splitlines() if line.startswith('Style: Default'))
+    # 5% of a 960px frame; editor preview uses the same normalized bottom offset.
+    assert style.endswith(',48,1')
+
+
 def test_editor_reworded_subtitle_burns_its_own_text_not_the_narration() -> None:
     # The editor may reword a caption while the spoken line keeps its original script text.
     ass = captions_ass([{'text': '限时五折', 'start': .2, 'end': .9}], 720, 960, 1)
@@ -161,6 +168,81 @@ async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_
     assert len(frame) == 3  # A real encoded tail frame is present.
     assert earlier_tail_frame != latest_tail_frame  # The last clip keeps moving through the end.
     assert progress.call_args.args == (95,)
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+async def test_dissolve_export_has_start_midpoint_and_end_blend_frames(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    red, blue, music = (tmp_path / name for name in ('red.mp4', 'blue.mp4', 'music.wav'))
+    await encode(['-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=30:d=2', '-an',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(red)], tmp_path)
+    await encode(['-f', 'lavfi', '-i', 'color=c=blue:s=160x120:r=30:d=2', '-an',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(blue)], tmp_path)
+    await encode(['-f', 'lavfi', '-i', 'sine=frequency=220:duration=4', '-ac', '1', '-ar', '24000',
+        '-c:a', 'pcm_s16le', str(music)], tmp_path)
+    clips = [
+        {'fileObjectId': 'red', 'start': 0, 'duration': 2, 'offset': 0, 'lane': 0,
+         'transition': '硬切', 'transitionDuration': 0},
+        {'fileObjectId': 'blue', 'start': 2, 'duration': 2, 'offset': 0, 'lane': 0,
+         'transition': '叠化', 'transitionDuration': .8},
+    ]
+    snapshot = {
+        'timeline': {'duration': 4, 'clips': clips}, 'aspectRatio': '4:3',
+        'originalVolume': 0, 'resolution': '480p', 'frameRate': 30,
+        'packaging': {'voices': {}, 'music': {'fileObjectId': 'music', 'duration': 4, 'volume': 0},
+            'captions': []},
+    }
+    output = await render(snapshot, {'red': red, 'blue': blue, 'music': music}, tmp_path, AsyncMock())
+
+    async def average_rgb(time: float) -> tuple[int, int, int]:
+        pixels = await command('ffmpeg', ['-v', 'error', '-i', str(output), '-ss', str(time),
+            '-frames:v', '1', '-vf', 'scale=1:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'])
+        assert len(pixels) == 3
+        return tuple(pixels)  # type: ignore[return-value]
+
+    before_midpoint = await average_rgb(1.7)
+    midpoint = await average_rgb(2.0)
+    after_midpoint = await average_rgb(2.3)
+    assert before_midpoint[0] > before_midpoint[2] * 2
+    assert midpoint[0] > 40 and midpoint[2] > 40
+    assert abs(midpoint[0] - midpoint[2]) < 45
+    assert after_midpoint[2] > after_midpoint[0] * 2
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+async def test_timeline_gap_renders_black_and_keeps_the_frozen_duration(tmp_path: Path, monkeypatch: Any) -> None:
+    """A gap has no source clip, so it becomes its own black+silence branch of the one-pass graph."""
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    red, music = tmp_path / 'red.mp4', tmp_path / 'music.wav'
+    await encode(['-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=30:d=1', '-an',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(red)], tmp_path)
+    await encode(['-f', 'lavfi', '-i', 'sine=frequency=220:duration=3', '-ac', '1', '-ar', '24000',
+        '-c:a', 'pcm_s16le', str(music)], tmp_path)
+    clips = [
+        {'fileObjectId': 'red', 'start': 0, 'duration': 1, 'offset': 0, 'lane': 0,
+         'transition': '硬切', 'transitionDuration': 0},
+        {'fileObjectId': 'red', 'start': 2, 'duration': 1, 'offset': 0, 'lane': 0,
+         'transition': '硬切', 'transitionDuration': 0},
+    ]
+    snapshot = {'timeline': {'duration': 3, 'clips': clips}, 'aspectRatio': '4:3',
+        'originalVolume': 0, 'resolution': '480p', 'frameRate': 30,
+        'packaging': {'voices': {}, 'music': {'fileObjectId': 'music', 'duration': 3, 'volume': 0},
+            'captions': []}}
+    output = await render(snapshot, {'red': red, 'music': music}, tmp_path, AsyncMock())
+    info = await probe(output)
+    assert abs(float(info['format']['duration']) - 3) < .1
+
+    async def average_rgb(time: float) -> tuple[int, int, int]:
+        pixels = await command('ffmpeg', ['-v', 'error', '-i', str(output), '-ss', str(time),
+            '-frames:v', '1', '-vf', 'scale=1:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'])
+        assert len(pixels) == 3
+        return tuple(pixels)  # type: ignore[return-value]
+
+    assert (await average_rgb(.5))[0] > 100  # the first clip
+    assert max(await average_rgb(1.5)) < 30  # the gap between them is black
+    assert (await average_rgb(2.5))[0] > 100  # the second clip
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
@@ -416,6 +498,40 @@ async def test_unusable_fades_are_rejected(tmp_path: Path, monkeypatch: Any, fad
         {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .12})
     with pytest.raises(PackagingError):
         await render(snapshot, files, tmp_path, AsyncMock())
+
+
+async def test_render_never_caps_the_encoder_threads(tmp_path: Path, monkeypatch: Any) -> None:
+    """`-threads` is positional, so an output-side cap pins x264 to a single thread: it made a
+    44s 720p export ~3.5x slower. Parallelism is bounded by FINAL_OUTPUT_MAX_CONCURRENCY."""
+    calls: list[list[str]] = []
+    async def fake_encode(args: list[str], cwd: Path) -> None:
+        calls.append(args)
+    async def fake_probe(path: Path) -> dict[str, Any]:
+        width, height = final_output.output_size('4:3', '720p')
+        return {'format': {'duration': '4.0'}, 'streams': [
+            {'codec_type': 'video', 'codec_name': 'h264', 'duration': '4.0', 'width': width, 'height': height, 'avg_frame_rate': '30/1'},
+            {'codec_type': 'audio', 'codec_name': 'aac', 'duration': '4.0'}]}
+    monkeypatch.setattr(final_output, 'encode', fake_encode)
+    monkeypatch.setattr(final_output, 'probe', fake_probe)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1.2, 'duration': .5, 'volume': .8}},
+        {'fileObjectId': 'music', 'start': 1.0, 'duration': 1.5, 'volume': .12})
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+        'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())
+    assert calls and all('-threads' not in args for args in calls)
+
+
+async def test_encode_thread_caps_stay_before_the_inputs(monkeypatch: Any) -> None:
+    """The shared wrapper caps the decoder and the filter graph, never the encoder."""
+    seen: list[list[str]] = []
+    async def fake_command(program: str, args: list[str], **kwargs: Any) -> bytes:
+        seen.append(args)
+        return b''
+    monkeypatch.setattr(final_output, 'command', fake_command)
+    await encode(['-i', 'in.mp4', '-c:v', 'libx264', 'out.mp4'], Path('.'))
+    args = seen[0]
+    for option in ('-threads', '-filter_complex_threads', '-filter_threads'):
+        assert args.index(option) < args.index('-i')
 
 
 async def test_audio_geometry_beyond_the_frozen_timeline_is_rejected(tmp_path: Path, monkeypatch: Any) -> None:

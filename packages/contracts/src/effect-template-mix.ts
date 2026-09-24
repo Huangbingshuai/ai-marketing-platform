@@ -162,6 +162,7 @@ export type EffectTemplateMixSamplingCheckpoint = {
 export type EffectTemplateMixAiRun = {
   id: string;
   templateId: string;
+  operation?: 'FILL' | 'REFRESH_TRIMS';
   targetVariantId: string | null;
   outputVariantId: string | null;
   status: EffectTemplateMixAiRunStatus;
@@ -256,6 +257,8 @@ export type ValidateEffectTemplateMixRequest = EffectTemplateMixRevisionRequest 
 export type ValidateEffectTemplateMixData = { artifacts: WorkingArtifactCommitSummary[] };
 export type CreateEffectTemplateMixAiRunRequest = EffectTemplateMixRevisionRequest & {
   targetVariantId?: string;
+  /** Recalculate trim points only for bound clips whose confirmed render revision advanced. */
+  refreshAffectedSlots?: boolean;
   idempotencyKey: string;
 };
 export type EffectTemplateMixAiClassification = {

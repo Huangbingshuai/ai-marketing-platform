@@ -39,6 +39,7 @@ class Snapshot(BaseModel):
     template: dict[str, Any]
     draftRevision: int
     targetVariantId: str | None
+    trimOnly: bool = False
     lockedBindings: list[dict[str, Any]]
     reuseCounts: dict[str, int] = Field(default_factory=dict)
     promptArtifacts: list[dict[str, Any]]

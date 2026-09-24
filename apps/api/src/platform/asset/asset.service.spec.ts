@@ -439,6 +439,7 @@ describe('AssetService', () => {
       ...{
         directory: 'AUDIO_ASSETS',
         type: 'VOICE_AUDIO',
+        tags: ['模板混剪音乐库'],
         originalFileName: 'theme.mp3',
         mimeType: 'audio/mpeg',
         sizeBytes: 5,
@@ -456,7 +457,7 @@ describe('AssetService', () => {
         tags: ['模板混剪音乐库'],
         workflowRunId: '34726346-e726-463e-921e-6db3e080bf8a',
       },
-      { path, originalname: 'theme.mp3', mimetype: 'audio/mpeg', size: 5 },
+      { path, originalname: 'theme.mp3', mimetype: 'application/octet-stream', size: 5 },
     );
 
     expect(repository.workflowRunExists).toHaveBeenCalledWith(
@@ -466,6 +467,7 @@ describe('AssetService', () => {
     expect(repository.create).toHaveBeenCalledWith(
       record.projectId,
       expect.objectContaining({
+        mimeType: 'audio/mpeg',
         workflowFile: {
           workflowRunId: '34726346-e726-463e-921e-6db3e080bf8a',
           nodeId: 'TEMPLATE_MIX',
@@ -474,6 +476,7 @@ describe('AssetService', () => {
       }),
     );
     expect(result.previewKind).toBe('AUDIO');
+    expect(result.mimeType).toBe('audio/mpeg');
   });
 
   it('validates the final directory/type combination for partial updates', async () => {
@@ -514,6 +517,27 @@ describe('AssetService', () => {
       end: 2,
     });
     expect(storage.open).toHaveBeenCalledWith(record.storageKey, { start: 1, end: 2 });
+  });
+
+  it('rejects non-MP3 files from the music library before storing them', async () => {
+    const path = join(temporaryRoot, 'theme.m4a');
+    await writeFile(path, 'audio');
+
+    await expect(
+      service.import(
+        record.projectId,
+        {
+          name: 'theme.m4a',
+          directory: 'AUDIO_ASSETS',
+          type: 'VOICE_AUDIO',
+          tags: ['模板混剪音乐库'],
+          workflowRunId: '34726346-e726-463e-921e-6db3e080bf8a',
+        },
+        { path, originalname: 'theme.m4a', mimetype: 'audio/mp4', size: 5 },
+      ),
+    ).rejects.toMatchObject({ response: { message: '音乐库仅支持导入 MP3 文件' } });
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(repository.create).not.toHaveBeenCalled();
   });
 });
 

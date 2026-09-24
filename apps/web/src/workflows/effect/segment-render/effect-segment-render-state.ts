@@ -55,6 +55,7 @@ export type EffectSegmentRenderTask = {
   retryCount: number;
   maxAutoRetries: number;
   abnormal: boolean;
+  needsUpdate: boolean;
   errorCode?: string | null;
   errorMessage: string | null;
   providerTaskId?: string | null;
@@ -77,6 +78,7 @@ export type EffectSegmentRenderWorkspace = {
   batchId?: string | null;
   batchRevision?: number | null;
   stale?: boolean;
+  refreshScope?: 'NONE' | 'SELECTIVE' | 'FULL';
   commitStatus?: WorkingArtifactCommitStatus | null;
   batchStatus: EffectSegmentRenderBatchStatus;
   tasks: EffectSegmentRenderTask[];
@@ -119,6 +121,7 @@ export const effectSegmentRenderWorkspaceFromApi = (
   batchId: data.batch?.id ?? null,
   batchRevision: data.batch?.revision ?? null,
   stale: data.batch?.stale ?? false,
+  refreshScope: data.batch?.refreshScope ?? 'NONE',
   commitStatus: data.batch?.commitStatus ?? null,
   batchStatus: data.batch?.status ?? 'NOT_STARTED',
   tasks: data.batch?.tasks.map(effectSegmentRenderTaskFromApi) ?? [],

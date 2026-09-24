@@ -351,7 +351,9 @@ const exportRangeTasks = computed(() => {
 
 const canPreviewTask = (task: EffectSegmentRenderTask): boolean => Boolean(task.output);
 const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
-  !isEffectSegmentRenderBusy(task.status) && !task.repair;
+  !isEffectSegmentRenderBusy(task.status) &&
+  !task.repair &&
+  !(task.needsUpdate && workspace.value?.refreshScope === 'FULL');
 
 const creativeCoreForTask = (task: EffectSegmentRenderTask): string =>
   cardCreativeCoreByPromptId.value[task.promptId] ?? '创意方向待同步';
@@ -572,10 +574,13 @@ const canStartBatch = computed(
     promptCount.value > 0 &&
     !batchActive.value,
 );
+const tasksNeedingUpdate = computed(() => tasks.value.filter((task) => task.needsUpdate));
 const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
   if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
   if (!workspace.value?.promptReady) return '等待上游 Prompt 完成校验';
+  if (workspace.value?.stale && workspace.value.refreshScope === 'SELECTIVE')
+    return `仅重新生成 ${tasksNeedingUpdate.value.length} 个待更新素材`;
   if (workspace.value?.stale) return '按最新 Prompt 重新渲染';
   if (hasBatch.value) return '重新渲染';
   return `开始批量渲染（${promptCount.value}）`;
@@ -917,10 +922,21 @@ const startBatch = async (): Promise<void> => {
   const product = currentProduct.value;
   const current = workspace.value;
   if (!product || operation.value || !current || !canStartBatch.value) return;
+  const selectiveRefresh = current.stale && current.refreshScope === 'SELECTIVE';
+  const selectedTaskIds = selectiveRefresh ? tasksNeedingUpdate.value.map(({ id }) => id) : [];
+  if (selectiveRefresh && !selectedTaskIds.length) return;
   const rerendering = hasBatch.value;
   if (
     !(await requestActionConfirmation(
-      rerendering
+      selectiveRefresh
+        ? {
+            eyebrow: '按最新 Prompt 定向更新',
+            title: `只重新生成 ${selectedTaskIds.length} 个已变更素材？`,
+            description: `其余 ${Math.max(0, current.tasks.length - selectedTaskIds.length)} 个素材保持不变。完成后，引用这些素材的混剪工程会保留剪辑内容并提示重新确认/包装；本次会产生 ${selectedTaskIds.length} 个 Seedance 任务费用。`,
+            confirmLabel: `重新生成 ${selectedTaskIds.length} 个素材`,
+            tone: 'warning',
+          }
+        : rerendering
         ? {
             eyebrow: current.stale ? '按最新 Prompt 重新渲染' : '重新渲染全部片段',
             title: `重新生成全部 ${promptCount.value} 个视频素材片段？`,
@@ -944,6 +960,22 @@ const startBatch = async (): Promise<void> => {
   operation.value = 'batch';
   validated.value = false;
   try {
+    if (selectiveRefresh) {
+      const response = await regenerateEffectSegmentRenderTasks(
+        props.projectId,
+        current.batchId!,
+        {
+          taskIds: selectedTaskIds,
+          expectedBatchRevision: current.batchRevision!,
+          idempotencyKey: crypto.randomUUID(),
+        },
+        controller.signal,
+      );
+      if (controller.signal.aborted || currentProductId.value !== product.id) return;
+      applyBatch(response.data.batch);
+      showNotice(`${selectedTaskIds.length} 个变更素材已按最新 Prompt 重新进入渲染队列`);
+      return;
+    }
     const response = await startEffectSegmentRenderBatch(
       props.projectId,
       product.id,
@@ -975,12 +1007,14 @@ const retryTask = async (taskId: string): Promise<void> => {
   const current = workspace.value;
   if (!product || operation.value || !current?.batchId || typeof current.batchRevision !== 'number')
     return;
+  const taskNeedsUpdate = current.tasks.find(({ id }) => id === taskId)?.needsUpdate ?? false;
   if (
     !(await requestActionConfirmation({
-      eyebrow: '重新生成片段',
-      title: '重新生成这个视频片段？',
-      description:
-        '重新生成会提交一个新的真实 Seedance 请求，原 Prompt 与该批次冻结的渲染配置保持不变，并产生供应商费用。',
+      eyebrow: taskNeedsUpdate ? '按最新 Prompt 更新素材' : '重新生成片段',
+      title: taskNeedsUpdate ? '按修改后的 Prompt 重新生成这个素材？' : '重新生成这个视频片段？',
+      description: taskNeedsUpdate
+        ? '这条素材会使用当前已确认的 Prompt 和原批次渲染设置重新生成；旧视频在新结果完成校验前仍会保留。'
+        : '重新生成会提交一个新的真实 Seedance 请求，Prompt 与渲染配置保持不变。',
       confirmLabel: '确认重新生成',
       tone: 'warning',
     }))
@@ -1878,6 +1912,7 @@ onBeforeUnmount(() => {
                 <span class="material-status-pill" :class="statusMeta(task.status).tone">
                   {{ statusMeta(task.status).label }}
                 </span>
+                <span v-if="task.needsUpdate" class="prompt-update-pill">Prompt 已更新</span>
                 <LoaderCircle
                   v-if="isEffectSegmentRenderBusy(task.status)"
                   class="spin"
@@ -4127,6 +4162,19 @@ select:disabled {
 }
 .material-status-pill.retry {
   background: #b6751bd9;
+}
+.prompt-update-pill {
+  position: absolute;
+  z-index: 2;
+  top: 31px;
+  right: 8px;
+  padding: 3px 7px;
+  color: #805000;
+  background: #fff2ce;
+  border: 1px solid #f2d28c;
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 800;
 }
 .material-card-body {
   min-height: 112px;

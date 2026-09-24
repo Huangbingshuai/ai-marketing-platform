@@ -10,9 +10,17 @@ describe('effect template-mix music library', () => {
     expect(page).toContain("resourceTab === 'VOICE'");
   });
 
-  it('imports supported audio files as project assets tagged for the music library', () => {
+  it('limits music imports to MP3 files and stores them as project assets', () => {
     expect(source).toContain('导入音乐');
-    expect(source).toContain('AUDIO_FILE_ACCEPT');
+    expect(source).toContain("const MP3_FILE_ACCEPT = 'audio/mpeg,.mp3'");
+    expect(source).toContain(':accept="MP3_FILE_ACCEPT"');
+    expect(source).toContain('/\\.mp3$/i.test(file.name)');
+    expect(source).toContain('function isMp3Asset(asset: Asset): boolean');
+    expect(source).toContain("'is-unsupported': !isMp3Asset(asset)");
+    expect(source).toContain('不支持的格式');
+    expect(source).not.toContain('response.data.items.filter((asset)');
+    expect(source).toContain('音乐库仅支持导入 MP3 文件');
+    expect(source).toContain('仅支持 MP3');
     expect(source).toContain("directory: 'AUDIO_ASSETS'");
     expect(source).toContain("type: 'VOICE_AUDIO'");
     expect(source).toContain('tags: [MUSIC_LIBRARY_TAG]');

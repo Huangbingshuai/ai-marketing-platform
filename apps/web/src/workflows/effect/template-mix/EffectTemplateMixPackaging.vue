@@ -9,7 +9,7 @@ import {
   packagingStageState,
   currentPackagingRun,
 } from './effect-packaging-progress';
-import { createPackagingPoller } from './effect-packaging-poller';
+import { createPackagingPoller, packagingPollErrorMessage } from './effect-packaging-poller';
 import type { PackagingStage } from './effect-packaging-progress';
 import { packagingPlaybackError } from './effect-packaging-audio';
 import {
@@ -185,7 +185,7 @@ const poller = createPackagingPoller({
     loadError.value = '';
   },
   onError(reason) {
-    loadError.value = reason instanceof Error ? reason.message : '读取包装失败';
+    loadError.value = packagingPollErrorMessage(reason);
   },
   onLoading(value) {
     loading.value = value && !runs.value.length;

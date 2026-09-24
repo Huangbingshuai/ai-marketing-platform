@@ -81,6 +81,7 @@ export const createEffectTemplateMixAiRun = (
   expectedRevision: number,
   templateId: string,
   targetVariantId?: string,
+  refreshAffectedSlots = false,
 ): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
   requestJson(
     basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/ai-fill-runs',
@@ -92,6 +93,7 @@ export const createEffectTemplateMixAiRun = (
         expectedRevision,
         idempotencyKey: crypto.randomUUID(),
         ...(targetVariantId ? { targetVariantId } : {}),
+        ...(refreshAffectedSlots ? { refreshAffectedSlots: true } : {}),
       },
     },
   );

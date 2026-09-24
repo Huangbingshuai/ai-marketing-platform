@@ -376,6 +376,7 @@ const toAiRun = (run: {
   updatedAt: Date;
 }): EffectTemplateMixAiRun => {
   const snapshot = object(run.inputSnapshot) as {
+    trimOnly?: boolean;
     materials?: Array<{
       id?: string;
       code?: string;
@@ -607,6 +608,7 @@ const toAiRun = (run: {
   return {
     id: run.id,
     templateId: run.templateId,
+    operation: snapshot?.trimOnly ? 'REFRESH_TRIMS' : 'FILL',
     targetVariantId: run.targetVariantId,
     outputVariantId: run.outputVariantId,
     status: run.status,
@@ -685,13 +687,14 @@ export class EffectTemplateMixService {
     value: unknown,
   ): Promise<EffectTemplateMixWorkspaceData> {
     const draft = draftOf(value);
-    const [previousState, lockedTemplateIds, packagingLockedIds, activePackagingIds, recentAiRuns] = await Promise.all([
-      this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
-      this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
-      this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
-      this.aiRuns?.activePackagingTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
-      this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
-    ]);
+    const [previousState, lockedTemplateIds, packagingLockedIds, activePackagingIds, recentAiRuns] =
+      await Promise.all([
+        this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
+        this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+        this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+        this.aiRuns?.activePackagingTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+        this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
+      ]);
     const previous = previousState ? draftOf(previousState.state) : emptyDraft();
     if (introducesDuplicateTemplateName(draft, previous))
       throw new ApiHttpException(
@@ -709,10 +712,14 @@ export class EffectTemplateMixService {
         before && next && workflowStateHash(before.workspace) !== workflowStateHash(next.workspace),
       );
       const templateChanged = Boolean(
-        before && next && workflowStateHash(before.workspace.template) !== workflowStateHash(next.workspace.template),
+        before &&
+        next &&
+        workflowStateHash(before.workspace.template) !== workflowStateHash(next.workspace.template),
       );
       const removedExistingVariant = Boolean(
-        before && next && before.workspace.variants.some(
+        before &&
+        next &&
+        before.workspace.variants.some(
           (variant) => !next.workspace.variants.some((candidate) => candidate.id === variant.id),
         ),
       );
@@ -777,8 +784,7 @@ export class EffectTemplateMixService {
       const filledTemplateHash = this.filledHashForEntry(before ?? untrustedEntry, recentAiRuns);
       if (filledTemplateHash) entry.filledTemplateHash = filledTemplateHash;
       else delete entry.filledTemplateHash;
-      entry.needsAiFill =
-        this.needsRefill(entry, entry.filledTemplateHash);
+      entry.needsAiFill = this.needsRefill(entry, entry.filledTemplateHash);
     }
     const result = await this.working.putNodeState(projectId, workflowRunId, 'TEMPLATE_MIX', {
       expectedRevision,
@@ -808,6 +814,7 @@ export class EffectTemplateMixService {
     expectedRevision: number,
     idempotencyKey: string,
     targetVariantId?: string,
+    refreshAffectedSlots = false,
   ): Promise<EffectTemplateMixAiRun> {
     const [nodeState, artifacts, previousRuns, packagingLockedIds] = await Promise.all([
       this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
@@ -829,7 +836,13 @@ export class EffectTemplateMixService {
       ? entry!.workspace.variants.find(({ id }) => id === targetVariantId)
       : undefined;
     if (targetVariantId && !target) this.notFound('当前成片工程不存在');
-    if (entry!.packagingLocked)
+    if (refreshAffectedSlots && !target)
+      throw new ApiHttpException(
+        '更新已替换素材需要指定已有成片工程',
+        HttpStatus.BAD_REQUEST,
+        'VALIDATION_ERROR',
+      );
+    if (entry!.packagingLocked && !refreshAffectedSlots)
       throw new ApiHttpException(
         '智能成片包装已开始，此模板不能重新智能填充',
         HttpStatus.CONFLICT,
@@ -936,7 +949,48 @@ export class EffectTemplateMixService {
         'VALIDATION_ERROR',
       );
     const materialById = new Map(materials.map((item) => [item.id, item]));
-    const lockedBindings = (target?.manualSlotIds ?? []).flatMap((slotId) => {
+    const refreshBindings = refreshAffectedSlots
+      ? slots.flatMap((slot) => {
+          const previousSlot = target?.slots.find(({ id }) => id === slot.id);
+          const sourceSlotId = previousSlot?.id;
+          const materialId = sourceSlotId ? target?.bindings[sourceSlotId] : undefined;
+          const material = materialId ? materialById.get(materialId) : undefined;
+          const previousRevision = sourceSlotId
+            ? target?.bindingRevisions[sourceSlotId]
+            : undefined;
+          if (
+            !sourceSlotId ||
+            !material ||
+            (Number.isInteger(previousRevision) &&
+              material.artifactRevision <= (previousRevision ?? 0))
+          )
+            return [];
+          if (slot.duration > material.duration + 0.001)
+            throw new ApiHttpException(
+              `「${slot.label}」的新素材长度不足以保留原槽位时长，请先调整模板时长`,
+              HttpStatus.CONFLICT,
+              'CONFLICT',
+            );
+          return [
+            {
+              slotId: slot.id,
+              materialId: material.id,
+              artifactRevision: material.artifactRevision,
+            },
+          ];
+        })
+      : [];
+    if (refreshAffectedSlots && !refreshBindings.length)
+      throw new ApiHttpException(
+        '当前成片没有已完成校验的新素材需要更新',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
+    const refreshSlotIds = new Set(refreshBindings.map(({ slotId }) => slotId));
+    const lockedSlotIds = refreshAffectedSlots
+      ? slots.filter(({ id }) => !refreshSlotIds.has(id)).map(({ id }) => id)
+      : (target?.manualSlotIds ?? []);
+    const lockedBindings = lockedSlotIds.flatMap((slotId) => {
       const oldSlot = target?.slots.find(({ id }) => id === slotId);
       const slot = slots.find(({ id, role }) => id === slotId || role === oldSlot?.role);
       const materialId = target?.bindings[slotId];
@@ -953,6 +1007,12 @@ export class EffectTemplateMixService {
           ]
         : [];
     });
+    if (refreshAffectedSlots && lockedBindings.length !== slots.length - refreshBindings.length)
+      throw new ApiHttpException(
+        '当前工程还有其他素材位已过期或不满足原截取范围，请先单独处理这些素材位',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
     const unlockedSlots = slots.filter(
       (slot) => !lockedBindings.some((binding) => binding.slotId === slot.id),
     );
@@ -1007,6 +1067,7 @@ export class EffectTemplateMixService {
       draftRevision: expectedRevision,
       workspaceHash: workflowStateHash(entry!.workspace),
       targetVariantId: targetVariantId ?? null,
+      ...(refreshAffectedSlots ? { trimOnly: true, refreshBindings } : {}),
       maxOutputVariants: target ? 1 : 100 - entry!.workspace.variants.length,
       lockedBindings,
       existingVariantBindings,
@@ -1066,39 +1127,70 @@ export class EffectTemplateMixService {
       const cached = cachedClassifications.get(material.id);
       return cached ? [cached] : [];
     });
-    const boundTargetSelections = target
-      ? unlockedSlots.flatMap((slot) => {
-          const oldSlot = target.slots.find(({ id, role }) => id === slot.id || role === slot.role);
-          const materialId = oldSlot ? target.bindings[oldSlot.id] : undefined;
-          if (!materialId || !materialById.has(materialId)) return [];
-          const metadata = target.bindingMetadata?.[oldSlot!.id];
-          const classification = cachedClassifications.get(materialId);
-          const matchScore = Number(
-            metadata?.matchScore ?? classification?.scores[slot.role] ?? 0.7,
-          );
+    const boundTargetSelections = refreshAffectedSlots
+      ? refreshBindings.flatMap((binding) => {
+          const slot = slots.find(({ id }) => id === binding.slotId);
+          const oldSlot = target?.slots.find(({ id }) => id === binding.slotId);
+          const metadata = target?.bindingMetadata?.[binding.slotId];
+          if (!slot || !oldSlot) return [];
+          const score = Number(metadata?.matchScore ?? 0.7);
           return [
             {
-              slotId: slot.id,
+              slotId: binding.slotId,
               role: slot.role,
-              materialId,
-              matchScore: Number.isFinite(matchScore) ? Math.max(0, Math.min(1, matchScore)) : 0.7,
+              materialId: binding.materialId,
+              matchScore: Number.isFinite(score) ? Math.max(0, Math.min(1, score)) : 0.7,
               matchLevel:
                 metadata?.matchLevel === 'LOW_MATCH' ? ('LOW_MATCH' as const) : ('NORMAL' as const),
-              classificationReason: String(
-                metadata?.classificationReason ??
-                  classification?.reasons[slot.role] ??
-                  '复用当前成片已有槽位归属',
-              ),
+              classificationReason:
+                metadata?.classificationReason ?? '保留原槽位素材归属，仅重新分析截取起点',
               duration: slot.duration,
             },
           ];
         })
-      : [];
+      : target
+        ? unlockedSlots.flatMap((slot) => {
+            const oldSlot = target.slots.find(
+              ({ id, role }) => id === slot.id || role === slot.role,
+            );
+            const materialId = oldSlot ? target.bindings[oldSlot.id] : undefined;
+            if (!materialId || !materialById.has(materialId)) return [];
+            const metadata = target.bindingMetadata?.[oldSlot!.id];
+            const classification = cachedClassifications.get(materialId);
+            const matchScore = Number(
+              metadata?.matchScore ?? classification?.scores[slot.role] ?? 0.7,
+            );
+            return [
+              {
+                slotId: slot.id,
+                role: slot.role,
+                materialId,
+                matchScore: Number.isFinite(matchScore)
+                  ? Math.max(0, Math.min(1, matchScore))
+                  : 0.7,
+                matchLevel:
+                  metadata?.matchLevel === 'LOW_MATCH'
+                    ? ('LOW_MATCH' as const)
+                    : ('NORMAL' as const),
+                classificationReason: String(
+                  metadata?.classificationReason ??
+                    classification?.reasons[slot.role] ??
+                    '复用当前成片已有槽位归属',
+                ),
+                duration: slot.duration,
+              },
+            ];
+          })
+        : [];
     const preserveExistingAssignments = Boolean(
       target && unlockedSlots.length > 0 && boundTargetSelections.length === unlockedSlots.length,
     );
     const initialSelections = preserveExistingAssignments ? boundTargetSelections : [];
-    if (preserveExistingAssignments && reusableClassifications.length !== snapshot.materials.length)
+    if (
+      !refreshAffectedSlots &&
+      preserveExistingAssignments &&
+      reusableClassifications.length !== snapshot.materials.length
+    )
       throw new ApiHttpException(
         '找不到完整的历史归槽结果，为避免素材重新归类，请先恢复原始智能填充结果',
         HttpStatus.CONFLICT,
@@ -1149,11 +1241,14 @@ export class EffectTemplateMixService {
       workflowRunId,
       templateId,
       targetVariantId: targetVariantId ?? null,
+      refreshAffectedSlots,
       expectedRevision,
     });
-    const initialClassifications = reusableCheckpoint
-      ? (reusableCheckpoint.classificationResult as unknown[])
-      : reusableClassifications;
+    const initialClassifications = refreshAffectedSlots
+      ? []
+      : reusableCheckpoint
+        ? (reusableCheckpoint.classificationResult as unknown[])
+        : reusableClassifications;
     const created = await this.aiRuns!.create({
       projectId,
       workflowRunId,
@@ -1167,7 +1262,7 @@ export class EffectTemplateMixService {
       snapshot,
       ...(initialClassifications.length ? { initialClassifications } : {}),
       ...(initialSelections.length ? { initialSelections } : {}),
-      ...(reusableCheckpoint
+      ...(!refreshAffectedSlots && reusableCheckpoint
         ? {
             initialSelections: reusableCheckpoint.selectionResult as unknown[],
             initialTrims: reusableCheckpoint.trimResult as unknown[],
@@ -1451,8 +1546,30 @@ export class EffectTemplateMixService {
       run.classificationResult as unknown as EffectTemplateMixAiClassification[];
     if (!Array.isArray(selections))
       throw new ApiHttpException('智能填充尚未完成素材匹配', HttpStatus.CONFLICT, 'CONFLICT');
-    if (!Array.isArray(classifications) || !classificationsValid(snapshot, classifications, true))
+    if (
+      !snapshot.trimOnly &&
+      (!Array.isArray(classifications) || !classificationsValid(snapshot, classifications, true))
+    )
       throw new ApiHttpException('Prompt 归槽结果缺失或无效', HttpStatus.CONFLICT, 'CONFLICT');
+    if (snapshot.trimOnly) {
+      const expected = snapshot.refreshBindings ?? [];
+      if (
+        !snapshot.targetVariantId ||
+        !expected.length ||
+        selections.length !== expected.length ||
+        expected.some(
+          ({ slotId, materialId }) =>
+            !selections.some(
+              (selection) => selection.slotId === slotId && selection.materialId === materialId,
+            ),
+        )
+      )
+        throw new ApiHttpException(
+          '素材截取更新结果与待更新槽位不一致',
+          HttpStatus.CONFLICT,
+          'CONFLICT',
+        );
+    }
     const trimByKey = new Map(trims.map((item) => [aiResultKey(item), item]));
     if (
       new Set(selections.map(aiResultKey)).size !== selections.length ||
@@ -1581,7 +1698,7 @@ export class EffectTemplateMixService {
       let variant = currentTarget;
       const previousVariantHash = variant ? workflowStateHash(variant) : null;
       if (!variant) {
-          variant = {
+        variant = {
           id: outputVariantIds.length === 0 ? run.id : randomUUID(),
           name: entry!.workspace.template.name + ' · ' + (entry!.workspace.variants.length + 1),
           appliedTemplateVersion: entry!.workspace.template.editVersion,
@@ -1599,9 +1716,9 @@ export class EffectTemplateMixService {
           subtitleStyle: 'standard',
           bgm: null,
           voice: null,
-            originalVolume: 1,
-            appliedTemplateHash: templateConfigurationHash(entry!.workspace.template),
-          };
+          originalVolume: 1,
+          appliedTemplateHash: templateConfigurationHash(entry!.workspace.template),
+        };
         entry!.workspace.variants.push(variant);
       }
       if (snapshot.targetVariantId) {
@@ -1736,16 +1853,23 @@ export class EffectTemplateMixService {
     templateId: string,
     expectedRevision: number,
   ): Promise<EffectTemplateMixWorkspaceData> {
-    return this.mutate(projectId, workflowRunId, expectedRevision, templateId, (workspace) => {
-      if (!slotsValid(workspace.template.slots, 4))
-        throw new ApiHttpException(
-          '新成片槽位时长必须为 4–15 秒',
-          HttpStatus.BAD_REQUEST,
-          'VALIDATION_ERROR',
-        );
-      workspace.variants.push(createEmptyVariant(workspace));
-      workspace.editVersion += 1;
-    }, { allowPackagingLocked: true });
+    return this.mutate(
+      projectId,
+      workflowRunId,
+      expectedRevision,
+      templateId,
+      (workspace) => {
+        if (!slotsValid(workspace.template.slots, 4))
+          throw new ApiHttpException(
+            '新成片槽位时长必须为 4–15 秒',
+            HttpStatus.BAD_REQUEST,
+            'VALIDATION_ERROR',
+          );
+        workspace.variants.push(createEmptyVariant(workspace));
+        workspace.editVersion += 1;
+      },
+      { allowPackagingLocked: true },
+    );
   }
 
   async refillVariant(
@@ -2249,7 +2373,8 @@ export class EffectTemplateMixService {
         Object.values(variant.bindings).some(
           (materialId) => materialId && !availableMaterialIds.has(materialId),
         )
-      ) return true;
+      )
+        return true;
       if (!filledTemplateHash) return false;
       return variant.appliedTemplateHash
         ? variant.appliedTemplateHash !== currentHash
@@ -2291,21 +2416,18 @@ export class EffectTemplateMixService {
         source.availability !== 'AVAILABLE' ||
         source.freshness !== 'CURRENT' ||
         !Number.isInteger(variant.bindingRevisions[slot.id]) ||
-        variant.bindingRevisions[slot.id]! > source.revision ||
+        variant.bindingRevisions[slot.id] !== source.revision ||
         used.has(source.id) ||
         !Number.isFinite(offset) ||
         offset < 0 ||
         offset + slot.duration > clipDuration(source) + 0.001
       ) {
         throw new ApiHttpException(
-          '成片工程引用了缺失、过期、重复或时长不足的素材',
+          '成片工程引用了缺失、待重新分析截取区间、重复或时长不足的素材',
           HttpStatus.CONFLICT,
           'CONFLICT',
         );
       }
-      // A stable render-task artifact may advance after a selective Prompt rerender.
-      // Keep the user's timeline edit, but rebind it to the newly current clip revision.
-      variant.bindingRevisions[slot.id] = source.revision;
       used.add(source.id);
       allSourceIds.add(source.id);
     }

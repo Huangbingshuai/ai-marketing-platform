@@ -39,12 +39,30 @@ export class EffectTemplateMixAiRepository {
   }
 
   async packagedTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
-    const rows = await this.prisma.effectPackagingRun.findMany({
-      where: { projectId, workflowRunId },
-      distinct: ['templateId'],
-      select: { templateId: true },
-    });
-    return rows.map(({ templateId }) => templateId);
+    const [activeRuns, currentPackages] = await Promise.all([
+      this.prisma.effectPackagingRun.findMany({
+        where: { projectId, workflowRunId, status: { in: ['QUEUED', 'RUNNING'] } },
+        distinct: ['templateId'],
+        select: { templateId: true },
+      }),
+      this.prisma.workingArtifact.findMany({
+        where: {
+          projectId,
+          workflowRunId,
+          nodeId: 'TEMPLATE_MIX',
+          artifactKey: { startsWith: 'timeline-package:' },
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        },
+        select: { artifactKey: true },
+      }),
+    ]);
+    const templateIds = new Set(activeRuns.map(({ templateId }) => templateId));
+    for (const { artifactKey } of currentPackages) {
+      const [, templateId] = artifactKey.split(':', 2);
+      if (templateId) templateIds.add(templateId);
+    }
+    return [...templateIds];
   }
 
   async activePackagingTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
@@ -172,16 +190,32 @@ export class EffectTemplateMixAiRepository {
       const currentDraft = nodeState.state as unknown as EffectTemplateMixDraft;
       const targetEntry = currentDraft.templates.find((entry) => entry.id === input.templateId);
       if (!targetEntry) return { kind: 'STALE_INPUT' as const };
-      if (targetEntry.packagingLocked) return { kind: 'PACKAGING_LOCKED' as const };
       if (
         await transaction.effectPackagingRun.count({
           where: {
             projectId: input.projectId,
             workflowRunId: input.workflowRunId,
             templateId: input.templateId,
+            status: { in: ['QUEUED', 'RUNNING'] },
           },
         })
       )
+        return { kind: 'PACKAGING_LOCKED' as const };
+      const currentPackage = await transaction.workingArtifact.findFirst({
+        where: {
+          projectId: input.projectId,
+          workflowRunId: input.workflowRunId,
+          nodeId: 'TEMPLATE_MIX',
+          artifactKey: { startsWith: `timeline-package:${input.templateId}:` },
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        },
+        select: { id: true },
+      });
+      // A confirmed rerender is allowed to recalculate only the affected trim
+      // points. Its subsequent timeline validation will advance the visual
+      // artifact and stale the package through the existing dependency graph.
+      if (currentPackage && !input.snapshot.trimOnly)
         return { kind: 'PACKAGING_LOCKED' as const };
       const active = await transaction.effectTemplateMixAiRun.findFirst({
         where: {

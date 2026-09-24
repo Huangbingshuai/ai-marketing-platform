@@ -502,6 +502,7 @@ export class WorkflowWorkingRepository {
     nodeId: string,
     artifactKey: string,
     input: WorkingArtifactUpsertInput,
+    invalidateDependents = true,
   ): Promise<{
     record: WorkingArtifactRecord;
     previousStorageKey: string | null;
@@ -633,7 +634,7 @@ export class WorkflowWorkingRepository {
         where: { projectId, id: { in: orphanedFileObjectIds }, finalOutputItems: { none: {} } },
         data: { status: 'ORPHANED', orphanedAt: new Date() },
       });
-    if (previous)
+    if (previous && invalidateDependents)
       await this.markArtifactDependentsStaleInTransaction(
         transaction,
         projectId,
@@ -656,7 +657,11 @@ export class WorkflowWorkingRepository {
     projectId: string,
     workflowRunId: string,
     nodeId: string,
-    artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
+    artifacts: Array<{
+      artifactKey: string;
+      input: WorkingArtifactUpsertInput;
+      invalidateDependents?: boolean;
+    }>,
   ) {
     return this.prisma.$transaction((transaction) =>
       this.commitValidatedArtifactsInTransaction(
@@ -674,7 +679,11 @@ export class WorkflowWorkingRepository {
     projectId: string,
     workflowRunId: string,
     nodeId: string,
-    artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
+    artifacts: Array<{
+      artifactKey: string;
+      input: WorkingArtifactUpsertInput;
+      invalidateDependents?: boolean;
+    }>,
   ) {
     const results = [];
     for (const artifact of artifacts) {
@@ -685,6 +694,7 @@ export class WorkflowWorkingRepository {
         nodeId,
         artifact.artifactKey,
         artifact.input,
+        artifact.invalidateDependents ?? true,
       );
       results.push({ artifactKey: artifact.artifactKey, ...result });
     }
@@ -789,7 +799,7 @@ export class WorkflowWorkingRepository {
     );
   }
 
-  private async markArtifactIdsAndDependentsStaleInTransaction(
+  async markArtifactIdsAndDependentsStaleInTransaction(
     transaction: Prisma.TransactionClient,
     projectId: string,
     workflowRunId: string,

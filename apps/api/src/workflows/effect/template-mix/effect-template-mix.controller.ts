@@ -74,6 +74,7 @@ export class EffectTemplateMixController {
       body.expectedRevision,
       body.idempotencyKey,
       body.targetVariantId,
+      body.refreshAffectedSlots ?? false,
     );
   }
 

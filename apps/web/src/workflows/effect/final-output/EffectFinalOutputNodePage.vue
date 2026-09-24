@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, onActivated, onDeactivated, onBeforeUnmount, ref, watch } from 'vue';
 import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Clapperboard, Download, Film, Layers, LoaderCircle, Play, RefreshCw } from '@lucide/vue';
-import type { ApiResponse, FinalOutputResolution, FinalOutputRun } from '@ai-marketing/contracts';
+import type {
+  ApiResponse,
+  EffectTemplateMixMaterial,
+  EffectTemplateMixWorkspaceData,
+  FinalOutputResolution,
+  FinalOutputRun,
+} from '@ai-marketing/contracts';
 import { apiUrl, requestJson } from '../../../api/http-client';
 import EffectTemplateMixThumbnail from '../template-mix/EffectTemplateMixThumbnail.vue';
 
@@ -11,30 +17,118 @@ const emit = defineEmits<{
   preview: [selection: { templateId: string; variantId: string }];
 }>();
 const OUTPUT_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const;
+type OutputPreviewClip = {
+  fileObjectId: string;
+  time: number;
+  contentHash: string;
+  version?: string;
+};
+type OutputTemplateCard = {
+  templateId: string;
+  templateName: string;
+  run: FinalOutputRun | undefined;
+  pendingLabel: string;
+  pendingTitle: string;
+  pendingDetail: string;
+};
 const runs = ref<FinalOutputRun[]>([]),
   selectedTemplateId = ref(''),
   selectedRunId = ref(''),
+  mixWorkspace = ref<EffectTemplateMixWorkspaceData | null>(null),
   resolution = ref<FinalOutputResolution>('720p'),
   frameRate = ref<24 | 25 | 30 | 50 | 60>(30),
   page = ref(1),
   pageSize = ref(20),
+  selectionMode = ref(false),
+  selectedItemIds = ref<Set<string>>(new Set()),
+  batchDownloading = ref(false),
   settingsByTemplate = ref(new Map<string, { resolution: FinalOutputResolution; frameRate: 24 | 25 | 30 | 50 | 60 }>());
 const loading = ref(true),
+  mixLoading = ref(true),
   busy = ref(false),
-  error = ref('');
+  playingItemId = ref(''),
+  error = ref(''),
+  mixError = ref('');
 const templates = computed(() => {
   const latestByTemplate = new Map<string, FinalOutputRun>();
   for (const outputRun of runs.value) {
     if (!latestByTemplate.has(outputRun.templateId))
       latestByTemplate.set(outputRun.templateId, outputRun);
   }
-  return [...latestByTemplate.values()];
+  if (!mixWorkspace.value) {
+    return [...latestByTemplate.values()].map((run) => ({
+      templateId: run.templateId,
+      templateName: run.templateName,
+      run,
+      pendingLabel: '',
+      pendingTitle: '',
+      pendingDetail: '',
+    }));
+  }
+  const workspaceTemplates = mixWorkspace.value?.draft.templates ?? [];
+  const cards: OutputTemplateCard[] = workspaceTemplates.map((entry) => {
+    const outputRun = latestByTemplate.get(entry.id);
+    const variants = entry.workspace.variants;
+    const hasIncompleteVariant = variants.some(
+      (variant) =>
+        !variant.slots.length ||
+        variant.slots.some((slot) => !variant.bindings[slot.id]),
+    );
+    const pendingLabel = entry.needsAiFill
+      ? '待重新智能填充'
+      : entry.packagingLocked
+        ? '待完成校验'
+        : !variants.length || hasIncompleteVariant
+          ? '待完成混剪'
+          : '待成片包装';
+    const pendingTitle = entry.needsAiFill
+      ? '模板需要重新智能填充'
+      : entry.packagingLocked
+        ? '该模板尚未进入成片输出'
+        : !variants.length || hasIncompleteVariant
+          ? '该模板还有未完成的混剪工程'
+          : '该模板还没有待渲染成片';
+    const pendingDetail = entry.needsAiFill
+      ? '返回模板混剪，先按当前模板配置重新智能填充，再完成成片包装和校验。'
+      : entry.packagingLocked
+        ? '成片包装已启动。返回模板混剪，等待该模板全部包装成功后，点击“完成校验并进入成片输出”。'
+        : !variants.length || hasIncompleteVariant
+          ? '返回模板混剪，补齐工程的素材槽位并完成混剪校验，然后进行成片包装。'
+          : '返回模板混剪，为该模板进行成片包装；全部包装成功后，再点击“完成校验并进入成片输出”。';
+    return {
+      templateId: entry.id,
+      templateName: entry.workspace.template.name,
+      // Keep superseded output runs in persistence, but don't present them as the
+      // current result after the source package/timeline became stale.
+      run: entry.packagingLocked ? outputRun : undefined,
+      pendingLabel,
+      pendingTitle,
+      pendingDetail,
+    };
+  });
+  return cards;
 });
-const templateRuns = computed(() => runs.value.filter((r) => r.templateId === selectedTemplateId.value));
+const templateRuns = computed(() => {
+  const currentRun = templates.value.find(({ templateId }) => templateId === selectedTemplateId.value)?.run;
+  return currentRun ? [currentRun] : [];
+});
 const run = computed(() => templateRuns.value.find((r) => r.id === selectedRunId.value) ?? templateRuns.value[0]);
+const selectedTemplate = computed(
+  () => templates.value.find(({ templateId }) => templateId === selectedTemplateId.value),
+);
+const pageLoading = computed(() => loading.value || mixLoading.value);
 const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.status));
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
 const items = computed(() => run.value?.items.slice((page.value - 1) * pageSize.value, page.value * pageSize.value) ?? []);
+const downloadableItems = computed(() =>
+  run.value?.items.filter((item) => item.status === 'COMPLETED' && Boolean(item.fileObjectId)) ?? [],
+);
+const selectedItems = computed(() =>
+  downloadableItems.value.filter((item) => selectedItemIds.value.has(item.id)),
+);
+const allDownloadableSelected = computed(() =>
+  downloadableItems.value.length > 0 && downloadableItems.value.every((item) => selectedItemIds.value.has(item.id)),
+);
 const displayName = (item: FinalOutputRun['items'][number]) => {
   const index = run.value?.items.findIndex(({ variantId }) => variantId === item.variantId) ?? -1;
   return index < 0 ? '成片' : `成片 ${String(index + 1).padStart(2, '0')}`;
@@ -66,9 +160,14 @@ const statusTone = (status: string) => {
 };
 const base = computed(() => `/projects/${props.projectId}/workflows/effect/final-output`);
 const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
+const mixMaterials = computed(
+  () => new Map((mixWorkspace.value?.materials ?? []).map((material) => [material.id, material])),
+);
 let timer: ReturnType<typeof setTimeout> | undefined;
 let controller: AbortController | undefined;
+let mixController: AbortController | undefined;
 let generation = 0,
+  mixGeneration = 0,
   mounted = true;
 async function refresh() {
   const current = ++generation;
@@ -84,10 +183,10 @@ async function refresh() {
     runs.value = result.data;
     const savedSettings = new Map(settingsByTemplate.value);
     for (const template of templates.value) {
-      if (!savedSettings.has(template.templateId)) {
+      if (template.run && !savedSettings.has(template.templateId)) {
         savedSettings.set(template.templateId, {
-          resolution: template.resolution,
-          frameRate: template.frameRate,
+          resolution: template.run.resolution,
+          frameRate: template.run.frameRate,
         });
       }
     }
@@ -106,6 +205,83 @@ async function refresh() {
       if (mounted) timer = setTimeout(() => void refresh(), 4000);
     }
   }
+}
+async function refreshMixWorkspace() {
+  const current = ++mixGeneration;
+  mixController?.abort();
+  mixController = new AbortController();
+  mixLoading.value = true;
+  try {
+    const result = await requestJson<ApiResponse<EffectTemplateMixWorkspaceData>>(
+      `/projects/${props.projectId}/workflows/effect/template-mix?workflowRunId=${encodeURIComponent(props.workflowRunId)}`,
+      { operation: '读取混剪成片预览', signal: mixController.signal },
+    );
+    if (current === mixGeneration) {
+      mixWorkspace.value = result.data;
+      mixError.value = '';
+      if (!templates.value.some(({ templateId }) => templateId === selectedTemplateId.value))
+        selectedTemplateId.value = templates.value[0]?.templateId ?? '';
+    }
+  } catch (reason) {
+    if (current === mixGeneration && !(reason instanceof DOMException && reason.name === 'AbortError')) {
+      mixWorkspace.value = null;
+      mixError.value = reason instanceof Error ? reason.message : '读取混剪模板失败';
+    }
+  } finally {
+    if (current === mixGeneration) mixLoading.value = false;
+  }
+}
+const refreshAll = () => {
+  void refreshMixWorkspace();
+  void refresh();
+};
+const previewClips = (item: FinalOutputRun['items'][number]): OutputPreviewClip[] => {
+  const entry = mixWorkspace.value?.draft.templates.find(({ id }) => id === run.value?.templateId);
+  const variant = entry?.workspace.variants.find(({ id }) => id === item.variantId);
+  if (!entry || !variant) return item.cover ? [item.cover] : [];
+  const clips = variant.slots
+    .map((slot) => mixMaterials.value.get(variant.bindings[slot.id] ?? ''))
+    .filter((material): material is EffectTemplateMixMaterial => Boolean(material?.available))
+    .map((material) => ({
+      fileObjectId: material.fileObjectId,
+      time: Math.min(0.12, material.duration / 2),
+      contentHash: material.contentHash,
+      version: `${material.artifactRevision}:${material.contentHash}`,
+    }));
+  if (!clips.length) return item.cover ? [item.cover] : [];
+  const sampleIndexes = [...new Set([0, Math.floor((clips.length - 1) / 2), clips.length - 1])];
+  return sampleIndexes.map((index) => clips[index]!);
+};
+const previewVersion = (clip: OutputPreviewClip) => clip.version ?? clip.contentHash;
+function toggleSelectionMode() {
+  selectionMode.value = !selectionMode.value;
+  if (!selectionMode.value) selectedItemIds.value = new Set();
+}
+function toggleItemSelection(itemId: string) {
+  const next = new Set(selectedItemIds.value);
+  if (next.has(itemId)) next.delete(itemId);
+  else next.add(itemId);
+  selectedItemIds.value = next;
+}
+function toggleSelectAllDownloadable() {
+  selectedItemIds.value = allDownloadableSelected.value
+    ? new Set()
+    : new Set(downloadableItems.value.map((item) => item.id));
+}
+function downloadSelected() {
+  if (!selectedItems.value.length || batchDownloading.value) return;
+  batchDownloading.value = true;
+  for (const item of selectedItems.value) {
+    if (!item.fileObjectId) continue;
+    const anchor = document.createElement('a');
+    anchor.href = `${fileUrl(item.fileObjectId)}?download=true`;
+    anchor.download = `${displayName(item)}.mp4`;
+    anchor.style.display = 'none';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  }
+  window.setTimeout(() => { batchDownloading.value = false; }, 700);
 }
 async function command(action: 'retry' | 'cancel') {
   if (!run.value || busy.value) return;
@@ -141,7 +317,9 @@ async function startRender() {
 function stop() {
   mounted = false;
   ++generation;
+  ++mixGeneration;
   controller?.abort();
+  mixController?.abort();
   clearTimeout(timer);
 }
 watch(
@@ -151,8 +329,14 @@ watch(
     selectedTemplateId.value = '';
     selectedRunId.value = '';
     settingsByTemplate.value = new Map();
+    selectedItemIds.value = new Set();
+    selectionMode.value = false;
+    mixWorkspace.value = null;
+    mixLoading.value = true;
+    mixError.value = '';
     loading.value = true;
     page.value = 1;
+    void refreshMixWorkspace();
     void refresh();
   },
   { immediate: true },
@@ -161,9 +345,16 @@ watch(selectedTemplateId, () => {
   page.value = 1;
   selectedRunId.value = templateRuns.value[0]?.id ?? '';
 });
-watch(selectedRunId, () => { page.value = 1; });
+watch(selectedRunId, () => {
+  page.value = 1;
+  selectedItemIds.value = new Set();
+  selectionMode.value = false;
+});
+watch(page, () => { playingItemId.value = ''; });
 watch(() => run.value?.id, () => {
   page.value = 1;
+  selectedItemIds.value = new Set();
+  selectionMode.value = false;
   if (run.value) {
     const saved = run.value.status === 'PENDING_RENDER'
       ? settingsByTemplate.value.get(run.value.templateId)
@@ -181,6 +372,7 @@ watch([resolution, frameRate], ([nextResolution, nextFrameRate]) => {
 });
 onActivated(() => {
   mounted = true;
+  if (!mixWorkspace.value && mixController?.signal.aborted) void refreshMixWorkspace();
   void refresh();
 });
 onDeactivated(stop);
@@ -199,29 +391,29 @@ onBeforeUnmount(stop);
       </div>
     </header>
 
-    <div v-if="error" class="notice" role="alert">
+    <div v-if="error || mixError" class="notice" role="alert">
       <AlertCircle :size="17" />
-      <span>{{ error }}</span>
-      <button class="secondary-button" type="button" @click="refresh">
+      <span>{{ error || mixError }}</span>
+      <button class="secondary-button" type="button" @click="refreshAll">
         <RefreshCw :size="14" />重新读取
       </button>
     </div>
 
-    <section v-if="loading" class="page-state" role="status">
+    <section v-if="pageLoading" class="page-state" role="status">
       <span class="state-icon loading-icon"><Film :size="24" /></span>
       <h3>正在读取成片输出</h3>
-      <p>正在恢复当前项目和工作流运行的输出任务…</p>
+      <p>正在读取当前工作流的混剪模板和成片任务…</p>
     </section>
-    <section v-else-if="!run && !error" class="page-state empty-state">
+    <section v-else-if="!templates.length && !error && !mixError" class="page-state empty-state">
       <span class="state-icon"><Film :size="25" /></span>
-      <h3>暂无待渲染成片</h3>
-      <p>每个模板完成校验后会独立进入此处；选择模板并点击“导出成片”后，才开始渲染该模板下的全部成片。</p>
+      <h3>暂无混剪模板</h3>
+      <p>完成模板混剪后，模板会按原有顺序显示在这里；每个模板的成片任务彼此独立。</p>
       <button class="secondary-button" type="button" @click="$emit('back')">
         <ArrowLeft :size="14" />返回模板混剪
       </button>
     </section>
 
-    <template v-else-if="run">
+    <template v-else-if="templates.length">
       <div class="output-layout">
         <aside class="template-sidebar" aria-label="模板列表">
           <header class="template-sidebar__heading">
@@ -242,13 +434,15 @@ onBeforeUnmount(stop);
               <Layers :size="18" />
               <span class="template-card__copy">
                 <strong>{{ template.templateName }}</strong>
-                <small>{{ template.counts.total }} 条成片 · {{ labels[template.status] }}</small>
+                <small v-if="template.run">{{ template.run.counts.total }} 条成片 · {{ labels[template.run.status] }}</small>
+                <small v-else>{{ template.pendingLabel }}</small>
               </span>
             </button>
           </div>
         </aside>
 
         <main class="output-main">
+          <template v-if="run">
           <label v-if="templateRuns.length > 1" class="batch-select">
             <span>输出批次</span>
             <select v-model="selectedRunId" aria-label="选择输出批次">
@@ -287,7 +481,7 @@ onBeforeUnmount(stop);
       <section v-else class="frozen-settings" aria-label="当前渲染规格">
         <span>输出规格：<strong>{{ run.resolution }} · {{ run.frameRate }} fps</strong></span>
       </section>
-      <section v-if="run.status !== 'PENDING_RENDER'" class="batch-panel" aria-label="批次输出进度">
+      <section v-if="run.status !== 'PENDING_RENDER' && run.status !== 'COMPLETED'" class="batch-panel" aria-label="批次输出进度">
         <div class="batch-panel__heading">
           <div>
             <span class="eyebrow">成片渲染进度</span>
@@ -333,46 +527,93 @@ onBeforeUnmount(stop);
             <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' ? '待渲染成片' : '成片列表' }}</h3>
             <p>{{ run.status === 'PENDING_RENDER' ? '当前模板已完成校验，点击导出后渲染此模板的全部成片' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
           </div>
-          <span class="result-count">第 {{ page }} / {{ pageCount }} 页 · 共 {{ run.counts.total }} 条</span>
+          <div class="workspace-heading__actions">
+            <button
+              v-if="downloadableItems.length"
+              class="secondary-button selection-toggle"
+              type="button"
+              :aria-pressed="selectionMode"
+              @click="toggleSelectionMode"
+            >{{ selectionMode ? '退出选择' : '选择成片' }}</button>
+            <span class="result-count">第 {{ page }} / {{ pageCount }} 页 · 共 {{ run.counts.total }} 条</span>
+          </div>
         </header>
+        <div v-if="selectionMode" class="selection-action-bar">
+          <span>已选 {{ selectedItems.length }} 条可下载成片</span>
+          <button type="button" :disabled="!downloadableItems.length" @click="toggleSelectAllDownloadable">
+            {{ allDownloadableSelected ? '取消全选' : '全选成片' }}
+          </button>
+          <button
+            class="primary-button"
+            type="button"
+            :disabled="!selectedItems.length || batchDownloading"
+            @click="downloadSelected"
+          ><Download :size="14" />{{ batchDownloading ? '已加入下载' : '批量下载' }}</button>
+        </div>
         <div v-if="items.length" class="output-grid">
           <article
             v-for="item in items"
             :key="item.id"
             class="output-card"
-            :class="{ abnormal: item.status === 'FAILED' || item.status === 'CANCELLED' }"
+            :class="{
+              abnormal: item.status === 'FAILED' || item.status === 'CANCELLED',
+              selectable: selectionMode && item.status === 'COMPLETED' && Boolean(item.fileObjectId),
+              selected: selectedItemIds.has(item.id),
+            }"
           >
             <div class="output-preview" :class="statusTone(item.status)">
+              <label
+                v-if="selectionMode && item.status === 'COMPLETED' && item.fileObjectId"
+                class="output-checkbox"
+                @click.stop
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedItemIds.has(item.id)"
+                  :aria-label="`选择${displayName(item)}下载`"
+                  @change="toggleItemSelection(item.id)"
+                />
+              </label>
               <video
-                v-if="item.fileObjectId"
+                v-if="item.fileObjectId && playingItemId === item.id"
+                :src="fileUrl(item.fileObjectId)"
+                controls
+                preload="metadata"
+                autoplay
+                @ended="playingItemId = ''"
+                :aria-label="`${displayName(item)} 成片播放`"
+              />
+              <button
+                v-else-if="previewClips(item).length || !item.fileObjectId"
+                class="preview-trigger"
+                :class="{ 'has-cover': Boolean(item.cover) }"
+                type="button"
+                :aria-label="`${item.fileObjectId ? '播放' : '预览'}${displayName(item)}`"
+                :title="item.fileObjectId ? '播放最终成片' : '在混剪工作台预览这条成片的时间轴与包装'"
+                @click="item.fileObjectId ? (playingItemId = item.id) : previewItem(item.variantId)"
+              >
+                <span v-if="previewClips(item).length" class="preview-cover preview-montage">
+                  <EffectTemplateMixThumbnail
+                    v-for="(clip, clipIndex) in previewClips(item)"
+                    :key="`${item.id}:${clip.fileObjectId}:${clip.contentHash}:${page}`"
+                    :source="fileUrl(clip.fileObjectId)"
+                    :time="clip.time"
+                    :version="previewVersion(clip)"
+                    :alt="`${displayName(item)} 第 ${clipIndex + 1} 段画面`"
+                  />
+                </span>
+                <Clapperboard v-else :size="25" />
+                <span class="preview-label">{{ item.fileObjectId ? '播放成片' : '预览成片' }}</span>
+              </button>
+              <video
+                v-else-if="item.fileObjectId"
                 :src="fileUrl(item.fileObjectId)"
                 controls
                 preload="metadata"
                 :aria-label="`${displayName(item)} 成片播放`"
               />
-              <template v-else>
-                <button
-                  class="preview-trigger"
-                  :class="{ 'has-cover': Boolean(item.cover) }"
-                  type="button"
-                  :aria-label="`预览${displayName(item)}`"
-                  title="在混剪工作台预览这条成片的时间轴与包装"
-                  @click="previewItem(item.variantId)"
-                >
-                  <span v-if="item.cover" class="preview-cover">
-                    <EffectTemplateMixThumbnail
-                      :source="fileUrl(item.cover.fileObjectId)"
-                      :time="item.cover.time"
-                      :version="item.cover.contentHash"
-                      :alt="`${displayName(item)} 封面`"
-                    />
-                  </span>
-                  <Clapperboard v-else :size="25" />
-                  <span class="preview-label">预览成片</span>
-                </button>
-                <small v-if="run.status !== 'PENDING_RENDER'">{{ item.progress }}%</small>
-                <small v-else>等待导出</small>
-              </template>
+              <small v-if="run.status === 'PENDING_RENDER'">等待导出</small>
+              <small v-else-if="item.status !== 'COMPLETED'">{{ item.progress }}%</small>
             </div>
             <div class="output-info">
               <div class="output-card__title">
@@ -382,7 +623,7 @@ onBeforeUnmount(stop);
                 </span>
               </div>
               <p class="output-meta">{{ run.status === 'PENDING_RENDER' ? `预计 ${item.duration.toFixed(1)} 秒 · 待导出` : `${item.duration.toFixed(1)} 秒 · H.264 / AAC · 内嵌字幕` }}</p>
-              <div v-if="run.status !== 'PENDING_RENDER'" class="item-progress">
+              <div v-if="run.status !== 'PENDING_RENDER' && item.status !== 'COMPLETED'" class="item-progress">
                 <progress :value="item.progress" max="100" :aria-label="`${displayName(item)} 进度`" />
                 <strong>{{ item.progress }}%</strong>
               </div>
@@ -417,8 +658,18 @@ onBeforeUnmount(stop);
             下一页<ChevronRight :size="14" />
           </button>
           <span>共 {{ run.counts.total }} 条</span>
-        </nav>
+          </nav>
       </section>
+          </template>
+          <section v-else class="template-readiness" role="status">
+            <span class="state-icon"><Film :size="25" /></span>
+            <span class="readiness-eyebrow">{{ selectedTemplate?.pendingLabel ?? '尚未进入成片输出' }}</span>
+            <h3>{{ selectedTemplate?.pendingTitle ?? '该模板还没有待渲染成片' }}</h3>
+            <p>{{ selectedTemplate?.pendingDetail ?? '返回模板混剪，完成当前模板的成片包装与校验。' }}</p>
+            <button class="secondary-button" type="button" @click="$emit('back')">
+              <ArrowLeft :size="14" />返回模板混剪
+            </button>
+          </section>
         </main>
       </div>
     </template>
@@ -492,11 +743,7 @@ onBeforeUnmount(stop);
   font-size: 13px;
 }
 .output-layout {
-  position: sticky;
-  top: 12px;
   display: grid;
-  height: calc(100vh - 190px);
-  min-height: 500px;
   grid-template-columns: minmax(220px, 250px) minmax(0, 1fr);
   align-items: stretch;
   gap: 18px;
@@ -506,9 +753,6 @@ onBeforeUnmount(stop);
   top: 12px;
   display: grid;
   min-width: 0;
-  min-height: 0;
-  height: 100%;
-  max-height: 100%;
   padding: 16px;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
@@ -540,12 +784,38 @@ onBeforeUnmount(stop);
   gap: 8px;
 }
 .output-main {
-  display: flex;
   min-width: 0;
-  min-height: 0;
+}
+.template-readiness {
+  display: flex;
+  min-height: 440px;
+  padding: 28px;
+  align-items: center;
+  justify-content: center;
   flex-direction: column;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+  gap: 12px;
+  color: #7f8da2;
+  text-align: center;
+  background: #fff;
+  border: 1px solid #dfe7f4;
+  border-radius: 16px;
+}
+.readiness-eyebrow {
+  margin-top: 3px;
+  color: #7d899d;
+  font-size: 11px;
+  font-weight: 700;
+}
+.template-readiness h3 {
+  margin: 0;
+  color: #34445c;
+  font-size: 17px;
+}
+.template-readiness p {
+  max-width: 620px;
+  margin: 0 0 5px;
+  font-size: 12px;
+  line-height: 1.7;
 }
 .template-card {
   display: flex;
@@ -846,10 +1116,8 @@ progress {
   font-size: 14px;
 }
 .output-workspace {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
+  position: sticky;
+  top: 12px;
   margin-top: 15px;
   overflow: hidden;
   background: #fff;
@@ -862,6 +1130,46 @@ progress {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid #edf0f5;
+}
+.workspace-heading__actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+.selection-toggle {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 12px;
+}
+.selection-action-bar {
+  display: flex;
+  min-height: 58px;
+  padding: 9px 14px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #53627a;
+  background: #f3f7ff;
+  border-bottom: 1px solid #dce7fb;
+  font-size: 12px;
+}
+.selection-action-bar > span {
+  margin-right: auto;
+}
+.selection-action-bar > button:not(.primary-button) {
+  min-height: 36px;
+  padding: 0 12px;
+  background: #fff;
+  cursor: pointer;
+}
+.selection-action-bar > button:disabled {
+  cursor: not-allowed;
+}
+.selection-action-bar .primary-button {
+  min-height: 36px;
+  padding: 0 14px;
 }
 .workspace-heading h3,
 .workspace-heading p {
@@ -883,10 +1191,7 @@ progress {
 }
 .output-grid {
   display: grid;
-  min-height: 0;
-  flex: 1 1 auto;
   align-content: start;
-  overflow-y: auto;
   padding: 12px;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   grid-auto-rows: max-content;
@@ -908,6 +1213,13 @@ progress {
 .output-card.abnormal {
   border-color: #f0b9b3;
 }
+.output-card.selectable {
+  cursor: default;
+}
+.output-card.selected {
+  border-color: #7da7ff;
+  box-shadow: 0 0 0 2px #2563eb1c;
+}
 .output-preview {
   position: relative;
   display: flex;
@@ -923,6 +1235,28 @@ progress {
   color: #617fae;
   background: linear-gradient(135deg, #edf3fa, #e4ecf6);
   font-size: 11px;
+}
+.output-checkbox {
+  position: absolute;
+  z-index: 2;
+  top: 9px;
+  left: 9px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  background: #ffffffed;
+  border: 1px solid #dce5f3;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px #17203326;
+  cursor: pointer;
+}
+.output-checkbox input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #2563eb;
+  cursor: pointer;
 }
 .output-preview.running,
 .output-preview.pending {
@@ -968,6 +1302,12 @@ progress {
   position: absolute;
   inset: 0;
   overflow: hidden;
+}
+.preview-montage {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  background: #fff;
 }
 .preview-cover :deep(img),
 .preview-cover :deep(.thumbnail-loading) {
@@ -1126,33 +1466,18 @@ progress {
 }
 @media (max-width: 1200px) {
   .output-layout {
-    position: static;
-    height: auto;
-    min-height: 0;
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
   }
   .template-sidebar {
     position: static;
     min-height: 0;
-    height: auto;
     max-height: none;
   }
   .template-list {
     overflow: visible;
     grid-auto-rows: 72px;
     grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  }
-  .output-main {
-    min-height: 0;
-    overflow: visible;
-  }
-  .output-workspace {
-    min-height: 0;
-    flex: initial;
-  }
-  .output-grid {
-    overflow: visible;
   }
 }
 @media (max-width: 900px) {
@@ -1180,8 +1505,23 @@ progress {
     align-items: flex-start;
     flex-direction: column;
   }
+  .workspace-heading__actions {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .selection-action-bar {
+    justify-content: flex-start;
+  }
+  .selection-action-bar > span {
+    flex: 1 0 100%;
+  }
   .batch-select {
     width: 100%;
+  }
+  .template-readiness {
+    min-height: 320px;
+    padding: 22px 16px;
   }
   .render-settings {
     align-items: stretch;

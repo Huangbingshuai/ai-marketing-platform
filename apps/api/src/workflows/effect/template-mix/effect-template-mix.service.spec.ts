@@ -1,4 +1,8 @@
-import type { EffectTemplateMixDraft, EffectTemplateMixVariant, WorkingArtifact } from '@ai-marketing/contracts';
+import type {
+  EffectTemplateMixDraft,
+  EffectTemplateMixVariant,
+  WorkingArtifact,
+} from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
@@ -313,7 +317,9 @@ describe('EffectTemplateMixService', () => {
   it('rejects newly introduced duplicate template names after whitespace and Unicode normalization', async () => {
     const { service, working } = harness();
     const value = draft();
-    const duplicate = JSON.parse(JSON.stringify(value.templates[0])) as (typeof value.templates)[number];
+    const duplicate = JSON.parse(
+      JSON.stringify(value.templates[0]),
+    ) as (typeof value.templates)[number];
     duplicate.id = 'another-template';
     duplicate.workspace.template.name = '　跑量模板　';
     value.templates.push(duplicate);
@@ -362,6 +368,19 @@ describe('EffectTemplateMixService', () => {
     expect(inputs[1].input.dependencies).toEqual([
       expect.objectContaining({ sourceArtifactId: sourceId, sourceRevision: 2 }),
     ]);
+  });
+
+  it('requires the user-triggered trim refresh after a bound render revision advances', async () => {
+    const { service, working } = harness();
+    const state = draft();
+    const variant = state.templates[0]!.workspace.variants[0]!;
+    variant.bindingRevisions[variant.slots[0]!.id] = 1;
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+
+    await expect(service.validate('project', 'run', 7, templateId)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
   });
 
   it('rejects a stale browser draft revision', async () => {
@@ -516,7 +535,9 @@ describe('EffectTemplateMixService', () => {
     const aiRuns = {
       packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
       activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
-      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      // A stale fill lease must not block the additive empty-project operation
+      // after packaging has permanently locked the template.
+      lockedTemplateIds: vi.fn().mockResolvedValue([templateId]),
       listRecent: vi.fn().mockResolvedValue([]),
       sourceArtifacts: vi.fn().mockResolvedValue([]),
     };
@@ -558,12 +579,16 @@ describe('EffectTemplateMixService', () => {
       aiRuns as unknown as EffectTemplateMixAiRepository,
     );
 
-    await expect(packageLockedService.saveDraft('project', 'run', 7, edited)).resolves.toBeDefined();
+    await expect(
+      packageLockedService.saveDraft('project', 'run', 7, edited),
+    ).resolves.toBeDefined();
     expect(edited.templates[0]!.workspace.variants[0]!.offsets[slotId]).toBe(0.5);
     edited.templates[0]!.workspace.template.name = '不允许修改的模板名';
-    await expect(packageLockedService.saveDraft('project', 'run', 8, edited)).rejects.toMatchObject({
-      status: 409,
-    });
+    await expect(packageLockedService.saveDraft('project', 'run', 8, edited)).rejects.toMatchObject(
+      {
+        status: 409,
+      },
+    );
   });
 
   it('rejects a server mutation based on a stale draft revision', async () => {
@@ -791,6 +816,128 @@ describe('EffectTemplateMixService', () => {
       ),
     );
     expect(refilling.initialClassifications).toHaveLength(6);
+  });
+
+  it('creates a trim-only refresh for changed clips without changing their slot assignments', async () => {
+    const roles = [
+      'HOOK',
+      'PAIN_POINT',
+      'PRODUCT',
+      'SELLING_POINT',
+      'TRANSFORMATION',
+      'END',
+    ] as const;
+    const state = draft();
+    const entry = state.templates[0]!;
+    entry.workspace.template.slots = roles.map((role, index) => ({
+      id: `refresh-slot-${index}`,
+      label: `槽位 ${index + 1}`,
+      role,
+      purpose: 'HOOK',
+      duration: 4,
+      transition: '硬切',
+    }));
+    entry.workspace.variants = [
+      {
+        id: variantId,
+        name: '跑量模板 · 1',
+        appliedTemplateVersion: entry.workspace.template.editVersion,
+        slots: JSON.parse(
+          JSON.stringify(entry.workspace.template.slots),
+        ) as typeof entry.workspace.template.slots,
+        bindings: Object.fromEntries(
+          roles.map((_, index) => [`refresh-slot-${index}`, `material-${index}`]),
+        ),
+        bindingRevisions: Object.fromEntries(roles.map((_, index) => [`refresh-slot-${index}`, 2])),
+        offsets: Object.fromEntries(roles.map((_, index) => [`refresh-slot-${index}`, 0])),
+        manualSlotIds: [],
+        conflictSlotIds: [],
+        status: 'CURRENT',
+        captions: [],
+        subtitleStyle: 'standard',
+        bgm: null,
+        voice: null,
+        originalVolume: 1,
+      } as EffectTemplateMixVariant,
+    ];
+    const promptArtifact = {
+      id: 'prompt-artifact',
+      nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:product',
+      revision: 3,
+      contentHash: 'p'.repeat(64),
+      payload: {
+        items: roles.map((_, index) => ({ id: `prompt-${index}`, content: `Prompt ${index}` })),
+      },
+    };
+    const clips = roles.map((_, index) => ({
+      id: `material-${index}`,
+      nodeId: 'SEGMENT_RENDER',
+      artifactKey: `render-clip:${index}`,
+      revision: index === 2 ? 3 : 2,
+      contentHash: `${index}`.repeat(64),
+      storageKey: `video/${index}.mp4`,
+      name: `素材 ${index} 视频片段`,
+      payload: {
+        promptId: `prompt-${index}`,
+        renderCode: `V${index}`,
+        durationSeconds: 5,
+        contentHash: 'v'.repeat(64),
+        fileObjectId: `file-${index}`,
+        primaryPurpose: 'HOOK',
+        compatiblePurposes: ['HOOK'],
+      },
+    }));
+    const working = { getNodeState: vi.fn().mockResolvedValue({ revision: 11, state }) };
+    const create = vi.fn().mockResolvedValue({
+      kind: 'CREATED',
+      run: {
+        id: 'refresh-run',
+        templateId,
+        targetVariantId: variantId,
+        outputVariantId: null,
+        status: 'QUEUED',
+        stage: 'TRIMMING',
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+    const aiRepository = {
+      sourceArtifacts: vi.fn().mockResolvedValue([promptArtifact, ...clips]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      // A completed package normally locks the template. The explicit
+      // trim-only refresh is allowed; active packaging is still blocked by
+      // the repository's transactional guard.
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      create,
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await service.createAiRun('project', 'run', templateId, 11, 'refresh-key', variantId, true);
+
+    const input = create.mock.calls[0]![0];
+    expect(input.snapshot).toMatchObject({
+      trimOnly: true,
+      targetVariantId: variantId,
+      refreshBindings: [
+        { slotId: 'refresh-slot-2', materialId: 'material-2', artifactRevision: 3 },
+      ],
+    });
+    expect(input.snapshot.lockedBindings).toHaveLength(5);
+    expect(input.snapshot.trimOnly).toBe(true);
+    expect(input.initialSelections).toHaveLength(1);
+    expect(input.initialSelections[0]).toMatchObject({
+      slotId: 'refresh-slot-2',
+      materialId: 'material-2',
+      duration: 4,
+    });
+    expect(input.initialClassifications).toBeUndefined();
   });
 
   it('persists a partial Prompt-classification shard for lease-safe resume', async () => {

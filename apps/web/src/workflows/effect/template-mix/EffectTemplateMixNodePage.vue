@@ -360,6 +360,23 @@ const selectedVariant = computed(
     workspace.value?.variants[0] ??
     null,
 );
+const selectedVariantRefreshSlotIds = computed(() => {
+  const variant = selectedVariant.value;
+  if (!variant || !workspace.value) return [];
+  return variant.slots.flatMap((slot) => {
+    const materialId = variant.bindings[slot.id];
+    const material = materialId
+      ? workspace.value?.materials.find(({ id }) => id === materialId)
+      : undefined;
+    const boundRevision = variant.bindingRevisions[slot.id];
+    return material?.available &&
+      (typeof boundRevision !== 'number' ||
+        !Number.isInteger(boundRevision) ||
+        material.artifactRevision > boundRevision)
+      ? [slot.id]
+      : [];
+  });
+});
 const canUndoTimeline = computed(() => timelineUndoStack.value.length > 0);
 const canRedoTimeline = computed(() => timelineRedoStack.value.length > 0);
 const clearTimelineHistory = (): void => {
@@ -3448,6 +3465,10 @@ const createEmptyVariant = async (): Promise<void> => {
   }
 };
 const openPackaging = (target: 'ACTION' | 'WORKFLOW'): void => {
+  if (target === 'ACTION' && selectedVariantRefreshSlotIds.value.length) {
+    showNotice('当前成片引用了已更新素材，请先更新受影响素材位并完成校验', 'error');
+    return;
+  }
   if (target === 'ACTION' && activeEntry.value?.needsAiFill) {
     showNotice('模板已改动，或仍有成片未按当前模板重新智能填充；请先完成需要更新的成片', 'error');
     return;
@@ -3458,10 +3479,18 @@ const handlePackagingStarted = async (): Promise<void> => {
   await load();
   if (activeEntry.value) activeEntry.value.packagingLocked = true;
 };
-const preparePackaging = async (): Promise<number | null> =>
-  (await flushPendingEdits()) ? draftRevision.value : null;
-const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<void> => {
-  if (packagingLocked.value) {
+const preparePackaging = async (): Promise<number | null> => {
+  if (selectedVariantRefreshSlotIds.value.length) {
+    showNotice('请先更新已替换素材的截取区间并完成混剪校验', 'error');
+    return null;
+  }
+  return (await flushPendingEdits()) ? draftRevision.value : null;
+};
+const startAiFill = async (
+  target: EffectTemplateMixVariant | null,
+  refreshAffectedSlots = false,
+): Promise<void> => {
+  if (packagingLocked.value && !refreshAffectedSlots) {
     showNotice('智能成片包装已启动或完成，此模板不能重新智能填充', 'error');
     return;
   }
@@ -3478,6 +3507,7 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
       draftRevision.value,
       templateId,
       variantId,
+      refreshAffectedSlots,
     );
     const workspaceResponse = await loadEffectTemplateMixWorkspace(
       props.projectId,
@@ -3487,11 +3517,13 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
     activeTemplateId.value = templateId;
     aiRuns.value = [result.data, ...aiRuns.value.filter(({ id }) => id !== result.data.id)];
     showNotice(
-      target?.manualSlotIds.length
-        ? '智能填充已开始，人工槽位会保留，其余槽位重新计算'
-        : target
-          ? '重新智能填充已开始，将保留原六槽位素材归属，只重新计算素材裁切'
-          : '智能填充已开始；完成前不会创建成片工程',
+      refreshAffectedSlots
+        ? '正在为已更新素材位重新分析截取起点；槽位归属、其他素材和剪辑位置保持不变'
+        : target?.manualSlotIds.length
+          ? '智能填充已开始，人工槽位会保留，其余槽位重新计算'
+          : target
+            ? '重新智能填充已开始，将保留原六槽位素材归属，只重新计算素材裁切'
+            : '智能填充已开始；完成前不会创建成片工程',
     );
     void pollAiRun(result.data.id);
   } catch (error) {
@@ -3503,11 +3535,14 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
   }
 };
 const refill = (): void => void startAiFill(selectedVariant.value);
+const refreshAffectedClips = (): void => {
+  if (selectedVariantRefreshSlotIds.value.length) void startAiFill(selectedVariant.value, true);
+};
 const retryFailedAiRun = (): void => {
   const run = failedAiRun.value;
   if (run?.targetVariantId && activeUi.value) {
     activeUi.value.selectedVariantId = run.targetVariantId;
-    void startAiFill(selectedVariant.value);
+    void startAiFill(selectedVariant.value, run.operation === 'REFRESH_TRIMS');
     return;
   }
   void startAiFill(null);
@@ -4324,7 +4359,7 @@ defineExpose({ flushPendingEdits });
             </button>
           </footer>
           <p v-if="packagingLocked" class="template-lock-banner" role="status">
-            <Lock :size="15" />模板配置和智能填充已锁定；仍可新建空成片并精修未包装工程。
+            <Lock :size="15" />模板配置和常规智能填充已锁定；上游素材更新时可仅重算受影响素材的截取区间；仍可新建空成片并精修未包装工程。
           </p>
           <p v-else-if="templateEditLocked" class="template-lock-banner" role="status">
             <Lock :size="15" />智能填充正在运行，模板暂时锁定；任务结束后可修改。
@@ -4356,6 +4391,30 @@ defineExpose({ flushPendingEdits });
             >
           </div>
           <div class="workbench-actions">
+            <button
+              v-if="selectedVariantRefreshSlotIds.length"
+              class="button primary"
+              type="button"
+              :disabled="
+                mutating ||
+                Boolean(activeAiRun) ||
+                selectedVariantRefreshSlotIds.length === 0
+              "
+              :title="`保留槽位和其他剪辑，只重新分析 ${selectedVariantRefreshSlotIds.length} 个已更新素材的截取起点`"
+              @click="refreshAffectedClips"
+            >
+              <LoaderCircle
+                v-if="activeAiRun?.operation === 'REFRESH_TRIMS'"
+                class="spin"
+                :size="15"
+              />
+              <WandSparkles v-else :size="15" />
+              {{
+                activeAiRun?.operation === 'REFRESH_TRIMS'
+                  ? '正在更新素材截取…'
+                  : `自动更新截取区间（${selectedVariantRefreshSlotIds.length}）`
+              }}
+            </button>
             <button
               class="button primary"
               type="button"

@@ -142,6 +142,76 @@ function harness(count = 1) {
 }
 const request = { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'key' };
 
+describe('final output preview covers', () => {
+  it('uses the first occupied template slot like the template mix card', async () => {
+    const { service, outputRun } = harness();
+    const variant = {
+      id: 'v0',
+      name: '成片0',
+      slots: [
+        { id: 'first-slot', role: 'HOOK', label: '开场', duration: 3, transition: '硬切' },
+        { id: 'earlier-on-timeline', role: 'PRODUCT', label: '产品', duration: 7, transition: '硬切' },
+      ],
+      bindings: { 'first-slot': 'material-first', 'earlier-on-timeline': 'material-earlier' },
+      bindingRevisions: {},
+      offsets: {},
+    } as unknown as EffectTemplateMixVariant;
+    const snapshot = {
+      timeline: {
+        variant,
+        duration: 10,
+        clips: [
+          {
+            slotId: 'earlier-on-timeline',
+            materialId: 'material-earlier',
+            fileObjectId: 'earlier-cover',
+            contentHash: 'earlier-hash',
+            start: 0,
+            duration: 7,
+            offset: 0,
+            lane: 0,
+            prompt: '',
+            transition: '硬切',
+            transitionDuration: 0,
+          },
+          {
+            slotId: 'first-slot',
+            materialId: 'material-first',
+            fileObjectId: 'template-card-cover',
+            contentHash: 'template-card-hash',
+            start: 7,
+            duration: 3,
+            offset: 1,
+            lane: 0,
+            prompt: '',
+            transition: '硬切',
+            transitionDuration: 0,
+          },
+        ],
+      },
+    } as unknown as FinalOutputSnapshot;
+    outputRun.items = [{
+      id: 'output-item',
+      variantId: 'v0',
+      name: '成片0',
+      status: 'PENDING_RENDER',
+      progress: 0,
+      errorMessage: null,
+      fileObjectId: null,
+      assetId: null,
+      snapshot,
+    }];
+
+    const result = await service.get('p', 'out');
+
+    expect(result.items[0]?.cover).toEqual({
+      fileObjectId: 'template-card-cover',
+      time: 0.12,
+      contentHash: 'template-card-hash',
+    });
+  });
+});
+
 describe('atomic full packaging completion', () => {
   it.each([1, 10, 100])(
     'commits all %i visuals and packages as an isolated pending template output',

@@ -168,7 +168,12 @@ class Consumer:
             ]
             rows: list[Classification]
             selections: list[Selection]
-            if restored_rows and checkpoint.get("selections"):
+            if snapshot.trimOnly:
+                if not checkpoint.get("selections"):
+                    raise RuntimeError("trim-only run is missing fixed slot selections")
+                rows = restored_rows
+                selections = [Selection.model_validate(item) for item in checkpoint["selections"]]
+            elif restored_rows and checkpoint.get("selections"):
                 rows = restored_rows
                 selections = [Selection.model_validate(item) for item in checkpoint["selections"]]
             else:

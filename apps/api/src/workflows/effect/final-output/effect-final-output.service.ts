@@ -390,15 +390,20 @@ export class EffectFinalOutputService {
         )
         .map((i) => {
           const snapshot = i.snapshot as unknown as FinalOutputSnapshot;
-          const firstClip = [...snapshot.timeline.clips].sort((a, b) => a.start - b.start)[0];
+          const firstBoundSlot = snapshot.timeline.variant.slots.find(
+            ({ id }) => Boolean(snapshot.timeline.variant.bindings[id]),
+          );
+          const coverClip = (firstBoundSlot
+            ? snapshot.timeline.clips.find((clip) => clip.slotId === firstBoundSlot.id)
+            : undefined) ?? [...snapshot.timeline.clips].sort((a, b) => a.start - b.start)[0];
           return {
             id: i.id,
             variantId: i.variantId,
             name: i.name,
-            cover: firstClip ? {
-              fileObjectId: firstClip.fileObjectId,
-              time: firstClip.offset + Math.min(0.12, firstClip.duration / 2),
-              contentHash: firstClip.contentHash,
+            cover: coverClip ? {
+              fileObjectId: coverClip.fileObjectId,
+              time: 0.12,
+              contentHash: coverClip.contentHash,
             } : null,
             status: i.status as FinalOutputRun['status'],
             duration: snapshot.timeline.duration,

@@ -363,8 +363,19 @@ export class EffectSegmentRenderRepository {
     taskIds: string[],
     expectedBatchRevision: number,
     idempotencyKey: string,
+    input: {
+      sourcePrompt: { artifactId: string; revision: number; contentHash: string };
+      taskSnapshots: Record<string, EffectSegmentRenderRequestSnapshot>;
+    },
   ) {
-    const requestHash = workflowStateHash({ batchId, taskIds: [...taskIds].sort() });
+    const requestHash = workflowStateHash({
+      batchId,
+      taskIds: [...taskIds].sort(),
+      sourcePrompt: input.sourcePrompt,
+      taskSnapshots: Object.fromEntries(
+        Object.entries(input.taskSnapshots).sort(([left], [right]) => left.localeCompare(right)),
+      ),
+    });
     try {
       return await this.prisma.$transaction(async (transaction) => {
         await transaction.$queryRaw<Array<{ id: string }>>`
@@ -394,11 +405,11 @@ export class EffectSegmentRenderRepository {
           where: {
             projectId,
             workflowRunId: batch.workflowRunId,
-            id: batch.sourcePromptArtifactId,
+            id: input.sourcePrompt.artifactId,
             nodeId: 'PROMPT_GENERATION',
             artifactKey: 'prompt-batch:' + batch.productId,
-            revision: batch.sourcePromptRevision,
-            contentHash: batch.sourcePromptHash,
+            revision: input.sourcePrompt.revision,
+            contentHash: input.sourcePrompt.contentHash,
             freshness: 'CURRENT',
             availability: 'AVAILABLE',
           },
@@ -409,9 +420,15 @@ export class EffectSegmentRenderRepository {
           where: { projectId, batchId, id: { in: uniqueIds } },
         });
         if (tasks.length !== uniqueIds.length) return { kind: 'TASK_NOT_FOUND' as const };
-        const sourceSnapshot = tasks[0]?.requestSnapshot as
-          | { sourcePackage?: { artifactId?: string; revision?: number; contentHash?: string } }
-          | undefined;
+        if (
+          Object.keys(input.taskSnapshots).length !== uniqueIds.length ||
+          tasks.some((task) => {
+            const snapshot = input.taskSnapshots[task.id];
+            return !snapshot || snapshot.promptId !== task.promptId;
+          })
+        )
+          return { kind: 'PROMPT_CONFLICT' as const };
+        const sourceSnapshot = input.taskSnapshots[tasks[0]!.id];
         const sourcePackage = sourceSnapshot?.sourcePackage;
         if (
           !sourcePackage?.artifactId ||
@@ -450,13 +467,15 @@ export class EffectSegmentRenderRepository {
           data: { projectId, batchId, idempotencyKey, requestHash },
         });
         for (const task of tasks) {
+          const snapshot = input.taskSnapshots[task.id]!;
           await transaction.effectSegmentRenderTask.update({
             where: { projectId_id: { projectId, id: task.id } },
             data: {
               status: 'QUEUED',
               operationKind: 'GENERATE',
-              requestSnapshot: json(task.generationRequestSnapshot),
-              sourceFingerprint: workflowStateHash(task.generationRequestSnapshot),
+              requestSnapshot: json(snapshot),
+              generationRequestSnapshot: json(snapshot),
+              sourceFingerprint: workflowStateHash(snapshot),
               progress: 0,
               renderVersion: { increment: 1 },
               retryCount: 0,
@@ -509,7 +528,14 @@ export class EffectSegmentRenderRepository {
         }
         await transaction.effectSegmentRenderBatch.update({
           where: { projectId_id: { projectId, id: batchId } },
-          data: { status: 'RUNNING', activeKey: 'ACTIVE', revision: { increment: 1 } },
+          data: {
+            status: 'RUNNING',
+            activeKey: 'ACTIVE',
+            sourcePromptArtifactId: input.sourcePrompt.artifactId,
+            sourcePromptRevision: input.sourcePrompt.revision,
+            sourcePromptHash: input.sourcePrompt.contentHash,
+            revision: { increment: 1 },
+          },
         });
         return { kind: 'UPDATED' as const };
       });
@@ -1514,6 +1540,7 @@ export class EffectSegmentRenderRepository {
     projectId: string,
     batchId: string,
     expectedRevision: number,
+    sourcePrompt: { artifactId: string; revision: number; contentHash: string },
     sourcePackage: { artifactId: string; revision: number; contentHash: string },
     artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
   ) {
@@ -1536,11 +1563,11 @@ export class EffectSegmentRenderRepository {
         where: {
           projectId,
           workflowRunId: batch.workflowRunId,
-          id: batch.sourcePromptArtifactId,
+          id: sourcePrompt.artifactId,
           nodeId: 'PROMPT_GENERATION',
           artifactKey: 'prompt-batch:' + batch.productId,
-          revision: batch.sourcePromptRevision,
-          contentHash: batch.sourcePromptHash,
+          revision: sourcePrompt.revision,
+          contentHash: sourcePrompt.contentHash,
           freshness: 'CURRENT',
           availability: 'AVAILABLE',
         },
@@ -1561,6 +1588,14 @@ export class EffectSegmentRenderRepository {
       });
       if (!source) return { kind: 'SOURCE_CONFLICT' as const };
       if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+      await transaction.effectSegmentRenderBatch.update({
+        where: { projectId_id: { projectId, id: batchId } },
+        data: {
+          sourcePromptArtifactId: sourcePrompt.artifactId,
+          sourcePromptRevision: sourcePrompt.revision,
+          sourcePromptHash: sourcePrompt.contentHash,
+        },
+      });
       const committed = await this.workingRepository.commitValidatedArtifactsInTransaction(
         transaction,
         projectId,

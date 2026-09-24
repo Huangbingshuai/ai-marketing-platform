@@ -9,6 +9,15 @@ export type TransitionPresentation = {
 const clamp = (value: number): number => Math.max(0, Math.min(1, value));
 
 /**
+ * Playback-only compositor keyframes for a dissolve. The editor's Vue state is
+ * intentionally throttled while playing, so the incoming layer must animate
+ * on the browser compositor instead of following the low-frequency playhead.
+ */
+export const effectTemplateMixDissolvePlaybackKeyframes = (
+  rawProgress: number,
+): Keyframe[] => [{ opacity: String(clamp(rawProgress)) }, { opacity: '1' }];
+
+/**
  * Builds the two-layer presentation used by the editor preview. The outgoing
  * and incoming clips are intentionally independent so a seek or a paused
  * frame renders the same transition as playback.

@@ -3,9 +3,17 @@ from unittest.mock import AsyncMock
 import pytest
 
 from effect_template_mix.api import InternalApi
-from effect_template_mix.consumer import temporary_video_directory
-from effect_template_mix.models import Material, Runtime, SampledMaterial, SamplingCheckpoint
-from effect_template_mix.provider import ProviderError
+from effect_template_mix.consumer import Consumer, temporary_video_directory
+from effect_template_mix.models import (
+    Claim,
+    Material,
+    Runtime,
+    SampledMaterial,
+    SamplingCheckpoint,
+    TrimCheckpoint,
+    TrimOutput,
+)
+from effect_template_mix.provider import ArkProvider, ProviderError, TrimChoice
 from effect_template_mix.reliability import (
     classification_chunks,
     classification_output_token_budget,
@@ -91,3 +99,73 @@ async def test_sampling_checkpoint_uses_the_run_lease_and_persists_frame_timesta
         json={"projectId": "project-1", "samples": [sample.model_dump()]},
     )
     await api.close()
+
+
+@pytest.mark.asyncio
+async def test_trim_only_refresh_skips_classification_and_retrims_only_the_fixed_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = AsyncMock(spec=InternalApi)
+    selected = {
+        "variantIndex": 0,
+        "slotId": "slot-updated",
+        "role": "PRODUCT",
+        "materialId": "clip-updated",
+        "matchScore": 0.8,
+        "matchLevel": "NORMAL",
+        "classificationReason": "保留原槽位素材归属",
+        "duration": 4,
+    }
+    source = material(1).model_copy(update={
+        "id": "clip-updated", "duration": 10, "promptId": "prompt-updated",
+        "prompt": "新版产品展示画面", "artifactId": "clip-updated",
+        "artifactKey": "render-clip:updated", "artifactRevision": 2,
+    })
+    snapshot = {
+        "schemaVersion": 1,
+        "template": {"id": "template", "name": "模板", "editVersion": 1,
+            "slots": [{"id": "slot-updated", "role": "PRODUCT", "label": "产品展示", "duration": 4}]},
+        "draftRevision": 4,
+        "targetVariantId": "variant",
+        "trimOnly": True,
+        "lockedBindings": [],
+        "promptArtifacts": [],
+        "materials": [source.model_dump()],
+    }
+    api.claim.return_value = Claim(
+        terminal=False,
+        attemptToken="lease",
+        snapshot=snapshot,
+        checkpoint={"selections": [selected]},
+    )
+    api.video.return_value = b"fake-video"
+    api.checkpoint_sampling.return_value = SamplingCheckpoint(
+        materialIds=["clip-updated"],
+        samples=[SampledMaterial(materialId="clip-updated", frameTimestampsSeconds=[1, 2])],
+    )
+    api.checkpoint_trims.return_value = TrimCheckpoint(
+        trims=[TrimOutput(slotId="slot-updated", materialId="clip-updated", trimStartSeconds=2, trimReason="动作完整")],
+        progress=90,
+    )
+    provider = AsyncMock(spec=ArkProvider)
+    provider.trim.return_value = TrimChoice(trimStartSeconds=2, trimReason="动作完整")
+    monkeypatch.setattr(
+        "effect_template_mix.consumer.sample_frames",
+        AsyncMock(return_value=[(1.0, b"frame-1"), (2.0, b"frame-2")]),
+    )
+    consumer = Consumer(
+        "amqp://test", "effect.template-mix.requested", api, provider,
+        1000, 10, 16000, 8192, 1,
+    )
+    message = AsyncMock()
+    message.body = b'{"schemaVersion":1,"projectId":"project","runId":"run","requestId":"request"}'
+
+    await consumer.handle(message)
+
+    provider.classify.assert_not_awaited()
+    provider.trim.assert_awaited_once()
+    assert api.video.await_count == 1
+    assert api.video.await_args.args[1:] == ("clip-updated", 1000)
+    api.complete.assert_awaited_once()
+    assert len(api.complete.await_args.args[1]) == 1
+    assert api.complete.await_args.args[1][0].slotId == "slot-updated"

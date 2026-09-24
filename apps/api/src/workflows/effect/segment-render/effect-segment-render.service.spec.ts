@@ -377,6 +377,35 @@ describe('EffectSegmentRenderService', () => {
     expect(repository.createBatch).not.toHaveBeenCalled();
   });
 
+  it('marks only changed Prompt slots for selective rerendering', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-selective-refresh',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    repository.batch.mockResolvedValue(created.batch);
+    repository.renderArtifact.mockResolvedValue({
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
+    });
+    const updated = promptBatch();
+    updated.items[0]!.content += ' Prompt 更新。';
+    repository.promptArtifact.mockResolvedValue({
+      ...promptArtifact(updated),
+      revision: 4,
+      contentHash: 'e'.repeat(64),
+    });
+
+    const result = await service.batch('project-a', created.batch.id);
+
+    expect(result.batch.refreshScope).toBe('SELECTIVE');
+    expect(result.batch.tasks.filter(({ needsUpdate }) => needsUpdate).map(({ promptId }) => promptId))
+      .toEqual([item.id]);
+  });
+
   it('creates fifty independent tasks while freezing the same complete image set for every Prompt', async () => {
     const many = promptBatch();
     many.items = Array.from({ length: 50 }, (_, index) => ({
