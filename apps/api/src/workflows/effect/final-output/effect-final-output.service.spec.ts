@@ -1,3 +1,6 @@
+import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   EffectTemplateMixVariant,
@@ -86,7 +89,17 @@ function harness(count = 1) {
     $executeRaw: vi.fn(),
     workflowNodeState: { findUnique: vi.fn().mockResolvedValue(state) },
     workingArtifact: { findMany: vi.fn().mockResolvedValue(sources) },
-    fileObject: { findMany: vi.fn().mockResolvedValue(files), count: vi.fn().mockResolvedValue(3) },
+    fileObject: {
+      findMany: vi.fn().mockResolvedValue(files),
+      count: vi.fn().mockResolvedValue(3),
+      create: vi.fn().mockResolvedValue({ id: 'new-file' }),
+      delete: vi.fn().mockResolvedValue({ id: 'new-file' }),
+    },
+    asset: {
+      create: vi.fn().mockResolvedValue({ id: 'asset-created' }),
+      update: vi.fn().mockImplementation(({ where }) => Promise.resolve({ id: where.id })),
+    },
+    assetVersion: { create: vi.fn().mockResolvedValue({ id: 'version' }), deleteMany: vi.fn() },
     effectPackagingRun: { count: vi.fn().mockResolvedValue(0) },
     effectPackagingItem: { findMany: vi.fn().mockResolvedValue(rows) },
     effectFinalOutputRun: {
@@ -102,6 +115,8 @@ function harness(count = 1) {
     },
     effectFinalOutputItem: {
       updateMany: vi.fn(),
+      findFirst: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
       update: vi.fn().mockImplementation(({ where, data }) => {
         const item = outputRun.items.find((entry) => (entry as { id: string }).id === where.id) as Record<string, unknown> | undefined;
         if (item) Object.assign(item, data);
@@ -110,6 +125,7 @@ function harness(count = 1) {
     },
     jobOutbox: { upsert: vi.fn() },
     workflowRun: { updateMany: vi.fn() },
+    project: { findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'p', name: '项目' }) },
   };
   const inputs = variants.map((v) => ({ artifactKey: `timeline-project:t:${v.id}`, input: {} }));
   const mix = {
@@ -129,18 +145,72 @@ function harness(count = 1) {
             revision: 2,
             contentHash: 'confirmed-hash',
           },
+          previousStorageKey: null,
+          unchanged: false,
+          orphanedFileObjectIds: [],
         })),
       ),
+    enqueueCleanup: vi.fn(),
+  };
+  const storage = {
+    put: vi.fn().mockResolvedValue({ key: 'stored/new.mp4', sizeBytes: 64 }),
+    delete: vi.fn().mockResolvedValue(undefined),
+  };
+  // Real transactions roll back on throw; mirror that so "failure keeps the previous output" is
+  // actually observable instead of leaving half-applied writes in the fixture.
+  const scopedDb = {
+    ...db,
+    $transaction: async (fn: (tx: typeof db) => unknown) => {
+      const before = structuredClone(outputRun);
+      try {
+        return await fn(db);
+      } catch (error) {
+        Object.assign(outputRun, before);
+        throw error;
+      }
+    },
   };
   const service = new EffectFinalOutputService(
-    { ...db, $transaction: (fn: (tx: typeof db) => unknown) => fn(db) } as unknown as PrismaService,
+    scopedDb as unknown as PrismaService,
     mix as unknown as EffectTemplateMixService,
     working as unknown as WorkflowWorkingRepository,
-    {} as StoragePort,
+    storage as unknown as StoragePort,
   );
-  return { db, service, working, rows, state, sources, mix, outputRun };
+  return { db, service, working, storage, rows, state, sources, mix, outputRun };
+}
+
+/** A real on-disk file so upload()'s MP4 header probe and sha256 pass. */
+async function outputFile(): Promise<{ path: string; size: number; cleanup: () => Promise<void> }> {
+  const directory = await mkdtemp(join(tmpdir(), 'final-output-unit-'));
+  const path = join(directory, 'local.mp4');
+  const header = Buffer.alloc(64);
+  header.write('ftyp', 4);
+  await writeFile(path, header);
+  return {
+    path,
+    size: header.length,
+    cleanup: async () => {
+      await unlink(path);
+      await rmdir(directory);
+    },
+  };
 }
 const request = { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'key' };
+
+/** workingArtifact rows that satisfy current() for an already-completed batch. */
+function currentRows(items: { snapshot: FinalOutputSnapshot }[]) {
+  return [
+    ...new Map(
+      items.flatMap((item) => item.snapshot.dependencies).map((d) => [d.artifactId, d]),
+    ).values(),
+  ].map((d) => ({
+    id: d.artifactId,
+    revision: d.revision,
+    contentHash: d.contentHash,
+    freshness: 'CURRENT',
+    availability: 'AVAILABLE',
+  }));
+}
 
 describe('final output preview covers', () => {
   it('uses the first occupied template slot like the template mix card', async () => {
@@ -308,16 +378,56 @@ describe('atomic full packaging completion', () => {
     await service.complete('p', 't', request);
     await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
     expect(db.effectFinalOutputRun.update).toHaveBeenCalledWith({
-      where: { id: 'out' }, data: { status: 'QUEUED' },
+      where: { id: 'out' },
+      data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null, completedAt: null },
     });
     expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: 'QUEUED', snapshot: expect.objectContaining({ resolution: '1080p', frameRate: 50 }) }),
     }));
     expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
     expect(outputRun.status).toBe('QUEUED');
-    await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
-    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    // An in-flight batch is the one thing a re-export must not touch.
     await expect(service.start('p', 'out', { resolution: '480p', frameRate: 24 })).rejects.toThrow('不能修改');
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it.each(['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'])(
+    're-exports a %s batch by resetting every item and rewriting the batch spec',
+    async (status) => {
+      const { service, db, outputRun } = harness(3);
+      await service.complete('p', 't', request);
+      outputRun.status = status;
+      const items = outputRun.items as { status: string; snapshot: FinalOutputSnapshot }[];
+      items.forEach((item) => { item.status = status; });
+      db.workingArtifact.findMany.mockResolvedValue(currentRows(items));
+
+      await service.start('p', 'out', { resolution: '480p', frameRate: 24 });
+
+      expect(db.effectFinalOutputItem.update).toHaveBeenCalledTimes(3);
+      for (const [call] of db.effectFinalOutputItem.update.mock.calls) {
+        expect(call.data).toMatchObject({ status: 'QUEUED', progress: 0, errorMessage: null });
+        expect(call.data.snapshot).toMatchObject({ resolution: '480p', frameRate: 24 });
+      }
+      expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    },
+  );
+  it('refuses a re-export when the upstream package went stale, without touching state', async () => {
+    const { service, db, outputRun } = harness(2);
+    await service.complete('p', 't', request);
+    outputRun.status = 'COMPLETED';
+    const items = outputRun.items as { status: string; snapshot: FinalOutputSnapshot }[];
+    items.forEach((item) => { item.status = 'COMPLETED'; });
+    // Bump the package revision: the batch was exported against revision 2.
+    db.workingArtifact.findMany.mockResolvedValue(
+      currentRows(items).map((row) =>
+        row.id.startsWith('timeline-package:') ? { ...row, revision: 9 } : row,
+      ),
+    );
+
+    await expect(service.start('p', 'out', { resolution: '1080p', frameRate: 50 })).rejects.toThrow('过期');
+
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+    expect(outputRun.status).toBe('COMPLETED');
   });
   it('old attempt tokens cannot renew or write progress', async () => {
     const { service, db } = harness();
@@ -333,5 +443,193 @@ describe('atomic full packaging completion', () => {
         where: { projectId: 'p', runId: 'out', status: { in: ['QUEUED', 'RUNNING'] } },
       }),
     );
+  });
+});
+
+/** Completes a batch, then hands back an exported run with stable item ids and upstream rows. */
+async function exportedRun(count = 2) {
+  const context = harness(count);
+  await context.service.complete('p', 't', request);
+  const items = context.outputRun.items as {
+    id: string;
+    status: string;
+    snapshot: FinalOutputSnapshot;
+    fileObjectId?: string | null;
+    assetId?: string | null;
+  }[];
+  items.forEach((item, index) => {
+    item.id = `item-${index}`;
+    item.status = 'COMPLETED';
+    item.fileObjectId = `old-file-${index}`;
+    item.assetId = `old-asset-${index}`;
+  });
+  context.outputRun.status = 'COMPLETED';
+  context.db.workingArtifact.findMany.mockResolvedValue(currentRows(items));
+  return { ...context, items };
+}
+
+describe('single item re-render', () => {
+  it('resets exactly one item, keeps its own snapshot and enqueues once', async () => {
+    const { service, db, items } = await exportedRun();
+    const before = JSON.stringify(items[0]!.snapshot);
+
+    await service.renderItem('p', 'out', 'item-0');
+
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledOnce();
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith({
+      where: { id: 'item-0' },
+      data: { status: 'QUEUED', progress: 0, errorMessage: null },
+    });
+    // The batch spec must survive a single-item re-render untouched (toDto reads items[0]).
+    expect(JSON.stringify(items[0]!.snapshot)).toBe(before);
+    expect(items[0]!.status).toBe('QUEUED');
+    expect(items[1]!.status).toBe('COMPLETED');
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['QUEUED', '正在渲染'],
+    ['RUNNING', '正在渲染'],
+    ['PENDING_RENDER', '尚未导出'],
+  ])('refuses to re-render one item while the run is %s', async (status, message) => {
+    const { service, db, outputRun } = await exportedRun();
+    outputRun.status = status;
+    await expect(service.renderItem('p', 'out', 'item-0')).rejects.toThrow(message);
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('reports a missing item instead of re-queueing the batch', async () => {
+    const { service, db } = await exportedRun();
+    await expect(service.renderItem('p', 'out', 'missing')).rejects.toThrow('条目不存在');
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+  });
+  it('refuses a stale upstream before resetting the item', async () => {
+    const { service, db, items } = await exportedRun();
+    db.workingArtifact.findMany.mockResolvedValue(currentRows(items).slice(0, 1));
+    await expect(service.renderItem('p', 'out', 'item-0')).rejects.toThrow('过期');
+    expect(items[0]!.status).toBe('COMPLETED');
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('re-render overwrites the previous artifact in place', () => {
+  async function prepareUpload() {
+    const context = await exportedRun();
+    const { db, working, items } = context;
+    const item = items[0]!;
+    db.effectFinalOutputItem.findFirst.mockResolvedValue({
+      ...item,
+      // claim() hands the worker only non-COMPLETED items, so an upload always sees QUEUED.
+      status: 'QUEUED',
+      run: { workflowRunId: 'w', templateId: 't' },
+    });
+    db.effectFinalOutputItem.findUniqueOrThrow.mockResolvedValue({
+      status: 'QUEUED',
+      fileObjectId: 'old-file-0',
+      assetId: 'old-asset-0',
+    });
+    working.commitValidatedArtifactsInTransaction.mockResolvedValue([
+      {
+        artifactKey: 'final-video:t:v0',
+        record: {
+          id: 'final-video:t:v0',
+          artifactKey: 'final-video:t:v0',
+          nodeId: 'FINAL_OUTPUT',
+          revision: 2,
+          contentHash: 'output-hash',
+        },
+        previousStorageKey: 'stored/old.mp4',
+        unchanged: false,
+        orphanedFileObjectIds: ['old-file-0'],
+      },
+    ]);
+    return { ...context, item };
+  }
+
+  it('releases the old pointer before the artifact commit and updates the asset in place', async () => {
+    const { service, db, working, items } = await prepareUpload();
+    const file = await outputFile();
+    try {
+      const result = await service.upload('p', 'out', 'token', 'item-0', {
+        path: file.path,
+        size: file.size,
+      });
+
+      // The orphan guard (finalOutputItems: { none: {} }) only fires if the item let go first.
+      const repoint = db.effectFinalOutputItem.update.mock.calls.findIndex(
+        (call) => call[0].data.fileObjectId === null,
+      );
+      expect(repoint).toBeGreaterThanOrEqual(0);
+      // The commit mock was already exercised by complete(), so compare against its last call.
+      expect(db.effectFinalOutputItem.update.mock.invocationCallOrder[repoint]).toBeLessThan(
+        working.commitValidatedArtifactsInTransaction.mock.invocationCallOrder.at(-1)!,
+      );
+
+      expect(db.asset.create).not.toHaveBeenCalled();
+      expect(db.assetVersion.deleteMany).toHaveBeenCalledWith({
+        where: { projectId: 'p', assetId: 'old-asset-0' },
+      });
+      expect(db.asset.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'old-asset-0' }, data: expect.objectContaining({ currentVersion: 1 }) }),
+      );
+      expect(db.assetVersion.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ assetId: 'old-asset-0', version: 1 }) }),
+      );
+      expect(working.enqueueCleanup).toHaveBeenCalledWith('p', 'stored/old.mp4', 'FINAL_OUTPUT_REPLACED');
+      expect(items[0]!.fileObjectId).toBe('new-file');
+      expect(result).toEqual({ fileObjectId: 'new-file' });
+    } finally {
+      await file.cleanup();
+    }
+  });
+
+  it('keeps the previous output when the upload fails', async () => {
+    const { service, db, working, storage, outputRun } = await prepareUpload();
+    const file = await outputFile();
+    db.asset.update.mockRejectedValueOnce(new Error('db down'));
+    try {
+      await expect(
+        service.upload('p', 'out', 'token', 'item-0', { path: file.path, size: file.size }),
+      ).rejects.toThrow('db down');
+      // The whole transaction rolled back: the item still points at the surviving output.
+      const item = (outputRun.items as { fileObjectId?: string | null; assetId?: string | null; status: string }[])[0]!;
+      expect(item.fileObjectId).toBe('old-file-0');
+      expect(item.assetId).toBe('old-asset-0');
+      expect(item.status).toBe('COMPLETED');
+      expect(working.enqueueCleanup).not.toHaveBeenCalled();
+      // Only the aborted attempt's own blob is discarded.
+      expect(storage.delete).toHaveBeenCalledWith('stored/new.mp4');
+    } finally {
+      await file.cleanup();
+    }
+  });
+
+  it('does not leak a second blob when the re-render is byte-identical', async () => {
+    const { service, db, working, storage, items } = await prepareUpload();
+    working.commitValidatedArtifactsInTransaction.mockResolvedValue([
+      {
+        artifactKey: 'final-video:t:v0',
+        record: { id: 'final-video:t:v0', artifactKey: 'final-video:t:v0', nodeId: 'FINAL_OUTPUT', revision: 1, contentHash: 'output-hash' },
+        previousStorageKey: 'stored/old.mp4',
+        unchanged: true,
+        orphanedFileObjectIds: [],
+      },
+    ]);
+    const file = await outputFile();
+    try {
+      const result = await service.upload('p', 'out', 'token', 'item-0', {
+        path: file.path,
+        size: file.size,
+      });
+      // The artifact still owns stored/old.mp4, so nothing may schedule its deletion.
+      expect(working.enqueueCleanup).not.toHaveBeenCalled();
+      expect(storage.delete).toHaveBeenCalledWith('stored/new.mp4');
+      expect(db.fileObject.delete).toHaveBeenCalledWith({ where: { id: 'new-file' } });
+      expect(items[0]!.fileObjectId).toBe('old-file-0');
+      expect(items[0]!.assetId).toBe('old-asset-0');
+      expect(items[0]!.status).toBe('COMPLETED');
+      expect(result).toEqual({ fileObjectId: 'old-file-0' });
+    } finally {
+      await file.cleanup();
+    }
   });
 });

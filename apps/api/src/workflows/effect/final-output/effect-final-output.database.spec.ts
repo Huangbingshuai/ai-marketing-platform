@@ -30,10 +30,15 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
     const rollback = new Error('TEST_ROLLBACK');
     const directory = await mkdtemp(join(tmpdir(), 'output-transaction-'));
     const videoPath = join(directory, 'local.mp4');
+    const rerenderPath = join(directory, 'rerender.mp4');
     // Only exercise the upload/asset transaction here; real decoding is covered by FFmpeg tests.
     const header = Buffer.alloc(64);
     header.write('ftyp', 4);
     await writeFile(videoPath, header);
+    // A re-render at new settings produces different bytes; identical bytes are a legal no-op.
+    const rerenderHeader = Buffer.alloc(128);
+    rerenderHeader.write('ftyp', 4);
+    await writeFile(rerenderPath, rerenderHeader);
     try {
       await expect(
         db.$transaction(
@@ -118,7 +123,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                       variant: v,
                       sourceTimelineHash: visualHash(v),
                       duration: 10,
-                      clips: [{ fileObjectId: files[0]!.id }],
+                      clips: [{ slotId: 's', start: 0, duration: 10, fileObjectId: files[0]!.id }],
                       facts: [{ id: 'f', text: '测试商品' }],
                       dependencies: [
                         {
@@ -131,8 +136,9 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                       ],
                     },
                     checkpoint: {
+                      narrationLayoutVersion: 'SLOT_V1',
                       vision: [{ start: 0, end: 10, description: '测试画面' }],
-                      script: [{ id: 'line', text: '商品', start: 0, end: 4, factIds: ['f'] }],
+                      script: [{ id: 'line', slotId: 's', text: '商品', start: 0, end: 10, factIds: ['f'] }],
                       voices: {
                         line: { fileObjectId: files[1]!.id, start: 0, duration: 2, volume: 1 },
                       },
@@ -167,18 +173,23 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               }),
             } as unknown as EffectTemplateMixService;
             let uploaded = 0;
+            const deleted: string[] = [];
             const storage: StoragePort = {
               put: async (input) => {
                 let sizeBytes = 0;
                 for await (const chunk of input.stream) sizeBytes += Buffer.byteLength(chunk);
                 expect(sizeBytes).toBe(input.sizeBytes);
                 uploaded += 1;
-                return { key: `test/${projectId}/final.mp4`, sizeBytes: input.sizeBytes };
+                // A fresh key per upload: a constant key would make the second artifact commit look
+                // unchanged and silently no-op, hiding the re-render path.
+                return { key: `test/${projectId}/final-${uploaded}.mp4`, sizeBytes: input.sizeBytes };
               },
               putShared: async () => {
                 throw new Error('This transaction test never uploads shared media');
               },
-              delete: async () => undefined,
+              delete: async (key) => {
+                deleted.push(key);
+              },
               open: async () => {
                 throw new Error('This transaction test never downloads source media');
               },
@@ -257,6 +268,83 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 10,
               ),
             ).rejects.toThrow('过期');
+            await tx.workingArtifact.update({ where: { id: source.id }, data: { revision: 1 } });
+
+            // --- single-item re-render: overwrite in place, never a second asset row or leaked blob ---
+            await tx.effectFinalOutputItem.updateMany({
+              where: { projectId, runId: run.id },
+              data: { status: 'COMPLETED', progress: 100 },
+            });
+            await tx.effectFinalOutputRun.update({
+              where: { id: run.id },
+              data: { status: 'COMPLETED' },
+            });
+            const beforeRerender = await tx.effectFinalOutputItem.findUniqueOrThrow({
+              where: { id: itemId },
+            });
+            await service.renderItem(projectId, run.id, itemId);
+            expect(
+              (await tx.effectFinalOutputItem.findUniqueOrThrow({ where: { id: itemId } })).status,
+            ).toBe('QUEUED');
+            const rerenderClaim = await service.claim(projectId, run.id);
+            expect(rerenderClaim.items!.filter((item) => item.status === 'COMPLETED')).toHaveLength(
+              99,
+            );
+            expect(rerenderClaim.items!.filter((item) => item.status === 'QUEUED')).toHaveLength(1);
+            const rerendered = await service.upload(
+              projectId,
+              run.id,
+              rerenderClaim.attemptToken!,
+              itemId,
+              { path: rerenderPath, size: rerenderHeader.length },
+            );
+            expect(rerendered.fileObjectId).not.toBe(beforeRerender.fileObjectId);
+            expect(
+              (await tx.fileObject.findUniqueOrThrow({ where: { id: beforeRerender.fileObjectId! } }))
+                .status,
+            ).toBe('ORPHANED');
+            expect(
+              (await tx.fileObject.findUniqueOrThrow({ where: { id: rerendered.fileObjectId! } }))
+                .status,
+            ).toBe('AVAILABLE');
+            expect(await tx.asset.count({ where: { projectId, sourceNode: 'FINAL_OUTPUT' } })).toBe(
+              1,
+            );
+            expect(await tx.assetVersion.count({ where: { projectId } })).toBe(1);
+            expect(
+              (
+                await tx.workingArtifact.findFirstOrThrow({
+                  where: { projectId, nodeId: 'FINAL_OUTPUT' },
+                })
+              ).revision,
+            ).toBe(2);
+            expect(await tx.storageCleanupTask.count({ where: { projectId } })).toBe(1);
+            expect(deleted).toEqual([]);
+            await service.finish(projectId, run.id, rerenderClaim.attemptToken!);
+            expect(
+              (await tx.effectFinalOutputRun.findUniqueOrThrow({ where: { id: run.id } })).status,
+            ).toBe('COMPLETED');
+
+            // A failed re-render must leave the previous output downloadable and the batch PARTIAL.
+            await service.renderItem(projectId, run.id, itemId);
+            const failedClaim = await service.claim(projectId, run.id);
+            await service.progress(
+              projectId,
+              run.id,
+              failedClaim.attemptToken!,
+              itemId,
+              40,
+              '重新渲染失败',
+            );
+            await service.finish(projectId, run.id, failedClaim.attemptToken!);
+            expect(
+              (await tx.effectFinalOutputRun.findUniqueOrThrow({ where: { id: run.id } })).status,
+            ).toBe('PARTIAL');
+            expect(
+              (await tx.effectFinalOutputItem.findUniqueOrThrow({ where: { id: itemId } }))
+                .fileObjectId,
+            ).toBe(rerendered.fileObjectId);
+
             throw rollback;
           },
           { timeout: 120_000 },
@@ -266,6 +354,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
     } finally {
       await db.$disconnect();
       await unlink(videoPath);
+      await unlink(rerenderPath);
       await rmdir(directory);
     }
   },
