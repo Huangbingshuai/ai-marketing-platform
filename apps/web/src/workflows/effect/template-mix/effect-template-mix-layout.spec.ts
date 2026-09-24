@@ -24,6 +24,21 @@ describe('effect template mix workbench layout', () => {
     );
     expect(workflowSource).toContain('v-else-if="activeStep === 4"');
   });
+  it('supports same-template timeline copy and paste shortcuts and restores double-click audio separation', () => {
+    expect(timelineSource).toContain("if (!editingText && key === 'c')");
+    expect(timelineSource).toContain("if (!editingText && key === 'v')");
+    expect(timelineSource).toContain('copyVideoSlots');
+    expect(timelineSource).toContain('copyAudioClip');
+    expect(timelineSource).toContain('pasteVideoMaterials');
+    expect(timelineSource).toContain('pasteAudioMaterial');
+    expect(timelineSource).toContain('复制素材');
+    expect(timelineSource).toContain('粘贴素材');
+    expect(timelineSource).toContain('@dblclick="onVideoClipDoubleClick($event, slot.id)"');
+    expect(timelineSource).toContain("emit('separateAudio', slotId)");
+    expect(timelineSource).toContain('() => props.templateId');
+    expect(pageSource).toContain('@paste-video-materials="pasteTimelineVideoMaterials"');
+    expect(pageSource).toContain('@paste-audio-material="pasteTimelineAudioMaterial"');
+  });
   it('uses the real draft, material and validation API', () => {
     expect(pageSource).toContain("from './api/effect-template-mix.api'");
     expect(pageSource).toContain('loadEffectTemplateMixWorkspace');

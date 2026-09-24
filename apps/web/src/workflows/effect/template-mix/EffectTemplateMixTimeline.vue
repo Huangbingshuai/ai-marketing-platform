@@ -2,6 +2,7 @@
 import type {
   EffectTemplateMixAudio,
   EffectTemplateMixCaption,
+  EffectTemplateMixDetachedAudio,
   EffectTemplateMixMaterial,
   EffectTemplateMixSlot,
   EffectTemplateMixTransition,
@@ -17,6 +18,7 @@ import {
 } from '@ai-marketing/contracts';
 import {
   Captions,
+  Copy,
   Eye,
   EyeOff,
   Film,
@@ -25,6 +27,7 @@ import {
   Magnet,
   MousePointer2,
   Music2,
+  ClipboardPaste,
   Redo2,
   Undo2,
   Unlock,
@@ -47,6 +50,7 @@ import EffectTemplateMixWaveform from './EffectTemplateMixWaveform.vue';
 const props = withDefaults(
   defineProps<{
     duration: number;
+    templateId?: string;
     canRedo?: boolean;
     canUndo?: boolean;
     readOnly?: boolean;
@@ -117,6 +121,24 @@ const emit = defineEmits<{
   selectAudioClips: [clipIds: string[]];
   selectSlot: [slotId: string];
   separateAudio: [slotId: string];
+  pasteVideoMaterials: [items: Array<{
+    materialId: string;
+    targetSlotId: string;
+    offset: number;
+    duration: number;
+    detachedAudio?: EffectTemplateMixDetachedAudio;
+  }>];
+  pasteAudioMaterial: [audio: {
+    fileObjectId: string;
+    name: string;
+    sourceAssetId?: string;
+    sourceDuration: number;
+    duration: number;
+    start: number;
+    offset: number;
+    volume: number;
+  }];
+  requestNotice: [message: string];
   trimSlot: [slotId: string, trimStartSeconds: number];
   previewTransitionDuration: [slotId: string, duration: number];
   updateTransitionDuration: [slotId: string, duration: number];
@@ -277,7 +299,38 @@ const materialDropSlotId = ref('');
 const selectedClipIds = ref<string[]>([]);
 const selectedAudioIds = ref<string[]>([]);
 const audioDrag = ref<AudioDragState | null>(null);
-const clipContextMenu = ref<{ slotId: string; left: number; top: number } | null>(null);
+type TimelineClipboard =
+  | {
+      kind: 'VIDEO';
+      entries: Array<{
+        sourceSlotId: string;
+        materialId: string;
+        offset: number;
+        duration: number;
+        detachedAudio?: EffectTemplateMixDetachedAudio;
+      }>;
+    }
+  | {
+      kind: 'AUDIO';
+      audio: {
+        fileObjectId: string;
+        name: string;
+        sourceAssetId?: string;
+        sourceDuration: number;
+        duration: number;
+        offset: number;
+        volume: number;
+      };
+    };
+const timelineClipboard = ref<TimelineClipboard | null>(null);
+const clipContextMenu = ref<{
+  kind: 'VIDEO' | 'AUDIO' | 'EMPTY_VIDEO' | 'EMPTY_AUDIO';
+  slotId?: string;
+  audioId?: string;
+  pasteStart?: number;
+  left: number;
+  top: number;
+} | null>(null);
 const trackHeaders = ref<HTMLElement | null>(null);
 const trackLocked = reactive<Record<VisibleTrack, boolean>>({
   AUDIO: false,
@@ -565,7 +618,7 @@ const detachedAudioRows = (): TimelineAudio[] =>
       ? props.projectId
         ? apiUrl(`/projects/${encodeURIComponent(props.projectId)}/assets/${encodeURIComponent(audio.sourceAssetId)}/content`)
         : ''
-      : material?.contentUrl ?? '';
+      : (material?.contentUrl ?? fileUrl(audio.fileObjectId));
     if (!sourceUrl) return [];
     const offset = Math.max(0, audio.offset);
     return [{
@@ -1225,30 +1278,243 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
   addWindowPointerListeners();
 };
 const onVideoClipContextMenu = (event: MouseEvent, slotId: string): void => {
-  if (props.readOnly) return;
   if (!materialForSlot(slotId)) return;
   event.preventDefault();
   event.stopPropagation();
+  timelineShell.value?.focus({ preventScroll: true });
   selectedAudioIds.value = [];
   setSelection([slotId]);
   clipContextMenu.value = {
+    kind: 'VIDEO',
     slotId,
     left: Math.min(event.clientX, window.innerWidth - 208),
-    top: Math.min(event.clientY, window.innerHeight - 54),
+    top: Math.min(event.clientY, window.innerHeight - 120),
   };
+};
+const videoClipboardEntries = (slotIds: string[]): NonNullable<Extract<TimelineClipboard, { kind: 'VIDEO' }>['entries']> =>
+  slotIds.flatMap((slotId) => {
+    const slot = props.variant?.slots.find(({ id }) => id === slotId);
+    const material = slot ? materialForSlot(slotId) : null;
+    if (!slot || !material) return [];
+    const detachedAudio = props.variant?.detachedAudios?.find(
+      (audio) => audio.sourceSlotId === slotId,
+    );
+    return [{
+      sourceSlotId: slotId,
+      materialId: material.id,
+      offset: Math.max(0, props.variant?.offsets[slotId] ?? 0),
+      duration: slot.duration,
+      ...(detachedAudio ? { detachedAudio: { ...detachedAudio } } : {}),
+    }];
+  });
+const copyVideoSlots = (slotIds: string[]): void => {
+  const entries = videoClipboardEntries(slotIds);
+  if (!entries.length) {
+    emit('requestNotice', '所选位置没有可复制的视频素材');
+    return;
+  }
+  timelineClipboard.value = { kind: 'VIDEO', entries };
+  emit('requestNotice', `${entries.length} 个视频素材已复制，可切换到同一模板的其他成片粘贴`);
+};
+const copyAudioClip = (audioId: string): void => {
+  const detachedId = audioId.startsWith('detached:') ? audioId.slice('detached:'.length) : '';
+  const detached = props.variant?.detachedAudios?.find(({ id }) => id === detachedId);
+  let source: {
+    fileObjectId: string;
+    name: string;
+    sourceAssetId?: string;
+    sourceDuration: number;
+    duration: number;
+    offset: number;
+    volume: number;
+  } | null = detached
+    ? {
+        fileObjectId: detached.fileObjectId,
+        name: detached.name,
+        ...(detached.sourceAssetId ? { sourceAssetId: detached.sourceAssetId } : {}),
+        sourceDuration: detached.sourceDuration ?? detached.offset + detached.duration,
+        duration: detached.duration,
+        offset: detached.offset,
+        volume: detached.volume,
+      }
+    : null;
+  const packagedMusic = props.packaging?.checkpoint.music;
+  if (!source && audioId === 'music' && packagedMusic) {
+    const offset = packagedMusic.offset ?? 0;
+    source = {
+      fileObjectId: packagedMusic.fileObjectId,
+      name: '配乐',
+      sourceDuration: offset + packagedMusic.duration,
+      duration: packagedMusic.duration,
+      offset,
+      volume: packagedMusic.volume,
+    };
+  }
+  if (!source && audioId === 'music' && props.variant?.bgm) {
+    const audio = props.variant.bgm;
+    const offset = audio.offset ?? 0;
+    source = {
+      fileObjectId: audio.fileObjectId,
+      name: '配乐',
+      sourceDuration: offset + audio.duration,
+      duration: audio.duration,
+      offset,
+      volume: audio.volume,
+    };
+  }
+  if (!source && audioId === 'voice' && props.variant?.voice) {
+    const audio = props.variant.voice;
+    const offset = audio.offset ?? 0;
+    source = {
+      fileObjectId: audio.fileObjectId,
+      name: '口播',
+      sourceDuration: offset + audio.duration,
+      duration: audio.duration,
+      offset,
+      volume: audio.volume,
+    };
+  }
+  if (!source && audioId.startsWith('voice:')) {
+    const lineId = audioId.slice('voice:'.length);
+    const audio = props.packaging?.checkpoint.voices?.[lineId];
+    if (audio) {
+      const offset = audio.offset ?? 0;
+      source = {
+        fileObjectId: audio.fileObjectId,
+        name: '口播',
+        sourceDuration: offset + audio.duration,
+        duration: audio.duration,
+        offset,
+        volume: audio.volume,
+      };
+    }
+  }
+  if (!source) {
+    emit('requestNotice', '当前音频素材无法复制');
+    return;
+  }
+  timelineClipboard.value = { kind: 'AUDIO', audio: source };
+  emit('requestNotice', '音频素材已复制，可切换到同一模板的其他成片粘贴');
 };
 const contextAudioDetached = (): boolean =>
   Boolean(
-    clipContextMenu.value &&
+    clipContextMenu.value?.slotId &&
       props.variant?.detachedAudios?.some(
         (audio) => audio.sourceSlotId === clipContextMenu.value?.slotId,
       ),
   );
-const runClipContextAction = (): void => {
-  if (props.readOnly) return;
-  const slotId = clipContextMenu.value?.slotId;
-  if (!slotId) return;
+const canPasteAtContext = computed(() =>
+  Boolean(
+    !props.readOnly &&
+      (((clipContextMenu.value?.kind === 'VIDEO' ||
+        clipContextMenu.value?.kind === 'EMPTY_VIDEO') &&
+        timelineClipboard.value?.kind === 'VIDEO' &&
+        clipContextMenu.value.slotId) ||
+        ((clipContextMenu.value?.kind === 'AUDIO' ||
+          clipContextMenu.value?.kind === 'EMPTY_AUDIO') &&
+          timelineClipboard.value?.kind === 'AUDIO')),
+  ),
+);
+const openEmptyTrackContextMenu = (event: MouseEvent, kind: 'VIDEO' | 'AUDIO'): void => {
+  if (!timelineClipboard.value || event.target !== event.currentTarget) return;
+  event.preventDefault();
+  event.stopPropagation();
+  timelineShell.value?.focus({ preventScroll: true });
+  const bounds = viewport.value?.getBoundingClientRect();
+  const time = bounds
+    ? Math.max(0, Math.min(timelineDuration.value, (event.clientX - bounds.left + (viewport.value?.scrollLeft ?? 0)) / pixelsPerSecond.value))
+    : Math.max(0, Math.min(timelineDuration.value, props.playhead));
+  const selectedTarget = selectedClipIds.value.at(-1) ?? props.selectedSlotId;
+  const missingTarget = props.variant?.slots.find((slot) => !materialForSlot(slot.id))?.id;
+  const targetSlotId = kind === 'VIDEO' ? (selectedTarget || missingTarget || '') : undefined;
+  clipContextMenu.value = {
+    kind: kind === 'VIDEO' ? 'EMPTY_VIDEO' : 'EMPTY_AUDIO',
+    ...(targetSlotId ? { slotId: targetSlotId } : {}),
+    pasteStart: time,
+    left: Math.min(event.clientX, window.innerWidth - 208),
+    top: Math.min(event.clientY, window.innerHeight - 120),
+  };
+};
+const onAudioClipContextMenu = (event: MouseEvent, audioId: string): void => {
+  event.preventDefault();
+  event.stopPropagation();
+  timelineShell.value?.focus({ preventScroll: true });
+  selectedClipIds.value = [];
+  selectAudio(audioId);
+  clipContextMenu.value = {
+    kind: 'AUDIO',
+    audioId,
+    left: Math.min(event.clientX, window.innerWidth - 208),
+    top: Math.min(event.clientY, window.innerHeight - 92),
+  };
+};
+const pasteVideoSlots = (targetSlotIds: string[]): void => {
+  const clipboard = timelineClipboard.value;
+  if (props.readOnly || clipboard?.kind !== 'VIDEO' || !targetSlotIds.length) return;
+  if (targetSlotIds.length !== clipboard.entries.length) {
+    emit('requestNotice', '请选中与复制素材数量相同的目标槽位后再粘贴');
+    return;
+  }
+  emit(
+    'pasteVideoMaterials',
+    clipboard.entries.map((entry, index) => ({
+      materialId: entry.materialId,
+      targetSlotId: targetSlotIds[index]!,
+      offset: entry.offset,
+      duration: entry.duration,
+      ...(entry.detachedAudio ? { detachedAudio: { ...entry.detachedAudio } } : {}),
+    })),
+  );
+};
+const pasteClipboard = (targetSlotId?: string, start?: number): void => {
+  const clipboard = timelineClipboard.value;
+  if (props.readOnly || !clipboard) return;
+  if (clipboard.kind === 'VIDEO') {
+    const slots = props.variant?.slots ?? [];
+    const targets = selectedClipIds.value.length
+      ? selectedClipIds.value
+      : targetSlotId
+        ? [targetSlotId]
+        : props.selectedSlotId
+          ? [props.selectedSlotId]
+          : [];
+    if (targets.length === clipboard.entries.length) {
+      pasteVideoSlots(targets);
+      return;
+    }
+    const first = targets[0] ?? props.selectedSlotId;
+    const startIndex = slots.findIndex(({ id }) => id === first);
+    if (startIndex < 0 || startIndex + clipboard.entries.length > slots.length) {
+      emit('requestNotice', '目标成片没有足够的素材槽位用于粘贴');
+      return;
+    }
+    pasteVideoSlots(slots.slice(startIndex, startIndex + clipboard.entries.length).map(({ id }) => id));
+    return;
+  }
+  const pasteStart = Math.max(0, Math.min(timelineDuration.value, start ?? props.playhead));
+  emit('pasteAudioMaterial', { ...clipboard.audio, start: pasteStart });
+};
+const runClipContextAction = (action: 'COPY' | 'PASTE' | 'SEPARATE'): void => {
+  const menu = clipContextMenu.value;
+  if (!menu) return;
   clipContextMenu.value = null;
+  if (action === 'SEPARATE' && menu.slotId) {
+    emit('separateAudio', menu.slotId);
+    return;
+  }
+  if (action === 'COPY') {
+    if (menu.slotId && (menu.kind === 'VIDEO' || menu.kind === 'EMPTY_VIDEO'))
+      copyVideoSlots([menu.slotId]);
+    else if (menu.audioId) copyAudioClip(menu.audioId);
+    return;
+  }
+  pasteClipboard(menu.slotId, menu.pasteStart);
+};
+const onVideoClipDoubleClick = (event: MouseEvent, slotId: string): void => {
+  if (props.readOnly || !materialForSlot(slotId)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  setSelection([slotId]);
   emit('separateAudio', slotId);
 };
 
@@ -1971,6 +2237,33 @@ const onTimelineKeydown = (event: KeyboardEvent): void => {
     clipContextMenu.value = null;
     return;
   }
+  if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+    const target = event.target;
+    const editingText =
+      target instanceof Element &&
+      Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+    const key = event.key.toLowerCase();
+    if (!editingText && key === 'c') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (selectedAudioIds.value.length === 1) {
+        if (selectedAudioIds.value[0]!.startsWith('caption:'))
+          emit('requestNotice', '字幕不单独复制，以免与口播声音失去同步');
+        else copyAudioClip(selectedAudioIds.value[0]!);
+      } else if (selectedAudioIds.value.length > 1) {
+        emit('requestNotice', '请一次选择一个音频素材进行复制');
+      } else {
+        copyVideoSlots(selectedClipIds.value.length ? selectedClipIds.value : [props.selectedSlotId]);
+      }
+      return;
+    }
+    if (!editingText && key === 'v') {
+      event.preventDefault();
+      event.stopPropagation();
+      pasteClipboard();
+      return;
+    }
+  }
   if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
   event.preventDefault();
   event.stopPropagation();
@@ -1992,6 +2285,14 @@ watch(
     selectedClipIds.value = props.selectedSlotId ? [props.selectedSlotId] : [];
     selectedAudioIds.value = [];
     void fitTimeline();
+  },
+);
+watch(
+  () => props.templateId,
+  () => {
+    // Keep the clipboard available while switching成片 in this template, but never leak it
+    // into another template where its source materials may not belong.
+    timelineClipboard.value = null;
   },
 );
 
@@ -2072,8 +2373,30 @@ onBeforeUnmount(() => {
         :style="{ left: `${clipContextMenu.left}px`, top: `${clipContextMenu.top}px` }"
         @pointerdown.stop
       >
-        <button type="button" role="menuitem" @click="runClipContextAction">
+        <button
+          v-if="clipContextMenu.kind === 'VIDEO' || clipContextMenu.kind === 'AUDIO'"
+          type="button"
+          role="menuitem"
+          @click="runClipContextAction('COPY')"
+        >
+          <Copy :size="14" />复制素材
+        </button>
+        <button
+          v-if="clipContextMenu.kind === 'VIDEO'"
+          type="button"
+          role="menuitem"
+          :disabled="props.readOnly"
+          @click="runClipContextAction('SEPARATE')"
+        >
           {{ contextAudioDetached() ? '恢复视频原声' : '分离音频' }}
+        </button>
+        <button
+          v-if="canPasteAtContext"
+          type="button"
+          role="menuitem"
+          @click="runClipContextAction('PASTE')"
+        >
+          <ClipboardPaste :size="14" />粘贴素材
         </button>
       </div>
     </Teleport>
@@ -2113,7 +2436,7 @@ onBeforeUnmount(() => {
         </button>
         <span class="timeline-time">{{ formatTimecode(playhead) }}</span>
           <span class="timeline-hint"
-          >素材可直接拖入 · 点击标尺定位 · 拖动片段换位 · 滚动查看上下轨道 · 拖边恢复素材时长</span
+          >素材可直接拖入 · Ctrl/Cmd+C、V 复制粘贴 · 右键打开操作 · 点击标尺定位 · 拖动片段换位</span
         >
       </div>
       <div class="zoom-controls" aria-label="时间轴缩放">
@@ -2293,6 +2616,7 @@ onBeforeUnmount(() => {
               @dragleave="onTrackDragLeave"
               @dragover="onTrackDragOver"
               @drop="onTrackDrop"
+              @contextmenu="openEmptyTrackContextMenu($event, 'VIDEO')"
               @pointerdown="onTrackPointerDown($event, 'VIDEO')"
             >
               <template v-if="variant">
@@ -2317,6 +2641,7 @@ onBeforeUnmount(() => {
                   :data-slot-id="slot.id"
                   @pointerdown="onClipPointerDown($event, slot.id)"
                   @contextmenu="onVideoClipContextMenu($event, slot.id)"
+                  @dblclick="onVideoClipDoubleClick($event, slot.id)"
                 >
                   <template v-if="materialForSlot(slot.id)">
                     <div class="clip-mini-preview" aria-hidden="true">
@@ -2444,6 +2769,7 @@ onBeforeUnmount(() => {
             @dragleave="onMusicTrackDragLeave"
             @dragover="onMusicTrackDragOver"
             @drop="onMusicTrackDrop"
+            @contextmenu="openEmptyTrackContextMenu($event, 'AUDIO')"
             @pointerdown="onTrackPointerDown($event, track)"
           >
             <div
@@ -2463,6 +2789,7 @@ onBeforeUnmount(() => {
               :data-audio-id="audio.id"
               :title="audio.text ?? audio.label"
               @pointerdown="onAudioPointerDown($event, audio)"
+              @contextmenu="onAudioClipContextMenu($event, audio.id)"
             >
               <EffectTemplateMixWaveform
                 v-if="audio.sourceUrl"
@@ -3201,6 +3528,9 @@ onBeforeUnmount(() => {
 .clip-context-menu button {
   width: 100%;
   padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   border: 0;
   border-radius: 5px;
   background: transparent;
@@ -3212,6 +3542,13 @@ onBeforeUnmount(() => {
 .clip-context-menu button:focus-visible {
   outline: none;
   background: #edf4ff;
+}
+.clip-context-menu button:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+.clip-context-menu button:disabled:hover {
+  background: transparent;
 }
 .caption-clip.is-selected,
 .audio-clip.is-selected {

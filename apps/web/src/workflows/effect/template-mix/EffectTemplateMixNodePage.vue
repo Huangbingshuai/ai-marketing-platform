@@ -2288,7 +2288,9 @@ const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string =
     );
   return (
     workspace.value?.materials.find((item) => item.fileObjectId === audio.fileObjectId)?.contentUrl ??
-    ''
+    apiUrl(
+      `/projects/${encodeURIComponent(props.projectId)}/file-objects/${encodeURIComponent(audio.fileObjectId)}/content`,
+    )
   );
 };
 const resetTimelinePlayerState = (): void => {
@@ -2664,6 +2666,137 @@ const moveMaterialToSlot = (material: EffectTemplateMixMaterial, targetSlotId: s
       ? `已将${material.name}与${targetSlot.label}素材交换槽位`
       : `已将${material.name}移动到${targetSlot.label}`,
   );
+};
+type TimelineVideoPaste = {
+  materialId: string;
+  targetSlotId: string;
+  offset: number;
+  duration: number;
+  detachedAudio?: EffectTemplateMixDetachedAudio;
+};
+const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
+  const variant = selectedVariant.value;
+  const materials = workspace.value?.materials;
+  if (!variant || !materials?.length || !items.length) return;
+  if (projectEditLocked.value) {
+    showNotice('当前任务正在运行，暂时不能粘贴素材', 'warning');
+    return;
+  }
+  const targets = new Set(items.map(({ targetSlotId }) => targetSlotId));
+  const materialIds = items.map(({ materialId }) => materialId);
+  if (targets.size !== items.length || new Set(materialIds).size !== items.length) {
+    showNotice('复制内容与目标槽位重复，请重新选择后粘贴', 'warning');
+    return;
+  }
+  const resolved = items.map((item) => {
+    const slot = variant.slots.find(({ id }) => id === item.targetSlotId);
+    const material = materials.find(({ id }) => id === item.materialId);
+    if (
+      !slot ||
+      !material?.available ||
+      item.duration < 4 ||
+      item.duration > 15 ||
+      item.offset < 0 ||
+      item.offset + item.duration > material.duration
+    )
+      return null;
+    return { ...item, slot, material };
+  });
+  if (resolved.some((item) => !item)) {
+    showNotice('复制素材已失效或超出目标时长，未粘贴任何内容', 'warning');
+    return;
+  }
+  const overwrittenSlots = new Set(items.map(({ targetSlotId }) => targetSlotId));
+  if (
+    resolved.some((item) =>
+      variant.slots.some(
+        (slot) =>
+          !overwrittenSlots.has(slot.id) && variant.bindings[slot.id] === item!.material.id,
+      ),
+    )
+  ) {
+    showNotice('同一成片不能重复使用同一个视频素材', 'warning');
+    return;
+  }
+  rememberTimelineEdit();
+  clearDetachedAudioForSlots(variant, [...overwrittenSlots]);
+  for (const item of resolved) {
+    if (!item) continue;
+    variant.bindings[item.slot.id] = item.material.id;
+    variant.bindingRevisions[item.slot.id] = item.material.artifactRevision;
+    variant.offsets[item.slot.id] = item.offset;
+    item.slot.duration = item.duration;
+    variant.bindingMetadata ??= {};
+    variant.bindingMetadata[item.slot.id] = {
+      source: 'MANUAL',
+      classificationReason: '从同模板其他成片粘贴素材',
+      trimReason: '复制素材截取范围',
+    };
+    if (!variant.manualSlotIds.includes(item.slot.id)) variant.manualSlotIds.push(item.slot.id);
+    variant.conflictSlotIds = variant.conflictSlotIds.filter((id) => id !== item.slot.id);
+    if (item.detachedAudio) {
+      const start = currentTiming.value.slots.find(({ id }) => id === item.slot.id)?.start ?? 0;
+      variant.detachedAudios = [
+        ...(variant.detachedAudios ?? []),
+        {
+          ...item.detachedAudio,
+          id: crypto.randomUUID(),
+          sourceSlotId: item.slot.id,
+          start,
+          duration: item.duration,
+        },
+      ];
+    }
+  }
+  clearDetachedTransitions(variant);
+  activeUi.value && (activeUi.value.selectedSlotId = resolved.at(-1)?.slot.id ?? activeUi.value.selectedSlotId);
+  resetTimelinePlayerState();
+  bump();
+  showNotice(`已粘贴 ${items.length} 个视频素材`);
+};
+const pasteTimelineAudioMaterial = (audio: {
+  fileObjectId: string;
+  name: string;
+  sourceAssetId?: string;
+  sourceDuration: number;
+  duration: number;
+  start: number;
+  offset: number;
+  volume: number;
+}): void => {
+  const variant = selectedVariant.value;
+  if (!variant) return;
+  if (projectEditLocked.value) {
+    showNotice('当前任务正在运行，暂时不能粘贴音频', 'warning');
+    return;
+  }
+  const start = Math.max(0, Math.min(currentDuration.value, audio.start));
+  const duration = Math.min(
+    audio.duration,
+    Math.max(0, currentDuration.value - start),
+    Math.max(0, audio.sourceDuration - audio.offset),
+  );
+  if (!audio.fileObjectId || duration < 0.1) {
+    showNotice('音频素材已失效，或播放头超出成片范围', 'warning');
+    return;
+  }
+  rememberTimelineEdit();
+  const pasted: EffectTemplateMixDetachedAudio = {
+    id: crypto.randomUUID(),
+    ...(audio.sourceAssetId ? { sourceAssetId: audio.sourceAssetId } : {}),
+    fileObjectId: audio.fileObjectId,
+    name: audio.name,
+    sourceDuration: audio.sourceDuration,
+    duration,
+    start,
+    offset: audio.offset,
+    volume: audio.volume,
+  };
+  variant.detachedAudios = [...(variant.detachedAudios ?? []), pasted];
+  selectedAudioClipIds.value = [`detached:${pasted.id}`];
+  resetTimelinePlayerState();
+  bump();
+  showNotice('音频素材已粘贴到当前成片');
 };
 const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string): void => {
   const variant = selectedVariant.value;
@@ -5145,6 +5278,7 @@ defineExpose({ flushPendingEdits });
              read-only instead. -->
         <EffectTemplateMixTimeline
           ref="timelineRef"
+          :template-id="activeTemplateId"
           :packaging="selectedPackaging"
           :read-only="projectEditLocked"
           :can-redo="canRedoTimeline && !projectEditLocked"
@@ -5167,6 +5301,9 @@ defineExpose({ flushPendingEdits });
           @reorder-slot="moveProjectSlot"
           @change-audio-volume="changePackagingAudioVolume"
           @separate-audio="separateAudioForSlot"
+          @paste-video-materials="pasteTimelineVideoMaterials"
+          @paste-audio-material="pasteTimelineAudioMaterial"
+          @request-notice="showNotice"
           @add-music-asset="addMusicAssetToTimeline"
           @move-audio-clip="movePackagingAudio"
           @resize-audio-clip="resizePackagingAudio"
