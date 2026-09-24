@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../../database/prisma.service';
 import type { PackagingSnapshot } from '@ai-marketing/contracts';
 import { EffectPackagingRepository } from './effect-packaging.repository';
+import { templateConfigurationHash } from './template-mix-lifecycle';
+
+const testTemplate = { name: '模板', editVersion: 1, slots: [] };
+const testDraft = {
+  schemaVersion: 1,
+  activeTemplateId: 't',
+  templates: [{ id: 't', workspace: { editVersion: 1, template: testTemplate, variants: [] } }],
+};
 
 function harness() {
   const db = {
@@ -21,6 +29,11 @@ function harness() {
       findFirstOrThrow: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
+    },
+    effectTemplateMixAiRun: { count: vi.fn().mockResolvedValue(0) },
+    workflowNodeState: {
+      findUnique: vi.fn().mockResolvedValue({ id: 'state', revision: 1, state: testDraft }),
+      update: vi.fn(),
     },
     jobOutbox: { upsert: vi.fn() },
   };
@@ -49,6 +62,8 @@ describe('packaging lease and durable task repository', () => {
       requestHash: 'hash',
       snapshots: [snapshot],
       checkpoints: [{}],
+      expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate),
     });
     const data = db.effectPackagingRun.create.mock.calls[0]![0].data;
     expect(data.projectId).toBe('p');
@@ -67,6 +82,8 @@ describe('packaging lease and durable task repository', () => {
       requestHash: 'same',
       snapshots: [],
       checkpoints: [],
+      expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate),
     };
     expect(await repo.create(input)).toBe('run');
     expect(db.$executeRaw).toHaveBeenCalledWith(
@@ -87,6 +104,8 @@ describe('packaging lease and durable task repository', () => {
       requestHash: 'hash',
       snapshots: [],
       checkpoints: [],
+      expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate),
     });
     expect(db.jobOutbox.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -101,6 +120,67 @@ describe('packaging lease and durable task repository', () => {
         }),
       }),
     );
+  });
+  it('locks the template in the same transaction that starts packaging', async () => {
+    const { db, repo } = harness();
+    await repo.create({
+      projectId: 'p',
+      workflowRunId: 'w',
+      templateId: 't',
+      idempotencyKey: 'k',
+      requestHash: 'hash',
+      snapshots: [],
+      checkpoints: [],
+      expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate),
+    });
+    const update = db.workflowNodeState.update.mock.calls[0]![0];
+    expect(update.data.revision).toEqual({ increment: 1 });
+    expect(update.data.state).toMatchObject({
+      templates: [{ id: 't', packagingLocked: true, filledTemplateHash: templateConfigurationHash(testTemplate) }],
+    });
+  });
+  it('rejects packaging atomically while any bound variant uses an older template', async () => {
+    const { db, repo } = harness();
+    const currentHash = templateConfigurationHash(testTemplate);
+    db.workflowNodeState.findUnique.mockResolvedValue({
+      id: 'state',
+      revision: 1,
+      state: {
+        ...testDraft,
+        templates: [
+          {
+            id: 't',
+            filledTemplateHash: currentHash,
+            workspace: {
+              editVersion: 1,
+              template: testTemplate,
+              variants: [
+                {
+                  id: 'v',
+                  bindings: { slot: 'asset' },
+                  appliedTemplateHash: 'old-template-hash',
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    await expect(
+      repo.create({
+        projectId: 'p',
+        workflowRunId: 'w',
+        templateId: 't',
+        idempotencyKey: 'k',
+        requestHash: 'hash',
+        snapshots: [],
+        checkpoints: [],
+        expectedDraftRevision: 1,
+        expectedTemplateHash: currentHash,
+      }),
+    ).rejects.toThrow('仍有成片未按当前模板重新智能填充');
+    expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
   });
   it('rejects old token and expired lease writes before touching items', async () => {
     const { db, repo } = harness();

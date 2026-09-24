@@ -12,6 +12,9 @@ import {
   EFFECT_TEMPLATE_MIX_QUEUE,
   EFFECT_TEMPLATE_MIX_JOB_TYPE,
 } from '../../../platform/job/job.constants';
+import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
+import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { templateConfigurationHash } from './template-mix-lifecycle';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -32,7 +35,8 @@ export class EffectPackagingRepository {
   async list(projectId: string, workflowRunId: string, templateId: string) {
     const latest = await this.db.effectPackagingItem.findMany({
       where: { projectId, run: { workflowRunId, templateId } },
-      orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }], distinct: ['variantId'],
+      orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }],
+      distinct: ['variantId'],
       select: { id: true, runId: true },
     });
     const recent = await this.db.effectPackagingRun.findMany({
@@ -43,10 +47,18 @@ export class EffectPackagingRepository {
     });
     const recentIds = new Set(recent.map((r) => r.id));
     const extraIds = [...new Set(latest.map((i) => i.runId))].filter((id) => !recentIds.has(id));
-    const older = extraIds.length ? await this.db.effectPackagingRun.findMany({
-      where: { projectId, workflowRunId, templateId, id: { in: extraIds } }, orderBy: { createdAt: 'desc' },
-      include: { items: { where: { id: { in: latest.map((i) => i.id) } }, orderBy: [{ shardIndex: 'asc' }, { id: 'asc' }] } },
-    }) : [];
+    const older = extraIds.length
+      ? await this.db.effectPackagingRun.findMany({
+          where: { projectId, workflowRunId, templateId, id: { in: extraIds } },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            items: {
+              where: { id: { in: latest.map((i) => i.id) } },
+              orderBy: [{ shardIndex: 'asc' }, { id: 'asc' }],
+            },
+          },
+        })
+      : [];
     return [...recent, ...older];
   }
   private enqueue(tx: Prisma.TransactionClient, projectId: string, runId: string) {
@@ -94,6 +106,8 @@ export class EffectPackagingRepository {
     requestHash: string;
     snapshots: PackagingSnapshot[];
     checkpoints: PackagingCheckpoint[];
+    expectedDraftRevision: number;
+    expectedTemplateHash: string;
   }) {
     const shards = packagingShardIndexes(input.snapshots);
     return this.db.$transaction(async (tx) => {
@@ -111,6 +125,72 @@ export class EffectPackagingRepository {
         if (replay.requestHash !== input.requestHash)
           throw new ConflictException('幂等键对应的包装请求已改变');
         return replay.id;
+      }
+      await tx.$queryRaw`SELECT "id" FROM "workflow_node_states"
+        WHERE "projectId"=${input.projectId}::uuid AND "workflowRunId"=${input.workflowRunId}::uuid
+          AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
+      const nodeState = await tx.workflowNodeState.findUnique({
+        where: {
+          projectId_workflowRunId_nodeId: {
+            projectId: input.projectId,
+            workflowRunId: input.workflowRunId,
+            nodeId: 'TEMPLATE_MIX',
+          },
+        },
+      });
+      if (!nodeState || nodeState.revision !== input.expectedDraftRevision)
+        throw new ConflictException('混剪草稿已变化，请刷新后重试');
+      const currentDraft = nodeState.state as unknown as EffectTemplateMixDraft;
+      const currentEntry = currentDraft.templates.find((entry) => entry.id === input.templateId);
+      if (!currentEntry) throw new ConflictException('模板不存在，请刷新后重试');
+      if (
+        templateConfigurationHash(currentEntry.workspace.template) !== input.expectedTemplateHash ||
+        (currentEntry.filledTemplateHash &&
+          currentEntry.filledTemplateHash !== input.expectedTemplateHash)
+      )
+        throw new ConflictException('模板已变化，请先重新智能填充后再进行包装');
+      const staleVariant = currentEntry.workspace.variants.some((variant) => {
+        if (!Object.values(variant.bindings ?? {}).some(Boolean)) return false;
+        return variant.appliedTemplateHash
+          ? variant.appliedTemplateHash !== input.expectedTemplateHash
+          : variant.appliedTemplateVersion !== currentEntry.workspace.template.editVersion;
+      });
+      if (staleVariant)
+        throw new ConflictException('仍有成片未按当前模板重新智能填充，请逐条完成后再包装');
+      if (
+        await tx.effectTemplateMixAiRun.count({
+          where: {
+            projectId: input.projectId,
+            workflowRunId: input.workflowRunId,
+            templateId: input.templateId,
+            status: { in: ['QUEUED', 'RUNNING'] },
+          },
+        })
+      )
+        throw new ConflictException('智能填充正在运行，暂不能开始智能成片包装');
+      if (!currentEntry.packagingLocked) {
+        const lockedDraft = {
+          ...currentDraft,
+          templates: currentDraft.templates.map((entry) =>
+            entry.id === input.templateId
+              ? {
+                  ...entry,
+                  aiFillLocked: false,
+                  packagingLocked: true,
+                  filledTemplateHash: input.expectedTemplateHash,
+                }
+              : entry,
+          ),
+        };
+        await tx.workflowNodeState.update({
+          where: { id: nodeState.id },
+          data: {
+            state: json(lockedDraft),
+            contentHash: workflowStateHash(lockedDraft),
+            revision: { increment: 1 },
+            savedAt: new Date(),
+          },
+        });
       }
       if (
         await tx.effectPackagingRun.count({
@@ -171,7 +251,13 @@ export class EffectPackagingRepository {
         where: { projectId, runId: id, status: { not: 'COMPLETED' } },
         data: { status: 'QUEUED', errorMessage: null },
       });
-      return { terminal: false, attemptToken, items: run.items.map((item) => item.status === 'COMPLETED' ? item : { ...item, status: 'QUEUED' }) };
+      return {
+        terminal: false,
+        attemptToken,
+        items: run.items.map((item) =>
+          item.status === 'COMPLETED' ? item : { ...item, status: 'QUEUED' },
+        ),
+      };
     });
   }
   async recoverExpired() {

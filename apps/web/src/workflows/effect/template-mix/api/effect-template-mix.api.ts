@@ -30,15 +30,20 @@ export const serializeEffectTemplateMixDraft = (
 ): EffectTemplateMixDraft => ({
   schemaVersion: 1,
   activeTemplateId,
-  templates: entries.map(({ id, aiFillLocked, workspace }) => ({
-    id,
-    ...(aiFillLocked ? { aiFillLocked: true } : {}),
-    workspace: {
-      editVersion: workspace.editVersion,
-      template: workspace.template,
-      variants: workspace.variants,
-    },
-  })),
+  templates: entries.map(
+    ({ id, aiFillLocked, filledTemplateHash, packagingLocked, needsAiFill, workspace }) => ({
+      id,
+      ...(aiFillLocked ? { aiFillLocked: true } : {}),
+      ...(filledTemplateHash ? { filledTemplateHash } : {}),
+      ...(packagingLocked ? { packagingLocked: true } : {}),
+      ...(needsAiFill ? { needsAiFill: true } : {}),
+      workspace: {
+        editVersion: workspace.editVersion,
+        template: workspace.template,
+        variants: workspace.variants,
+      },
+    }),
+  ),
 });
 
 export const saveEffectTemplateMixDraft = (
@@ -131,11 +136,20 @@ export const validateEffectTemplateMix = (
   });
 
 export const completeEffectTemplateMixPackaging = (
-  projectId: string, workflowRunId: string, expectedRevision: number, templateId: string, idempotencyKey: string,
-) => requestJson(basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/complete-packaging', {
-  method: 'POST', operation: '完成全部包装并进入成片输出',
-  body: { workflowRunId, expectedRevision, idempotencyKey },
-});
+  projectId: string,
+  workflowRunId: string,
+  expectedRevision: number,
+  templateId: string,
+  idempotencyKey: string,
+) =>
+  requestJson(
+    basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/complete-packaging',
+    {
+      method: 'POST',
+      operation: '完成全部包装并进入成片输出',
+      body: { workflowRunId, expectedRevision, idempotencyKey },
+    },
+  );
 
 /** Editor audio geometry is persisted on the packaging item, not the workflow draft. */
 export const updateEffectPackagingAudio = (

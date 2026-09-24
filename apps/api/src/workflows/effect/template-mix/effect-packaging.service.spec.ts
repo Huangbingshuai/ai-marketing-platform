@@ -24,8 +24,14 @@ describe('voice segment upload boundaries', () => {
   it('accepts only sample counts that exactly cover the uploaded WAV', () => {
     expect(parseVoiceSegmentFrames('[24000,48000]', 3)).toEqual([24000, 48000]);
     expect(parseVoiceSegmentFrames(undefined, 3)).toBeUndefined();
-    for (const value of ['[24000,24000]', '[0,72000]', '[1.5,71998.5]', '["24000",48000]',
-      '{}', 'broken']) {
+    for (const value of [
+      '[24000,24000]',
+      '[0,72000]',
+      '[1.5,71998.5]',
+      '["24000",48000]',
+      '{}',
+      'broken',
+    ]) {
       expect(() => parseVoiceSegmentFrames(value, 3)).toThrow('边界与音频不一致');
     }
   });
@@ -43,7 +49,12 @@ function harness() {
     artifactKey: 'timeline-package:t:v',
     availability: 'AVAILABLE',
     freshness: 'CURRENT',
-    payload: { narrationLayoutVersion: 'SLOT_V1', sourceTimelineHash: visualHash(v), visualArtifactId: 'visual', visualRevision: 2 },
+    payload: {
+      narrationLayoutVersion: 'SLOT_V1',
+      sourceTimelineHash: visualHash(v),
+      visualArtifactId: 'visual',
+      visualRevision: 2,
+    },
   };
   const mix = {
     workspace: vi.fn().mockResolvedValue({
@@ -51,17 +62,21 @@ function harness() {
       draft: { templates: [{ id: 't', workspace: { variants: [v] } }] },
     }),
   };
-  const working = { listArtifacts: vi.fn().mockResolvedValue({ items: [visual, packaging] }),
-    fileObjectContent: vi.fn().mockResolvedValue('voice-content') };
+  const working = {
+    listArtifacts: vi.fn().mockResolvedValue({ items: [visual, packaging] }),
+    fileObjectContent: vi.fn().mockResolvedValue('voice-content'),
+  };
   const repo = {
     get: vi.fn(),
     retry: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
     updateCheckpoint: vi.fn(),
     list: vi.fn().mockResolvedValue([]),
     create: vi.fn().mockResolvedValue('new-run'),
-    db: { effectPackagingRun: { findUnique: vi.fn().mockResolvedValue(null) },
+    db: {
+      effectPackagingRun: { findUnique: vi.fn().mockResolvedValue(null) },
       effectPackagingFile: { count: vi.fn().mockResolvedValue(0) },
-      effectVoicePreview: { findFirst: vi.fn().mockResolvedValue(null) } },
+      effectVoicePreview: { findFirst: vi.fn().mockResolvedValue(null) },
+    },
   };
   const service = new EffectPackagingService(
     repo as unknown as EffectPackagingRepository,
@@ -108,11 +123,48 @@ function completedRun() {
   return { id: 'run', workflowRunId: 'w', templateId: 't', items: [completedItem()] };
 }
 describe('packaging service output boundary', () => {
+  it('refuses packaging until a template change has been refilled', async () => {
+    const { service, repo, mix } = harness();
+    mix.workspace.mockResolvedValue({
+      draftRevision: 1,
+      draft: {
+        templates: [
+          {
+            id: 't',
+            needsAiFill: true,
+            workspace: {
+              template: { name: '模板', editVersion: 2, slots: [] },
+              variants: [v],
+            },
+          },
+        ],
+      },
+    } as never);
+    await expect(
+      service.create('p', 't', {
+        workflowRunId: 'w',
+        expectedRevision: 1,
+        idempotencyKey: 'must-refill',
+      }),
+    ).rejects.toThrow('未按当前模板重新智能填充');
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
   it('projects frozen clip and confirmed-fact examples without exposing file identifiers or raw prompts', async () => {
     const { service, repo, mix } = harness();
     const timelineVariant = {
       ...v,
-      slots: [{ id: 'slot-product', label: '产品展示', role: 'PRODUCT', purpose: 'PRODUCT', duration: 8, transition: '叠化', transitionDuration: 0.5 }],
+      slots: [
+        {
+          id: 'slot-product',
+          label: '产品展示',
+          role: 'PRODUCT',
+          purpose: 'PRODUCT',
+          duration: 8,
+          transition: '叠化',
+          transitionDuration: 0.5,
+        },
+      ],
       bindings: { 'slot-product': 'material-1' },
       bindingRevisions: { 'slot-product': 3 },
       offsets: { 'slot-product': 1.25 },
@@ -120,9 +172,17 @@ describe('packaging service output boundary', () => {
     } as unknown as EffectTemplateMixVariant;
     const sourceTimelineHash = visualHash(timelineVariant);
     const clip = {
-      slotId: 'slot-product', materialId: 'material-1', fileObjectId: 'secret-file-id',
-      contentHash: 'hash', start: 2, duration: 8, offset: 1.25, lane: 0,
-      prompt: '不应透出的完整 Prompt 正文', transition: '叠化', transitionDuration: 0.5,
+      slotId: 'slot-product',
+      materialId: 'material-1',
+      fileObjectId: 'secret-file-id',
+      contentHash: 'hash',
+      start: 2,
+      duration: 8,
+      offset: 1.25,
+      lane: 0,
+      prompt: '不应透出的完整 Prompt 正文',
+      transition: '叠化',
+      transitionDuration: 0.5,
       originalAudioDetached: true,
     };
     mix.workspace.mockResolvedValue({
@@ -131,147 +191,349 @@ describe('packaging service output boundary', () => {
       materials: [{ id: 'material-1', code: 'R-06', name: '腊肠煎制' }],
     });
     repo.get.mockResolvedValue({
-      id: 'run', workflowRunId: 'w', templateId: 't', status: 'COMPLETED',
-      createdAt: new Date('2026-09-23T04:00:00.000Z'), startedAt: null, completedAt: null,
-      items: [{
-        id: 'item', variantId: 'v', name: '成片 01', shardIndex: 0,
-        sourceTimelineHash, snapshot: {
-          sourceTimelineHash, duration: 10, variant: timelineVariant, clips: [clip],
-          facts: [{ id: 'fact-1', text: '广式腊肠采用传统风干工艺', artifactId: 'artifact', revision: 2 }],
-          dependencies: [],
-        }, checkpoint: {
-          narrationLayoutVersion: 'SLOT_V1',
-          script: [{ id: 'line-1', slotId: 'slot-product', text: '依据商品事实组织的文案', start: 2, end: 10, factIds: ['fact-1'] }],
-        }, status: 'COMPLETED', stage: 'READY',
-        errorMessage: null, startedAt: null, completedAt: null,
-        updatedAt: new Date('2026-09-23T04:00:00.000Z'),
-      }],
+      id: 'run',
+      workflowRunId: 'w',
+      templateId: 't',
+      status: 'COMPLETED',
+      createdAt: new Date('2026-09-23T04:00:00.000Z'),
+      startedAt: null,
+      completedAt: null,
+      items: [
+        {
+          id: 'item',
+          variantId: 'v',
+          name: '成片 01',
+          shardIndex: 0,
+          sourceTimelineHash,
+          snapshot: {
+            sourceTimelineHash,
+            duration: 10,
+            variant: timelineVariant,
+            clips: [clip],
+            facts: [
+              {
+                id: 'fact-1',
+                text: '广式腊肠采用传统风干工艺',
+                artifactId: 'artifact',
+                revision: 2,
+              },
+            ],
+            dependencies: [],
+          },
+          checkpoint: {
+            narrationLayoutVersion: 'SLOT_V1',
+            script: [
+              {
+                id: 'line-1',
+                slotId: 'slot-product',
+                text: '依据商品事实组织的文案',
+                start: 2,
+                end: 10,
+                factIds: ['fact-1'],
+              },
+            ],
+          },
+          status: 'COMPLETED',
+          stage: 'READY',
+          errorMessage: null,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: new Date('2026-09-23T04:00:00.000Z'),
+        },
+      ],
     } as never);
 
     const result = await service.get('project', 'run');
-    expect(result.items[0]?.sourceClips).toEqual([{
-      slotLabel: '产品展示', materialName: 'R-06 · 腊肠煎制', sourceOffset: 1.25,
-      timelineStart: 2, duration: 8, transition: '叠化', transitionDuration: 0.5,
-      originalAudioDetached: true,
-    }]);
-    expect(result.items[0]?.sourceFacts).toEqual([{ id: 'fact-1', text: '广式腊肠采用传统风干工艺' }]);
+    expect(result.items[0]?.sourceClips).toEqual([
+      {
+        slotLabel: '产品展示',
+        materialName: 'R-06 · 腊肠煎制',
+        sourceOffset: 1.25,
+        timelineStart: 2,
+        duration: 8,
+        transition: '叠化',
+        transitionDuration: 0.5,
+        originalAudioDetached: true,
+      },
+    ]);
+    expect(result.items[0]?.sourceFacts).toEqual([
+      { id: 'fact-1', text: '广式腊肠采用传统风干工艺' },
+    ]);
     expect(JSON.stringify(result.items[0]?.sourceClips)).not.toContain('secret-file-id');
     expect(JSON.stringify(result.items[0])).not.toContain('完整 Prompt 正文');
   });
 
   it('allows only the current item’s archived voice for subtitle-only redo', async () => {
     const { service, repo, working } = harness();
-    const run = completedRun(), item = run.items[0]!;
-    vi.spyOn(service, 'workerItem').mockResolvedValue({ run, item, snapshot: item.snapshot } as never);
+    const run = completedRun(),
+      item = run.items[0]!;
+    vi.spyOn(service, 'workerItem').mockResolvedValue({
+      run,
+      item,
+      snapshot: item.snapshot,
+    } as never);
     repo.db.effectPackagingFile.count.mockResolvedValue(1);
     expect(await service.content('p', 'run', 'attempt', 'item', 'voice')).toBe('voice-content');
-    expect(repo.db.effectPackagingFile.count).toHaveBeenCalledWith({ where: expect.objectContaining({
-      projectId: 'p', fileObjectId: 'voice', role: { startsWith: 'voice-' },
-    }) });
+    expect(repo.db.effectPackagingFile.count).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        projectId: 'p',
+        fileObjectId: 'voice',
+        role: { startsWith: 'voice-' },
+      }),
+    });
     repo.db.effectPackagingFile.count.mockResolvedValue(0);
-    await expect(service.content('p', 'run', 'attempt', 'item', 'voice')).rejects.toThrow('不属于当前成片');
-    await expect(service.content('p', 'run', 'attempt', 'item', 'other')).rejects.toThrow('不属于当前成片');
+    await expect(service.content('p', 'run', 'attempt', 'item', 'voice')).rejects.toThrow(
+      '不属于当前成片',
+    );
+    await expect(service.content('p', 'run', 'attempt', 'item', 'other')).rejects.toThrow(
+      '不属于当前成片',
+    );
     expect(working.fileObjectContent).toHaveBeenCalledTimes(1);
   });
   it('creates one caption-only run for every current variant without discarding voices or music', async () => {
     const { service, repo, mix } = harness();
-    const variants = ['v1', 'v2'].map((id) => ({ ...v, id, slots: [{ id: 'a', duration: 4 }],
-      bindings: { a: 'clip' } })) as unknown as EffectTemplateMixVariant[];
-    mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't',
-      workspace: { template: {}, variants } }] } });
-    const originals = variants.map((variant) => ({ ...completedItem(), variantId: variant.id,
+    const variants = ['v1', 'v2'].map((id) => ({
+      ...v,
+      id,
+      slots: [{ id: 'a', duration: 4 }],
+      bindings: { a: 'clip' },
+    })) as unknown as EffectTemplateMixVariant[];
+    mix.workspace.mockResolvedValue({
+      draftRevision: 1,
+      draft: {
+        templates: [
+          {
+            id: 't',
+            workspace: { template: { name: '模板', editVersion: 1, slots: [] }, variants },
+          },
+        ],
+      },
+    });
+    const originals = variants.map((variant) => ({
+      ...completedItem(),
+      variantId: variant.id,
       sourceTimelineHash: visualHash(variant),
-      snapshot: { ...completedItem().snapshot, variant, sourceTimelineHash: visualHash(variant),
-        narrationLayoutVersion: 'SLOT_V1' },
+      snapshot: {
+        ...completedItem().snapshot,
+        variant,
+        sourceTimelineHash: visualHash(variant),
+        narrationLayoutVersion: 'SLOT_V1',
+      },
       checkpoint: { ...completedItem().checkpoint, narrationLayoutVersion: 'SLOT_V1' },
     }));
     repo.list.mockResolvedValue([{ items: originals }]);
     vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
-    const snap = vi.spyOn(packagingDomain, 'packagingSnapshot').mockImplementation((variant) => ({
-      ...originals[0]!.snapshot, variant, sourceTimelineHash: visualHash(variant),
-    }) as never);
+    const snap = vi.spyOn(packagingDomain, 'packagingSnapshot').mockImplementation(
+      (variant) =>
+        ({
+          ...originals[0]!.snapshot,
+          variant,
+          sourceTimelineHash: visualHash(variant),
+        }) as never,
+    );
     try {
-      await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1,
-        idempotencyKey: 'bulk-captions', component: 'CAPTIONS' });
+      await service.create('p', 't', {
+        workflowRunId: 'w',
+        expectedRevision: 1,
+        idempotencyKey: 'bulk-captions',
+        component: 'CAPTIONS',
+      });
       const created = repo.create.mock.calls[0]![0];
       expect(created.snapshots).toHaveLength(2);
-      expect(created.snapshots.every((entry: { redoCaptionsOnly?: boolean }) => entry.redoCaptionsOnly)).toBe(true);
+      expect(
+        created.snapshots.every((entry: { redoCaptionsOnly?: boolean }) => entry.redoCaptionsOnly),
+      ).toBe(true);
       expect(created.checkpoints.map((entry: PackagingCheckpoint) => entry.voices)).toEqual(
-        originals.map((entry) => entry.checkpoint.voices));
+        originals.map((entry) => entry.checkpoint.voices),
+      );
       expect(created.checkpoints.every((entry: PackagingCheckpoint) => !entry.captions)).toBe(true);
       expect(created.checkpoints.map((entry: PackagingCheckpoint) => entry.music)).toEqual(
-        originals.map((entry) => entry.checkpoint.music));
-    } finally { snap.mockRestore(); }
+        originals.map((entry) => entry.checkpoint.music),
+      );
+    } finally {
+      snap.mockRestore();
+    }
   });
   it('redo of one slot preserves other text, edited audio, captions and music exactly', async () => {
     const { service, repo, mix } = harness();
-    const variant = { ...v, slots: [{ id: 'a', duration: 3 }, { id: 'b', duration: 3 }], bindings: { a: '1', b: '2' } } as unknown as EffectTemplateMixVariant;
+    const variant = {
+      ...v,
+      slots: [
+        { id: 'a', duration: 3 },
+        { id: 'b', duration: 3 },
+      ],
+      bindings: { a: '1', b: '2' },
+    } as unknown as EffectTemplateMixVariant;
     const hash = visualHash(variant);
-    const frozen = { ...completedItem().snapshot, variant, sourceTimelineHash: hash, narrationLayoutVersion: 'SLOT_V1' as const };
+    const frozen = {
+      ...completedItem().snapshot,
+      variant,
+      sourceTimelineHash: hash,
+      narrationLayoutVersion: 'SLOT_V1' as const,
+    };
     const cp: PackagingCheckpoint = {
       narrationLayoutVersion: 'SLOT_V1',
       script: [
         { id: 'a', slotId: 'a', text: '第一句', start: 0, end: 3, factIds: ['f'] },
         { id: 'b', slotId: 'b', text: '第二句', start: 3, end: 6, factIds: ['f'] },
       ],
-      voices: { a: { fileObjectId: 'a', start: 0, duration: 2, volume: 1 },
-        b: { fileObjectId: 'b', start: 3.2, duration: 1, offset: .2, volume: .5, fadeOut: .2 } },
-      captions: [{ id: 'a', text: '第一句', start: 0, end: 2 }, { id: 'b', text: '编辑字幕', start: 3.2, end: 4.2 }],
-      music: { fileObjectId: 'bgm', start: 1, duration: 5, volume: .1, offset: 2 },
+      voices: {
+        a: { fileObjectId: 'a', start: 0, duration: 2, volume: 1 },
+        b: { fileObjectId: 'b', start: 3.2, duration: 1, offset: 0.2, volume: 0.5, fadeOut: 0.2 },
+      },
+      captions: [
+        { id: 'a', text: '第一句', start: 0, end: 2 },
+        { id: 'b', text: '编辑字幕', start: 3.2, end: 4.2 },
+      ],
+      music: { fileObjectId: 'bgm', start: 1, duration: 5, volume: 0.1, offset: 2 },
       voiceSlotRetries: { a: 1, b: 1 },
     };
-    mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't', workspace: { template: {}, variants: [variant] } }] } });
-    repo.list.mockResolvedValue([{ items: [{ variantId: 'v', sourceTimelineHash: hash, snapshot: frozen, checkpoint: cp }] }]);
+    mix.workspace.mockResolvedValue({
+      draftRevision: 1,
+      draft: {
+        templates: [
+          {
+            id: 't',
+            workspace: {
+              template: { name: '模板', editVersion: 1, slots: [] },
+              variants: [variant],
+            },
+          },
+        ],
+      },
+    });
+    repo.list.mockResolvedValue([
+      { items: [{ variantId: 'v', sourceTimelineHash: hash, snapshot: frozen, checkpoint: cp }] },
+    ]);
     vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
     const snap = vi.spyOn(packagingDomain, 'packagingSnapshot').mockReturnValue(frozen);
     try {
-      await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'k', variantId: 'v', component: 'VOICE', slotId: 'a' });
+      await service.create('p', 't', {
+        workflowRunId: 'w',
+        expectedRevision: 1,
+        idempotencyKey: 'k',
+        variantId: 'v',
+        component: 'VOICE',
+        slotId: 'a',
+      });
       const next = repo.create.mock.calls[0]![0];
       expect(next.snapshots[0].redoSlotId).toBe('a');
-      expect(next.snapshots[0].voiceProfile).toMatchObject({ id: 'vivi', speaker: 'zh_female_vv_uranus_bigtts' });
+      expect(next.snapshots[0].voiceProfile).toMatchObject({
+        id: 'vivi',
+        speaker: 'zh_female_vv_uranus_bigtts',
+      });
       expect(next.checkpoints[0].script).toEqual([cp.script![1]]);
       expect(next.checkpoints[0].voices).toEqual({ b: cp.voices!.b });
       expect(next.checkpoints[0].captions).toEqual([cp.captions![1]]);
       expect(next.checkpoints[0].music).toEqual(cp.music);
       expect(next.checkpoints[0].voiceSlotRetries).toEqual({ b: 1 });
-    } finally { snap.mockRestore(); }
+    } finally {
+      snap.mockRestore();
+    }
   });
-  it.each(['MUSIC', 'CAPTIONS'] as const)('redo %s preserves the original voice despite the new template choice', async (component) => {
-    const { service, repo, mix } = harness();
-    const variant = { ...v, slots: [{ id: 'a', duration: 3 }], bindings: { a: '1' } } as unknown as EffectTemplateMixVariant;
-    const sourceTimelineHash = visualHash(variant);
-    const oldVoice = { id: 'old', name: '旧音色', gender: 'MALE' as const, description: '', version: 'old', speaker: 'old', resourceId: 'seed-tts-2.0' };
-    const frozen = { ...completedItem().snapshot, variant, sourceTimelineHash, narrationLayoutVersion: 'SLOT_V1' as const, voiceProfile: oldVoice };
-    mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't', workspace: { template: { voiceProfileId: 'unavailable-new-choice' }, variants: [variant] } }] } });
-    const previousCheckpoint: PackagingCheckpoint = {
-      narrationLayoutVersion: 'SLOT_V1',
-      voices: { a: { fileObjectId: 'voice-a', start: .4, offset: .2, duration: 1.5, volume: .6 } },
-      music: { fileObjectId: 'music-a', start: 1, offset: 2, duration: 5, volume: .1 },
-      captions: [{ id: 'a', text: '旧字幕', start: .4, end: 1.9 }],
-    };
-    repo.list.mockResolvedValue([{ items: [{ variantId: 'v', sourceTimelineHash, snapshot: frozen, checkpoint: previousCheckpoint }] }]);
-    vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
-    const snap = vi.spyOn(packagingDomain, 'packagingSnapshot').mockReturnValue({ ...frozen, voiceProfile: undefined } as never);
-    try {
-      await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'k', variantId: 'v', component });
-      expect(repo.create.mock.calls[0]![0].snapshots[0].voiceProfile).toEqual(oldVoice);
-      if (component === 'CAPTIONS') {
-        const created = repo.create.mock.calls[0]![0];
-        expect(created.snapshots[0].redoCaptionsOnly).toBe(true);
-        expect(created.checkpoints[0].voices).toEqual(previousCheckpoint.voices);
-        expect(created.checkpoints[0].music).toEqual(previousCheckpoint.music);
-        expect(created.checkpoints[0].captions).toBeUndefined();
+  it.each(['MUSIC', 'CAPTIONS'] as const)(
+    'redo %s preserves the original voice despite the new template choice',
+    async (component) => {
+      const { service, repo, mix } = harness();
+      const variant = {
+        ...v,
+        slots: [{ id: 'a', duration: 3 }],
+        bindings: { a: '1' },
+      } as unknown as EffectTemplateMixVariant;
+      const sourceTimelineHash = visualHash(variant);
+      const oldVoice = {
+        id: 'old',
+        name: '旧音色',
+        gender: 'MALE' as const,
+        description: '',
+        version: 'old',
+        speaker: 'old',
+        resourceId: 'seed-tts-2.0',
+      };
+      const frozen = {
+        ...completedItem().snapshot,
+        variant,
+        sourceTimelineHash,
+        narrationLayoutVersion: 'SLOT_V1' as const,
+        voiceProfile: oldVoice,
+      };
+      mix.workspace.mockResolvedValue({
+        draftRevision: 1,
+        draft: {
+          templates: [
+            {
+              id: 't',
+              workspace: {
+                template: {
+                  name: '模板',
+                  editVersion: 1,
+                  slots: [],
+                  voiceProfileId: 'unavailable-new-choice',
+                },
+                variants: [variant],
+              },
+            },
+          ],
+        },
+      });
+      const previousCheckpoint: PackagingCheckpoint = {
+        narrationLayoutVersion: 'SLOT_V1',
+        voices: {
+          a: { fileObjectId: 'voice-a', start: 0.4, offset: 0.2, duration: 1.5, volume: 0.6 },
+        },
+        music: { fileObjectId: 'music-a', start: 1, offset: 2, duration: 5, volume: 0.1 },
+        captions: [{ id: 'a', text: '旧字幕', start: 0.4, end: 1.9 }],
+      };
+      repo.list.mockResolvedValue([
+        {
+          items: [
+            {
+              variantId: 'v',
+              sourceTimelineHash,
+              snapshot: frozen,
+              checkpoint: previousCheckpoint,
+            },
+          ],
+        },
+      ]);
+      vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
+      const snap = vi
+        .spyOn(packagingDomain, 'packagingSnapshot')
+        .mockReturnValue({ ...frozen, voiceProfile: undefined } as never);
+      try {
+        await service.create('p', 't', {
+          workflowRunId: 'w',
+          expectedRevision: 1,
+          idempotencyKey: 'k',
+          variantId: 'v',
+          component,
+        });
+        expect(repo.create.mock.calls[0]![0].snapshots[0].voiceProfile).toEqual(oldVoice);
+        if (component === 'CAPTIONS') {
+          const created = repo.create.mock.calls[0]![0];
+          expect(created.snapshots[0].redoCaptionsOnly).toBe(true);
+          expect(created.checkpoints[0].voices).toEqual(previousCheckpoint.voices);
+          expect(created.checkpoints[0].music).toEqual(previousCheckpoint.music);
+          expect(created.checkpoints[0].captions).toBeUndefined();
+        }
+      } finally {
+        snap.mockRestore();
       }
-    } finally { snap.mockRestore(); }
-  });
+    },
+  );
   it('recovers missing entries without retrying an unrelated completed stale entry', async () => {
     const { service, repo } = harness();
-    const get = vi.spyOn(service, 'get').mockResolvedValue({ items: [
-      { status: 'COMPLETED', stale: true }, { status: 'FAILED', stale: false, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } },
-    ] } as PackagingRun);
+    const get = vi.spyOn(service, 'get').mockResolvedValue({
+      items: [
+        { status: 'COMPLETED', stale: true },
+        { status: 'FAILED', stale: false, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } },
+      ],
+    } as PackagingRun);
     await service.retry('p', 'r');
     expect(repo.retry).toHaveBeenCalledWith('p', 'r');
-    get.mockResolvedValue({ items: [{ status: 'FAILED', stale: true, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } }] } as PackagingRun);
+    get.mockResolvedValue({
+      items: [{ status: 'FAILED', stale: true, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } }],
+    } as PackagingRun);
     await expect(service.retry('p', 'r')).rejects.toThrow('源时间轴');
     expect(repo.retry).toHaveBeenCalledTimes(1);
   });
@@ -345,7 +607,13 @@ describe('packaging service output boundary', () => {
     const { service, repo } = harness();
     const item = completedItem();
     // The music bed already carries an editor fade; the narration does not.
-    item.checkpoint.music = { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12, fadeIn: 0.3 };
+    item.checkpoint.music = {
+      fileObjectId: 'music',
+      start: 0,
+      duration: 10,
+      volume: 0.12,
+      fadeIn: 0.3,
+    };
     repo.get.mockResolvedValue({ ...completedRun(), items: [item] });
     repo.updateCheckpoint.mockResolvedValue(completedItem());
     await service.updateAudio('p', 'run', 'item', {

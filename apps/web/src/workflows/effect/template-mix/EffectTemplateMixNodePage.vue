@@ -61,7 +61,17 @@ import {
   ZoomIn,
   ZoomOut,
 } from '@lucide/vue';
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue';
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from 'vue';
 
 import {
   createEffectTemplateMixAiRun,
@@ -85,7 +95,10 @@ import {
   markEffectTemplateMixChanged,
   moveEffectTemplateMixSlot,
 } from './effect-template-mix-state';
-import { effectTemplateMixTransitionPresentation } from './effect-template-mix-transition';
+import {
+  effectTemplateMixDissolvePlaybackKeyframes,
+  effectTemplateMixTransitionPresentation,
+} from './effect-template-mix-transition';
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
@@ -213,6 +226,32 @@ const workflowDialogOpen = ref(false);
 const selectedWorkflowStage = ref<EffectTemplateMixAiRun['stage'] | null>(null);
 const notice = ref<Notice | null>(null);
 const newTemplateName = ref('新品跑量模板');
+const templateNameBeforeEdit = ref('');
+const templateNameKey = (name: string): string => name.normalize('NFKC').trim().toLowerCase();
+const hasTemplateNameConflict = (name: string, exceptId?: string): boolean => {
+  const key = templateNameKey(name);
+  return Boolean(
+    key &&
+      catalog.value.some(
+        (entry) =>
+          entry.id !== exceptId && templateNameKey(entry.workspace.template.name) === key,
+      ),
+  );
+};
+const createTemplateNameConflict = computed(() => hasTemplateNameConflict(newTemplateName.value));
+const activeTemplateNameConflict = computed(() =>
+  workspace.value
+    ? hasTemplateNameConflict(workspace.value.template.name, activeTemplateId.value)
+    : false,
+);
+const nextAvailableTemplateName = (baseName: string): string => {
+  if (!hasTemplateNameConflict(baseName)) return baseName;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const candidate = `${baseName} ${suffix}`;
+    if (!hasTemplateNameConflict(candidate)) return candidate;
+  }
+  return `${baseName} ${crypto.randomUUID().slice(0, 8)}`;
+};
 const displayedTimelineSlotId = ref('');
 const playerUnavailableSlotId = ref('');
 const transitionFrame = ref('');
@@ -267,6 +306,8 @@ let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSave: Promise<boolean> | undefined;
 let playbackAnimationFrame: number | undefined;
 let playerScrubberAnimations: Animation[] = [];
+let dissolvePlaybackAnimation: Animation | null = null;
+let dissolvePlaybackSignature = '';
 let playbackAnchorMilliseconds = 0;
 let playbackAnchorSeconds = 0;
 let lastUiPlaybackMilliseconds = 0;
@@ -286,8 +327,14 @@ const pollControllers = new Map<string, AbortController>();
 const activeEntry = computed(
   () => catalog.value.find(({ id }) => id === activeTemplateId.value) ?? null,
 );
-const templateEditLocked = computed(
-  () => Boolean(activeEntry.value?.aiFillLocked || activeAiRun.value || fillStartPending.value),
+const packagingLocked = computed(() => Boolean(activeEntry.value?.packagingLocked));
+const templateEditLocked = computed(() =>
+  Boolean(
+    activeEntry.value?.aiFillLocked ||
+    activeAiRun.value ||
+    fillStartPending.value ||
+    packagingLocked.value,
+  ),
 );
 const workspace = computed(() => activeEntry.value?.workspace ?? null);
 const activeUi = computed(() =>
@@ -423,9 +470,7 @@ const selectedMaterial = computed(() =>
 const slotMoveSourceLabel = computed(() => {
   const materialId = slotMoveMaterial.value?.id;
   const variant = selectedVariant.value;
-  return (
-    variant?.slots.find((slot) => variant.bindings[slot.id] === materialId)?.label || '未分配'
-  );
+  return variant?.slots.find((slot) => variant.bindings[slot.id] === materialId)?.label || '未分配';
 });
 const slotMoveOptions = computed(() => {
   const variant = selectedVariant.value;
@@ -471,11 +516,11 @@ type ActiveTransitionPreview = {
   start: number;
   transition: EffectTemplateMixTransition;
 };
-const activeTransitionPreview = computed<ActiveTransitionPreview | null>(() => {
+const transitionPreviewAt = (time: number): ActiveTransitionPreview | null => {
   const variant = selectedVariant.value;
   if (!variant) return null;
   const ranges = currentTiming.value.slots;
-  const safeTime = Math.max(0, Math.min(playhead.value, currentDuration.value));
+  const safeTime = Math.max(0, Math.min(time, currentDuration.value));
   for (let index = 1; index < variant.slots.length; index += 1) {
     const incomingSlot = variant.slots[index]!;
     if (incomingSlot.transition === '硬切') continue;
@@ -507,7 +552,10 @@ const activeTransitionPreview = computed<ActiveTransitionPreview | null>(() => {
     };
   }
   return null;
-});
+};
+const activeTransitionPreview = computed<ActiveTransitionPreview | null>(() =>
+  transitionPreviewAt(playhead.value),
+);
 const visibleTimelineSlotIds = computed(() => {
   const transition = activeTransitionPreview.value;
   return transition
@@ -540,6 +588,35 @@ const transitionOverlayStyle = computed<Record<string, string> | undefined>(() =
   );
   return presentation.overlay;
 });
+const stopDissolvePlaybackAnimation = (): void => {
+  dissolvePlaybackAnimation?.cancel();
+  dissolvePlaybackAnimation = null;
+  dissolvePlaybackSignature = '';
+};
+const syncDissolvePlaybackAnimation = (
+  transition: ActiveTransitionPreview | null,
+  playbackTime: number,
+): void => {
+  if (!transition || transition.transition !== '叠化') {
+    stopDissolvePlaybackAnimation();
+    return;
+  }
+  const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}`;
+  if (
+    signature === dissolvePlaybackSignature &&
+    dissolvePlaybackAnimation?.playState === 'running'
+  )
+    return;
+  stopDissolvePlaybackAnimation();
+  const incoming = timelinePlayers.get(transition.incomingSlot.id);
+  const remaining = Math.max(0, transition.end - playbackTime);
+  if (!incoming || remaining <= 0 || typeof incoming.animate !== 'function') return;
+  dissolvePlaybackSignature = signature;
+  dissolvePlaybackAnimation = incoming.animate(
+    effectTemplateMixDissolvePlaybackKeyframes(transition.progress),
+    { duration: remaining * 1000, easing: 'linear', fill: 'both' },
+  );
+};
 const previewRange = computed(() =>
   previewSlot.value
     ? (currentTiming.value.slots.find(({ id }) => id === previewSlot.value?.id) ?? null)
@@ -611,10 +688,7 @@ const startPlayerScrubberMotion = (startSeconds: number): void => {
     fill: 'both',
   };
   playerScrubberAnimations = [
-    fill.animate(
-      [{ transform: `scaleX(${startProgress})` }, { transform: 'scaleX(1)' }],
-      timing,
-    ),
+    fill.animate([{ transform: `scaleX(${startProgress})` }, { transform: 'scaleX(1)' }], timing),
     thumb.animate(
       [
         { transform: `translate3d(${startProgress * width}px, 0, 0)` },
@@ -637,44 +711,43 @@ const previewHasPackagingAudio = computed(() => {
   const checkpoint = selectedPackaging.value?.checkpoint;
   const hasPackagedAudio = Boolean(
     checkpoint &&
-      (checkpoint.narrationLayoutVersion === 'SLOT_V1' ||
-        Object.keys(checkpoint.voices ?? {}).length ||
-        checkpoint.music),
+    (checkpoint.narrationLayoutVersion === 'SLOT_V1' ||
+      Object.keys(checkpoint.voices ?? {}).length ||
+      checkpoint.music),
   );
   const active = (audio: { duration: number; start: number; volume: number } | null | undefined) =>
     Boolean(
-      audio &&
-        audio.volume > 0 &&
-        current >= audio.start &&
-        current < audio.start + audio.duration,
-  );
+      audio && audio.volume > 0 && current >= audio.start && current < audio.start + audio.duration,
+    );
   if (hasPackagedAudio) {
     const voice = !audioTrackMuted.value && Object.values(checkpoint?.voices ?? {}).some(active);
     const music = !audioTrackMuted.value && active(checkpoint?.music);
-    const detached = !audioTrackMuted.value &&
+    const detached =
+      !audioTrackMuted.value &&
       (selectedVariant.value?.detachedAudios?.some((audio) => active(audio)) ?? false);
     return voice || music || detached;
   }
-  const detached = selectedVariant.value?.detachedAudios?.some((audio) =>
-    active(audio),
-  ) ?? false;
-  return !audioTrackMuted.value &&
-    (detached || active(selectedVariant.value?.voice) || active(selectedVariant.value?.bgm));
+  const detached = selectedVariant.value?.detachedAudios?.some((audio) => active(audio)) ?? false;
+  return (
+    !audioTrackMuted.value &&
+    (detached || active(selectedVariant.value?.voice) || active(selectedVariant.value?.bgm))
+  );
 });
 const previewHasAudibleTrack = computed(() =>
   Boolean(
     previewIsPlaying.value &&
-      ((!videoTrackMuted.value &&
-        stageMaterial.value &&
-        !slotHasDetachedAudio(displayedTimelineSlotId.value) &&
-        materialAudioPresence[stageMaterial.value.id]) ||
-        previewHasPackagingAudio.value),
+    ((!videoTrackMuted.value &&
+      stageMaterial.value &&
+      !slotHasDetachedAudio(displayedTimelineSlotId.value) &&
+      materialAudioPresence[stageMaterial.value.id]) ||
+      previewHasPackagingAudio.value),
   ),
 );
 /** Captions are burned into the render, so the stage has to show them at the same clock. */
 const previewCaption = computed(() => {
   if (!captionTrackVisible.value || auditionMaterial.value) return undefined;
-  const captions = selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
+  const captions =
+    selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
   return captions.find(
     (caption) =>
       previewCurrentTime.value >= caption.start && previewCurrentTime.value < caption.end,
@@ -886,9 +959,13 @@ const workflowStageStatusLabel = (stage: EffectTemplateMixAiRun['stage']): strin
     running: '进行中',
   })[workflowStageState(stage)];
 const workflowStageTone = (stage: EffectTemplateMixAiRun['stage']): string =>
-  ({ done: 'success', failed: 'danger', incomplete: 'danger', pending: 'pending', running: 'running' })[
-    workflowStageState(stage)
-  ];
+  ({
+    done: 'success',
+    failed: 'danger',
+    incomplete: 'danger',
+    pending: 'pending',
+    running: 'running',
+  })[workflowStageState(stage)];
 const workflowStageDetail = (stage: EffectTemplateMixAiRun['stage']) =>
   workflowRunForDisplay.value?.stageDetails?.[stage] ?? null;
 const workflowStageProgress = (stage: EffectTemplateMixAiRun['stage']): string => {
@@ -910,6 +987,7 @@ const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
 };
 const openCreate = async (event: MouseEvent): Promise<void> => {
   dialogTrigger.value = event.currentTarget as HTMLElement;
+  newTemplateName.value = nextAvailableTemplateName('新品跑量模板');
   createOpen.value = true;
   await nextTick();
   createNameInput.value?.focus();
@@ -1052,6 +1130,7 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
   stopPolling(run.id);
   mutating.value = false;
   if (run.status === 'FAILED' || run.status === 'CANCELLED') {
+    await load();
     showNotice(run.errorMessage || '智能填充失败，请重试', 'error');
     return;
   }
@@ -1224,9 +1303,7 @@ const pauseForVoiceAudition = (): void => {
  * against the last confirmed copy and PUT separately from the workflow draft.
  */
 type PackagingAudioTarget =
-  | { kind: 'CAPTION'; key: string }
-  | { kind: 'MUSIC' }
-  | { kind: 'VOICE'; key: string };
+  { kind: 'CAPTION'; key: string } | { kind: 'MUSIC' } | { kind: 'VOICE'; key: string };
 const packagingAudioTarget = (clipId: string): PackagingAudioTarget | null => {
   if (clipId.startsWith('caption:')) return { kind: 'CAPTION', key: clipId.slice(8) };
   if (clipId === 'music') return { kind: 'MUSIC' };
@@ -1265,7 +1342,10 @@ const sameAudio = (left: PackagingAudio, right: PackagingAudio, kind: 'MUSIC' | 
   packagingAudioFade(left, kind, 'fadeIn') === packagingAudioFade(right, kind, 'fadeIn') &&
   packagingAudioFade(left, kind, 'fadeOut') === packagingAudioFade(right, kind, 'fadeOut');
 const sameBox = (left: PackagingCaptionBox, right: PackagingCaptionBox): boolean =>
-  left.x === right.x && left.y === right.y && left.width === right.width && left.scale === right.scale;
+  left.x === right.x &&
+  left.y === right.y &&
+  left.width === right.width &&
+  left.scale === right.scale;
 const audioEdit = (audio: PackagingAudio, kind: 'MUSIC' | 'VOICE'): PackagingAudioEdit => ({
   start: audio.start,
   offset: audio.offset ?? 0,
@@ -1290,8 +1370,15 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
   const captions =
     JSON.stringify(current.captions ?? []) === JSON.stringify(baseline.captions ?? [])
       ? null
-      : (current.captions ?? []).map(({ id, voiceLineId, segmentIndex, segmentCount, text, start, end }) =>
-          ({ id, ...(voiceLineId ? { voiceLineId, segmentIndex, segmentCount } : {}), text, start, end }));
+      : (current.captions ?? []).map(
+          ({ id, voiceLineId, segmentIndex, segmentCount, text, start, end }) => ({
+            id,
+            ...(voiceLineId ? { voiceLineId, segmentIndex, segmentCount } : {}),
+            text,
+            start,
+            end,
+          }),
+        );
   // Only the boxes this editor touched, so an unrelated drag never rewrites the others.
   const boxes: Record<string, PackagingCaptionBox> = {};
   for (const [id, box] of Object.entries(current.captionBoxes ?? {})) {
@@ -1454,11 +1541,14 @@ const resizePackagingAudio = (
   offset: number,
   duration: number,
 ): void => {
-  if (editDetachedAudio(clipId, (audio) => {
-    audio.start = start;
-    audio.offset = offset;
-    audio.duration = duration;
-  })) return;
+  if (
+    editDetachedAudio(clipId, (audio) => {
+      audio.start = start;
+      audio.offset = offset;
+      audio.duration = duration;
+    })
+  )
+    return;
   const target = packagingAudioTarget(clipId);
   if (!target) return;
   editPackagingAudio((checkpoint) => {
@@ -1531,7 +1621,9 @@ const probeMaterialAudio = async (material: EffectTemplateMixMaterial): Promise<
         player.addEventListener('loadedmetadata', () => resolve(), { once: true });
         player.addEventListener('error', () => reject(new Error('素材读取失败')), { once: true });
       }),
-      timeout(8000).then(() => { throw new Error('素材读取超时'); }),
+      timeout(8000).then(() => {
+        throw new Error('素材读取超时');
+      }),
     ]);
     if (typeof player.mozHasAudio === 'boolean') {
       materialAudioPresence[material.id] = player.mozHasAudio;
@@ -1569,7 +1661,9 @@ const clearDetachedAudioForSlots = (variant: EffectTemplateMixVariant, slotIds: 
       .map(({ id }) => id),
   );
   if (!removedIds.size) return;
-  variant.detachedAudios = (variant.detachedAudios ?? []).filter((audio) => !removedIds.has(audio.id));
+  variant.detachedAudios = (variant.detachedAudios ?? []).filter(
+    (audio) => !removedIds.has(audio.id),
+  );
   selectedAudioClipIds.value = selectedAudioClipIds.value.filter(
     (clipId) => !removedIds.has(clipId.slice('detached:'.length)),
   );
@@ -1594,7 +1688,8 @@ const separateAudioForSlot = async (slotId: string): Promise<void> => {
       selectedVariant.value !== variant ||
       variant.bindings[slotId] !== material.id ||
       variant.detachedAudios?.some((audio) => audio.sourceSlotId === slotId)
-    ) return;
+    )
+      return;
     const start = currentTiming.value.slots.find(({ id }) => id === slotId)?.start ?? 0;
     const audio: EffectTemplateMixDetachedAudio = {
       id: crypto.randomUUID(),
@@ -1635,7 +1730,8 @@ const onPlayerPanelPointerDown = (event: PointerEvent): void => {
 };
 const editingCaption = computed(() => {
   if (!selectedCaptionId.value) return null;
-  const captions = selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
+  const captions =
+    selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
   return captions.find((caption) => caption.id === selectedCaptionId.value) ?? null;
 });
 const changeCaptionText = (event: Event): void => {
@@ -1790,7 +1886,10 @@ const onAudioParamsChange = (values: Record<string, number>): void => {
       // A clip shorter than the standard cannot hold the same fade, so each one keeps the other
       // edge it already has and caps this one by what is left — never past its own end.
       if (fadeInTouched) {
-        const room = Math.max(0, audio.duration - packagingAudioFade(audio, target.kind, 'fadeOut'));
+        const room = Math.max(
+          0,
+          audio.duration - packagingAudioFade(audio, target.kind, 'fadeOut'),
+        );
         const fadeIn = Math.min(values.fadeIn ?? 0, room);
         if (fadeIn !== packagingAudioFade(audio, target.kind, 'fadeIn'))
           audio.fadeIn = Math.round(fadeIn * 100) / 100;
@@ -2091,7 +2190,16 @@ const resetEditorHeight = (): void => {
   timelineHeight.value = 260;
 };
 const addTemplate = (): void => {
-  const entry = createEffectTemplateMixEntry(newTemplateName.value.trim() || '未命名混剪模板');
+  const name = newTemplateName.value.trim();
+  if (!name) {
+    showNotice('请输入模板名称', 'warning');
+    return;
+  }
+  if (createTemplateNameConflict.value) {
+    showNotice('当前工作流已有同名模板，请修改名称', 'warning');
+    return;
+  }
+  const entry = createEffectTemplateMixEntry(name);
   entry.workspace.materials =
     workspace.value?.materials ?? catalog.value[0]?.workspace.materials ?? [];
   catalog.value.push(entry);
@@ -2103,6 +2211,12 @@ const addTemplate = (): void => {
   createOpen.value = false;
   view.value = 'CONFIG';
   scheduleSave();
+};
+const submitTemplateOnEnter = (event: KeyboardEvent): void => {
+  // Enter may still be accepting a Chinese IME candidate; only submit after composition ends.
+  if (event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  addTemplate();
 };
 const setTimelinePlayer = (slotId: string, element: unknown): void => {
   if (element instanceof HTMLVideoElement) {
@@ -2165,7 +2279,8 @@ const syncDetachedAudio = (forceSeek = false): void => {
       continue;
     }
     const localTime = playhead.value - row.start;
-    const active = playing.value && !audioTrackMuted.value && localTime >= 0 && localTime < row.duration;
+    const active =
+      playing.value && !audioTrackMuted.value && localTime >= 0 && localTime < row.duration;
     if (!active) {
       player.pause();
       player.dataset.timelineActive = 'false';
@@ -2185,10 +2300,13 @@ const syncDetachedAudio = (forceSeek = false): void => {
     player.dataset.timelineActive = 'true';
     if (player.paused && player.dataset.timelineStarting !== 'true') {
       player.dataset.timelineStarting = 'true';
-      void player.play().catch(() => undefined).finally(() => {
-        player.dataset.timelineStarting = 'false';
-        if (player.dataset.timelineActive !== 'true') player.pause();
-      });
+      void player
+        .play()
+        .catch(() => undefined)
+        .finally(() => {
+          player.dataset.timelineStarting = 'false';
+          if (player.dataset.timelineActive !== 'true') player.pause();
+        });
     }
   }
 };
@@ -2374,9 +2492,13 @@ let lastPreviewTarget: typeof props.previewTarget = null;
 const applyPreviewTarget = (): void => {
   const target = props.previewTarget;
   if (
-    !target || target === lastPreviewTarget || pageState.value !== 'READY' ||
-    target.projectId !== props.projectId || target.workflowRunId !== props.workflowRunId
-  ) return;
+    !target ||
+    target === lastPreviewTarget ||
+    pageState.value !== 'READY' ||
+    target.projectId !== props.projectId ||
+    target.workflowRunId !== props.workflowRunId
+  )
+    return;
   lastPreviewTarget = target;
   const entry = catalog.value.find(({ id }) => id === target.templateId);
   if (!entry || !entry.workspace.variants.some(({ id }) => id === target.variantId)) {
@@ -2456,10 +2578,7 @@ const moveMaterialToSlot = (material: EffectTemplateMixMaterial, targetSlotId: s
     if (variant.bindingMetadata) delete variant.bindingMetadata[sourceSlot.id];
     variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== sourceSlot.id);
   }
-  clearDetachedAudioForSlots(
-    variant,
-    [targetSlot.id, ...(sourceSlot ? [sourceSlot.id] : [])],
-  );
+  clearDetachedAudioForSlots(variant, [targetSlot.id, ...(sourceSlot ? [sourceSlot.id] : [])]);
   variant.bindings[targetSlot.id] = material.id;
   variant.bindingRevisions[targetSlot.id] = material.artifactRevision;
   variant.offsets[targetSlot.id] = 0;
@@ -2781,6 +2900,19 @@ const changeTemplate = (): void => {
   }
   scheduleSave();
 };
+const beginTemplateNameEdit = (): void => {
+  templateNameBeforeEdit.value = workspace.value?.template.name ?? '';
+};
+const changeTemplateName = (): void => {
+  if (!workspace.value) return;
+  if (activeTemplateNameConflict.value) {
+    workspace.value.template.name = templateNameBeforeEdit.value;
+    showNotice('当前工作流已有同名模板，请使用其他名称', 'warning');
+    return;
+  }
+  templateNameBeforeEdit.value = workspace.value.template.name;
+  changeTemplate();
+};
 const templateTransitionForRow = (index: number): EffectTemplateMixSlot | null =>
   workspace.value?.template.slots[index + 1] ?? null;
 const changeTemplateTransition = (index: number, event: Event): void => {
@@ -2820,11 +2952,13 @@ const overlapsTimelineClip = (
   start < otherEnd - 1 / TIMELINE_FPS && start + duration > otherStart + 1 / TIMELINE_FPS;
 const normalizeVariantVideoLanes = (variant: EffectTemplateMixVariant): void => {
   variant.videoLanes ??= {};
-  const used = [...new Set(
-    variant.slots
-      .filter((slot) => Boolean(materialForSlot(slot.id, variant)))
-      .map((slot) => Math.max(0, Math.round(variant.videoLanes?.[slot.id] ?? 0))),
-  )].sort((left, right) => left - right);
+  const used = [
+    ...new Set(
+      variant.slots
+        .filter((slot) => Boolean(materialForSlot(slot.id, variant)))
+        .map((slot) => Math.max(0, Math.round(variant.videoLanes?.[slot.id] ?? 0))),
+    ),
+  ].sort((left, right) => left - right);
   const laneMap = new Map(used.map((lane, index) => [lane, index]));
   for (const slot of variant.slots) {
     if (!materialForSlot(slot.id, variant)) {
@@ -2883,9 +3017,7 @@ const resolveTimelinePlacement = (
   const ranges = currentTiming.value.slots
     .filter(
       ({ id }) =>
-        id !== slotId &&
-        !excludedSlotIds.has(id) &&
-        Boolean(materialForSlot(id, variant)),
+        id !== slotId && !excludedSlotIds.has(id) && Boolean(materialForSlot(id, variant)),
     )
     .map((range) => ({
       ...range,
@@ -2940,7 +3072,9 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
     const resolvedStart = Math.max(0, Math.round(resolved.start * 30) / 30);
     if (resolved.insertLaneAt !== undefined) {
       insertLaneAt =
-        insertLaneAt === null ? resolved.insertLaneAt : Math.min(insertLaneAt, resolved.insertLaneAt);
+        insertLaneAt === null
+          ? resolved.insertLaneAt
+          : Math.min(insertLaneAt, resolved.insertLaneAt);
     }
     const resolvedLane = Math.max(0, Math.round(resolved.lane));
     const shouldApplyMove =
@@ -3117,11 +3251,23 @@ const createEmptyVariant = async (): Promise<void> => {
   }
 };
 const openPackaging = (target: 'ACTION' | 'WORKFLOW'): void => {
+  if (target === 'ACTION' && activeEntry.value?.needsAiFill) {
+    showNotice('模板已改动，或仍有成片未按当前模板重新智能填充；请先完成需要更新的成片', 'error');
+    return;
+  }
   void packagingPanel.value?.open(target);
+};
+const handlePackagingStarted = async (): Promise<void> => {
+  await load();
+  if (activeEntry.value) activeEntry.value.packagingLocked = true;
 };
 const preparePackaging = async (): Promise<number | null> =>
   (await flushPendingEdits()) ? draftRevision.value : null;
 const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<void> => {
+  if (packagingLocked.value) {
+    showNotice('智能成片包装已开始，此模板不能重新智能填充', 'error');
+    return;
+  }
   if (!workspace.value || mutating.value || activeAiRun.value) return;
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
   const templateId = activeTemplateId.value;
@@ -3147,7 +3293,7 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
       target?.manualSlotIds.length
         ? '智能填充已开始，人工槽位会保留，其余槽位重新计算'
         : target
-          ? '重新智能填充已开始，正在按原始 Prompt 归槽并裁剪'
+          ? '重新智能填充已开始，将保留原六槽位素材归属，只重新计算素材裁切'
           : '智能填充已开始；完成前不会创建成片工程',
     );
     void pollAiRun(result.data.id);
@@ -3188,12 +3334,10 @@ const removeCaption = (id: string): void => {
 };
 const quantizeTimelineTime = (raw: number): number =>
   Math.round(Math.max(0, Math.min(currentDuration.value, raw)) * TIMELINE_FPS) / TIMELINE_FPS;
-const stopPlaybackClock = (
-  resumeBackgroundMediaWork = true,
-  freezeVisualClock = true,
-): void => {
+const stopPlaybackClock = (resumeBackgroundMediaWork = true, freezeVisualClock = true): void => {
   if (playbackAnimationFrame !== undefined) cancelAnimationFrame(playbackAnimationFrame);
   playbackAnimationFrame = undefined;
+  stopDissolvePlaybackAnimation();
   if (freezeVisualClock) {
     timelineRef.value?.stopPlaybackNeedle(playhead.value);
     stopPlayerScrubberMotion(playhead.value);
@@ -3266,8 +3410,10 @@ const currentPlaybackClockSeconds = (): number =>
     ),
   );
 const syncPlayingVideoFrame = (): void => {
-  const transition = activeTransitionPreview.value;
+  const playbackTime = currentPlaybackClockSeconds();
+  const transition = transitionPreviewAt(playbackTime);
   if (transition) {
+    syncDissolvePlaybackAnimation(transition, playbackTime);
     const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
     pauseTimelinePlayers(activeIds);
     const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}`;
@@ -3294,6 +3440,7 @@ const syncPlayingVideoFrame = (): void => {
     }
     return;
   }
+  syncDissolvePlaybackAnimation(null, playbackTime);
   const slot = previewSlot.value;
   const range = previewRange.value;
   const material = previewMaterial.value;
@@ -3404,8 +3551,11 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
       playerUnavailableSlotId.value = '';
       return true;
     }
-    const transition = activeTransitionPreview.value;
+    const playbackTime = resume ? currentPlaybackClockSeconds() : playhead.value;
+    const transition = transitionPreviewAt(playbackTime);
     if (transition) {
+      if (resume) syncDissolvePlaybackAnimation(transition, playbackTime);
+      else syncDissolvePlaybackAnimation(null, playbackTime);
       const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
       pauseTimelinePlayers(activeIds);
       const outgoing = syncTimelineVideo(transition.outgoingSlot.id, resume);
@@ -3423,16 +3573,14 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
       }
       return true;
     }
+    syncDissolvePlaybackAnimation(null, playbackTime);
     const video = activeTimelinePlayer();
     // The slot may have just mounted after a variant switch. Ask the caller to
     // retry after Vue flushes once, but never keep an old seek request alive.
     if (!video) return false;
     pauseTimelinePlayers(slot.id);
     const sourceTime = timelineSourceTime(slot.id);
-    if (
-      sourceTime !== null &&
-      Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS
-    ) {
+    if (sourceTime !== null && Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS) {
       try {
         video.currentTime = Math.max(0, sourceTime);
       } catch {
@@ -3463,6 +3611,7 @@ const scheduleSeekSync = (): void => {
 };
 const seek = (raw: number): void => {
   closeMaterialPreview();
+  stopDissolvePlaybackAnimation();
   playhead.value = quantizeTimelineTime(raw);
   timelineRef.value?.setPlaybackNeedle(playhead.value);
   setPlayerScrubber(playhead.value);
@@ -3606,7 +3755,8 @@ const validateDraft = async (): Promise<void> => {
   validating.value = true;
   try {
     const signature = `${props.projectId}:${props.workflowRunId}:${activeEntry.value.id}:${draftRevision.value}`;
-    if (completionKey?.signature !== signature) completionKey = { signature, key: crypto.randomUUID() };
+    if (completionKey?.signature !== signature)
+      completionKey = { signature, key: crypto.randomUUID() };
     await completeEffectTemplateMixPackaging(
       props.projectId,
       props.workflowRunId,
@@ -3890,8 +4040,13 @@ defineExpose({ flushPendingEdits });
               v-model="workspace.template.name"
               maxlength="40"
               :disabled="templateEditLocked"
-              @change="changeTemplate"
+              :aria-invalid="activeTemplateNameConflict"
+              @focus="beginTemplateNameEdit"
+              @change="changeTemplateName"
           /></label>
+          <small v-if="activeTemplateNameConflict" class="name-conflict" role="alert">
+            当前工作流已有同名模板，请修改名称。
+          </small>
           <div class="slot-table">
             <div class="slot-heading">
               <span>槽位 / 顺序</span><span>时间区间（自动）</span><span>时长（秒）</span
@@ -3901,7 +4056,11 @@ defineExpose({ flushPendingEdits });
               <div class="slot-name">
                 <b>{{ index + 1 }}</b
                 ><span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span
-                ><button :disabled="templateEditLocked || index === 0" @click="moveTemplateSlot(slot.id, -1)">↑</button
+                ><button
+                  :disabled="templateEditLocked || index === 0"
+                  @click="moveTemplateSlot(slot.id, -1)"
+                >
+                  ↑</button
                 ><button
                   :disabled="templateEditLocked || index === workspace.template.slots.length - 1"
                   @click="moveTemplateSlot(slot.id, 1)"
@@ -3953,8 +4112,18 @@ defineExpose({ flushPendingEdits });
               <WandSparkles :size="15" />进入精修工作台
             </button>
           </footer>
-          <p v-if="templateEditLocked" class="template-lock-banner" role="status">
-            <Lock :size="15" />此模板已进入智能填充并锁定。需要修改时请新建模板。
+          <p v-if="packagingLocked" class="template-lock-banner" role="status">
+            <Lock :size="15" />智能成片包装已开始，此模板不能再修改或重新智能填充。
+          </p>
+          <p v-else-if="templateEditLocked" class="template-lock-banner" role="status">
+            <Lock :size="15" />智能填充正在运行，模板暂时锁定；任务结束后可修改。
+          </p>
+          <p
+            v-else-if="activeEntry?.needsAiFill"
+            class="template-lock-banner warning"
+            role="status"
+          >
+            <AlertCircle :size="15" />模板已改动，或仍有成片未按当前模板重新填充；请逐条更新后才能开始包装。
           </p>
         </div>
       </section>
@@ -3982,15 +4151,14 @@ defineExpose({ flushPendingEdits });
               :disabled="
                 mutating ||
                 Boolean(activeAiRun) ||
+                packagingLocked ||
                 workspace.materials.length < 6
               "
               @click="refill"
             >
               <LoaderCircle v-if="activeAiRun" class="spin" :size="15" />
               <RefreshCw v-else-if="selectedVariant" :size="15" />
-              {{
-                activeAiRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : '智能填充'
-              }}
+              {{ activeAiRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : '智能填充' }}
             </button>
             <button
               ref="workflowTrigger"
@@ -4002,16 +4170,33 @@ defineExpose({ flushPendingEdits });
               <Workflow :size="14" />查看工作流
             </button>
             <button
-              v-if="previewTarget?.projectId === projectId && previewTarget?.workflowRunId === workflowRunId"
+              v-if="
+                previewTarget?.projectId === projectId &&
+                previewTarget?.workflowRunId === workflowRunId
+              "
               class="button"
               type="button"
               @click="returnToFinalOutput"
-            >返回成片输出</button>
+            >
+              返回成片输出
+            </button>
             <button class="button" @click="leaveEditor">返回模板配置</button>
           </div>
         </header>
-        <div v-if="templateEditLocked" class="template-lock-banner" role="status">
-          <Lock :size="15" />此模板已进入智能填充并锁定，当前工程为只读。需要继续修改请新建模板。
+        <div v-if="packagingLocked" class="template-lock-banner" role="status">
+          <Lock :size="15" />智能成片包装已开始，模板和成片工程均已锁定；不能修改或重新智能填充。
+        </div>
+        <div v-else-if="templateEditLocked" class="template-lock-banner" role="status">
+          <Lock :size="15" />智能填充正在运行，模板和成片工程暂时锁定。
+        </div>
+        <div
+          v-else-if="activeEntry?.needsAiFill"
+          class="template-lock-banner warning"
+          role="status"
+        >
+          <AlertCircle
+            :size="15"
+          />模板配置已变更，当前及未更新的成片需按新模板重新填充。重填会保留该成片现有六槽位素材归属。
         </div>
         <div v-if="failedAiRun" class="ai-run-card editor-run failed" role="alert">
           <AlertCircle :size="18" />
@@ -4154,13 +4339,19 @@ defineExpose({ flushPendingEdits });
               </div></template
             >
             <template v-else-if="resourceTab === 'TEXT' && selectedVariant"
-                ><header>
-                  <strong>字幕</strong
-                  ><button class="button compact" :disabled="templateEditLocked" @click="addCaption"><Plus :size="13" />添加</button>
+              ><header>
+                <strong>字幕</strong
+                ><button class="button compact" :disabled="templateEditLocked" @click="addCaption">
+                  <Plus :size="13" />添加
+                </button>
               </header>
               <label class="subtitle-style"
                 >字幕样式
-                <select v-model="selectedVariant.subtitleStyle" :disabled="templateEditLocked" @change="bump">
+                <select
+                  v-model="selectedVariant.subtitleStyle"
+                  :disabled="templateEditLocked"
+                  @change="bump"
+                >
                   <option value="standard">标准白字</option>
                   <option value="bold">加粗描边</option>
                   <option value="yellow">重点黄字</option>
@@ -4168,10 +4359,17 @@ defineExpose({ flushPendingEdits });
               </label>
               <div class="caption-list">
                 <article v-for="caption in selectedVariant.captions" :key="caption.id">
-                  <input v-model="caption.text" maxlength="120" :disabled="templateEditLocked" @input="bump" /><small
+                  <input
+                    v-model="caption.text"
+                    maxlength="120"
+                    :disabled="templateEditLocked"
+                    @input="bump"
+                  /><small
                     >{{ formatEffectTemplateMixTime(caption.start) }} —
                     {{ formatEffectTemplateMixTime(caption.end) }}</small
-                  ><button :disabled="templateEditLocked" @click="removeCaption(caption.id)"><X :size="14" /></button>
+                  ><button :disabled="templateEditLocked" @click="removeCaption(caption.id)">
+                    <X :size="14" />
+                  </button>
                 </article>
                 <p v-if="!selectedVariant.captions.length">选择一个槽位后添加字幕。</p>
               </div></template
@@ -4256,10 +4454,14 @@ defineExpose({ flushPendingEdits });
             >
             <EffectVoiceLibrary
               v-else-if="resourceTab === 'AUDIO'"
-              :project-id="props.projectId" :workflow-run-id="props.workflowRunId" :template-id="activeTemplateId"
-              :selected-id="workspace.template.voiceProfileId" :playing="previewIsPlaying"
+              :project-id="props.projectId"
+              :workflow-run-id="props.workflowRunId"
+              :template-id="activeTemplateId"
+              :selected-id="workspace.template.voiceProfileId"
+              :playing="previewIsPlaying"
               :disabled="templateEditLocked"
-              @select="selectVoiceProfile" @audition="pauseForVoiceAudition"
+              @select="selectVoiceProfile"
+              @audition="pauseForVoiceAudition"
             />
           </aside>
           <div
@@ -4321,7 +4523,10 @@ defineExpose({ flushPendingEdits });
                     :ref="(element) => setTimelinePlayer(slot.id, element)"
                     class="timeline-stage-video"
                     :class="{
-                      'is-visible': videoTrackVisible && !auditionMaterial && visibleTimelineSlotIds.has(slot.id),
+                      'is-visible':
+                        videoTrackVisible &&
+                        !auditionMaterial &&
+                        visibleTimelineSlotIds.has(slot.id),
                     }"
                     :style="timelinePlayerStyle(slot.id)"
                     :src="materialForSlot(slot.id)?.contentUrl"
@@ -4345,7 +4550,10 @@ defineExpose({ flushPendingEdits });
                   v-for="audio in selectedVariant?.detachedAudios ?? []"
                   :key="`detached-player:${audio.id}`"
                   :ref="(element) => setDetachedAudioPlayer(audio.id, element)"
-                  :src="workspace.materials.find((item) => item.fileObjectId === audio.fileObjectId)?.contentUrl"
+                  :src="
+                    workspace.materials.find((item) => item.fileObjectId === audio.fileObjectId)
+                      ?.contentUrl
+                  "
                   preload="auto"
                   @loadedmetadata="syncDetachedAudio(true)"
                 />
@@ -4356,7 +4564,9 @@ defineExpose({ flushPendingEdits });
                   aria-hidden="true"
                 />
                 <div
-                  v-if="selectedVariant && !auditionMaterial && (!videoTrackVisible || !previewMaterial)"
+                  v-if="
+                    selectedVariant && !auditionMaterial && (!videoTrackVisible || !previewMaterial)
+                  "
                   class="player-blackout"
                   :aria-label="videoTrackVisible ? '素材缺口黑屏' : '视频轨道已隐藏'"
                 />
@@ -4666,10 +4876,11 @@ defineExpose({ flushPendingEdits });
             EFFECT_TEMPLATE_MIX_ROLE_LABELS[selectedSlot.role]
           }}</b
           ><span v-if="!selectedTransitionInfo" class="slot-readonly-control"
-            ><span>时长</span><b>{{ selectedSlot.duration }}</b><span>秒</span></span
+            ><span>时长</span><b>{{ selectedSlot.duration }}</b
+            ><span>秒</span></span
           ><span v-if="!selectedTransitionInfo && selectedMaterial" class="slot-readonly-control"
-            ><span>截取起点</span
-            ><b>{{ selectedVariant.offsets[selectedSlot.id] ?? 0 }}</b><span>秒</span></span
+            ><span>截取起点</span><b>{{ selectedVariant.offsets[selectedSlot.id] ?? 0 }}</b
+            ><span>秒</span></span
           ><span v-if="!selectedTransitionInfo && selectedMaterial" class="trim-range"
             >截取 {{ (selectedVariant.offsets[selectedSlot.id] ?? 0).toFixed(1) }}s —
             {{
@@ -4765,6 +4976,7 @@ defineExpose({ flushPendingEdits });
             @selected="onPackagingSelected"
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
+            @started="handlePackagingStarted"
           />
         </div>
         <div v-if="editingCaption" class="caption-text-editor">
@@ -4862,7 +5074,7 @@ defineExpose({ flushPendingEdits });
           :video-visible="videoTrackVisible"
           :caption-visible="captionTrackVisible"
           :selected-audio-clip-id="
-            selectedCaptionId ? `caption:${selectedCaptionId}` : selectedAudioClipIds[0] ?? null
+            selectedCaptionId ? `caption:${selectedCaptionId}` : (selectedAudioClipIds[0] ?? null)
           "
           :selected-slot-id="selectedSlot?.id ?? ''"
           :variant="selectedVariant"
@@ -4921,7 +5133,9 @@ defineExpose({ flushPendingEdits });
             : pendingCount
               ? '仍有工程待同步'
               : complete
-                ? packagingReady ? '全部成片包装就绪' : '请等待全部成片包装成功且未过期'
+                ? packagingReady
+                  ? '全部成片包装就绪'
+                  : '请等待全部成片包装成功且未过期'
                 : '请先补齐所有素材槽位'
         "
         :status-detail="'步骤 5 / 6 · ' + workspace.template.name"
@@ -4949,15 +5163,20 @@ defineExpose({ flushPendingEdits });
           <main>
             <label
               >模板名称<input ref="createNameInput" v-model="newTemplateName" maxlength="40"
+                :aria-invalid="createTemplateNameConflict"
+                @keydown.enter="submitTemplateOnEnter"
             /></label>
-            <p>成片时长由各槽位时长实时累加。</p>
+            <p v-if="createTemplateNameConflict" class="name-conflict" role="alert">
+              当前工作流已有同名模板，请修改名称后再创建。
+            </p>
+            <p v-else>成片时长由各槽位时长实时累加。</p>
           </main>
           <footer>
             <button type="button" class="button" @click="closeCreate">取消</button>
             <button
               type="button"
               class="button primary modal-submit"
-              :disabled="!newTemplateName.trim()"
+              :disabled="!newTemplateName.trim() || createTemplateNameConflict"
               @click="addTemplate"
             >
               <Plus :size="14" />创建模板
@@ -5139,7 +5358,8 @@ defineExpose({ flushPendingEdits });
                   <p>{{ aiStageInputs[selectedWorkflowStage] }}</p>
                   <ul v-if="workflowStageDetail(selectedWorkflowStage)?.inputSamples.length">
                     <li
-                      v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.inputSamples"
+                      v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)
+                        ?.inputSamples"
                       :key="`input-${sampleIndex}`"
                     >
                       {{ sample }}
@@ -5152,7 +5372,8 @@ defineExpose({ flushPendingEdits });
                   <p>{{ aiStageOutputs[selectedWorkflowStage] }}</p>
                   <ul v-if="workflowStageDetail(selectedWorkflowStage)?.outputSamples.length">
                     <li
-                      v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.outputSamples"
+                      v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)
+                        ?.outputSamples"
                       :key="`output-${sampleIndex}`"
                     >
                       {{ sample }}
@@ -5398,6 +5619,11 @@ button:disabled {
   margin: 12px 0 10px;
   font-size: 12px;
   font-weight: 700;
+}
+.name-conflict {
+  color: #dc2626 !important;
+  font-size: 12px;
+  font-weight: 600;
 }
 .name-field input,
 .slot-row input,
@@ -6136,7 +6362,13 @@ button:disabled {
   background: linear-gradient(90deg, #ef4444 0 35%, #506b86 35% 65%, #22d3ee 65%);
 }
 .transition-preview.is-ripple {
-  background: radial-gradient(circle, transparent 0 12%, #d8e7f2 14% 19%, transparent 21% 29%, #506b86 31% 100%);
+  background: radial-gradient(
+    circle,
+    transparent 0 12%,
+    #d8e7f2 14% 19%,
+    transparent 21% 29%,
+    #506b86 31% 100%
+  );
 }
 .transition-preview.is-black-flash {
   background: radial-gradient(circle, #506b86 0 18%, #05070b 20% 54%, #d8e7f2 56%);
@@ -6173,14 +6405,23 @@ button:disabled {
   filter: blur(0.4px);
 }
 .transition-preview.is-color-flash {
-  background: linear-gradient(110deg, #506b86 0 22%, #f472b6 35%, #fef08a 50%, #67e8f9 65%, #506b86 82%);
+  background: linear-gradient(
+    110deg,
+    #506b86 0 22%,
+    #f472b6 35%,
+    #fef08a 50%,
+    #67e8f9 65%,
+    #506b86 82%
+  );
 }
 .transition-preview.is-noise-dissolve {
   background:
     radial-gradient(circle at 25% 35%, #d8e7f2 0 3px, transparent 4px),
-    radial-gradient(circle at 70% 65%, #273747 0 3px, transparent 4px),
-    #506b86;
-  background-size: 18px 18px, 23px 23px, auto;
+    radial-gradient(circle at 70% 65%, #273747 0 3px, transparent 4px), #506b86;
+  background-size:
+    18px 18px,
+    23px 23px,
+    auto;
 }
 .transition-preview.is-liquid {
   background: radial-gradient(ellipse at 45% 52%, #d8e7f2 0 18%, #8da3b6 38%, #506b86 72%);

@@ -11,7 +11,14 @@ export type EffectTemplateMixAiSnapshot = {
     id: string;
     name: string;
     editVersion: number;
-    slots: Array<{ id: string; role: EffectTemplateMixRole; label: string; duration: number }>;
+    slots: Array<{
+      id: string;
+      role: EffectTemplateMixRole;
+      label: string;
+      duration: number;
+      transition?: string;
+      transitionDuration?: number | undefined;
+    }>;
   };
   draftRevision: number;
   /** The selected template workspace at claim time; unrelated templates may be edited. */

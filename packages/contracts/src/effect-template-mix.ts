@@ -113,6 +113,8 @@ export type EffectTemplateMixVariant = {
   name: string;
   /** Local template edit sequence, NOT WorkingArtifact revision. */
   appliedTemplateVersion: number;
+  /** Exact template configuration used by the latest successful smart-fill for this variant. */
+  appliedTemplateHash?: string;
   slots: EffectTemplateMixSlot[];
   bindings: Record<string, string>;
   bindingRevisions: Record<string, number>;
@@ -195,8 +197,14 @@ export type EffectTemplateMixWorkspace = {
 };
 export type EffectTemplateMixTemplateEntry = {
   id: string;
-  /** Set after the first smart-fill run is created; the template workspace then stays immutable. */
+  /** Transient while smart-fill is queued/running. */
   aiFillLocked?: boolean;
+  /** Hash of template configuration used by the latest successful smart-fill. */
+  filledTemplateHash?: string;
+  /** True after packaging starts; this is a one-way lifecycle lock. */
+  packagingLocked?: boolean;
+  /** True when current template configuration differs from the latest successful fill. */
+  needsAiFill?: boolean;
   workspace: EffectTemplateMixWorkspace;
 };
 export type EffectTemplateMixDraft = {
@@ -204,6 +212,9 @@ export type EffectTemplateMixDraft = {
   templates: {
     id: string;
     aiFillLocked?: boolean;
+    filledTemplateHash?: string;
+    packagingLocked?: boolean;
+    needsAiFill?: boolean;
     workspace: Omit<EffectTemplateMixWorkspace, 'materials'>;
   }[];
   activeTemplateId: string;

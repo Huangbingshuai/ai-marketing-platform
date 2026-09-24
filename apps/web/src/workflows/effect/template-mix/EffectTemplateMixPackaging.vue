@@ -1,11 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import {
-  AlertCircle,
-  ArrowLeft,
-  Workflow,
-  X,
-} from '@lucide/vue';
+import { AlertCircle, ArrowLeft, Workflow, X } from '@lucide/vue';
 import { WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   packagingProgress,
@@ -46,7 +41,12 @@ const props = defineProps<{
   /** Shared with the workbench's single audio track control. */
   audioMuted: boolean;
 }>();
-const emit = defineEmits<{ selected: [item: PackagingItem | null]; preview: [enabled: boolean]; ready: [ready: boolean] }>();
+const emit = defineEmits<{
+  selected: [item: PackagingItem | null];
+  preview: [enabled: boolean];
+  ready: [ready: boolean];
+  started: [];
+}>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const visible = ref(false),
   busy = ref(false),
@@ -70,17 +70,22 @@ const completeCount = computed(
     props.variants.filter((v) => v.slots.length && v.slots.every((s) => v.bindings[s.id])).length,
 );
 const active = computed(() => runs.value.some((r) => ['QUEUED', 'RUNNING'].includes(r.status)));
-const progressRun = computed(
-  () => currentPackagingRun(runs.value),
+const progressRun = computed(() => currentPackagingRun(runs.value));
+const progress = computed(
+  () => progressRun.value?.execution?.progressPercent ?? packagingProgress(progressRun.value),
 );
-const progress = computed(() => progressRun.value?.execution?.progressPercent ?? packagingProgress(progressRun.value));
 const executionSummary = computed(() => {
   const value = progressRun.value;
   if (!value) return `本次覆盖 ${completeCount.value} 条完整成片`;
   const e = value.execution;
   const base = `已完成 ${value.counts.completed} / ${value.counts.total} 条 · ${value.counts.shards} 个分片`;
   if (!e) return base;
-  const eta = e.estimatedRemainingSeconds === null ? (active.value && e.delayed ? ' · 暂无可靠完成时间' : '') : ` · 预计剩余 ${Math.ceil(e.estimatedRemainingSeconds / 60)} 分钟${e.estimateBasis === 'BASELINE' ? '（初始估算）' : ''}`;
+  const eta =
+    e.estimatedRemainingSeconds === null
+      ? active.value && e.delayed
+        ? ' · 暂无可靠完成时间'
+        : ''
+      : ` · 预计剩余 ${Math.ceil(e.estimatedRemainingSeconds / 60)} 分钟${e.estimateBasis === 'BASELINE' ? '（初始估算）' : ''}`;
   return `${base} · 排队 ${e.queued} · 运行 ${e.running}${eta}${e.delayed ? ' · 当前吞吐低于目标或存在失败' : ''}`;
 });
 const progressSummary = computed(() => {
@@ -90,9 +95,12 @@ const progressSummary = computed(() => {
   const item = value.items.find((i) => i.status === 'RUNNING');
   return `智能成片包装 · ${item ? PACKAGING_STAGE_LABELS[item.stage] : statusLabel[value.status]} · 阶段进度 ${progress.value}%`;
 });
-const stageStates = computed(() => Object.fromEntries(
-  PACKAGING_STAGES.map((stage) => [stage, packagingStageState(run.value?.items ?? [], stage)]),
-) as Record<PackagingStage, ReturnType<typeof packagingStageState>>);
+const stageStates = computed(
+  () =>
+    Object.fromEntries(
+      PACKAGING_STAGES.map((stage) => [stage, packagingStageState(run.value?.items ?? [], stage)]),
+    ) as Record<PackagingStage, ReturnType<typeof packagingStageState>>,
+);
 const stageState = (stage: PackagingStage) => stageStates.value[stage];
 const selectedStageSamples = computed(() =>
   selectedStage.value && run.value
@@ -134,11 +142,22 @@ const boundaryError = computed(() => {
 });
 const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
 watch(selected, (item) => emit('selected', item), { immediate: true });
-const allReady = computed(() => !active.value && !loadError.value && props.variants.length > 0 && props.variants.every((v) => {
-  const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === v.id);
-  return item && item.status === 'COMPLETED' && !currentItem(item).stale &&
-    item.checkpoint.narrationLayoutVersion === 'SLOT_V1' && !packagingSlotBoundaryError(v);
-}));
+const allReady = computed(
+  () =>
+    !active.value &&
+    !loadError.value &&
+    props.variants.length > 0 &&
+    props.variants.every((v) => {
+      const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === v.id);
+      return (
+        item &&
+        item.status === 'COMPLETED' &&
+        !currentItem(item).stale &&
+        item.checkpoint.narrationLayoutVersion === 'SLOT_V1' &&
+        !packagingSlotBoundaryError(v)
+      );
+    }),
+);
 watch(allReady, (ready) => emit('ready', ready), { immediate: true });
 
 const poller = createPackagingPoller({
@@ -160,7 +179,7 @@ const poller = createPackagingPoller({
     loading.value = value && !runs.value.length;
   },
   // Discover tasks started in another session even when this workspace is idle.
-  interval: () => visible.value || active.value || loadError.value ? 4000 : 30_000,
+  interval: () => (visible.value || active.value || loadError.value ? 4000 : 30_000),
 });
 const refresh = () => poller.refresh();
 function refreshOnReturn() {
@@ -225,7 +244,11 @@ async function create() {
       const expectedRevision = await props.prepare();
       if (context.generation !== generation) return;
       if (expectedRevision === null) throw new Error('请先保存时间轴草稿');
-      const body = { workflowRunId: context.workflowRunId, expectedRevision, component: 'ALL' as const };
+      const body = {
+        workflowRunId: context.workflowRunId,
+        expectedRevision,
+        component: 'ALL' as const,
+      };
       const fingerprint = JSON.stringify(body);
       if (pendingCreate?.fingerprint !== fingerprint)
         pendingCreate = { fingerprint, key: crypto.randomUUID() };
@@ -241,6 +264,7 @@ async function create() {
       pendingCreate = null;
       poller.stop();
       runs.value = [response.data, ...runs.value.filter((r) => r.id !== response.data.id)];
+      emit('started');
     });
   } finally {
     if (context.generation === generation) starting.value = false;
@@ -267,7 +291,9 @@ const previewAvailable = computed(() => {
   // Stale only describes the saved visual snapshot. It must not silence already-generated audio
   // while the user is editing the timeline.
   return Boolean(
-    (item && item.status === 'COMPLETED') || selectedVariant.value?.voice || selectedVariant.value?.bgm,
+    (item && item.status === 'COMPLETED') ||
+    selectedVariant.value?.voice ||
+    selectedVariant.value?.bgm,
   );
 });
 watch(
@@ -301,8 +327,9 @@ const currentVoice = computed<PreviewAudio | undefined>(() => {
     (left, right) => left.start - right.start,
   );
   const slotVoice =
-    voices.find((audio) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration) ??
-    voices.find((audio) => audio.start > props.playhead);
+    voices.find(
+      (audio) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
+    ) ?? voices.find((audio) => audio.start > props.playhead);
   if (slotVoice) return slotVoice;
   // Legacy packaging stored one whole-film voice on the variant instead of a slot-keyed
   // checkpoint. Keep that already-generated audio playable while the user repackages it.
@@ -366,9 +393,8 @@ function syncAudio(forceSeek = false) {
     const fadeIn = packagingAudioFade(audio, kind, 'fadeIn');
     const fadeOut = packagingAudioFade(audio, kind, 'fadeOut');
     const fadeInGain = fadeIn > 0 ? Math.min(1, Math.max(0, timelineTime / fadeIn)) : 1;
-    const fadeOutGain = fadeOut > 0
-      ? Math.min(1, Math.max(0, (audio.duration - timelineTime) / fadeOut))
-      : 1;
+    const fadeOutGain =
+      fadeOut > 0 ? Math.min(1, Math.max(0, (audio.duration - timelineTime) / fadeOut)) : 1;
     element.volume = Math.max(0, Math.min(1, audio.volume * Math.min(fadeInGain, fadeOutGain)));
     if (element.readyState < HTMLMediaElement.HAVE_METADATA) {
       if (element.dataset.timelinePriming === audio.fileObjectId) continue;
@@ -401,24 +427,27 @@ function syncAudio(forceSeek = false) {
       const fileId = audio.fileObjectId;
       const isMusic = element === musicElement.value;
       element.dataset.timelineStarting = 'true';
-      void element.play().catch((reason: unknown) => {
-        const current = isMusic ? currentMusic.value : currentVoice.value;
-        const bound = isMusic ? musicElement.value : voiceElement.value;
-        const warning = packagingPlaybackError(
-          reason,
-          version === generation &&
-            !playbackBlocked[kind] &&
-            props.playing &&
-            bound === element &&
-            current?.fileObjectId === fileId,
-        );
-        if (!warning) return;
-        playbackBlocked[kind] = true;
-        previewError.value = warning;
-      }).finally(() => {
-        element.dataset.timelineStarting = 'false';
-        if (element.dataset.timelineActive !== 'true') element.pause();
-      });
+      void element
+        .play()
+        .catch((reason: unknown) => {
+          const current = isMusic ? currentMusic.value : currentVoice.value;
+          const bound = isMusic ? musicElement.value : voiceElement.value;
+          const warning = packagingPlaybackError(
+            reason,
+            version === generation &&
+              !playbackBlocked[kind] &&
+              props.playing &&
+              bound === element &&
+              current?.fileObjectId === fileId,
+          );
+          if (!warning) return;
+          playbackBlocked[kind] = true;
+          previewError.value = warning;
+        })
+        .finally(() => {
+          element.dataset.timelineStarting = 'false';
+          if (element.dataset.timelineActive !== 'true') element.pause();
+        });
     }
   }
 }
@@ -440,23 +469,26 @@ function startPlaybackAudio() {
     element.volume = 0;
     element.muted = false;
     try {
-      void element.play().catch(() => undefined).finally(() => {
-        const ownsPrime = element.dataset.timelinePriming === fileId;
-        if (ownsPrime && element.dataset.timelineActive !== 'true') {
-          element.pause();
-          try {
-            element.currentTime = 0;
-          } catch {
-            // A source reload can temporarily make the current position unavailable.
+      void element
+        .play()
+        .catch(() => undefined)
+        .finally(() => {
+          const ownsPrime = element.dataset.timelinePriming === fileId;
+          if (ownsPrime && element.dataset.timelineActive !== 'true') {
+            element.pause();
+            try {
+              element.currentTime = 0;
+            } catch {
+              // A source reload can temporarily make the current position unavailable.
+            }
           }
-        }
-        const savedVolume = Number(element.dataset.timelinePrimeVolume);
-        element.volume = Number.isFinite(savedVolume) ? savedVolume : originalVolume;
-        element.dataset.timelinePrimeVolume = '';
-        element.muted = props.audioMuted;
-        if (ownsPrime) element.dataset.timelinePriming = '';
-        if (element.dataset.timelineActive !== 'true') element.pause();
-      });
+          const savedVolume = Number(element.dataset.timelinePrimeVolume);
+          element.volume = Number.isFinite(savedVolume) ? savedVolume : originalVolume;
+          element.dataset.timelinePrimeVolume = '';
+          element.muted = props.audioMuted;
+          if (ownsPrime) element.dataset.timelinePriming = '';
+          if (element.dataset.timelineActive !== 'true') element.pause();
+        });
     } catch {
       element.dataset.timelinePriming = '';
       element.volume = originalVolume;
@@ -499,7 +531,10 @@ watch(
   ],
   () => void nextTick(() => syncAudio()),
 );
-watch(() => props.seekVersion, () => void nextTick(() => syncAudio(true)));
+watch(
+  () => props.seekVersion,
+  () => void nextTick(() => syncAudio(true)),
+);
 watch(
   () => [props.projectId, props.workflowRunId, props.templateId],
   () => {
@@ -616,10 +651,12 @@ onBeforeUnmount(() => {
                 >{{ packagingStageDetails[stage].description
                 }}<template v-if="run">
                   · {{ stageState(stage).completed }} / {{ run.items.length }} 完成</template
-                ></small>
-                <small v-if="stageState(stage).summary" class="packaging-stage-counts">{{ stageState(stage).summary }}</small>
-              </span
-            >
+                ></small
+              >
+              <small v-if="stageState(stage).summary" class="packaging-stage-counts">{{
+                stageState(stage).summary
+              }}</small>
+            </span>
             <em>{{ stageState(stage).label }}</em>
           </button>
         </template>
@@ -639,29 +676,46 @@ onBeforeUnmount(() => {
             <span>INPUT</span><strong>本阶段输入示例（最多 4 项）</strong>
             <p>{{ packagingStageDetails[selectedStage].input }}</p>
             <ul v-if="selectedStageSamples.inputSamples.length">
-              <li v-for="(sample, index) in selectedStageSamples.inputSamples" :key="`input-${index}`">
+              <li
+                v-for="(sample, index) in selectedStageSamples.inputSamples"
+                :key="`input-${index}`"
+              >
                 {{ sample }}
               </li>
             </ul>
-            <p v-else class="workflow-detail-empty-samples">{{ run ? '当前阶段暂无已保存的输入样例' : '读取任务后显示实际输入样例' }}</p>
+            <p v-else class="workflow-detail-empty-samples">
+              {{ run ? '当前阶段暂无已保存的输入样例' : '读取任务后显示实际输入样例' }}
+            </p>
           </section>
           <section class="workflow-detail-block is-output">
             <span>OUTPUT</span><strong>本阶段结果示例（最多 4 项）</strong>
             <p>{{ packagingStageDetails[selectedStage].output }}</p>
             <ul v-if="selectedStageSamples.outputSamples.length">
-              <li v-for="(sample, index) in selectedStageSamples.outputSamples" :key="`output-${index}`">
+              <li
+                v-for="(sample, index) in selectedStageSamples.outputSamples"
+                :key="`output-${index}`"
+              >
                 {{ sample }}
               </li>
             </ul>
-            <p v-else class="workflow-detail-empty-samples">{{ run ? '当前阶段暂无已保存的结果样例' : '读取任务后显示实际结果样例' }}</p>
+            <p v-else class="workflow-detail-empty-samples">
+              {{ run ? '当前阶段暂无已保存的结果样例' : '读取任务后显示实际结果样例' }}
+            </p>
             <div v-if="selectedStageSamples.audioPreviews.length" class="workflow-audio-previews">
-              <label v-for="(preview, index) in selectedStageSamples.audioPreviews" :key="`audio-${index}`">
+              <label
+                v-for="(preview, index) in selectedStageSamples.audioPreviews"
+                :key="`audio-${index}`"
+              >
                 <span>{{ preview.label }}</span>
-                <audio controls preload="none" :src="fileUrl(preview.fileObjectId)">{{ preview.label }}</audio>
+                <audio controls preload="none" :src="fileUrl(preview.fileObjectId)">
+                  {{ preview.label }}
+                </audio>
               </label>
             </div>
             <p v-if="run" role="status">阶段状态：{{ stageState(selectedStage).label }}</p>
-            <p v-else role="status">{{ loading ? '正在读取结果…' : loadError ? '暂时无法读取结果' : '尚未生成结果' }}</p>
+            <p v-else role="status">
+              {{ loading ? '正在读取结果…' : loadError ? '暂时无法读取结果' : '尚未生成结果' }}
+            </p>
           </section>
         </template>
       </aside>
@@ -763,10 +817,24 @@ p {
   margin: 8px 12px;
   flex-shrink: 0;
 }
-.workflow-graph-node small.packaging-stage-counts { color: #435b7d; }
-.workflow-audio-previews { display: grid; margin-top: 8px; gap: 8px; }
-.workflow-audio-previews label { display: grid; gap: 4px; color: #52617a; font-size: 9px; }
-.workflow-audio-previews audio { width: 100%; height: 32px; }
+.workflow-graph-node small.packaging-stage-counts {
+  color: #435b7d;
+}
+.workflow-audio-previews {
+  display: grid;
+  margin-top: 8px;
+  gap: 8px;
+}
+.workflow-audio-previews label {
+  display: grid;
+  gap: 4px;
+  color: #52617a;
+  font-size: 9px;
+}
+.workflow-audio-previews audio {
+  width: 100%;
+  height: 32px;
+}
 .packaging-dialog {
   max-width: calc(100vw - 32px);
 }

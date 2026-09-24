@@ -366,7 +366,7 @@ export class EffectFinalOutputService {
       }
       await tx.effectFinalOutputRun.update({ where: { id }, data: { status: 'QUEUED' } });
       await this.enqueue(tx, projectId, id);
-    });
+    }, { timeout: 60_000 });
     return this.get(projectId, id);
   }
 

@@ -31,6 +31,15 @@ export class EffectTemplateMixAiRepository {
 
   async lockedTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
     const rows = await this.prisma.effectTemplateMixAiRun.findMany({
+      where: { projectId, workflowRunId, status: { in: ['QUEUED', 'RUNNING'] } },
+      distinct: ['templateId'],
+      select: { templateId: true },
+    });
+    return rows.map(({ templateId }) => templateId);
+  }
+
+  async packagedTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
+    const rows = await this.prisma.effectPackagingRun.findMany({
       where: { projectId, workflowRunId },
       distinct: ['templateId'],
       select: { templateId: true },
@@ -150,11 +159,32 @@ export class EffectTemplateMixAiRepository {
           },
         },
       });
-      if (!nodeState || nodeState.revision !== input.expectedDraftRevision)
-        return { kind: 'STALE_INPUT' as const };
+      if (!nodeState) return { kind: 'STALE_INPUT' as const };
       const currentDraft = nodeState.state as unknown as EffectTemplateMixDraft;
       const targetEntry = currentDraft.templates.find((entry) => entry.id === input.templateId);
       if (!targetEntry) return { kind: 'STALE_INPUT' as const };
+      if (targetEntry.packagingLocked) return { kind: 'PACKAGING_LOCKED' as const };
+      if (
+        await transaction.effectPackagingRun.count({
+          where: {
+            projectId: input.projectId,
+            workflowRunId: input.workflowRunId,
+            templateId: input.templateId,
+          },
+        })
+      )
+        return { kind: 'PACKAGING_LOCKED' as const };
+      const active = await transaction.effectTemplateMixAiRun.findFirst({
+        where: {
+          projectId: input.projectId,
+          workflowRunId: input.workflowRunId,
+          templateId: input.templateId,
+          status: { in: ['QUEUED', 'RUNNING'] },
+        },
+      });
+      if (active) return { kind: 'ACTIVE_CONFLICT' as const, run: active };
+      if (nodeState.revision !== input.expectedDraftRevision)
+        return { kind: 'STALE_INPUT' as const };
       const frozenSources = [
         ...input.snapshot.promptArtifacts.map((item) => ({
           id: item.id,
@@ -187,32 +217,21 @@ export class EffectTemplateMixAiRepository {
         })
       )
         return { kind: 'STALE_INPUT' as const };
-      const active = await transaction.effectTemplateMixAiRun.findFirst({
-        where: {
-          projectId: input.projectId,
-          workflowRunId: input.workflowRunId,
-          templateId: input.templateId,
-          status: { in: ['QUEUED', 'RUNNING'] },
+      const lockedDraft: EffectTemplateMixDraft = {
+        ...currentDraft,
+        templates: currentDraft.templates.map((entry) =>
+          entry.id === input.templateId ? { ...entry, aiFillLocked: true } : entry,
+        ),
+      };
+      await transaction.workflowNodeState.update({
+        where: { id: nodeState.id },
+        data: {
+          state: json(lockedDraft),
+          contentHash: workflowStateHash(lockedDraft),
+          revision: { increment: 1 },
+          savedAt: new Date(),
         },
       });
-      if (active) return { kind: 'ACTIVE_CONFLICT' as const, run: active };
-      if (!targetEntry.aiFillLocked) {
-        const lockedDraft: EffectTemplateMixDraft = {
-          ...currentDraft,
-          templates: currentDraft.templates.map((entry) =>
-            entry.id === input.templateId ? { ...entry, aiFillLocked: true } : entry,
-          ),
-        };
-        await transaction.workflowNodeState.update({
-          where: { id: nodeState.id },
-          data: {
-            state: json(lockedDraft),
-            contentHash: workflowStateHash(lockedDraft),
-            revision: { increment: 1 },
-            savedAt: new Date(),
-          },
-        });
-      }
       const run = await transaction.effectTemplateMixAiRun.create({
         data: {
           projectId: input.projectId,
@@ -430,7 +449,8 @@ export class EffectTemplateMixAiRepository {
       const merged = [...byMaterialId.values()];
       const mergedSamples = merged.filter(
         (item): item is EffectTemplateMixSampledMaterial =>
-          typeof item === 'object' && item !== null &&
+          typeof item === 'object' &&
+          item !== null &&
           typeof (item as { materialId?: unknown }).materialId === 'string' &&
           Array.isArray((item as { frameTimestampsSeconds?: unknown }).frameTimestampsSeconds),
       );
@@ -555,7 +575,7 @@ export class EffectTemplateMixAiRepository {
         nextDraft = {
           ...current,
           templates: current.templates.map((entry) =>
-            entry.id === templateId ? updatedEntry : entry,
+            entry.id === templateId ? { ...updatedEntry, aiFillLocked: false } : entry,
           ),
         };
         nextContentHash = workflowStateHash(nextDraft);
@@ -641,7 +661,53 @@ export class EffectTemplateMixAiRepository {
             lastError: null,
           },
         });
+      else
+        await this.clearFillLock(
+          transaction,
+          run.projectId,
+          run.workflowRunId,
+          run.templateId,
+          now,
+        );
       return requeue ? ('REQUEUED' as const) : ('FAILED' as const);
+    });
+  }
+
+  private async clearFillLock(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+    now: Date,
+  ) {
+    await transaction.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "workflow_node_states"
+      WHERE "projectId" = ${projectId}::uuid AND "workflowRunId" = ${workflowRunId}::uuid
+        AND "nodeId" = 'TEMPLATE_MIX' FOR UPDATE
+    `;
+    const row = await transaction.workflowNodeState.findUnique({
+      where: {
+        projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX' },
+      },
+    });
+    if (!row) return;
+    const draft = row.state as unknown as EffectTemplateMixDraft;
+    const entry = draft.templates?.find((candidate) => candidate.id === templateId);
+    if (!entry?.aiFillLocked) return;
+    const next = {
+      ...draft,
+      templates: draft.templates.map((candidate) =>
+        candidate.id === templateId ? { ...candidate, aiFillLocked: false } : candidate,
+      ),
+    };
+    await transaction.workflowNodeState.update({
+      where: { id: row.id },
+      data: {
+        state: json(next),
+        contentHash: workflowStateHash(next),
+        revision: { increment: 1 },
+        savedAt: now,
+      },
     });
   }
 
@@ -671,7 +737,13 @@ export class EffectTemplateMixAiRepository {
           completedAt: retry ? null : now,
         },
       });
-      if (updated.count !== 1 || !retry) continue;
+      if (updated.count !== 1) continue;
+      if (!retry) {
+        await this.prisma.$transaction((transaction) =>
+          this.clearFillLock(transaction, run.projectId, run.workflowRunId, run.templateId, now),
+        );
+        continue;
+      }
       await this.prisma.jobOutbox.updateMany({
         where: {
           projectId: run.projectId,
