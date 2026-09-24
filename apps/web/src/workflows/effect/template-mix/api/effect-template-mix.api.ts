@@ -30,8 +30,9 @@ export const serializeEffectTemplateMixDraft = (
 ): EffectTemplateMixDraft => ({
   schemaVersion: 1,
   activeTemplateId,
-  templates: entries.map(({ id, workspace }) => ({
+  templates: entries.map(({ id, aiFillLocked, workspace }) => ({
     id,
+    ...(aiFillLocked ? { aiFillLocked: true } : {}),
     workspace: {
       editVersion: workspace.editVersion,
       template: workspace.template,

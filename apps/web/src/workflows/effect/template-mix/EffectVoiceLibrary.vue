@@ -10,6 +10,7 @@ const props = defineProps<{
   templateId: string;
   selectedId?: string | undefined;
   playing: boolean;
+  disabled?: boolean;
 }>();
 const emit = defineEmits<{ select: [id: string]; audition: [] }>();
 const catalog = ref<EffectVoiceCatalog>({ profiles: [], defaultId: null });
@@ -105,7 +106,7 @@ function markPreviewStopped() {
   playingVoiceProfileId.value = '';
 }
 async function selectAndPlay(profile: EffectVoiceProfile) {
-  emit('select', profile.id);
+  if (!props.disabled) emit('select', profile.id);
   emit('audition');
   stop();
   const currentRequest = ++playbackRequest;
@@ -214,7 +215,7 @@ onBeforeUnmount(() => {
         class="voice-card"
         :class="{ selected: selectedId === profile.id }"
         :aria-pressed="selectedId === profile.id"
-        :aria-label="`${selectedId === profile.id ? '已选择' : '选择'} ${profile.name}${playingVoiceProfileId === profile.id ? '，正在播放' : ''}`"
+        :aria-label="`${disabled ? '试听' : selectedId === profile.id ? '已选择' : '选择'} ${profile.name}${playingVoiceProfileId === profile.id ? '，正在播放' : ''}`"
         @mouseenter="void prepareSample(profile).catch(() => undefined)"
         @focus="void prepareSample(profile).catch(() => undefined)"
         @click="selectAndPlay(profile)"

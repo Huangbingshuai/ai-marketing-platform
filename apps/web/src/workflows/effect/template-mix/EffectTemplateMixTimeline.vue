@@ -49,6 +49,7 @@ const props = withDefaults(
     duration: number;
     canRedo?: boolean;
     canUndo?: boolean;
+    readOnly?: boolean;
     fps?: number;
     height?: number;
     materials: EffectTemplateMixMaterial[];
@@ -69,6 +70,7 @@ const props = withDefaults(
   {
     canRedo: false,
     canUndo: false,
+    readOnly: false,
     fps: 30,
     height: 260,
     playing: false,
@@ -480,7 +482,7 @@ const fileUrl = (id: string): string =>
 // item still shows its captions and audio — dropping them here would wipe the arrangement the user
 // is looking at — but its checkpoint no longer matches the timeline, so it stays read-only.
 const audioEditable = computed(
-  () => props.packaging?.status === 'COMPLETED' && !props.packaging.stale,
+  () => !props.readOnly && props.packaging?.status === 'COMPLETED' && !props.packaging.stale,
 );
 /** Kept on the timeline but marked, so the stale rows read as "out of date", not as "current". */
 const packagingStale = computed(() => Boolean(props.packaging?.stale));
@@ -899,6 +901,7 @@ const slotIdFromDragEvent = (event: DragEvent): string => {
 const acceptsMaterialDrag = (event: DragEvent): boolean =>
   Boolean(
     props.variant &&
+    !props.readOnly &&
     !trackLocked.VIDEO &&
     event.dataTransfer?.types.includes('application/x-effect-template-mix-material'),
   );
@@ -943,7 +946,7 @@ const syncTrackScroll = (source: 'HEADERS' | 'VIEWPORT'): void => {
 };
 
 const startTransitionResize = (event: PointerEvent, slotId: string): void => {
-  if (event.button !== 0 || trackLocked.VIDEO) return;
+  if (props.readOnly || event.button !== 0 || trackLocked.VIDEO) return;
   const slots = props.variant?.slots ?? [];
   const index = slots.findIndex(({ id }) => id === slotId);
   const slot = index >= 0 ? slots[index] : null;
@@ -975,6 +978,7 @@ const openTransition = (slotId: string): void => {
 const transitionDragActive = (event: DragEvent): boolean =>
   Boolean(
     props.variant &&
+    !props.readOnly &&
     !trackLocked.VIDEO &&
     event.dataTransfer?.types.includes('application/x-effect-transition'),
   );
@@ -1015,6 +1019,7 @@ const onTransitionDragLeave = (event: DragEvent): void => {
   transitionDropSlotId.value = '';
 };
 const onTransitionDrop = (event: DragEvent): void => {
+  if (props.readOnly) return;
   const transition = event.dataTransfer?.getData('application/x-effect-transition') ?? '';
   const slotId = transitionTargetSlotIdFromClientX(event.clientX) || transitionDropSlotId.value;
   transitionDropSlotId.value = '';
@@ -1032,6 +1037,7 @@ const onTrackDragLeave = (event: DragEvent): void => {
   onTransitionDragLeave(event);
 };
 const onTrackDrop = (event: DragEvent): void => {
+  if (props.readOnly) return;
   onMaterialDrop(event);
   onTransitionDrop(event);
 };
@@ -1121,6 +1127,7 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
   const element = viewport.value;
   const range = rangeForSlot(slotId);
   if (!element || !range) return;
+  if (props.readOnly) return;
   const bounds = element.getBoundingClientRect();
   const selectedSlotIds = selectedClipIds.value.includes(slotId)
     ? [...selectedClipIds.value]
@@ -1153,6 +1160,7 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
   addWindowPointerListeners();
 };
 const onVideoClipContextMenu = (event: MouseEvent, slotId: string): void => {
+  if (props.readOnly) return;
   if (!materialForSlot(slotId)) return;
   event.preventDefault();
   event.stopPropagation();
@@ -1172,6 +1180,7 @@ const contextAudioDetached = (): boolean =>
       ),
   );
 const runClipContextAction = (): void => {
+  if (props.readOnly) return;
   const slotId = clipContextMenu.value?.slotId;
   if (!slotId) return;
   clipContextMenu.value = null;
@@ -1179,7 +1188,7 @@ const runClipContextAction = (): void => {
 };
 
 const beginTrim = (event: PointerEvent, slotId: string): void => {
-  if (event.button !== 0 || trackLocked.VIDEO) return;
+  if (props.readOnly || event.button !== 0 || trackLocked.VIDEO) return;
   event.preventDefault();
   event.stopPropagation();
   setSelection([slotId]);
@@ -1198,7 +1207,7 @@ const beginEdgeTrim = (
   slotId: string,
   side: 'LEFT' | 'RIGHT',
 ): void => {
-  if (event.button !== 0 || trackLocked.VIDEO) return;
+  if (props.readOnly || event.button !== 0 || trackLocked.VIDEO) return;
   const slot = props.variant?.slots.find(({ id }) => id === slotId);
   const material = slot ? materialForSlot(slotId) : null;
   if (!slot || !material || edgeTrimBlocked(slotId, side)) return;
@@ -1305,7 +1314,7 @@ const onAudioPointerDown = (event: PointerEvent, audio: TimelineAudio): void => 
     // standard the rest of the group takes, so reordering is what makes the pointer the reference.
     selectedAudioIds.value = [audio.id, ...selectedAudioIds.value.filter((id) => id !== audio.id)];
   }
-  if (!audio.editable) return;
+  if (props.readOnly || !audio.editable) return;
   beginAudioDrag(event, audio, 'MOVE', null);
 };
 
@@ -1314,7 +1323,7 @@ const beginAudioTrim = (
   audio: AudioDragTarget,
   side: 'LEFT' | 'RIGHT',
 ): void => {
-  if (event.button !== 0 || trackLocked.AUDIO) return;
+  if (props.readOnly || event.button !== 0 || trackLocked.AUDIO) return;
   event.preventDefault();
   event.stopPropagation();
   selectAudio(audio.id);
@@ -1322,7 +1331,7 @@ const beginAudioTrim = (
 };
 
 const beginAudioVolume = (event: PointerEvent, audio: TimelineAudio): void => {
-  if (event.button !== 0 || trackLocked.AUDIO) return;
+  if (props.readOnly || event.button !== 0 || trackLocked.AUDIO) return;
   event.preventDefault();
   event.stopPropagation();
   // Volume is the audio counterpart of a caption's size, so a set takes one level together.
@@ -1366,7 +1375,7 @@ const captionGroupIds = (draggedId: string): string[] => {
   return selected.length > 1 && selected.includes(draggedId) ? selected : [];
 };
 const onCaptionPointerDown = (event: PointerEvent, caption: EffectTemplateMixCaption): void => {
-  if (event.button !== 0 || trackLocked.CAPTION) return;
+  if (props.readOnly || event.button !== 0 || trackLocked.CAPTION) return;
   if (audioEdgeHandleDisabled(event)) {
     event.preventDefault();
     event.stopPropagation();
@@ -1395,7 +1404,7 @@ const beginCaptionTrim = (
   caption: EffectTemplateMixCaption,
   side: 'LEFT' | 'RIGHT',
 ): void => {
-  if (event.button !== 0 || trackLocked.CAPTION) return;
+  if (props.readOnly || event.button !== 0 || trackLocked.CAPTION) return;
   event.preventDefault();
   event.stopPropagation();
   selectAudio(`caption:${caption.id}`);

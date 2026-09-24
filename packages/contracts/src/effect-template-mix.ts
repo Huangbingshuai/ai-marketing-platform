@@ -193,10 +193,19 @@ export type EffectTemplateMixWorkspace = {
   /** Read-only upstream view, never serialized in the node draft. */
   materials: EffectTemplateMixMaterial[];
 };
-export type EffectTemplateMixTemplateEntry = { id: string; workspace: EffectTemplateMixWorkspace };
+export type EffectTemplateMixTemplateEntry = {
+  id: string;
+  /** Set after the first smart-fill run is created; the template workspace then stays immutable. */
+  aiFillLocked?: boolean;
+  workspace: EffectTemplateMixWorkspace;
+};
 export type EffectTemplateMixDraft = {
   schemaVersion: 1;
-  templates: { id: string; workspace: Omit<EffectTemplateMixWorkspace, 'materials'> }[];
+  templates: {
+    id: string;
+    aiFillLocked?: boolean;
+    workspace: Omit<EffectTemplateMixWorkspace, 'materials'>;
+  }[];
   activeTemplateId: string;
 };
 export type EffectTemplateMixWorkspaceData = {

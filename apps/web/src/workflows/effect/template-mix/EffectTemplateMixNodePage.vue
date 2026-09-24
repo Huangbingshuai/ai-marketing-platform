@@ -46,6 +46,7 @@ import {
   Focus,
   Layers3,
   LoaderCircle,
+  Lock,
   Maximize2,
   Minimize2,
   Music2,
@@ -125,6 +126,7 @@ const view = ref<'CONFIG' | 'EDITOR'>('CONFIG');
 const saveState = ref<'dirty' | 'saved' | 'saving'>('saved');
 const validating = ref(false);
 const mutating = ref(false);
+const fillStartPending = ref(false);
 const aiRuns = ref<EffectTemplateMixAiRun[]>([]);
 const classificationPools = ref<EffectTemplateMixClassificationPool[]>([]);
 const activeAiRun = computed(
@@ -285,6 +287,9 @@ const pollControllers = new Map<string, AbortController>();
 
 const activeEntry = computed(
   () => catalog.value.find(({ id }) => id === activeTemplateId.value) ?? null,
+);
+const templateEditLocked = computed(
+  () => Boolean(activeEntry.value?.aiFillLocked || activeAiRun.value || fillStartPending.value),
 );
 const workspace = computed(() => activeEntry.value?.workspace ?? null);
 const activeUi = computed(() =>
@@ -1030,9 +1035,11 @@ const installWorkspaceData = (
     '';
   let detachedTransitionChanged = false;
   const activeEntryForCleanup = catalog.value.find(({ id }) => id === activeTemplateId.value);
-  for (const variant of activeEntryForCleanup?.workspace.variants ?? []) {
-    normalizeVariantVideoLanes(variant);
-    detachedTransitionChanged = clearDetachedTransitions(variant) || detachedTransitionChanged;
+  if (!activeEntryForCleanup?.aiFillLocked) {
+    for (const variant of activeEntryForCleanup?.workspace.variants ?? []) {
+      normalizeVariantVideoLanes(variant);
+      detachedTransitionChanged = clearDetachedTransitions(variant) || detachedTransitionChanged;
+    }
   }
   Object.keys(committedVersions).forEach((key) => delete committedVersions[key]);
   data.commits
@@ -1182,12 +1189,24 @@ const persist = async (keepalive = false): Promise<boolean> => {
     saveState.value = 'saved';
     return true;
   } catch (error) {
+    if (error instanceof Error && error.message.includes('已进入智能填充并锁定')) {
+      saveState.value = 'saved';
+      await load();
+      showNotice('智能填充开始后，此模板已锁定；如需修改请新建模板', 'warning');
+      return false;
+    }
     saveState.value = 'dirty';
     showNotice(error instanceof Error ? error.message : '草稿保存失败', 'error');
     return false;
   }
 };
 const scheduleSave = (): void => {
+  if (templateEditLocked.value) {
+    clearTimeout(saveTimer);
+    saveState.value = 'saved';
+    if (!fillStartPending.value) void load();
+    return;
+  }
   saveState.value = 'dirty';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => (pendingSave = persist()), 450);
@@ -1197,6 +1216,7 @@ const bump = (): void => {
   scheduleSave();
 };
 const selectVoiceProfile = (id: string): void => {
+  if (templateEditLocked.value) return;
   if (!workspace.value || workspace.value.template.voiceProfileId === id) return;
   workspace.value.template.voiceProfileId = id;
   bump();
@@ -1655,7 +1675,7 @@ const captionBox = (id: string): PackagingCaptionBox =>
  * matches the timeline — a stale checkpoint is shown on the timeline but never written to.
  */
 const captionEditable = computed(
-  () => selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale,
+  () => selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale && !templateEditLocked.value,
 );
 /** The caption the font stepper reads its current size from: the lone one, or the set's first. */
 const captionScaleTarget = computed(() => {
@@ -3118,6 +3138,7 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
   const templateId = activeTemplateId.value;
   const variantId = target?.id;
   mutating.value = true;
+  fillStartPending.value = true;
   try {
     const result = await createEffectTemplateMixAiRun(
       props.projectId,
@@ -3126,6 +3147,12 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
       templateId,
       variantId,
     );
+    const workspaceResponse = await loadEffectTemplateMixWorkspace(
+      props.projectId,
+      props.workflowRunId,
+    );
+    installWorkspaceData(workspaceResponse.data);
+    activeTemplateId.value = templateId;
     aiRuns.value = [result.data, ...aiRuns.value.filter(({ id }) => id !== result.data.id)];
     showNotice(
       target?.manualSlotIds.length
@@ -3136,8 +3163,10 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
     );
     void pollAiRun(result.data.id);
   } catch (error) {
+    await load();
     showNotice(error instanceof Error ? error.message : '重新填充失败', 'error');
   } finally {
+    fillStartPending.value = false;
     mutating.value = false;
   }
 };
@@ -3674,13 +3703,23 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     target?.closest('[role="dialog"]')
   )
     return;
-  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'z') {
+  const key = event.key.toLocaleLowerCase();
+  if (
+    templateEditLocked.value &&
+    (((event.ctrlKey || event.metaKey) && ['z', 'y'].includes(key)) ||
+      key === 'delete' ||
+      key === 'backspace')
+  ) {
+    event.preventDefault();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && key === 'z') {
     event.preventDefault();
     if (event.shiftKey) redoTimelineEdit();
     else undoTimelineEdit();
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'y') {
+  if ((event.ctrlKey || event.metaKey) && key === 'y') {
     event.preventDefault();
     redoTimelineEdit();
     return;
@@ -3900,6 +3939,7 @@ defineExpose({ flushPendingEdits });
             >模板名称<input
               v-model="workspace.template.name"
               maxlength="40"
+              :disabled="templateEditLocked"
               @change="changeTemplate"
           /></label>
           <div class="slot-table">
@@ -3911,9 +3951,9 @@ defineExpose({ flushPendingEdits });
               <div class="slot-name">
                 <b>{{ index + 1 }}</b
                 ><span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span
-                ><button :disabled="index === 0" @click="moveTemplateSlot(slot.id, -1)">↑</button
+                ><button :disabled="templateEditLocked || index === 0" @click="moveTemplateSlot(slot.id, -1)">↑</button
                 ><button
-                  :disabled="index === workspace.template.slots.length - 1"
+                  :disabled="templateEditLocked || index === workspace.template.slots.length - 1"
                   @click="moveTemplateSlot(slot.id, 1)"
                 >
                   ↓
@@ -3928,11 +3968,13 @@ defineExpose({ flushPendingEdits });
                 min="4"
                 max="15"
                 step=".1"
+                :disabled="templateEditLocked"
                 @change="changeTemplate"
               /><template v-if="index < workspace.template.slots.length - 1">
                 <select
                   :value="templateTransitionForRow(index)?.transition ?? '硬切'"
                   :aria-label="`${EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role]}到下一槽位的转场`"
+                  :disabled="templateEditLocked"
                   @change="changeTemplateTransition(index, $event)"
                 >
                   <option v-for="item in EFFECT_TEMPLATE_MIX_TRANSITIONS" :key="item" :value="item">
@@ -3961,6 +4003,9 @@ defineExpose({ flushPendingEdits });
               <WandSparkles :size="15" />进入精修工作台
             </button>
           </footer>
+          <p v-if="templateEditLocked" class="template-lock-banner" role="status">
+            <Lock :size="15" />此模板已进入智能填充并锁定。需要修改时请新建模板。
+          </p>
         </div>
       </section>
 
@@ -4013,11 +4058,14 @@ defineExpose({ flushPendingEdits });
               @click="returnToFinalOutput"
             >返回成片输出</button>
             <button class="button" @click="leaveEditor">返回模板配置</button
-            ><button class="button" :disabled="mutating || !selectedVariant" @click="openOverwrite">
+            ><button class="button" :disabled="mutating || templateEditLocked || !selectedVariant" @click="openOverwrite">
               更新模板配置
             </button>
           </div>
         </header>
+        <div v-if="templateEditLocked" class="template-lock-banner" role="status">
+          <Lock :size="15" />此模板已进入智能填充并锁定，当前工程为只读。需要继续修改请新建模板。
+        </div>
         <div v-if="failedAiRun" class="ai-run-card editor-run failed" role="alert">
           <AlertCircle :size="18" />
           <div>
@@ -4089,10 +4137,10 @@ defineExpose({ flushPendingEdits });
                   :class="{
                     selected: auditionMaterial?.id === material.id,
                     used: materialUsageLabel(material.id),
-                    disabled: !selectedVariant,
+                    disabled: !selectedVariant || templateEditLocked,
                     dragging: draggingMaterialId === material.id,
                   }"
-                  :draggable="Boolean(selectedVariant)"
+                  :draggable="Boolean(selectedVariant) && !templateEditLocked"
                   @click="onMaterialCardClick(material)"
                   @pointerdown="beginMaterialPointerDrag($event, material)"
                   @dragstart="beginMaterialDrag($event, material)"
@@ -4159,13 +4207,13 @@ defineExpose({ flushPendingEdits });
               </div></template
             >
             <template v-else-if="resourceTab === 'TEXT' && selectedVariant"
-              ><header>
-                <strong>字幕</strong
-                ><button class="button compact" @click="addCaption"><Plus :size="13" />添加</button>
+                ><header>
+                  <strong>字幕</strong
+                  ><button class="button compact" :disabled="templateEditLocked" @click="addCaption"><Plus :size="13" />添加</button>
               </header>
               <label class="subtitle-style"
                 >字幕样式
-                <select v-model="selectedVariant.subtitleStyle" @change="bump">
+                <select v-model="selectedVariant.subtitleStyle" :disabled="templateEditLocked" @change="bump">
                   <option value="standard">标准白字</option>
                   <option value="bold">加粗描边</option>
                   <option value="yellow">重点黄字</option>
@@ -4173,10 +4221,10 @@ defineExpose({ flushPendingEdits });
               </label>
               <div class="caption-list">
                 <article v-for="caption in selectedVariant.captions" :key="caption.id">
-                  <input v-model="caption.text" maxlength="120" @input="bump" /><small
+                  <input v-model="caption.text" maxlength="120" :disabled="templateEditLocked" @input="bump" /><small
                     >{{ formatEffectTemplateMixTime(caption.start) }} —
                     {{ formatEffectTemplateMixTime(caption.end) }}</small
-                  ><button @click="removeCaption(caption.id)"><X :size="14" /></button>
+                  ><button :disabled="templateEditLocked" @click="removeCaption(caption.id)"><X :size="14" /></button>
                 </article>
                 <p v-if="!selectedVariant.captions.length">选择一个槽位后添加字幕。</p>
               </div></template
@@ -4243,7 +4291,8 @@ defineExpose({ flushPendingEdits });
                       class="transition-card"
                       :class="{ active: item.id === selectedSlot?.transition }"
                       type="button"
-                      draggable="true"
+                      :disabled="templateEditLocked"
+                      :draggable="!templateEditLocked"
                       @dragstart="beginTransitionDrag($event, item.id)"
                       @click="changeTransition(item.id)"
                     >
@@ -4262,6 +4311,7 @@ defineExpose({ flushPendingEdits });
               v-else-if="resourceTab === 'AUDIO'"
               :project-id="props.projectId" :workflow-run-id="props.workflowRunId" :template-id="activeTemplateId"
               :selected-id="workspace.template.voiceProfileId" :playing="previewIsPlaying"
+              :disabled="templateEditLocked"
               @select="selectVoiceProfile" @audition="pauseForVoiceAudition"
             />
           </aside>
@@ -4592,7 +4642,7 @@ defineExpose({ flushPendingEdits });
                 <button
                   class="button compact primary"
                   type="button"
-                  :disabled="mutating || Boolean(activeAiRun) || workspace.variants.length >= 100"
+                  :disabled="mutating || templateEditLocked || workspace.variants.length >= 100"
                   title="新建一个不包含任何素材的空成片工程"
                   @click="createEmptyVariant"
                 >
@@ -4851,8 +4901,9 @@ defineExpose({ flushPendingEdits });
         <EffectTemplateMixTimeline
           ref="timelineRef"
           :packaging="selectedPackaging"
-          :can-redo="canRedoTimeline"
-          :can-undo="canUndoTimeline"
+          :read-only="templateEditLocked"
+          :can-redo="canRedoTimeline && !templateEditLocked"
+          :can-undo="canUndoTimeline && !templateEditLocked"
           :duration="currentDuration"
           :height="timelineHeight"
           :materials="workspace.materials"
@@ -5379,6 +5430,18 @@ button:disabled {
 .config-panel {
   padding: 14px;
   box-shadow: 0 4px 14px rgb(30 64 175 / 4%);
+}
+.template-lock-banner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 9px 11px;
+  color: #82550f;
+  background: #fff8e8;
+  border: 1px solid #f2d69b;
+  border-radius: 8px;
+  font-size: 12px;
 }
 .config-panel > header,
 .config-panel > footer {

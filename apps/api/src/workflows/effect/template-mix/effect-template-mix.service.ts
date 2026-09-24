@@ -61,6 +61,7 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
       return (
         typeof entry?.id === 'string' &&
         entry.id.length > 0 &&
+        (entry.aiFillLocked === undefined || typeof entry.aiFillLocked === 'boolean') &&
         Number.isInteger(workspace?.editVersion) &&
         typeof template?.name === 'string' &&
         Number.isInteger(template.editVersion) &&
@@ -601,11 +602,12 @@ export class EffectTemplateMixService {
     projectId: string,
     workflowRunId: string,
   ): Promise<EffectTemplateMixWorkspaceData> {
-    const [nodeState, artifactData, aiRuns, classificationSources] = await Promise.all([
+    const [nodeState, artifactData, aiRuns, classificationSources, lockedTemplateIds] = await Promise.all([
       this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.working.listArtifacts(projectId, { workflowRunId }),
       this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.sourceArtifacts(projectId, workflowRunId) ?? Promise.resolve([]),
+      this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     return this.toWorkspaceData(
       nodeState ? draftOf(nodeState.state) : emptyDraft(),
@@ -613,6 +615,7 @@ export class EffectTemplateMixService {
       artifactData.items,
       aiRuns,
       classificationSources,
+      lockedTemplateIds,
     );
   }
 
@@ -623,12 +626,28 @@ export class EffectTemplateMixService {
     value: unknown,
   ): Promise<EffectTemplateMixWorkspaceData> {
     const draft = draftOf(value);
-    const previousState = await this.working.getNodeStateOrNull(
-      projectId,
-      workflowRunId,
-      'TEMPLATE_MIX',
-    );
+    const [previousState, lockedTemplateIds] = await Promise.all([
+      this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
+      this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+    ]);
     const previous = previousState ? draftOf(previousState.state) : emptyDraft();
+    const lockedSet = new Set(lockedTemplateIds);
+    for (const templateId of lockedSet) {
+      const before = previous.templates.find((entry) => entry.id === templateId);
+      const next = draft.templates.find((entry) => entry.id === templateId);
+      if (
+        !before ||
+        !next ||
+        workflowStateHash(before.workspace) !== workflowStateHash(next.workspace)
+      ) {
+        throw new ApiHttpException(
+          '此模板已进入智能填充并锁定，不能再修改；请新建模板继续编辑',
+          HttpStatus.CONFLICT,
+          'CONFLICT',
+        );
+      }
+      next.aiFillLocked = true;
+    }
     const currentSlotsValid = (
       slots: EffectTemplateMixSlot[],
       before: EffectTemplateMixSlot[] | undefined,
@@ -675,6 +694,7 @@ export class EffectTemplateMixService {
       artifacts.items,
       aiRuns,
       classificationSources,
+      lockedTemplateIds,
     );
   }
 
@@ -1295,6 +1315,7 @@ export class EffectTemplateMixService {
         HttpStatus.CONFLICT,
         'CONFLICT',
       );
+    entry!.aiFillLocked = true;
     const currentById = new Map(currentSources.map((artifact) => [artifact.id, artifact]));
     const sourcesCurrent =
       snapshot.promptArtifacts.every((source) => {
@@ -1815,11 +1836,12 @@ export class EffectTemplateMixService {
     templateId: string,
     mutation: (workspace: EffectTemplateMixWorkspace) => void,
   ): Promise<EffectTemplateMixWorkspaceData> {
-    const [nodeState, artifactData, aiRuns, classificationSources] = await Promise.all([
+    const [nodeState, artifactData, aiRuns, classificationSources, lockedTemplateIds] = await Promise.all([
       this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.working.listArtifacts(projectId, { workflowRunId }),
       this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.sourceArtifacts(projectId, workflowRunId) ?? Promise.resolve([]),
+      this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     if (nodeState.revision !== expectedRevision) {
       throw new ApiHttpException(
@@ -1831,6 +1853,12 @@ export class EffectTemplateMixService {
     const draft = draftOf(nodeState.state);
     const entry = draft.templates.find(({ id }) => id === templateId);
     if (!entry) this.notFound('当前混剪模板不存在');
+    if (lockedTemplateIds.includes(templateId))
+      throw new ApiHttpException(
+        '此模板已进入智能填充并锁定，不能再修改；请新建模板继续编辑',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
     const promptSources = promptSourcesFromArtifacts(artifactData.items);
     const workspace: EffectTemplateMixWorkspace = {
       ...entry!.workspace,
@@ -1855,6 +1883,7 @@ export class EffectTemplateMixService {
       artifactData.items,
       aiRuns,
       classificationSources,
+      lockedTemplateIds,
     );
   }
 
@@ -1864,7 +1893,17 @@ export class EffectTemplateMixService {
     artifacts: WorkingArtifact[],
     aiRunRecords: EffectTemplateMixAiRunRecord[] = [],
     classificationSources: EffectTemplateMixClassificationSource[] = [],
+    lockedTemplateIds: string[] = [],
   ): EffectTemplateMixWorkspaceData {
+    const lockedSet = new Set(lockedTemplateIds);
+    const workspaceDraft: EffectTemplateMixDraft = {
+      ...draft,
+      templates: draft.templates.map((entry) =>
+        lockedSet.has(entry.id) || entry.aiFillLocked
+          ? { ...entry, aiFillLocked: true }
+          : entry,
+      ),
+    };
     const promptSources = promptSourcesFromArtifacts(artifacts);
     const materials = artifacts
       .map((artifact) => materialFrom(artifact, promptSources))
@@ -1898,7 +1937,7 @@ export class EffectTemplateMixService {
         !Array.isArray(run.classificationResult)
       )
         continue;
-      const entry = draft.templates.find(({ id }) => id === run.templateId);
+      const entry = workspaceDraft.templates.find(({ id }) => id === run.templateId);
       const snapshot = run.inputSnapshot as EffectTemplateMixAiSnapshot;
       const classifications = run.classificationResult as EffectTemplateMixAiClassification[];
       if (
@@ -1948,7 +1987,7 @@ export class EffectTemplateMixService {
       pooledTemplates.add(run.templateId);
     }
     return {
-      draft,
+      draft: workspaceDraft,
       draftRevision,
       materials,
       commits,
