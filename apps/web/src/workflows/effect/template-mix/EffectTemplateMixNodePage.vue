@@ -64,7 +64,6 @@ import {
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue';
 
 import {
-  applyEffectTemplateMixVariant,
   createEffectTemplateMixAiRun,
   createEmptyEffectTemplateMixVariant,
   getEffectTemplateMixAiRun,
@@ -210,7 +209,6 @@ const previewZoom = ref(100);
 const playerFullscreen = ref(false);
 const materialAudioPresence = reactive<Record<string, boolean | undefined>>({});
 const createOpen = ref(false);
-const overwriteOpen = ref(false);
 const workflowDialogOpen = ref(false);
 const selectedWorkflowStage = ref<EffectTemplateMixAiRun['stage'] | null>(null);
 const notice = ref<Notice | null>(null);
@@ -918,15 +916,6 @@ const openCreate = async (event: MouseEvent): Promise<void> => {
 };
 const closeCreate = async (): Promise<void> => {
   createOpen.value = false;
-  await nextTick();
-  dialogTrigger.value?.focus();
-};
-const openOverwrite = (event: MouseEvent): void => {
-  dialogTrigger.value = event.currentTarget as HTMLElement;
-  overwriteOpen.value = true;
-};
-const closeOverwrite = async (): Promise<void> => {
-  overwriteOpen.value = false;
   await nextTick();
   dialogTrigger.value?.focus();
 };
@@ -3180,43 +3169,6 @@ const retryFailedAiRun = (): void => {
   }
   void startAiFill(null);
 };
-const overwrite = async (sync: boolean): Promise<void> => {
-  if (!workspace.value || !selectedVariant.value || mutating.value) return;
-  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
-  const templateId = activeTemplateId.value;
-  const variantId = selectedVariant.value.id;
-  mutating.value = true;
-  try {
-    const result = await applyEffectTemplateMixVariant(
-      props.projectId,
-      props.workflowRunId,
-      draftRevision.value,
-      templateId,
-      variantId,
-      sync,
-    );
-    installWorkspaceData(result.data);
-    if (uiByTemplate[templateId]) uiByTemplate[templateId].selectedVariantId = variantId;
-    const conflicts =
-      catalog.value
-        .find(({ id }) => id === templateId)
-        ?.workspace.variants.reduce((sum, variant) => sum + variant.conflictSlotIds.length, 0) ?? 0;
-    overwriteOpen.value = false;
-    saveState.value = 'saved';
-    showNotice(
-      conflicts
-        ? '已同步，但部分工程仍有素材缺口'
-        : sync
-          ? '已更新模板并同步其他工程'
-          : '已更新模板，其他工程等待同步',
-      conflicts ? 'warning' : 'success',
-    );
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : '更新模板失败', 'error');
-  } finally {
-    mutating.value = false;
-  }
-};
 const addCaption = (): void => {
   if (!selectedVariant.value || !selectedSlot.value) return;
   const range = currentTiming.value.slots.find(({ id }) => id === selectedSlot.value?.id);
@@ -3679,7 +3631,6 @@ const flushPendingEdits = async (): Promise<boolean> => {
 const onEscape = (event: KeyboardEvent): void => {
   if (event.key === 'Escape') {
     if (createOpen.value) void closeCreate();
-    if (overwriteOpen.value) void closeOverwrite();
     if (workflowDialogOpen.value) void closeWorkflowDialog();
   }
 };
@@ -3688,7 +3639,6 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
   if (
     view.value !== 'EDITOR' ||
     createOpen.value ||
-    overwriteOpen.value ||
     workflowDialogOpen.value ||
     packagingPanel.value?.visible ||
     event.defaultPrevented
@@ -4057,10 +4007,7 @@ defineExpose({ flushPendingEdits });
               type="button"
               @click="returnToFinalOutput"
             >返回成片输出</button>
-            <button class="button" @click="leaveEditor">返回模板配置</button
-            ><button class="button" :disabled="mutating || templateEditLocked || !selectedVariant" @click="openOverwrite">
-              更新模板配置
-            </button>
+            <button class="button" @click="leaveEditor">返回模板配置</button>
           </div>
         </header>
         <div v-if="templateEditLocked" class="template-lock-banner" role="status">
@@ -5014,31 +4961,6 @@ defineExpose({ flushPendingEdits });
               @click="addTemplate"
             >
               <Plus :size="14" />创建模板
-            </button>
-          </footer>
-        </section>
-      </div>
-      <div v-if="overwriteOpen && workspace" class="mask" @mousedown.self="closeOverwrite">
-        <section
-          class="modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="mix-overwrite-title"
-        >
-          <header>
-            <div>
-              <h3 id="mix-overwrite-title">更新当前模板配置</h3>
-              <p>使用当前工程的顺序、时长和转场更新模板。</p>
-            </div>
-            <button aria-label="关闭更新模板弹窗" @click="closeOverwrite"><X :size="18" /></button>
-          </header>
-          <main>
-            <p>同步时只更新「{{ workspace.template.name }}」下的其他工程，并保留人工选择素材。</p>
-          </main>
-          <footer>
-            <button class="button" :disabled="mutating" @click="overwrite(false)">仅更新模板</button
-            ><button class="button primary" :disabled="mutating" @click="overwrite(true)">
-              更新并同步其他工程
             </button>
           </footer>
         </section>
