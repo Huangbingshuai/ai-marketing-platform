@@ -164,7 +164,7 @@ async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
-@pytest.mark.parametrize('frame_rate', [24, 60])
+@pytest.mark.parametrize('frame_rate', [24, 30, 60])
 async def test_confirmed_six_slot_package_renders_complete_timeline(
     tmp_path: Path, monkeypatch: Any, frame_rate: int,
 ) -> None:

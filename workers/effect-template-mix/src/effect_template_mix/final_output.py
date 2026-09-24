@@ -346,7 +346,10 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         f'alimiter=limit=0.95,atrim=duration={duration}[audio]']
     (directory / 'captions.ass').write_text(
         captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes')), encoding='utf-8')
-    filters += [f'[{current}]subtitles=captions.ass,format=yuv420p[video]']
+    # Re-apply the selected constant frame rate after concat/xfade. Individual
+    # segments are CFR, but concat can yield a non-integer average rate when
+    # adjacent slot durations end between frame boundaries.
+    filters += [f'[{current}]fps={frame_rate},subtitles=captions.ass,format=yuv420p[video]']
     output = directory / 'final.mp4'
     await progress(50)
     await encode([*inputs, '-filter_complex', ';'.join(filters), '-map', '[video]', '-map', '[audio]', '-shortest', '-t', str(duration),
