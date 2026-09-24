@@ -744,14 +744,7 @@ class PackagingHandler:
                     if saved:
                         captions.extend(saved)
                         continue
-                    voice = voices.get(line['id'])
-                    if not voice:
-                        # The editor may have deleted this line's narration. Its subtitle is still
-                        # there to keep, so the line simply gets no freshly split captions.
-                        LOGGER.info('packaging caption split skipped without a voice item=%s line=%s',
-                            item['id'], line['id'])
-                        continue
-                    generated = captions_for_voice(line, voice)
+                    generated = captions_for_voice(line, voices[line['id']])
                     captions.extend(generated)
                     if line['id'] in boxes:
                         for caption in generated:
