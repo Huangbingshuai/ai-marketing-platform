@@ -18,6 +18,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsISO8601,
   IsNumber,
@@ -27,6 +28,7 @@ import {
   IsUUID,
   Max,
   MaxLength,
+  Matches,
   Min,
   MinLength,
   ValidateNested,
@@ -60,6 +62,14 @@ export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
 export class PackagingAudioUploadDto extends EffectTemplateMixWorkerProjectDto {
   @IsOptional() @IsString() @MaxLength(2500) segmentFrames?: string;
 }
+/** `text` is an assertion the server checks against the caption it will actually speak. */
+export class CreatePackagingCaptionVoiceDto {
+  @IsString() @Matches(/^[a-zA-Z0-9_-]{1,50}$/u) captionId!: string;
+  @IsString() @MaxLength(500) text!: string;
+}
+export class PackagingCaptionVoiceWriteDto extends EffectTemplateMixWorkerProjectDto {
+  @IsString() @Matches(/^[a-zA-Z0-9_-]{1,50}$/u) captionId!: string;
+}
 export class PackagingCheckpointDto extends EffectTemplateMixWorkerProjectDto {
   @IsIn(PACKAGING_STAGES) stage!: PackagingStage;
   @IsObject() checkpoint!: PackagingCheckpoint;
@@ -78,9 +88,13 @@ export class PackagingAudioEditDto {
 }
 export class PackagingCaptionEditDto {
   @IsString() @MinLength(1) @MaxLength(50) id!: string;
-  @IsString() @MinLength(1) @MaxLength(500) text!: string;
+  // Blank text is valid only for a newly-created editor draft; the domain validator
+  // enforces that generated/narration captions remain non-empty.
+  @IsString() @MaxLength(500) text!: string;
   @Type(() => Number) @IsNumber() @Min(0) start!: number;
   @Type(() => Number) @IsNumber() @Min(0) end!: number;
+  @IsOptional() @IsBoolean() manual?: boolean;
+  @IsOptional() @IsString() @Matches(/^[a-zA-Z0-9_-]{1,80}$/u) trackId?: string;
 }
 /** Normalised caption geometry; ranges mirror the domain check that backs this up. */
 export class PackagingCaptionBoxDto {
@@ -92,7 +106,25 @@ export class PackagingCaptionBoxDto {
 export class UpdatePackagingAudioDto {
   @IsISO8601() expectedUpdatedAt!: string;
   @IsOptional() @IsObject() voices?: Record<string, PackagingAudioEditDto>;
+  // A generated caption narration is moved and trimmed exactly like a script-line voice, so it
+  // takes the same per-clip shape and is keyed by caption id. Same as `voices`, the values are
+  // checked in the service, which owns the real source lengths.
+  @IsOptional() @IsObject() captionVoices?: Record<string, PackagingAudioEditDto>;
   @IsOptional() @ValidateNested() @Type(() => PackagingAudioEditDto) music?: PackagingAudioEditDto;
+  // A delete cannot be expressed as a geometry edit — there is no clip left to send — so each kind
+  // that may go carries its own removal channel. Ids are checked for shape only: the service ignores
+  // one it does not know, which is what a delete racing a redo looks like.
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^[a-zA-Z0-9_-]{1,80}$/u, { each: true })
+  removedVoices?: string[];
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^[a-zA-Z0-9_-]{1,80}$/u, { each: true })
+  removedCaptionVoices?: string[];
+  @IsOptional() @IsBoolean() removeMusic?: boolean;
   @IsOptional() @IsObject() boxes?: Record<string, PackagingCaptionBoxDto>;
   @IsOptional()
   @IsArray()
@@ -142,6 +174,15 @@ export class EffectPackagingController {
     @Body() body: UpdatePackagingAudioDto,
   ) {
     return this.service.updateAudio(projectId, runId, itemId, body);
+  }
+  @Post('packaging-runs/:runId/items/:itemId/caption-voice')
+  requestCaptionVoice(
+    @Param('projectId', uuid) projectId: string,
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Body() body: CreatePackagingCaptionVoiceDto,
+  ) {
+    return this.service.requestCaptionVoice(projectId, runId, itemId, body);
   }
   @Get('templates/:templateId/variants/:variantId/output-inputs')
   outputInputs(
@@ -224,5 +265,29 @@ export class EffectPackagingWorkerController {
     @UploadedFile() file: { path: string; size: number } | undefined,
   ) {
     return this.service.upload(body.projectId, runId, token, itemId, role, file, body.segmentFrames);
+  }
+}
+
+/**
+ * The editor-triggered caption narration has no packaging run to hold a lease on, so it lives on
+ * its own route: the worker token is the whole guard, and the item's own caption list decides
+ * whether the write is legal.
+ */
+@Controller('internal/workers/effect-template-mix/caption-voices')
+@UseGuards(EffectTemplateMixWorkerGuard)
+export class EffectPackagingCaptionVoiceController {
+  constructor(@Inject(EffectPackagingService) readonly service: EffectPackagingService) {}
+  @Post(':runId/items/:itemId/audio')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024, files: 1 } }),
+    UploadTemporaryFileCleanupInterceptor,
+  )
+  upload(
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Body() body: PackagingCaptionVoiceWriteDto,
+    @UploadedFile() file: { path: string; size: number } | undefined,
+  ) {
+    return this.service.uploadCaptionVoice(body.projectId, runId, itemId, body.captionId, file);
   }
 }

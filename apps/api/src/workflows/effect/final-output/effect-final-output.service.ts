@@ -10,16 +10,26 @@ import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
 import type {
   CompleteEffectPackagingRequest,
+  EffectTemplateMixMaterial,
   FinalOutputRun,
   FinalOutputSnapshot,
   PackagingCheckpoint,
   PackagingSnapshot,
   StartFinalOutputRequest,
+  WorkingArtifact,
 } from '@ai-marketing/contracts';
-import { FINAL_OUTPUT_RESOLUTIONS } from '@ai-marketing/contracts';
+import {
+  EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
+  effectTemplateMixContentDuration,
+  FINAL_OUTPUT_RESOLUTIONS,
+  packagingOverlayTimeline,
+} from '@ai-marketing/contracts';
 import { PrismaService } from '../../../database/prisma.service';
 import type { Prisma } from '../../../generated/prisma/client';
-import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
+import {
+  WorkflowWorkingRepository,
+  workingArtifactInclude,
+} from '../../../platform/workflow/workflow-working.repository';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import {
@@ -27,13 +37,36 @@ import {
   EFFECT_TEMPLATE_MIX_QUEUE,
 } from '../../../platform/job/job.constants';
 import { EffectTemplateMixService } from '../template-mix/effect-template-mix.service';
-import { matchesVisualHash, requireSlotPackaging, visualHash } from '../template-mix/effect-packaging.domain';
+import {
+  artifactVisitor,
+  matchesVisualHash,
+  packagingClips,
+  requireSlotPackaging,
+  visualHash,
+} from '../template-mix/effect-packaging.domain';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
 const include = { items: { orderBy: { id: 'asc' as const } } };
 const audioIds = (cp: PackagingCheckpoint) =>
   [...Object.values(cp.voices ?? {}), ...(cp.music ? [cp.music] : [])].map((a) => a.fileObjectId);
+/**
+ * The picture layers the user stacked on top after the package was confirmed.
+ *
+ * They are deliberately not part of what a package freezes — adding or moving one must not restate a
+ * package the user has already paid for — so the export reads them from the live draft instead and
+ * folds them into the timeline it hands to the renderer, which only ever sees clips.
+ */
+const liveOverlays = (
+  variant: PackagingSnapshot['variant'],
+  materials: EffectTemplateMixMaterial[],
+  artifacts: WorkingArtifact[],
+): PackagingSnapshot['clips'] => {
+  const slots = variant.slots.filter((slot) => slot.overlay === true);
+  return slots.length
+    ? packagingClips({ ...variant, slots }, materials, artifactVisitor(artifacts))
+    : [];
+};
 
 @Injectable()
 export class EffectFinalOutputService {
@@ -145,6 +178,14 @@ export class EffectFinalOutputService {
         const sources = await tx.workingArtifact.findMany({
           where: { projectId, workflowRunId: body.workflowRunId },
         });
+        // Overlays come from the live draft rather than the frozen snapshot, so their own artifacts
+        // have to be walked here as well; the rest of the run reads provenance off the snapshot.
+        const overlayArtifacts = variants.some((v) => v.slots.some((s) => s.overlay === true))
+          ? ((await tx.workingArtifact.findMany({
+              where: { projectId, workflowRunId: body.workflowRunId },
+              include: workingArtifactInclude,
+            })) as unknown as WorkingArtifact[])
+          : [];
         const rows = variants.map((variant) => {
           const item = history.find((i) => i.variantId === variant.id);
           if (
@@ -172,13 +213,23 @@ export class EffectFinalOutputService {
             )
           )
             throw new ConflictException('包装上游来源已过期，请恢复包装');
-          return { item, snapshot, checkpoint };
+          return {
+            item,
+            snapshot,
+            checkpoint,
+            variant,
+            overlays: liveOverlays(variant, workspace.materials, overlayArtifacts),
+          };
         });
         const inputHash = workflowStateHash(
           rows.map((r) => ({
             variant: r.snapshot.sourceTimelineHash,
             checkpoint: r.checkpoint,
             dependencies: r.snapshot.dependencies,
+            // Overlays stay out of the visual hash — that is what keeps a confirmed package usable.
+            // Being invisible there makes them invisible above too, and an export that ignored them
+            // would hand back the run it built before the overlay existed.
+            overlays: packagingOverlayTimeline(r.variant),
           })),
         );
         const duplicate = await tx.effectFinalOutputRun.findUnique({
@@ -197,6 +248,7 @@ export class EffectFinalOutputService {
             rows.flatMap((r) => [
               ...audioIds(r.checkpoint),
               ...r.snapshot.clips.map((c) => c.fileObjectId),
+              ...r.overlays.map((c) => c.fileObjectId),
               ...(r.snapshot.detachedAudios ?? []).map((a) => a.fileObjectId),
             ]),
           ),
@@ -236,6 +288,13 @@ export class EffectFinalOutputService {
           const cp = { ...row.checkpoint };
           delete cp.musicTaskId;
           delete cp.musicSubmissionPending;
+          // The film is as long as its content, so the render length follows the checkpoint's own
+          // extent — audio or a caption carried past the last video clip is a black tail, not a
+          // truncation. The frozen snapshot's own `duration` is video-only and is left alone. The live
+          // draft is what is measured, so an overlay reaching past the last clip extends the film.
+          const duration = effectTemplateMixContentDuration(row.variant, cp);
+          if (duration > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS)
+            throw new BadRequestException('成片时长超过容量上限');
           const packageResult = await this.working.commitValidatedArtifactsInTransaction(
             tx,
             projectId,
@@ -256,7 +315,7 @@ export class EffectFinalOutputService {
                     sourceTimelineHash: visualHash(row.snapshot.variant),
                     visualArtifactId: visual.id,
                     visualRevision: visual.revision,
-                    duration: row.snapshot.duration,
+                    duration,
                     ...cp,
                     mix: { originalVolume: 0.15, bgmVolume: 0.12, ducking: true },
                     subtitleStyle: 'standard',
@@ -265,7 +324,8 @@ export class EffectFinalOutputService {
                     .filter((f) => audioIds(cp).includes(f.id))
                     .map((f, sortOrder) => ({
                       fileObjectId: f.id,
-                      role: f.id === cp.music!.fileObjectId ? 'BGM' : 'VOICE',
+                      // The editor may have deleted the bed, so a voice-only mix is a normal state.
+                      role: f.id === cp.music?.fileObjectId ? 'BGM' : 'VOICE',
                       sortOrder,
                       originalFileName: f.originalFileName,
                       mimeType: f.mimeType,
@@ -285,8 +345,26 @@ export class EffectFinalOutputService {
           );
           const packaging = packageResult[0]!.record;
           const firstClip = row.snapshot.clips[0]!;
+          // The renderer only ever sees clips, so the live overlays are folded in here. The frozen
+          // overlays are dropped first: one the user has since deleted must not render, and one still
+          // on the timeline is supplied by `row.overlays` — keeping both would draw it twice.
+          const timelineClips = [
+            ...row.snapshot.clips.filter((clip) => clip.overlay !== true),
+            ...row.overlays,
+          ].map((clip) => ({
+            ...clip,
+            // Rows are numbered against the live draft, and adding an overlay shifts the ones under
+            // it. Keeping the frozen row numbers would place the overlay beside a clip it should
+            // cover, so every row is re-read from the draft the user is looking at.
+            lane: row.variant.videoLanes?.[clip.slotId] ?? clip.lane,
+          }));
           const snapshot: FinalOutputSnapshot = {
-            timeline: { ...row.snapshot, sourceTimelineHash: visualHash(row.snapshot.variant) },
+            timeline: {
+              ...row.snapshot,
+              clips: timelineClips,
+              duration,
+              sourceTimelineHash: visualHash(row.snapshot.variant),
+            },
             packaging: cp,
             dependencies: [
               ...dependencies,

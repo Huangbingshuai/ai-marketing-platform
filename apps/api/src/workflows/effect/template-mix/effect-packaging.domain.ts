@@ -1,9 +1,12 @@
 import {
+  EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
   EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION,
   PACKAGING_AUDIO_GAIN_CEILING,
+  effectTemplateMixContentDuration,
   packagingTimelineClips,
   packagingTimelineDuration,
   packagingVisualTimeline,
+  packagingStoredTimelineStarts,
   packagingSlotBoundaryError,
 } from '@ai-marketing/contracts';
 import type {
@@ -33,23 +36,23 @@ export function matchesVisualHash(variant: EffectTemplateMixVariant, hash: strin
   frozen?: EffectTemplateMixVariant): boolean {
   if (visualHash(variant) === hash) return true;
   if (!frozen || visualHash(variant) !== visualHash(frozen)) return false;
-  return workflowStateHash({ ...packagingVisualTimeline(frozen), videoLanes: frozen.videoLanes ?? {} }) === hash;
+  return (
+    workflowStateHash({
+      ...packagingVisualTimeline(frozen),
+      // Both of these are editor materialization the timeline above normalizes away — the sequential
+      // starts and the lane numbers. A package confirmed before that was hashed with them in place.
+      timelineStarts: packagingStoredTimelineStarts(frozen),
+      videoLanes: frozen.videoLanes ?? {},
+    }) === hash
+  );
 }
 
-export function packagingSnapshot(
-  variant: EffectTemplateMixVariant,
-  materials: EffectTemplateMixMaterial[],
-  artifacts: WorkingArtifact[],
-  musicSources: ReadonlyMap<string, { fileObjectId: string; sourceDuration: number }> = new Map(),
-): PackagingSnapshot {
-  const boundaryError = packagingSlotBoundaryError(variant);
-  if (boundaryError) throw new BadRequestException(boundaryError);
-  if (
-    !variant.slots.length ||
-    variant.slots.length > 30 ||
-    packagingTimelineDuration(variant) > 3600
-  )
-    throw new BadRequestException('包装时间轴超过容量上限');
+/**
+ * The artifacts a packaging consumes, walked through their upstream dependencies so anything that is
+ * no longer current is rejected. One is built per snapshot and shared by the clip builder below and by
+ * the detached-audio check after it.
+ */
+export function artifactVisitor(artifacts: WorkingArtifact[]) {
   const byId = new Map(artifacts.map((a) => [a.id, a]));
   const used = new Map<string, WorkingArtifact>();
   const visit = (id: string) => {
@@ -66,7 +69,23 @@ export function packagingSnapshot(
         visit(source.id);
       }
   };
-  const clips = packagingTimelineClips(variant).map(({ slot, start, lane }) => {
+  return { byId, used, visit };
+}
+
+/**
+ * Builds the frozen clip rows for a variant's slots, rejecting any clip whose material, cut or
+ * provenance has gone stale.
+ *
+ * The packaging snapshot calls it with the whole variant. The export calls it again with only the
+ * overlay slots, folding in the picture layers the user stacked on after the package was confirmed:
+ * those are not part of what was confirmed, but they still have to be renderable clips.
+ */
+export function packagingClips(
+  variant: EffectTemplateMixVariant,
+  materials: EffectTemplateMixMaterial[],
+  { byId, used, visit }: ReturnType<typeof artifactVisitor>,
+): PackagingSnapshot['clips'] {
+  return packagingTimelineClips(variant).map(({ slot, start, lane }) => {
     const m = materials.find((m) => m.id === variant.bindings[slot.id]);
     const offset = variant.offsets[slot.id] ?? 0;
     if (
@@ -107,6 +126,8 @@ export function packagingSnapshot(
       offset,
       duration: slot.duration,
       prompt,
+      // The Worker narrates every clip unless it is told this one is picture only.
+      overlay: slot.overlay === true,
       transition: slot.transition,
       transitionDuration:
         slot.transitionDuration ??
@@ -116,7 +137,29 @@ export function packagingSnapshot(
       ),
     };
   });
+}
+
+export function packagingSnapshot(
+  variant: EffectTemplateMixVariant,
+  materials: EffectTemplateMixMaterial[],
+  artifacts: WorkingArtifact[],
+  musicSources: ReadonlyMap<string, { fileObjectId: string; sourceDuration: number }> = new Map(),
+): PackagingSnapshot {
+  const boundaryError = packagingSlotBoundaryError(variant);
+  if (boundaryError) throw new BadRequestException(boundaryError);
+  if (
+    !variant.slots.length ||
+    variant.slots.length > 30 ||
+    effectTemplateMixContentDuration(variant) > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS
+  )
+    throw new BadRequestException('包装时间轴超过容量上限');
+  const visitor = artifactVisitor(artifacts);
+  const { used, visit } = visitor;
+  const clips = packagingClips(variant, materials, visitor);
   const timelineDuration = packagingTimelineDuration(variant);
+  // A detached track is part of the film's content, so the film is at least as long as it is: the
+  // only bound left is the capacity cap. (`timelineDuration` stays video-only — it is the frozen
+  // snapshot's own length, which the editor is allowed to render past.)
   const detachedAudios = variant.detachedAudios ?? [];
   const videoDetachedAudios = detachedAudios.filter((audio) => audio.sourceSlotId);
   if (
@@ -137,7 +180,7 @@ export function packagingSnapshot(
           audio.start < 0 ||
           !Number.isFinite(audio.duration) ||
           audio.duration <= 0 ||
-          audio.start + audio.duration > timelineDuration + 0.001 ||
+          audio.start + audio.duration > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS + 0.001 ||
           !Number.isFinite(audio.offset) ||
           audio.offset < 0 ||
           audio.offset + audio.duration > source.sourceDuration + 0.05 ||
@@ -156,7 +199,7 @@ export function packagingSnapshot(
         audio.start < 0 ||
         !Number.isFinite(audio.duration) ||
         audio.duration <= 0 ||
-        audio.start + audio.duration > timelineDuration + 0.001 ||
+        audio.start + audio.duration > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS + 0.001 ||
         !Number.isFinite(audio.offset) ||
         audio.offset < 0 ||
         audio.offset + audio.duration > material.duration + 0.05 ||
@@ -227,12 +270,25 @@ export function validatePackagingCheckpoint(
   const fail = () => {
     throw new BadRequestException('包装结果结构、来源或时间边界无效');
   };
+  /** Slot-bound rows: they belong to a video clip, so the frozen visual timeline bounds them. */
   const interval = (start: number, end: number) =>
     Number.isFinite(start) &&
     Number.isFinite(end) &&
     start >= 0 &&
     end > start &&
     end <= snapshot.duration + 0.001;
+  /**
+   * Placed rows: audio and captions the editor is free to carry past the last video clip, which is
+   * how a black tail with sound is made. The film is as long as its own content, so the content
+   * duration cannot bound them — it grows with whatever is being validated — and the capacity cap
+   * is the only limit left.
+   */
+  const contentInterval = (start: number, end: number) =>
+    Number.isFinite(start) &&
+    Number.isFinite(end) &&
+    start >= 0 &&
+    end > start &&
+    end <= EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS + 0.001;
   /**
    * Fades are editor-only and optional, so an absent field is legal — the pipeline default applies.
    * When one is present it has to be a real duration that fits inside the clip, or the render would
@@ -274,6 +330,7 @@ export function validatePackagingCheckpoint(
           'music',
           'captions',
           'captionBoxes',
+          'captionVoices',
           'captionLayoutVersion',
           'musicTaskId',
           'musicSubmissionPending',
@@ -383,7 +440,9 @@ export function validatePackagingCheckpoint(
       ids.add(row.id);
       end = row.end;
     }
-    if (slotLayout && ready && slots.size !== snapshot.clips.length) fail();
+    // An overlay is picture only, so the script covers the narrated clips and stops there.
+    if (slotLayout && ready && slots.size !== snapshot.clips.filter((c) => !c.overlay).length)
+      fail();
   }
   if (checkpoint.voices)
     for (const [id, audio] of Object.entries(checkpoint.voices)) {
@@ -396,9 +455,38 @@ export function validatePackagingCheckpoint(
         !audio ||
         !Number.isFinite(offset) ||
         offset < 0 ||
-        !interval(audio.start, audio.start + audio.duration) ||
-        (slotLayout && (audio.start < (line?.start ?? 0) || audio.start + audio.duration > limit + 0.001)) ||
+        !contentInterval(audio.start, audio.start + audio.duration) ||
+        // The worker keeps a line inside its slot; the editor may carry it past the slot's end,
+        // which is what extends the film.
+        (slotLayout && !edited &&
+          (audio.start < (line?.start ?? 0) || audio.start + audio.duration > limit + 0.001)) ||
         (!edited && (audio.start !== line.start || audio.start + audio.duration > limit + 0.001)) ||
+        !Number.isFinite(audio.volume) ||
+        audio.volume < 0 ||
+        audio.volume > PACKAGING_AUDIO_GAIN_CEILING ||
+        !fades(audio)
+      )
+        fail();
+      if (audio.segmentFrames &&
+        (!Array.isArray(audio.segmentFrames) || !audio.segmentFrames.length || audio.segmentFrames.length > 500 ||
+          audio.segmentFrames.some((frames) => !Number.isSafeInteger(frames) || frames <= 0) ||
+          Math.abs(audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 - audio.duration) > .001)) fail();
+    }
+  // A generated caption narration is editor-owned, so — like a caption box — it is checked for
+  // shape and bounds and for nothing else. It has no script line to line up with and no slot to
+  // stay inside, its caption may be gone by the time it is read (deleting a subtitle must not
+  // silently delete the narration the user paid for), and the editor may carry it anywhere. Coupling
+  // it to the caption would also make a component redo fail, because that redo validates with the
+  // strict pipeline rules after the editor has already moved things.
+  if (checkpoint.captionVoices)
+    for (const [id, audio] of Object.entries(checkpoint.captionVoices)) {
+      const offset = audio?.offset ?? 0;
+      if (
+        !/^[a-zA-Z0-9_-]{1,50}$/.test(id) ||
+        !audio ||
+        !Number.isFinite(offset) ||
+        offset < 0 ||
+        !contentInterval(audio.start, audio.start + audio.duration) ||
         !Number.isFinite(audio.volume) ||
         audio.volume < 0 ||
         audio.volume > PACKAGING_AUDIO_GAIN_CEILING ||
@@ -415,7 +503,7 @@ export function validatePackagingCheckpoint(
     if (
       !Number.isFinite(offset) ||
       offset < 0 ||
-      !interval(checkpoint.music.start, checkpoint.music.start + checkpoint.music.duration) ||
+      !contentInterval(checkpoint.music.start, checkpoint.music.start + checkpoint.music.duration) ||
       (!edited &&
         (checkpoint.music.start !== 0 ||
           Math.abs(checkpoint.music.duration - snapshot.duration) > 0.05)) ||
@@ -430,35 +518,72 @@ export function validatePackagingCheckpoint(
     if (!Array.isArray(checkpoint.captions)) fail();
     if (checkpoint.captions.length > 500) fail();
     if (new Set(checkpoint.captions.map((c) => c.id)).size !== checkpoint.captions.length) fail();
-    let previousEnd = 0;
+    // Two cards may share a row only when they share a track. The key is the one the editor packs
+    // rows with (`assignEffectTemplateMixCaptionLanes`): an explicit track, a manual card's own id,
+    // or the legacy narration row. Cards from different tracks are drawn on different rows and are
+    // free to be on screen together, which is why the bound is per track rather than per kind.
+    const previousEnd = new Map<string, number>();
     const segmentsByLine = new Map<string, typeof checkpoint.captions>();
     for (const c of checkpoint.captions) {
+      const manual = c.manual === true;
       const lineId = segmentedCaptions ? c.voiceLineId : c.id;
       const script = checkpoint.script?.find((s) => s.id === lineId),
         audio = lineId ? checkpoint.voices?.[lineId] : undefined;
       if (
-        !script ||
-        !audio ||
-        (segmentedCaptions && (typeof c.voiceLineId !== 'string' || !/^[a-zA-Z0-9_-]{1,50}$/.test(c.id) ||
-          !Number.isSafeInteger(c.segmentIndex) || !Number.isSafeInteger(c.segmentCount) ||
-          c.segmentIndex! < 0 || c.segmentCount! < 1 || c.segmentCount! > 500)) ||
+        (c.manual !== undefined && typeof c.manual !== 'boolean') ||
+        // A track of its own is editor geometry, so any card may carry one — a narration card the
+        // editor pulled onto its own row just as much as a manual title. Only the shape is checked.
+        (c.trackId !== undefined &&
+          (typeof c.trackId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(c.trackId))) ||
+        (manual &&
+          (!edited ||
+            c.voiceLineId !== undefined ||
+            c.segmentIndex !== undefined ||
+            c.segmentCount !== undefined)) ||
+        (manual && !/^[a-zA-Z0-9_-]{1,50}$/.test(c.id)) ||
+        // The line is what a caption hangs off; its narration is an optional overlay, so the editor
+        // may delete the voice and leave the line and its subtitle standing.
+        (!manual && !script) ||
+        (segmentedCaptions &&
+          !manual &&
+          (typeof c.voiceLineId !== 'string' ||
+            !/^[a-zA-Z0-9_-]{1,50}$/.test(c.id) ||
+            !Number.isSafeInteger(c.segmentIndex) ||
+            !Number.isSafeInteger(c.segmentCount) ||
+            c.segmentIndex! < 0 ||
+            c.segmentCount! < 1 ||
+            c.segmentCount! > 500)) ||
         typeof c.text !== 'string' ||
-        !c.text.trim() ||
+        (!manual && !c.text.trim()) ||
         c.text.length > 500 ||
-        (segmentedCaptions && (captionsV2 ? /[，,。.!！？?；;：:…]/u : /\p{P}/u).test(c.text)) ||
+        (!manual &&
+          segmentedCaptions &&
+          (captionsV2 ? /[，,。.!！？?；;：:…]/u : /\p{P}/u).test(c.text)) ||
         // The editor may reword a subtitle without rewriting the narration it is voiced from.
-        (!segmentedCaptions && !edited && c.text !== script.text) ||
-        (!segmentedCaptions && (slotLayout || !edited) &&
+        (!manual && !segmentedCaptions && !edited && c.text !== script!.text) ||
+        // A deleted voice has nothing to align to, so the alignment rules only hold when one exists.
+        (!manual && !segmentedCaptions && !edited && audio &&
           (c.start !== audio.start || Math.abs(c.end - c.start - audio.duration) > 0.002)) ||
-        (segmentedCaptions && (c.start < audio.start - 0.001 || c.end > audio.start + audio.duration + 0.001)) ||
-        !interval(c.start, c.end)
-        || (slotLayout && (c.start < (script?.start ?? 0) || c.end > (script?.end ?? 0) + 0.001))
+        (!manual &&
+          segmentedCaptions &&
+          !edited &&
+          audio &&
+          (c.start < audio.start - 0.001 || c.end > audio.start + audio.duration + 0.001)) ||
+        !contentInterval(c.start, c.end)
+        || (!manual && slotLayout && !edited &&
+          (c.start < (script?.start ?? 0) || c.end > (script?.end ?? 0) + 0.001))
       )
         fail();
-      // Segments must never show together, even on the Worker write path.
-      if ((edited || segmentedCaptions) && c.start < previousEnd - 0.001) fail();
-      previousEnd = Math.max(previousEnd, c.end);
-      if (segmentedCaptions) {
+      // Segments must never show together, even on the Worker write path — within one track. Two
+      // cards on different tracks are on different rows and may deliberately overlap.
+      const track = c.trackId
+        ? `track:${c.trackId}`
+        : manual
+          ? `manual:${c.id}`
+          : 'legacy-generated';
+      if ((edited || segmentedCaptions) && c.start < (previousEnd.get(track) ?? 0) - 0.001) fail();
+      previousEnd.set(track, Math.max(previousEnd.get(track) ?? 0, c.end));
+      if (segmentedCaptions && !manual) {
         const parts = segmentsByLine.get(lineId!) ?? [];
         parts.push(c);
         segmentsByLine.set(lineId!, parts);
@@ -469,11 +594,14 @@ export function validatePackagingCheckpoint(
       const audio = checkpoint.voices?.[line.id];
       return (ready && !parts?.length) || (parts?.length && (
         parts.some((part, index) => part.segmentIndex !== index || part.segmentCount !== parts.length) ||
-        (captionsV2 && parts.some((part, index) => index > 0 &&
+        // The pipeline lays a line's cards edge to edge; the editor may pull one away, which opens
+        // a gap rather than breaking anything, so the rule only holds the worker write path.
+        (!edited && captionsV2 && parts.some((part, index) => index > 0 &&
           Math.abs(part.start - parts[index - 1]!.end) > 0.001)) ||
         (!edited && parts.map((part) => part.text).join('').replace(/\s/gu, '') !==
           line.text.replace(captionsV2 ? /[，,。.!！？?；;：:…\s]/gu : /[\p{P}\s]/gu, '')) ||
-        (captionsV3 && (!audio?.segmentFrames || parts.length !== audio.segmentFrames.length ||
+        // Frame alignment is only meaningful for a line that still has its narration.
+        (captionsV3 && audio && (!audio.segmentFrames || parts.length !== audio.segmentFrames.length ||
           (!edited && parts.some((part, index) => {
             const startFrames = audio.segmentFrames!.slice(0, index).reduce((sum, n) => sum + n, 0);
             const endFrames = startFrames + audio.segmentFrames![index]!;
@@ -509,18 +637,25 @@ export function validatePackagingCheckpoint(
         fail();
     }
   }
+  const narrationCaptions = checkpoint.captions?.filter((caption) => !caption.manual) ?? [];
   if (
     ready &&
     (!checkpoint.vision?.length ||
       !checkpoint.script?.length ||
-      !checkpoint.music ||
-      checkpoint.script.some((s) => !checkpoint.voices?.[s.id]) ||
+      // A narration is not part of being renderable either: the editor may delete one and keep the
+      // line and its subtitle, and the renderer mixes whatever voices are left. A redo synthesizes
+      // every line again, so the deletion lasts exactly until the next run.
       (segmentedCaptions
-        ? !checkpoint.captions?.length
-        : checkpoint.captions?.length !== checkpoint.script.length))
+        ? !narrationCaptions.length
+        : narrationCaptions.length !== checkpoint.script.length))
   )
     fail();
-  if (ready && captionsV3 && checkpoint.script?.some((line) => !checkpoint.voices?.[line.id]?.segmentFrames)) fail();
+  // Frame-split captions need the frames of the voice they were split from; a line whose voice the
+  // editor deleted simply has no frames to match.
+  if (ready && captionsV3 && checkpoint.script?.some((line) => {
+    const audio = checkpoint.voices?.[line.id];
+    return audio && !audio.segmentFrames;
+  })) fail();
 }
 
 export function requireSlotPackaging(snapshot: PackagingSnapshot, checkpoint: PackagingCheckpoint): void {

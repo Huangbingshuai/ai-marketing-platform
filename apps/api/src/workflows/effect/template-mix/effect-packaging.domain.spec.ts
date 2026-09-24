@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   PACKAGING_AUDIO_GAIN_CEILING,
+  packagingOverlayTimeline,
   packagingShardIndexes,
   packagingVisualVariant,
   packagingVisualTimeline,
@@ -13,7 +14,9 @@ import type {
   WorkingArtifact,
 } from '@ai-marketing/contracts';
 import {
+  artifactVisitor,
   canonicalizeCheckpoint,
+  packagingClips,
   packagingSnapshot,
   validatePackagingCheckpoint,
   visualHash,
@@ -264,6 +267,36 @@ describe('slot-bound narration layout', () => {
     ];
     return { frozen, cp };
   };
+  it('lets the editor drag one subtitle card away from its neighbours', () => {
+    const { frozen, cp } = segmentedV2();
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    // Pulling the second card to the right opens a gap, which is a normal edit — the pipeline's
+    // "segments of one line stay glued" rule belongs to the worker write path, not to the editor.
+    cp.captions![1]!.start = 3.4;
+    cp.captions![1]!.end = 4.6;
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    // The worker path still refuses it.
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
+  });
+  it('lets the editor carry a slot-bound line and its subtitle past the slot, but never the worker', () => {
+    const { frozen, cp } = segmented();
+    cp.voices!['line-1']!.start = 12;
+    cp.captions!.forEach((caption, index) => {
+      caption.start = 12 + index * 1.2;
+      caption.end = 12 + (index + 1) * 1.2;
+    });
+    // The frozen snapshot is still video-only: only the render length follows the content.
+    expect(frozen.duration).toBe(10);
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
+    // A subtitle is a placed clip too, so it is free of the voice it was voiced from.
+    cp.captions![1]!.start = 15;
+    cp.captions![1]!.end = 16.2;
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    // Capacity is the only bound left.
+    cp.voices!['line-1']!.start = 3600;
+    expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+  });
   const segmentedV2 = () => {
     const { frozen, cp } = segmented();
     cp.captionLayoutVersion = 'SEGMENT_V2';
@@ -277,7 +310,7 @@ describe('slot-bound narration layout', () => {
     expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
     expect(canonicalizeCheckpoint(frozen, cp).captions).toEqual(cp.captions);
   });
-  it('rejects punctuation, missing text, wrong parent, overlap and crossing the voice', () => {
+  it('rejects punctuation, missing text, wrong parent and overlap', () => {
     for (const [index, change] of [
       (cp: PackagingCheckpoint) => {
         cp.captions![0]!.text = '第一句，';
@@ -291,9 +324,6 @@ describe('slot-bound narration layout', () => {
       (cp: PackagingCheckpoint) => {
         cp.captions![1]!.start = 1;
       },
-      (cp: PackagingCheckpoint) => {
-        cp.captions![1]!.end = 2.5;
-      },
     ].entries()) {
       const { frozen, cp } = segmented();
       change(cp);
@@ -306,7 +336,20 @@ describe('slot-bound narration layout', () => {
     expect(() => validatePackagingCheckpoint(frozen, cp)).not.toThrow();
     expect(() => requireSlotPackaging(frozen, cp)).toThrow();
   });
-  it('keeps enumeration commas in V2 and requires adjacent punctuation-split cards', () => {
+  it('keeps segmented subtitles when their narration is deleted', () => {
+    const { frozen, cp } = segmentedV2();
+    // The editor deleted this line's narration. Its cards stay where they are — they are the
+    // subtitles the viewer still reads — and the frame check has nothing left to check.
+    delete cp.voices!['line-1'];
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).not.toThrow();
+    expect(cp.captions).toHaveLength(2);
+    // A narration that is still there must still be frame-split; only a deleted one is exempt.
+    cp.captionLayoutVersion = 'SEGMENT_V3';
+    cp.voices!['line-1'] = { fileObjectId: 'voice', start: 0, duration: 2.4, volume: 1 };
+    expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+  });
+  it('keeps enumeration commas in V2 and holds the card adjacency on the worker path', () => {
     const { frozen, cp } = segmentedV2();
     expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
     for (const text of ['腊肠，米饭', '腊肠!米饭', '腊肠？米饭', '腊肠。米饭']) {
@@ -315,7 +358,9 @@ describe('slot-bound narration layout', () => {
     }
     cp.captions![0]!.text = '腊肠、米饭';
     cp.captions![1]!.start = 1.3;
-    expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+    // The pipeline writes a line's cards edge to edge; the editor may pull one away from the next.
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
   });
   it('validates V3 subtitles against actual PCM segment frames', () => {
     const { frozen, cp } = segmentedV2();
@@ -356,6 +401,88 @@ describe('slot-bound narration layout', () => {
     v.videoLanes = { s2: 1 };
     expect(() => packagingSnapshot(v, materials, sources())).toThrow('槽位口播边界冲突');
   });
+  const overlaid = () => {
+    const v = variant();
+    v.slots.push({ ...v.slots[0]!, id: 's2', overlay: true });
+    v.bindings.s2 = 'clip';
+    v.bindingRevisions.s2 = 1;
+    v.offsets.s2 = 0;
+    // The overlay sits on top of the narrated slot, on its own lane, and covering it is its job.
+    v.timelineStarts = { s2: 3 };
+    v.videoLanes = { s2: 1 };
+    return v;
+  };
+  it('freezes an overlay that covers a narrated slot, and marks it picture only', () => {
+    const frozen = packagingSnapshot(overlaid(), materials, sources());
+    expect(frozen.clips.map((clip) => clip.overlay)).toEqual([false, true]);
+  });
+  it('keeps an overlay out of the visual hash, so stacking one cannot lock the package', () => {
+    const plain = variant();
+    const stacked = overlaid();
+    // Adding, moving or removing a picture layer is not a change to what was confirmed, so the hash
+    // the captions and audio were arranged against has to survive it.
+    expect(visualHash(stacked)).toBe(visualHash(plain));
+    // Moving it around, or taking it away again, is equally invisible to the hash.
+    expect(visualHash({ ...stacked, timelineStarts: { s2: 7 }, videoLanes: { s2: 2 } })).toBe(
+      visualHash(plain),
+    );
+    expect(visualHash({ ...stacked, slots: plain.slots })).toBe(visualHash(plain));
+  });
+  it('reads a row shift as the same picture, but a reorder as a new one', () => {
+    const two = variant();
+    two.slots.push({ ...two.slots[0]!, id: 's2', role: 'END' });
+    two.bindings.s2 = 'clip';
+    two.bindingRevisions.s2 = 1;
+    two.offsets.s2 = 0;
+    two.timelineStarts = { s: 0, s2: 10 };
+    const apart = { ...two, videoLanes: { s: 0, s2: 1 } };
+    // Opening an overlay row pushes every narrated row down together, which is not a change to the
+    // picture — only their order is.
+    expect(visualHash({ ...apart, videoLanes: { s: 1, s2: 2 } })).toBe(visualHash(apart));
+    expect(visualHash({ ...apart, videoLanes: { s: 1, s2: 0 } })).not.toBe(visualHash(apart));
+  });
+  it('reports the overlays separately, so the render can still tell two of them apart', () => {
+    const stacked = overlaid();
+    expect(packagingOverlayTimeline(stacked)).toEqual([
+      {
+        id: 's2',
+        binding: 'clip',
+        bindingRevision: 1,
+        offset: 0,
+        start: 3,
+        lane: 1,
+        duration: 10,
+        transition: '硬切',
+        transitionDuration: 0,
+      },
+    ]);
+    // The hash ignores the overlay on purpose, so this is the only thing that changes when one is
+    // added or moved — the export's dedupe key would otherwise hand back the earlier run.
+    expect(packagingOverlayTimeline({ ...stacked, timelineStarts: { s: 0, s2: 4 } })).not.toEqual(
+      packagingOverlayTimeline(stacked),
+    );
+    expect(packagingOverlayTimeline(variant())).toEqual([]);
+  });
+  it('builds clips for just the overlays, which is how the export folds them back in', () => {
+    const stacked = overlaid();
+    const overlays = stacked.slots.filter((slot) => slot.overlay === true);
+    const clips = packagingClips(
+      { ...stacked, slots: overlays },
+      materials,
+      artifactVisitor(sources()),
+    );
+    expect(clips.map((clip) => [clip.slotId, clip.overlay, clip.lane, clip.start])).toEqual([
+      ['s2', true, 1, 3],
+    ]);
+  });
+  it('counts the script against the narrated clips, so an overlay needs no line', () => {
+    const frozen = packagingSnapshot(overlaid(), materials, sources());
+    const cp = checkpoint();
+    cp.narrationLayoutVersion = 'SLOT_V1';
+    cp.script![0]!.slotId = 's';
+    cp.script![0]!.end = 10;
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+  });
   it('requires exactly one valid line per slot at completion', () => {
     const { frozen, cp } = current();
     expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
@@ -374,14 +501,17 @@ describe('slot-bound narration layout', () => {
     expect(() => validatePackagingCheckpoint(frozen, cp)).not.toThrow();
     expect(() => requireSlotPackaging(frozen, cp)).toThrow();
   });
-  it('does not let edited voice or subtitle borrow a following gap', () => {
+  it('does not let the worker path borrow a following gap, while the editor may', () => {
     const { frozen, cp } = current();
     frozen.duration = 20;
     cp.voices!['line-1']!.start = 9;
-    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).toThrow();
+    // The editor is free to carry a line into the gap; the canonical worker write is not.
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
     cp.voices!['line-1']!.start = 0;
     cp.captions![0]!.end = 11;
-    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
   });
   it('keeps legacy playback validation but refuses legacy output', () => {
     expect(() => validatePackagingCheckpoint(snapshot(), checkpoint(), true)).not.toThrow();
@@ -433,6 +563,8 @@ describe('packaging snapshots and validation', () => {
       b = variant();
     b.captions = [{ id: 'c', text: '字幕', start: 0, end: 2 }];
     b.originalVolume = 0.1;
+    // Audio rows are pure arrangement: dragging a clip to another row must not restate the payload.
+    b.audioLanes = { music: 1, 'voice:line-1': 2 };
     expect(visualHash(a)).toBe(visualHash(b));
     expect(packagingVisualVariant(a)).toEqual(packagingVisualVariant(b));
     b.offsets.s = 1;
@@ -449,8 +581,73 @@ describe('packaging snapshots and validation', () => {
     expect(matchesVisualHash(implicit, legacy, explicit)).toBe(true);
     expect(matchesVisualHash(explicit, legacy, explicit)).toBe(true);
     expect(matchesVisualHash(implicit, 'forged', explicit)).toBe(false);
-    expect(matchesVisualHash({ ...explicit, videoLanes: { s: 1 } }, legacy, explicit)).toBe(false);
+    // A row is only an order, and a lone clip has no order to change: renumbering it is the same
+    // picture, so the legacy fallback is allowed to read it as unchanged.
+    expect(matchesVisualHash({ ...explicit, videoLanes: { s: 1 } }, legacy, explicit)).toBe(true);
+    // Reordering clips is a different picture, so the fallback must not swallow it.
+    const stacked = {
+      ...explicit,
+      slots: [...explicit.slots, { ...explicit.slots[0]!, id: 's2', role: 'END' as const }],
+      bindings: { s: 'clip', s2: 'clip' },
+      bindingRevisions: { s: 1, s2: 1 },
+      offsets: { s: 0, s2: 0 },
+      videoLanes: { s: 0, s2: 1 },
+    };
+    const stackedLegacy = workflowStateHash({
+      ...packagingVisualTimeline(stacked),
+      videoLanes: stacked.videoLanes,
+    });
+    expect(
+      matchesVisualHash({ ...stacked, videoLanes: { s: 1, s2: 0 } }, stackedLegacy, stacked),
+    ).toBe(false);
     expect(matchesVisualHash({ ...explicit, offsets: { s: 1 } }, legacy, explicit)).toBe(false);
+  });
+  it('ignores starts the sequential layout would have produced anyway', () => {
+    const implicit = variant();
+    // The editor materializes a start for every slot on the first trim. A start that equals the
+    // sequential cursor is the same picture, so it must not restate an already-confirmed hash.
+    const materialized = { ...variant(), timelineStarts: { s: 0 } };
+    expect(visualHash(implicit)).toBe(visualHash(materialized));
+    expect(matchesVisualHash(materialized, visualHash(implicit), implicit)).toBe(true);
+    // A start that really moves the clip is a different picture.
+    expect(visualHash({ ...variant(), timelineStarts: { s: 5 } })).not.toBe(visualHash(implicit));
+  });
+  it('walks overlays when deciding which starts are redundant', () => {
+    const withOverlay = (timelineStarts: Record<string, number>) => {
+      const base = variant();
+      return {
+        ...base,
+        slots: [
+          base.slots[0]!,
+          // An overlay still occupies time, so the slot after it starts later than a walk that
+          // skipped the overlay would think.
+          { ...base.slots[0]!, id: 'o', overlay: true, duration: 3 },
+          { ...base.slots[0]!, id: 's2', role: 'END' as const, duration: 4 },
+        ],
+        bindings: { s: 'clip', s2: 'clip' },
+        bindingRevisions: { s: 1, s2: 1 },
+        offsets: { s: 0, s2: 0 },
+        timelineStarts,
+      };
+    };
+    // 10 + 3 = 13 is where the third slot lands sequentially. Had the walk forgotten the overlay it
+    // would answer 10, and the explicit 13 would then read as a real move.
+    const sequential = withOverlay({ s: 0, o: 10, s2: 13 });
+    expect(visualHash(sequential)).toBe(visualHash(withOverlay({})));
+    expect(visualHash(withOverlay({ s: 0, o: 10, s2: 10 }))).not.toBe(visualHash(sequential));
+  });
+  it('reads a package confirmed before starts were normalized as the same picture', () => {
+    // The editor materialized the sequential start, and the package was hashed with it in place.
+    const materialized = { ...variant(), timelineStarts: { s: 0 } };
+    const confirmed = workflowStateHash({
+      ...packagingVisualTimeline(materialized),
+      timelineStarts: { s: 0 },
+    });
+    expect(matchesVisualHash(materialized, confirmed, materialized)).toBe(true);
+    // A start that really moved was never redundant, so it must still expire the package.
+    expect(
+      matchesVisualHash({ ...variant(), timelineStarts: { s: 5 } }, confirmed, materialized),
+    ).toBe(false);
   });
   it.each([1, 10, 100])(
     'groups %i variants with stable identities and bounded capacity',
@@ -530,13 +727,21 @@ describe('packaging snapshots and validation', () => {
     expect(() => validatePackagingCheckpoint(snapshot(), edited, true, true)).not.toThrow();
     expect(() => validatePackagingCheckpoint(snapshot(), edited, true)).toThrow();
   });
-  it('rejects edited audio or captions that leave the frozen timeline', () => {
+  it('lets the editor carry placed audio past the frozen timeline, up to the capacity cap', () => {
+    // The film is as long as its content, so a track moved past the last video clip is a black
+    // tail rather than an error — carrying one out there is exactly how the editor extends it.
     const overVoice = checkpoint();
     overVoice.voices!['line-1'] = { fileObjectId: 'voice', start: 8.5, duration: 2.4, volume: 1 };
-    expect(() => validatePackagingCheckpoint(snapshot(), overVoice, true, true)).toThrow();
+    expect(() => validatePackagingCheckpoint(snapshot(), overVoice, true, true)).not.toThrow();
     const overMusic = checkpoint();
     overMusic.music = { fileObjectId: 'music', start: 5, duration: 6, volume: 0.2 };
-    expect(() => validatePackagingCheckpoint(snapshot(), overMusic, true, true)).toThrow();
+    expect(() => validatePackagingCheckpoint(snapshot(), overMusic, true, true)).not.toThrow();
+    // The worker path stays canonical, so the same checkpoint is refused there.
+    expect(() => validatePackagingCheckpoint(snapshot(), overVoice, true)).toThrow();
+    // Capacity is the only bound left.
+    const tooLong = checkpoint();
+    tooLong.music = { fileObjectId: 'music', start: 3599, duration: 6, volume: 0.2 };
+    expect(() => validatePackagingCheckpoint(snapshot(), tooLong, true, true)).toThrow();
     const negative = checkpoint();
     negative.voices!['line-1'] = {
       fileObjectId: 'voice',
@@ -546,6 +751,26 @@ describe('packaging snapshots and validation', () => {
       offset: -0.5,
     };
     expect(() => validatePackagingCheckpoint(snapshot(), negative, true, true)).toThrow();
+  });
+  it('accepts an empty manual subtitle draft only on the editor write path', () => {
+    const edited = checkpoint();
+    // Manual titles are an independent lane and may cover an AI narration subtitle interval.
+    edited.captions!.push({
+      id: 'manual-caption',
+      manual: true,
+      trackId: 'subtitle-track-0000000000001-test',
+      text: '',
+      start: 1,
+      end: 1.5,
+    });
+    expect(() => validatePackagingCheckpoint(snapshot(), edited, true, true)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(snapshot(), edited, true, false)).toThrow();
+    const invalidTrack = { ...edited, captions: edited.captions!.map((caption) =>
+      caption.id === 'manual-caption' ? { ...caption, trackId: 'not valid!' } : caption) };
+    expect(() => validatePackagingCheckpoint(snapshot(), invalidTrack, true, true)).toThrow();
+    const notManual = { ...edited, captions: edited.captions!.map((caption) =>
+      caption.id === 'manual-caption' ? { ...caption, manual: false } : caption) };
+    expect(() => validatePackagingCheckpoint(snapshot(), notManual, true, true)).toThrow();
   });
   it('accepts editor fades that fit inside the clip and keeps them through a redo', () => {
     const faded = checkpoint();
@@ -625,6 +850,69 @@ describe('packaging snapshots and validation', () => {
       ],
     };
     expect(() => validatePackagingCheckpoint(snapshot(), overlapping, true, true)).toThrow();
+  });
+  it('lets subtitles on different tracks overlap, while one track still refuses it', () => {
+    const track = 'subtitle-track-0000000000001-a';
+    const acrossTracks: PackagingCheckpoint = {
+      ...checkpoint(),
+      captions: [
+        { id: 'line-1', text: '商品', start: 0, end: 2.4 },
+        // A card on a track of its own is drawn on its own row, so covering the narration is the
+        // editor's business rather than a conflict.
+        { id: 'manual-caption', manual: true, trackId: track, text: '', start: 1, end: 2 },
+      ],
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), acrossTracks, true, true)).not.toThrow();
+    const oneTrack: PackagingCheckpoint = {
+      ...acrossTracks,
+      captions: [
+        { id: 'line-1', text: '商品', start: 0, end: 2.4, trackId: track },
+        { id: 'manual-caption', manual: true, trackId: track, text: '', start: 1, end: 2 },
+      ],
+    };
+    // Two cards that really share one track are the pair the renderer would show at once.
+    expect(() => validatePackagingCheckpoint(snapshot(), oneTrack, true, true)).toThrow();
+  });
+  it('gives any card a track of its own and only checks the shape of the id', () => {
+    const track = 'subtitle-track-0000000000001-a';
+    const narration: PackagingCheckpoint = {
+      ...checkpoint(),
+      captions: [{ id: 'line-1', text: '商品', start: 0, end: 2.4, trackId: track }],
+    };
+    // A narration card the editor pulled onto its own row carries one just as a manual title does.
+    expect(() => validatePackagingCheckpoint(snapshot(), narration, true, true)).not.toThrow();
+    const malformed: PackagingCheckpoint = {
+      ...checkpoint(),
+      captions: [{ id: 'line-1', text: '商品', start: 0, end: 2.4, trackId: 'not valid!' }],
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), malformed, true, true)).toThrow();
+  });
+  it('treats a deleted music bed as a normal, renderable checkpoint', () => {
+    const silent = checkpoint();
+    delete silent.music;
+    // The editor may delete the bed, so `ready` must not require one.
+    expect(() => validatePackagingCheckpoint(snapshot(), silent, true, true)).not.toThrow();
+  });
+  it('treats a deleted narration as a normal, renderable checkpoint', () => {
+    const muted = checkpoint();
+    delete muted.voices!['line-1'];
+    // A narration is an optional overlay on its line: the line and its subtitle are what the film
+    // is built from, so deleting the audio leaves a package that still renders — just silently.
+    expect(() => validatePackagingCheckpoint(snapshot(), muted, true, true)).not.toThrow();
+    // The worker write path is stricter about geometry, but it must not be stricter about this:
+    // a redo that reuses an edited checkpoint sees the same missing narration.
+    expect(() => validatePackagingCheckpoint(snapshot(), muted, true, false)).not.toThrow();
+    // The line and the subtitle are exactly what a delete must not take with it.
+    expect(muted.script).toHaveLength(1);
+    expect(muted.captions).toHaveLength(1);
+  });
+  it('still refuses a caption whose line is gone', () => {
+    const orphan: PackagingCheckpoint = {
+      ...checkpoint(),
+      captions: [{ id: 'ghost', text: '商品', start: 0, end: 2.4 }],
+    };
+    // Deleting the audio is allowed; deleting the line the subtitle hangs off is not.
+    expect(() => validatePackagingCheckpoint(snapshot(), orphan, true, true)).toThrow();
   });
   it('restores pipeline-canonical geometry before a partial redo', () => {
     const edited = checkpoint();
@@ -718,5 +1006,49 @@ describe('packaging snapshots and validation', () => {
       'line-1': { x: 0.5, y: 0.5, width: 0.5, scale: 1, extra: 1 } as never,
     };
     expect(() => validatePackagingCheckpoint(snapshot(), unknownKey)).toThrow();
+  });
+  it('accepts an editor-generated caption narration without giving it a script line', () => {
+    const voiced = checkpoint();
+    voiced.captionVoices = {
+      'caption-1': { fileObjectId: 'file-9', duration: 3, start: 0.5, volume: 1 },
+    };
+    // The editor may carry it anywhere, and the strict worker path accepts it too — a component redo
+    // validates with the strict rules after the editor has already moved things.
+    expect(() => validatePackagingCheckpoint(snapshot(), voiced, true, true)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(snapshot(), voiced, true)).not.toThrow();
+    // It has no script line and no matching caption, and neither is required.
+    expect(voiced.script?.some((line) => line.id === 'caption-1')).not.toBe(true);
+    expect(voiced.captions?.some((c) => c.id === 'caption-1')).not.toBe(true);
+  });
+  it('keeps a generated caption narration through a component redo and rejects forged entries', () => {
+    const redo: PackagingCheckpoint = checkpoint();
+    delete redo.captions;
+    redo.captionVoices = {
+      'caption-1': { fileObjectId: 'file-9', duration: 3, start: 0.5, volume: 1 },
+    };
+    // The redo regenerates the caption list, so the narration outlives the caption it came from:
+    // deleting a subtitle must not silently delete the audio the user paid for.
+    expect(() => validatePackagingCheckpoint(snapshot(), redo)).not.toThrow();
+    expect(canonicalizeCheckpoint(snapshot(), redo).captionVoices).toEqual(redo.captionVoices);
+    for (const id of ['', 'a b', 'x'.repeat(51)]) {
+      const forged = checkpoint();
+      forged.captionVoices = {
+        [id]: { fileObjectId: 'file-9', duration: 3, start: 0, volume: 1 },
+      };
+      expect(() => validatePackagingCheckpoint(snapshot(), forged)).toThrow();
+    }
+    for (const audio of [
+      { fileObjectId: 'file-9', duration: 0, start: 0, volume: 1 },
+      { fileObjectId: 'file-9', duration: 3, start: -1, volume: 1 },
+      { fileObjectId: 'file-9', duration: 3, start: 0, volume: -0.1 },
+      { fileObjectId: 'file-9', duration: 3, start: 0, volume: 11 },
+      { fileObjectId: 'file-9', duration: 3, start: 0, volume: 1, offset: -1 },
+      { fileObjectId: 'file-9', duration: 3, start: 0, volume: 1, fadeIn: 4 },
+      { fileObjectId: 'file-9', duration: 3, start: 0, volume: 1, segmentFrames: [24_000] },
+    ]) {
+      const bad = checkpoint();
+      bad.captionVoices = { 'caption-1': audio as never };
+      expect(() => validatePackagingCheckpoint(snapshot(), bad)).toThrow();
+    }
   });
 });

@@ -9,6 +9,7 @@ import type {
   EffectTemplateMixMaterial,
   EffectTemplateMixRole,
   EffectTemplateMixSlot,
+  EffectTemplateMixTemplate,
   EffectTemplateMixVariant,
   EffectTemplateMixWorkspace,
   EffectTemplateMixWorkspaceData,
@@ -680,6 +681,19 @@ export class EffectTemplateMixService {
     );
   }
 
+  /**
+   * The voice only feeds future packaging and voice redos, never existing audio, so a template that
+   * has already been packaged may still have its voice switched. Hashing without it keeps every
+   * other field locked exactly as before.
+   */
+  private templateWithoutVoice(template: EffectTemplateMixTemplate): Omit<
+    EffectTemplateMixTemplate,
+    'voiceProfileId'
+  > {
+    const { voiceProfileId: _voiceProfileId, ...rest } = template;
+    return rest;
+  }
+
   async saveDraft(
     projectId: string,
     workflowRunId: string,
@@ -711,10 +725,13 @@ export class EffectTemplateMixService {
       const workspaceChanged = Boolean(
         before && next && workflowStateHash(before.workspace) !== workflowStateHash(next.workspace),
       );
+      // A voice-only change is allowed after packaging, so it is masked out here. `workspaceChanged`
+      // above still includes it, which keeps a run that is currently in flight locked.
       const templateChanged = Boolean(
         before &&
         next &&
-        workflowStateHash(before.workspace.template) !== workflowStateHash(next.workspace.template),
+        workflowStateHash(this.templateWithoutVoice(before.workspace.template)) !==
+          workflowStateHash(this.templateWithoutVoice(next.workspace.template)),
       );
       const removedExistingVariant = Boolean(
         before &&

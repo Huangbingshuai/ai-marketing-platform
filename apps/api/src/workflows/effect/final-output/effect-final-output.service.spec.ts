@@ -368,6 +368,113 @@ describe('atomic full packaging completion', () => {
       { id: 'line', start: 3, end: 4.5, text: '商品' },
     ]);
   });
+  it('renders the film as long as its content, black tail included', async () => {
+    const { service, db, working, rows } = harness();
+    // A track carried past the last video clip is what extends the film, so the two numbers have to
+    // disagree here: the frozen snapshot stays video-only while the render length follows the content.
+    const checkpoint = rows[0]!.checkpoint as PackagingCheckpoint;
+    checkpoint.music = { fileObjectId: 'music', start: 0, duration: 14, volume: 0.2 };
+    checkpoint.captions = [{ id: 'line', start: 12, end: 13, text: '商品' }];
+    await service.complete('p', 't', request);
+    const item = db.effectFinalOutputRun.create.mock.calls[0]![0].data.items.create[0] as {
+      snapshot: FinalOutputSnapshot;
+    };
+    expect(item.snapshot.timeline.duration).toBe(14);
+    expect(item.snapshot.timeline.clips[0]!.duration).toBe(10);
+    // The package the worker reads has to agree, or the tail would be cut off at the last clip.
+    const payload = working.commitValidatedArtifactsInTransaction.mock.calls
+      .flatMap((call) => call[4] as { artifactKey: string; input: { payload: { duration: number } } }[])
+      .find((entry) => entry.artifactKey === 'timeline-package:t:v0')!;
+    expect(payload.input.payload.duration).toBe(14);
+  });
+  it('folds a live overlay into the timeline and gives it an output run of its own', async () => {
+    const plain = harness();
+    await plain.service.complete('p', 't', request);
+    const baseline = plain.db.effectFinalOutputRun.create.mock.calls[0]![0].data.inputHash;
+
+    const { service, db, mix, rows } = harness();
+    // The package never froze the overlay — that is what keeps it from locking the captions and
+    // audio — so the export has to read it from the live draft, and read every row from the draft
+    // too: opening the overlay's row pushed the narrated clip down, and keeping the frozen row
+    // number would put the overlay beside the clip it is meant to cover.
+    const variant = rows[0]!.snapshot.variant;
+    variant.slots.push({
+      id: 'overlay',
+      role: 'PRODUCT',
+      purpose: 'PRODUCT_DISPLAY',
+      label: '叠加',
+      duration: 6,
+      transition: '硬切',
+      overlay: true,
+    });
+    variant.bindings.overlay = 'overlay-clip';
+    variant.bindingRevisions.overlay = 1;
+    variant.offsets.overlay = 0;
+    variant.timelineStarts = { overlay: 3 };
+    variant.videoLanes = { s: 1, overlay: 0 };
+    mix.workspace.mockResolvedValue({
+      materials: [
+        {
+          id: 'overlay-clip',
+          artifactId: 'overlay-source',
+          fileObjectId: 'overlay-video',
+          duration: 15,
+          available: true,
+          artifactRevision: 1,
+          contentHash: 'overlay-hash',
+        },
+      ],
+    });
+    const prompt = {
+      sourceType: 'WORKING_ARTIFACT',
+      sourceArtifactId: 'prompt',
+      sourceRevision: 1,
+    };
+    db.workingArtifact.findMany.mockResolvedValue([
+      { id: 'source', revision: 1, contentHash: 'hash', freshness: 'CURRENT', availability: 'AVAILABLE', dependencies: [] },
+      {
+        id: 'overlay-source',
+        revision: 1,
+        contentHash: 'overlay-hash',
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+        artifactKey: 'render-clip:o',
+        payload: { promptId: 'p' },
+        dependencies: [prompt],
+      },
+      {
+        id: 'prompt',
+        revision: 1,
+        contentHash: 'prompt-hash',
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+        artifactKey: 'prompt-batch:p',
+        payload: { items: [{ id: 'p', content: '叠加层原始 Prompt' }] },
+        dependencies: [],
+      },
+    ]);
+    db.fileObject.findMany.mockResolvedValue(
+      ['video', 'voice', 'music', 'overlay-video'].map((id) => ({
+        id,
+        originalFileName: id,
+        mimeType: 'video/mp4',
+        sha256: id,
+      })),
+    );
+
+    await service.complete('p', 't', request);
+    const created = db.effectFinalOutputRun.create.mock.calls[0]![0].data;
+    // The visual hash is blind to overlays, so without its own key an export that added one would
+    // dedupe back to the run it built before the overlay existed.
+    expect(created.inputHash).not.toBe(baseline);
+    const item = created.items.create[0] as { snapshot: FinalOutputSnapshot };
+    expect(item.snapshot.timeline.clips.map((clip) => [clip.slotId, clip.overlay, clip.lane])).toEqual(
+      [
+        ['s', undefined, 1],
+        ['overlay', true, 0],
+      ],
+    );
+  });
   it('rejects reused idempotency keys for different requests', async () => {
     const { service, db } = harness();
     db.effectFinalOutputRun.findUnique.mockResolvedValue({ id: 'out', requestHash: 'other' });

@@ -7,6 +7,7 @@ import type {
   EffectTemplateMixVariant,
   EffectTemplateMixWorkspace,
 } from '@ai-marketing/contracts';
+import { syncEffectTemplateMixVariantSlots } from '@ai-marketing/contracts';
 import { randomUUID } from 'node:crypto';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -260,7 +261,8 @@ export const selectAssignedVariant = (
     const pool = pools.get(slot.role) ?? [];
     if (!pool.length) continue;
     const best = pool.reduce((current, item) => {
-      const currentAdjusted = current.matchScore - (reuseCounts.get(current.materialId) ?? 0) * 0.02;
+      const currentAdjusted =
+        current.matchScore - (reuseCounts.get(current.materialId) ?? 0) * 0.02;
       const adjusted = item.matchScore - (reuseCounts.get(item.materialId) ?? 0) * 0.02;
       return adjusted > currentAdjusted ? item : current;
     });
@@ -291,7 +293,7 @@ export const enumerateAssignedVariants = (
   maxOverlap = MAX_SLOT_REUSE_OVERLAP,
 ): EffectTemplateMixAiSelection[][] => {
   const pools = buildAssignedPools(slots, materials, classifications);
-  if (slots.some((slot) => !(pools.get(slot.role)?.length))) return [];
+  if (slots.some((slot) => !pools.get(slot.role)?.length)) return [];
   const bindingKey = (slotId: string, materialId: string): string => `${slotId}:${materialId}`;
   const allSets = existingGroups.map(
     (group) => new Set(group.map(({ slotId, materialId }) => bindingKey(slotId, materialId))),
@@ -341,9 +343,7 @@ export const enumerateAssignedVariants = (
   while (results.length < Math.max(0, maxVariants)) {
     const variant = buildOne();
     if (!variant) break;
-    allSets.push(
-      new Set(variant.map(({ slotId, materialId }) => bindingKey(slotId, materialId))),
-    );
+    allSets.push(new Set(variant.map(({ slotId, materialId }) => bindingKey(slotId, materialId))));
     for (const { materialId } of variant) usage.set(materialId, (usage.get(materialId) ?? 0) + 1);
     results.push(variant);
   }
@@ -402,7 +402,10 @@ export const applyVariantToTemplate = (
   sourceVariant: EffectTemplateMixVariant,
   syncOtherVariants: boolean,
 ): { conflicts: number; synced: number } => {
-  workspace.template.slots = clone(sourceVariant.slots);
+  // The variant carries template slots plus its own free clips; only the former describe the
+  // template, so promoting a variant must not leak those extra clips into the shared template.
+  const templateIds = new Set(workspace.template.slots.map(({ id }) => id));
+  workspace.template.slots = sourceVariant.slots.filter(({ id }) => templateIds.has(id)).map(clone);
   workspace.template.editVersion += 1;
   workspace.editVersion += 1;
   sourceVariant.appliedTemplateVersion = workspace.template.editVersion;
@@ -415,7 +418,7 @@ export const applyVariantToTemplate = (
     variant.status = 'PENDING';
     if (!syncOtherVariants) continue;
 
-    variant.slots = clone(workspace.template.slots);
+    variant.slots = syncEffectTemplateMixVariantSlots(workspace.template.slots, variant.slots);
     const slotIds = new Set(variant.slots.map(({ id }) => id));
     variant.bindings = Object.fromEntries(
       Object.entries(variant.bindings).filter(([slotId]) => slotIds.has(slotId)),

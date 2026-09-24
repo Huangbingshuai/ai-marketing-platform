@@ -5,10 +5,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
 import type {
+  CreatePackagingCaptionVoiceRequest,
   CreatePackagingRequest,
   EffectTemplateMixVariant,
   PackagingCheckpoint,
@@ -463,13 +464,13 @@ export class EffectPackagingService {
       },
     };
   }
-  /** Editor audio edits: only geometry/volume are trusted, never the client's file identity. */
-  async updateAudio(
-    projectId: string,
-    runId: string,
-    itemId: string,
-    body: UpdatePackagingAudioRequest,
-  ): Promise<PackagingItem> {
+  /**
+   * A completed item the editor may still write to. Editing is only legal while the frozen visual
+   * source still matches the draft and every artifact it consumed is still current — the rule the
+   * audio-edit route has always applied, shared here so a second editor write path cannot drift
+   * from it.
+   */
+  private async editableItem(projectId: string, runId: string, itemId: string) {
     const raw = await this.repo.get(projectId, runId);
     const item = raw?.items.find((i) => i.id === itemId);
     if (!raw || !item) throw new NotFoundException('包装成片不存在');
@@ -479,10 +480,10 @@ export class EffectPackagingService {
       await this.working.listArtifacts(projectId, { workflowRunId: raw.workflowRunId })
     ).items;
     const snapshot = item.snapshot as unknown as PackagingSnapshot;
-    const variant = workspace.draft.templates
-      .find((t) => t.id === raw.templateId)
-      ?.workspace.variants.find((v) => v.id === item.variantId);
+    const entry = workspace.draft.templates.find((t) => t.id === raw.templateId);
+    const variant = entry?.workspace.variants.find((v) => v.id === item.variantId);
     if (
+      !entry ||
       !variant ||
       !matchesVisualHash(variant, item.sourceTimelineHash, snapshot.variant) ||
       snapshot.dependencies.some(
@@ -497,10 +498,36 @@ export class EffectPackagingService {
       )
     )
       throw new ConflictException('源时间轴已改变，请重新生成包装后再编辑音频');
+    return { raw, item, snapshot, workspace, artifacts, entry, variant };
+  }
+  /** Editor audio edits: only geometry/volume are trusted, never the client's file identity. */
+  async updateAudio(
+    projectId: string,
+    runId: string,
+    itemId: string,
+    body: UpdatePackagingAudioRequest,
+  ): Promise<PackagingItem> {
+    const { raw, item, snapshot, workspace, artifacts } = await this.editableItem(
+      projectId,
+      runId,
+      itemId,
+    );
     const old = item.checkpoint as PackagingCheckpoint;
     let voices = old.voices;
-    if (body.voices) {
+    // A narration is an optional overlay on its script line, so deleting one drops the key and
+    // nothing else: the line and its subtitle stay, and the film simply has no speech there. A
+    // re-packaging synthesizes every line again. An unknown id is ignored rather than refused,
+    // because the editor may be deleting a clip a concurrent redo already dropped.
+    if (body.removedVoices?.length) {
       voices = { ...(old.voices ?? {}) };
+      // An edit and a delete are the same field, so the edit wins if a client sends both for one id,
+      // matching the music bed's rule.
+      for (const id of body.removedVoices) if (!body.voices?.[id]) delete voices[id];
+    }
+    if (body.voices) {
+      // Copied from the map the delete above produced, so one request may both drop a clip and move
+      // another.
+      voices = { ...(voices ?? {}) };
       for (const [id, edit] of Object.entries(body.voices)) {
         const current = Object.hasOwn(voices, id) ? voices[id] : undefined;
         if (!current) throw new BadRequestException('口播音频不存在');
@@ -520,7 +547,39 @@ export class EffectPackagingService {
         };
       }
     }
+    // A generated caption narration is trimmed and moved exactly like a narration line, but nothing
+    // follows it: the caption owns the narration here, not the other way round.
+    let captionVoices = old.captionVoices;
+    if (body.removedCaptionVoices?.length) {
+      // A caption narration is keyed by caption and depends on nothing else, so a delete is just the
+      // entry going away. An unknown id is ignored rather than refused: the editor may be deleting a
+      // clip a concurrent redo already dropped.
+      captionVoices = { ...(old.captionVoices ?? {}) };
+      for (const id of body.removedCaptionVoices) delete captionVoices[id];
+    }
+    if (body.captionVoices) {
+      captionVoices = { ...(captionVoices ?? {}) };
+      for (const [id, edit] of Object.entries(body.captionVoices)) {
+        const current = Object.hasOwn(captionVoices, id) ? captionVoices[id] : undefined;
+        if (!current) throw new BadRequestException('字幕口播不存在');
+        const offset = edit.offset ?? 0;
+        const length = edit.duration ?? current.duration;
+        const available = (current.offset ?? 0) + current.duration;
+        if (offset < 0 || length <= 0 || offset + length > available + 0.05)
+          throw new BadRequestException('字幕口播裁剪超出真实音频长度');
+        captionVoices[id] = {
+          ...current,
+          start: edit.start,
+          volume: edit.volume,
+          offset,
+          duration: length,
+          ...fadeFields(length, current, edit),
+        };
+      }
+    }
     let music = old.music;
+    // An edit and a delete are the same field, so the edit wins if a client somehow sends both.
+    if (body.removeMusic && !body.music) music = undefined;
     if (body.music) {
       if (!old.music) throw new BadRequestException('纯音乐音频不存在');
       const offset = body.music.offset ?? 0;
@@ -535,16 +594,32 @@ export class EffectPackagingService {
         ...fadeFields(length, old.music, body.music),
       };
     }
+    const oldCaptionsById = new Map((old.captions ?? []).map((caption) => [caption.id, caption]));
     const captions = body.captions
       ? [...body.captions]
           .sort((left, right) => left.start - right.start)
-          .map(({ id, voiceLineId, segmentIndex, segmentCount, text, start, end }) => ({
-            id,
-            ...(voiceLineId ? { voiceLineId, segmentIndex, segmentCount } : {}),
-            text,
-            start,
-            end,
-          }))
+          .map(({ id, text, start, end, manual, trackId }) => {
+            const previous = oldCaptionsById.get(id);
+            // A track of its own is editor geometry, exactly like `start`/`end`: it is what makes a
+            // subtitle a row of its own, and a narration card may have one just as a manual card may.
+            // It is never dropped once set, so a card cannot silently lose its row.
+            const resolvedTrackId = previous?.trackId ?? trackId;
+            return {
+              id,
+              ...(previous?.manual || (!previous && manual === true) ? { manual: true } : {}),
+              ...(resolvedTrackId ? { trackId: resolvedTrackId } : {}),
+              ...(previous?.voiceLineId
+                ? {
+                    voiceLineId: previous.voiceLineId,
+                    segmentIndex: previous.segmentIndex,
+                    segmentCount: previous.segmentCount,
+                  }
+                : {}),
+              text,
+              start,
+              end,
+            };
+          })
       : old.captions;
     let captionBoxes = old.captionBoxes;
     if (body.boxes) {
@@ -557,8 +632,12 @@ export class EffectPackagingService {
     }
     const next: PackagingCheckpoint = { ...old };
     if (voices) next.voices = voices;
+    // `next` starts as a copy of the old checkpoint, so a deleted bed has to be taken off it rather
+    // than merely left unwritten. A request that simply says nothing about the music keeps it.
     if (music) next.music = music;
+    else if (body.removeMusic) delete next.music;
     if (captions) next.captions = captions;
+    if (captionVoices) next.captionVoices = captionVoices;
     if (old.narrationLayoutVersion === 'SLOT_V1' && body.voices && !body.captions && next.captions)
       next.captions = next.captions.map((c) => {
         const lineId = c.voiceLineId ?? c.id;
@@ -579,6 +658,143 @@ export class EffectPackagingService {
     validatePackagingCheckpoint(snapshot, next, true, true);
     const saved = await this.repo.updateCheckpoint(projectId, itemId, next, body.expectedUpdatedAt);
     return this.presentItems({ ...raw, items: [saved] }, workspace, artifacts)[0]!;
+  }
+  /**
+   * Ask the worker to speak one caption's text again with the template's current voice.
+   *
+   * The template's choice wins over the item's frozen profile: the editor may switch voices after
+   * packaging, and a newly generated line is exactly what that switch is for. Existing narration is
+   * left untouched, so the frozen profile is only the fallback for a template with no voice picked.
+   *
+   * `body.text` is an assertion, never the text to speak: synthesis reads the caption the server has
+   * stored, so a client cannot spend the project's paid voice budget on arbitrary words, and an
+   * editor that is still inside its save debounce is told to save instead of quietly being voiced
+   * from the previous revision.
+   */
+  async requestCaptionVoice(
+    projectId: string,
+    runId: string,
+    itemId: string,
+    body: CreatePackagingCaptionVoiceRequest,
+  ) {
+    const { item, snapshot, entry } = await this.editableItem(projectId, runId, itemId);
+    const caption = (item.checkpoint as PackagingCheckpoint).captions?.find(
+      (c) => c.id === body.captionId,
+    );
+    if (!caption) throw new NotFoundException('字幕不存在');
+    if (caption.text !== body.text) throw new ConflictException('字幕文本尚未保存，请稍后重试');
+    if (!caption.text.trim()) throw new BadRequestException('字幕文本为空，无法生成口播');
+    const templateVoiceId = entry.workspace.template.voiceProfileId;
+    const profile = templateVoiceId
+      ? this.voiceCatalog.selection(templateVoiceId)
+      : (snapshot.voiceProfile ?? this.voiceCatalog.selection());
+    const requestId = randomUUID();
+    await this.repo.enqueueCaptionVoice({
+      schemaVersion: 2,
+      taskType: 'CAPTION_VOICE',
+      projectId,
+      runId,
+      itemId,
+      captionId: caption.id,
+      text: caption.text,
+      profile,
+      requestId,
+    });
+    return { requestId };
+  }
+  /**
+   * The worker's write-back for {@link requestCaptionVoice}. There is no packaging lease to hold
+   * here — the editor asked for this, not a run — so the worker token is the guard and the write is
+   * idempotent by caption: the same bytes arriving twice (a redelivered message) leave the clip
+   * alone, while different bytes are a legitimate regeneration and replace it.
+   */
+  async uploadCaptionVoice(
+    projectId: string,
+    runId: string,
+    itemId: string,
+    captionId: string,
+    file: { path: string; size: number } | undefined,
+  ) {
+    if (!file || file.size > 100 * 1024 * 1024) throw new BadRequestException('字幕口播音频无效');
+    const raw = await this.repo.get(projectId, runId);
+    const item = raw?.items.find((i) => i.id === itemId);
+    if (!raw || !item) throw new NotFoundException('包装成片不存在');
+    if (item.status !== 'COMPLETED') throw new ConflictException('包装尚未完成，无法写入口播');
+    const snapshot = item.snapshot as unknown as PackagingSnapshot;
+    if (!(item.checkpoint as PackagingCheckpoint).captions?.some((c) => c.id === captionId))
+      throw new NotFoundException('字幕不存在');
+    const duration = await wavDuration(file.path, file.size);
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(file.path)) hash.update(chunk);
+    const sha256 = hash.digest('hex');
+    const role = `caption-voice-${captionId}`;
+    const existing = await this.repo.db.effectPackagingFile.findUnique({
+      where: { projectId_itemId_role: { projectId, itemId, role } },
+      include: { fileObject: true },
+    });
+    if (existing?.fileObject.sha256 === sha256) return { fileObjectId: existing.fileObjectId };
+    const project = await this.repo.db.project.findUniqueOrThrow({ where: { id: projectId } });
+    const stored = await this.storage.put({
+      projectId,
+      stream: createReadStream(file.path),
+      sizeBytes: file.size,
+      contentType: 'audio/wav',
+      keyContext: {
+        projectName: project.name,
+        workflow: 'effect',
+        lifecycle: 'staging',
+        category: 'timeline-package',
+        originalFileName: `${itemId}-${role}.wav`,
+      },
+    });
+    try {
+      return await this.repo.db.$transaction(async (tx) => {
+        const created = await tx.fileObject.create({
+          data: {
+            projectId,
+            workflowRunId: raw.workflowRunId,
+            nodeId: 'TEMPLATE_MIX',
+            originalFileName: `${item.variantId}-${role}.wav`,
+            mimeType: 'audio/wav',
+            sizeBytes: file.size,
+            storageKey: stored.key,
+            sha256,
+          },
+        });
+        await tx.effectPackagingFile.upsert({
+          where: { projectId_itemId_role: { projectId, itemId, role } },
+          create: { projectId, itemId, role, fileObjectId: created.id },
+          update: { fileObjectId: created.id },
+        });
+        const current = await tx.effectPackagingItem.findUniqueOrThrow({ where: { id: itemId } });
+        const checkpoint = current.checkpoint as PackagingCheckpoint;
+        const caption = checkpoint.captions?.find((c) => c.id === captionId);
+        if (!caption) throw new NotFoundException('字幕不存在');
+        const next: PackagingCheckpoint = {
+          ...checkpoint,
+          captionVoices: {
+            ...checkpoint.captionVoices,
+            // Aligned on the caption by construction — this is the one place that knows both.
+            [captionId]: {
+              ...(snapshot.voiceProfile ? { voiceProfile: snapshot.voiceProfile } : {}),
+              fileObjectId: created.id,
+              duration,
+              start: caption.start,
+              volume: 1,
+            },
+          },
+        };
+        validatePackagingCheckpoint(snapshot, next, true, true);
+        await tx.effectPackagingItem.update({
+          where: { id: itemId },
+          data: { checkpoint: JSON.parse(JSON.stringify(next)) },
+        });
+        return { fileObjectId: created.id };
+      });
+    } catch (error) {
+      await this.storage.delete(stored.key).catch(() => undefined);
+      throw error;
+    }
   }
   async list(projectId: string, workflowRunId: string, templateId: string) {
     const [workspace, artifacts, runs] = await Promise.all([
@@ -660,9 +876,13 @@ export class EffectPackagingService {
     const { snapshot, item, run } = await this.workerItem(projectId, runId, token, itemId);
     const sourceVideo = snapshot.clips.some((c) => c.fileObjectId === fileId);
     const timelineAudio = (snapshot.detachedAudios ?? []).some((audio) => audio.fileObjectId === fileId);
-    const savedVoice = Object.values((item.checkpoint as PackagingCheckpoint).voices ?? {}).some(
-      (voice) => voice.fileObjectId === fileId,
-    );
+    const checkpoint = item.checkpoint as PackagingCheckpoint;
+    const savedVoice = [
+      ...Object.values(checkpoint.voices ?? {}),
+      // A generated caption narration is a voice file like any other, so the renderer has to be
+      // able to fetch it or the mix would fail on a file it was told to include.
+      ...Object.values(checkpoint.captionVoices ?? {}),
+    ].some((voice) => voice.fileObjectId === fileId);
     const ownedVoice =
       savedVoice &&
       Boolean(
@@ -670,7 +890,10 @@ export class EffectPackagingService {
           where: {
             projectId,
             fileObjectId: fileId,
-            role: { startsWith: 'voice-' },
+            OR: [
+              { role: { startsWith: 'voice-' } },
+              { role: { startsWith: 'caption-voice-' } },
+            ],
             item: {
               variantId: item.variantId,
               sourceTimelineHash: item.sourceTimelineHash,

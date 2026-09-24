@@ -22,6 +22,7 @@ import {
 import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 import { EffectFinalOutputController, EffectFinalOutputWorkerController } from '../final-output/effect-final-output.controller';
 import {
+  EffectPackagingCaptionVoiceController,
   EffectPackagingController,
   EffectPackagingWorkerController,
 } from './effect-packaging.controller';
@@ -33,6 +34,7 @@ import {
     EffectTemplateMixWorkerController,
     EffectPackagingController,
     EffectPackagingWorkerController,
+    EffectPackagingCaptionVoiceController,
     EffectVoiceController,
     EffectVoiceWorkerController,
     EffectVoiceCatalogSampleWorkerController,

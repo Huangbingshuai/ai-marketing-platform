@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../../database/prisma.service';
 import type { Prisma } from '../../../generated/prisma/client';
 import type {
+  PackagingCaptionVoiceQueueMessage,
   PackagingCheckpoint,
   PackagingSnapshot,
   PackagingStage,
@@ -95,6 +96,23 @@ export class EffectPackagingRepository {
         nextAttemptAt: new Date(),
         publishedAt: null,
         lastError: null,
+      },
+    });
+  }
+  /**
+   * One row per request, keyed by the request id rather than by the item: the outbox upsert re-arms
+   * the row it matches, so keying by item would let a second caption silently overwrite a
+   * still-pending first one. Nothing re-arms this row either, which is deliberate — the synthesis is
+   * a one-shot paid call the user asked for by hand, not a pipeline stage that has to converge.
+   */
+  enqueueCaptionVoice(message: PackagingCaptionVoiceQueueMessage) {
+    return this.db.jobOutbox.create({
+      data: {
+        projectId: message.projectId,
+        aggregateId: message.requestId,
+        jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE,
+        routingKey: EFFECT_TEMPLATE_MIX_QUEUE,
+        payload: json(message),
       },
     });
   }

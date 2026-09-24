@@ -70,14 +70,7 @@ const workspace = (): EffectTemplateMixWorkspace => ({
   materials: [material('flex', 'HOOK', ['EFFECT']), material('hook-only', 'HOOK')],
 });
 
-const ROLES = [
-  'HOOK',
-  'PAIN_POINT',
-  'PRODUCT',
-  'SELLING_POINT',
-  'TRANSFORMATION',
-  'END',
-] as const;
+const ROLES = ['HOOK', 'PAIN_POINT', 'PRODUCT', 'SELLING_POINT', 'TRANSFORMATION', 'END'] as const;
 
 const zeroScores = (): Record<EffectTemplateMixRole, number> => ({
   HOOK: 0,
@@ -141,6 +134,40 @@ describe('effect template mix domain', () => {
     expect(sibling.slots[0]!.duration).toBe(2);
     expect(sibling.bindings['slot-hook']).toBe(fixed);
     expect(sibling.status).toBe('SYNCED');
+  });
+
+  it('promotes only the template slots and keeps every variant clip dropped on its own track', () => {
+    const value = workspace();
+    const source = createVariant(value);
+    const extra = {
+      id: 'free-clip',
+      label: 'extra',
+      role: 'PRODUCT' as const,
+      purpose: 'PRODUCT_DISPLAY' as const,
+      duration: 4,
+      transition: '硬切' as const,
+      transitionDuration: 0,
+    };
+    source.slots.push(extra);
+    source.bindings[extra.id] = 'flex';
+    source.videoLanes = { [extra.id]: 1 };
+    value.variants.push(source);
+    const sibling: EffectTemplateMixVariant = createVariant(value);
+    const siblingExtra = { ...extra, id: 'sibling-clip' };
+    sibling.slots.push(siblingExtra);
+    sibling.bindings[siblingExtra.id] = 'hook-only';
+    sibling.videoLanes = { [siblingExtra.id]: 1 };
+    value.variants.push(sibling);
+
+    applyVariantToTemplate(value, source, true);
+
+    // The template keeps its own two slots — a variant's free clip is not a template slot.
+    expect(value.template.slots.map(({ id }) => id)).toEqual(['slot-hook', 'slot-effect']);
+    // The promoted variant keeps its clip, and the sibling keeps its own.
+    expect(source.slots.map(({ id }) => id)).toEqual(['slot-hook', 'slot-effect', 'free-clip']);
+    expect(sibling.slots.map(({ id }) => id)).toEqual(['slot-hook', 'slot-effect', 'sibling-clip']);
+    expect(sibling.bindings['sibling-clip']).toBe('hook-only');
+    expect(sibling.videoLanes['sibling-clip']).toBe(1);
   });
 
   it('uses global AI scores, keeps materials unique and marks low-match fill', () => {
@@ -247,9 +274,9 @@ describe('effect template mix domain', () => {
     const withoutEndClassifications = classifications.filter(
       ({ materialId }) => !materialId.startsWith('end-'),
     );
-    expect(buildAssignedPools(slots, withoutEnd, withoutEndClassifications).get('END')).toHaveLength(
-      0,
-    );
+    expect(
+      buildAssignedPools(slots, withoutEnd, withoutEndClassifications).get('END'),
+    ).toHaveLength(0);
     expect(
       enumerateAssignedVariants(slots, withoutEnd, withoutEndClassifications, [], 100),
     ).toEqual([]);

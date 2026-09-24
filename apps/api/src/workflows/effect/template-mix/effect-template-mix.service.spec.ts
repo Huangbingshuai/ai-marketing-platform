@@ -591,6 +591,65 @@ describe('EffectTemplateMixService', () => {
     );
   });
 
+  it('allows switching the voice after packaging while every other template field stays locked', async () => {
+    const { working } = harness();
+    const previous = draft();
+    previous.templates[0]!.packagingLocked = true;
+    previous.templates[0]!.workspace.template.voiceProfileId = 'voice-a';
+    const voiced = JSON.parse(JSON.stringify(previous)) as EffectTemplateMixDraft;
+    voiced.templates[0]!.workspace.template.voiceProfileId = 'voice-b';
+    // Same edit plus a real template change: the slot must still be refused.
+    const retimed = JSON.parse(JSON.stringify(voiced)) as EffectTemplateMixDraft;
+    retimed.templates[0]!.workspace.template.slots[0]!.duration = 9;
+    working.getNodeStateOrNull
+      .mockResolvedValueOnce({ revision: 7, state: previous })
+      .mockResolvedValueOnce({ revision: 8, state: voiced })
+      .mockResolvedValueOnce({ revision: 9, state: retimed });
+    const aiRuns = {
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRuns as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(service.saveDraft('project', 'run', 7, voiced)).resolves.toBeDefined();
+    expect(voiced.templates[0]!.workspace.template.voiceProfileId).toBe('voice-b');
+    await expect(service.saveDraft('project', 'run', 8, retimed)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
+  it('still locks a voice change while a packaging run is in flight', async () => {
+    const { working } = harness();
+    const previous = draft();
+    previous.templates[0]!.packagingLocked = true;
+    previous.templates[0]!.workspace.template.voiceProfileId = 'voice-a';
+    const voiced = JSON.parse(JSON.stringify(previous)) as EffectTemplateMixDraft;
+    voiced.templates[0]!.workspace.template.voiceProfileId = 'voice-b';
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
+    const aiRuns = {
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      // The run is still going, so the whole workspace comparison must keep guarding it.
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRuns as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(service.saveDraft('project', 'run', 7, voiced)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
   it('rejects a server mutation based on a stale draft revision', async () => {
     const { service, working } = harness();
     await expect(
