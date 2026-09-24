@@ -38,8 +38,13 @@ const props = defineProps<{
   playhead: number;
   seekVersion: number;
   playing: boolean;
-  /** Shared with the workbench's single audio track control. */
-  audioMuted: boolean;
+  /**
+   * Mirror the workbench's audio rows: one flag per row, so silencing a row leaves every other row
+   * playing. Rows carry no meaning — every one of them is just 音频 — so the flag follows the row
+   * number and `audioRowByClipId` says which row each clip is currently on.
+   */
+  audioRowMuted: boolean[];
+  audioRowByClipId: Record<string, number>;
 }>();
 const emit = defineEmits<{
   selected: [item: PackagingItem | null];
@@ -295,9 +300,12 @@ async function command(action: 'cancel' | 'retry') {
 // Use the player clock without writing packaging fields back into the visual draft.
 const voiceElement = ref<HTMLAudioElement | null>(null),
   musicElement = ref<HTMLAudioElement | null>(null);
+// A caption narration is added *alongside* the script-line voices it was generated next to, so its
+// clip overlaps theirs by design and needs an element of its own — one element follows one clip.
+const captionVoiceElement = ref<HTMLAudioElement | null>(null);
 // The main player owns all track playback. Only a failed play attempt blocks
 // audio until the next player gesture; there is no separate audition switch.
-const playbackBlocked = reactive({ MUSIC: false, VOICE: false });
+const playbackBlocked = reactive({ MUSIC: false, VOICE: false, CAPTION_VOICE: false });
 const previewAvailable = computed(() => {
   const item = selected.value;
   // Stale only describes the saved visual snapshot. It must not silence already-generated audio
@@ -333,23 +341,34 @@ type PreviewAudio = {
   fadeIn?: number;
   fadeOut?: number;
 };
-const currentVoice = computed<PreviewAudio | undefined>(() => {
+/** Silence is a property of the row a clip sits on, resolved through the workbench's own row map. */
+const rowMuted = (clipId: string): boolean =>
+  props.audioRowMuted[props.audioRowByClipId[clipId] ?? 0] ?? false;
+/**
+ * The narration line being previewed, carrying the timeline id that resolves it to a row. A slot
+ * line is `voice:<lineId>` and the legacy whole-film voice is `voice`, so both are silenced by
+ * whichever row the workbench draws them on.
+ */
+type PreviewVoice = { id: string; audio: PreviewAudio };
+const currentVoiceEntry = computed<PreviewVoice | undefined>(() => {
   if (!previewAvailable.value) return undefined;
-  const voices = Object.values(selected.value?.checkpoint.voices ?? {}).sort(
-    (left, right) => left.start - right.start,
-  );
+  const voices = Object.entries(selected.value?.checkpoint.voices ?? {})
+    .map(([lineId, audio]) => ({ id: `voice:${lineId}`, audio }))
+    .sort((left, right) => left.audio.start - right.audio.start);
   const slotVoice =
     voices.find(
-      (audio) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
-    ) ?? voices.find((audio) => audio.start > props.playhead);
+      ({ audio }) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
+    ) ?? voices.find(({ audio }) => audio.start > props.playhead);
   if (slotVoice) return slotVoice;
   // Legacy packaging stored one whole-film voice on the variant instead of a slot-keyed
   // checkpoint. Keep that already-generated audio playable while the user repackages it.
   if (!selected.value || selected.value.checkpoint.narrationLayoutVersion !== 'SLOT_V1') {
-    return selectedVariant.value?.voice as EffectTemplateMixAudio | undefined;
+    const legacy = selectedVariant.value?.voice as EffectTemplateMixAudio | undefined;
+    return legacy ? { id: 'voice', audio: legacy } : undefined;
   }
   return undefined;
 });
+const currentVoice = computed<PreviewAudio | undefined>(() => currentVoiceEntry.value?.audio);
 const nextVoice = computed<PreviewAudio | undefined>(() => {
   if (!previewAvailable.value) return undefined;
   const voices = Object.values(selected.value?.checkpoint.voices ?? {}).sort(
@@ -370,10 +389,36 @@ const currentMusic = computed<PreviewAudio | undefined>(() => {
   }
   return undefined;
 });
+/**
+ * The caption narration under the playhead, falling back to the next one the way a script-line voice
+ * does — the element has to stay mounted across narrations, because a fresh element that was never
+ * primed from the player's gesture has its `play()` refused. Its id is the timeline's own clip id
+ * (`capvoice:` plus the caption), which is what lets the row map silence it by the row it is on.
+ */
+const currentCaptionVoiceEntry = computed<PreviewVoice | undefined>(() => {
+  if (!previewAvailable.value) return undefined;
+  const voices = Object.entries(selected.value?.checkpoint.captionVoices ?? {})
+    .map(([captionId, audio]) => ({ id: `capvoice:${captionId}`, audio }))
+    .sort((left, right) => left.audio.start - right.audio.start);
+  return (
+    voices.find(
+      ({ audio }) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
+    ) ?? voices.find(({ audio }) => audio.start > props.playhead)
+  );
+});
+const currentCaptionVoice = computed<PreviewAudio | undefined>(
+  () => currentCaptionVoiceEntry.value?.audio,
+);
 function syncAudio(forceSeek = false) {
   for (const [kind, element, audio, muted] of [
-    ['VOICE', voiceElement.value, currentVoice.value, props.audioMuted],
-    ['MUSIC', musicElement.value, currentMusic.value, props.audioMuted],
+    ['VOICE', voiceElement.value, currentVoice.value, rowMuted(currentVoiceEntry.value?.id ?? 'voice')],
+    ['MUSIC', musicElement.value, currentMusic.value, rowMuted('music')],
+    [
+      'CAPTION_VOICE',
+      captionVoiceElement.value,
+      currentCaptionVoice.value,
+      rowMuted(currentCaptionVoiceEntry.value?.id ?? ''),
+    ],
   ] as const) {
     if (!element || !audio || playbackBlocked[kind] || !props.playing) {
       element?.pause();
@@ -402,8 +447,11 @@ function syncAudio(forceSeek = false) {
       continue;
     }
     const time = timelineTime + Math.max(0, audio.offset ?? 0);
-    const fadeIn = packagingAudioFade(audio, kind, 'fadeIn');
-    const fadeOut = packagingAudioFade(audio, kind, 'fadeOut');
+    // The fade default is the one place the kind matters, and it only splits music from speech —
+    // a caption narration fades like the voice it is.
+    const fadeKind: 'MUSIC' | 'VOICE' = kind === 'MUSIC' ? 'MUSIC' : 'VOICE';
+    const fadeIn = packagingAudioFade(audio, fadeKind, 'fadeIn');
+    const fadeOut = packagingAudioFade(audio, fadeKind, 'fadeOut');
     const fadeInGain = fadeIn > 0 ? Math.min(1, Math.max(0, timelineTime / fadeIn)) : 1;
     const fadeOutGain =
       fadeOut > 0 ? Math.min(1, Math.max(0, (audio.duration - timelineTime) / fadeOut)) : 1;
@@ -437,13 +485,24 @@ function syncAudio(forceSeek = false) {
     if (element.paused && element.dataset.timelineStarting !== 'true') {
       const version = generation;
       const fileId = audio.fileObjectId;
+      // Each element has to report against its own clip, or a caption narration's failure would be
+      // recorded as the script-line voice's and silence the wrong one.
       const isMusic = element === musicElement.value;
+      const isCaptionVoice = element === captionVoiceElement.value;
       element.dataset.timelineStarting = 'true';
       void element
         .play()
         .catch((reason: unknown) => {
-          const current = isMusic ? currentMusic.value : currentVoice.value;
-          const bound = isMusic ? musicElement.value : voiceElement.value;
+          const current = isMusic
+            ? currentMusic.value
+            : isCaptionVoice
+              ? currentCaptionVoice.value
+              : currentVoice.value;
+          const bound = isMusic
+            ? musicElement.value
+            : isCaptionVoice
+              ? captionVoiceElement.value
+              : voiceElement.value;
           const warning = packagingPlaybackError(
             reason,
             version === generation &&
@@ -463,79 +522,99 @@ function syncAudio(forceSeek = false) {
     }
   }
 }
+/**
+ * A narration line may begin well after the play button's user gesture. Prime the persistent element
+ * silently now so the browser won't reject its later play(). Both the script-line voice and the
+ * caption narration need this and neither can share an element, so it is one helper used twice.
+ */
+function primeElement(
+  audio: PreviewAudio | undefined,
+  element: HTMLAudioElement | null,
+  clipId: string,
+): void {
+  if (!audio || !element || props.playhead >= audio.start) return;
+  const fileId = audio.fileObjectId;
+  const originalVolume = element.volume;
+  element.dataset.timelinePriming = fileId;
+  element.dataset.timelinePrimeVolume = String(originalVolume);
+  element.volume = 0;
+  element.muted = false;
+  try {
+    void element
+      .play()
+      .catch(() => undefined)
+      .finally(() => {
+        const ownsPrime = element.dataset.timelinePriming === fileId;
+        if (ownsPrime && element.dataset.timelineActive !== 'true') {
+          element.pause();
+          try {
+            element.currentTime = 0;
+          } catch {
+            // A source reload can temporarily make the current position unavailable.
+          }
+        }
+        const savedVolume = Number(element.dataset.timelinePrimeVolume);
+        element.volume = Number.isFinite(savedVolume) ? savedVolume : originalVolume;
+        element.dataset.timelinePrimeVolume = '';
+        element.muted = rowMuted(clipId);
+        if (ownsPrime) element.dataset.timelinePriming = '';
+        if (element.dataset.timelineActive !== 'true') element.pause();
+      });
+  } catch {
+    element.dataset.timelinePriming = '';
+    element.volume = originalVolume;
+    element.dataset.timelinePrimeVolume = '';
+    element.muted = rowMuted(clipId);
+  }
+}
+/** Stop one element and hand back the volume the prime borrowed from it. */
+function releaseElement(element: HTMLAudioElement | null): void {
+  if (!element) return;
+  element.pause();
+  element.dataset.timelineActive = 'false';
+  element.dataset.timelineStarting = 'false';
+  element.dataset.timelinePriming = '';
+  const primed = element.dataset.timelinePrimeVolume;
+  // A released marker is an empty string, not a level — reading it as 0 would silence the element.
+  if (primed) element.volume = Number(primed);
+  element.dataset.timelinePrimeVolume = '';
+}
 /** Start packaged audio directly from the player's user gesture. */
 function startPlaybackAudio() {
   playbackBlocked.MUSIC = false;
   playbackBlocked.VOICE = false;
+  playbackBlocked.CAPTION_VOICE = false;
   previewError.value = '';
   syncAudio(true);
-  // A narration line may begin well after the play button's user gesture. Prime the
-  // persistent voice element silently now so the browser won't reject its later play().
-  const audio = currentVoice.value;
-  const element = voiceElement.value;
-  if (audio && element && props.playhead < audio.start) {
-    const fileId = audio.fileObjectId;
-    const originalVolume = element.volume;
-    element.dataset.timelinePriming = fileId;
-    element.dataset.timelinePrimeVolume = String(originalVolume);
-    element.volume = 0;
-    element.muted = false;
-    try {
-      void element
-        .play()
-        .catch(() => undefined)
-        .finally(() => {
-          const ownsPrime = element.dataset.timelinePriming === fileId;
-          if (ownsPrime && element.dataset.timelineActive !== 'true') {
-            element.pause();
-            try {
-              element.currentTime = 0;
-            } catch {
-              // A source reload can temporarily make the current position unavailable.
-            }
-          }
-          const savedVolume = Number(element.dataset.timelinePrimeVolume);
-          element.volume = Number.isFinite(savedVolume) ? savedVolume : originalVolume;
-          element.dataset.timelinePrimeVolume = '';
-          element.muted = props.audioMuted;
-          if (ownsPrime) element.dataset.timelinePriming = '';
-          if (element.dataset.timelineActive !== 'true') element.pause();
-        });
-    } catch {
-      element.dataset.timelinePriming = '';
-      element.volume = originalVolume;
-      element.dataset.timelinePrimeVolume = '';
-      element.muted = props.audioMuted;
-    }
-  }
+  primeElement(currentVoice.value, voiceElement.value, currentVoiceEntry.value?.id ?? 'voice');
+  primeElement(
+    currentCaptionVoice.value,
+    captionVoiceElement.value,
+    currentCaptionVoiceEntry.value?.id ?? '',
+  );
 }
 function stopPlaybackAudio() {
-  voiceElement.value?.pause();
-  musicElement.value?.pause();
-  if (voiceElement.value) {
-    voiceElement.value.dataset.timelineActive = 'false';
-    voiceElement.value.dataset.timelineStarting = 'false';
-    voiceElement.value.dataset.timelinePriming = '';
-    const primeVolume = Number(voiceElement.value.dataset.timelinePrimeVolume);
-    if (Number.isFinite(primeVolume)) voiceElement.value.volume = primeVolume;
-    voiceElement.value.dataset.timelinePrimeVolume = '';
-  }
-  if (musicElement.value) {
-    musicElement.value.dataset.timelineActive = 'false';
-    musicElement.value.dataset.timelineStarting = 'false';
-  }
+  releaseElement(voiceElement.value);
+  releaseElement(musicElement.value);
+  releaseElement(captionVoiceElement.value);
 }
 watch(
   () => [
     props.playhead,
     props.playing,
-    props.audioMuted,
+    props.audioRowMuted,
+    props.audioRowByClipId,
     playbackBlocked.VOICE,
     playbackBlocked.MUSIC,
+    playbackBlocked.CAPTION_VOICE,
     currentVoice.value?.fileObjectId,
     currentVoice.value?.volume,
     currentVoice.value?.fadeIn,
     currentVoice.value?.fadeOut,
+    currentCaptionVoice.value?.fileObjectId,
+    currentCaptionVoice.value?.volume,
+    currentCaptionVoice.value?.fadeIn,
+    currentCaptionVoice.value?.fadeOut,
     currentMusic.value?.fileObjectId,
     currentMusic.value?.volume,
     currentMusic.value?.fadeIn,
@@ -562,6 +641,7 @@ watch(
     close();
     playbackBlocked.MUSIC = false;
     playbackBlocked.VOICE = false;
+    playbackBlocked.CAPTION_VOICE = false;
     if (props.templateId) void refresh();
   },
   { immediate: true },
@@ -577,6 +657,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', refreshOnReturn);
   voiceElement.value?.pause();
   musicElement.value?.pause();
+  captionVoiceElement.value?.pause();
 });
 </script>
 
@@ -613,6 +694,15 @@ onBeforeUnmount(() => {
     :src="fileUrl(nextVoice.fileObjectId)"
     preload="auto"
     aria-hidden="true"
+  />
+  <audio
+    v-if="currentCaptionVoice"
+    ref="captionVoiceElement"
+    :src="fileUrl(currentCaptionVoice.fileObjectId)"
+    preload="auto"
+    @loadedmetadata="syncAudio()"
+    @seeked="syncAudio()"
+    @canplay="syncAudio()"
   />
   <audio
     v-if="currentMusic"

@@ -9,7 +9,8 @@ describe('template mix compositor playback clock', () => {
     expect(timelineSource).toContain('playheadElement.value');
     expect(timelineSource).toContain('element.animate(');
     expect(timelineSource).toContain("easing: 'linear'");
-    expect(timelineSource).toContain('startPlaybackNeedle, stopPlaybackNeedle');
+    expect(timelineSource).toContain('startPlaybackNeedle,');
+    expect(timelineSource).toContain('stopPlaybackNeedle,');
   });
 
   it('animates the player progress separately from Vue playhead renders', () => {
@@ -30,7 +31,9 @@ describe('template mix compositor playback clock', () => {
 
   it('updates the player timecode on every animation frame without a full Vue render', () => {
     expect(pageSource).toContain('const playerTimecode = ref<HTMLSpanElement | null>(null)');
-    expect(pageSource).toContain("playerTimecode.value.textContent = formatPlayerTimecode(seconds)");
+    expect(pageSource).toContain(
+      'playerTimecode.value.textContent = formatPlayerTimecode(seconds)',
+    );
     expect(pageSource).toContain('syncPlayerTimecode(next)');
     expect(pageSource).toContain('ref="playerTimecode"');
   });
@@ -40,7 +43,7 @@ describe('template mix compositor playback clock', () => {
       "if (event.code === 'Space' && target === playerScrubber.value)",
     );
     const genericInputGuard = pageSource.indexOf(
-      "target?.matches('input, textarea, select, [contenteditable=\"true\"]')",
+      'target?.matches(\'input, textarea, select, [contenteditable="true"]\')',
     );
     expect(scrubberSpaceHandler).toBeGreaterThan(-1);
     expect(genericInputGuard).toBeGreaterThan(scrubberSpaceHandler);

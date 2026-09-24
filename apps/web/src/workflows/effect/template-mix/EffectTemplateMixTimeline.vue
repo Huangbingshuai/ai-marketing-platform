@@ -103,14 +103,26 @@ const emit = defineEmits<{
   assignMaterial: [materialId: string, slotId: string];
   /** A library clip released on a track border: the row to create and where in time it starts. */
   insertMaterialTrack: [materialId: string, lane: number, start: number];
-  addMusicAsset: [music: MusicAssetDrop & { row: number; start: number }];
+  /** `insertRow` is set when the track was let go on a row border: open a row there for it. */
+  addMusicAsset: [
+    music: MusicAssetDrop & { row: number; start: number; insertRow?: number | undefined },
+  ];
   applyTransition: [slotId: string, transition: EffectTemplateMixTransition];
   changeAudioVolume: [clipId: string, volume: number];
   // `row` is the audio row the clip was dropped on; a caption has no row, so it omits the argument
-  // and only its time changes.
-  moveAudioClip: [clipId: string, start: number, row?: number];
+  // and only its time changes. `insertRow` is set when it was let go on a row border instead: open a
+  // row there for it, the same answer a library track gets.
+  moveAudioClip: [clipId: string, start: number, row?: number, insertRow?: number];
+  /**
+   * A subtitle let go on a caption row border. Caption rows are derived from the caption's track, so
+   * giving it a row of its own means minting a new track for it — there is no lane number to pass.
+   */
+  splitCaptionTrack: [captionId: string, start: number];
+  /** A library track let go on top of an audio clip: take the clip's place, keeping its own length. */
+  replaceAudioWithMusic: [clipId: string, music: MusicAssetDrop];
   moveAudioClips: [moves: Array<{ clipId: string; start: number; row?: number }>];
-  moveClip: [slotId: string, start: number, lane: number];
+  /** `insertLane` is set when the clip was let go on a track border: open a row there for it. */
+  moveClip: [slotId: string, start: number, lane: number, insertLane?: number];
   moveClips: [moves: Array<{ slotId: string; start: number; lane: number }>];
   openTransition: [slotId: string];
   redo: [];
@@ -177,7 +189,10 @@ type TimelineAudioKind = AudioClipKind;
 type MusicAssetDrop = { assetId: string; fileObjectId: string; name: string; duration: number };
 /** One audio clip or caption block; kind affects its colour, not its track. */
 type TimelineAudio = {
-  /** Namespaced selection id: `voice:<lineId>`, `music`, `voice`, or `caption:<id>`. */
+  /**
+   * Namespaced selection id: `voice:<lineId>`, `capvoice:<captionId>`, `music`, `voice`,
+   * `detached:<id>`, or `caption:<id>`.
+   */
   id: string;
   kind: TimelineAudioKind;
   label: string;
@@ -235,6 +250,10 @@ type AudioDragState = {
   volumeHeight: number;
   /** The row the grabbed clip rounds to while the pointer moves; unclamped on purpose. */
   currentRow: number;
+  /** The audio row border the pointer is on, when one is under it: open a row there instead. */
+  insertRow: number | null;
+  /** The caption row border the pointer is on: the subtitle is given a row of its own there. */
+  insertCaptionTrack: boolean;
   /** Vertical position of the ghost inside the audio area, in pixels, following the pointer. */
   ghostTop: number;
   /** Row each member of the selection started on, so a group rides one shared row delta. */
@@ -248,6 +267,8 @@ type ClipDragState = {
   /** Vertical position of the ghost in the video track, in pixels, following the pointer exactly. */
   ghostTop: number;
   grabOffset: number;
+  /** The border the pointer is on, when one is under it: the clip opens a row there instead. */
+  insertLane: number | null;
   initialLanes: Record<string, number>;
   initialStarts: Record<string, number>;
   selectedSlotIds: string[];
@@ -347,6 +368,8 @@ const suppressTransitionClick = ref(false);
 const transitionDropSlotId = ref('');
 /** Row a library track is hovering over, so only that row highlights as a drop target. */
 const musicDropRow = ref<number | null>(null);
+/** The audio clip a library track is hovering, so it is the one that dims and gets outlined. */
+const musicDropClipId = ref('');
 const trimDrag = ref<TrimDragState | null>(null);
 const edgeTrimDrag = ref<EdgeTrimDragState | null>(null);
 const marquee = ref<MarqueeState | null>(null);
@@ -469,7 +492,9 @@ const timelineDuration = computed(() =>
     props.duration,
     draggedTimelineEnd.value,
     draggedAudioEnd.value,
-    effectTemplateMixContentDuration(props.variant, props.packaging?.checkpoint),
+    props.variant
+      ? effectTemplateMixContentDuration(props.variant, props.packaging?.checkpoint)
+      : 0,
     ...layoutSlots.value.map(({ end }) => end),
   ),
 );
@@ -626,20 +651,40 @@ const timelineAudios = computed<TimelineAudio[]>(() => {
   return timelineAudioClipRefs(props.variant, packaged, props.materials, props.projectId).flatMap(
     (ref): TimelineAudio[] => {
       if (ref.source === 'PACKAGED' && checkpoint) {
-        const lineId = ref.id.slice('voice:'.length);
-        const audio = ref.kind === 'MUSIC' ? checkpoint.music : checkpoint.voices?.[lineId];
+        // A caption narration is a narration line the editor generated from a subtitle, so it is
+        // keyed by caption rather than by script line and needs its own lookup.
+        const captionId = ref.id.startsWith('capvoice:')
+          ? ref.id.slice('capvoice:'.length)
+          : undefined;
+        // Either namespace resolves to one string key; only the collection it indexes differs.
+        const lineId = captionId ?? ref.id.slice('voice:'.length);
+        const audio =
+          ref.kind === 'MUSIC'
+            ? checkpoint.music
+            : captionId === undefined
+              ? checkpoint.voices?.[lineId]
+              : checkpoint.captionVoices?.[captionId];
         if (!audio) return [];
         const offset = Math.max(0, audio.offset ?? 0);
         // The packaged branch is only reached for a narration line or the music bed, so the fade
         // default is resolved against one of those two rather than the detached kind.
         const fadeKind: 'MUSIC' | 'VOICE' = ref.kind === 'MUSIC' ? 'MUSIC' : 'VOICE';
         const lineText =
-          ref.kind === 'VOICE' ? script.find((line) => line.id === lineId)?.text : undefined;
+          ref.kind !== 'VOICE'
+            ? undefined
+            : captionId === undefined
+              ? script.find((line) => line.id === lineId)?.text
+              : checkpoint.captions?.find((caption) => caption.id === captionId)?.text;
         return [
           {
             id: ref.id,
             kind: ref.kind,
-            label: ref.kind === 'MUSIC' ? '纯音乐草稿' : '口播草稿',
+            label:
+              ref.kind === 'MUSIC'
+                ? '纯音乐草稿'
+                : captionId === undefined
+                  ? '口播草稿'
+                  : '字幕口播',
             start: audio.start,
             duration: audio.duration,
             offset,
@@ -786,12 +831,30 @@ const snapDraggedBlock = (
 
 /** How close, in px, the pointer must come to a track border before it becomes an insert target. */
 const TRACK_INSERT_THRESHOLD = 6;
+/**
+ * Audio rows are hit on their own edges rather than on a gap between clips, and the row is only one
+ * lane tall, so the band has to be a slice of the row instead of the few pixels a video's gap gives.
+ * A quarter of a row each side leaves the middle half still meaning "use this row".
+ */
+const AUDIO_INSERT_THRESHOLD = Math.round(AUDIO_LANE_HEIGHT / 4);
 /** Video rows sit on a fixed pitch, and a clip is inset inside its own row. */
 const VIDEO_LANE_PITCH = 70;
 const VIDEO_CLIP_INSET = 7;
-/** One border between two rows, and the video row a drop on it should create. */
-type TrackInsertTarget = { lane: number; top: number };
+/**
+ * One border between two rows, and the row a drop on it should open. A video border opens a video
+ * row, an audio border opens an audio one, and a caption border gives a subtitle a row of its own —
+ * the kinds are never each other's target, which is what keeps music under the picture however it
+ * was dropped.
+ */
+type TrackInsertTarget =
+  | { kind: 'VIDEO'; lane: number; top: number }
+  | { kind: 'AUDIO'; row: number; top: number }
+  | { kind: 'CAPTION'; lane: number; top: number };
 const trackInsertTarget = ref<TrackInsertTarget | null>(null);
+/** Which borders a given drag is allowed to see: a clip opens a video row, music opens an audio one. */
+const VIDEO_INSERT_KINDS: ReadonlySet<TrackInsertTarget['kind']> = new Set(['VIDEO']);
+const AUDIO_INSERT_KINDS: ReadonlySet<TrackInsertTarget['kind']> = new Set(['AUDIO']);
+const CAPTION_INSERT_KINDS: ReadonlySet<TrackInsertTarget['kind']> = new Set(['CAPTION']);
 /**
  * Where the guide is drawn, in canvas pixels. Kept as a client-space position and resolved here so
  * the line stays glued to the border it marks even if the viewport scrolls mid-drag.
@@ -805,25 +868,56 @@ const trackInsertGuideTop = computed(() => {
 /**
  * The track border the pointer is on, if any. Every video row contributes its top edge plus one
  * final edge below the last row, so a clip can also be dropped past everything that is there. A
- * caption row owns no video rows, so both of its edges create the first video row instead.
+ * caption row owns no video rows, so both of its edges create the first video row instead — unless
+ * it is a subtitle being dragged, which reads the same edges as rows of its own kind. Audio rows
+ * contribute their own edges the same way, one row further down per border.
  */
-const trackInsertTargetFrom = (clientY: number): TrackInsertTarget | null => {
+const trackInsertTargetFrom = (
+  clientY: number,
+  kinds: ReadonlySet<TrackInsertTarget['kind']>,
+): TrackInsertTarget | null => {
   const candidates: TrackInsertTarget[] = [];
   const videoElement = videoTrack.value;
-  if (videoElement) {
+  if (videoElement && kinds.has('VIDEO')) {
     const bounds = videoElement.getBoundingClientRect();
     // The border is the centre of the gap two neighbouring clips leave between them.
     const first = bounds.top + VIDEO_CLIP_INSET - 4;
     for (let lane = 0; lane <= videoLaneCount.value; lane += 1) {
-      candidates.push({ lane, top: first + lane * VIDEO_LANE_PITCH });
+      candidates.push({ kind: 'VIDEO', lane, top: first + lane * VIDEO_LANE_PITCH });
     }
   }
-  for (const element of captionTrackElements.values()) {
-    const bounds = element.getBoundingClientRect();
-    candidates.push({ lane: 0, top: bounds.top }, { lane: 0, top: bounds.bottom });
+  if (kinds.has('VIDEO')) {
+    for (const element of captionTrackElements.values()) {
+      const bounds = element.getBoundingClientRect();
+      candidates.push(
+        { kind: 'VIDEO', lane: 0, top: bounds.top },
+        { kind: 'VIDEO', lane: 0, top: bounds.bottom },
+      );
+    }
+  }
+  if (kinds.has('CAPTION')) {
+    for (const [track, element] of captionTrackElements) {
+      const bounds = element.getBoundingClientRect();
+      const lane = captionLaneOfTrack(track);
+      candidates.push(
+        { kind: 'CAPTION', lane, top: bounds.top },
+        { kind: 'CAPTION', lane: lane + 1, top: bounds.bottom },
+      );
+    }
+  }
+  if (kinds.has('AUDIO')) {
+    for (const [track, element] of audioTrackElements) {
+      const bounds = element.getBoundingClientRect();
+      const row = audioRowOfKey(track);
+      // The row below the last one has no top edge of its own, so the bottom edge opens it.
+      candidates.push(
+        { kind: 'AUDIO', row, top: bounds.top },
+        { kind: 'AUDIO', row: row + 1, top: bounds.bottom },
+      );
+    }
   }
   let best: TrackInsertTarget | null = null;
-  let bestDistance = TRACK_INSERT_THRESHOLD;
+  let bestDistance = kinds.has('AUDIO') ? AUDIO_INSERT_THRESHOLD : TRACK_INSERT_THRESHOLD;
   for (const candidate of candidates) {
     const distance = Math.abs(candidate.top - clientY);
     if (distance > bestDistance) continue;
@@ -832,15 +926,17 @@ const trackInsertTargetFrom = (clientY: number): TrackInsertTarget | null => {
   }
   return best;
 };
-/** The drop column as a time, on the same frame and clip-boundary grid a clip move snaps to. */
-const dropTimeFromClientX = (clientX: number): number => {
+/**
+ * The drop column as a time. `snap` is off for a drop that opens a row of its own: that clip is a free
+ * placement which may overlap what is already there, so pulling it up against a neighbour's edge — the
+ * whole point of the magnetic snap — would land it somewhere other than where it was let go.
+ */
+const dropTimeFromClientX = (clientX: number, snap = true): number => {
   const element = viewport.value;
   if (!element) return 0;
   const bounds = element.getBoundingClientRect();
-  return Math.max(
-    0,
-    snapTime((clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value),
-  );
+  const raw = Math.max(0, (clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value);
+  return snap ? snapTime(raw) : quantizeToFrame(raw);
 };
 
 // Keep one baseline caption lane visible, then give every additional lane its own row/header.
@@ -1062,10 +1158,19 @@ const captionClipStyle = (caption: EffectTemplateMixCaption): Record<string, str
   const drag = activeAudioDrag(`caption:${caption.id}`);
   const start = drag ? drag.currentStart : caption.start;
   const duration = drag ? drag.currentDuration : caption.end - caption.start;
+  // A card is drawn inside its own row, so its vertical travel is measured against the lane it
+  // started on: `ghostTop` is the ghost's top in the caption area's own coordinates, and subtracting
+  // that lane turns it back into an offset inside that row's element. The ghost is free to cross the
+  // first and last rows — the row it lands on is only decided on release.
+  const initialLane = drag?.initialRows[`caption:${caption.id}`];
+  const top =
+    drag && drag.mode === 'MOVE' && initialLane !== undefined
+      ? drag.ghostTop - initialLane * CAPTION_LANE_HEIGHT
+      : AUDIO_CLIP_INSET;
   return {
     height: `${CAPTION_CLIP_HEIGHT}px`,
     left: `${Math.max(0, start) * pixelsPerSecond.value}px`,
-    top: `${AUDIO_CLIP_INSET}px`,
+    top: `${top}px`,
     width: `${Math.max(14, duration * pixelsPerSecond.value)}px`,
   };
 };
@@ -1126,7 +1231,7 @@ const onMaterialDragOver = (event: DragEvent): void => {
   if (!acceptsMaterialDrag(event)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-  const target = trackInsertTargetFrom(event.clientY);
+  const target = trackInsertTargetFrom(event.clientY, VIDEO_INSERT_KINDS);
   trackInsertTarget.value = target;
   // A border and a slot are two answers to one gesture, so only ever show one of them.
   materialDropSlotId.value = target ? '' : slotIdFromDragEvent(event);
@@ -1138,7 +1243,7 @@ const onMaterialDragOver = (event: DragEvent): void => {
  */
 const onCaptionTrackDragOver = (event: DragEvent): void => {
   if (!acceptsMaterialDrag(event)) return;
-  const target = trackInsertTargetFrom(event.clientY);
+  const target = trackInsertTargetFrom(event.clientY, VIDEO_INSERT_KINDS);
   trackInsertTarget.value = target;
   materialDropSlotId.value = '';
   if (!target) return;
@@ -1168,8 +1273,9 @@ const onMaterialDrop = (event: DragEvent): void => {
   trackInsertTarget.value = null;
   materialDropSlotId.value = '';
   if (!materialId) return;
-  if (target) {
-    emit('insertMaterialTrack', materialId, target.lane, dropTimeFromClientX(event.clientX));
+  if (target?.kind === 'VIDEO') {
+    // A border drop is a free placement, not a butt-join, so only the frame grid applies to it.
+    emit('insertMaterialTrack', materialId, target.lane, dropTimeFromClientX(event.clientX, false));
     return;
   }
   if (!slotId) return;
@@ -1185,12 +1291,48 @@ const acceptsMusicAssetDrag = (event: DragEvent, track: AudioTrack): boolean =>
     event.dataTransfer?.types.includes('application/x-effect-template-mix-music'),
   );
 
+/**
+ * The audio clip under the pointer, if there is one. A drag carries no element of its own over the
+ * page, but the event still names what it is over — the same reading the video track takes — so the
+ * clip is looked up from the drag itself first. The row's own padding has no clip under it and is
+ * resolved from the pointer's time instead, which is the only other place a clip can be.
+ */
+const audioClipIdAtPoint = (event: DragEvent, track: AudioTrack): string => {
+  const target =
+    event.target instanceof Element ? event.target.closest<HTMLElement>('.audio-clip') : null;
+  if (target?.dataset.audioId) return target.dataset.audioId;
+  const time = dropTimeFromClientX(event.clientX, false);
+  return (
+    audiosForTrack(track).find(
+      (audio) => time >= audio.start && time < audio.start + audio.duration,
+    )?.id ?? ''
+  );
+};
+
+/**
+ * The clip a library track may take the place of, if the pointer is on one. Only a clip whose source
+ * lives on the project draft can be swapped: every other audio clip is a packaging checkpoint whose
+ * file the server owns and refuses a replacement for, so offering the swap there would dim a clip the
+ * drop then turns down. The pointer falls back to the row for those and the track lands beside them,
+ * which is what any other row does.
+ */
+const replaceableAudioClipId = (clipId: string): string =>
+  clipId.startsWith('detached:') ? clipId : '';
+
 const onMusicTrackDragOver = (event: DragEvent, track: AudioTrack): void => {
   // Any audio row takes a library track, so the drop decides the row rather than the clip's kind.
   if (!acceptsMusicAssetDrag(event, track)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-  musicDropRow.value = audioRowOfKey(track);
+  // A border between two rows, a clip under the pointer and the row itself are three answers to one
+  // gesture, so only one of them is ever shown. A border opens a row of its own; a clip that can take
+  // the drop is offered it as a replacement of itself, keeping that clip's place and length; anywhere
+  // else the track takes the row.
+  const target = trackInsertTargetFrom(event.clientY, AUDIO_INSERT_KINDS);
+  const clipId = target ? '' : replaceableAudioClipId(audioClipIdAtPoint(event, track));
+  trackInsertTarget.value = target;
+  musicDropClipId.value = clipId;
+  musicDropRow.value = target || clipId ? null : audioRowOfKey(track);
 };
 
 const onMusicTrackDragLeave = (event: DragEvent): void => {
@@ -1202,12 +1344,18 @@ const onMusicTrackDragLeave = (event: DragEvent): void => {
   )
     return;
   musicDropRow.value = null;
+  musicDropClipId.value = '';
+  trackInsertTarget.value = null;
 };
 
 const onMusicTrackDrop = (event: DragEvent, track: AudioTrack): void => {
   if (!acceptsMusicAssetDrag(event, track)) return;
   event.preventDefault();
+  const target = trackInsertTarget.value;
+  const replaceClipId = musicDropClipId.value;
   musicDropRow.value = null;
+  musicDropClipId.value = '';
+  trackInsertTarget.value = null;
   const viewportElement = viewport.value;
   if (!viewportElement) return;
   let data: MusicAssetDrop;
@@ -1231,7 +1379,17 @@ const onMusicTrackDrop = (event: DragEvent, track: AudioTrack): void => {
     0,
     (event.clientX - bounds.left + viewportElement.scrollLeft) / pixelsPerSecond.value,
   );
-  emit('addMusicAsset', { ...data, row: audioRowOfKey(track), start });
+  // Let go on top of a clip: the track takes that clip's place rather than opening a row for itself.
+  if (replaceClipId) {
+    emit('replaceAudioWithMusic', replaceClipId, data);
+    return;
+  }
+  emit('addMusicAsset', {
+    ...data,
+    row: audioRowOfKey(track),
+    start,
+    ...(target?.kind === 'AUDIO' ? { insertRow: target.row } : {}),
+  });
 };
 
 const syncTrackScroll = (source: 'HEADERS' | 'VIEWPORT'): void => {
@@ -1243,13 +1401,72 @@ const syncTrackScroll = (source: 'HEADERS' | 'VIEWPORT'): void => {
   }
 };
 
-/** Brings a newly created row and the clip on it into view, the way a drop should land visibly. */
-const scrollToLane = (lane: number, time: number): void => {
+/**
+ * The column only moves when it has to: a clip let go under the pointer is already where the user is
+ * looking, so scrolling it away would be a jump backwards. What it must guarantee is that the *whole*
+ * clip is shown — one dropped near the right edge would otherwise be revealed with its tail cut off.
+ * A clip longer than the viewport cannot fit at all, so its head wins and sits a margin in from the edge.
+ */
+const revealTimelineColumn = (time: number, duration: number): void => {
+  const element = viewport.value;
+  if (!element) return;
+  const margin = 24;
+  const left = Math.max(0, time * pixelsPerSecond.value);
+  const right = left + Math.max(0, duration) * pixelsPerSecond.value;
+  if (right - left > element.clientWidth - margin * 2)
+    element.scrollLeft = Math.max(0, left - margin);
+  else if (left < element.scrollLeft + margin) element.scrollLeft = Math.max(0, left - margin);
+  else if (right > element.scrollLeft + element.clientWidth - margin)
+    element.scrollLeft = right - element.clientWidth + margin;
+};
+
+/** Brings a newly created video row and the clip on it into view, the way a drop should land visibly. */
+const scrollToLane = (lane: number, time: number, duration = 0): void => {
   const element = viewport.value;
   if (!element) return;
   const rowTop = VIDEO_CLIP_INSET + Math.max(0, lane) * VIDEO_LANE_PITCH;
   element.scrollTop = Math.max(0, rowTop - element.clientHeight / 2 + VIDEO_LANE_PITCH / 2);
-  element.scrollLeft = Math.max(0, time * pixelsPerSecond.value - element.clientWidth / 3);
+  revealTimelineColumn(time, duration);
+  syncTrackScroll('VIEWPORT');
+};
+
+/**
+ * Brings an audio row and the clip on it into view. A row opened below the last one is off the bottom
+ * of the viewport, so without this the drop would look like it did nothing at all. The row is measured
+ * from its own element rather than from a pitch, because the rows above it are only one lane tall.
+ */
+const scrollToAudioRow = (row: number, time: number, duration = 0): void => {
+  const element = viewport.value;
+  if (!element) return;
+  const top = audioTrackElements.get(audioRowKey(Math.max(0, Math.round(row))))?.getBoundingClientRect()
+    .top;
+  if (top !== undefined) {
+    const rowTop = top - element.getBoundingClientRect().top + element.scrollTop;
+    element.scrollTop = Math.max(0, rowTop - element.clientHeight / 2 + AUDIO_LANE_HEIGHT / 2);
+  }
+  revealTimelineColumn(time, duration);
+  syncTrackScroll('VIEWPORT');
+};
+
+/**
+ * Brings a subtitle's own row into view once it has been given one. Caption rows are drawn as separate
+ * strips rather than one tall lane, so the row is measured from the first strip's position plus the
+ * lane the caption now occupies.
+ */
+const scrollToCaption = (captionId: string, time: number, duration = 0): void => {
+  const element = viewport.value;
+  if (!element) return;
+  const lane = captionLaneById.value.get(captionId) ?? 0;
+  const first = captionTrackElements.get(captionTrackKey(0))?.getBoundingClientRect();
+  if (first) {
+    const rowTop =
+      first.top - element.getBoundingClientRect().top + element.scrollTop + lane * CAPTION_LANE_HEIGHT;
+    element.scrollTop = Math.max(
+      0,
+      rowTop - element.clientHeight / 2 + CAPTION_LANE_HEIGHT / 2,
+    );
+  }
+  revealTimelineColumn(time, duration);
   syncTrackScroll('VIEWPORT');
 };
 
@@ -1456,6 +1673,7 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
     ghostTop: 7 + clipLane(slotId) * 70,
     grabOffset:
       event.clientX - bounds.left + element.scrollLeft - range.start * pixelsPerSecond.value,
+    insertLane: null,
     initialLanes,
     initialStarts,
     selectedSlotIds,
@@ -1576,6 +1794,21 @@ const copyAudioClip = (audioId: string): void => {
       source = {
         fileObjectId: audio.fileObjectId,
         name: '口播',
+        sourceDuration: offset + audio.duration,
+        duration: audio.duration,
+        offset,
+        volume: audio.volume,
+      };
+    }
+  }
+  if (!source && audioId.startsWith('capvoice:')) {
+    const captionId = audioId.slice('capvoice:'.length);
+    const audio = props.packaging?.checkpoint.captionVoices?.[captionId];
+    if (audio) {
+      const offset = audio.offset ?? 0;
+      source = {
+        fileObjectId: audio.fileObjectId,
+        name: '字幕口播',
         sourceDuration: offset + audio.duration,
         duration: audio.duration,
         offset,
@@ -1773,6 +2006,23 @@ const beginEdgeTrim = (event: PointerEvent, slotId: string, side: 'LEFT' | 'RIGH
 const audioAreaTop = (): number =>
   audioTrackElements.get(audioRowKey(0))?.getBoundingClientRect().top ?? 0;
 
+/**
+ * Top of the first caption row in client coordinates. Caption rows are drawn as their own strips
+ * rather than as one tall lane, so a subtitle's ghost is measured against the first strip and the
+ * lane it started on, the same way an audio clip's is measured against row 0.
+ */
+const captionAreaTop = (): number =>
+  captionTrackElements.get(captionTrackKey(0))?.getBoundingClientRect().top ?? 0;
+
+/**
+ * The row a clip currently sits on. An audio clip has a row number of its own; a subtitle's row is
+ * the lane it was packed into, which is derived from its track instead of stored on it.
+ */
+const dragRowOf = (clipId: string): number =>
+  clipId.startsWith('caption:')
+    ? (captionLaneById.value.get(clipId.slice('caption:'.length)) ?? 0)
+    : audioRowOf(clipId);
+
 const beginAudioDrag = (
   event: PointerEvent,
   target: AudioDragTarget,
@@ -1781,12 +2031,14 @@ const beginAudioDrag = (
 ): void => {
   // A vertical move carries the whole selection, so every member's starting row is frozen here: the
   // release applies one shared row delta, which is what keeps a group from bunching up on the row
-  // the pointer happens to be over. Captions are not on an audio row, so they are left out.
+  // the pointer happens to be over. A subtitle's row is the lane it was packed into, so it is frozen
+  // the same way — the two row kinds are counted in their own heights but never mixed.
   const initialRows: Record<string, number> = {};
-  if (mode === 'MOVE' && !target.id.startsWith('caption:')) {
-    for (const id of [target.id, ...dragGroupIds(target.id)]) initialRows[id] = audioRowOf(id);
+  if (mode === 'MOVE') {
+    for (const id of [target.id, ...dragGroupIds(target.id)]) initialRows[id] = dragRowOf(id);
   }
-  const row = audioRowOf(target.id);
+  const row = dragRowOf(target.id);
+  const caption = target.id.startsWith('caption:');
   audioDrag.value = {
     id: target.id,
     kind: target.kind,
@@ -1808,7 +2060,9 @@ const beginAudioDrag = (
     volumeTop: bounds?.top ?? 0,
     volumeHeight: bounds?.height ?? AUDIO_CLIP_HEIGHT,
     currentRow: row,
-    ghostTop: AUDIO_CLIP_INSET + row * AUDIO_LANE_HEIGHT,
+    insertRow: null,
+    insertCaptionTrack: false,
+    ghostTop: AUDIO_CLIP_INSET + row * (caption ? CAPTION_LANE_HEIGHT : AUDIO_LANE_HEIGHT),
     initialRows,
   };
   addWindowPointerListeners();
@@ -1898,25 +2152,46 @@ const beginAudioVolume = (event: PointerEvent, audio: TimelineAudio): void => {
 };
 
 /**
- * Captions move independently, so their row's neighbours are the only overlap fence. The row is
- * what makes it a fence rather than an arbitrary one: a card added from the library gets a track of
- * its own, and two subtitles on different rows are *meant* to overlap in time. Fencing against the
- * whole timeline instead would pin such a card between the ends of unrelated captions, which reads
- * as "the drag is stuck". Within one row the lane assignment keeps captions apart, so the sorted
- * neighbours really are the two cards this one may not cross.
+ * The track a subtitle belongs to. A card with a track of its own stands alone; a manual card that
+ * has none is a group of one; everything else is the legacy narration row the pipeline lays out
+ * edge to edge. This is the same key `assignEffectTemplateMixCaptionLanes` packs rows with, and the
+ * same one the checkpoint and the renderer check overlaps against, so all four agree by construction.
  */
-const captionBounds = (caption: EffectTemplateMixCaption): { minStart: number; maxEnd: number } => {
-  const lane = captionLaneById.value.get(caption.id) ?? 0;
-  const rows = timelineCaptions.value
-    .filter((row) => (captionLaneById.value.get(row.id) ?? 0) === lane)
-    .sort((left, right) => left.start - right.start);
-  const index = rows.findIndex((row) => row.id === caption.id);
-  return {
-    minStart: index > 0 ? rows[index - 1]!.end : 0,
-    // The last card on a row has nothing to its right, so it is free to travel — that is how a
-    // caption is carried past the last of the material and the film grows a tail.
-    maxEnd: index >= 0 && index + 1 < rows.length ? rows[index + 1]!.start : Number.POSITIVE_INFINITY,
-  };
+const captionTrackKeyOf = (caption: EffectTemplateMixCaption): string =>
+  caption.trackId
+    ? `track:${caption.trackId}`
+    : caption.manual === true
+      ? `manual:${caption.id}`
+      : 'legacy-generated';
+
+/**
+ * Whether a subtitle would come to rest on top of another card it shares a track with. Two cards on
+ * one track may never overlap — the checkpoint is rejected (`effect-packaging.domain.ts`) and the
+ * renderer refuses the film outright with `字幕越界或重叠` — while two cards on different tracks are
+ * drawn on different rows and are free to be on screen together. A landing that collides is answered
+ * by giving the card a track of its own, which is the subtitle counterpart of a video clip finding
+ * another lane; that is why this asks about the track rather than fencing the drag.
+ */
+const captionOverlapsOwnTrack = (
+  clipId: string,
+  start: number,
+  duration: number,
+  moving: ReadonlySet<string> = new Set([clipId]),
+): boolean => {
+  const entries = timelineCaptionEntries.value;
+  const dragged = entries.find((entry) => entry.id === clipId)?.caption;
+  if (!dragged) return false;
+  const key = captionTrackKeyOf(dragged);
+  const end = start + duration;
+  // The row packer treats two cards as sharing a row when one starts within a frame of the other's
+  // end, so the same tolerance is what decides whether this landing is a real overlap.
+  return entries.some(
+    (entry) =>
+      !moving.has(entry.id) &&
+      captionTrackKeyOf(entry.caption) === key &&
+      start < entry.caption.end - 1 / props.fps &&
+      entry.caption.start < end - 1 / props.fps,
+  );
 };
 
 const captionDragTarget = (caption: EffectTemplateMixCaption): AudioDragTarget => ({
@@ -1926,9 +2201,12 @@ const captionDragTarget = (caption: EffectTemplateMixCaption): AudioDragTarget =
   offset: 0,
   duration: Math.max(0, caption.end - caption.start),
   volume: 1,
-  // Captions are pure text, so only their neighbours limit them — never their own source length.
+  // Captions are pure text, so nothing of their own limits them: they travel as freely as a video
+  // clip, and a landing that would overlap a card on their track is answered with a track of its
+  // own rather than by stopping the drag short.
   sourceDuration: Number.POSITIVE_INFINITY,
-  ...captionBounds(caption),
+  minStart: 0,
+  maxEnd: Number.POSITIVE_INFINITY,
 });
 
 /**
@@ -1999,6 +2277,8 @@ watch(pixelsPerSecond, () => {
 });
 defineExpose({
   clearSelection,
+  scrollToAudioRow,
+  scrollToCaption,
   scrollToLane,
   setPlaybackNeedle,
   startPlaybackNeedle,
@@ -2072,6 +2352,14 @@ const updateDragTarget = (clientX: number, clientY: number): void => {
     drag.ghostTop = pointerTop;
     drag.currentLane = Math.round(pointerTop / 70);
   }
+  // A border under the pointer means "open a row here", which is a different answer from the row the
+  // pointer happens to be inside, so it wins and the guide says so. Only a single clip is offered it:
+  // a group slides rigidly, and there is no one row to open for the whole of it.
+  const border =
+    drag.selectedSlotIds.length === 1 ? trackInsertTargetFrom(clientY, VIDEO_INSERT_KINDS) : null;
+  trackInsertTarget.value = border;
+  drag.insertLane = border?.kind === 'VIDEO' ? border.lane : null;
+  if (drag.insertLane !== null) drag.currentLane = drag.insertLane;
   // Keep the ghost under the pointer while dragging, even when it temporarily
   // overlaps another clip. The parent resolves the final placement on pointerup,
   // matching Jianying's forgiving drag interaction instead of fighting the cursor.
@@ -2257,33 +2545,45 @@ function onWindowPointerMove(event: PointerEvent): void {
       // limit a move — carrying a clip past the last of the material is how the film is extended.
       const maxStart = Math.max(0, drag.maxEnd - drag.initialDuration);
       const requested = Math.max(drag.minStart, Math.min(maxStart, drag.initialStart + delta));
-      if (drag.id.startsWith('caption:')) {
-        // Subtitle blocks are positioned by their spoken timing, so magnetic snapping makes small
-        // corrections jump to unrelated audio/video edges. Keep them pixel-following; frame
-        // quantization above still guarantees a valid frame boundary when the edit is saved.
-        drag.currentStart = requested;
-        snapGuideTime.value = null;
-      } else {
-        // Voice/BGM retain magnetic alignment against other timeline edges.
-        const snapped = snapDraggedBlock(
-          requested,
-          drag.initialDuration,
-          new Set([drag.id, ...dragGroupIds(drag.id)]),
-          { maxStart, minStart: drag.minStart },
-        );
-        drag.currentStart = snapped.start;
-        snapGuideTime.value = snapped.guide;
-      }
+      // One rule for every block: magnetic alignment against the other timeline edges, with the
+      // guide line saying what it caught. Subtitles are included — frame quantization above already
+      // guarantees a valid frame boundary when the edit is saved, so snapping is a help, not a risk.
+      const snapped = snapDraggedBlock(
+        requested,
+        drag.initialDuration,
+        new Set([drag.id, ...dragGroupIds(drag.id)]),
+        { maxStart, minStart: drag.minStart },
+      );
+      drag.currentStart = snapped.start;
+      snapGuideTime.value = snapped.guide;
       // Free vertical travel, exactly like a video clip: the ghost follows the pointer pixel for
       // pixel and may cross every existing row, so the row is deliberately not clamped — landing
       // past the last one is how a new row gets made. It is measured from a row's centre so the row
-      // it rounds to changes in the gap between two rows rather than the instant it leaves one.
+      // it rounds to changes in the gap between two rows rather than the instant it leaves one. A
+      // subtitle travels its own, shorter rows, measured against the caption area rather than the
+      // audio one, because the two areas are stacked and only one of them is under the pointer.
       if (drag.initialRows[drag.id] !== undefined) {
-        const areaTop = audioAreaTop();
-        const pointerTop = event.clientY - areaTop - (AUDIO_CLIP_INSET + AUDIO_CLIP_HEIGHT / 2);
+        const caption = drag.id.startsWith('caption:');
+        const areaTop = caption ? captionAreaTop() : audioAreaTop();
+        const rowHeight = caption ? CAPTION_LANE_HEIGHT : AUDIO_LANE_HEIGHT;
+        const clipHeight = caption ? CAPTION_CLIP_HEIGHT : AUDIO_CLIP_HEIGHT;
+        const pointerTop = event.clientY - areaTop - (AUDIO_CLIP_INSET + clipHeight / 2);
         drag.ghostTop = AUDIO_CLIP_INSET + pointerTop;
-        drag.currentRow = Math.round(pointerTop / AUDIO_LANE_HEIGHT);
+        drag.currentRow = Math.round(pointerTop / rowHeight);
       }
+      // A border under the pointer means "open a row here", which is a different answer from the row
+      // the pointer happens to be inside, so it wins and the guide says so. A group slides rigidly, so
+      // there is no one row to open for the whole of it and only a lone clip is offered this. A
+      // subtitle reads the caption borders, which are the only ones that can give it a row of its own.
+      const insertTarget = dragGroupIds(drag.id).length
+        ? null
+        : trackInsertTargetFrom(
+            event.clientY,
+            drag.id.startsWith('caption:') ? CAPTION_INSERT_KINDS : AUDIO_INSERT_KINDS,
+          );
+      trackInsertTarget.value = insertTarget;
+      drag.insertRow = insertTarget?.kind === 'AUDIO' ? insertTarget.row : null;
+      drag.insertCaptionTrack = insertTarget?.kind === 'CAPTION';
     } else if (drag.mode === 'LEFT') {
       // The left edge can only reveal source that was trimmed away, or empty timeline.
       const minimumDelta = Math.max(drag.minStart - drag.initialStart, -drag.initialOffset);
@@ -2351,7 +2651,8 @@ function onWindowPointerUp(): void {
         lane: (drag.initialLanes[slotId] ?? 0) + laneDelta,
       }));
     if (moves.length > 1) emit('moveClips', moves);
-    else if (moves[0]) emit('moveClip', moves[0].slotId, moves[0].start, moves[0].lane);
+    else if (moves[0])
+      emit('moveClip', moves[0].slotId, moves[0].start, moves[0].lane, drag.insertLane ?? undefined);
     // A plain click on one item in a multi-selection collapses the selection;
     // an actual drag keeps the whole group selected for the next operation.
   } else if (
@@ -2387,14 +2688,32 @@ function onWindowPointerUp(): void {
       else for (const id of group) emit('changeAudioVolume', id, audio.currentVolume);
     } else if (audio.mode === 'MOVE') {
       const delta = audio.currentStart - audio.initialStart;
-      // Every audio member of the selection rides one shared row delta, so the set keeps its shape
-      // vertically as well as horizontally. A caption has no row, so it only reports its new time.
+      // Every member of the selection rides one shared row delta, so the set keeps its shape
+      // vertically as well as horizontally. A subtitle's row is derived from its track rather than
+      // stored, so its vertical travel is not reported as a row at all: a row it was not on is
+      // answered by minting a track, which is what `splitCaptionTrack` below does.
       const rowMove = audio.initialRows[audio.id] !== undefined;
-      const rowDelta = rowMove ? audio.currentRow - audio.initialRows[audio.id]! : 0;
+      const rowDelta = rowMove && !isCaption ? audio.currentRow - audio.initialRows[audio.id]! : 0;
       const rowFor = (id: string): number =>
         Math.max(0, (audio.initialRows[id] ?? audioRowOf(id)) + rowDelta);
       if (!group.length) {
-        if (rowMove) emit('moveAudioClip', audio.id, audio.currentStart, rowFor(audio.id));
+        if (isCaption) {
+          // Three landings ask for a track of its own: let go on a row border, come to rest on a row
+          // the card was not on, or land on top of another card it shares a track with. Anything
+          // else is a plain move in time.
+          const rowChanged = rowMove && audio.currentRow !== audio.initialRows[audio.id]!;
+          if (
+            audio.insertCaptionTrack ||
+            rowChanged ||
+            captionOverlapsOwnTrack(audio.id, audio.currentStart, audio.initialDuration)
+          )
+            emit('splitCaptionTrack', audio.id.slice('caption:'.length), audio.currentStart);
+          else emit('moveAudioClip', audio.id, audio.currentStart);
+        } else if (audio.insertRow !== null) {
+          // Let go on a border: the clip takes the row opened there, and the row it was over is not
+          // consulted at all — the border is the answer, exactly as it is for a library track.
+          emit('moveAudioClip', audio.id, audio.currentStart, audio.insertRow, audio.insertRow);
+        } else if (rowMove) emit('moveAudioClip', audio.id, audio.currentStart, rowFor(audio.id));
         else emit('moveAudioClip', audio.id, audio.currentStart);
       } else if (isCaption) {
         // A group slides rigidly, so the shared delta is capped by the caption nearest the start
@@ -2405,27 +2724,43 @@ function onWindowPointerUp(): void {
           ),
         );
         const shared = Math.max(delta, -earliest);
+        const moving = new Set(group);
+        // A member that would come to rest on a card outside the set is given a track of its own
+        // instead of riding along: the set keeps its shape in time, but two cards on one track may
+        // never overlap. The set is checked as a whole, so a sibling that is moving too is not what
+        // a member is measured against.
+        const riders: { clipId: string; start: number }[] = [];
+        const split: string[] = [];
+        for (const id of group) {
+          const entry = timelineCaptionEntries.value.find((item) => item.id === id);
+          if (!entry) continue;
+          const start = Math.max(0, entry.caption.start + shared);
+          const length = entry.caption.end - entry.caption.start;
+          if (captionOverlapsOwnTrack(id, start, length, moving)) split.push(id);
+          else riders.push({ clipId: id, start });
+        }
         // One event for the whole gesture, so the workbench records a single undo step instead of
         // one per caption and the group still lands in the same tick.
-        emit(
-          'moveAudioClips',
-          group.flatMap((id) => {
-            const entry = timelineCaptionEntries.value.find((item) => item.id === id);
-            return entry ? [{ clipId: id, start: Math.max(0, entry.caption.start + shared) }] : [];
-          }),
-        );
+        if (riders.length) emit('moveAudioClips', riders);
+        for (const id of split)
+          emit(
+            'splitCaptionTrack',
+            id.slice('caption:'.length),
+            Math.max(
+              0,
+              (timelineCaptionEntries.value.find((item) => item.id === id)?.caption.start ?? 0) +
+                shared,
+            ),
+          );
       } else {
         // Voice/BGM blocks slide rigidly too: the delta is bounded by whichever block would leave
-        // the timeline first, so the set keeps its shape instead of bunching up at the edges.
+        // the timeline first, so the set keeps its shape instead of bunching up at the edges. There
+        // is no right-hand bound, because the film grows to whatever the set is dragged out to.
         const clips = group
           .map((id) => timelineAudios.value.find((item) => item.id === id))
           .filter((clip): clip is TimelineAudio => Boolean(clip));
         const earliest = Math.min(...clips.map((clip) => clip.start));
-        const latest = Math.max(...clips.map((clip) => clip.start + clip.duration));
-        const shared = Math.min(
-          Math.max(delta, -earliest),
-          timelineDuration.value - latest,
-        );
+        const shared = Math.max(delta, -earliest);
         const moves = clips.map((clip) => ({
           clipId: clip.id,
           row: rowFor(clip.id),
@@ -2447,6 +2782,7 @@ function onWindowPointerUp(): void {
   scrubbing.value = false;
   snapGuideTime.value = null;
   clipDrag.value = null;
+  trackInsertTarget.value = null;
   transitionDrag.value = null;
   trimDrag.value = null;
   edgeTrimDrag.value = null;
@@ -2917,6 +3253,9 @@ onBeforeUnmount(() => {
                     'is-missing':
                       !materialForSlot(slot.id) || variant.conflictSlotIds.includes(slot.id),
                     'is-material-target': materialDropSlotId === slot.id,
+                    // Silencing the video track washes out the audio strip at the clip's foot — the
+                    // picture itself is untouched, which is what 声音关闭 means.
+                    'is-muted': trackMuted('VIDEO'),
                   }"
                   :style="{
                     ...clipStyle(slot),
@@ -3072,6 +3411,9 @@ onBeforeUnmount(() => {
                   'is-selected': selectedAudioIds.includes(audio.id),
                   'is-dragging': audioDrag?.id === audio.id && audioDrag.mode === 'MOVE',
                   'is-stale': packagingStale,
+                  // A library track let go here takes this clip's place, so the clip it would replace
+                  // is the one that says so.
+                  'is-material-target': musicDropClipId === audio.id,
                 },
               ]"
               :style="audioClipStyle(audio)"
@@ -3148,7 +3490,7 @@ onBeforeUnmount(() => {
             class="snap-guide"
             :style="{ left: `${snapGuideLeft}px` }"
           />
-          <!-- The border a library clip is hovering; releasing on it adds a video row there. -->
+          <!-- The border under the pointer; releasing on it opens a row of that kind right there. -->
           <span
             v-if="trackInsertGuideTop !== null"
             class="track-insert-guide"
@@ -3468,8 +3810,32 @@ onBeforeUnmount(() => {
 .timeline-track.is-locked {
   cursor: not-allowed;
 }
+/* A locked lane has to *look* locked: the diagonal hatch is the signal, and the guards in the
+   pointer handlers — not this layer — are what actually reject the edit. */
+.timeline-track.is-locked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /* Above the clips and their trim handles (6–8), below the playhead and the marquee (20+). */
+  z-index: 10;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(38, 59, 89, 0.16) 0 6px,
+    transparent 6px 12px
+  );
+}
+/* Hiding a lane dims the whole lane, not just its clips. The caption lane paints its rows with a
+   gradient, so it needs the same override to dim with the others. The tone is a mid slate — halfway
+   between the lane's own near-white and the dark navy the app accents with — so the lane reads as
+   switched off without going black. */
+.timeline-track.is-hidden,
+.timeline-track.caption-track.is-hidden {
+  background: #8f9aab;
+}
 .timeline-track.is-hidden > :not(.track-empty-copy) {
-  opacity: 0.12;
+  opacity: 0.3;
+  filter: grayscale(1);
   pointer-events: none;
 }
 .track-empty-copy {
@@ -3538,17 +3904,33 @@ onBeforeUnmount(() => {
   border: 1px dashed #ef8f8f;
   background: #fff1f2;
 }
+/* 拖入的素材松手就会顶替这一条，所以它要看起来是被压住的那条：整条压暗，外加一圈描边，
+   而不是像被选中那样只是变亮。描边画在元素自己的边框上，压暗画在内容层上，两者互不冲淡。 */
 .video-clip.is-material-target {
   z-index: 12;
   border: 2px solid #2563eb;
-  background: #dbeafe;
   box-shadow: 0 0 0 4px #bfdbfeaa;
 }
 .video-clip.is-material-pointer-target {
   z-index: 12;
-  border-color: #2563eb;
-  background: #dbeafe;
+  border: 2px solid #2563eb;
   box-shadow: 0 0 0 3px #bfdbfe88;
+}
+.audio-clip.is-material-target {
+  z-index: 12;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px #bfdbfeaa;
+}
+.video-clip.is-material-target::before,
+.video-clip.is-material-pointer-target::before,
+.audio-clip.is-material-target::before {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(15, 23, 42, 0.5);
+  content: '';
+  pointer-events: none;
 }
 .clip-mini-preview {
   box-sizing: border-box;
@@ -3875,7 +4257,10 @@ onBeforeUnmount(() => {
   cursor: grabbing;
   opacity: 0.85;
 }
-/* A clip changing rows rides above the rows it crosses rather than sliding underneath them. */
+/* A clip changing rows rides above the rows it crosses rather than sliding underneath them. A
+   caption needs this too: its rows are separate strips stacked in order, so without it the card
+   would disappear under the row below the moment it was carried off its own. */
+.caption-clip.is-dragging,
 .audio-clip.is-dragging {
   z-index: 8;
 }
@@ -3932,6 +4317,18 @@ onBeforeUnmount(() => {
 }
 .audio-clip.is-muted {
   opacity: 0.42;
+}
+/* Silencing a video clip leaves its picture alone: only the audio strip along its foot washes out,
+   which is the same read as a muted audio row. A plain opacity would instead show the filmstrip
+   through the strip, so the palette the strip paints itself with is overridden with a pale one. */
+.video-clip.is-muted .clip-waveform {
+  --wave-border: #ccd5e1;
+  --wave-border-solid: #ccd5e1;
+  --wave-bg: #eaeef4;
+  --wave-bg-solid: #eaeef4;
+  --wave-line: #ccd5e1;
+  --wave-line-solid: #ccd5e1;
+  --wave-bar: #c2cbd7;
 }
 .audio-clip-label {
   position: relative;

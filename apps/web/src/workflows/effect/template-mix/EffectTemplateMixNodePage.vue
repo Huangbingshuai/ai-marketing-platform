@@ -77,6 +77,7 @@ import {
 } from 'vue';
 
 import {
+  createEffectCaptionVoice,
   createEffectTemplateMixAiRun,
   createEmptyEffectTemplateMixVariant,
   getEffectTemplateMixAiRun,
@@ -108,9 +109,11 @@ import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
 import { packagingActionText, packagingLockMessage } from './effect-packaging-progress';
 import {
+  DEFAULT_AUDIO_LANE,
   audioRowOf as audioRowOfClip,
   audioRowOfKey,
   compactAudioLanes,
+  rawAudioLane,
   timelineAudioClipRefs,
   type AudioRowTrack,
 } from './effect-template-mix-audio-lanes';
@@ -380,6 +383,12 @@ const projectEditLocked = computed(() =>
   ),
 );
 const templateEditLocked = computed(() => projectEditLocked.value || packagingLocked.value);
+/**
+ * The voice only feeds future packaging and voice redos, never existing audio, so it stays editable
+ * once the run has finished. It is still locked while a run is in flight, because that run already
+ * froze its own voice.
+ */
+const voiceSelectLocked = computed(() => projectEditLocked.value);
 const workspace = computed(() => activeEntry.value?.workspace ?? null);
 const activeUi = computed(() =>
   activeEntry.value ? uiByTemplate[activeEntry.value.id] : undefined,
@@ -826,6 +835,7 @@ const previewHasPackagingAudio = computed(() => {
     checkpoint &&
     (checkpoint.narrationLayoutVersion === 'SLOT_V1' ||
       Object.keys(checkpoint.voices ?? {}).length ||
+      Object.keys(checkpoint.captionVoices ?? {}).length ||
       checkpoint.music),
   );
   const active = (audio: { duration: number; start: number; volume: number } | null | undefined) =>
@@ -839,11 +849,14 @@ const previewHasPackagingAudio = computed(() => {
       ([lineId, audio]) => !mutedAudioClip(`voice:${lineId}`) && active(audio),
     );
     const music = !mutedAudioClip('music') && active(checkpoint?.music);
+    const captionVoice = Object.entries(checkpoint?.captionVoices ?? {}).some(
+      ([captionId, audio]) => !mutedAudioClip(`capvoice:${captionId}`) && active(audio),
+    );
     const detached =
       selectedVariant.value?.detachedAudios?.some(
         (audio) => !mutedAudioClip(`detached:${audio.id}`) && active(audio),
       ) ?? false;
-    return voice || music || detached;
+    return voice || music || captionVoice || detached;
   }
   // Legacy variant audio predates the split, so the whole-film narration reads as 口播 and the
   // bed as 纯音乐 — each still silenced only by its own row.
@@ -1374,9 +1387,25 @@ const load = async (): Promise<void> => {
     pageState.value = 'ERROR';
   }
 };
-const persist = async (keepalive = false): Promise<boolean> => {
-  if (pageState.value !== 'READY') return false;
+/**
+ * Serialised so two saves never share a revision. The revision a request carries stops being valid
+ * the moment the next one lands, so a second request sent while the first is still on the wire comes
+ * back as "节点内容已在其他页面更新" even though nothing is actually out of date — and a drag that
+ * outlives a save is exactly how that happens. Chaining also means each save reads the revision the
+ * previous one returned.
+ */
+const persist = (keepalive = false): Promise<boolean> => {
   clearTimeout(saveTimer);
+  const previous = pendingSave ?? Promise.resolve(true);
+  const next = previous.then(
+    () => persistNow(keepalive),
+    () => persistNow(keepalive),
+  );
+  pendingSave = next;
+  return next;
+};
+const persistNow = async (keepalive = false): Promise<boolean> => {
+  if (pageState.value !== 'READY') return false;
   saveState.value = 'saving';
   try {
     const result = await saveEffectTemplateMixDraft(
@@ -1417,7 +1446,7 @@ const bump = (): void => {
   scheduleSave();
 };
 const selectVoiceProfile = (id: string): void => {
-  if (templateEditLocked.value) return;
+  if (voiceSelectLocked.value) return;
   if (!workspace.value || workspace.value.template.voiceProfileId === id) return;
   workspace.value.template.voiceProfileId = id;
   bump();
@@ -1436,8 +1465,12 @@ const pauseForVoiceAudition = (): void => {
  * against the last confirmed copy and PUT separately from the workflow draft.
  */
 type PackagingAudioTarget =
-  { kind: 'CAPTION'; key: string } | { kind: 'MUSIC' } | { kind: 'VOICE'; key: string };
+  | { kind: 'CAPTION'; key: string }
+  | { kind: 'CAPTION_VOICE'; key: string }
+  | { kind: 'MUSIC' }
+  | { kind: 'VOICE'; key: string };
 const packagingAudioTarget = (clipId: string): PackagingAudioTarget | null => {
+  if (clipId.startsWith('capvoice:')) return { kind: 'CAPTION_VOICE', key: clipId.slice(9) };
   if (clipId.startsWith('caption:')) return { kind: 'CAPTION', key: clipId.slice(8) };
   if (clipId === 'music') return { kind: 'MUSIC' };
   if (clipId.startsWith('voice:')) return { kind: 'VOICE', key: clipId.slice(6) };
@@ -1451,7 +1484,9 @@ const packagingAudio = (
     ? checkpoint.music
     : target.kind === 'VOICE'
       ? checkpoint.voices?.[target.key]
-      : undefined;
+      : target.kind === 'CAPTION_VOICE'
+        ? checkpoint.captionVoices?.[target.key]
+        : undefined;
 /**
  * The volume row is shown in dB — how an editor reasons about a level — while the checkpoint keeps
  * the gain the worker multiplies by. The scale is shared with the timeline and the server's own
@@ -1496,10 +1531,30 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
     if (!before || sameAudio(before, audio, 'VOICE')) continue;
     voices[id] = audioEdit(audio, 'VOICE');
   }
+  // A narration is an optional overlay on its script line, so a deleted one is a key that went away.
+  // The line and its subtitle are untouched, so nothing else has to be said about the deletion.
+  const removedVoices = Object.keys(baseline.voices ?? {}).filter(
+    (id) => !Object.hasOwn(current.voices ?? {}, id),
+  );
+  // Caption narrations are separate clips from the script-line voices, so they diff separately and
+  // only the ones the editor actually moved are sent.
+  const captionVoices: Record<string, PackagingAudioEdit> = {};
+  for (const [id, audio] of Object.entries(current.captionVoices ?? {})) {
+    const before = baseline.captionVoices?.[id];
+    if (!before || sameAudio(before, audio, 'VOICE')) continue;
+    captionVoices[id] = audioEdit(audio, 'VOICE');
+  }
+  // A deleted clip is a key that was there and is not any more: the geometry diff cannot see it,
+  // because there is no current entry left to compare.
+  const removedCaptionVoices = Object.keys(baseline.captionVoices ?? {}).filter(
+    (id) => !Object.hasOwn(current.captionVoices ?? {}, id),
+  );
   const music =
     current.music && baseline.music && !sameAudio(baseline.music, current.music, 'MUSIC')
       ? audioEdit(current.music, 'MUSIC')
       : null;
+  // The music bed is a single field rather than a keyed map, so its removal is its own flag.
+  const removeMusic = Boolean(baseline.music) && !current.music;
   const captions =
     JSON.stringify(current.captions ?? []) === JSON.stringify(baseline.captions ?? [])
       ? null
@@ -1517,8 +1572,27 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
     const before = baseline.captionBoxes?.[id];
     if (!before || !sameBox(before, box)) boxes[id] = box;
   }
-  if (!Object.keys(voices).length && !music && !captions && !Object.keys(boxes).length) return null;
-  return { voices, music, captions, boxes };
+  if (
+    !Object.keys(voices).length &&
+    !removedVoices.length &&
+    !Object.keys(captionVoices).length &&
+    !removedCaptionVoices.length &&
+    !music &&
+    !removeMusic &&
+    !captions &&
+    !Object.keys(boxes).length
+  )
+    return null;
+  return {
+    voices,
+    removedVoices,
+    captionVoices,
+    removedCaptionVoices,
+    music,
+    removeMusic,
+    captions,
+    boxes,
+  };
 };
 /** Unsaved local geometry, always owned by one item so diffs never cross items. */
 let audioBaseline: {
@@ -1539,9 +1613,21 @@ const onPackagingSelected = (item: PackagingItem | null): void => {
       selectedPackaging.value = item;
       return;
     }
+    // A generated caption narration arrives on the polled copy while a local drag may still be
+    // unsaved, and the branch below keeps the local checkpoint wholesale — so the one entry that
+    // was just written is carried across explicitly rather than dropped with the rest.
+    const pending = pendingCaptionVoice.value;
+    const captionId = pending?.itemId === item.id ? pending.captionId : null;
+    const arrived = captionId ? item.checkpoint.captionVoices?.[captionId] : undefined;
     selectedPackaging.value = {
       ...item,
-      checkpoint: current.checkpoint,
+      checkpoint:
+        captionId && arrived
+          ? {
+              ...current.checkpoint,
+              captionVoices: { ...current.checkpoint.captionVoices, [captionId]: arrived },
+            }
+          : current.checkpoint,
       updatedAt: current.updatedAt,
     };
     return;
@@ -1573,7 +1659,13 @@ const flushAudioEdit = async (): Promise<void> => {
     const response = await updateEffectPackagingAudio(props.projectId, item.runId, targetId, {
       expectedUpdatedAt: baseline.updatedAt,
       ...(Object.keys(diff.voices).length ? { voices: diff.voices } : {}),
+      ...(diff.removedVoices.length ? { removedVoices: diff.removedVoices } : {}),
+      ...(Object.keys(diff.captionVoices).length ? { captionVoices: diff.captionVoices } : {}),
+      ...(diff.removedCaptionVoices.length
+        ? { removedCaptionVoices: diff.removedCaptionVoices }
+        : {}),
       ...(diff.music ? { music: diff.music } : {}),
+      ...(diff.removeMusic ? { removeMusic: true } : {}),
       ...(diff.captions ? { captions: diff.captions } : {}),
       ...(Object.keys(diff.boxes).length ? { boxes: diff.boxes } : {}),
     });
@@ -1867,6 +1959,9 @@ const separateAudioForSlot = async (slotId: string): Promise<void> => {
     // A separated original is a new clip with no row of its own, so it lands below everything else
     // and the extra row appears only now that there is something to put on it.
     normalizeVariantAudioLanes(variant);
+    // A direct assignment here bypasses the timeline's own selection, so a stale caption set would
+    // otherwise still be what Delete acts on.
+    selectedCaptionIds.value = [];
     selectedAudioClipIds.value = [`detached:${audio.id}`];
     bump();
     resetTimelinePlayerState();
@@ -1882,9 +1977,14 @@ const addMusicAssetToTimeline = (music: {
   duration: number;
   start: number;
   row: number;
+  insertRow?: number | undefined;
 }): void => {
   const variant = selectedVariant.value;
-  if (!variant || projectEditLocked.value || templateEditLocked.value) return;
+  // Only the template configuration is frozen once a packaging exists; where the audio sits is the
+  // editor's arrangement and stays editable, exactly as a clip moved between rows already is. Gating
+  // this on `templateEditLocked` would make the audio rows read-only in the very state — a completed
+  // packaging — in which the rest of the audio area is offered for editing.
+  if (!variant || projectEditLocked.value) return;
   if (!Number.isFinite(music.duration) || music.duration <= 0) return;
   // The film is as long as its content, so a track dropped past the current end extends it rather
   // than being trimmed back to fit: where it lands is where the user put it.
@@ -1903,19 +2003,55 @@ const addMusicAssetToTimeline = (music: {
   };
   rememberTimelineEdit();
   variant.detachedAudios = [...(variant.detachedAudios ?? []), audio];
-  // The library track lands on the row it was dropped on, not on a row picked for its kind, and
-  // dropping past the last row is how the user opens a new one.
   variant.audioLanes ??= {};
-  variant.audioLanes[`detached:${audio.id}`] = Math.max(0, Math.round(music.row));
+  if (music.insertRow === undefined) {
+    // The library track lands on the row it was dropped on, not on a row picked for its kind, and
+    // dropping past the last row is how the user opens a new one.
+    variant.audioLanes[`detached:${audio.id}`] = Math.max(0, Math.round(music.row));
+  } else {
+    // Dropping on a border opens a row instead: every row from there down moves one further, the way
+    // a video lane insert does, and the track takes the row that was made. Rows are stored sparsely
+    // and default by kind, so the ones in the way are written out before they can be shifted.
+    const refs = timelineAudioClipRefs(
+      variant,
+      selectedPackaging.value,
+      workspace.value?.materials ?? [],
+      props.projectId,
+    );
+    for (const ref of refs) variant.audioLanes[ref.id] = rawAudioLane(variant.audioLanes, ref);
+    const row = Math.max(0, Math.round(music.insertRow));
+    for (const ref of refs) {
+      const lane = variant.audioLanes[ref.id]!;
+      if (lane >= row) variant.audioLanes[ref.id] = lane + 1;
+    }
+    variant.audioLanes[`detached:${audio.id}`] = row;
+  }
   normalizeVariantAudioLanes(variant);
+  selectedCaptionIds.value = [];
   selectedAudioClipIds.value = [`detached:${audio.id}`];
   bump();
   resetTimelinePlayerState();
+  // A row opened below the last one is off the bottom of the viewport, so the drop would read as
+  // "nothing happened" until the user scrolled. Show the new row and the track on it.
+  const landedRow = audioRowOfClip(
+    timelineAudioClipRefs(
+      variant,
+      selectedPackaging.value,
+      workspace.value?.materials ?? [],
+      props.projectId,
+    ),
+    variant.audioLanes,
+    `detached:${audio.id}`,
+  );
+  void nextTick().then(() => timelineRef.value?.scrollToAudioRow(landedRow, start, duration));
 };
 /** The timeline owns its own selection, so clearing it from out here needs its own handle. */
 const timelineRef = ref<{
   clearSelection: () => void;
-  scrollToLane: (lane: number, time: number) => void;
+  /** The clip's own length, so the jump reveals all of it rather than just its head. */
+  scrollToLane: (lane: number, time: number, duration?: number) => void;
+  scrollToAudioRow: (row: number, time: number, duration?: number) => void;
+  scrollToCaption: (captionId: string, time: number, duration?: number) => void;
   setPlaybackNeedle: (seconds: number) => void;
   startPlaybackNeedle: (startSeconds: number, endSeconds?: number) => void;
   stopPlaybackNeedle: (seconds: number) => void;
@@ -1993,6 +2129,71 @@ const captionFontSize = computed(() => {
     ? Math.max(11, Math.round(stageCaptionFontSize.value * captionBox(target).scale))
     : stageCaptionFontSize.value;
 });
+/**
+ * The caption narration the editor has asked for and not yet seen arrive. One at a time is enough:
+ * the button is per-caption and disabled while busy, so a second request could only be a double
+ * click. The worker answers out of band, so the arrival is detected by watching the checkpoint the
+ * packaging panel polls rather than by this promise resolving.
+ */
+const pendingCaptionVoice = ref<{ itemId: string; captionId: string } | null>(null);
+const captionVoiceBusy = ref(false);
+let captionVoiceTimer: ReturnType<typeof setTimeout> | undefined;
+/** How long to wait for the worker before telling the user to try again. */
+const CAPTION_VOICE_TIMEOUT_MS = 90_000;
+const captionVoiceReady = computed(
+  () =>
+    captionEditable.value &&
+    !captionVoiceBusy.value &&
+    Boolean(editingCaption.value?.text.trim()) &&
+    Boolean(selectedPackaging.value),
+);
+const generateCaptionVoice = async (): Promise<void> => {
+  const caption = editingCaption.value;
+  const packaging = selectedPackaging.value;
+  if (!caption || !packaging || !captionVoiceReady.value) return;
+  // The text box debounces its save, and the server asserts the text it is given against the
+  // caption it has stored — voicing before the flush lands would fail that assertion.
+  await flushAudioEdit();
+  const text =
+    selectedPackaging.value?.checkpoint.captions?.find((item) => item.id === caption.id)?.text ??
+    caption.text;
+  captionVoiceBusy.value = true;
+  pendingCaptionVoice.value = { itemId: packaging.id, captionId: caption.id };
+  try {
+    await createEffectCaptionVoice(props.projectId, packaging.runId, packaging.id, {
+      captionId: caption.id,
+      text,
+    });
+    captionVoiceTimer = setTimeout(() => {
+      pendingCaptionVoice.value = null;
+      captionVoiceBusy.value = false;
+      showNotice('字幕口播生成超时，请稍后重试', 'warning');
+    }, CAPTION_VOICE_TIMEOUT_MS);
+  } catch (error) {
+    pendingCaptionVoice.value = null;
+    captionVoiceBusy.value = false;
+    showNotice(error instanceof Error ? error.message : '字幕口播生成请求失败', 'warning');
+  }
+};
+/**
+ * Landing the clip is the only thing the arrival has to do: the server already wrote it at the
+ * caption's start, so the placement only decides which row it occupies.
+ */
+watch(
+  () => selectedPackaging.value?.checkpoint.captionVoices,
+  (captionVoices) => {
+    const pending = pendingCaptionVoice.value;
+    const packaging = selectedPackaging.value;
+    if (!pending || !packaging || packaging.id !== pending.itemId) return;
+    const audio = captionVoices?.[pending.captionId];
+    if (!audio) return;
+    clearTimeout(captionVoiceTimer);
+    pendingCaptionVoice.value = null;
+    captionVoiceBusy.value = false;
+    placeGeneratedCaptionVoice(`capvoice:${pending.captionId}`, audio.start);
+    showNotice('字幕口播已生成，可拖动或调整音量');
+  },
+);
 const captionBoxStyle = (id: string): Record<string, string> => {
   const box = captionBox(id);
   return {
@@ -2014,7 +2215,8 @@ const audioStandard = computed<{ kind: 'MUSIC' | 'VOICE'; audio: PackagingAudio 
     const target = packagingAudioTarget(clipId);
     if (!target || target.kind === 'CAPTION') continue;
     const audio = packagingAudio(packaging.checkpoint, target);
-    if (audio) return { kind: target.kind, audio };
+    // A caption narration is a voice clip for every purpose the row cares about.
+    if (audio) return { kind: target.kind === 'MUSIC' ? 'MUSIC' : 'VOICE', audio };
   }
   return null;
 });
@@ -2097,6 +2299,8 @@ const onAudioParamsChange = (values: Record<string, number>): void => {
       if (!target || target.kind === 'CAPTION') continue;
       const audio = packagingAudio(checkpoint, target);
       if (!audio) continue;
+      // A caption narration takes the narration fade default, so only the music bed differs.
+      const kind: 'MUSIC' | 'VOICE' = target.kind === 'MUSIC' ? 'MUSIC' : 'VOICE';
       if (volumeTouched) {
         // One ceiling for every kind: the row's own top end, which the server accepts as-is.
         audio.volume = audioFromDb(
@@ -2106,18 +2310,15 @@ const onAudioParamsChange = (values: Record<string, number>): void => {
       // A clip shorter than the standard cannot hold the same fade, so each one keeps the other
       // edge it already has and caps this one by what is left — never past its own end.
       if (fadeInTouched) {
-        const room = Math.max(
-          0,
-          audio.duration - packagingAudioFade(audio, target.kind, 'fadeOut'),
-        );
+        const room = Math.max(0, audio.duration - packagingAudioFade(audio, kind, 'fadeOut'));
         const fadeIn = Math.min(values.fadeIn ?? 0, room);
-        if (fadeIn !== packagingAudioFade(audio, target.kind, 'fadeIn'))
+        if (fadeIn !== packagingAudioFade(audio, kind, 'fadeIn'))
           audio.fadeIn = Math.round(fadeIn * 100) / 100;
       }
       if (fadeOutTouched) {
-        const room = Math.max(0, audio.duration - packagingAudioFade(audio, target.kind, 'fadeIn'));
+        const room = Math.max(0, audio.duration - packagingAudioFade(audio, kind, 'fadeIn'));
         const fadeOut = Math.min(values.fadeOut ?? 0, room);
-        if (fadeOut !== packagingAudioFade(audio, target.kind, 'fadeOut'))
+        if (fadeOut !== packagingAudioFade(audio, kind, 'fadeOut'))
           audio.fadeOut = Math.round(fadeOut * 100) / 100;
       }
     }
@@ -2975,6 +3176,7 @@ const pasteTimelineAudioMaterial = (audio: {
     variant.audioLanes[`detached:${pasted.id}`] = Math.max(0, Math.round(audio.row));
   }
   normalizeVariantAudioLanes(variant);
+  selectedCaptionIds.value = [];
   selectedAudioClipIds.value = [`detached:${pasted.id}`];
   resetTimelinePlayerState();
   bump();
@@ -3027,6 +3229,14 @@ const removeMaterialFromSlot = (slotId: string): void => {
   delete variant.offsets[slot.id];
   if (variant.bindingMetadata) delete variant.bindingMetadata[slot.id];
   variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== slot.id);
+  // An overlay exists only because a material was dropped on it, so emptying it takes the whole
+  // clip away. A template slot stays behind instead: the template still describes that beat.
+  if (slot.overlay) {
+    variant.slots = variant.slots.filter(({ id }) => id !== slot.id);
+    delete variant.videoLanes?.[slot.id];
+    delete variant.timelineStarts?.[slot.id];
+    normalizeVariantVideoLanes(variant);
+  }
   clearDetachedTransitions(variant);
   resetTimelinePlayerState();
   bump();
@@ -3422,7 +3632,12 @@ const resolveTimelinePlacement = (
   // requested position and shift the existing clips down instead of covering.
   return { insertLaneAt: requestedLane, start: requestedStart, lane: requestedLane };
 };
-type TimelineClipMove = { slotId: string; start: number; lane: number };
+type TimelineClipMove = {
+  slotId: string;
+  start: number;
+  lane: number;
+  insertLane?: number | undefined;
+};
 
 const moveTimelineClips = (moves: TimelineClipMove[]): void => {
   const variant = selectedVariant.value;
@@ -3430,19 +3645,21 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
   normalizeVariantVideoLanes(variant);
   const excludedSlotIds = new Set(moves.map(({ slotId }) => slotId));
   let insertLaneAt: number | null = null;
-  const resolvedMoves = moves.flatMap(({ slotId, start, lane }) => {
+  const resolvedMoves = moves.flatMap(({ slotId, start, lane, insertLane }) => {
     const slot = variant.slots.find(({ id }) => id === slotId);
     if (!slot) return [];
     const nextStart = Math.max(0, Math.round(start * 30) / 30);
     const nextLane = Math.round(lane);
     const currentLane = Math.max(0, Math.round(variant.videoLanes?.[slotId] ?? 0));
+    // A border drop asks for a row of its own rather than a row to sit in, so it never looks for a
+    // free one — the rows it lands between move down instead.
     const resolved = resolveTimelinePlacement(
       variant,
       slotId,
       nextStart,
-      nextLane,
+      insertLane ?? nextLane,
       excludedSlotIds,
-      nextLane < currentLane,
+      insertLane !== undefined || nextLane < currentLane,
     );
     const currentStart =
       variant.timelineStarts?.[slotId] ??
@@ -3482,8 +3699,12 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
   resetTimelinePlayerState();
   bump();
 };
-const moveTimelineClip = (slotId: string, start: number, lane: number): void =>
-  moveTimelineClips([{ slotId, start, lane }]);
+const moveTimelineClip = (
+  slotId: string,
+  start: number,
+  lane: number,
+  insertLane?: number,
+): void => moveTimelineClips([{ slotId, start, lane, insertLane }]);
 
 /** A dropped clip keeps a role so the timeline still labels it; the template's six roles are hints. */
 const EFFECT_TEMPLATE_MIX_PURPOSE_ROLES: Record<EffectTemplateMixPurpose, EffectTemplateMixRole> = {
@@ -3493,11 +3714,15 @@ const EFFECT_TEMPLATE_MIX_PURPOSE_ROLES: Record<EffectTemplateMixPurpose, Effect
   END_CONVERSION: 'END',
 };
 /**
- * Adds a library material as a clip on a new track. The clip is an ordinary variant slot appended
- * after the template's own, so packaging, narration and rendering already know what to do with it —
- * the template itself never sees it. The whole picture stays linear: the clip takes the nearest
- * existing boundary as its start and everything from there shifts right, because the renderer shows
- * one clip at a time and refuses overlapping ones.
+ * Adds a library material as an overlay clip on a new track. The clip is a variant slot appended
+ * after the template's own, so the timeline, packaging and renderer all already know what to do with
+ * it — the template itself never sees it. It is marked `overlay`, which keeps it out of the narration
+ * pipeline: it covers the picture underneath instead of being spoken over it.
+ *
+ * Nothing else on the timeline moves. The clip lands exactly where it was dropped and may overlap its
+ * neighbours, because covering them is the point. The existing clips are left untouched, starts and
+ * all: the new slot is appended after them, so the packaging cursor fallback can only ever lay out
+ * clips behind it, and nothing already placed is pushed along.
  */
 const insertMaterialTrack = (materialId: string, lane: number, start: number): void => {
   const variant = selectedVariant.value;
@@ -3520,23 +3745,15 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
     return;
   }
   rememberTimelineEdit();
-  const before = currentTiming.value.slots.map((range) => ({ ...range }));
+  // Only the new clip gets an explicit start. Writing starts for the clips already there would restate
+  // the visual hash the packaging was confirmed against, and it is not needed: the cursor fallback
+  // lays a start-less slot out after its predecessor, and this one is appended last.
   variant.timelineStarts ??= {};
-  for (const range of before) variant.timelineStarts[range.id] = range.start;
-  const boundaries = [0];
-  for (const range of before) boundaries.push(range.start, range.end);
-  const insertAt = boundaries.reduce((best, candidate) =>
-    Math.abs(candidate - start) < Math.abs(best - start) ? candidate : best,
-  );
+  const insertAt = Math.max(0, start);
   const duration = Math.min(
     Math.min(15, Math.max(4, Math.round(material.duration * 10) / 10)),
     Math.floor(material.duration * 10) / 10,
   );
-  for (const range of before) {
-    if (range.start >= insertAt - 1 / TIMELINE_FPS) {
-      variant.timelineStarts[range.id] = range.start + duration;
-    }
-  }
   const slot: EffectTemplateMixSlot = {
     id: crypto.randomUUID(),
     role: EFFECT_TEMPLATE_MIX_PURPOSE_ROLES[material.purpose] ?? 'PRODUCT',
@@ -3545,6 +3762,7 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
     duration,
     transition: '硬切',
     transitionDuration: 0,
+    overlay: true,
   };
   const insertLane = Math.max(0, Math.round(lane));
   variant.videoLanes ??= {};
@@ -3570,9 +3788,9 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
   resetTimelinePlayerState();
   bump();
-  showNotice(`${material.code} 已放入新轨道`);
+  showNotice(`${material.code} 已作为叠加画面放入新轨道`);
   const compactedLane = variant.videoLanes[slot.id] ?? insertLane;
-  void nextTick().then(() => timelineRef.value?.scrollToLane(compactedLane, insertAt));
+  void nextTick().then(() => timelineRef.value?.scrollToLane(compactedLane, insertAt, duration));
 };
 
 /**
@@ -3605,10 +3823,10 @@ const audioClipPlacements = (
     props.projectId,
   ).flatMap((ref) => {
     if (ref.source === 'PACKAGED') {
-      const audio =
-        ref.kind === 'MUSIC'
-          ? checkpoint?.music
-          : checkpoint?.voices?.[ref.id.slice('voice:'.length)];
+      // The clip id already carries its own namespace, so the same resolver the edit rows use is
+      // what decides which checkpoint collection a placement reads from.
+      const target = packagingAudioTarget(ref.id);
+      const audio = target && checkpoint ? packagingAudio(checkpoint, target) : undefined;
       return audio ? [{ clipId: ref.id, duration: audio.duration, start: audio.start }] : [];
     }
     if (ref.source === 'LEGACY') {
@@ -3648,7 +3866,13 @@ const resolveAudioPlacement = (
   // there move down rather than being covered.
   return { insertRowAt: requestedRow, row: requestedRow };
 };
-type TimelineAudioMove = { clipId: string; row?: number; start: number };
+type TimelineAudioMove = {
+  clipId: string;
+  row?: number;
+  start: number;
+  /** Set when the clip was let go on a row border: open that row and put the clip on it. */
+  insertRow?: number;
+};
 /**
  * Move audio clips horizontally, vertically, or both. The row lives on the project draft while a
  * packaged clip's time lives on the server-owned checkpoint, so one gesture writes to two places.
@@ -3665,17 +3889,22 @@ const movePackagingAudios = (moves: TimelineAudioMove[]): void => {
   const durationOf = (clipId: string): number =>
     placements.find((placement) => placement.clipId === clipId)?.duration ?? 0;
   let insertRowAt: number | null = null;
-  const rowMoves = moves.flatMap(({ clipId, row, start }) => {
+  const rowMoves = moves.flatMap(({ clipId, row, insertRow, start }) => {
     if (row === undefined) return [];
     const requestedRow = Math.max(0, Math.round(row));
     const requestedStart = Math.max(0, Math.round(start * 30) / 30);
-    const resolved = resolveAudioPlacement(
-      rows,
-      requestedStart,
-      durationOf(clipId),
-      requestedRow,
-      excludedClipIds,
-    );
+    // Let go on a row border: the row opens exactly there. The "prefer an empty row above" rule is
+    // skipped on purpose — the border is the answer the user gave, not a hint to be improved on.
+    const resolved =
+      insertRow === undefined
+        ? resolveAudioPlacement(
+            rows,
+            requestedStart,
+            durationOf(clipId),
+            requestedRow,
+            excludedClipIds,
+          )
+        : { insertRowAt: requestedRow, row: requestedRow };
     if (resolved.insertRowAt !== undefined) {
       insertRowAt =
         insertRowAt === null ? resolved.insertRowAt : Math.min(insertRowAt, resolved.insertRowAt);
@@ -3685,6 +3914,9 @@ const movePackagingAudios = (moves: TimelineAudioMove[]): void => {
   });
   const shouldApplyMove =
     rowMoves.length > 0 ||
+    // A clip let go on its own row's border asks for a row to be opened even though neither its row
+    // nor its time changes, so the border alone is enough to make the gesture do something.
+    moves.some(({ insertRow }) => insertRow !== undefined) ||
     moves.some(({ clipId, start }) => {
       // Captions are not audio placements — they live on their own rows in the checkpoint — so
       // their current time has to be read separately or a caption drag would be dropped here.
@@ -3708,8 +3940,127 @@ const movePackagingAudios = (moves: TimelineAudioMove[]): void => {
   resetTimelinePlayerState();
   bump();
 };
-const movePackagingAudio = (clipId: string, start: number, row?: number): void =>
-  movePackagingAudios([row === undefined ? { clipId, start } : { clipId, row, start }]);
+const movePackagingAudio = (
+  clipId: string,
+  start: number,
+  row?: number,
+  insertRow?: number,
+): void =>
+  movePackagingAudios([
+    row === undefined
+      ? { clipId, start }
+      : { clipId, row, start, ...(insertRow === undefined ? {} : { insertRow }) },
+  ]);
+/**
+ * Give a subtitle a row of its own, by moving it onto a brand new track and leaving it where it was
+ * let go. Caption rows are derived from the caption's own track rather than stored, so a new row *is*
+ * a new `trackId` — the lane it lands on follows from that, and no row number has to be written.
+ */
+const splitCaptionTrack = (captionId: string, start: number): void => {
+  const packaging = selectedPackaging.value;
+  const variant = selectedVariant.value;
+  if (projectEditLocked.value) return;
+  // Whichever source the workbench is editing owns the caption; the timeline draws the checkpoint's
+  // copy when a completed packaging is selected, so the row has to be changed on that same object.
+  const caption =
+    packaging?.checkpoint.captions?.find((item) => item.id === captionId) ??
+    variant?.captions.find((item) => item.id === captionId);
+  if (!caption) return;
+  rememberTimelineEdit();
+  const next = quantizeTimelineTime(start);
+  // A subtitle carries its own length, so it keeps it: only the row and the time were asked for.
+  const length = Math.max(1 / TIMELINE_FPS, caption.end - caption.start);
+  const trackId = `subtitle-track-${Date.now().toString().padStart(13, '0')}-${crypto.randomUUID()}`;
+  if (packaging) {
+    // Written through the packaging editor rather than onto the object the lookup returned, because
+    // that is what captures the checkpoint baseline the save is later diffed against.
+    editPackagingAudio((checkpoint) => {
+      const target = checkpoint.captions?.find((item) => item.id === captionId);
+      if (!target) return;
+      target.trackId = trackId;
+      target.start = next;
+      target.end = next + length;
+    });
+  } else {
+    caption.trackId = trackId;
+    caption.start = next;
+    caption.end = next + length;
+    bump();
+  }
+  void nextTick().then(() => timelineRef.value?.scrollToCaption(captionId, next, length));
+};
+/**
+ * A library track let go on top of a separated audio clip takes its place. The clip keeps its own
+ * start and length — the replacement is asked to fit the hole, not the other way round — so a track
+ * shorter than the clip it would cover is refused rather than silently stretched or shortened.
+ *
+ * Only a separated clip can be replaced this way: every other audio row is server-owned (a narration
+ * line is bound to its script line, a packaged track to the confirmed checkpoint), and swapping those
+ * from the draft would leave the checkpoint describing audio that is no longer there.
+ */
+const replaceAudioWithMusic = (
+  clipId: string,
+  music: { assetId: string; fileObjectId: string; name: string; duration: number },
+): void => {
+  const variant = selectedVariant.value;
+  // Same rule as adding a track: the arrangement survives a packaging, so only a template that is
+  // frozen or mid-run refuses the swap.
+  if (projectEditLocked.value) return;
+  const audio = variant?.detachedAudios?.find(({ id }) => `detached:${id}` === clipId);
+  if (!variant || !audio) {
+    showNotice('只有分离出来的原声轨道可以这样替换', 'warning');
+    return;
+  }
+  if (music.duration < audio.duration) {
+    showNotice(`${music.name} 短于被覆盖的片段，无法替换`, 'warning');
+    return;
+  }
+  rememberTimelineEdit();
+  audio.fileObjectId = music.fileObjectId;
+  audio.name = music.name;
+  audio.sourceAssetId = music.assetId;
+  audio.sourceDuration = music.duration;
+  // The covered clip's window is what is kept, so the new track starts from its own head.
+  audio.offset = 0;
+  bump();
+  showNotice(`${music.name} 已替换该片段`);
+};
+/**
+ * Land a caption narration the editor just generated. `movePackagingAudios` cannot do this: the
+ * clip already sits at its caption's start on the default row, so `shouldApplyMove` would see
+ * nothing changed and drop the row insert — which here is the whole point.
+ */
+const placeGeneratedCaptionVoice = (clipId: string, start: number): void => {
+  const variant = selectedVariant.value;
+  if (!variant) return;
+  normalizeVariantAudioLanes(variant);
+  const placements = audioClipPlacements(variant);
+  const duration = placements.find((placement) => placement.clipId === clipId)?.duration ?? 0;
+  const laneOf = (id: string): number => Math.max(0, Math.round(variant.audioLanes?.[id] ?? 0));
+  const resolved = resolveAudioPlacement(
+    placements.map((placement) => ({ ...placement, lane: laneOf(placement.clipId) })),
+    Math.max(0, start),
+    duration,
+    DEFAULT_AUDIO_LANE.VOICE,
+    new Set([clipId]),
+  );
+  rememberTimelineEdit();
+  variant.audioLanes ??= {};
+  if (resolved.insertRowAt !== undefined) {
+    // The row the clip asked for is taken, so everything from there down moves instead of being
+    // covered — the same rule a manual drop onto an occupied row follows.
+    for (const placement of placements) {
+      if (placement.clipId === clipId) continue;
+      if (laneOf(placement.clipId) >= resolved.insertRowAt) {
+        variant.audioLanes[placement.clipId] = laneOf(placement.clipId) + 1;
+      }
+    }
+  }
+  variant.audioLanes[clipId] = Math.max(0, Math.round(resolved.row));
+  normalizeVariantAudioLanes(variant);
+  resetTimelinePlayerState();
+  bump();
+};
 const changeProjectDuration = (raw: string): void => {
   if (!selectedSlot.value || !selectedVariant.value) return;
   const duration = Math.round(Number(raw) * 10) / 10;
@@ -3761,11 +4112,67 @@ const removeTransitionFromSlot = (slotId: string): void => {
   resetTimelinePlayerState();
   bump();
 };
+/**
+ * Remove the selected audio clips. Every kind the editor owns can go: a separated source track, a
+ * caption narration, the packaged music bed, and a script-line narration — a narration is only an
+ * optional overlay on its line, so dropping it leaves the line, its subtitle and the film's length
+ * alone. Only an id the checkpoint does not know (a legacy whole-film voice) is refused out loud —
+ * silently doing nothing is what made the shortcut look broken in the first place.
+ */
+const deleteSelectedAudioClips = (clipIds: string[]): void => {
+  const variant = selectedVariant.value;
+  if (!variant) return;
+  const detachedIds = new Set<string>();
+  const captionVoiceIds = new Set<string>();
+  const voiceIds = new Set<string>();
+  let musicSelected = false;
+  for (const clipId of clipIds) {
+    if (clipId.startsWith('detached:')) detachedIds.add(clipId.slice('detached:'.length));
+    else if (clipId.startsWith('capvoice:')) captionVoiceIds.add(clipId.slice('capvoice:'.length));
+    else if (clipId.startsWith('voice:')) voiceIds.add(clipId.slice('voice:'.length));
+    else if (clipId === 'music') musicSelected = true;
+  }
+  const checkpoint = selectedPackaging.value?.checkpoint;
+  const removesDetached =
+    detachedIds.size > 0 && (variant.detachedAudios?.some((audio) => detachedIds.has(audio.id)) ?? false);
+  const removesCaptionVoice =
+    captionVoiceIds.size > 0 &&
+    [...captionVoiceIds].some((id) => Boolean(checkpoint?.captionVoices?.[id]));
+  const removesVoice =
+    voiceIds.size > 0 && [...voiceIds].some((id) => Boolean(checkpoint?.voices?.[id]));
+  const removesMusic = musicSelected && Boolean(checkpoint?.music);
+  if (removesDetached) {
+    rememberTimelineEdit();
+    variant.detachedAudios = (variant.detachedAudios ?? []).filter(
+      (audio) => !detachedIds.has(audio.id),
+    );
+  }
+  if (removesVoice || removesCaptionVoice || removesMusic) {
+    editPackagingAudio((next) => {
+      // Captured before the clips are removed, so undo brings the selection back.
+      rememberTimelineEdit();
+      if (removesMusic) delete next.music;
+      if (removesVoice) for (const id of voiceIds) delete next.voices?.[id];
+      if (removesCaptionVoice) for (const id of captionVoiceIds) delete next.captionVoices?.[id];
+    });
+  }
+  if (!removesDetached && !removesVoice && !removesCaptionVoice && !removesMusic) {
+    showNotice('该音频片段不能删除', 'warning');
+    return;
+  }
+  selectedAudioClipIds.value = [];
+  if (removesDetached) bump();
+};
 const deleteSelectedTimelineItem = (): void => {
   const selectedCaptions = [...selectedCaptionIds.value];
   if (selectedCaptions.length) {
     if (selectedPackaging.value) {
-      if (!captionEditable.value) return;
+      // A stale or unfinished packaging shows its captions but does not accept edits, so say so
+      // rather than swallowing the key.
+      if (!captionEditable.value) {
+        showNotice('当前包装已过期或未完成，字幕不可编辑', 'warning');
+        return;
+      }
       editPackagingAudio((checkpoint) => {
         // Captured before the captions are removed, so undo brings the selection back.
         rememberTimelineEdit();
@@ -3788,16 +4195,11 @@ const deleteSelectedTimelineItem = (): void => {
   }
   const variant = selectedVariant.value;
   if (!variant) return;
-  const detachedIds = new Set(
-    selectedAudioClipIds.value
-      .filter((clipId) => clipId.startsWith('detached:'))
-      .map((clipId) => clipId.slice('detached:'.length)),
-  );
-  if (detachedIds.size && variant.detachedAudios?.some((audio) => detachedIds.has(audio.id))) {
-    rememberTimelineEdit();
-    variant.detachedAudios = variant.detachedAudios.filter((audio) => !detachedIds.has(audio.id));
-    selectedAudioClipIds.value = [];
-    bump();
+  // An audio clip on screen is what Delete is about. This is checked before the video slot rather
+  // than after: falling through used to make a selected narration delete an unrelated slot instead,
+  // which is why the shortcut looked like it did nothing at all.
+  if (selectedAudioClipIds.value.length) {
+    deleteSelectedAudioClips([...selectedAudioClipIds.value]);
     return;
   }
   const transitionSlotId = activeTransitionSlotId.value;
@@ -4486,8 +4888,12 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
   // button takes Space and Enter. Delete and Ctrl+Z mean the same thing everywhere else in the editor,
   // so a stale focus left on a button must not swallow them — clicking 「添加」 leaves the button
   // focused, and that is what made "delete this subtitle" and undo go missing.
+  // The timeline's own buttons are the one exception: clicking a track's mute leaves it focused, and
+  // letting it take Space meant the next Space re-toggled the mute instead of playing. Space belongs
+  // to the player inside the timeline, so those buttons only keep Enter.
   const buttonOwnsKey =
     Boolean(target?.matches('button')) &&
+    !target?.closest('.mix-timeline-shell') &&
     !target?.closest('.transition-junction') &&
     !activeTransitionSlotId.value &&
     (event.code === 'Space' || event.key === 'Enter');
@@ -4809,7 +5215,7 @@ defineExpose({ flushPendingEdits });
           <p v-if="packagingLocked" class="template-lock-banner" role="status">
             <Lock
               :size="15"
-            />模板配置和常规智能填充已锁定；上游素材更新时可仅重算受影响素材的截取区间；仍可新建空成片并精修未包装工程。
+            />模板槽位配置和常规智能填充已锁定；音色仍可切换，影响后续包装与口播；上游素材更新时可仅重算受影响素材的截取区间；仍可新建空成片并精修未包装工程。
           </p>
           <p v-else-if="templateEditLocked" class="template-lock-banner" role="status">
             <Lock :size="15" />智能填充正在运行，模板暂时锁定；任务结束后可修改。
@@ -5157,7 +5563,7 @@ defineExpose({ flushPendingEdits });
               :template-id="activeTemplateId"
               :selected-id="workspace.template.voiceProfileId"
               :playing="previewIsPlaying"
-              :disabled="templateEditLocked"
+              :disabled="voiceSelectLocked"
               @select="selectVoiceProfile"
               @audition="pauseForVoiceAudition"
             />
@@ -5714,6 +6120,15 @@ defineExpose({ flushPendingEdits });
             >
               ＋
             </button>
+            <!-- 用模板当前音色把这条字幕合成为一段新口播；不选音色，一键生成。 -->
+            <button
+              type="button"
+              class="caption-voice-generate"
+              :disabled="!captionVoiceReady"
+              @click="generateCaptionVoice"
+            >
+              {{ captionVoiceBusy ? '生成中…' : '生成口播' }}
+            </button>
           </span>
         </div>
         <div v-else-if="selectedCaptionIds.length > 1" class="caption-text-editor">
@@ -5795,6 +6210,8 @@ defineExpose({ flushPendingEdits });
           @move-clips="moveTimelineClips"
           @assign-material="assignDroppedMaterial"
           @insert-material-track="insertMaterialTrack"
+          @replace-audio-with-music="replaceAudioWithMusic"
+          @split-caption-track="splitCaptionTrack"
           @apply-transition="changeTransitionForSlot"
           @open-transition="openTransitionPanel"
           @redo="redoTimelineEdit"
@@ -7907,7 +8324,10 @@ button:disabled {
 }
 .caption-text-editor input {
   min-width: 0;
+  /* Capped rather than left to eat the row: the controls beside it are the point of this bar, and a
+     subtitle is short enough that the extra width only pushed them off the edge. */
   flex: 1;
+  max-width: 320px;
   height: 26px;
   padding: 0 8px;
   border: 1px solid #d5a77d;
@@ -7952,6 +8372,13 @@ button:disabled {
 .caption-font-size button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+/* The steppers are square glyphs; the generate button carries a label, so it sizes to its text
+   instead of being clipped to 22px. */
+.caption-font-size button.caption-voice-generate {
+  width: auto;
+  padding: 0 8px;
+  white-space: nowrap;
 }
 /* Sits where the caption font stepper does, in a cool palette so the two never read alike. One line
    for all three numbers, so it takes no more height than the caption row it swaps with. */

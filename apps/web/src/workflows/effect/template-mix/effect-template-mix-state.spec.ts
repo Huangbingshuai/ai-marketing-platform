@@ -1,6 +1,7 @@
 import type { EffectTemplateMixVariant, EffectTemplateMixWorkspace } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  assignEffectTemplateMixCaptionLanes,
   cloneMix,
   createEffectTemplateMixEntry,
   EFFECT_TEMPLATE_MIX_TRANSITIONS,
@@ -34,6 +35,34 @@ const variant = (value: EffectTemplateMixWorkspace, id: string): EffectTemplateM
 });
 
 describe('effect template mix presentation state', () => {
+  it('creates one lane per manual caption track above the existing narration subtitle lane', () => {
+    const lanes = assignEffectTemplateMixCaptionLanes(
+      [
+        { id: 'generated-1', start: 0, end: 3 },
+        { id: 'generated-2', start: 4, end: 5 },
+        {
+          id: 'manual-older',
+          manual: true,
+          trackId: 'subtitle-track-0000000000001-test',
+          start: 0,
+          end: 3,
+        },
+        {
+          id: 'manual-newest',
+          manual: true,
+          trackId: 'subtitle-track-0000000000002-test',
+          start: 10,
+          end: 12,
+        },
+      ],
+      30,
+    );
+    expect(lanes.get('manual-newest')).toBe(0);
+    expect(lanes.get('manual-older')).toBe(1);
+    expect(lanes.get('generated-1')).toBe(2);
+    expect(lanes.get('generated-2')).toBe(2);
+  });
+
   it('keeps a new template without a project until AI fill completes', () => {
     const value = workspace();
     expect(value.variants).toEqual([]);
@@ -62,6 +91,35 @@ describe('effect template mix presentation state', () => {
     expect(value.variants[0]!.slots[0]!.duration).toBe(2.2);
     expect(value.variants[1]!.slots[0]!.duration).toBe(siblingDuration);
     expect(value.variants[1]!.status).toBe('PENDING');
+  });
+
+  it('keeps a variant-only clip on its own track through a template resync', () => {
+    const value = workspace();
+    value.variants = [variant(value, 'selected')];
+    const selected = value.variants[0]!;
+    const extra = {
+      id: 'free-clip',
+      role: 'PRODUCT' as const,
+      purpose: 'PRODUCT_DISPLAY' as const,
+      label: 'MAT-9',
+      duration: 5,
+      transition: '硬切' as const,
+      transitionDuration: 0,
+    };
+    selected.slots.push(extra);
+    selected.bindings[extra.id] = 'material-9';
+    selected.videoLanes = { [extra.id]: 2 };
+    selected.timelineStarts = { [extra.id]: 12 };
+    value.template.slots[0]!.duration = 6;
+    markEffectTemplateMixChanged(value, 'selected');
+    // The template's own slot is resynced...
+    expect(selected.slots[0]!.duration).toBe(6);
+    expect(selected.slots).toHaveLength(7);
+    // ...while the clip the template never knew about keeps its binding, row and start.
+    expect(selected.slots.at(-1)).toEqual(extra);
+    expect(selected.bindings[extra.id]).toBe('material-9');
+    expect(selected.videoLanes[extra.id]).toBe(2);
+    expect(selected.timelineStarts[extra.id]).toBe(12);
   });
 
   it('reorders without mutating the template array', () => {
@@ -111,17 +169,18 @@ describe('effect template mix presentation state', () => {
         '噪点溶解',
       ]),
     );
-    expect(EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY.filter((item) => item.category === '热门'))
-      .toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: '擦除' }),
-          expect.objectContaining({ id: '圆形展开' }),
-          expect.objectContaining({ id: '旋转' }),
-          expect.objectContaining({ id: '像素化' }),
-          expect.objectContaining({ id: '波纹' }),
-          expect.objectContaining({ id: '翻页' }),
-          expect.objectContaining({ id: '液体扭曲' }),
-        ]),
-      );
+    expect(
+      EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY.filter((item) => item.category === '热门'),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: '擦除' }),
+        expect.objectContaining({ id: '圆形展开' }),
+        expect.objectContaining({ id: '旋转' }),
+        expect.objectContaining({ id: '像素化' }),
+        expect.objectContaining({ id: '波纹' }),
+        expect.objectContaining({ id: '翻页' }),
+        expect.objectContaining({ id: '液体扭曲' }),
+      ]),
+    );
   });
 });

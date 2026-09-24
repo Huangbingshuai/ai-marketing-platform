@@ -153,6 +153,27 @@ export const completeEffectTemplateMixPackaging = (
     },
   );
 
+/**
+ * Speak one subtitle's text again with the item's own frozen voice. `text` is an assertion the
+ * server checks against the caption it has stored, so a caption still inside its save debounce is
+ * refused instead of being voiced from the previous revision.
+ */
+export const createEffectCaptionVoice = (
+  projectId: string,
+  runId: string,
+  itemId: string,
+  body: { captionId: string; text: string },
+): Promise<ApiResponse<{ requestId: string }>> =>
+  requestJson(
+    basePath(projectId) +
+      '/packaging-runs/' +
+      encodeURIComponent(runId) +
+      '/items/' +
+      encodeURIComponent(itemId) +
+      '/caption-voice',
+    { method: 'POST', operation: '生成字幕口播', body },
+  );
+
 /** Editor audio geometry is persisted on the packaging item, not the workflow draft. */
 export const updateEffectPackagingAudio = (
   projectId: string,

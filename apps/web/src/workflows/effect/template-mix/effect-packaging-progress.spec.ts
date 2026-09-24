@@ -85,6 +85,10 @@ describe('packaging workflow progress', () => {
     expect(packagingLockMessage(null)).toContain('正在读取');
     for (const status of ['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'] as const)
       expect(packagingLockMessage(status)).toContain('锁定');
+    // The voice is released once the run is over, so the terminal states must say so instead of
+    // implying the whole template configuration is frozen.
+    for (const status of ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'] as const)
+      expect(packagingLockMessage(status)).toContain('音色仍可切换');
     expect(component).toContain("(value) => emit('status', value?.status ?? null)");
     expect(page).toContain('@status="packagingRunStatus = $event"');
     expect(page).toContain('{{ packagingLockNotice }}');

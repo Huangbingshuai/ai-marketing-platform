@@ -29,12 +29,20 @@ describe('packaging audio playback wiring', () => {
     expect(packagingSource).toContain('element?.pause()');
     expect(packagingSource).not.toMatch(/<audio[^>]*\bautoplay\b/);
   });
-  it('shares independent voice/music mute state and starts audio from the player gesture', () => {
-    expect(packagingSource).toContain('voiceMuted: boolean');
-    expect(packagingSource).toContain('musicMuted: boolean');
-    expect(packagingSource).toContain("['VOICE', voiceElement.value, currentVoice.value, props.voiceMuted]");
-    expect(packagingSource).toContain("['MUSIC', musicElement.value, currentMusic.value, props.musicMuted]");
+  it('shares one mute flag per audio row and starts audio from the player gesture', () => {
+    // Rows carry no meaning, so the preview silences a clip by the row the workbench says it is on
+    // rather than by the kind of audio it is.
+    expect(packagingSource).toContain('audioRowMuted: boolean[]');
+    expect(packagingSource).toContain('audioRowByClipId: Record<string, number>');
+    expect(packagingSource).toContain('const rowMuted = (clipId: string): boolean =>');
+    expect(packagingSource).toContain('const currentVoiceEntry = computed<PreviewVoice | undefined>');
+    expect(packagingSource).toContain(
+      "['VOICE', voiceElement.value, currentVoice.value, rowMuted(currentVoiceEntry.value?.id ?? 'voice')]",
+    );
+    expect(packagingSource).toContain("['MUSIC', musicElement.value, currentMusic.value, rowMuted('music')]");
     expect(packagingSource).toContain('element.muted = muted');
+    expect(packagingSource).not.toContain('voiceMuted');
+    expect(packagingSource).not.toContain('musicMuted');
     expect(packagingSource).toContain('function startPlaybackAudio()');
     expect(packagingSource).toContain('syncAudio(true)');
     expect(packagingSource).toContain('startPlaybackAudio');
@@ -44,6 +52,25 @@ describe('packaging audio playback wiring', () => {
     expect(packagingSource).toContain('selectedVariant.value?.voice');
     expect(packagingSource).toContain('selectedVariant.value?.bgm');
     expect(packagingSource).toContain('previewAvailable');
+  });
+  it('plays a caption narration from an element of its own', () => {
+    // It is added *alongside* the script-line voices it was generated next to, so their clips
+    // overlap by design and one element cannot follow both.
+    expect(packagingSource).toContain('const captionVoiceElement = ref<HTMLAudioElement | null>(null);');
+    expect(packagingSource).toContain('CAPTION_VOICE: false');
+    expect(packagingSource).toContain(
+      'const currentCaptionVoiceEntry = computed<PreviewVoice | undefined>(',
+    );
+    expect(packagingSource).toContain("id: `capvoice:${captionId}`");
+    expect(packagingSource).toContain('ref="captionVoiceElement"');
+    // It joins the shared sync loop, so it gets the same seek, volume and fade treatment.
+    expect(packagingSource).toContain("'CAPTION_VOICE',");
+    expect(packagingSource).toContain("rowMuted(currentCaptionVoiceEntry.value?.id ?? ''),");
+    // A narration that starts long after the play gesture has to be primed or the browser refuses
+    // its later play(); both primed clips are released with the volume the prime borrowed.
+    expect(packagingSource).toContain('function primeElement(');
+    expect(packagingSource).toContain('primeElement(currentVoice.value, voiceElement.value,');
+    expect(packagingSource).toContain('releaseElement(captionVoiceElement.value);');
   });
 });
 

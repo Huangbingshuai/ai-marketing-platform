@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import workflowSource from '../source-import/EffectImportNodePage.vue?raw';
+import audioLanesSource from './effect-template-mix-audio-lanes.ts?raw';
 import pageSource from './EffectTemplateMixNodePage.vue?raw';
 import packagingSource from './EffectTemplateMixPackaging.vue?raw';
 import thumbnailCacheSource from './effect-template-mix-thumbnail-cache.ts?raw';
@@ -97,6 +98,14 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toMatch(/\bfillEffectTemplateMixVariant\b/u);
     expect(pageSource).not.toContain('syncEffectTemplateMixVariants');
     expect(pageSource).not.toMatch(/Mock|MOCK|createEffectTemplateMixMock/u);
+  });
+  it('never lets two draft saves share a revision', () => {
+    // A drag outlives a save, so the debounce can fire again while the first request is still on the
+    // wire. Both would carry the same revision and the second would come back as "节点内容已在其他
+    // 页面更新" even though nothing is stale, so the saves are chained instead.
+    expect(pageSource).toContain('const previous = pendingSave ?? Promise.resolve(true);');
+    expect(pageSource).toContain('() => persistNow(keepalive),');
+    expect(pageSource).toContain('const persistNow = async (keepalive = false): Promise<boolean> => {');
   });
   it('creates an empty film project separately from AI operations', () => {
     expect(pageSource).toContain('<Plus :size="13" />新建成片');
@@ -234,6 +243,13 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('const syncTrackScroll');
     expect(timelineSource).toContain('const draggedTimelineEnd = computed');
     expect(timelineSource).toContain('draggedTimelineEnd.value');
+    // The film reaches as far as its content: a clip carried past the last video clip has to grow
+    // the canvas under the pointer, otherwise the drag would be fenced by the current film length.
+    expect(timelineSource).toContain('const draggedAudioEnd = computed');
+    expect(timelineSource).toContain('draggedAudioEnd.value');
+    expect(timelineSource).toContain(
+      'effectTemplateMixContentDuration(props.variant, props.packaging?.checkpoint)',
+    );
     expect(timelineSource).toContain('const duration = Math.max(0, timelineDuration.value)');
     expect(timelineSource).not.toContain('+ majorTickSeconds.value;');
     expect(timelineSource).toContain('overflow: auto;');
@@ -445,22 +461,55 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('const beginAudioVolume');
     expect(timelineSource).toContain('const beginAudioTrim');
     expect(timelineSource).toContain('const onCaptionPointerDown');
-    expect(timelineSource).toContain('const captionBounds');
-    // Captions move independently, so their row's neighbours are the only overlap fence. Two subtitles
-    // on different rows are meant to overlap in time; fencing against the whole timeline instead would
-    // pin such a card between the ends of unrelated captions, which reads as "the drag is stuck".
-    expect(timelineSource).toContain('captionLaneById.value.get(caption.id) ?? 0');
+    // A subtitle travels as freely as a video clip. There is no fence at all, because a landing that
+    // would overlap a card on its own track is answered by giving it a track of its own — the
+    // subtitle counterpart of a video clip finding another lane.
+    expect(timelineSource).not.toContain('const captionBounds');
     expect(timelineSource).toContain(
-      'const rows = timelineCaptions.value\n    .filter((row) => (captionLaneById.value.get(row.id) ?? 0) === lane)',
+      'const captionTrackKeyOf = (caption: EffectTemplateMixCaption): string =>',
+    );
+    // The track key is the one the row packer and the checkpoint both group by, spelled the same way
+    // in all three places so they cannot drift.
+    expect(timelineSource).toContain('? `track:${caption.trackId}`');
+    expect(timelineSource).toContain(": 'legacy-generated';");
+    expect(timelineSource).toContain('const captionOverlapsOwnTrack = (');
+    expect(timelineSource).toContain('captionTrackKeyOf(entry.caption) === key');
+    expect(timelineSource).toContain(
+      'sourceDuration: Number.POSITIVE_INFINITY,\n  minStart: 0,\n  maxEnd: Number.POSITIVE_INFINITY,',
+    );
+    expect(timelineSource).toContain('captionLaneById.value.get(caption.id) ?? 0');
+    // A subtitle travels its own, shorter rows: the ghost is measured against the caption area and
+    // rebased onto the lane it started on, exactly as an audio clip's is against row 0.
+    expect(timelineSource).toContain(
+      'const captionAreaTop = (): number =>\n  captionTrackElements.get(captionTrackKey(0))?.getBoundingClientRect().top ?? 0;',
+    );
+    expect(timelineSource).toContain('const dragRowOf = (clipId: string): number =>');
+    expect(timelineSource).toContain(
+      'ghostTop: AUDIO_CLIP_INSET + row * (caption ? CAPTION_LANE_HEIGHT : AUDIO_LANE_HEIGHT),',
+    );
+    expect(timelineSource).toContain('drag.ghostTop - initialLane * CAPTION_LANE_HEIGHT');
+    // A subtitle's row is derived from its track rather than stored, so it takes part in the row
+    // gesture like anything else — but the row it lands on is never reported as an audio row it does
+    // not have: minting a track is what gives it one.
+    expect(timelineSource).toContain('const rowMove = audio.initialRows[audio.id] !== undefined;');
+    expect(timelineSource).toContain(
+      'const rowChanged = rowMove && audio.currentRow !== audio.initialRows[audio.id]!;',
+    );
+    // Its rows are separate strips, so a card carried off its own has to ride above the row below it.
+    expect(timelineSource).toContain(
+      '.caption-clip.is-dragging,\n.audio-clip.is-dragging {\n  z-index: 8;\n}',
     );
     // A group slides rigidly and reports once, so the workbench records one undo step for the gesture
     // rather than one per caption.
     expect(timelineSource).toContain(
       'const shared = Math.max(delta, -earliest);',
     );
-    expect(timelineSource).toContain(
-      "'moveAudioClips',\n          group.flatMap((id) => {",
-    );
+    // A member of the set that would land on a card outside it is given a track of its own instead
+    // of riding along, and the set is measured as a whole so a sibling that is moving too is not
+    // what a member is checked against.
+    expect(timelineSource).toContain('const moving = new Set(group);');
+    expect(timelineSource).toContain('if (captionOverlapsOwnTrack(id, start, length, moving)) split.push(id);');
+    expect(timelineSource).toContain("if (riders.length) emit('moveAudioClips', riders);");
     expect(timelineSource).toContain('drag.maxEnd - drag.initialDuration');
     expect(timelineSource).toContain("emit('moveAudioClip'");
     expect(timelineSource).toContain("'resizeAudioClip',");
@@ -583,17 +632,27 @@ describe('effect template mix workbench layout', () => {
   it('offers a track border as a new-row target for a library clip', () => {
     // The border is hit-tested from the pointer, and it always beats the slot underneath it.
     expect(timelineSource).toContain('const TRACK_INSERT_THRESHOLD = 6;');
+    // An audio row is one lane tall and has no gap between clips to aim at, so its band is a slice of
+    // the row rather than the few pixels a video row's gap gives.
+    expect(timelineSource).toContain('const AUDIO_INSERT_THRESHOLD = Math.round(AUDIO_LANE_HEIGHT / 4);');
+    expect(timelineSource).toContain('let bestDistance = kinds.has(\'AUDIO\') ? AUDIO_INSERT_THRESHOLD : TRACK_INSERT_THRESHOLD;');
     expect(timelineSource).toContain(
       'const trackInsertTarget = ref<TrackInsertTarget | null>(null);',
     );
-    expect(timelineSource).toContain(
-      'const trackInsertTargetFrom = (clientY: number): TrackInsertTarget | null => {',
-    );
+    expect(timelineSource).toContain('const trackInsertTargetFrom = (');
+    expect(timelineSource).toContain("kinds: ReadonlySet<TrackInsertTarget['kind']>,");
     expect(timelineSource).toContain('const first = bounds.top + VIDEO_CLIP_INSET - 4;');
     expect(timelineSource).toContain('for (let lane = 0; lane <= videoLaneCount.value; lane += 1)');
     // A caption row owns no video rows, so both of its edges create the first one.
     expect(timelineSource).toContain(
-      '{ lane: 0, top: bounds.top }, { lane: 0, top: bounds.bottom }',
+      "{ kind: 'VIDEO', lane: 0, top: bounds.top },\n        { kind: 'VIDEO', lane: 0, top: bounds.bottom },",
+    );
+    // A subtitle is the one thing that reads a caption border, and it reads it as a row of its own.
+    expect(timelineSource).toContain(
+      "const CAPTION_INSERT_KINDS: ReadonlySet<TrackInsertTarget['kind']> = new Set(['CAPTION']);",
+    );
+    expect(timelineSource).toContain(
+      "{ kind: 'CAPTION', lane, top: bounds.top },\n        { kind: 'CAPTION', lane: lane + 1, top: bounds.bottom },",
     );
     expect(timelineSource).toContain(
       "materialDropSlotId.value = target ? '' : slotIdFromDragEvent(event);",
@@ -607,9 +666,11 @@ describe('effect template mix workbench layout', () => {
       'insertMaterialTrack: [materialId: string, lane: number, start: number];',
     );
     expect(timelineSource).toContain(
-      "emit('insertMaterialTrack', materialId, target.lane, dropTimeFromClientX(event.clientX));",
+      "emit('insertMaterialTrack', materialId, target.lane, dropTimeFromClientX(event.clientX, false));",
     );
-    expect(timelineSource).toContain('const dropTimeFromClientX = (clientX: number): number => {');
+    expect(timelineSource).toContain('const dropTimeFromClientX = (clientX: number, snap = true): number => {');
+    // The magnet pulls a clip up against a neighbour's edge, which is not what a free placement wants.
+    expect(timelineSource).toContain('return snap ? snapTime(raw) : quantizeToFrame(raw);');
     // The guide is the vertical snap line laid on its side, and it lives on the canvas too.
     expect(timelineSource).toContain('v-if="trackInsertGuideTop !== null"');
     expect(timelineSource).toContain(':style="{ top: `${trackInsertGuideTop}px` }"');
@@ -619,22 +680,32 @@ describe('effect template mix workbench layout', () => {
     );
     // The editor scrolls the new row and clip into view through the exposed handle.
     expect(timelineSource).toContain(
-      'const scrollToLane = (lane: number, time: number): void => {',
+      'const scrollToLane = (lane: number, time: number, duration = 0): void => {',
     );
     expect(timelineSource).toContain('element.scrollTop = Math.max(');
     expect(timelineSource).toContain("syncTrackScroll('VIEWPORT');\n};");
+    // The whole clip has to be revealed, not just its head: one dropped near the right edge would
+    // otherwise come into view with its tail cut off, and one longer than the viewport keeps its head.
+    expect(timelineSource).toContain('const revealTimelineColumn = (time: number, duration: number): void => {');
+    expect(timelineSource).toContain('const right = left + Math.max(0, duration) * pixelsPerSecond.value;');
+    expect(timelineSource).toContain('if (right - left > element.clientWidth - margin * 2)');
     // The clip is an ordinary variant slot appended after the template's own.
     expect(pageSource).toContain(
       'const insertMaterialTrack = (materialId: string, lane: number, start: number): void => {',
     );
     expect(pageSource).toContain('@insert-material-track="insertMaterialTrack"');
-    expect(pageSource).toContain('scrollToLane: (lane: number, time: number) => void;');
+    expect(pageSource).toContain('scrollToLane: (lane: number, time: number, duration?: number) => void;');
     expect(pageSource).toContain('const EFFECT_TEMPLATE_MIX_PURPOSE_ROLES');
     expect(pageSource).toContain('variant.slots.push(slot);');
     expect(pageSource).toContain('variant.manualSlotIds.push(slot.id);');
-    // The picture stays linear: the clip takes a boundary and everything after it shifts right.
-    expect(pageSource).toContain('const insertAt = boundaries.reduce((best, candidate) =>');
-    expect(pageSource).toContain('variant.timelineStarts[range.id] = range.start + duration;');
+    // The clip is picture only, so it covers what it lands on instead of being spoken over it.
+    expect(pageSource).toContain('overlay: true,');
+    // Nothing under it moves: it starts exactly where it was dropped, and only the new clip is given a
+    // start, so the clips already placed keep the layout the packaging was confirmed against.
+    expect(pageSource).toContain('const insertAt = Math.max(0, start);');
+    expect(pageSource).not.toContain('timelineStarts[range.id] = range.start');
+    // The old ripple insert is gone: no clip is pushed along to make room for the new one.
+    expect(pageSource).not.toContain('boundaries.reduce');
     // A new row pushes the rows at and below it down, then the rows are compacted again.
     expect(pageSource).toContain(
       'if (current >= insertLane) variant.videoLanes[candidate.id] = current + 1;',
@@ -642,12 +713,216 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain(
       'normalizeVariantVideoLanes(variant);\n  clearDetachedTransitions(variant);',
     );
-    expect(pageSource).toContain('timelineRef.value?.scrollToLane(compactedLane, insertAt)');
+    expect(pageSource).toContain('timelineRef.value?.scrollToLane(compactedLane, insertAt, duration)');
     // Packaging refuses a clip it cannot narrate, so the editor refuses it first.
     expect(pageSource).toContain("'素材缺少已确认原始 Prompt，无法成片'");
     expect(pageSource).toContain("'素材不足 4 秒，无法新增轨道'");
     expect(timelineSource).not.toContain('clientYInVideoTrack');
     expect(timelineSource).not.toContain('nextFreeVideoLane');
+    // The row a border opens depends on what is being dragged, and that is the whole of the rule that
+    // keeps music under the picture: a video drag can never see an audio border, or the other way.
+    expect(timelineSource).toContain("const VIDEO_INSERT_KINDS: ReadonlySet<TrackInsertTarget['kind']> = new Set(['VIDEO']);");
+    expect(timelineSource).toContain("const AUDIO_INSERT_KINDS: ReadonlySet<TrackInsertTarget['kind']> = new Set(['AUDIO']);");
+    expect(timelineSource).toContain('if (videoElement && kinds.has(\'VIDEO\')) {');
+    expect(timelineSource).toContain("if (kinds.has('AUDIO')) {");
+    // The row below the last one has no top edge of its own, so the bottom edge opens it.
+    expect(timelineSource).toContain(
+      "{ kind: 'AUDIO', row, top: bounds.top },\n        { kind: 'AUDIO', row: row + 1, top: bounds.bottom },",
+    );
+    expect(timelineSource).toContain(
+      'const onMusicTrackDragOver = (event: DragEvent, track: AudioTrack): void => {',
+    );
+    expect(timelineSource).toContain(
+      'const target = trackInsertTargetFrom(event.clientY, AUDIO_INSERT_KINDS);',
+    );
+    expect(timelineSource).toContain('musicDropRow.value = target || clipId ? null : audioRowOfKey(track);');
+    expect(timelineSource).toContain("...(target?.kind === 'AUDIO' ? { insertRow: target.row } : {}),");
+  });
+  it('lets an existing clip and a music track open a row on the border they were dropped on', () => {
+    // Dragging a clip already on the timeline sees the same borders a library clip does, but only a
+    // single one can use it: a group slides rigidly and has no one row to open for the whole of it.
+    expect(timelineSource).toContain(
+      'const border =\n    drag.selectedSlotIds.length === 1 ? trackInsertTargetFrom(clientY, VIDEO_INSERT_KINDS) : null;',
+    );
+    expect(timelineSource).toContain("drag.insertLane = border?.kind === 'VIDEO' ? border.lane : null;");
+    // A border drop and a row drop are different answers, so the row index alone cannot carry it.
+    expect(timelineSource).toContain(
+      'moveClip: [slotId: string, start: number, lane: number, insertLane?: number];',
+    );
+    expect(timelineSource).toContain(
+      "emit('moveClip', moves[0].slotId, moves[0].start, moves[0].lane, drag.insertLane ?? undefined);",
+    );
+    expect(pageSource).toContain(
+      'const moveTimelineClip = (\n  slotId: string,\n  start: number,\n  lane: number,\n  insertLane?: number,\n): void => moveTimelineClips([{ slotId, start, lane, insertLane }]);',
+    );
+    // A border asks for a row of its own rather than a row to sit in, so it never looks for a free one.
+    expect(pageSource).toContain(
+      'insertLane !== undefined || nextLane < currentLane,',
+    );
+    // A music track dropped on a border opens an audio row: the rows from there down move one
+    // further, and the track takes the row that was made.
+    expect(pageSource).toContain('insertRow?: number | undefined;');
+    expect(pageSource).toContain('if (music.insertRow === undefined) {');
+    expect(pageSource).toContain('const row = Math.max(0, Math.round(music.insertRow));');
+    expect(pageSource).toContain('if (lane >= row) variant.audioLanes[ref.id] = lane + 1;');
+    // An existing audio clip reads the same audio borders a library track does, and a subtitle reads
+    // the caption ones — the only borders that can give a caption a row of its own.
+    expect(timelineSource).toContain(
+      'drag.id.startsWith(\'caption:\') ? CAPTION_INSERT_KINDS : AUDIO_INSERT_KINDS,',
+    );
+    expect(timelineSource).toContain("drag.insertRow = insertTarget?.kind === 'AUDIO' ? insertTarget.row : null;");
+    expect(timelineSource).toContain("drag.insertCaptionTrack = insertTarget?.kind === 'CAPTION';");
+    expect(timelineSource).toContain('insertRow: number | null;\n  /** The caption row border the pointer is on: the subtitle is given a row of its own there. */\n  insertCaptionTrack: boolean;');
+    // Let go on a border, the row it opens is the answer; the row under the pointer is not consulted.
+    expect(timelineSource).toContain(
+      'moveAudioClip: [clipId: string, start: number, row?: number, insertRow?: number];',
+    );
+    expect(timelineSource).toContain(
+      "emit('moveAudioClip', audio.id, audio.currentStart, audio.insertRow, audio.insertRow);",
+    );
+    expect(pageSource).toContain(
+      'insertRow === undefined\n        ? resolveAudioPlacement(',
+    );
+    expect(pageSource).toContain(
+      'movePackagingAudios([\n    row === undefined\n      ? { clipId, start }\n      : { clipId, row, start, ...(insertRow === undefined ? {} : { insertRow }) },\n  ]);',
+    );
+    // The view only forces the vertical position: the clip was just let go under the pointer, so
+    // scrolling sideways would carry it away from where the user dropped it.
+    expect(timelineSource).not.toContain('clientWidth / 3');
+    expect(timelineSource).toContain('else if (left < element.scrollLeft + margin) element.scrollLeft = Math.max(0, left - margin);');
+  });
+  it('gives a subtitle its own row and lets a music track replace a clip it was dropped on', () => {
+    // A caption row is derived from the caption's track, so a new row is a new track and nothing else.
+    expect(timelineSource).toContain(
+      "splitCaptionTrack: [captionId: string, start: number];",
+    );
+    expect(timelineSource).toContain(
+      "emit('splitCaptionTrack', audio.id.slice('caption:'.length), audio.currentStart);",
+    );
+    expect(pageSource).toContain('@split-caption-track="splitCaptionTrack"');
+    expect(pageSource).toContain('const splitCaptionTrack = (captionId: string, start: number): void => {');
+    expect(pageSource).toContain('const trackId = `subtitle-track-${Date.now()');
+    // The subtitle keeps its own length; only the row and the time were asked for.
+    expect(pageSource).toContain('const length = Math.max(1 / TIMELINE_FPS, caption.end - caption.start);');
+    // A checkpoint caption goes through the packaging editor, which is what captures the baseline the
+    // save is diffed against — writing it straight onto the checkpoint would never be persisted.
+    expect(pageSource).toContain('editPackagingAudio((checkpoint) => {\n      const target = checkpoint.captions?.find((item) => item.id === captionId);');
+    // Caption rows are separate strips, so the row is measured from the first strip plus its lane.
+    expect(timelineSource).toContain('const scrollToCaption = (captionId: string, time: number, duration = 0): void => {');
+    expect(timelineSource).toContain('element.scrollTop = Math.max(\n      0,\n      rowTop - element.clientHeight / 2 + CAPTION_LANE_HEIGHT / 2,\n    );');
+    expect(timelineSource).toContain('scrollToCaption,\n  scrollToLane,');
+    expect(pageSource).toContain('scrollToCaption: (captionId: string, time: number, duration?: number) => void;');
+    expect(pageSource).toContain('timelineRef.value?.scrollToCaption(captionId, next, length)');
+    // A library track let go on top of a clip takes its place instead of opening a row beside it.
+    expect(timelineSource).toContain(
+      'replaceAudioWithMusic: [clipId: string, music: MusicAssetDrop];',
+    );
+    expect(timelineSource).toContain("if (replaceClipId) {\n    emit('replaceAudioWithMusic', replaceClipId, data);");
+    expect(timelineSource).toContain('const musicDropClipId = ref(\'\');');
+    // The clip under the pointer is read from the drag itself, the same way the video track reads it,
+    // and the row's own padding falls back to the pointer's time.
+    expect(timelineSource).toContain(
+      "event.target instanceof Element ? event.target.closest<HTMLElement>('.audio-clip') : null;",
+    );
+    expect(timelineSource).toContain('if (target?.dataset.audioId) return target.dataset.audioId;');
+    expect(timelineSource).toContain('const time = dropTimeFromClientX(event.clientX, false);');
+    // Only a clip the draft owns the source of can be swapped — every other audio clip is a packaging
+    // checkpoint the server will not take a new file for, so dimming it would promise a drop that the
+    // workbench then turns down. Those fall back to the row and the track lands beside them.
+    expect(timelineSource).toContain(
+      'const replaceableAudioClipId = (clipId: string): string =>\n  clipId.startsWith(\'detached:\') ? clipId : \'\';',
+    );
+    expect(timelineSource).toContain(
+      "const clipId = target ? '' : replaceableAudioClipId(audioClipIdAtPoint(event, track));",
+    );
+    expect(timelineSource).toContain('musicDropClipId.value = clipId;');
+    expect(pageSource).toContain('@replace-audio-with-music="replaceAudioWithMusic"');
+    expect(pageSource).toContain('const replaceAudioWithMusic = (');
+    // The replacement fits the hole rather than the other way round, so a short track is refused.
+    expect(pageSource).toContain("showNotice(`${music.name} 短于被覆盖的片段，无法替换`, 'warning');");
+    expect(pageSource).toContain('audio.offset = 0;');
+    // The clip that would be replaced is the one that says so: dimmed, and outlined.
+    expect(timelineSource).toContain("'is-material-target': musicDropClipId === audio.id,");
+    expect(timelineSource).toContain('.audio-clip.is-material-target::before');
+    expect(timelineSource).toContain('background: rgba(15, 23, 42, 0.5);');
+  });
+  it('shows a music track dropped on an audio row border, and the row it opened', () => {
+    // Where the audio sits is the editor's arrangement and survives a packaging, exactly as a clip
+    // moved between rows does — only a frozen template or a run in flight refuses the drop. Gating on
+    // the template lock made the audio rows read-only in the very state the rest of them are editable.
+    expect(pageSource).toContain(
+      'const addMusicAssetToTimeline = (music: {',
+    );
+    expect(pageSource).toContain('if (!variant || projectEditLocked.value) return;');
+    expect(pageSource).toContain(
+      'if (!Number.isFinite(music.duration) || music.duration <= 0) return;',
+    );
+    expect(pageSource).not.toContain('if (!variant || templateEditLocked.value) return;');
+    // A row opened below the last one is off the bottom of the viewport, so the drop would read as
+    // "nothing happened" until the user scrolled. The row is measured from its own element rather
+    // than from a pitch, because the rows above it are only one lane tall.
+    expect(timelineSource).toContain(
+      'const scrollToAudioRow = (row: number, time: number, duration = 0): void => {',
+    );
+    expect(timelineSource).toContain(
+      'audioTrackElements.get(audioRowKey(Math.max(0, Math.round(row))))?.getBoundingClientRect()',
+    );
+    expect(timelineSource).toContain('revealTimelineColumn(time, duration);');
+    expect(timelineSource).toContain('scrollToAudioRow,\n  scrollToCaption,\n  scrollToLane,');
+    expect(pageSource).toContain(
+      'scrollToAudioRow: (row: number, time: number, duration?: number) => void;',
+    );
+    expect(pageSource).toContain('timelineRef.value?.scrollToAudioRow(landedRow, start, duration)');
+  });
+  it('drags a subtitle exactly like a video clip, and deletes the audio clip that is selected', () => {
+    // `?raw` hands back the worktree file, and `core.autocrlf` makes that CRLF while the committed
+    // file is LF, so the multi-line assertions below read a normalised copy: git rewrites the file
+    // on `git add` anyway, and this keeps the check honest on a Windows checkout too.
+    const timelineText = timelineSource.split('\r\n').join('\n');
+    const pageText = pageSource.split('\r\n').join('\n');
+    // One snap rule for every block: the caption-only exception that suppressed the vertical guide is
+    // gone, so a subtitle catches the same edges with the same line saying what it caught.
+    expect(timelineText).not.toContain('snapGuideTime.value = null;\n      }');
+    expect(timelineText).toContain(
+      "const snapped = snapDraggedBlock(\n        requested,\n        drag.initialDuration,\n        new Set([drag.id, ...dragGroupIds(drag.id)]),\n        { maxStart, minStart: drag.minStart },\n      );",
+    );
+    // The three landings that mint a track, and the plain time move that does not.
+    expect(timelineText).toContain(
+      'audio.insertCaptionTrack ||\n            rowChanged ||\n            captionOverlapsOwnTrack(audio.id, audio.currentStart, audio.initialDuration)',
+    );
+    expect(timelineText).toContain('else emit(\'moveAudioClip\', audio.id, audio.currentStart);');
+    // A track of its own is editor geometry, so the editor writes it for either kind of card — the
+    // server used to drop it silently, which is why a subtitle could never leave its row.
+    expect(pageText).toContain('const trackId = `subtitle-track-${Date.now()');
+    // Audio selection is authoritative: falling through to the video slot is what made Delete on a
+    // narration remove an unrelated slot, or nothing at all.
+    expect(pageText).toContain('const deleteSelectedAudioClips = (clipIds: string[]): void => {');
+    expect(pageText).toContain('if (selectedAudioClipIds.value.length) {\n    deleteSelectedAudioClips([...selectedAudioClipIds.value]);\n    return;\n  }');
+    expect(pageText).toContain('if (removesMusic) delete next.music;');
+    expect(pageText).toContain('if (removesVoice) for (const id of voiceIds) delete next.voices?.[id];');
+    expect(pageText).toContain('delete next.captionVoices?.[id];');
+    // A narration is an optional overlay on its line, so it deletes like any other clip: the line and
+    // its subtitle stay. Only an id the checkpoint does not know is refused, out loud.
+    expect(pageText).not.toContain('口播由脚本行生成，不能删除');
+    expect(pageText).toContain("showNotice('该音频片段不能删除', 'warning');");
+    // A stale packaging shows its captions but does not accept edits, and that refusal has to be
+    // visible too.
+    expect(pageText).toContain("showNotice('当前包装已过期或未完成，字幕不可编辑', 'warning');");
+    // The three places that select an audio clip directly bypass the timeline's own selection, so a
+    // stale caption set would otherwise still be what Delete acts on.
+    expect(pageText).toContain(
+      'selectedCaptionIds.value = [];\n    selectedAudioClipIds.value = [`detached:${audio.id}`];',
+    );
+    expect(pageText).toContain(
+      'selectedCaptionIds.value = [];\n  selectedAudioClipIds.value = [`detached:${audio.id}`];',
+    );
+    expect(pageText).toContain(
+      'selectedCaptionIds.value = [];\n  selectedAudioClipIds.value = [`detached:${pasted.id}`];',
+    );
+    // A removed bed is sent as its own flag, and a removed caption narration as the keys that went.
+    expect(pageText).toContain('const removeMusic = Boolean(baseline.music) && !current.music;');
+    expect(pageText).toContain('...(diff.removeMusic ? { removeMusic: true } : {}),');
+    expect(pageText).toContain('...(diff.removedCaptionVoices.length');
   });
   it('renders captions as standalone cards, in the preview and as an editable row', () => {
     // Each caption is its own selectable card with a fixed type icon on the left.
@@ -819,8 +1094,12 @@ describe('effect template mix workbench layout', () => {
       'if (!audioGroupIds().includes(audio.id)) selectAudio(audio.id);',
     );
     // A set slides rigidly: the shared delta is bounded by whichever block leaves the timeline first.
-    expect(timelineSource).toContain('const shared = Math.min(');
-    expect(timelineSource).toContain('timelineDuration.value - latest,');
+    // Only that left-hand bound survives — the film grows to whatever the set is dragged out to, so
+    // capping the set at the film's current length would fence it where a single clip is free.
+    expect(timelineSource).toContain(
+      'const shared = Math.max(delta, -earliest);\n        const moves = clips.map((clip) => ({',
+    );
+    expect(timelineSource).not.toContain('timelineDuration.value - latest,');
     // One gesture, one event: the set is reported together so the workbench can resolve the rows
     // atomically instead of applying the members one at a time.
     expect(timelineSource).toContain("if (moves.length > 1) emit('moveAudioClips', moves);");
@@ -832,18 +1111,21 @@ describe('effect template mix workbench layout', () => {
     // and the row it rounds to is deliberately unclamped, so dropping past the last row opens a
     // new one. A caption has no row, so it omits the row argument.
     expect(timelineSource).toContain('const audioAreaTop = (): number =>');
+    // A subtitle travels its own, shorter rows, measured against the caption area rather than the audio
+    // one: the two areas are stacked and only one of them is under the pointer.
+    expect(timelineSource).toContain('const areaTop = caption ? captionAreaTop() : audioAreaTop();');
+    expect(timelineSource).toContain('const rowHeight = caption ? CAPTION_LANE_HEIGHT : AUDIO_LANE_HEIGHT;');
+    expect(timelineSource).toContain('const clipHeight = caption ? CAPTION_CLIP_HEIGHT : AUDIO_CLIP_HEIGHT;');
     expect(timelineSource).toContain(
-      'const pointerTop = event.clientY - areaTop - (AUDIO_CLIP_INSET + AUDIO_CLIP_HEIGHT / 2);',
+      'const pointerTop = event.clientY - areaTop - (AUDIO_CLIP_INSET + clipHeight / 2);',
     );
     expect(timelineSource).toContain('drag.ghostTop = AUDIO_CLIP_INSET + pointerTop;');
+    expect(timelineSource).toContain('drag.currentRow = Math.round(pointerTop / rowHeight);');
     expect(timelineSource).toContain(
-      'drag.currentRow = Math.round(pointerTop / AUDIO_LANE_HEIGHT);',
+      'const rowDelta = rowMove && !isCaption ? audio.currentRow - audio.initialRows[audio.id]! : 0;',
     );
     expect(timelineSource).toContain(
-      'const rowDelta = rowMove ? audio.currentRow - audio.initialRows[audio.id]! : 0;',
-    );
-    expect(timelineSource).toContain(
-      'moveAudioClip: [clipId: string, start: number, row?: number];',
+      'moveAudioClip: [clipId: string, start: number, row?: number, insertRow?: number];',
     );
     // The workbench compacts the stored rows before resolving a drop, so the row the timeline drew
     // and the lane it stores mean the same thing.
@@ -879,6 +1161,109 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain(
       "else for (const id of group) emit('changeAudioVolume', id, audio.currentVolume);",
     );
+  });
+  it('generates a narration for one caption from the font-size row and lands it on an audio row', () => {
+    // The button sits beside the font stepper and belongs to the lone-caption branch: a narration
+    // speaks one subtitle, so a multi-selection has nothing to offer it.
+    expect(pageSource).toContain("{{ captionVoiceBusy ? '生成中…' : '生成口播' }}");
+    expect(pageSource).toContain(':disabled="!captionVoiceReady"');
+    expect(pageSource).toContain('@click="generateCaptionVoice"');
+    expect(pageSource.indexOf("'生成口播'")).toBeLessThan(
+      pageSource.indexOf('已选中 {{ selectedCaptionIds.length }} 条字幕'),
+    );
+    // The steppers are square glyphs, but this button carries a label, so it must size to its text
+    // instead of inheriting the 22px square and clipping the words.
+    expect(pageSource).toContain('.caption-font-size button.caption-voice-generate {');
+    expect(pageSource).toContain('white-space: nowrap;');
+    // The text box is capped rather than left to eat the row, so the controls beside it stay visible.
+    expect(pageSource).toContain('max-width: 320px;');
+    // The caption's text is debounced, so the save is flushed before the request: the server
+    // asserts the text it is given against the caption it stored.
+    expect(pageSource).toContain('const generateCaptionVoice = async (): Promise<void> => {');
+    expect(pageSource).toContain('await flushAudioEdit();');
+    expect(pageSource).toContain('await createEffectCaptionVoice(props.projectId, packaging.runId,');
+    // The worker answers out of band, so the arrival is watched for on the polled checkpoint and
+    // the clip is placed only then.
+    expect(pageSource).toContain('const pendingCaptionVoice = ref<{ itemId: string;');
+    expect(pageSource).toContain(
+      '() => selectedPackaging.value?.checkpoint.captionVoices,',
+    );
+    expect(pageSource).toContain(
+      'placeGeneratedCaptionVoice(`capvoice:${pending.captionId}`, audio.start);',
+    );
+    // A generated clip already sits at its caption's start, so `movePackagingAudios` would see no
+    // change and drop the row insert — the placement resolves the row directly instead.
+    expect(pageSource).toContain(
+      'const placeGeneratedCaptionVoice = (clipId: string, start: number): void => {',
+    );
+    expect(pageSource).toContain(
+      'DEFAULT_AUDIO_LANE.VOICE,\n    new Set([clipId]),',
+    );
+    expect(pageSource).toContain('if (laneOf(placement.clipId) >= resolved.insertRowAt) {');
+    // The clip id carries its own namespace, so one resolver decides both which checkpoint
+    // collection an edit writes and which one a placement reads.
+    expect(pageSource).toContain("| { kind: 'CAPTION_VOICE'; key: string }");
+    expect(pageSource).toContain(
+      "if (clipId.startsWith('capvoice:')) return { kind: 'CAPTION_VOICE', key: clipId.slice(9) };",
+    );
+    expect(pageSource).toContain('checkpoint.captionVoices?.[target.key]');
+    expect(pageSource).toContain('captionVoices: diff.captionVoices');
+    // A deleted clip is a key that was there and is not any more: the geometry diff cannot see it,
+    // because there is no current entry left to compare, so removals are diffed by key instead.
+    expect(pageSource).toContain('const removedCaptionVoices = Object.keys(baseline.captionVoices ?? {}).filter(');
+    expect(pageSource).toContain(
+      'const removedVoices = Object.keys(baseline.voices ?? {}).filter(',
+    );
+    expect(pageSource).toContain('!removedVoices.length &&');
+    expect(pageSource).toContain('    removedVoices,');
+    // A deleted narration travels the same way, and it is the only removal the editor can express
+    // that keeps the clip's line and subtitle in place.
+    expect(pageSource).toContain('...(diff.removedVoices.length ? { removedVoices: diff.removedVoices } : {}),');
+    // The timeline draws the clip and names it apart from a script line's 口播草稿.
+    expect(timelineSource).toContain("ref.id.startsWith('capvoice:')");
+    expect(timelineSource).toContain('checkpoint.captionVoices?.[captionId]');
+    expect(timelineSource).toContain("'字幕口播'");
+    expect(timelineSource).toContain(
+      "checkpoint.captions?.find((caption) => caption.id === captionId)?.text",
+    );
+    expect(timelineSource).toContain("if (!source && audioId.startsWith('capvoice:')) {");
+    // Membership stays decided in one place: the shared clip list is what makes the row exist.
+    expect(audioLanesSource).toContain('id: `capvoice:${id}`');
+    expect(audioLanesSource).toContain(
+      'Object.keys(packaging.checkpoint.captionVoices ?? {}).length > 0',
+    );
+  });
+  it('gives Space to the player instead of to a focused track button', () => {
+    // Clicking a track's mute leaves it focused. Letting a focused button own Space meant the next
+    // Space re-toggled the mute; inside the timeline Space is the player's, and Enter still
+    // activates whatever button the user tabbed to.
+    expect(pageSource).toContain("!target?.closest('.mix-timeline-shell') &&");
+    expect(pageSource).toContain("(event.code === 'Space' || event.key === 'Enter');");
+    expect(pageSource).toContain('if (!event.repeat) togglePreviewPlayback();');
+    // The exclusion is scoped to the timeline, so a button anywhere else keeps the browser default.
+    expect(pageSource).not.toContain("!target?.closest('.track-actions')");
+  });
+  it('lets a caption narration light the sound meter like any other packaging clip', () => {
+    // The clip is a packaging voice like the script-line ones, so the meter has to count it or it
+    // reads "当前无声音" while the narration is the only thing playing.
+    expect(pageSource).toContain('Object.keys(checkpoint.captionVoices ?? {}).length ||');
+    expect(pageSource).toContain('!mutedAudioClip(`capvoice:${captionId}`) && active(audio),');
+    expect(pageSource).toContain('return voice || music || captionVoice || detached;');
+  });
+  it('keeps the voice switchable after packaging while the slot configuration stays locked', () => {
+    // The voice only feeds future packaging and voice redos, so it is released as soon as the run
+    // finishes rather than staying pinned by the one-way packaging lock.
+    expect(pageSource).toContain('const voiceSelectLocked = computed(() => projectEditLocked.value);');
+    expect(pageSource).toContain(':disabled="voiceSelectLocked"');
+    expect(pageSource).toContain('if (voiceSelectLocked.value) return;');
+    // Everything else keeps the stricter lock, which is what still holds after a completed run.
+    expect(pageSource).toContain(
+      'const templateEditLocked = computed(() => projectEditLocked.value || packagingLocked.value);',
+    );
+    expect(pageSource).toContain(':disabled="templateEditLocked"');
+    // The banner must not claim the whole template configuration is frozen any more.
+    expect(pageSource).toContain('音色仍可切换');
+    expect(pageSource).not.toContain('模板配置和常规智能填充已锁定');
   });
   it('edits volume, fade-in and fade-out for a voice/BGM selection from one standard', () => {
     // The timeline reports the whole voice/music set, captions excluded: they own the font stepper.
@@ -956,10 +1341,10 @@ describe('effect template mix workbench layout', () => {
     // A shorter clip in the set cannot hold the standard's pair, so each edge is capped by what the
     // clip's other, already-committed edge leaves — never past its own end.
     expect(pageSource).toContain(
-      "const room = Math.max(0, audio.duration - packagingAudioFade(audio, target.kind, 'fadeOut'));",
+      "const room = Math.max(0, audio.duration - packagingAudioFade(audio, kind, 'fadeOut'));",
     );
     expect(pageSource).toContain(
-      "const room = Math.max(0, audio.duration - packagingAudioFade(audio, target.kind, 'fadeIn'));",
+      "const room = Math.max(0, audio.duration - packagingAudioFade(audio, kind, 'fadeIn'));",
     );
     expect(pageSource).toContain('const fadeIn = Math.min(values.fadeIn ?? 0, room);');
     expect(pageSource).toContain('const fadeOut = Math.min(values.fadeOut ?? 0, room);');
@@ -1143,5 +1528,21 @@ describe('effect template mix workbench layout', () => {
     expect(thumbnailCacheSource).toContain('retryAfter.set(key');
     expect(thumbnailCacheSource).toContain("video.addEventListener('canplay', capture)");
     expect(thumbnailCacheSource).not.toContain('failedKeys');
+  });
+  it('dims a hidden track, hatches a locked one and washes out a muted video track', () => {
+    // Hiding a lane is a whole-lane state, so the lane itself dims — and the caption lane's own row
+    // gradient has to be overridden for it to dim with the others. A mid slate, not black: the lane
+    // is switched off, not deleted.
+    expect(timelineSource).toContain('.timeline-track.caption-track.is-hidden {');
+    expect(timelineSource).toContain('background: #8f9aab;');
+    expect(timelineSource).toContain('filter: grayscale(1);');
+    // Locking already rejects every edit through the trackLocked guards, so the hatch is what makes
+    // it visible; it must not swallow the pointer those guards need to see.
+    expect(timelineSource).toContain('.timeline-track.is-locked::after {');
+    expect(timelineSource).toContain('rgba(38, 59, 89, 0.16) 0 6px,');
+    // The video track's speaker washes out the audio strip at the clip's foot and leaves the picture
+    // alone, which is what "声音关闭" means.
+    expect(timelineSource).toContain("'is-muted': trackMuted('VIDEO'),");
+    expect(timelineSource).toContain('.video-clip.is-muted .clip-waveform {');
   });
 });

@@ -1,4 +1,5 @@
 import type {
+  EffectTemplateMixCaption,
   EffectTemplateMixPurpose,
   EffectTemplateMixRole,
   EffectTemplateMixSlot,
@@ -6,9 +7,15 @@ import type {
   EffectTemplateMixWorkspace,
   EffectTemplateMixTemplateEntry,
 } from '@ai-marketing/contracts';
-import { EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION } from '@ai-marketing/contracts';
+import {
+  EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION,
+  syncEffectTemplateMixVariantSlots,
+} from '@ai-marketing/contracts';
 export type * from '@ai-marketing/contracts';
-export { EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION } from '@ai-marketing/contracts';
+export {
+  EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION,
+  syncEffectTemplateMixVariantSlots,
+} from '@ai-marketing/contracts';
 
 export const EFFECT_TEMPLATE_MIX_ROLE_LABELS: Record<EffectTemplateMixRole, string> = {
   END: '片尾转化',
@@ -365,7 +372,7 @@ export const markEffectTemplateMixChanged = (
   workspace.template.editVersion++;
   for (const variant of workspace.variants) {
     if (variant.id === selectedVariantId) {
-      variant.slots = cloneMix(workspace.template.slots);
+      variant.slots = syncEffectTemplateMixVariantSlots(workspace.template.slots, variant.slots);
       variant.appliedTemplateVersion = workspace.template.editVersion;
       variant.status = 'CURRENT';
     } else variant.status = 'PENDING';
@@ -394,6 +401,46 @@ export const effectTemplateMixTiming = (
     return { id: slot.id, start, end: ticks / 10 };
   });
   return { duration: ticks / 10, slots: positions };
+};
+type CaptionLaneInput = Pick<EffectTemplateMixCaption, 'id' | 'start' | 'end'> &
+  Partial<Pick<EffectTemplateMixCaption, 'manual' | 'trackId'>>;
+
+/** Keep explicit subtitle tracks on separate lanes, placing the newest user track above legacy captions. */
+export const assignEffectTemplateMixCaptionLanes = (
+  captions: readonly CaptionLaneInput[],
+  fps: number,
+): Map<string, number> => {
+  type Group = { key: string; order: number; rows: CaptionLaneInput[] };
+  const groups = new Map<string, Group>();
+  for (const caption of captions) {
+    const key = caption.trackId
+      ? `track:${caption.trackId}`
+      : caption.manual
+        ? `manual:${caption.id}`
+        : 'legacy-generated';
+    const order = caption.trackId ? 0 : caption.manual ? 1 : 2;
+    const group = groups.get(key) ?? { key, order, rows: [] };
+    group.rows.push(caption);
+    groups.set(key, group);
+  }
+  const sortedGroups = [...groups.values()].sort(
+    (left, right) => left.order - right.order || right.key.localeCompare(left.key),
+  );
+  const lanes = new Map<string, number>();
+  let laneOffset = 0;
+  for (const group of sortedGroups) {
+    const laneEnds: number[] = [];
+    for (const caption of [...group.rows].sort(
+      (left, right) => left.start - right.start || left.id.localeCompare(right.id),
+    )) {
+      const available = laneEnds.findIndex((end) => end <= caption.start + 1 / fps);
+      const localLane = available >= 0 ? available : laneEnds.length;
+      laneEnds[localLane] = Math.max(caption.start, caption.end);
+      lanes.set(caption.id, laneOffset + localLane);
+    }
+    laneOffset += Math.max(1, laneEnds.length);
+  }
+  return lanes;
 };
 export const formatEffectTemplateMixTime = (seconds: number): string => {
   const ticks = Math.max(0, Math.round(seconds * 10));
