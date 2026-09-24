@@ -21,7 +21,10 @@ export const effectTemplateMixTransitionPresentation = (
   const incomingOpacity = String(progress);
   const outgoingOpacity = String(1 - progress);
   const crossfade = {
-    outgoing: { opacity: outgoingOpacity },
+    // Keep the outgoing frame fully opaque and fade the incoming frame over it.
+    // Fading both layers independently exposes the black stage underneath and
+    // makes the midpoint visibly darker than the exported xfade result.
+    outgoing: { opacity: '1' },
     incoming: { opacity: incomingOpacity },
   };
 

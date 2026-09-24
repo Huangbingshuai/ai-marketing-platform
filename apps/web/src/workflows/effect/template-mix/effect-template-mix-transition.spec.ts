@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { effectTemplateMixTransitionPresentation } from './effect-template-mix-transition';
 
 describe('effect template mix transition presentation', () => {
-  it('crossfades both clips through the complete progress range', () => {
-    const presentation = effectTemplateMixTransitionPresentation('叠化', 0.25);
-    expect(presentation.outgoing.opacity).toBe('0.75');
-    expect(presentation.incoming.opacity).toBe('0.25');
+  it('fades the incoming clip over an opaque outgoing frame without revealing the stage background', () => {
+    for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
+      const presentation = effectTemplateMixTransitionPresentation('叠化', progress);
+      expect(presentation.outgoing.opacity).toBe('1');
+      expect(presentation.incoming.opacity).toBe(String(progress));
+    }
   });
 
   it('keeps directional transitions on two independent layers', () => {
