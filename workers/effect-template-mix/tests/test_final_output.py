@@ -57,6 +57,49 @@ def test_segmented_subtitles_burn_as_two_separate_events() -> None:
     assert '，' not in ''.join(events)
 
 
+def test_manual_subtitle_lane_can_overlap_narration_but_skips_empty_drafts() -> None:
+    captions = [
+        {'id': 'voice-caption', 'text': '口播字幕', 'start': 0, 'end': 3},
+        {'id': 'manual-title', 'manual': True, 'text': '自定义标题', 'start': 0, 'end': 3},
+    ]
+    events = [line for line in captions_ass(captions, 720, 960, 4).splitlines()
+              if line.startswith('Dialogue:')]
+    assert len(events) == 2
+    assert any(line.endswith('口播字幕') for line in events)
+    assert any(line.endswith('自定义标题') for line in events)
+    assert not any(line.startswith('Dialogue:') for line in captions_ass([
+        {'id': 'manual-empty', 'manual': True, 'text': '', 'start': 0, 'end': 3},
+    ], 720, 960, 4).splitlines())
+    # One row still holds one card at a time, so two cards that share a track may not overlap.
+    with pytest.raises(PackagingError):
+        captions_ass(captions + [
+            {'id': 'overlap-a', 'text': '重叠甲', 'start': 2, 'end': 4, 'trackId': 'title-row'},
+            {'id': 'overlap-b', 'text': '重叠乙', 'start': 2, 'end': 4, 'trackId': 'title-row'},
+        ], 720, 960, 4)
+
+
+def test_subtitles_share_a_row_only_when_they_share_a_track() -> None:
+    """The row a card is drawn on is the unit the editor packs, the checkpoint validates and the
+    renderer checks, so a card is free to overlap anything that is not on its own row."""
+    # Two cards on different explicit tracks are on screen together, by design.
+    events = [line for line in captions_ass([
+        {'id': 'a', 'text': '甲', 'start': 0, 'end': 3, 'trackId': 'row-1'},
+        {'id': 'b', 'text': '乙', 'start': 2, 'end': 4, 'trackId': 'row-2'},
+    ], 720, 960, 4).splitlines() if line.startswith('Dialogue:')]
+    assert len(events) == 2
+    # The legacy narration row is a row like any other, so two untouched cards still may not overlap.
+    with pytest.raises(PackagingError):
+        captions_ass([
+            {'id': 'a', 'text': '甲', 'start': 0, 'end': 3},
+            {'id': 'b', 'text': '乙', 'start': 2, 'end': 4},
+        ], 720, 960, 4)
+    # And a row may not run off the end of the film, however it is keyed.
+    with pytest.raises(PackagingError):
+        captions_ass([
+            {'id': 'a', 'text': '甲', 'start': 0, 'end': 5, 'trackId': 'row-1'},
+        ], 720, 960, 4)
+
+
 def test_caption_box_moves_wraps_and_scales_one_event() -> None:
     caption = [{'id': 'a1', 'text': '限时五折优惠活动今天最后一天抓紧时间下单抢购', 'start': .2, 'end': .9}]
     # 0.25 of 720 puts the block centre at 180; a 0.4 wrap is 288px, so margins are 36/396.
@@ -486,6 +529,153 @@ async def test_untouched_audio_keeps_the_pre_fade_filter_graph(tmp_path: Path, m
     assert voice.endswith('adelay=1200:all=1[voice0]') and 'afade' not in voice
     # The music bed falls back to min(0.5, length / 2).
     assert 'afade=t=in:st=1.0:d=0.5' in music and 'afade=t=out:st=2.0:d=0.5' in music
+
+
+async def test_a_deleted_music_bed_renders_a_voice_only_mix(tmp_path: Path, monkeypatch: Any) -> None:
+    """The editor may delete the packaged bed, so its absence is a normal checkpoint, not a broken
+    one: the mix loses an input and the film keeps its length."""
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1.2, 'duration': .5, 'volume': .8, 'offset': .2}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .12})
+    del snapshot['packaging']['music']
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav'},
+        tmp_path, AsyncMock())
+    assert not any(f.endswith('[music]') for f in filters)
+    mix = next(f for f in filters if f.endswith('[audio]'))
+    assert mix.startswith('[original][voice0]')
+    assert 'amix=inputs=2:normalize=0:duration=longest,' in mix
+    # Nothing left to duck, and the narration still lands where the editor put it.
+    assert 'volume=' in next(f for f in filters if f.endswith('[voice0]'))
+    assert 'atrim=duration=4.0[audio]' in mix
+
+
+async def test_a_deleted_narration_leaves_a_silent_span_and_keeps_its_subtitle(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    """The editor may delete one narration and keep its script line, so the film plays that span
+    silently while the subtitle it was voiced from is still burned in."""
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 0, 'duration': .5, 'volume': 1}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .12})
+    # `voices` is a keyed map, so a deleted narration is simply the key going away.
+    del snapshot['packaging']['voices']['line']
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'music': tmp_path / 'music.wav'},
+        tmp_path, AsyncMock())
+    # Nothing to mix in for that line, and nothing left to duck the bed either.
+    assert not any(f.endswith('[voice0]') for f in filters)
+    assert not any('between(' in f for f in filters if f.endswith('[music]'))
+    mix = next(f for f in filters if f.endswith('[audio]'))
+    assert mix.startswith('[original][music]')
+    assert 'amix=inputs=2:normalize=0:duration=longest,' in mix
+    assert 'atrim=duration=4.0[audio]' in mix
+    # The subtitle is untouched: deleting the narration must not take it with it.
+    ass = captions_ass(snapshot['packaging']['captions'], 720, 960, 4)
+    assert '本地测试字幕' in ass
+
+
+async def test_caption_narration_mixes_like_a_narration_line(tmp_path: Path, monkeypatch: Any) -> None:
+    """A caption narration the editor generated ducks the music and takes its own amix input."""
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 0, 'duration': .5, 'volume': 1}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .12})
+    snapshot['packaging']['captionVoices'] = {
+        'caption-1': {'fileObjectId': 'caption-voice', 'start': 2, 'duration': .8, 'volume': 1}}
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+        'caption-voice': tmp_path / 'caption-voice.wav', 'music': tmp_path / 'music.wav'},
+        tmp_path, AsyncMock())
+    caption = next(f for f in filters if f.endswith('[voice1]'))
+    music = next(f for f in filters if f.endswith('[music]'))
+    assert 'adelay=2000:all=1[voice1]' in caption
+    # Both narrations duck the bed, not just the one the pipeline wrote.
+    assert 'between(t,0.0,0.5)+between(t,2.0,2.8)' in music
+    assert 'amix=inputs=4:normalize=0' in next(f for f in filters if f.endswith('[audio]'))
+
+
+@pytest.mark.parametrize(('packaging', 'expected'), [
+    ({'voices': {'line': {'fileObjectId': 'voice'}},
+      'captionVoices': {'caption-1': {'fileObjectId': 'caption-voice'}},
+      'music': {'fileObjectId': 'music'}},
+     {'clip', 'voice', 'caption-voice', 'music'}),
+    # The editor may delete the bed, so a checkpoint without one must not ask for a file it lost.
+    ({'voices': {'line': {'fileObjectId': 'voice'}}}, {'clip', 'voice'}),
+])
+async def test_caption_narration_file_is_fetched_for_the_render(
+        packaging: Any, expected: set[str], monkeypatch: Any) -> None:
+    """The renderer is told to mix the file, so the handler has to download it first."""
+    api = AsyncMock(spec=InternalApi)
+    api.ROOT = 'internal/workers/effect-template-mix'
+    claim = {'terminal': False, 'attemptToken': 'token', 'items': [{'id': 'item', 'status': 'QUEUED',
+        'snapshot': {'resolution': '720p', 'timeline': {'clips': [{'fileObjectId': 'clip'}]},
+            'packaging': packaging}}]}
+
+    async def answer(_method: str, path: str, **_kwargs: Any) -> Any:
+        return claim if path.endswith('/claim') else None
+
+    api.request.side_effect = answer
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        async def aiter_bytes(self):
+            yield b'media'
+
+    class Stream:
+        async def __aenter__(self) -> Response:
+            return Response()
+
+        async def __aexit__(self, *_: Any) -> None:
+            pass
+
+    api.client = SimpleNamespace(stream=lambda *_args, **_kwargs: Stream())
+    seen: set[str] = set()
+
+    async def fake_render(_snapshot: Any, paths: dict[str, Path], directory: Path, _progress: Any) -> Path:
+        seen.update(paths)
+        output = directory / 'final.mp4'
+        output.write_bytes(b'fake video')
+        return output
+
+    monkeypatch.setattr(final_output, 'render', fake_render)
+    message = AsyncMock()
+    await FinalOutputHandler(api, 1000).handle(message, {
+        'projectId': '11111111-1111-4111-8111-111111111111',
+        'runId': '22222222-2222-4222-8222-222222222222'})
+    assert seen == expected
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+
+
+async def test_content_past_the_last_clip_renders_a_black_tail(tmp_path: Path, monkeypatch: Any) -> None:
+    """The film is as long as its content, so a voice carried past the last clip is a black tail
+    rather than a truncation: the gap is painted black and the encoder is asked for the full length."""
+    calls: list[list[str]] = []
+    async def fake_encode(args: list[str], cwd: Path) -> None:
+        calls.append(args)
+    async def fake_probe(path: Path) -> dict[str, Any]:
+        width, height = final_output.output_size('4:3', '720p')
+        return {'format': {'duration': '6.0'}, 'streams': [
+            {'codec_type': 'video', 'codec_name': 'h264', 'duration': '6.0', 'width': width, 'height': height, 'avg_frame_rate': '30/1'},
+            {'codec_type': 'audio', 'codec_name': 'aac', 'duration': '6.0'}]}
+    monkeypatch.setattr(final_output, 'encode', fake_encode)
+    monkeypatch.setattr(final_output, 'probe', fake_probe)
+    # The video clips stop at 4s; the narration and its subtitle run out to 6s.
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 4.5, 'duration': 1.5, 'volume': 1}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 6, 'volume': .12})
+    snapshot['timeline']['duration'] = 6
+    snapshot['packaging']['captions'] = [{'text': '尾部字幕', 'start': 4.5, 'end': 5.5}]
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+        'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())
+    args = calls[0]
+    graph = args[args.index('-filter_complex') + 1].split(';')
+    # The two seconds past the last clip are a black interval of exactly that length.
+    assert any(entry.startswith('color=c=black:') for entry in args)
+    assert any(f.startswith('[1:v]trim=duration=2.0,') for f in graph)
+    assert any(f.endswith('adelay=4500:all=1[voice0]') for f in graph)
+    assert args[args.index('-shortest') + 1:args.index('-shortest') + 3] == ['-t', '6.0']
 
 
 @pytest.mark.parametrize('fade', [{'fadeIn': -.1}, {'fadeOut': -.1}, {'fadeIn': float('nan')},

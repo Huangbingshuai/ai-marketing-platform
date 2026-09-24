@@ -183,13 +183,22 @@ Style: Default,Noto Sans CJK SC,{max(24, round(width / 22))},&H00FFFFFF,&H00FFFF
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     boxes = boxes or {}
-    previous = 0.0
+    # Two cards may share a row only when they share a track, which is the same grouping the editor
+    # packs rows with and the checkpoint validates against: an explicit track, a manual card's own
+    # id, or the legacy narration row. Cards from different tracks are drawn on different rows and
+    # are allowed on screen together, so the bound is per track rather than per kind.
+    previous: dict[str, float] = {}
     for row in captions:
         start, end = row['start'], row['end']
-        if not (math.isfinite(start) and math.isfinite(end) and previous <= start < end <= duration + .001):
+        group = (f"track:{row['trackId']}" if row.get('trackId')
+                 else f"manual:{row['id']}" if row.get('manual') is True else 'legacy-generated')
+        if not (math.isfinite(start) and math.isfinite(end)
+                and previous.get(group, 0.0) <= start < end <= duration + .001):
             raise PackagingError('字幕越界或重叠')
-        previous = end
+        previous[group] = end
         raw = str(row['text'])
+        if not raw.strip():
+            continue
         # A caption without an id simply has no editor geometry and keeps the default style.
         box = boxes.get(str(row.get('id', '')))
         if not box:
@@ -278,7 +287,9 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     detached = list(timeline.get('detachedAudios', []))
     # Editor edits may trim the source head (`offset`) and move clips along the timeline;
     # pipeline writes stay canonical, so absent keys mean the frozen timeline geometry.
-    voices = list(cp['voices'].values())
+    # A caption narration the editor generated is a narration line in every way the mixer cares
+    # about: it ducks the music, it takes one amix input, and it is moved by `offset`/`start`.
+    voices = [*cp['voices'].values(), *(cp.get('captionVoices') or {}).values()]
     for index, voice in enumerate(voices):
         actual = float(media[voice['fileObjectId']]['format']['duration'])
         offset = float(voice.get('offset', 0.0))
@@ -322,32 +333,37 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         source_index = source_count + len(voices) + index
         filters += [f'[{source_index}:a]aresample=48000,atrim=start={offset}:duration={length},'
             f'asetpts=PTS-STARTPTS,volume={volume},adelay={round(start * 1000)}:all=1[detached{index}]']
-    music = cp['music']
-    music_offset = float(music.get('offset', 0.0))
-    music_start = float(music.get('start', 0.0))
-    music_length = float(music.get('duration', duration))
-    if (not math.isfinite(music_offset) or music_offset < 0 or not math.isfinite(music_start) or music_start < 0
-            or not math.isfinite(music_length) or music_length <= 0
-            or music_start + music_length > duration + .001):
-        raise PackagingError('纯音乐时间范围与包装不一致')
-    inputs += ['-stream_loop', '-1', '-i', str(files[music['fileObjectId']])]
-    # Time-window ducking is deterministic, including silent PCM and gaps.
-    windows = '+'.join(f'between(t,{float(v["start"])},{float(v["start"]) + float(v["duration"])})' for v in voices) or '0'
-    music_index = source_count + len(voices) + len(detached)
-    # Ducking and fades run after `adelay`, so their time coordinates are timeline seconds.
-    # The 0.5s easing is the pipeline default: a checkpoint the editor never touched has no fade
-    # keys, and the fallback keeps its rendered audio identical to the pre-fade pipeline.
-    fade_in = float(music.get('fadeIn', min(0.5, music_length / 2)) or 0.0)
-    fade_out = float(music.get('fadeOut', min(0.5, music_length / 2)) or 0.0)
-    if (not math.isfinite(fade_in) or not math.isfinite(fade_out)
-            or fade_in < 0 or fade_out < 0 or fade_in + fade_out > music_length + .05):
-        raise PackagingError('纯音乐淡入淡出时长无效')
-    filters += [f"[{music_index}:a]aresample=48000,atrim=start={music_offset},asetpts=PTS-STARTPTS,atrim=duration={music_length},"
-        f"adelay={round(music_start * 1000)}:all=1,volume='{music['volume']}*if(gt({windows},0),0.35,1)':eval=frame,"
-        f"afade=t=in:st={music_start}:d={fade_in},afade=t=out:st={music_start + music_length - fade_out}:d={fade_out}[music]",
-        '[original][music]' + ''.join(f'[voice{i}]' for i in range(len(voices))) +
+    # The editor may delete the packaged bed outright, so its absence is a normal state rather than
+    # a broken checkpoint: the mix simply has one input fewer and the film keeps its length.
+    music = cp.get('music')
+    music_input = ''
+    if music:
+        music_offset = float(music.get('offset', 0.0))
+        music_start = float(music.get('start', 0.0))
+        music_length = float(music.get('duration', duration))
+        if (not math.isfinite(music_offset) or music_offset < 0 or not math.isfinite(music_start) or music_start < 0
+                or not math.isfinite(music_length) or music_length <= 0
+                or music_start + music_length > duration + .001):
+            raise PackagingError('纯音乐时间范围与包装不一致')
+        inputs += ['-stream_loop', '-1', '-i', str(files[music['fileObjectId']])]
+        # Time-window ducking is deterministic, including silent PCM and gaps.
+        windows = '+'.join(f'between(t,{float(v["start"])},{float(v["start"]) + float(v["duration"])})' for v in voices) or '0'
+        music_index = source_count + len(voices) + len(detached)
+        # Ducking and fades run after `adelay`, so their time coordinates are timeline seconds.
+        # The 0.5s easing is the pipeline default: a checkpoint the editor never touched has no fade
+        # keys, and the fallback keeps its rendered audio identical to the pre-fade pipeline.
+        fade_in = float(music.get('fadeIn', min(0.5, music_length / 2)) or 0.0)
+        fade_out = float(music.get('fadeOut', min(0.5, music_length / 2)) or 0.0)
+        if (not math.isfinite(fade_in) or not math.isfinite(fade_out)
+                or fade_in < 0 or fade_out < 0 or fade_in + fade_out > music_length + .05):
+            raise PackagingError('纯音乐淡入淡出时长无效')
+        filters += [f"[{music_index}:a]aresample=48000,atrim=start={music_offset},asetpts=PTS-STARTPTS,atrim=duration={music_length},"
+            f"adelay={round(music_start * 1000)}:all=1,volume='{music['volume']}*if(gt({windows},0),0.35,1)':eval=frame,"
+            f"afade=t=in:st={music_start}:d={fade_in},afade=t=out:st={music_start + music_length - fade_out}:d={fade_out}[music]"]
+        music_input = '[music]'
+    filters += ['[original]' + music_input + ''.join(f'[voice{i}]' for i in range(len(voices))) +
         ''.join(f'[detached{i}]' for i in range(len(detached))) +
-        f'amix=inputs={2 + len(voices) + len(detached)}:normalize=0:duration=longest,'
+        f'amix=inputs={1 + (1 if music else 0) + len(voices) + len(detached)}:normalize=0:duration=longest,'
         f'alimiter=limit=0.95,atrim=duration={duration}[audio]']
     (directory / 'captions.ass').write_text(
         captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes')), encoding='utf-8')
@@ -409,7 +425,9 @@ class FinalOutputHandler:
                     ids = ({c['fileObjectId'] for c in snapshot['timeline']['clips']}
                         | {a['fileObjectId'] for a in snapshot['timeline'].get('detachedAudios', [])}
                         | {v['fileObjectId'] for v in snapshot['packaging']['voices'].values()}
-                        | {snapshot['packaging']['music']['fileObjectId']})
+                        | {v['fileObjectId'] for v in (snapshot['packaging'].get('captionVoices') or {}).values()}
+                        | ({snapshot['packaging']['music']['fileObjectId']}
+                           if snapshot['packaging'].get('music') else set()))
                     with tempfile.TemporaryDirectory(prefix='effect-output-') as temporary:
                         directory = Path(temporary)
                         paths: dict[str, Path] = {}

@@ -38,6 +38,16 @@ def test_overlap_is_rejected_without_lane_escape() -> None:
         narration_windows(value)
 
 
+def test_overlay_covers_a_narrated_slot_without_being_narrated() -> None:
+    value = snapshot()
+    # The overlay lands inside the narrated slot, on a lane above it: covering it is its job, so
+    # the overlap that would otherwise be a boundary conflict is not one.
+    value['clips'].append({**value['clips'][0], 'slotId': 's2', 'start': 1, 'lane': 1,
+                           'overlay': True})
+    value['variant']['slots'].append({'id': 's2', 'role': 'END', 'overlay': True})
+    assert [row['slotId'] for row in narration_windows(value)] == ['s']
+
+
 def test_cache_key_changes_on_trim_or_content_but_not_timeline_position() -> None:
     clip = snapshot()['clips'][0]
     assert slot_vision_key(clip) == slot_vision_key({**clip, 'start': 22, 'slotId': 'another'})

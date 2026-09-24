@@ -8,6 +8,7 @@ from .provider import ArkProvider
 from .packaging import PackagingHandler
 from .packaging_provider import PackagingProvider
 from .final_output import FinalOutputHandler
+from .caption_voice import CaptionVoiceHandler
 from .voice_preview import VoicePreviewHandler
 
 
@@ -38,6 +39,7 @@ async def serve() -> None:
         packaging,
         FinalOutputHandler(api, settings.max_video_bytes, settings.final_output_max_concurrency),
         VoicePreviewHandler(api, packaging_provider, packaging.requests),
+        CaptionVoiceHandler(api, packaging_provider, packaging.requests),
     )
     try:
         await consumer.run()

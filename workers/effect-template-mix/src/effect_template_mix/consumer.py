@@ -18,6 +18,7 @@ from .reliability import classification_chunks
 from .video import sample_frames
 from .packaging import PackagingHandler
 from .final_output import FinalOutputHandler
+from .caption_voice import CaptionVoiceHandler
 from .voice_preview import VoicePreviewHandler
 
 LOGGER = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class Consumer:
         packaging: PackagingHandler | None = None,
         final_output: FinalOutputHandler | None = None,
         voice_preview: VoicePreviewHandler | None = None,
+        caption_voice: CaptionVoiceHandler | None = None,
     ) -> None:
         self.rabbitmq_url = rabbitmq_url
         self.queue = queue
@@ -79,6 +81,7 @@ class Consumer:
         self.packaging = packaging
         self.final_output = final_output
         self.voice_preview = voice_preview
+        self.caption_voice = caption_voice
         self.long_task = asyncio.Semaphore(1)
         self.request_slots = packaging.requests if packaging else asyncio.Semaphore(ai_max_concurrency)
         self.connection: AbstractRobustConnection | None = None
@@ -86,7 +89,8 @@ class Consumer:
     async def run(self) -> None:
         self.connection = await aio_pika.connect_robust(self.rabbitmq_url)
         channel = await self.connection.channel()
-        # At most one long job plus one preview; long-job execution remains serialized.
+        # At most one long job plus one interactive task (a voice preview or a caption narration);
+        # long-job execution remains serialized.
         await channel.set_qos(prefetch_count=2)
         queue = await channel.declare_queue(self.queue, durable=True)
         await queue.consume(self.handle)
@@ -108,6 +112,14 @@ class Consumer:
                 await message.nack(requeue=False)
             else:
                 await self.voice_preview.handle(message, envelope)
+            return
+        # A caption narration is a one-off paid call the editor is waiting on, so it must not queue
+        # behind a packaging run; it is serialized against itself, not against the long task.
+        if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'CAPTION_VOICE':
+            if self.caption_voice is None:
+                await message.nack(requeue=False)
+            else:
+                await self.caption_voice.handle(message, envelope)
             return
         async with self.long_task:
             await self.handle_work(message)

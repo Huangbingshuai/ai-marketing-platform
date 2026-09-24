@@ -1,6 +1,7 @@
 """Bounded local analysis proxies and duration-accurate PCM audio; never final export."""
 import asyncio
 import io
+import struct
 import wave
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,42 @@ def pcm_wav(pcm: bytes, rate: int = 24000) -> tuple[bytes, float]:
         wav.setframerate(rate)
         wav.writeframes(pcm)
     return stream.getvalue(), len(pcm) / (2 * rate)
+
+
+# A caption narration is the one clip whose start *is* another clip's start (the subtitle it speaks),
+# so the engine's own lead-in silence plays as the subtitle already being up. Keep a short pre-roll
+# so the first phoneme still has its attack; the trailing silence is harmless and left alone.
+_CAPTION_VOICE_LEAD_SECONDS = .08
+_SILENCE_WINDOW_SECONDS = .02
+_SILENCE_FLOOR_RATIO = .08
+_SILENCE_FLOOR_ABSOLUTE = .005
+
+
+def trim_leading_silence(pcm: bytes, rate: int = 24000) -> bytes:
+    """Cut the synthesizer's lead-in silence down to `_CAPTION_VOICE_LEAD_SECONDS`.
+
+    Windows of `_SILENCE_WINDOW_SECONDS` are scored by RMS against `max(absolute floor, peak ratio)`,
+    which is what separates the noise floor from speech on a real 24 kHz line (measured on a live
+    sample: peak RMS .169, threshold .0135, speech onset .68s into a 3.01s clip). Input that never
+    crosses the threshold — or that starts sooner than the pre-roll — is returned unchanged.
+    """
+    if len(pcm) < 2:
+        return pcm
+    window = max(1, round(rate * _SILENCE_WINDOW_SECONDS)) * 2
+    levels = []
+    for offset in range(0, len(pcm) - 1, window):
+        frame = pcm[offset:offset + window]
+        samples = struct.unpack(f'<{len(frame) // 2}h', frame[:len(frame) // 2 * 2])
+        levels.append((sum((value / 32768) ** 2 for value in samples) / len(samples)) ** .5)
+    if not levels:
+        return pcm
+    threshold = max(_SILENCE_FLOOR_ABSOLUTE, max(levels) * _SILENCE_FLOOR_RATIO)
+    onset = next((index for index, level in enumerate(levels) if level >= threshold), None)
+    if onset is None:
+        return pcm
+    keep = round(rate * _CAPTION_VOICE_LEAD_SECONDS) * 2
+    lead = onset * window
+    return pcm[lead - keep:] if lead > keep else pcm
 
 
 async def music_wav(data: bytes, directory: Path, duration: float) -> bytes:

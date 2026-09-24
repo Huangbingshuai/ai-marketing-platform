@@ -9,7 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from effect_template_mix.api import InternalApi
+from effect_template_mix.api import ApiError, InternalApi
+from effect_template_mix.caption_voice import CaptionVoiceHandler
 from effect_template_mix.packaging import narration_windows, plan_script
 from effect_template_mix.packaging_provider import PackagingError, PackagingProvider, PackagingTransientError, VoicePermissionError
 from effect_template_mix.provider import ArkProvider
@@ -134,6 +135,92 @@ async def test_packaging_persists_frozen_voice_and_real_utilization() -> None:
     del cp['narrationMetrics']  # recover upload-before-checkpoint crash without generating again
     await handler.process_item('/run', {}, 'project', value)
     assert provider.voice.await_count == 1 and cp['narrationMetrics'][slot]['audioSeconds'] == 1
+
+
+def caption_harness(error: Exception | None = None) -> tuple[Any, ...]:
+    api = AsyncMock(spec=InternalApi)
+    api.ROOT = '/internal/workers/effect-template-mix'
+    api.request.return_value = {'fileObjectId': 'saved'}
+    provider = AsyncMock(spec=PackagingProvider)
+    provider.require_tts_configuration = lambda: None
+    provider.voice.return_value = b'\x01\x00' * 24000
+    if error:
+        provider.voice.side_effect = error
+    message = AsyncMock()
+    message.redelivered = False
+    envelope = {'schemaVersion': 2, 'taskType': 'CAPTION_VOICE', 'projectId': str(uuid4()),
+        'runId': str(uuid4()), 'itemId': str(uuid4()), 'captionId': 'caption-1', 'text': '限时五折',
+        'profile': {'id': 'p', 'name': '音色', 'gender': 'MALE', 'description': '', 'version': 'v1',
+            'speaker': 'frozen_voice', 'resourceId': 'seed-tts-2.0'},
+        'requestId': str(uuid4())}
+    handler = CaptionVoiceHandler(api, provider, asyncio.Semaphore(4))
+    return api, provider, message, envelope, handler
+
+
+async def test_caption_narration_speaks_its_text_and_uploads_one_wav_without_a_lease() -> None:
+    api, provider, message, envelope, handler = caption_harness()
+    await handler.handle(message, envelope)
+    provider.voice.assert_awaited_once_with('限时五折', speaker='frozen_voice', resource_id='seed-tts-2.0')
+    call = api.request.call_args_list[-1]
+    assert call.args[0] == 'POST'
+    assert call.args[1] == (f"/internal/workers/effect-template-mix/caption-voices/{envelope['runId']}"
+        f"/items/{envelope['itemId']}/audio")
+    # Nothing to claim and nothing to fence: the editor's request is one paid call and one upload.
+    assert [row.args[1].rsplit('/', 1)[-1] for row in api.request.call_args_list] == ['audio']
+    assert call.kwargs['data'] == {'projectId': envelope['projectId'], 'captionId': 'caption-1'}
+    assert call.kwargs['files']['file'][1][:4] == b'RIFF'
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+
+
+@pytest.mark.parametrize(('retryable', 'redelivered', 'requeue'), [
+    (False, False, False),  # the caption is gone: redelivering cannot change that
+    (True, False, True),
+    (True, True, False),  # at most one redelivery, so a paid call is never repeated twice
+])
+async def test_caption_narration_failure_is_requeued_at_most_once(
+    retryable: bool, redelivered: bool, requeue: bool,
+) -> None:
+    api, _provider, message, envelope, handler = caption_harness()
+    api.request.side_effect = ApiError('rejected', retryable=retryable)
+    message.redelivered = redelivered
+    await handler.handle(message, envelope)
+    message.nack.assert_awaited_once_with(requeue=requeue)
+    message.ack.assert_not_awaited()
+
+
+async def test_malformed_caption_narration_never_calls_the_provider() -> None:
+    api, provider, message, envelope, handler = caption_harness()
+    await handler.handle(message, {**envelope, 'taskType': 'OTHER'})
+    await handler.handle(message, {**envelope, 'captionId': None})
+    assert provider.voice.await_count == 0 and api.request.await_count == 0
+
+
+async def test_caption_narration_runs_while_a_long_job_is_still_active() -> None:
+    api, provider, message, envelope, handler = caption_harness()
+    entered, release = asyncio.Event(), asyncio.Event()
+    packaging = AsyncMock(spec=PackagingHandler)
+    packaging.requests = handler.requests
+
+    async def long_job(*_: Any) -> None:
+        entered.set()
+        await release.wait()
+
+    packaging.handle.side_effect = long_job
+    consumer = Consumer('amqp://test', 'effect.template-mix.requested', api, AsyncMock(spec=ArkProvider),
+        1000, 10, 16000, 8192, 4, packaging, None, None, handler)
+    long_message = AsyncMock()
+    long_message.body = json.dumps({**envelope, 'taskType': 'PACKAGING'}).encode()
+    message.body = json.dumps(envelope).encode()
+    long_task = asyncio.create_task(consumer.handle(long_message))
+    await asyncio.wait_for(entered.wait(), 1)
+    try:
+        await asyncio.wait_for(consumer.handle(message), 1)
+        # The editor's narration was spoken and uploaded while the packaging run still held the slot.
+        assert provider.voice.await_count == 1 and not long_task.done()
+    finally:
+        release.set()
+        await long_task
 
 
 async def test_preview_runs_during_packaging_but_waits_for_shared_vendor_permit() -> None:

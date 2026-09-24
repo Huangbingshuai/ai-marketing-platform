@@ -228,8 +228,14 @@ class SlotVisionOutput(BaseModel):
     slots: list[SlotDescription]
 
 
+def narrated_clips(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """The clips that own a narration line. An overlay is a picture layer the user stacked on top:
+    it renders and it covers what is under it, but it is never spoken, subtitled or described."""
+    return [clip for clip in snapshot['clips'] if not clip.get('overlay')]
+
+
 def narration_windows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = sorted(snapshot['clips'], key=lambda c: c['start'])
+    rows = sorted(narrated_clips(snapshot), key=lambda c: c['start'])
     previous_end = 0.0
     roles = {s['id']: s['role'] for s in snapshot['variant']['slots']}
     result = []
@@ -272,7 +278,7 @@ def script_structure_issues(script: ScriptOutput, snapshot: dict[str, Any]) -> l
     if not script.musicBrief.strip() or len(script.musicBrief) > 2000:
         issues.add('MUSIC_BRIEF')
     facts = {fact['id'] for fact in snapshot['facts']}
-    slots = {c['slotId']: c for c in snapshot['clips']}
+    slots = {c['slotId']: c for c in narrated_clips(snapshot)}
     if len(script.lines) != len(slots) or {r.slotId for r in script.lines} != set(slots):
         issues.add('SLOT_COVERAGE')
     ids: set[str] = set()
@@ -350,7 +356,7 @@ async def plan_script(ark: ArkProvider, snapshot: dict[str, Any], vision: Any,
             '不要额外添加确认事实没有的绝对化、效果承诺或口感评价；不要为每个镜头强造一个商品卖点。',
             'musicBrief 用中文写纯器乐曲风、乐器、情绪与节奏，无歌词、无人声、不仿制音乐人，不指定时长。',
         ],
-        'confirmedFacts': snapshot['facts'], 'shots': snapshot['clips'],
+        'confirmedFacts': snapshot['facts'], 'shots': narrated_clips(snapshot),
         'vision': vision, 'duration': snapshot['duration'], 'narrationWindows': windows,
     }
     if voice_retry:
@@ -563,10 +569,11 @@ class PackagingHandler:
             if not cp.get('vision'):
                 await save('VISION', {})
                 await self.slot_vision(snapshot, cp, endpoint, headers, project_id, directory, guard, save)
-            missing_slots = {c['slotId'] for c in snapshot['clips']} - {s['slotId'] for s in cp.get('script', [])}
+            narrated = narrated_clips(snapshot)
+            missing_slots = {c['slotId'] for c in narrated} - {s['slotId'] for s in cp.get('script', [])}
             if missing_slots:
                 await save('SCRIPT', {})
-                partial = {**snapshot, 'clips': [c for c in snapshot['clips'] if c['slotId'] in missing_slots]}
+                partial = {**snapshot, 'clips': [c for c in narrated if c['slotId'] in missing_slots]}
                 script_diagnostics: dict[str, int] = {}
                 async with paid_request('_item', 'scriptSeconds'):
                     script_result = await plan_script(self.ark, partial,
@@ -699,7 +706,7 @@ class PackagingHandler:
                 if any(retry_counts.get(error.slot_id, 0) >= 1 for error in overruns):
                     raise overruns[0]
                 failed_ids = {error.slot_id for error in overruns}
-                partial = {**snapshot, 'clips': [clip for clip in snapshot['clips']
+                partial = {**snapshot, 'clips': [clip for clip in narrated_clips(snapshot)
                     if clip['slotId'] in failed_ids]}
                 failed_lines = {line['slotId']: line for line in cp['script'] if line['slotId'] in failed_ids}
                 retry_context = [{'slotId': error.slot_id, 'previousText': failed_lines[error.slot_id]['text'],
@@ -737,7 +744,14 @@ class PackagingHandler:
                     if saved:
                         captions.extend(saved)
                         continue
-                    generated = captions_for_voice(line, voices[line['id']])
+                    voice = voices.get(line['id'])
+                    if not voice:
+                        # The editor may have deleted this line's narration. Its subtitle is still
+                        # there to keep, so the line simply gets no freshly split captions.
+                        LOGGER.info('packaging caption split skipped without a voice item=%s line=%s',
+                            item['id'], line['id'])
+                        continue
+                    generated = captions_for_voice(line, voice)
                     captions.extend(generated)
                     if line['id'] in boxes:
                         for caption in generated:
@@ -752,7 +766,7 @@ class PackagingHandler:
                           guard: Callable[[], Awaitable[None]],
                           save: Callable[[str, dict[str, Any]], Awaitable[None]]) -> None:
         owned = []
-        for clip in snapshot['clips']:
+        for clip in narrated_clips(snapshot):
             key = slot_vision_key(clip)
             hit = key in self.vision_cache or key in self.vision_pending
             cp['timings'].setdefault(clip['slotId'], {})['cacheHit'] = hit
@@ -806,7 +820,7 @@ class PackagingHandler:
                     cp['timings'][clip['slotId']]['visionSeconds'] = (time.monotonic() - started) / len(owned)
                     cp['timings'][clip['slotId']]['localQueueSeconds'] += (started - queued) / len(owned)
             cache = {}
-            for clip in snapshot['clips']:
+            for clip in narrated_clips(snapshot):
                 key = slot_vision_key(clip)
                 description = self.vision_cache.get(key)
                 if description is None:
@@ -814,7 +828,7 @@ class PackagingHandler:
                 cache[clip['slotId']] = {'key': key, 'description': description}
             await save('SCRIPT', {'slotVision': cache, 'vision': [
                 {'slotId': c['slotId'], 'start': c['start'], 'end': c['start'] + c['duration'],
-                 'description': cache[c['slotId']]['description']} for c in snapshot['clips']], 'timings': cp['timings']})
+                 'description': cache[c['slotId']]['description']} for c in narrated_clips(snapshot)], 'timings': cp['timings']})
         except BaseException:
             for clip in owned:
                 pending = self.vision_pending.pop(slot_vision_key(clip), None)
