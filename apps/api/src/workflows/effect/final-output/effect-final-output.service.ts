@@ -320,7 +320,7 @@ export class EffectFinalOutputService {
                     visualRevision: visual.revision,
                     duration,
                     ...cp,
-                    mix: { originalVolume: 0.15, bgmVolume: 0.12, ducking: true },
+                    mix: { originalVolume: 0.15, bgmVolume: cp.music?.volume ?? 0, ducking: true },
                     subtitleStyle: 'standard',
                   },
                   files: files

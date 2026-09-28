@@ -1,8 +1,5 @@
 <script setup lang="ts">
-import {
-  type EffectWorkflowBranch,
-  type EffectWorkflowBranchTreeData,
-} from '@ai-marketing/contracts';
+import { type EffectWorkflowBranchTreeData } from '@ai-marketing/contracts';
 import { X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
@@ -15,6 +12,7 @@ import {
 } from './effect-workflow-branch-layout';
 
 const props = defineProps<{
+  projectName: string;
   tree: EffectWorkflowBranchTreeData | null;
   loading: boolean;
   error: string;
@@ -22,41 +20,25 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: []; retry: []; select: [workflowRunId: string] }>();
 const dialog = ref<HTMLElement | null>(null);
-const selectedId = ref<string | null>(null);
-const selectedNodeKey = ref<string | null>(null);
+const scrollContainer = ref<HTMLElement | null>(null);
+const graphElement = ref<HTMLElement | null>(null);
 let returnFocus: HTMLElement | null = null;
 let previousBodyOverflow = '';
-const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
-const updateViewportWidth = () => {
-  viewportWidth.value = window.innerWidth;
-};
-
-const layout = computed(() =>
-  buildEffectBranchLayout(
-    props.tree?.branches ?? [],
-    viewportWidth.value <= 760 ? 132 : BRANCH_TREE_AXIS_WIDTH,
-  ),
-);
-const selected = computed<EffectWorkflowBranch | null>(
-  () =>
-    props.tree?.branches.find((branch) => branch.workflowRunId === selectedId.value) ??
-    props.tree?.branches.find((branch) => branch.isActive) ??
-    null,
-);
-const selectedNode = computed(
-  () =>
-    layout.value.nodes.find(
-      (node) =>
-        node.workflowRunId === selected.value?.workflowRunId && node.key === selectedNodeKey.value,
-    ) ?? null,
-);
+const layout = computed(() => buildEffectBranchLayout(props.tree?.branches ?? []));
+const mixStartIndex = BRANCH_TREE_STAGES.findIndex((stage) => stage.nodeId === 'TEMPLATE_MIX');
+const mixStages = BRANCH_TREE_STAGES.filter((stage) => stage.nodeId === 'TEMPLATE_MIX');
 const stageName = (stageKey: (typeof BRANCH_TREE_STAGES)[number]['key']) =>
   BRANCH_TREE_STAGES.find((stage) => stage.key === stageKey)?.name ?? stageKey;
-const versionText = (revision: number | null, revisions: number[] | undefined, count: number) => {
+const versionText = (
+  revision: number | null,
+  revisions: number[] | undefined,
+  count: number,
+  status: string,
+) => {
   const name = (value: number) => `版本${String(value).padStart(2, '0')}`;
   if (revision !== null) return name(revision);
   if (revisions?.length) return revisions.map(name).join(' / ');
-  return count > 0 ? '版本未记录' : '尚未生成';
+  return status === 'PENDING' && count > 0 ? '待校验' : '版本未记录';
 };
 const artifactCreatedAtText = (value: string | null) => {
   if (!value) return '创建时间未记录';
@@ -72,23 +54,41 @@ const artifactCreatedAtText = (value: string | null) => {
   }).format(date)}`;
 };
 const statusText = (status: string, count: number) =>
-  status === 'CONFIRMED' ? `已确认 · ${count} 项` : status === 'STALE' ? '待更新' : '待处理';
+  status === 'CONFIRMED'
+    ? `已确认 · ${count} 项`
+    : status === 'STALE'
+      ? '待更新'
+      : count > 0
+        ? '待校验'
+        : '待处理';
+const nodeStatusText = (stageKey: string, status: string, count: number) =>
+  stageKey === 'MIX_TEMPLATE' && status === 'PENDING' ? '模板已创建' : statusText(status, count);
 
+const selectNode = (workflowRunId: string) => {
+  if (!props.switching && workflowRunId !== props.tree?.activeWorkflowRunId)
+    emit('select', workflowRunId);
+};
+const centerTree = async () => {
+  await nextTick();
+  const scroll = scrollContainer.value;
+  const graph = graphElement.value;
+  if (!scroll || !graph) return;
+  const axisWidth =
+    scroll.querySelector<HTMLElement>('.branch-axis-rail')?.getBoundingClientRect().width ??
+    BRANCH_TREE_AXIS_WIDTH;
+  const graphCenter =
+    graph.getBoundingClientRect().left -
+    scroll.getBoundingClientRect().left +
+    scroll.scrollLeft +
+    layout.value.root.x;
+  const visibleTreeCenter = axisWidth + (scroll.clientWidth - axisWidth) / 2;
+  scroll.scrollLeft = Math.max(0, graphCenter - visibleTreeCenter);
+};
+const onViewportResize = () => void centerTree();
 watch(
   () => props.tree,
-  (tree) => {
-    if (!tree) return;
-    if (!tree.branches.some((branch) => branch.workflowRunId === selectedId.value)) {
-      selectedId.value = tree.activeWorkflowRunId;
-      selectedNodeKey.value =
-        layout.value.nodes.find(
-          (node) =>
-            node.workflowRunId === tree.activeWorkflowRunId &&
-            node.nodeId === tree.branches.find((branch) => branch.isActive)?.currentNodeId,
-        )?.key ?? null;
-    }
-  },
-  { immediate: true },
+  () => void centerTree(),
+  { flush: 'post' },
 );
 const onKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape' && !props.switching) {
@@ -117,13 +117,14 @@ onMounted(async () => {
   previousBodyOverflow = document.body.style.overflow;
   document.body.style.overflow = 'hidden';
   document.addEventListener('keydown', onKeydown);
-  window.addEventListener('resize', updateViewportWidth);
+  window.addEventListener('resize', onViewportResize);
   await nextTick();
   dialog.value?.focus();
+  await centerTree();
 });
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown);
-  window.removeEventListener('resize', updateViewportWidth);
+  window.removeEventListener('resize', onViewportResize);
   document.body.style.overflow = previousBodyOverflow;
   returnFocus?.focus();
 });
@@ -144,7 +145,9 @@ onBeforeUnmount(() => {
           <div>
             <span class="branch-eyebrow">EFFECT WORKFLOW</span>
             <h2 id="branch-title">版本分支树</h2>
-            <p>从资料导入向下展开各节点版本；分叉直接长在树上，红色标出当前工作流路径。</p>
+            <p>
+              从项目向下展开各节点版本；分叉直接长在树上，红色标出当前工作流路径。点击其他分支的版本即可切换。
+            </p>
           </div>
           <button
             type="button"
@@ -169,15 +172,77 @@ onBeforeUnmount(() => {
             <div class="branch-toolbar__legend">
               <span><i class="legend-current" />当前工作流路径</span>
               <span><i class="legend-other" />其他版本</span>
-              <span><i class="legend-pending" />待处理阶段</span>
             </div>
+            <span v-if="switching" class="branch-switching" role="status">正在切换分支…</span>
           </div>
-          <div class="branch-scroll" aria-label="效果类工作流版本树">
+          <div
+            ref="scrollContainer"
+            class="branch-scroll"
+            aria-label="效果类工作流版本树"
+            :aria-busy="switching"
+          >
             <div
               class="branch-canvas"
-              :style="{ minWidth: `${layout.width}px`, height: `${layout.height}px` }"
+              :style="{
+                minWidth: `${layout.width + BRANCH_TREE_AXIS_WIDTH}px`,
+                height: `${layout.height}px`,
+              }"
             >
               <div
+                v-for="(stage, index) in BRANCH_TREE_STAGES"
+                :key="`band:${stage.key}`"
+                class="branch-stage-band"
+                :class="{ 'branch-stage-band--alternate': index % 2 === 1 }"
+                :style="{
+                  top: `${BRANCH_TREE_TOP + index * BRANCH_TREE_ROW_GAP - BRANCH_TREE_ROW_GAP / 2}px`,
+                  height: `${BRANCH_TREE_ROW_GAP}px`,
+                }"
+                aria-hidden="true"
+              />
+              <div class="branch-axis-rail">
+                <template v-for="(stage, index) in BRANCH_TREE_STAGES" :key="`axis:${stage.key}`">
+                  <div
+                    v-if="stage.nodeId !== 'TEMPLATE_MIX'"
+                    class="branch-axis"
+                    :class="{ 'branch-axis--alternate': index % 2 === 1 }"
+                    :style="{
+                      top: `${BRANCH_TREE_TOP + index * BRANCH_TREE_ROW_GAP}px`,
+                      height: `${BRANCH_TREE_ROW_GAP}px`,
+                    }"
+                  >
+                    <span class="branch-axis__number">{{
+                      String(index < mixStartIndex ? index + 1 : 6).padStart(2, '0')
+                    }}</span>
+                    <span>{{ stage.name }}</span>
+                  </div>
+                </template>
+                <div
+                  class="branch-axis-mix-group"
+                  role="group"
+                  aria-label="混剪：混剪模板、智能填充、智能成片包装"
+                  :style="{
+                    top: `${BRANCH_TREE_TOP + mixStartIndex * BRANCH_TREE_ROW_GAP - BRANCH_TREE_ROW_GAP / 2}px`,
+                    height: `${mixStages.length * BRANCH_TREE_ROW_GAP}px`,
+                  }"
+                >
+                  <div class="branch-axis-mix-group__parent">
+                    <span class="branch-axis__number">05</span>
+                    <span>混剪</span>
+                  </div>
+                  <div class="branch-axis-mix-group__rows">
+                    <div
+                      v-for="stage in mixStages"
+                      :key="stage.key"
+                      class="branch-axis-mix-group__row"
+                      :style="{ height: `${BRANCH_TREE_ROW_GAP}px` }"
+                    >
+                      <span>{{ stage.name }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div
+                ref="graphElement"
                 class="branch-graph"
                 :style="{ width: `${layout.width}px`, height: `${layout.height}px` }"
               >
@@ -220,25 +285,16 @@ onBeforeUnmount(() => {
                     "
                     :class="{
                       'branch-line--active': edge.onActivePath,
-                      'branch-line--pending': edge.pending,
                     }"
                   />
                 </svg>
-                <div class="branch-axis-rail">
-                  <div
-                    v-for="(stage, index) in BRANCH_TREE_STAGES"
-                    :key="`axis:${stage.key}`"
-                    class="branch-axis"
-                    :class="{ 'branch-axis--mix': stage.nodeId === 'TEMPLATE_MIX' }"
-                    :style="{ top: `${BRANCH_TREE_TOP + index * BRANCH_TREE_ROW_GAP}px` }"
-                  >
-                    <span class="branch-axis__number">{{
-                      stage.nodeId === 'TEMPLATE_MIX'
-                        ? '05'
-                        : String(index < 4 ? index + 1 : 6).padStart(2, '0')
-                    }}</span>
-                    <span>{{ stage.name }}</span>
-                  </div>
+                <div
+                  class="branch-project-root"
+                  :class="{ 'branch-project-root--active': tree?.activeWorkflowRunId }"
+                  :style="{ left: `${layout.root.x}px`, top: `${layout.root.y}px` }"
+                  :aria-label="`项目：${projectName}`"
+                >
+                  {{ projectName }}
                 </div>
                 <button
                   v-for="node in layout.nodes"
@@ -248,60 +304,35 @@ onBeforeUnmount(() => {
                   :class="{
                     'branch-node--active': node.onActivePath,
                     'branch-node--current': node.isCurrentStage,
-                    'branch-node--pending': node.status === 'PENDING',
-                    'branch-node--selected': selectedNode?.key === node.key,
                   }"
+                  :disabled="switching"
                   :style="{ left: `${node.x}px`, top: `${node.y}px` }"
-                  :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '尚未创建模板') : versionText(node.revision, node.revisions, node.artifactCount)}，${node.stageKey !== 'MIX_TEMPLATE' && node.artifactCount > 0 ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${statusText(node.status, node.artifactCount)}${node.onActivePath ? '，当前工作流路径' : ''}`"
-                  :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '尚未创建模板') : versionText(node.revision, node.revisions, node.artifactCount)} · ${statusText(node.status, node.artifactCount)}`"
-                  @click="
-                    selectedId = node.workflowRunId;
-                    selectedNodeKey = node.key;
-                  "
+                  :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node.stageKey, node.status, node.artifactCount)}${node.onActivePath ? '，当前工作流路径' : ''}`"
+                  :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node.stageKey, node.status, node.artifactCount)}`"
+                  @click="selectNode(node.workflowRunId)"
                 >
                   <strong>{{
                     node.stageKey === 'MIX_TEMPLATE'
-                      ? (node.templateName ?? '尚未创建模板')
-                      : versionText(node.revision, node.revisions, node.artifactCount)
+                      ? (node.templateName ?? '模板')
+                      : versionText(node.revision, node.revisions, node.artifactCount, node.status)
                   }}</strong>
                   <span
-                    v-if="node.stageKey !== 'MIX_TEMPLATE' && node.artifactCount > 0"
+                    v-if="
+                      node.stageKey === 'MIX_TEMPLATE' ||
+                      (node.artifactCount > 0 && node.status !== 'PENDING')
+                    "
                     class="branch-node__created-at"
-                    title="已确认工作副本的创建时间；旧 revision 的单独确认时间不可追溯"
+                    :title="
+                      node.stageKey === 'MIX_TEMPLATE'
+                        ? '模板创建时间；旧草稿可能未记录'
+                        : '已确认工作副本的创建时间；旧 revision 的单独确认时间不可追溯'
+                    "
                     >{{ artifactCreatedAtText(node.createdAt) }}</span
                   >
                 </button>
               </div>
             </div>
           </div>
-          <footer v-if="selected" class="branch-footer">
-            <div class="branch-footer__selection">
-              <span>已选版本</span>
-              <strong v-if="selectedNode"
-                >{{ stageName(selectedNode.stageKey) }} ·
-                {{
-                  selectedNode.stageKey === 'MIX_TEMPLATE'
-                    ? (selectedNode.templateName ?? '尚未创建模板')
-                    : versionText(
-                        selectedNode.revision,
-                        selectedNode.revisions,
-                        selectedNode.artifactCount,
-                      )
-                }}</strong
-              >
-              <span v-if="selectedNode"
-                >· {{ statusText(selectedNode.status, selectedNode.artifactCount) }}</span
-              >
-            </div>
-            <button
-              type="button"
-              class="branch-activate"
-              :disabled="selected.isActive || switching"
-              @click="emit('select', selected.workflowRunId)"
-            >
-              {{ switching ? '正在切换…' : selected.isActive ? '正在使用此分支' : '切换到此分支' }}
-            </button>
-          </footer>
         </template>
       </section>
     </div>
@@ -413,10 +444,6 @@ onBeforeUnmount(() => {
 .legend-other {
   background: #a2b3cd;
 }
-.legend-pending {
-  background: #fff;
-  border: 1px dashed #aab8ca;
-}
 .branch-scroll {
   flex: 1;
   min-height: 0;
@@ -425,6 +452,7 @@ onBeforeUnmount(() => {
 }
 .branch-canvas {
   position: relative;
+  display: flex;
   width: 100%;
   box-sizing: border-box;
   background:
@@ -432,9 +460,47 @@ onBeforeUnmount(() => {
     #fff;
   border: 0;
 }
+.branch-stage-band {
+  position: absolute;
+  right: 0;
+  left: 0;
+  background: rgba(250, 252, 255, 0.78);
+  border-top: 1px solid #edf1f7;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.branch-stage-band--alternate {
+  background: rgba(242, 246, 252, 0.78);
+}
 .branch-graph {
   position: relative;
+  flex: 0 0 auto;
   margin: 0 auto;
+}
+.branch-project-root {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  width: 240px;
+  height: 72px;
+  padding: 8px 12px;
+  transform: translate(-50%, -50%);
+  place-items: center;
+  color: #253755;
+  background: #fff;
+  border: 2px solid #9eb4cf;
+  border-radius: 8px;
+  box-shadow: 0 5px 15px rgba(35, 67, 105, 0.12);
+  box-sizing: border-box;
+  font-size: 14px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.branch-project-root--active {
+  color: #b72437;
+  background: #fff5f5;
+  border-color: #df3547;
 }
 .branch-lines {
   position: absolute;
@@ -446,9 +512,6 @@ onBeforeUnmount(() => {
   stroke: #b2c1d5;
   stroke-width: 2.5;
   stroke-linecap: round;
-}
-.branch-lines path.branch-line--pending {
-  stroke-dasharray: 5 5;
 }
 .branch-lines path.branch-line--active {
   stroke: #df3547;
@@ -467,17 +530,20 @@ onBeforeUnmount(() => {
   left: 0;
   z-index: 3;
   width: 178px;
+  flex: 0 0 178px;
   height: 100%;
   pointer-events: none;
-  background: linear-gradient(90deg, #fff 88%, rgba(255, 255, 255, 0));
+  background: #fafcff;
+  border-right: 1px solid #e3eaf4;
+  box-sizing: border-box;
 }
 .branch-axis {
   position: absolute;
-  left: 10px;
+  left: 0;
   display: flex;
   align-items: center;
-  width: 154px;
-  height: 62px;
+  width: 100%;
+  padding: 0 10px;
   transform: translateY(-50%);
   gap: 9px;
   color: #52647e;
@@ -485,9 +551,51 @@ onBeforeUnmount(() => {
   font-weight: 700;
   box-sizing: border-box;
 }
-.branch-axis--mix {
-  padding-left: 16px;
-  font-size: 12px;
+.branch-axis--alternate {
+  background: #f2f6fc;
+}
+.branch-axis-mix-group {
+  position: absolute;
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: 91px minmax(0, 1fr);
+  background: #fafcff;
+  box-shadow:
+    inset 0 1px #dce6f3,
+    inset 0 -1px #dce6f3;
+  box-sizing: border-box;
+}
+.branch-axis-mix-group__parent {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 10px;
+  gap: 9px;
+  color: #52647e;
+  background: #e8f0fc;
+  border-right: 1px solid #cbd9ed;
+  font-size: 13px;
+  font-weight: 700;
+  box-sizing: border-box;
+}
+.branch-axis-mix-group__rows {
+  min-width: 0;
+}
+.branch-axis-mix-group__row {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: #435b7b;
+  font-size: 11px;
+  font-weight: 700;
+  box-sizing: border-box;
+}
+.branch-axis-mix-group__row + .branch-axis-mix-group__row {
+  border-top: 1px solid #e0e8f3;
+}
+.branch-axis-mix-group__row:nth-child(even) {
+  background: #f2f6fc;
 }
 .branch-axis__number {
   display: grid;
@@ -499,11 +607,6 @@ onBeforeUnmount(() => {
   background: #eff3f9;
   border-radius: 5px;
   font-size: 11px;
-}
-.branch-axis--mix .branch-axis__number {
-  width: 21px;
-  height: 21px;
-  font-size: 10px;
 }
 .branch-node {
   position: absolute;
@@ -550,59 +653,16 @@ onBeforeUnmount(() => {
     0 0 0 5px rgba(223, 53, 71, 0.14),
     0 5px 18px rgba(211, 47, 63, 0.2);
 }
-.branch-node--pending {
-  border-style: dashed;
-  color: #7d8ba0;
-  background: #fbfcff;
+.branch-node:disabled {
+  cursor: wait;
 }
-.branch-node--selected {
-  outline: 3px solid rgba(46, 101, 221, 0.24);
-  outline-offset: 4px;
-}
-.branch-node--active.branch-node--selected {
-  outline-color: rgba(220, 53, 69, 0.3);
-}
-.branch-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 68px;
-  padding: 10px 24px;
-  gap: 18px;
-  background: #fff;
-  border-top: 1px solid #dde6f2;
-}
-.branch-footer__selection {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 7px;
-  color: #6b7c93;
+.branch-switching {
+  color: #2563eb;
   font-size: 12px;
-}
-.branch-footer__selection strong {
-  color: #233755;
-  font-size: 14px;
-}
-.branch-activate {
-  min-width: 150px;
-  padding: 10px 16px;
-  color: #fff;
-  background: #2563eb;
-  border: 0;
-  border-radius: 10px;
   font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.branch-activate:disabled {
-  color: #8895aa;
-  background: #edf1f7;
-  cursor: default;
 }
 .branch-close:focus-visible,
-.branch-node:focus-visible,
-.branch-activate:focus-visible {
+.branch-node:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
 }
@@ -622,20 +682,24 @@ onBeforeUnmount(() => {
     padding: 0;
   }
   .branch-axis-rail {
-    width: 137px;
+    width: 156px;
+    flex-basis: 156px;
   }
   .branch-axis {
-    width: 126px;
+    padding: 0 8px;
     font-size: 11px;
   }
-  .branch-footer {
-    align-items: stretch;
-    flex-direction: column;
-    padding: 10px 14px;
-    gap: 8px;
+  .branch-axis-mix-group {
+    grid-template-columns: 73px minmax(0, 1fr);
   }
-  .branch-activate {
-    width: 100%;
+  .branch-axis-mix-group__parent {
+    padding: 0 8px;
+    gap: 5px;
+    font-size: 11px;
+  }
+  .branch-axis-mix-group__row {
+    padding: 0 8px;
+    font-size: 10px;
   }
 }
 </style>

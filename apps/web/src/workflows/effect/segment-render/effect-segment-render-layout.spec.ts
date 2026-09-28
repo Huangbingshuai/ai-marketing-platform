@@ -189,6 +189,15 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('v-if="!selectionMode" class="material-card-actions"');
   });
 
+  it('spreads the four material actions across the full card footer', () => {
+    expect(pageSource).toMatch(
+      /\.material-card-actions\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\);/,
+    );
+    expect(pageSource).toMatch(/\.material-card-actions button\s*\{[^}]*width:\s*100%;/);
+    expect(pageSource).toContain('.material-card-actions button:hover:not(:disabled)');
+    expect(pageSource).toContain('.material-card-actions button:focus-visible');
+  });
+
   it('copies the prompt-node pagination controls and page size options', () => {
     expect(pageSource).toContain('class="prompt-pagination"');
     expect(pageSource).toContain('class="prompt-page-size"');
@@ -276,6 +285,6 @@ describe('effect segment render material gallery layout', () => {
     expect(parentSource).toContain('v-else-if="activeStep === 3"');
     expect(parentSource).toContain('@back="selectWorkflowStep(2)"');
     expect(parentSource).toContain('@next="selectWorkflowStep(4)"');
-    expect(parentSource).toContain('v-if="activeDownstreamBoundary"');
+    expect(parentSource).not.toContain('v-if="activeDownstreamBoundary"');
   });
 });

@@ -47,6 +47,134 @@ describe('WorkflowWorkingService node activation', () => {
 });
 
 describe('WorkflowWorkingService effect branch tree', () => {
+  it('includes unconfirmed mix templates from the active run draft without creating a version', async () => {
+    const createdAt = new Date('2026-09-28T01:00:00.000Z');
+    const repository = {
+      listEffectRunBranches: vi.fn().mockResolvedValue([
+        {
+          id: 'root',
+          activeKey: 'ACTIVE',
+          parentWorkflowRunId: null,
+          forkNodeId: null,
+          forkTemplateId: null,
+          branchLabel: null,
+          currentNodeId: 'TEMPLATE_MIX',
+          createdAt,
+          updatedAt: createdAt,
+          nodeStates: [
+            {
+              state: {
+                schemaVersion: 1,
+                activeTemplateId: 'template-new',
+                templates: [
+                  {
+                    id: 'template-new',
+                    createdAt: '2026-09-27T08:00:00.000Z',
+                    workspace: { template: { name: '新品跑量模板' } },
+                  },
+                  { id: 'template-old', workspace: { template: { name: '测试1' } } },
+                ],
+              },
+            },
+          ],
+          workingArtifacts: [
+            {
+              nodeId: 'TEMPLATE_MIX',
+              artifactKey: 'mix-template:template-old',
+              revision: 3,
+              createdAt,
+              freshness: 'CURRENT',
+              name: '测试1',
+            },
+          ],
+        },
+      ]),
+    };
+    const service = new WorkflowWorkingService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+
+    const tree = await service.getEffectBranchTree('project-a');
+
+    expect(tree.branches).toHaveLength(1);
+    expect(tree.branches[0]?.templates).toEqual([
+      expect.objectContaining({
+        templateId: 'template-old',
+        name: '测试1',
+        templateRevision: 3,
+        templateCreatedAt: createdAt.toISOString(),
+      }),
+      expect.objectContaining({
+        templateId: 'template-new',
+        name: '新品跑量模板',
+        templateRevision: null,
+        templateCreatedAt: '2026-09-27T08:00:00.000Z',
+        fillRevision: null,
+        packagingRevision: null,
+        timelineVariantCount: 0,
+      }),
+    ]);
+    expect(
+      tree.branches[0]?.nodes.find((node) => node.nodeId === 'TEMPLATE_MIX')?.artifactCount,
+    ).toBe(1);
+  });
+
+  it('reveals a draft fill only after its completed AI output still exists in the draft', async () => {
+    const createdAt = new Date('2026-09-28T01:00:00.000Z');
+    const makeRun = (variantIds: string[]) => ({
+      id: 'root',
+      activeKey: 'ACTIVE',
+      parentWorkflowRunId: null,
+      forkNodeId: null,
+      forkTemplateId: null,
+      branchLabel: null,
+      currentNodeId: 'TEMPLATE_MIX',
+      createdAt,
+      updatedAt: createdAt,
+      nodeStates: [
+        {
+          state: {
+            schemaVersion: 1,
+            activeTemplateId: 'template-new',
+            templates: [
+              {
+                id: 'template-new',
+                workspace: {
+                  template: { name: '新品跑量模板' },
+                  variants: variantIds.map((id) => ({ id })),
+                },
+              },
+            ],
+          },
+        },
+      ],
+      effectTemplateMixAiRuns: [{ templateId: 'template-new', outputVariantId: 'variant-ai' }],
+      workingArtifacts: [],
+    });
+    const repository = {
+      listEffectRunBranches: vi.fn().mockResolvedValue([makeRun(['variant-ai'])]),
+    };
+    const service = new WorkflowWorkingService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+
+    const filled = await service.getEffectBranchTree('project-a');
+    expect(filled.branches[0]?.templates[0]).toMatchObject({
+      templateRevision: null,
+      templateCreatedAt: null,
+      fillRevision: null,
+      draftFillReady: true,
+    });
+
+    repository.listEffectRunBranches.mockResolvedValue([makeRun([])]);
+    const cleared = await service.getEffectBranchTree('project-a');
+    expect(cleared.branches[0]?.templates[0]?.draftFillReady).toBe(false);
+  });
+
   it('uses the actual revision of each mix layer and never invents one for mixed product revisions', async () => {
     const createdAt = new Date('2026-09-28T01:00:00.000Z');
     const artifacts = [

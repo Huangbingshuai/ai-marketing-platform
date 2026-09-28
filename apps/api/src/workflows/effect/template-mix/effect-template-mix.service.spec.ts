@@ -125,7 +125,9 @@ const harness = () => {
 describe('EffectTemplateMixService', () => {
   it('reads only the saved variant for packaging hot-path source checks', async () => {
     const { service, working } = harness();
-    expect((await service.currentVariant('project', 'run', templateId, variantId))?.id).toBe(variantId);
+    expect((await service.currentVariant('project', 'run', templateId, variantId))?.id).toBe(
+      variantId,
+    );
     expect(working.getNodeStateOrNull).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
     expect(working.listArtifacts).not.toHaveBeenCalled();
     expect(await service.currentVariant('project', 'run', templateId, 'missing')).toBeNull();
@@ -320,7 +322,35 @@ describe('EffectTemplateMixService', () => {
   it('allows the first 4-second draft without a previous node state', async () => {
     const { service, working } = harness();
     working.getNodeStateOrNull.mockResolvedValue(null);
-    await expect(service.saveDraft('project', 'run', null, draft())).resolves.toBeDefined();
+    const saved = await service.saveDraft('project', 'run', null, draft());
+    const createdAt = saved.draft.templates[0]?.createdAt;
+    expect(createdAt).toEqual(expect.any(String));
+    expect(Number.isNaN(Date.parse(createdAt!))).toBe(false);
+
+    const edited = draft();
+    edited.templates[0]!.createdAt = '2000-01-01T00:00:00.000Z';
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 8, state: saved.draft });
+    await service.saveDraft('project', 'run', 8, edited);
+    expect(working.putNodeState.mock.calls[1]?.[3].state.templates[0]?.createdAt).toBe(createdAt);
+  });
+
+  it('does not invent a creation time for a legacy template or trust a client replacement', async () => {
+    const { service, working } = harness();
+    const edited = draft();
+    edited.templates[0]!.createdAt = '2000-01-01T00:00:00.000Z';
+    const saved = await service.saveDraft('project', 'run', 7, edited);
+    expect(saved.draft.templates[0]?.createdAt).toBeUndefined();
+    expect(working.putNodeState.mock.calls[0]?.[3].state.templates[0]?.createdAt).toBeUndefined();
+  });
+
+  it('rejects an invalid template creation timestamp', async () => {
+    const { service, working } = harness();
+    const edited = draft();
+    edited.templates[0]!.createdAt = 'not-a-date';
+    await expect(service.saveDraft('project', 'run', 7, edited)).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(working.putNodeState).not.toHaveBeenCalled();
   });
 
   it('rejects newly introduced duplicate template names after whitespace and Unicode normalization', async () => {
@@ -506,7 +536,11 @@ describe('EffectTemplateMixService', () => {
       revision: 2,
       availability: 'AVAILABLE',
       freshness: 'CURRENT',
-      payload: { schemaVersion: 1, productId: 'product', clips: taskIds.map((taskId) => ({ taskId })) },
+      payload: {
+        schemaVersion: 1,
+        productId: 'product',
+        clips: taskIds.map((taskId) => ({ taskId })),
+      },
     }) as unknown as WorkingArtifact;
   const workspaceWith = async (items: WorkingArtifact[]) => {
     const working = {
@@ -538,9 +572,7 @@ describe('EffectTemplateMixService', () => {
       { ...source, freshness: 'STALE' } as WorkingArtifact,
     ]);
 
-    expect(result.materials).toEqual([
-      expect.objectContaining({ id: sourceId, available: false }),
-    ]);
+    expect(result.materials).toEqual([expect.objectContaining({ id: sourceId, available: false })]);
   });
 
   it('keeps a superseded clip an existing project is bound to and shows it as expired', async () => {
@@ -551,9 +583,7 @@ describe('EffectTemplateMixService', () => {
       { ...source, freshness: 'STALE' } as WorkingArtifact,
     ]);
 
-    expect(result.materials).toEqual([
-      expect.objectContaining({ id: sourceId, available: false }),
-    ]);
+    expect(result.materials).toEqual([expect.objectContaining({ id: sourceId, available: false })]);
   });
 
   it('keeps a current clip the batch no longer lists so a bound variant still resolves', async () => {

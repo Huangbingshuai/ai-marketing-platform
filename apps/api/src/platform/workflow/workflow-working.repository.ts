@@ -1,6 +1,6 @@
-import {
-  EFFECT_WORKFLOW_BRANCH_NODES,
-  type EffectWorkflowBranchNodeId,
+import { EFFECT_WORKFLOW_BRANCH_NODES } from '@ai-marketing/contracts';
+import type {
+  EffectWorkflowBranchNodeId,
   AssetDirectory,
   AssetType,
   AssetWorkflow,
@@ -190,6 +190,42 @@ const persistedArtifactHash = (record: WorkingArtifactRecord): string =>
     })),
   });
 
+const artifactRevisionSnapshot = (record: WorkingArtifactRecord): Prisma.InputJsonValue =>
+  ({
+    kind: record.kind,
+    name: record.name,
+    directory: record.directory,
+    type: record.type,
+    tags: record.tags,
+    payload: record.payload,
+    metadata: record.metadata,
+    originalFileName: record.originalFileName,
+    mimeType: record.mimeType,
+    sizeBytes: record.sizeBytes,
+    storageKey: record.storageKey,
+    sourceRunId: record.sourceRunId,
+    sourceArtifactId: record.sourceArtifactId,
+    freshness: record.freshness,
+    availability: record.availability,
+    files: record.files.map((file) => ({
+      fileObjectId: file.fileObjectId,
+      role: file.role,
+      sortOrder: file.sortOrder,
+      originalFileName: file.fileObject.originalFileName,
+      mimeType: file.fileObject.mimeType,
+      sha256: file.fileObject.sha256,
+      storageKey: file.fileObject.storageKey,
+    })),
+    dependencies: record.dependencies.map((dependency) => ({
+      sourceType: dependency.sourceType,
+      sourceNodeId: dependency.sourceNodeId,
+      sourceArtifactId: dependency.sourceArtifactId,
+      sourceKey: dependency.sourceKey,
+      sourceRevision: dependency.sourceRevision,
+      sourceHash: dependency.sourceHash,
+    })),
+  }) as Prisma.InputJsonValue;
+
 @Injectable()
 export class WorkflowWorkingRepository {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
@@ -237,8 +273,19 @@ export class WorkflowWorkingRepository {
 
   listEffectRunBranches(projectId: string) {
     return this.prisma.workflowRun.findMany({
-      where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      where: {
+        projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+        OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
+      },
       include: {
+        nodeStates: {
+          where: { nodeId: 'TEMPLATE_MIX' },
+          select: { state: true },
+        },
+        effectTemplateMixAiRuns: {
+          where: { status: 'COMPLETED', outputVariantId: { not: null } },
+          select: { templateId: true, outputVariantId: true },
+        },
         workingArtifacts: {
           where: { availability: 'AVAILABLE' },
           select: {
@@ -265,7 +312,10 @@ export class WorkflowWorkingRepository {
       });
       const active = runs.find((run) => run.activeKey === 'ACTIVE');
       const target = runs.find((run) => run.id === targetRunId);
-      if (!active || !target || target.status === 'COMPLETED') return null;
+      if (
+        !active || !target || target.status === 'COMPLETED' ||
+        (target.parentWorkflowRunId && !target.branchPublishedAt)
+      ) return null;
       const byId = new Map(runs.map((run) => [run.id, run]));
       const rootId = (id: string): string | null => {
         const visited = new Set<string>();
@@ -578,12 +628,29 @@ export class WorkflowWorkingRepository {
     return this.prisma.fileObject.findFirst({ where: { id: fileObjectId, projectId } });
   }
 
-  upsertFileObjectInTransaction(
+  async upsertFileObjectInTransaction(
     transaction: Prisma.TransactionClient,
     projectId: string,
     workflowRunId: string,
     input: FileObjectInput,
   ) {
+    const existing = await transaction.fileObject.findUnique({
+      where: { projectId_storageKey: { projectId, storageKey: input.storageKey } },
+    });
+    if (existing && existing.workflowRunId !== workflowRunId) {
+      const visited = new Set([workflowRunId]);
+      let run = await transaction.workflowRun.findFirst({
+        where: { projectId, id: workflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      });
+      while (run?.parentWorkflowRunId && !visited.has(run.parentWorkflowRunId)) {
+        if (run.parentWorkflowRunId === existing.workflowRunId) return existing;
+        visited.add(run.parentWorkflowRunId);
+        run = await transaction.workflowRun.findFirst({
+          where: { projectId, id: run.parentWorkflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+        });
+      }
+      throw new Error('WORKING_FILE_OBJECT_NOT_FOUND');
+    }
     return transaction.fileObject.upsert({
       where: { projectId_storageKey: { projectId, storageKey: input.storageKey } },
       create: {
@@ -651,6 +718,7 @@ export class WorkflowWorkingRepository {
       where: { id: workflowRunId, projectId, status: { in: [...openRunStatuses] } },
     });
     if (!run) throw new Error('WORKFLOW_RUN_NOT_FOUND');
+    const captureEffectRevision = run.workflow === 'EFFECT' && run.workflowSpace === 'EFFECT';
     const unique = { projectId, workflowRunId, nodeId, artifactKey };
     const previous = await transaction.workingArtifact.findUnique({
       where: { projectId_workflowRunId_nodeId_artifactKey: unique },
@@ -715,6 +783,11 @@ export class WorkflowWorkingRepository {
         data: { projectId, workflowRunId, nodeId, artifactKey, ...data },
       });
     }
+    if (previous && captureEffectRevision)
+      await this.persistArtifactRevisionSnapshotInTransaction(
+        transaction, projectId, workflowRunId, nodeId, artifactKey, previous,
+        previous.updatedAt ?? previous.createdAt ?? new Date(),
+      );
     const previousFileIds = previous?.files.map((item) => item.fileObjectId) ?? [];
     await transaction.workingArtifactFile.deleteMany({
       where: { projectId, workingArtifactId: baseRecord.id },
@@ -756,15 +829,16 @@ export class WorkflowWorkingRepository {
     const replacedFileObjectIds = previousFileIds.filter((id) => !currentFileIds.has(id));
     const orphanedFileObjectIds: string[] = [];
     for (const fileObjectId of replacedFileObjectIds) {
-      const [artifactLinks, materials, uploadItems] = await Promise.all([
+      const [artifactLinks, revisionLinks, materials, uploadItems] = await Promise.all([
         transaction.workingArtifactFile.count({ where: { projectId, fileObjectId } }),
+        transaction.workingArtifactRevisionFile.count({ where: { projectId, fileObjectId } }),
         transaction.effectImportMaterial.count({ where: { projectId, fileObjectId } }),
         transaction.effectImportUploadItem.count({ where: { projectId, fileObjectId } }),
       ]);
       const packagingFiles = await transaction.effectPackagingFile.count({
         where: { projectId, fileObjectId },
       });
-      if (artifactLinks + materials + uploadItems + packagingFiles === 0)
+      if (artifactLinks + revisionLinks + materials + uploadItems + packagingFiles === 0)
         orphanedFileObjectIds.push(fileObjectId);
     }
     if (orphanedFileObjectIds.length)
@@ -783,12 +857,59 @@ export class WorkflowWorkingRepository {
       where: { id: baseRecord.id },
       include: workingArtifactInclude,
     });
+    if (captureEffectRevision)
+      await this.persistArtifactRevisionSnapshotInTransaction(
+        transaction, projectId, workflowRunId, nodeId, artifactKey, record, new Date(),
+      );
     return {
       record,
       previousStorageKey: previous?.storageKey ?? null,
       unchanged: false,
       orphanedFileObjectIds,
     };
+  }
+
+  private async persistArtifactRevisionSnapshotInTransaction(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    workflowRunId: string,
+    nodeId: string,
+    artifactKey: string,
+    record: WorkingArtifactRecord,
+    confirmedAt: Date,
+  ): Promise<void> {
+    const snapshot = await transaction.workingArtifactRevisionSnapshot.upsert({
+      where: {
+        projectId_workflowRunId_nodeId_artifactKey_revision: {
+          projectId, workflowRunId, nodeId, artifactKey, revision: record.revision,
+        },
+      },
+      create: {
+        projectId,
+        workflowRunId,
+        workingArtifactId: record.id,
+        nodeId,
+        artifactKey,
+        revision: record.revision,
+        contentHash: record.contentHash,
+        snapshot: artifactRevisionSnapshot(record),
+        confirmedAt,
+      },
+      update: {},
+      select: { id: true },
+    });
+    if (record.files.length)
+      await transaction.workingArtifactRevisionFile.createMany({
+        data: record.files.map((file) => ({
+          projectId,
+          workflowRunId,
+          snapshotId: snapshot.id,
+          fileObjectId: file.fileObjectId,
+          role: file.role,
+          sortOrder: file.sortOrder,
+        })),
+        skipDuplicates: true,
+      });
   }
 
   async commitValidatedArtifacts(
@@ -845,26 +966,67 @@ export class WorkflowWorkingRepository {
     workflowRunId: string,
     input: WorkingArtifactUpsertInput,
   ): Promise<void> {
+    const lineage: Array<{ runId: string; crossedForks: EffectForkScope[] }> = [
+      { runId: workflowRunId, crossedForks: [] },
+    ];
+    const visited = new Set([workflowRunId]);
+    let current = await transaction.workflowRun.findFirst({
+      where: { projectId, id: workflowRunId },
+    });
+    while (
+      current?.workflow === 'EFFECT' && current.workflowSpace === 'EFFECT' &&
+      current.parentWorkflowRunId && !visited.has(current.parentWorkflowRunId)
+    ) {
+      const parent = await transaction.workflowRun.findFirst({
+        where: { projectId, id: current.parentWorkflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      });
+      if (!parent) break;
+      visited.add(parent.id);
+      lineage.push({
+        runId: parent.id,
+        crossedForks: [
+          ...lineage[lineage.length - 1]!.crossedForks,
+          { forkNodeId: current.forkNodeId, forkTemplateId: current.forkTemplateId },
+        ],
+      });
+      current = parent;
+    }
+    const allowedRunIds = lineage.map(({ runId }) => runId);
     const fileIds = [...new Set(input.files?.map((file) => file.fileObjectId) ?? [])];
     if (fileIds.length) {
       const count = await transaction.fileObject.count({
-        where: { projectId, workflowRunId, id: { in: fileIds } },
+        where: { projectId, workflowRunId: { in: allowedRunIds }, id: { in: fileIds } },
       });
       if (count !== fileIds.length) throw new Error('WORKING_FILE_OBJECT_NOT_FOUND');
     }
     for (const dependency of input.dependencies ?? []) {
       if (dependency.sourceType === 'WORKING_ARTIFACT') {
-        const source = dependency.sourceArtifactId
-          ? await transaction.workingArtifact.findFirst({
-              where: {
-                id: dependency.sourceArtifactId,
-                projectId,
-                workflowRunId,
-              },
-            })
-          : await transaction.workingArtifact.findFirst({
-              where: { projectId, workflowRunId, artifactKey: dependency.sourceKey },
-            });
+        const candidates = await transaction.workingArtifact.findMany({
+          where: {
+            projectId,
+            workflowRunId: { in: allowedRunIds },
+            ...(dependency.sourceArtifactId
+              ? { id: dependency.sourceArtifactId }
+              : {
+                  artifactKey: {
+                    in: [
+                      dependency.sourceKey,
+                      dependency.sourceKey.replace('effective-video-config:', 'global-video-config:'),
+                    ],
+                  },
+                }),
+          },
+        });
+        const source = lineage
+          .map(({ runId, crossedForks }) =>
+            candidates.find(
+              (candidate) =>
+                candidate.workflowRunId === runId &&
+                (crossedForks.length === 0 ||
+                  inheritedEffectArtifactVisible(candidate, crossedForks)),
+            ),
+          )
+          .find(Boolean);
         const keyMatches =
           source?.artifactKey === dependency.sourceKey ||
           (dependency.sourceKey.startsWith('effective-video-config:') &&
@@ -980,6 +1142,14 @@ export class WorkflowWorkingRepository {
         include: workingArtifactInclude,
       });
       if (record) {
+        const run = await transaction.workflowRun.findFirst({
+          where: { projectId, id: workflowRunId },
+        });
+        if (run?.workflow === 'EFFECT' && run.workflowSpace === 'EFFECT')
+          await this.persistArtifactRevisionSnapshotInTransaction(
+            transaction, projectId, workflowRunId, nodeId, artifactKey, record,
+            record.updatedAt,
+          );
         await this.markArtifactDependentsStaleInTransaction(
           transaction,
           projectId,
@@ -994,6 +1164,7 @@ export class WorkflowWorkingRepository {
               projectId,
               id: { in: fileObjectIds },
               packagingFiles: { none: {} },
+              revisionLinks: { none: {} },
               finalOutputItems: { none: {} },
               voicePreviews: { none: {} },
             },

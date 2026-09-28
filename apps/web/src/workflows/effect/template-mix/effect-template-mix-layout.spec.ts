@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import workflowSource from '../source-import/EffectImportNodePage.vue?raw';
 import audioLanesSource from './effect-template-mix-audio-lanes.ts?raw';
-import pageSource from './EffectTemplateMixNodePage.vue?raw';
+import rawPageSource from './EffectTemplateMixNodePage.vue?raw';
 import packagingSource from './EffectTemplateMixPackaging.vue?raw';
 import thumbnailCacheSource from './effect-template-mix-thumbnail-cache.ts?raw';
 import thumbnailSource from './EffectTemplateMixThumbnail.vue?raw';
 import filmstripSource from './EffectTemplateMixFilmstrip.vue?raw';
-import timelineSource from './EffectTemplateMixTimeline.vue?raw';
+import rawTimelineSource from './EffectTemplateMixTimeline.vue?raw';
 import waveformSource from './EffectTemplateMixWaveform.vue?raw';
+
+const pageSource = rawPageSource.replace(/\r\n/gu, '\n');
+const timelineSource = rawTimelineSource.replace(/\r\n/gu, '\n');
 
 describe('effect template mix workbench layout', () => {
   it('leaves the transition track empty at a direct cut while keeping drop-to-add available', () => {
@@ -24,6 +27,16 @@ describe('effect template mix workbench layout', () => {
       "import EffectTemplateMixNodePage from '../template-mix/EffectTemplateMixNodePage.vue'",
     );
     expect(workflowSource).toContain('v-else-if="activeStep === 4"');
+  });
+  it('disables batch repackaging when the template needs a refill or any packaged source is stale', () => {
+    expect(pageSource).toContain('const packagingActionBlockReason = computed(() => {');
+    expect(pageSource).toContain('if (entry.needsAiFill)');
+    expect(pageSource).toContain('const completeVariants = entry.workspace.variants.filter(');
+    expect(pageSource).toContain('material.artifactRevision !== variant.bindingRevisions[slot.id]');
+    expect(pageSource).toContain('Boolean(packagingActionBlockReason)');
+    expect(pageSource).toContain('packagingActionBlockReason ??');
+    expect(pageSource).toContain("if (target === 'ACTION' && packagingActionBlockReason.value)");
+    expect(pageSource).toContain('background: #fff;\n  border-color: #dbe3ef;\n  opacity: 1;');
   });
   it('supports same-template timeline copy and paste shortcuts and restores double-click audio separation', () => {
     expect(timelineSource).toContain("if (!editingText && key === 'c')");
@@ -93,7 +106,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('getEffectTemplateMixAiRun');
     expect(pageSource).toContain('大模型按 Prompt 归槽');
     expect(pageSource).toContain('changeTrimStart');
-    expect(pageSource).toContain('applyEffectTemplateMixVariant');
+    expect(pageSource).toContain('completeEffectTemplateMixPackaging');
     expect(pageSource).toContain('completeEffectTemplateMixPackaging');
     expect(pageSource).not.toMatch(/\bfillEffectTemplateMixVariant\b/u);
     expect(pageSource).not.toContain('syncEffectTemplateMixVariants');
@@ -161,7 +174,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const aiFillBlockReason = computed<string | null>(');
     expect(pageSource).toContain('if (!refreshAffectedSlots && aiFillBlockReason.value) {');
     expect(pageSource).toContain('class="material-expired-banner"');
-    expect(pageSource).toContain('class="material-expired-badge"');
+    expect(pageSource).not.toContain('class="material-expired-badge"');
     expect(pageSource).not.toContain(
       '!selectedVariant ||\n                workspace.materials.length < 6',
     );
@@ -205,7 +218,7 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain(
       "const trackOrder = ref<VisibleTrack[]>(['CAPTION', 'VIDEO']);",
     );
-    expect(timelineSource).toContain('const orderedTracks = computed<VisibleTrack[]>(() => {');
+    expect(timelineSource).toContain('const orderedTracks = computed<VisibleTrack[]>(() => [');
     expect(timelineSource).toContain('const visiblePrimaryTracks = computed');
     expect(timelineSource).toContain('const hasCaptionTrack = computed');
     expect(timelineSource).toContain('const hasCaptionTrack = computed(() => true);');
@@ -234,7 +247,7 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).not.toContain('Math.min(3,');
     expect(timelineSource).not.toContain('未配置字幕');
     expect(timelineSource).not.toContain('未配置音频');
-    expect(timelineSource).toContain("type VisibleTrack = 'CAPTION' | 'VIDEO' | AudioTrack");
+    expect(timelineSource).toContain("type VisibleTrack = 'CAPTION' | CaptionTrack | 'VIDEO' | AudioTrack;");
     // Mute is one flag per row, not one per kind of audio.
     expect(timelineSource).toContain('audioRowMuted?: boolean[]');
     expect(timelineSource).not.toContain('voiceMuted?: boolean');
@@ -328,7 +341,7 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('Math.hypot(');
     expect(pageSource).toContain('beginMaterialPointerDrag');
     expect(pageSource).toContain("className = 'material-drag-ghost'");
-    expect(pageSource).toContain(':draggable="Boolean(selectedVariant)"');
+    expect(pageSource).toContain(':draggable="Boolean(selectedVariant) && !projectEditLocked"');
     expect(pageSource).not.toContain('过期素材不能重新拖入槽位');
     expect(pageSource).toContain('@dragstart="beginMaterialDrag($event, material)"');
     expect(pageSource).toContain('@dragend="endMaterialDrag"');
@@ -482,8 +495,8 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('const captionOverlapsTrack = (');
     expect(timelineSource).toContain('effectTemplateMixCaptionTrackKey(entry.caption) === key');
     expect(timelineSource).toContain('const captionOverlapsOwnTrack = (');
-    expect(timelineSource).toContain(
-      'sourceDuration: Number.POSITIVE_INFINITY,\n  minStart: 0,\n  maxEnd: Number.POSITIVE_INFINITY,',
+    expect(timelineSource).toMatch(
+      /sourceDuration: Number\.POSITIVE_INFINITY,\s*minStart: 0,\s*maxEnd: Number\.POSITIVE_INFINITY,/u,
     );
     expect(timelineSource).toContain('captionLaneById.value.get(caption.id) ?? 0');
     // A subtitle travels its own, shorter rows: the ghost is measured against the caption area and
@@ -1030,7 +1043,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('class="caption-text-editor"');
     expect(pageSource).toContain('const changeCaptionText');
     expect(pageSource).toContain('@select-audio-clip="onAudioClipSelected"');
-    expect(pageSource).toContain('checkpoint.captions?.find((c) => c.id === captionId)');
+    expect(pageSource).toContain('checkpoint.captions?.find((item) => item.id === captionId)');
   });
   it('makes the in-video caption selectable, draggable and resizable with snap guides', () => {
     // Both directions of the selection are wired: preview -> timeline and timeline -> preview.
@@ -1105,9 +1118,9 @@ describe('effect template mix workbench layout', () => {
   it('selects several captions at once and edits their geometry as one group', () => {
     // The caption lane marquees exactly like the video lane, and Ctrl/Cmd toggles one card.
     expect(timelineSource).toContain('track: VisibleTrack;');
-    expect(timelineSource).toContain('const captionTrack = ref<HTMLElement | null>(null);');
-    expect(timelineSource).toContain(':ref="setCaptionTrackElement"');
-    expect(timelineSource).toContain('captionTrack.value');
+    expect(timelineSource).toContain('const captionTrackElements = new Map<CaptionTrack, HTMLElement>();');
+    expect(timelineSource).toContain('setCaptionTrackElement(track === \'CAPTION\' ? captionTrackKey(0) : track, element)');
+    expect(timelineSource).toContain('captionTrackElements.get(captionTrackKey(0))');
     // Every row marquees, and an audio row measures only its own lane.
     expect(timelineSource).toContain("box.track === 'CAPTION'");
     expect(timelineSource).toContain('audioTrackElements.get(box.track)');
@@ -1273,9 +1286,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain(
       'const placeGeneratedCaptionVoice = (clipId: string, start: number): void => {',
     );
-    expect(pageSource).toContain(
-      'DEFAULT_AUDIO_LANE.VOICE,\n    new Set([clipId]),',
-    );
+    expect(pageSource).toMatch(/DEFAULT_AUDIO_LANE\.VOICE,\s*new Set\(\[clipId\]\),/u);
     expect(pageSource).toContain('if (laneOf(placement.clipId) >= resolved.insertRowAt) {');
     // The clip id carries its own namespace, so one resolver decides both which checkpoint
     // collection an edit writes and which one a placement reads.
@@ -1345,9 +1356,7 @@ describe('effect template mix workbench layout', () => {
   it('edits volume, fade-in and fade-out for a voice/BGM selection from one standard', () => {
     // The timeline reports the whole voice/music set, captions excluded: they own the font stepper.
     expect(timelineSource).toContain('selectAudioClips: [clipIds: string[]];');
-    expect(timelineSource).toContain(
-      "emit(\n      'selectAudioClips',\n      ids.filter((id) => !id.startsWith('caption:')),",
-    );
+    expect(timelineSource).toMatch(/'selectAudioClips',\s*ids\.filter\(\(id\) => !id\.startsWith\('caption:'\)\)/u);
     expect(pageSource).toContain('@select-audio-clips="onAudioClipsSelected"');
     expect(pageSource).toContain('const selectedAudioClipIds = ref<string[]>([]);');
     expect(pageSource).toContain('const onAudioClipsSelected = (clipIds: string[]): void');
@@ -1444,7 +1453,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('--parameter-accent: #2563eb;');
     expect(pageSource).toContain('--parameter-field-background: #ffffff;');
   });
-  it('keeps a stale packaging on the timeline instead of wiping its captions and audio', () => {
+  it('shows stale packaging on its project card without overlaying expiration badges on timeline clips', () => {
     // Nulling the prop on staleness is what used to empty the caption and audio lanes the moment a
     // lane moved: those packaged clips are the arrangement the user is looking at, so they stay put.
     expect(pageSource).toContain(':packaging="selectedPackaging"');
@@ -1456,15 +1465,15 @@ describe('effect template mix workbench layout', () => {
       "selectedPackaging.value?.status === 'COMPLETED' && !projectEditLocked.value",
     );
     expect(pageSource).not.toContain('时间轴已改变，当前包装已过期，请重新生成包装后再编辑');
-    // The timeline keeps the badge and the edit gestures; stale clips are no longer dimmed.
+    // Staleness is shown once on the project card. The editable timeline itself stays visually clean.
     expect(timelineSource).toContain(
       "() => !props.readOnly && props.packaging?.status === 'COMPLETED',",
     );
-    expect(timelineSource).toContain(
-      'const packagingStale = computed(() => Boolean(props.packaging?.stale));',
-    );
-    expect(timelineSource).toContain("'is-stale': packagingStale,");
-    expect(timelineSource).toContain('.clip-stale-badge {');
+    expect(pageSource).toContain('class="project-expired-badge"');
+    expect(pageSource).toContain('@stale-variants="onStalePackagingVariants"');
+    expect(packagingSource).toContain("emit('staleVariants', variantIds)");
+    expect(timelineSource).not.toContain('clip-stale-badge');
+    expect(timelineSource).not.toContain('is-stale');
     expect(timelineSource).not.toContain('.caption-clip.is-stale,\n.audio-clip.is-stale {');
   });
   it('lets a snapped caption be dragged back off the line', () => {

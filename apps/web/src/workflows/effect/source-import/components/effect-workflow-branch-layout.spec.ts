@@ -4,7 +4,12 @@ import {
   type EffectWorkflowBranchNodeId,
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
-import { BRANCH_TREE_STAGES, buildEffectBranchLayout } from './effect-workflow-branch-layout';
+import treeSource from './EffectWorkflowBranchTree.vue?raw';
+import {
+  BRANCH_TREE_LEAF_GAP,
+  BRANCH_TREE_STAGES,
+  buildEffectBranchLayout,
+} from './effect-workflow-branch-layout';
 
 const branch = (
   id: string,
@@ -24,6 +29,7 @@ const branch = (
     {
       templateId: 'template-a',
       name: '测试 A',
+      templateCreatedAt: '2026-09-26T00:00:00.000Z',
       templateRevision: 2,
       fillRevision: 3,
       fillCreatedAt: '2026-09-27T00:00:00.000Z',
@@ -45,21 +51,43 @@ const branch = (
 });
 
 describe('effect workflow branch tree layout', () => {
+  it('shows the three mix layers inside one workflow-node group without adding a seventh workflow node', () => {
+    expect(BRANCH_TREE_STAGES.slice(4, 7).map((stage) => stage.name)).toEqual([
+      '混剪模板',
+      '智能填充',
+      '智能成片包装',
+    ]);
+    expect(BRANCH_TREE_STAGES.slice(4, 7).every((stage) => stage.nodeId === 'TEMPLATE_MIX')).toBe(
+      true,
+    );
+    expect(treeSource).toContain('class="branch-axis-mix-group"');
+    expect(treeSource).toContain('class="branch-axis-mix-group__parent"');
+    expect(treeSource).toContain('<span>混剪</span>');
+    expect(treeSource).toContain('class="branch-axis-mix-group__row"');
+  });
+
   it('draws one top-down path across the six workflow nodes and three mix layers', () => {
     const layout = buildEffectBranchLayout([branch('main', null, null, true)]);
     expect(layout.nodes.map((node) => node.stageKey)).toEqual(
       BRANCH_TREE_STAGES.map((stage) => stage.key),
     );
     expect(layout.nodes.map((node) => node.x)).toEqual(Array(8).fill(layout.nodes[0]?.x));
+    expect(layout.root.x).toBe(layout.width / 2);
     expect(layout.nodes.map((node) => node.revision)).toEqual([1, 2, 3, 4, 2, 3, 4, 5]);
     expect(layout.nodes.find((node) => node.stageKey === 'SOURCE_IMPORT')?.createdAt).toBe(
       '2026-09-20T00:00:00.000Z',
     );
-    expect(layout.nodes.find((node) => node.stageKey === 'MIX_TEMPLATE')?.createdAt).toBeNull();
     expect(layout.nodes.find((node) => node.stageKey === 'MIX_FILL')?.createdAt).toBe(
       '2026-09-27T00:00:00.000Z',
     );
-    expect(layout.edges).toHaveLength(7);
+    expect(layout.nodes.find((node) => node.stageKey === 'MIX_TEMPLATE')?.createdAt).toBe(
+      '2026-09-26T00:00:00.000Z',
+    );
+    expect(layout.edges).toHaveLength(8);
+    expect(layout.root.y).toBeLessThan(layout.nodes[0]!.y);
+    expect(
+      layout.edges.find((edge) => edge.key === 'project-root->main:SOURCE_IMPORT:-')?.onActivePath,
+    ).toBe(true);
     expect(layout.nodes.every((node) => node.onActivePath)).toBe(true);
     expect(layout.nodes.filter((node) => node.isCurrentStage).map((node) => node.stageKey)).toEqual(
       ['PROMPT_GENERATION'],
@@ -86,8 +114,32 @@ describe('effect workflow branch tree layout', () => {
     ).toBe(true);
   });
 
+  it('fans multiple import versions out from the project root', () => {
+    const single = buildEffectBranchLayout([branch('main', null, null, true)]);
+    const layout = buildEffectBranchLayout([
+      branch('main', null, null),
+      branch('import-2', 'main', 'SOURCE_IMPORT', true),
+    ]);
+    const imports = layout.nodes.filter((node) => node.stageKey === 'SOURCE_IMPORT');
+    expect(imports).toHaveLength(2);
+    expect(imports[0]!.x).not.toBe(imports[1]!.x);
+    expect(layout.root.x).toBe((imports[0]!.x + imports[1]!.x) / 2);
+    expect(single.nodes[0]!.x - single.width / 2).toBe(0);
+    expect(imports[0]!.x - layout.width / 2).toBe(-BRANCH_TREE_LEAF_GAP / 2);
+    expect(imports[1]!.x - layout.width / 2).toBe(BRANCH_TREE_LEAF_GAP / 2);
+    expect(layout.edges.filter((edge) => edge.key.startsWith('project-root->'))).toHaveLength(2);
+    expect(
+      layout.edges.find((edge) => edge.key === 'project-root->import-2:SOURCE_IMPORT:-')
+        ?.onActivePath,
+    ).toBe(true);
+    expect(
+      layout.edges.find((edge) => edge.key === 'project-root->main:SOURCE_IMPORT:-')?.onActivePath,
+    ).toBe(false);
+  });
+
   it('shows every template as a child of rendering without a template filter', () => {
     const main = branch('main', null, null, true);
+    const oneTemplateLayout = buildEffectBranchLayout([main]);
     main.templates.push({
       ...main.templates[0]!,
       templateId: 'template-b',
@@ -99,8 +151,73 @@ describe('effect workflow branch tree layout', () => {
     const templates = layout.nodes.filter((node) => node.stageKey === 'MIX_TEMPLATE');
     expect(templates.map((node) => node.templateName)).toEqual(['测试 A', '测试 B']);
     expect(templates.map((node) => node.revision)).toEqual([2, 7]);
+    expect(
+      oneTemplateLayout.nodes.find((node) => node.stageKey === 'MIX_TEMPLATE')!.x -
+        oneTemplateLayout.width / 2,
+    ).toBe(0);
+    expect(templates[0]!.x - layout.width / 2).toBe(-BRANCH_TREE_LEAF_GAP / 2);
+    expect(templates[1]!.x - layout.width / 2).toBe(BRANCH_TREE_LEAF_GAP / 2);
     expect(render.x).toBe((templates[0]!.x + templates[1]!.x) / 2);
     expect(layout.edges.filter((edge) => edge.key.startsWith(`${render.key}->`))).toHaveLength(2);
+  });
+
+  it('shows a saved but unconfirmed template without inventing its downstream nodes', () => {
+    const main = branch('main', null, null, true);
+    main.templates.push({
+      templateId: 'template-draft',
+      name: '新品跑量模板',
+      templateRevision: null,
+      fillRevision: null,
+      packagingRevision: null,
+      timelineVariantCount: 0,
+      packagingVariantCount: 0,
+    });
+
+    const layout = buildEffectBranchLayout([main]);
+    const draftNodes = layout.nodes.filter((node) => node.templateId === 'template-draft');
+
+    expect(layout.nodes.filter((node) => node.stageKey === 'MIX_TEMPLATE')).toHaveLength(2);
+    expect(draftNodes.map((node) => node.stageKey)).toEqual(['MIX_TEMPLATE']);
+    expect(draftNodes.every((node) => node.status === 'PENDING' && node.revision === null)).toBe(
+      true,
+    );
+    expect(draftNodes.every((node) => node.onActivePath)).toBe(true);
+    expect(
+      layout.edges.find((edge) => edge.key.endsWith('->main:MIX_TEMPLATE:template-draft'))
+        ?.onActivePath,
+    ).toBe(true);
+    expect(layout.edges.every((edge) => !('pending' in edge))).toBe(true);
+    expect(treeSource).not.toContain('branch-node--pending');
+    expect(treeSource).not.toContain('branch-line--pending');
+  });
+
+  it('adds a fill node after smart fill succeeds without inventing a confirmed revision', () => {
+    const main = branch('main', null, null, true);
+    main.templates = [
+      {
+        templateId: 'template-draft',
+        name: '新品跑量模板',
+        templateRevision: null,
+        fillRevision: null,
+        packagingRevision: null,
+        timelineVariantCount: 0,
+        packagingVariantCount: 0,
+        draftFillReady: true,
+      },
+    ];
+
+    const layout = buildEffectBranchLayout([main]);
+    const draftNodes = layout.nodes.filter((node) => node.templateId === 'template-draft');
+
+    expect(draftNodes.map((node) => node.stageKey)).toEqual(['MIX_TEMPLATE', 'MIX_FILL']);
+    expect(draftNodes[1]).toMatchObject({
+      status: 'PENDING',
+      revision: null,
+      artifactCount: 1,
+    });
+    expect(layout.edges.some((edge) => edge.key.endsWith('->main:MIX_FILL:template-draft'))).toBe(
+      true,
+    );
   });
 
   it('positions every child when three templates fan out from one render', () => {
@@ -148,18 +265,24 @@ describe('effect workflow branch tree layout', () => {
     ).toBe(true);
   });
 
-  it('keeps ungenerated mix layers as pending rectangles without inventing revisions', () => {
+  it('omits mix layers when no template or result exists', () => {
     const main = branch('main', null, null, true);
     main.templates = [];
     const layout = buildEffectBranchLayout([main]);
+    expect(layout.nodes.filter((node) => node.nodeId === 'TEMPLATE_MIX')).toEqual([]);
+  });
+
+  it('omits an unproduced workflow node and connects the next real version to its ancestor', () => {
+    const main = branch('main', null, null, true);
+    main.nodes[1]!.artifactCount = 0;
+    main.nodes[1]!.status = 'PENDING';
+
+    const layout = buildEffectBranchLayout([main]);
+
+    expect(layout.nodes.some((node) => node.stageKey === 'INFORMATION_EXTRACTION')).toBe(false);
     expect(
-      layout.nodes
-        .filter((node) => node.nodeId === 'TEMPLATE_MIX')
-        .map((node) => ({
-          status: node.status,
-          revision: node.revision,
-        })),
-    ).toEqual(Array(3).fill({ status: 'PENDING', revision: null }));
+      layout.edges.some((edge) => edge.key === 'main:SOURCE_IMPORT:-->main:PROMPT_GENERATION:-'),
+    ).toBe(true);
   });
 
   it('passes through every actual revision when several products or variants differ', () => {

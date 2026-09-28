@@ -755,6 +755,12 @@ export class EffectSourceImportRepository {
         previousMaterial.fileObjectId !== file.fileObject?.id &&
         (await transaction.workingArtifactFile.count({
           where: { projectId, fileObjectId: previousMaterial.fileObjectId },
+        })) === 0 &&
+        (await transaction.workingArtifactRevisionFile.count({
+          where: { projectId, fileObjectId: previousMaterial.fileObjectId },
+        })) === 0 &&
+        (await transaction.effectImportMaterial.count({
+          where: { projectId, fileObjectId: previousMaterial.fileObjectId },
         })) === 0
       )
         await transaction.fileObject.update({
@@ -795,6 +801,12 @@ export class EffectSourceImportRepository {
       if (
         material.fileObjectId &&
         (await transaction.workingArtifactFile.count({
+          where: { projectId, fileObjectId: material.fileObjectId },
+        })) === 0 &&
+        (await transaction.workingArtifactRevisionFile.count({
+          where: { projectId, fileObjectId: material.fileObjectId },
+        })) === 0 &&
+        (await transaction.effectImportMaterial.count({
           where: { projectId, fileObjectId: material.fileObjectId },
         })) === 0
       )
@@ -1539,6 +1551,7 @@ export class EffectSourceImportRepository {
             id: fileObjectId,
             materials: { none: {} },
             artifactLinks: { none: {} },
+            revisionLinks: { none: {} },
             uploadItems: { none: { session: { status: 'UPLOADING' } } },
           },
         });
@@ -1572,13 +1585,19 @@ export class EffectSourceImportRepository {
   }
 
   async isStorageHeld(projectId: string, storageKey: string): Promise<boolean> {
-    const [holds, materials, artifactFiles, uploadItems, assets, versions] = await Promise.all([
+    const [holds, materials, artifactFiles, revisionFiles, legacyRevisionFiles, uploadItems, assets, versions] = await Promise.all([
       this.prisma.effectExtractionFileHold.count({ where: { projectId, storageKey } }),
       this.prisma.effectImportMaterial.count({
         where: { projectId, OR: [{ storageKey }, { fileObject: { storageKey } }] },
       }),
       this.prisma.workingArtifactFile.count({
         where: { projectId, fileObject: { storageKey } },
+      }),
+      this.prisma.workingArtifactRevisionFile.count({
+        where: { projectId, fileObject: { storageKey } },
+      }),
+      this.prisma.workingArtifactRevisionSnapshot.count({
+        where: { projectId, snapshot: { path: ['storageKey'], equals: storageKey } },
       }),
       this.prisma.effectImportUploadItem.count({
         where: {
@@ -1591,7 +1610,7 @@ export class EffectSourceImportRepository {
       this.prisma.asset.count({ where: { projectId, storageKey } }),
       this.prisma.assetVersion.count({ where: { projectId, storageKey } }),
     ]);
-    return holds + materials + artifactFiles + uploadItems + assets + versions > 0;
+    return holds + materials + artifactFiles + revisionFiles + legacyRevisionFiles + uploadItems + assets + versions > 0;
   }
 
   deleteOrphanedFileObject(projectId: string, storageKey: string) {
@@ -1603,6 +1622,7 @@ export class EffectSourceImportRepository {
           status: 'ORPHANED',
           materials: { none: {} },
           artifactLinks: { none: {} },
+          revisionLinks: { none: {} },
           uploadItems: { none: { session: { status: 'UPLOADING' } } },
         },
         select: { id: true },

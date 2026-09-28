@@ -344,6 +344,6 @@ describe('effect prompt generation current layout', () => {
     );
     expect(parentSource).toContain('v-else-if="activeStep === 2"');
     expect(parentSource).toContain('@next="selectWorkflowStep(3)"');
-    expect(parentSource).toContain('v-if="activeDownstreamBoundary"');
+    expect(parentSource).not.toContain('v-if="activeDownstreamBoundary"');
   });
 });

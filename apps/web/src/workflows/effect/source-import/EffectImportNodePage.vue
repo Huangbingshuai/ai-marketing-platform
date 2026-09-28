@@ -1394,18 +1394,26 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
 const loadBranchTree = async (): Promise<void> => {
   if (!currentProjectId.value) return;
   branchController?.abort();
-  branchController = new AbortController();
+  const controller = new AbortController();
+  branchController = controller;
   const projectId = currentProjectId.value;
   branchTreeLoading.value = true;
   branchTreeError.value = '';
   try {
-    const result = await getEffectWorkflowBranchTree(projectId, branchController.signal);
-    if (currentProjectId.value === projectId) branchTree.value = result.data;
+    if (!(await flushPendingEdits())) {
+      if (branchController === controller && !controller.signal.aborted)
+        branchTreeError.value = '节点草稿保存失败，请重试后查看版本树';
+      return;
+    }
+    if (controller.signal.aborted || currentProjectId.value !== projectId) return;
+    const result = await getEffectWorkflowBranchTree(projectId, controller.signal);
+    if (branchController === controller && currentProjectId.value === projectId)
+      branchTree.value = result.data;
   } catch (error) {
-    if (!isAbortError(error))
+    if (!isAbortError(error) && branchController === controller)
       branchTreeError.value = error instanceof Error ? error.message : '加载版本分支失败';
   } finally {
-    branchTreeLoading.value = false;
+    if (branchController === controller) branchTreeLoading.value = false;
   }
 };
 const openBranchTree = (): void => {
@@ -1571,6 +1579,7 @@ onBeforeUnmount(() => {
       />
       <EffectWorkflowBranchTree
         v-if="branchTreeOpen"
+        :project-name="projectContext.currentProject.value?.name ?? '当前项目'"
         :tree="branchTree"
         :loading="branchTreeLoading"
         :error="branchTreeError"

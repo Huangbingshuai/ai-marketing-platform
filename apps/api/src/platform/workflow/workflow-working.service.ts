@@ -45,6 +45,43 @@ const previewKind = (mimeType: string | null): AssetPreviewKind => {
   return 'DOWNLOAD';
 };
 
+const mixDraftTemplates = (
+  value: unknown,
+): Array<{ id: string; name: string; createdAt: string | null; variantIds: string[] }> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const draft = value as Record<string, unknown>;
+  if (draft.schemaVersion !== 1 || !Array.isArray(draft.templates)) return [];
+  return draft.templates.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const entry = value as Record<string, unknown>;
+    const workspace = entry.workspace;
+    if (!workspace || typeof workspace !== 'object' || Array.isArray(workspace)) return [];
+    const template = (workspace as Record<string, unknown>).template;
+    if (!template || typeof template !== 'object' || Array.isArray(template)) return [];
+    const id = entry.id;
+    const name = (template as Record<string, unknown>).name;
+    const createdAt = entry.createdAt;
+    const variants = (workspace as Record<string, unknown>).variants;
+    const variantIds = Array.isArray(variants)
+      ? variants.flatMap((variant) => {
+          if (!variant || typeof variant !== 'object' || Array.isArray(variant)) return [];
+          const variantId = (variant as Record<string, unknown>).id;
+          return typeof variantId === 'string' ? [variantId] : [];
+        })
+      : [];
+    return typeof id === 'string' && id.length > 0 && typeof name === 'string'
+      ? [
+          {
+            id,
+            name: name.trim() || `模板 ${id.slice(0, 8)}`,
+            createdAt: typeof createdAt === 'string' ? createdAt : null,
+            variantIds,
+          },
+        ]
+      : [];
+  });
+};
+
 const toNodeState = (record: {
   id: string;
   projectId: string;
@@ -289,6 +326,7 @@ export class WorkflowWorkingService {
           const template = templatesById.get(match[2]) ?? {
             templateId: match[2],
             name: `模板 ${match[2].slice(0, 8)}`,
+            templateCreatedAt: null,
             templateRevision: null,
             templateRevisions: [],
             fillRevision: null,
@@ -306,6 +344,7 @@ export class WorkflowWorkingService {
           };
           if (match[1] === 'mix-template') {
             template.name = artifact.name;
+            template.templateCreatedAt = artifact.createdAt.toISOString();
             template.templateRevision = artifact.revision;
             template.templateRevisions = [artifact.revision];
           } else if (match[1] === 'timeline-project') template.timelineVariantCount += 1;
@@ -317,6 +356,45 @@ export class WorkflowWorkingService {
             template.deliveryCount = 1;
           }
           templatesById.set(match[2], template);
+        }
+        // A newly created template lives in the mix draft until validation. Show it in the
+        // canvas without inventing a confirmed artifact or a new workflow branch.
+        for (const state of run.nodeStates ?? []) {
+          for (const draftTemplate of mixDraftTemplates(state.state)) {
+            const template: EffectWorkflowBranch['templates'][number] = templatesById.get(
+              draftTemplate.id,
+            ) ?? {
+              templateId: draftTemplate.id,
+              name: draftTemplate.name,
+              templateCreatedAt: null,
+              templateRevision: null,
+              templateRevisions: [],
+              fillRevision: null,
+              fillRevisions: [],
+              fillCreatedAt: null,
+              packagingRevision: null,
+              packagingRevisions: [],
+              packagingCreatedAt: null,
+              timelineVariantCount: 0,
+              packagingVariantCount: 0,
+              deliveryRevision: null,
+              deliveryRevisions: [],
+              deliveryCount: 0,
+              deliveryCreatedAt: null,
+            };
+            template.name = draftTemplate.name;
+            template.templateCreatedAt =
+              draftTemplate.createdAt ?? template.templateCreatedAt ?? null;
+            const variantIds = new Set(draftTemplate.variantIds);
+            const completedFills = (run.effectTemplateMixAiRuns ?? []).filter(
+              (aiRun) =>
+                aiRun.templateId === draftTemplate.id &&
+                aiRun.outputVariantId !== null &&
+                variantIds.has(aiRun.outputVariantId),
+            );
+            template.draftFillReady = completedFills.length > 0;
+            templatesById.set(draftTemplate.id, template);
+          }
         }
         for (const template of templatesById.values()) {
           const fills = visibleArtifacts.filter((artifact) =>

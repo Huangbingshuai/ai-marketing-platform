@@ -17,6 +17,13 @@ export const effectTemplateMixDissolvePlaybackKeyframes = (
   rawProgress: number,
 ): Keyframe[] => [{ opacity: String(clamp(rawProgress)) }, { opacity: '1' }];
 
+/** The flash is compositor-driven during playback because Vue's playhead is throttled. */
+export const effectTemplateMixFlashPlaybackKeyframes = (): Keyframe[] =>
+  Array.from({ length: 21 }, (_, index) => ({
+    opacity: effectTemplateMixTransitionPresentation('闪白', index / 20).overlay!.opacity,
+    offset: index / 20,
+  }));
+
 /**
  * Builds the two-layer presentation used by the editor preview. The outgoing
  * and incoming clips are intentionally independent so a seek or a paused
@@ -67,10 +74,11 @@ export const effectTemplateMixTransitionPresentation = (
       };
     case '闪白':
       return {
-        outgoing: { opacity: outgoingOpacity },
-        incoming: { opacity: incomingOpacity },
+        // Keep both pictures visible. Only the middle of the cut gets a short,
+        // restrained highlight; this curve mirrors final_output.py's xfade.
+        ...crossfade,
         overlay: {
-          opacity: String(Math.sin(progress * Math.PI) * 0.92),
+          opacity: String(0.4 * Math.max(0, 1 - Math.abs(2 * progress - 1) * 2) ** 2),
           background: '#fff',
         },
       };

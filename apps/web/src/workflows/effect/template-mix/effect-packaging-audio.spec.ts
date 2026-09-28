@@ -18,9 +18,7 @@ describe('packaging audio playback wiring', () => {
     expect(packagingSource).toMatch(/emit\('preview', enabled\);[\s\S]*?immediate: true/);
   });
   it('keeps playback and error recovery controlled by the main player', () => {
-    expect(packagingSource).toContain(
-      'playbackBlocked[kind] || (!props.playing && !forcePlayback)',
-    );
+    expect(packagingSource).toContain('playbackBlocked[kind] || !props.playing');
     expect(packagingSource).toContain('() => [props.playing, props.selectedVariantId]');
     expect(packagingSource).toContain('playbackBlocked.MUSIC = false');
     expect(packagingSource).toContain('playbackBlocked.VOICE = false');
@@ -41,6 +39,9 @@ describe('packaging audio playback wiring', () => {
     );
     expect(packagingSource).toContain("['MUSIC', musicElement.value, currentMusic.value, rowMuted('music')]");
     expect(packagingSource).toContain('element.muted = muted');
+    expect(packagingSource).toContain("kind === 'MUSIC' &&");
+    expect(packagingSource).toContain('narrationPlayingAt(currentVoice.value');
+    expect(packagingSource).toContain('? 0.35');
     expect(packagingSource).not.toContain('voiceMuted');
     expect(packagingSource).not.toContain('musicMuted');
     expect(packagingSource).toContain('function startPlaybackAudio()');

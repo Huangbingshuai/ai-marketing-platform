@@ -157,6 +157,56 @@ describe('WorkflowWorkingRepository', () => {
     });
   });
 
+  it('loads mix drafts alongside confirmed artifacts for the project branch tree', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new WorkflowWorkingRepository({
+      workflowRun: { findMany },
+    } as unknown as PrismaService);
+
+    await repository.listEffectRunBranches('project-a');
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT',
+          OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
+        },
+        include: expect.objectContaining({
+          nodeStates: {
+            where: { nodeId: 'TEMPLATE_MIX' },
+            select: { state: true },
+          },
+          effectTemplateMixAiRuns: {
+            where: { status: 'COMPLETED', outputVariantId: { not: null } },
+            select: { templateId: true, outputVariantId: true },
+          },
+        }),
+      }),
+    );
+  });
+
+  it('does not activate an unpublished temporary effect branch', async () => {
+    const update = vi.fn();
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      workflowRun: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'root', activeKey: 'ACTIVE', parentWorkflowRunId: null },
+          { id: 'pending', activeKey: null, parentWorkflowRunId: 'root', branchPublishedAt: null },
+        ]),
+        update,
+      },
+      effectImportWorkspace: { findFirst: vi.fn() },
+    };
+    const repository = new WorkflowWorkingRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.activateEffectRunBranch('project-a', 'pending')).resolves.toBeNull();
+    expect(update).not.toHaveBeenCalled();
+    expect(transaction.effectImportWorkspace.findFirst).not.toHaveBeenCalled();
+  });
+
   it('activates a node without creating or revising node state', async () => {
     const run = { id: 'run-a', projectId: 'project-a', currentNodeId: 'INFORMATION_EXTRACTION' };
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
@@ -384,7 +434,7 @@ describe('WorkflowWorkingRepository', () => {
     };
     const updated = { ...previous, storageKey: '01-working/new.png', revision: 3 };
     const transaction = {
-      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-a' }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-a', workflow: 'EFFECT', workflowSpace: 'EFFECT' }) },
       workingArtifact: {
         findUnique: vi.fn().mockResolvedValue(previous),
         findUniqueOrThrow: vi.fn().mockResolvedValue(updated),
@@ -393,6 +443,8 @@ describe('WorkflowWorkingRepository', () => {
       },
       workingArtifactFile: { deleteMany: vi.fn() },
       workingArtifactDependency: { deleteMany: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
+      workingArtifactRevisionSnapshot: { upsert: vi.fn().mockResolvedValue({ id: 'snapshot-a' }) },
+      workingArtifactRevisionFile: { createMany: vi.fn() },
       fileObject: { updateMany: vi.fn() },
     };
     const repository = new WorkflowWorkingRepository({
@@ -418,6 +470,14 @@ describe('WorkflowWorkingRepository', () => {
     expect(transaction.workingArtifact.create).not.toHaveBeenCalled();
     expect(transaction.workingArtifact.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'artifact-a', revision: 2 } }),
+    );
+    expect(transaction.workingArtifactRevisionSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ revision: 2, contentHash: 'old-hash' }),
+      }),
+    );
+    expect(transaction.workingArtifactRevisionSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ revision: 3 }) }),
     );
   });
 
@@ -482,5 +542,102 @@ describe('WorkflowWorkingRepository', () => {
     expect(result).toMatchObject({ unchanged: true, record: { id: 'artifact-a', revision: 1 } });
     expect(executeRaw).toHaveBeenCalledTimes(1);
     expect(transaction.workingArtifact.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('accepts only an ancestor Run file reference, never a sibling Run file', async () => {
+    const child = {
+      id: 'child', projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT',
+      parentWorkflowRunId: 'parent', forkNodeId: 'PROMPT_GENERATION', forkTemplateId: null,
+    };
+    const parent = { ...child, id: 'parent', parentWorkflowRunId: null };
+    const fileCount = vi.fn().mockImplementation(({ where }) =>
+      where.id.in.includes('ancestor-file') && where.workflowRunId.in.includes('parent') ? 1 : 0,
+    );
+    const transaction = {
+      workflowRun: {
+        findFirst: vi.fn().mockImplementation(({ where }) =>
+          where.id === 'child' ? child : where.id === 'parent' ? parent : null,
+        ),
+      },
+      fileObject: { count: fileCount },
+    };
+    const repository = new WorkflowWorkingRepository({} as PrismaService);
+    const validate = repository as unknown as {
+      validateArtifactInputsInTransaction: (
+        transaction: unknown, projectId: string, workflowRunId: string,
+        input: { files: Array<{ fileObjectId: string }> },
+      ) => Promise<void>;
+    };
+
+    await expect(validate.validateArtifactInputsInTransaction(
+      transaction, 'project-a', 'child', { files: [{ fileObjectId: 'ancestor-file' }] },
+    )).resolves.toBeUndefined();
+    expect(fileCount).toHaveBeenCalledWith({
+      where: { projectId: 'project-a', workflowRunId: { in: ['child', 'parent'] }, id: { in: ['ancestor-file'] } },
+    });
+    await expect(validate.validateArtifactInputsInTransaction(
+      transaction, 'project-a', 'child', { files: [{ fileObjectId: 'sibling-file' }] },
+    )).rejects.toThrow('WORKING_FILE_OBJECT_NOT_FOUND');
+  });
+
+  it('rejects an ancestor artifact at or below the fork stage', async () => {
+    const child = {
+      id: 'child', projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT',
+      parentWorkflowRunId: 'parent', forkNodeId: 'PROMPT_GENERATION', forkTemplateId: null,
+    };
+    const transaction = {
+      workflowRun: {
+        findFirst: vi.fn().mockImplementation(({ where }) =>
+          where.id === 'child' ? child : where.id === 'parent'
+            ? { ...child, id: 'parent', parentWorkflowRunId: null } : null,
+        ),
+      },
+      workingArtifact: {
+        findMany: vi.fn().mockResolvedValue([{ id: 'parent-prompt', projectId: 'project-a',
+          workflowRunId: 'parent', nodeId: 'PROMPT_GENERATION', artifactKey: 'prompt-batch:product',
+          revision: 1 }]),
+      },
+    };
+    const repository = new WorkflowWorkingRepository({} as PrismaService);
+    const validate = repository as unknown as {
+      validateArtifactInputsInTransaction: (
+        transaction: unknown, projectId: string, workflowRunId: string,
+        input: { dependencies: Array<{ sourceType: string; sourceArtifactId: string; sourceKey: string; sourceRevision: number }> },
+      ) => Promise<void>;
+    };
+
+    await expect(validate.validateArtifactInputsInTransaction(transaction, 'project-a', 'child', {
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'parent-prompt',
+        sourceKey: 'prompt-batch:product', sourceRevision: 1 }],
+    })).rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+  });
+
+  it('reuses an ancestor media object without rewriting it and rejects sibling media', async () => {
+    const existing = { id: 'file-a', workflowRunId: 'parent', storageKey: 'source/key' };
+    const transaction = {
+      fileObject: {
+        findUnique: vi.fn().mockResolvedValue(existing),
+        upsert: vi.fn(),
+      },
+      workflowRun: {
+        findFirst: vi.fn().mockImplementation(({ where }) =>
+          where.id === 'child'
+            ? { id: 'child', parentWorkflowRunId: 'parent' }
+            : { id: 'parent', parentWorkflowRunId: null },
+        ),
+      },
+    };
+    const repository = new WorkflowWorkingRepository({} as PrismaService);
+    const input = { nodeId: 'SOURCE_IMPORT', originalFileName: 'a.png', mimeType: 'image/png',
+      sizeBytes: 4, storageKey: 'source/key', sha256: 'a'.repeat(64) };
+    await expect(repository.upsertFileObjectInTransaction(
+      transaction as never, 'project-a', 'child', input,
+    )).resolves.toEqual(existing);
+    expect(transaction.fileObject.upsert).not.toHaveBeenCalled();
+
+    transaction.fileObject.findUnique.mockResolvedValue({ ...existing, workflowRunId: 'sibling' });
+    await expect(repository.upsertFileObjectInTransaction(
+      transaction as never, 'project-a', 'child', input,
+    )).rejects.toThrow('WORKING_FILE_OBJECT_NOT_FOUND');
   });
 });

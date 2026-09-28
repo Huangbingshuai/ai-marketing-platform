@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   effectTemplateMixDissolvePlaybackKeyframes,
+  effectTemplateMixFlashPlaybackKeyframes,
   effectTemplateMixTransitionPresentation,
 } from './effect-template-mix-transition';
 
@@ -32,9 +33,21 @@ describe('effect template mix transition presentation', () => {
 
   it('adds an overlay for flash transitions without replacing either clip', () => {
     const presentation = effectTemplateMixTransitionPresentation('闪白', 0.5);
-    expect(presentation.outgoing.opacity).toBe('0.5');
+    expect(presentation.outgoing.opacity).toBe('1');
     expect(presentation.incoming.opacity).toBe('0.5');
     expect(presentation.overlay?.background).toBe('#fff');
+    expect(Number(presentation.overlay?.opacity)).toBeCloseTo(0.4);
+    for (const progress of [0, 0.25, 0.75, 1]) {
+      expect(effectTemplateMixTransitionPresentation('闪白', progress).overlay?.opacity).toBe('0');
+    }
+  });
+
+  it('animates the brief flash on the compositor between throttled playhead updates', () => {
+    const frames = effectTemplateMixFlashPlaybackKeyframes();
+    expect(frames).toHaveLength(21);
+    expect(frames[0]).toEqual({ opacity: '0', offset: 0 });
+    expect(frames[10]).toEqual({ opacity: '0.4', offset: 0.5 });
+    expect(frames[20]).toEqual({ opacity: '0', offset: 1 });
   });
 
   it('clamps out-of-range progress so seeking stays deterministic', () => {

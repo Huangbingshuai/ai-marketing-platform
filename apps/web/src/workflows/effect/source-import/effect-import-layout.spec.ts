@@ -7,6 +7,12 @@ import productEditorSource from './components/ProductImportEditor.vue?raw';
 import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from './effect-import-options';
 
 describe('effect import single-product prototype grid', () => {
+  it('saves the current node draft before loading the branch tree so new templates appear immediately', () => {
+    expect(pageSource).toMatch(
+      /const loadBranchTree = async \(\): Promise<void> => \{[\s\S]*?await flushPendingEdits\(\)[\s\S]*?getEffectWorkflowBranchTree\(projectId, controller\.signal\)/,
+    );
+  });
+
   it('creates an upload target automatically instead of showing an empty-state gate', () => {
     expect(pageSource).toContain('await ensureUploadTarget()');
     expect(pageSource).not.toContain('尚未创建单产品资料包');

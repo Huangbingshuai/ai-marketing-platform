@@ -984,7 +984,7 @@ export class EffectPackagingService {
           duration,
           ...(segmentFrames ? { segmentFrames } : {}),
           start: role === 'music' ? 0 : (line?.start ?? -1),
-          volume: role === 'music' ? 0.12 : 1,
+          volume: 1,
         };
         const checkpoint: PackagingCheckpoint =
           role === 'music'

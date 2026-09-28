@@ -106,11 +106,14 @@ export type EffectWorkflowBranchNode = {
 export type EffectWorkflowBranchTemplate = {
   templateId: string;
   name: string;
+  templateCreatedAt?: string | null;
   templateRevision?: number | null;
   templateRevisions?: number[];
   fillRevision: number | null;
   fillRevisions?: number[];
   fillCreatedAt?: string | null;
+  /** Successful smart-fill in the local draft, awaiting explicit validation. */
+  draftFillReady?: boolean;
   packagingRevision: number | null;
   packagingRevisions?: number[];
   packagingCreatedAt?: string | null;

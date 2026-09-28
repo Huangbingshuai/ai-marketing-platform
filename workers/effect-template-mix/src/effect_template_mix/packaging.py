@@ -745,7 +745,7 @@ class PackagingHandler:
                 started = time.monotonic()
                 file_id = await upload('music', data)
                 item_times['musicUploadSeconds'] = item_times.get('musicUploadSeconds', 0) + time.monotonic() - started
-                await save('CAPTIONS', {'music': {'fileObjectId': file_id, 'start': 0, 'duration': snapshot['duration'], 'volume': .12}, 'timings': timings})
+                await save('CAPTIONS', {'music': {'fileObjectId': file_id, 'start': 0, 'duration': snapshot['duration'], 'volume': 1.0}, 'timings': timings})
 
             # Music and the six independent voice clips are external waits. Persist every
             # successful sibling before surfacing an error, so recovery never repays for it.

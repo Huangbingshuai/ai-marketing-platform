@@ -102,6 +102,7 @@ import {
 } from './effect-template-mix-state';
 import {
   effectTemplateMixDissolvePlaybackKeyframes,
+  effectTemplateMixFlashPlaybackKeyframes,
   effectTemplateMixTransitionPresentation,
 } from './effect-template-mix-transition';
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
@@ -153,6 +154,7 @@ const packagingRunStatus = ref<PackagingRun['status'] | null>(null);
  * ones — but a film that quietly loses its narration is a surprise, so every one of them is named.
  */
 const packagingFailures = ref<{ variantId: string; name: string; message: string }[]>([]);
+const stalePackagingVariantIds = ref<Set<string>>(new Set());
 const packagingFailureByVariant = computed(
   () => new Map(packagingFailures.value.map((failure) => [failure.variantId, failure])),
 );
@@ -160,6 +162,37 @@ const packagingLockNotice = computed(() => packagingLockMessage(packagingRunStat
 const packagingActionLabel = computed(() =>
   packagingActionText(packagingReady.value, packagingRunStatus.value),
 );
+const packagingActionBlockReason = computed(() => {
+  const entry = activeEntry.value;
+  if (!entry) return null;
+  if (entry.needsAiFill)
+    return '当前模板或成片仍需重新智能填充；请先更新素材并完成混剪校验。';
+
+  // Packaging submits every complete variant in this template as one batch. Check all of those
+  // variants, not only the selected card, so an expired source cannot leave an apparently usable
+  // batch action that the API will reject.
+  const materialById = new Map(
+    (workspace.value?.materials ?? []).map((material) => [material.id, material]),
+  );
+  const completeVariants = entry.workspace.variants.filter(
+    (variant) =>
+      variant.slots.length > 0 && variant.slots.every((slot) => variant.bindings[slot.id]),
+  );
+  const hasStaleSource = completeVariants.some((variant) =>
+    variant.slots.some((slot) => {
+      const materialId = variant.bindings[slot.id];
+      const material = materialId ? materialById.get(materialId) : undefined;
+      return (
+        !material?.available ||
+        !Number.isInteger(variant.bindingRevisions[slot.id]) ||
+        material.artifactRevision !== variant.bindingRevisions[slot.id]
+      );
+    }),
+  );
+  return hasStaleSource
+    ? '本模板有成片引用了过期素材；请先在视频渲染节点更新素材，再智能填充并完成校验。'
+    : null;
+});
 let completionKey: { signature: string; key: string } | null = null;
 const committedVersions = reactive<Record<string, number>>({});
 const uiByTemplate = reactive<Record<string, TemplateUi>>({});
@@ -360,7 +393,9 @@ let pendingSave: Promise<boolean> | undefined;
 let playbackAnimationFrame: number | undefined;
 let playerScrubberAnimations: Animation[] = [];
 let dissolvePlaybackAnimation: Animation | null = null;
+let flashPlaybackAnimation: Animation | null = null;
 let dissolvePlaybackSignature = '';
+const transitionOverlayElement = ref<HTMLDivElement | null>(null);
 let playbackAnchorMilliseconds = 0;
 let playbackAnchorSeconds = 0;
 let lastUiPlaybackMilliseconds = 0;
@@ -720,23 +755,25 @@ const transitionOverlayStyle = computed<Record<string, string> | undefined>(() =
   );
   return presentation.overlay;
 });
-const stopDissolvePlaybackAnimation = (): void => {
+const stopTransitionPlaybackAnimation = (): void => {
   dissolvePlaybackAnimation?.cancel();
   dissolvePlaybackAnimation = null;
+  flashPlaybackAnimation?.cancel();
+  flashPlaybackAnimation = null;
   dissolvePlaybackSignature = '';
 };
-const syncDissolvePlaybackAnimation = (
+const syncTransitionPlaybackAnimation = (
   transition: ActiveTransitionPreview | null,
   playbackTime: number,
 ): void => {
-  if (!transition || transition.transition !== '叠化') {
-    stopDissolvePlaybackAnimation();
+  if (!transition || (transition.transition !== '叠化' && transition.transition !== '闪白')) {
+    stopTransitionPlaybackAnimation();
     return;
   }
-  const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}`;
+  const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}:${transition.transition}`;
   if (signature === dissolvePlaybackSignature && dissolvePlaybackAnimation?.playState === 'running')
     return;
-  stopDissolvePlaybackAnimation();
+  stopTransitionPlaybackAnimation();
   const incoming = timelinePlayers.get(transition.incomingSlot.id);
   const remaining = Math.max(0, transition.end - playbackTime);
   if (!incoming || remaining <= 0 || typeof incoming.animate !== 'function') return;
@@ -745,6 +782,22 @@ const syncDissolvePlaybackAnimation = (
     effectTemplateMixDissolvePlaybackKeyframes(transition.progress),
     { duration: remaining * 1000, easing: 'linear', fill: 'both' },
   );
+  if (transition.transition === '闪白') {
+    void nextTick(() => {
+      if (!playing.value || dissolvePlaybackSignature !== signature) return;
+      const overlay = transitionOverlayElement.value;
+      if (!overlay || typeof overlay.animate !== 'function') return;
+      flashPlaybackAnimation = overlay.animate(effectTemplateMixFlashPlaybackKeyframes(), {
+        duration: transition.duration * 1000,
+        easing: 'linear',
+        fill: 'both',
+      });
+      flashPlaybackAnimation.currentTime = Math.max(
+        0,
+        Math.min(transition.duration, currentPlaybackClockSeconds() - transition.start) * 1000,
+      );
+    });
+  }
 };
 const previewRange = computed(() =>
   previewSlot.value
@@ -979,6 +1032,7 @@ const filteredMaterials = computed(() => {
   return workspace.value.materials
     .filter(
       (item) =>
+        item.available &&
         (materialRoleFilter.value === 'ALL' ||
           classificationByRoleAndMaterial.value.has(`${materialRoleFilter.value}:${item.id}`)) &&
         (!slot || item.duration + 0.001 >= slot.duration) &&
@@ -1000,11 +1054,9 @@ const displayedMaterials = computed(() => {
   return filteredMaterials.value.slice(start, start + materialPageSize.value);
 });
 /**
- * A stale clip is still a real, playable, packageable file — it is only its Prompt that moved on —
- * so the pool keeps listing it and the user keeps every manual ability over it. What it cannot do is
- * get picked by smart fill, which reads materials through `sourceArtifacts` and therefore only ever
- * sees current ones. That difference has to be visible before the button is pressed: otherwise the
- * user counts a hundred clips in the pool and is told there are not enough of them.
+ * Old clips remain in workspace data so existing timelines can still play them. The selectable
+ * library and smart fill only expose confirmed current clips; otherwise the user would see old
+ * material cards next to new renders and mistake them for eligible refill sources.
  */
 const availableMaterials = computed(
   () => workspace.value?.materials.filter(({ available }) => available) ?? [],
@@ -1037,14 +1089,14 @@ const aiFillBlockReason = computed<string | null>(() => {
   const expired = expiredMaterialCount.value;
   const detail = expired ? `，其中 ${expired} 条已过期（对应的 Prompt 已更新）` : '';
   if (!candidates.length)
-    return `当前没有可用素材${detail}；请先在视频渲染节点重新生成素材后再智能填充。`;
+    return `当前没有已确认的可用素材${detail}；请先在视频渲染节点更新素材并完成校验。`;
   if (candidates.length < unlockedSlots.length)
-    return `当前可用素材 ${candidates.length} 条${detail}，不足 ${unlockedSlots.length} 个待填槽位；请先在视频渲染节点重新生成素材后再智能填充。`;
+    return `当前可用素材 ${candidates.length} 条${detail}，不足 ${unlockedSlots.length} 个待填槽位；请先在视频渲染节点更新素材并完成校验。`;
   const shortSlot = unlockedSlots.find(
     (slot) => !candidates.some((material) => material.duration + 0.001 >= slot.duration),
   );
   if (shortSlot)
-    return `当前可用素材都短于「${shortSlot.label}」所需的 ${shortSlot.duration} 秒${detail}；请先在视频渲染节点重新生成更长的素材。`;
+    return `当前可用素材都短于「${shortSlot.label}」所需的 ${shortSlot.duration} 秒${detail}；请先在视频渲染节点更新更长的素材并完成校验。`;
   return null;
 });
 const selectedBindingMetadata = computed(() =>
@@ -4380,15 +4432,14 @@ const createEmptyVariant = async (): Promise<void> => {
   }
 };
 const openPackaging = (target: 'ACTION' | 'WORKFLOW'): void => {
-  if (target === 'ACTION' && selectedVariantRefreshSlotIds.value.length) {
-    showNotice('当前成片引用了已更新素材，请先更新受影响素材位并完成校验', 'error');
-    return;
-  }
-  if (target === 'ACTION' && activeEntry.value?.needsAiFill) {
-    showNotice('模板已改动，或仍有成片未按当前模板重新智能填充；请先完成需要更新的成片', 'error');
+  if (target === 'ACTION' && packagingActionBlockReason.value) {
+    showNotice(packagingActionBlockReason.value, 'error');
     return;
   }
   void packagingPanel.value?.open(target);
+};
+const onStalePackagingVariants = (variantIds: string[]): void => {
+  stalePackagingVariantIds.value = new Set(variantIds);
 };
 const handlePackagingStarted = async (): Promise<void> => {
   await load();
@@ -4443,7 +4494,7 @@ const startAiFill = async (
         : target?.manualSlotIds.length
           ? '智能填充已开始，人工槽位会保留，其余槽位重新计算'
           : target
-            ? '重新智能填充已开始，将保留原六槽位素材归属，只重新计算素材裁切'
+            ? '重新智能填充已开始；可用的原素材归属尽量保留，已过期素材会重新匹配'
             : '智能填充已开始；完成前不会创建成片工程',
     );
     void pollAiRun(result.data.id);
@@ -4516,7 +4567,7 @@ const quantizeTimelineTime = (raw: number): number =>
 const stopPlaybackClock = (resumeBackgroundMediaWork = true, freezeVisualClock = true): void => {
   if (playbackAnimationFrame !== undefined) cancelAnimationFrame(playbackAnimationFrame);
   playbackAnimationFrame = undefined;
-  stopDissolvePlaybackAnimation();
+  stopTransitionPlaybackAnimation();
   if (freezeVisualClock) {
     timelineRef.value?.stopPlaybackNeedle(playhead.value);
     stopPlayerScrubberMotion(playhead.value);
@@ -4593,7 +4644,7 @@ const syncPlayingVideoFrame = (): void => {
   const playbackTime = currentPlaybackClockSeconds();
   const transition = transitionPreviewAt(playbackTime);
   if (transition) {
-    syncDissolvePlaybackAnimation(transition, playbackTime);
+    syncTransitionPlaybackAnimation(transition, playbackTime);
     const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
     pauseTimelinePlayers(activeIds);
     const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}`;
@@ -4620,7 +4671,7 @@ const syncPlayingVideoFrame = (): void => {
     }
     return;
   }
-  syncDissolvePlaybackAnimation(null, playbackTime);
+  syncTransitionPlaybackAnimation(null, playbackTime);
   const slot = previewSlot.value;
   const range = previewRange.value;
   const material = previewMaterial.value;
@@ -4737,8 +4788,8 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
     const playbackTime = resume ? currentPlaybackClockSeconds() : playhead.value;
     const transition = transitionPreviewAt(playbackTime);
     if (transition) {
-      if (resume) syncDissolvePlaybackAnimation(transition, playbackTime);
-      else syncDissolvePlaybackAnimation(null, playbackTime);
+      if (resume) syncTransitionPlaybackAnimation(transition, playbackTime);
+      else syncTransitionPlaybackAnimation(null, playbackTime);
       const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
       pauseTimelinePlayers(activeIds);
       const outgoing = syncTimelineVideo(transition.outgoingSlot.id, resume);
@@ -4756,7 +4807,7 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
       }
       return true;
     }
-    syncDissolvePlaybackAnimation(null, playbackTime);
+    syncTransitionPlaybackAnimation(null, playbackTime);
     const video = activeTimelinePlayer();
     // The slot may have just mounted after a variant switch. Ask the caller to
     // retry after Vue flushes once, but never keep an old seek request alive.
@@ -4794,7 +4845,7 @@ const scheduleSeekSync = (): void => {
 };
 const seek = (raw: number): void => {
   closeMaterialPreview();
-  stopDissolvePlaybackAnimation();
+  stopTransitionPlaybackAnimation();
   playhead.value = quantizeTimelineTime(raw);
   syncPlayerTimecode(playhead.value);
   timelineRef.value?.setPlaybackNeedle(playhead.value);
@@ -5123,8 +5174,20 @@ onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   void load();
 });
-onActivated(applyPreviewTarget);
+let mixWorkbenchWasDeactivated = false;
+onActivated(() => {
+  if (!mixWorkbenchWasDeactivated) {
+    applyPreviewTarget();
+    return;
+  }
+  mixWorkbenchWasDeactivated = false;
+  void (async () => {
+    if (!(await flushPendingEdits())) return;
+    await load();
+  })();
+});
 onDeactivated(() => {
+  mixWorkbenchWasDeactivated = true;
   playing.value = false;
   pauseTimelinePlayers();
   stopPlaybackClock();
@@ -5303,11 +5366,11 @@ defineExpose({ flushPendingEdits });
               <p v-if="availableMaterials.length">
                 已载入 {{ availableMaterials.length }} 个已确认视频片段<template
                   v-if="expiredMaterialCount"
-                  >，另有 {{ expiredMaterialCount }} 条已过期</template
+                  >；旧成片另保留 {{ expiredMaterialCount }} 条历史素材</template
                 >。
               </p>
               <p v-else-if="expiredMaterialCount" class="warning">
-                {{ expiredMaterialCount }} 条素材已全部过期（对应的 Prompt 已更新），请先在视频渲染节点重新生成，否则无法完成填充。
+                {{ expiredMaterialCount }} 条旧素材已过期；请先在视频渲染节点更新素材并完成校验，再重新智能填充。
               </p>
               <p v-else class="warning">上一步没有已确认视频片段，可配置模板，但无法完成填充。</p>
               <small v-if="workspace.variants.length"
@@ -5337,7 +5400,7 @@ defineExpose({ flushPendingEdits });
           >
             <AlertCircle
               :size="15"
-            />模板已改动，或仍有成片未按当前模板重新填充；请逐条更新后才能开始包装。
+            />模板配置或素材版本已变化；请逐条重新智能填充受影响的成片，完成后才能开始包装。
           </p>
         </div>
       </section>
@@ -5434,7 +5497,7 @@ defineExpose({ flushPendingEdits });
         >
           <AlertCircle
             :size="15"
-          />模板配置已变更，当前及未更新的成片需按新模板重新填充。重填会保留该成片现有六槽位素材归属。
+          />模板配置或素材版本已变化；请重新智能填充受影响的成片。可用的原素材归属尽量保留，已过期素材会重新匹配。
         </div>
         <div
           v-if="packagingFailures.length"
@@ -5521,10 +5584,11 @@ defineExpose({ flushPendingEdits });
                   {{ option.label }} <small>{{ option.count }}</small>
                 </button>
               </div>
-              <p v-if="expiredMaterialCount" class="material-expired-banner" role="status">
-                <AlertCircle
-                  :size="14"
-                />{{ expiredMaterialCount }} 条素材已过期（对应的 Prompt 已更新），智能填充不会使用它们；请先在视频渲染节点重新生成。
+              <p v-if="expiredMaterialCount && !availableMaterials.length" class="material-expired-banner" role="status">
+                <AlertCircle :size="14" />当前没有已确认的可用素材；请先在视频渲染节点完成校验。
+              </p>
+              <p v-else-if="expiredMaterialCount" class="material-expired-banner" role="status">
+                <AlertCircle :size="14" />已载入 {{ availableMaterials.length }} 条当前素材；{{ expiredMaterialCount }} 条旧素材仅保留在原成片工程中，不参与重新智能填充。
               </p>
               <div v-if="filteredMaterials.length" ref="materialGrid" class="material-grid">
                 <article
@@ -5533,7 +5597,6 @@ defineExpose({ flushPendingEdits });
                   :class="{
                     selected: auditionMaterial?.id === material.id,
                     used: materialUsageLabel(material.id),
-                    expired: !material.available,
                     disabled: !selectedVariant || projectEditLocked,
                     dragging: draggingMaterialId === material.id,
                   }"
@@ -5555,14 +5618,7 @@ defineExpose({ flushPendingEdits });
                     <div class="material-name-row">
                       <b :title="material.name">{{ material.name }}</b>
                       <span
-                        v-if="!material.available"
-                        class="material-expired-badge"
-                        title="对应的 Prompt 已更新，智能填充不会使用；请先在视频渲染节点重新生成这条素材"
-                      >
-                        已过期
-                      </span>
-                      <span
-                        v-else-if="classificationForMaterial(material.id)"
+                        v-if="classificationForMaterial(material.id)"
                         class="material-ai-role"
                         :class="{ low: classificationForMaterial(material.id)!.matchScore < 0.6 }"
                         :title="`AI 归槽分 ${(classificationForMaterial(material.id)!.matchScore * 100).toFixed(0)}`"
@@ -5805,6 +5861,7 @@ defineExpose({ flushPendingEdits });
                 />
                 <div
                   v-if="activeTransitionPreview && transitionOverlayStyle"
+                  ref="transitionOverlayElement"
                   class="player-transition-overlay"
                   :style="transitionOverlayStyle"
                   aria-hidden="true"
@@ -6018,9 +6075,13 @@ defineExpose({ flushPendingEdits });
                     !selectedVariant ||
                     packagingPanel?.busy ||
                     packagingPanel?.active ||
-                    packagingPanel?.loading
+                    packagingPanel?.loading ||
+                    Boolean(packagingActionBlockReason)
                   "
-                  title="为本模板下全部完整成片生成口播、配乐和字幕，将调用付费 AI 服务"
+                  :title="
+                    packagingActionBlockReason ??
+                    '为本模板下全部完整成片生成口播、配乐和字幕，将调用付费 AI 服务'
+                  "
                   @click="openPackaging('ACTION')"
                 >
                   <LoaderCircle
@@ -6063,6 +6124,7 @@ defineExpose({ flushPendingEdits });
                   variant.id === selectedVariant?.id,
                   packagingReady,
                   packagingFailureByVariant.get(variant.id)?.message,
+                  stalePackagingVariantIds.has(variant.id),
                 ]"
                 :class="{
                   active: variant.id === selectedVariant?.id,
@@ -6094,8 +6156,16 @@ defineExpose({ flushPendingEdits });
                 </span>
                 <div class="project-card-info">
                   <b>{{ variantDisplayName(variant, index) }}</b>
+                  <small
+                    v-if="stalePackagingVariantIds.has(variant.id)"
+                    class="project-expired-badge"
+                    title="上游素材或时间轴已更新；现有成片仍可播放和编辑"
+                  >
+                    已过期
+                  </small>
                   <small class="project-duration">{{ variantDuration(variant).toFixed(0) }}s</small>
                   <span
+                    v-if="!stalePackagingVariantIds.has(variant.id)"
                     class="project-status"
                     :class="{
                       pending: variant.status === 'PENDING',
@@ -6241,6 +6311,7 @@ defineExpose({ flushPendingEdits });
             @started="handlePackagingStarted"
             @status="packagingRunStatus = $event"
             @failures="packagingFailures = $event"
+            @stale-variants="onStalePackagingVariants"
           />
         </div>
         <div v-if="editingCaption" class="caption-text-editor">
@@ -6416,7 +6487,7 @@ defineExpose({ flushPendingEdits });
         :validating="validating"
         :next-disabled="!validated || validating"
         next-label="下一步：成片输出"
-        validate-label="完成校验并进入成片输出"
+        validate-label="完成校验"
         :show-next="false"
         @back="emit('back')"
         @validate="validateDraft"
@@ -7210,15 +7281,6 @@ button:disabled {
   border-color: #b9c9df;
   background: #f8fafc;
 }
-.material-grid article.expired {
-  border-style: dashed;
-  border-color: #e3c489;
-  background: #fffdf6;
-}
-.material-grid article.expired .thumb {
-  filter: grayscale(0.55);
-  opacity: 0.72;
-}
 .material-expired-banner {
   display: flex;
   align-items: center;
@@ -7315,16 +7377,6 @@ button:disabled {
 .material-ai-role.low {
   color: #a45318;
   background: #fff1dc;
-}
-.material-expired-badge {
-  flex: none;
-  padding: 1px 4px;
-  border-radius: 4px;
-  color: #a45318;
-  background: #fff1dc;
-  font-size: 8px;
-  font-weight: 700;
-  white-space: nowrap;
 }
 .material-copy b {
   overflow: hidden;
@@ -8337,6 +8389,12 @@ button:disabled {
 .project-actions .button svg {
   flex: 0 0 auto;
 }
+.project-actions .button:disabled {
+  color: #94a3b8;
+  background: #fff;
+  border-color: #dbe3ef;
+  opacity: 1;
+}
 .project-actions .primary {
   grid-column: 1 / -1;
 }
@@ -8410,6 +8468,17 @@ button:disabled {
   color: #64748b;
   font-size: 10px;
   line-height: 1;
+  white-space: nowrap;
+}
+.project-expired-badge {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border: 1px solid #f5d48a;
+  border-radius: 4px;
+  background: #fff7e6;
+  color: #9a6700;
+  font-size: 9px;
+  line-height: 1.2;
   white-space: nowrap;
 }
 .project-status {

@@ -187,6 +187,12 @@ const repairRegion = (value: unknown): EffectSegmentRenderRepairRegion | null =>
 const requestSnapshot = (value: unknown): EffectSegmentRenderRequestSnapshot =>
   value as EffectSegmentRenderRequestSnapshot;
 
+const insightProductName = (value: unknown): string | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const productName = (value as Record<string, unknown>).productName;
+  return typeof productName === 'string' && productName.trim() ? productName.trim() : null;
+};
+
 const sourcePackageSnapshot = (value: unknown): EffectSegmentRenderSourcePackage | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const sourcePackage = (value as { sourcePackage?: unknown }).sourcePackage;
@@ -406,14 +412,22 @@ export class EffectSegmentRenderService {
 
   private async present(record: EffectSegmentRenderBatchRecord): Promise<EffectSegmentRenderBatch> {
     const sourceSnapshot = sourcePackageSnapshot(record.tasks[0]?.requestSnapshot);
-    const [prompt, sourcePackage] = await Promise.all([
+    const [prompt, sourcePackage, marketingInsight] = await Promise.all([
       this.repository.promptArtifact(record.projectId, record.workflowRunId, record.productId),
       this.repository.sourcePackageArtifact(
         record.projectId,
         record.workflowRunId,
         record.productId,
       ),
+      this.repository.marketingInsightArtifact(
+        record.projectId,
+        record.workflowRunId,
+        record.productId,
+      ),
     ]);
+    const productName =
+      insightProductName(marketingInsight?.payload) ??
+      (record.product.name.trim() || '未命名产品');
     const upstreamStale = Boolean(
       !prompt ||
       prompt.freshness !== 'CURRENT' ||
@@ -469,7 +483,7 @@ export class EffectSegmentRenderService {
       projectId: record.projectId,
       workflowRunId: record.workflowRunId,
       productId: record.productId,
-      productName: record.product.name.trim() || '未命名产品',
+      productName,
       sourcePrompt: {
         artifactId: record.sourcePromptArtifactId,
         revision: record.sourcePromptRevision,
@@ -483,7 +497,7 @@ export class EffectSegmentRenderService {
       workingArtifactRevision: artifact?.revision ?? null,
       summary: summary(record),
       tasks: record.tasks.map((task) =>
-        presentTask(task, record.product.name, taskIdsNeedingUpdate.has(task.id)),
+        presentTask(task, productName, taskIdsNeedingUpdate.has(task.id)),
       ),
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),

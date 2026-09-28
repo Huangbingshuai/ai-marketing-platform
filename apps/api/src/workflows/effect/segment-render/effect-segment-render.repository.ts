@@ -167,6 +167,18 @@ export class EffectSegmentRenderRepository {
     });
   }
 
+  marketingInsightArtifact(projectId: string, workflowRunId: string, productId: string) {
+    return this.prisma.workingArtifact.findFirst({
+      where: {
+        projectId,
+        workflowRunId,
+        nodeId: 'INFORMATION_EXTRACTION',
+        artifactKey: 'marketing-insight:' + productId,
+        availability: 'AVAILABLE',
+      },
+    });
+  }
+
   sourcePackageArtifact(projectId: string, workflowRunId: string, productId: string) {
     return this.prisma.workingArtifact.findFirst({
       where: {

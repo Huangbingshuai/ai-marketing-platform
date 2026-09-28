@@ -173,7 +173,7 @@ async def test_audio_led_container_cannot_hide_a_short_video_track(tmp_path: Pat
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
-@pytest.mark.parametrize('transition', ['硬切', *final_output.TRANSITIONS, '六镜头混合'])
+@pytest.mark.parametrize('transition', ['硬切', *final_output.TRANSITIONS, '闪白', '六镜头混合'])
 async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_path: Path, monkeypatch: Any, transition: str) -> None:
     monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
     async def diagnostic_command(program: str, args: list[str], timeout: float = 900, cwd: Path | None = None) -> bytes:
@@ -220,8 +220,9 @@ async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+@pytest.mark.parametrize('transition', ['叠化', '闪白'])
 async def test_dissolve_export_has_start_midpoint_and_end_blend_frames(
-    tmp_path: Path, monkeypatch: Any,
+    tmp_path: Path, monkeypatch: Any, transition: str,
 ) -> None:
     monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
     red, blue, music = (tmp_path / name for name in ('red.mp4', 'blue.mp4', 'music.wav'))
@@ -235,7 +236,7 @@ async def test_dissolve_export_has_start_midpoint_and_end_blend_frames(
         {'fileObjectId': 'red', 'start': 0, 'duration': 2, 'offset': 0, 'lane': 0,
          'transition': '硬切', 'transitionDuration': 0},
         {'fileObjectId': 'blue', 'start': 2, 'duration': 2, 'offset': 0, 'lane': 0,
-         'transition': '叠化', 'transitionDuration': .8},
+         'transition': transition, 'transitionDuration': .8},
     ]
     snapshot = {
         'timeline': {'duration': 4, 'clips': clips}, 'aspectRatio': '4:3',
@@ -257,6 +258,9 @@ async def test_dissolve_export_has_start_midpoint_and_end_blend_frames(
     assert before_midpoint[0] > before_midpoint[2] * 2
     assert midpoint[0] > 40 and midpoint[2] > 40
     assert abs(midpoint[0] - midpoint[2]) < 45
+    if transition == '闪白':
+        assert 45 < midpoint[1] < 190  # Noticeable highlight without an opaque white frame.
+        assert max(midpoint) < 235
     assert after_midpoint[2] > after_midpoint[0] * 2
 
 

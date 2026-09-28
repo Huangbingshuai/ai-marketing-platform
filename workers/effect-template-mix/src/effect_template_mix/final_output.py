@@ -31,7 +31,7 @@ def stage(name: str, started: float, **values: int | str | bool) -> None:
     LOGGER.info('final_output_stage %s', json.dumps({**(STAGE_CONTEXT.get() or {}),
         'stage': name, 'durationMs': round((time.monotonic() - started) * 1000), **values}, ensure_ascii=False))
 TRANSITIONS = {
-    '叠化': 'fade', '推镜': 'zoomin', '闪白': 'fadewhite', '缩放': 'zoomin',
+    '叠化': 'fade', '推镜': 'zoomin', '缩放': 'zoomin',
     '左滑': 'slideleft', '上推': 'slideup', '擦除': 'wipeleft', '翻转': 'hlslice',
     '圆形展开': 'circleopen', '模糊溶解': 'hblur', '右滑': 'slideright', '下推': 'slidedown',
     '旋转': 'radial', '百叶窗': 'hlslice', '菱形展开': 'diagtl', '像素化': 'pixelize',
@@ -41,6 +41,17 @@ TRANSITIONS = {
     '放大模糊': 'hblur', '彩色闪光': 'fadewhite', '噪点溶解': 'dissolve', '液体扭曲': 'radial',
     '斜向擦除': 'diagtl',
 }
+
+
+def transition_filter(transition: str, duration: float, offset: float) -> str:
+    if transition == '闪白':
+        # xfade's P runs from 1 (outgoing) to 0 (incoming). Match the editor's
+        # brief 40% white accent over a normal crossfade, not a full white frame.
+        flash = '0.4*pow(max(0,1-abs(2*P-1)*2),2)'
+        white = 'if(eq(PLANE,0),235,128)'  # Limited-range YUV white / neutral chroma.
+        expression = f'(A*P+B*(1-P))*(1-({flash}))+({white})*({flash})'
+        return f"xfade=transition=custom:duration={duration}:offset={offset}:expr='{expression}'"
+    return f'xfade=transition={TRANSITIONS[transition]}:duration={duration}:offset={offset}'
 
 
 async def command(program: str, args: list[str], timeout: float = 900, cwd: Path | None = None) -> bytes:
@@ -327,12 +338,13 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         transition = clip.get('transition', '硬切') if previous_clip and clip and clip['start'] == start else '硬切'
         length = min(float(clip.get('transitionDuration', 0)) if clip else 0, end - start, intervals[index - 1][1] - intervals[index - 1][0], 5)
         if transition != '硬切' and length >= 1 / frame_rate:
-            if transition not in TRANSITIONS:
+            if transition not in TRANSITIONS and transition != '闪白':
                 raise PackagingError('不支持的转场类型')
             # FFmpeg 7 tpad/concat can clear frame_rate (1/0); xfade requires CFR.
             filters += [f'[{current}]fps={frame_rate},tpad=stop_mode=clone:stop_duration={length / 2},fps={frame_rate},settb=AVTB[pad{index}]',
                 f'[v{index}]fps={frame_rate},tpad=start_mode=clone:start_duration={length / 2},fps={frame_rate},settb=AVTB[incoming{index}]',
-                f'[pad{index}][incoming{index}]xfade=transition={TRANSITIONS[transition]}:duration={length}:offset={start - length / 2}[join{index}]']
+                f'[pad{index}][incoming{index}]'
+                f'{transition_filter(transition, length, start - length / 2)}[join{index}]']
         else:
             filters += [f'[{current}][v{index}]concat=n=2:v=1:a=0[join{index}]']
         current = f'join{index}'

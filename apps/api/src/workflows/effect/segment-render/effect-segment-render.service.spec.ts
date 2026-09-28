@@ -102,6 +102,9 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     workflowRun: vi.fn().mockResolvedValue({ id: 'run-a' }),
     product: vi.fn().mockResolvedValue({ id: 'product-a', name: '测试产品' }),
     promptArtifact: vi.fn().mockResolvedValue(artifact),
+    marketingInsightArtifact: vi.fn().mockResolvedValue({
+      payload: { productName: '测试产品' },
+    }),
     sourcePackageArtifact: vi.fn().mockResolvedValue(sourcePackageArtifact),
     latestBatch: vi.fn().mockResolvedValue(null),
     renderArtifact: vi.fn().mockResolvedValue(null),
@@ -303,6 +306,24 @@ describe('EffectSegmentRenderService', () => {
       promptArtifactRevision: 3,
       batch: null,
     });
+  });
+
+  it('uses the confirmed extraction product name in the batch and preview tasks', async () => {
+    const { service } = serviceWith({
+      marketingInsightArtifact: vi.fn().mockResolvedValue({
+        payload: { productName: '紫苏梅子酱' },
+      }),
+    });
+
+    const result = await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-extracted-name',
+    });
+
+    expect(result.batch.productName).toBe('紫苏梅子酱');
+    expect(result.batch.tasks.map(({ productName }) => productName)).toEqual(['紫苏梅子酱']);
   });
 
   it('freezes one render task per confirmed Prompt and appends the shared prompt once', async () => {

@@ -159,6 +159,8 @@ describe('EffectSourceImportRepository project isolation', () => {
         effectExtractionFileHold: { count: extractionCount },
         effectImportMaterial: { count: vi.fn().mockResolvedValue(0) },
         workingArtifactFile: { count: vi.fn().mockResolvedValue(0) },
+        workingArtifactRevisionFile: { count: vi.fn().mockResolvedValue(0) },
+        workingArtifactRevisionSnapshot: { count: vi.fn().mockResolvedValue(0) },
         effectImportUploadItem: { count: vi.fn().mockResolvedValue(0) },
         asset: { count: vi.fn().mockResolvedValue(0) },
         assetVersion: { count: vi.fn().mockResolvedValue(0) },
@@ -169,6 +171,28 @@ describe('EffectSourceImportRepository project isolation', () => {
     await expect(repository.isStorageHeld('project-a', 'source/object')).resolves.toBe(true);
     expect(extractionCount).toHaveBeenCalledWith({
       where: { projectId: 'project-a', storageKey: 'source/object' },
+    });
+  });
+
+  it('protects media referenced only by a confirmed revision snapshot', async () => {
+    const revisionCount = vi.fn().mockResolvedValue(1);
+    const repository = new EffectSourceImportRepository(
+      {
+        effectExtractionFileHold: { count: vi.fn().mockResolvedValue(0) },
+        effectImportMaterial: { count: vi.fn().mockResolvedValue(0) },
+        workingArtifactFile: { count: vi.fn().mockResolvedValue(0) },
+        workingArtifactRevisionFile: { count: revisionCount },
+        workingArtifactRevisionSnapshot: { count: vi.fn().mockResolvedValue(0) },
+        effectImportUploadItem: { count: vi.fn().mockResolvedValue(0) },
+        asset: { count: vi.fn().mockResolvedValue(0) },
+        assetVersion: { count: vi.fn().mockResolvedValue(0) },
+      } as unknown as PrismaService,
+      {} as never,
+    );
+
+    await expect(repository.isStorageHeld('project-a', 'source/object')).resolves.toBe(true);
+    expect(revisionCount).toHaveBeenCalledWith({
+      where: { projectId: 'project-a', fileObject: { storageKey: 'source/object' } },
     });
   });
 

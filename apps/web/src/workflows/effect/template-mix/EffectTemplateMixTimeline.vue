@@ -644,8 +644,6 @@ const fileUrl = (id: string): string =>
 const audioEditable = computed(
   () => !props.readOnly && props.packaging?.status === 'COMPLETED',
 );
-/** Kept on the timeline but marked, so the stale rows read as "out of date", not as "current". */
-const packagingStale = computed(() => Boolean(props.packaging?.stale));
 /**
  * The clips the audio area draws. Membership comes from the shared clip list rather than being
  * decided again here, so the row a clip is drawn on cannot drift from the row it is muted by or
@@ -3258,7 +3256,6 @@ onBeforeUnmount(() => {
                 :class="{
                   'is-selected': selectedAudioIds.includes(entry.id),
                   'is-dragging': audioDrag?.id === entry.id && audioDrag.mode === 'MOVE',
-                  'is-stale': packagingStale,
                 }"
                 :style="captionClipStyle(entry.caption)"
                 :data-audio-id="entry.id"
@@ -3267,7 +3264,6 @@ onBeforeUnmount(() => {
               >
                 <Captions class="caption-clip-icon" :size="13" aria-hidden="true" />
                 <span class="caption-clip-text">{{ entry.caption.text || '新字幕' }}</span>
-                <span v-if="packagingStale" class="clip-stale-badge">过期</span>
                 <template v-if="audioEditable && selectedAudioIds.includes(entry.id)">
                   <button
                     class="edge-trim-handle edge-trim-left"
@@ -3342,7 +3338,6 @@ onBeforeUnmount(() => {
                     >
                       {{ formatTimecode(activeSlotDuration(slot.id)) }}
                     </time>
-                    <span v-if="packagingStale" class="clip-stale-badge">过期</span>
                     <div class="clip-info">
                       <b>{{ materialForSlot(slot.id)?.code }}</b>
                       <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span>
@@ -3472,7 +3467,6 @@ onBeforeUnmount(() => {
                   'is-muted': trackMuted(track),
                   'is-selected': selectedAudioIds.includes(audio.id),
                   'is-dragging': audioDrag?.id === audio.id && audioDrag.mode === 'MOVE',
-                  'is-stale': packagingStale,
                   // A library track let go here takes this clip's place, so the clip it would replace
                   // is the one that says so.
                   'is-material-target': musicDropClipId === audio.id,
@@ -3502,7 +3496,6 @@ onBeforeUnmount(() => {
                 :style="audioFadeStyle(audio, 'LEFT')"
                 aria-hidden="true"
               />
-              <span v-if="packagingStale" class="clip-stale-badge">过期</span>
               <span
                 v-if="audio.fadeOut > 0"
                 class="audio-fade-mask audio-fade-out"
@@ -4326,20 +4319,6 @@ onBeforeUnmount(() => {
 .caption-clip.is-dragging,
 .audio-clip.is-dragging {
   z-index: 8;
-}
-/* Stale is an informational badge, never a visual lock/disabled treatment. */
-.clip-stale-badge {
-  position: absolute;
-  z-index: 3;
-  top: 2px;
-  right: 3px;
-  border-radius: 4px;
-  padding: 1px 4px;
-  background: #fff4d6;
-  color: #8a5a00;
-  font-size: 9px;
-  line-height: 13px;
-  pointer-events: none;
 }
 /* Captions read as standalone rounded cards, not as labels painted on the lane. */
 .caption-clip {

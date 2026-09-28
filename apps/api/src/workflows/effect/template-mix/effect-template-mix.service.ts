@@ -63,6 +63,10 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
       return (
         typeof entry?.id === 'string' &&
         entry.id.length > 0 &&
+        (entry.createdAt === undefined ||
+          (typeof entry.createdAt === 'string' &&
+            !Number.isNaN(Date.parse(entry.createdAt)) &&
+            new Date(entry.createdAt).toISOString() === entry.createdAt)) &&
         (entry.aiFillLocked === undefined || typeof entry.aiFillLocked === 'boolean') &&
         (entry.filledTemplateHash === undefined || typeof entry.filledTemplateHash === 'string') &&
         (entry.packagingLocked === undefined || typeof entry.packagingLocked === 'boolean') &&
@@ -758,8 +762,11 @@ export class EffectTemplateMixService {
   ): Promise<EffectTemplateMixVariant | null> {
     const state = await this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX');
     if (!state) return null;
-    return draftOf(state.state).templates.find((entry) => entry.id === templateId)
-      ?.workspace.variants.find((variant) => variant.id === variantId) ?? null;
+    return (
+      draftOf(state.state)
+        .templates.find((entry) => entry.id === templateId)
+        ?.workspace.variants.find((variant) => variant.id === variantId) ?? null
+    );
   }
 
   /**
@@ -767,10 +774,9 @@ export class EffectTemplateMixService {
    * has already been packaged may still have its voice switched. Hashing without it keeps every
    * other field locked exactly as before.
    */
-  private templateWithoutVoice(template: EffectTemplateMixTemplate): Omit<
-    EffectTemplateMixTemplate,
-    'voiceProfileId'
-  > {
+  private templateWithoutVoice(
+    template: EffectTemplateMixTemplate,
+  ): Omit<EffectTemplateMixTemplate, 'voiceProfileId'> {
     const { voiceProfileId: _voiceProfileId, ...rest } = template;
     return rest;
   }
@@ -875,6 +881,10 @@ export class EffectTemplateMixService {
       );
     for (const entry of draft.templates) {
       const before = previous.templates.find((candidate) => candidate.id === entry.id);
+      // Creation time belongs to the persisted template, never to an editable client field.
+      if (before?.createdAt) entry.createdAt = before.createdAt;
+      else if (!before) entry.createdAt = new Date().toISOString();
+      else delete entry.createdAt;
       entry.aiFillLocked = activeSet.has(entry.id);
       entry.packagingLocked = packagingSet.has(entry.id);
       const untrustedEntry = { ...entry };

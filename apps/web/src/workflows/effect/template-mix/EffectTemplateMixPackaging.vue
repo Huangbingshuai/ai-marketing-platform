@@ -54,6 +54,8 @@ const emit = defineEmits<{
   status: [status: PackagingRun['status'] | null];
   /** Films whose packaging failed; they will still be submitted, playing picture only. */
   failures: [failures: { variantId: string; name: string; message: string }[]];
+  /** Films whose saved packaging no longer matches their source; reported for the project list. */
+  staleVariants: [variantIds: string[]];
 }>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const visible = ref(false),
@@ -143,6 +145,14 @@ const selected = computed(() => {
   if (!item || !variant) return null;
   return currentItem(item);
 });
+const staleVariantIds = computed(() =>
+  props.variants.flatMap((variant) => {
+    const item = runs.value.flatMap((packagingRun) => packagingRun.items)
+      .find((packagingItem) => packagingItem.variantId === variant.id);
+    return item && currentItem(item).stale ? [variant.id] : [];
+  }),
+);
+watch(staleVariantIds, (variantIds) => emit('staleVariants', variantIds), { immediate: true });
 const selectedVariant = computed(() =>
   props.variants.find((variant) => variant.id === props.selectedVariantId),
 );
@@ -431,6 +441,13 @@ const currentCaptionVoiceEntry = computed<PreviewVoice | undefined>(() => {
 const currentCaptionVoice = computed<PreviewAudio | undefined>(
   () => currentCaptionVoiceEntry.value?.audio,
 );
+const narrationPlayingAt = (audio: PreviewAudio | undefined, id: string): boolean =>
+  Boolean(
+    audio &&
+      !rowMuted(id) &&
+      props.playhead >= audio.start &&
+      props.playhead < audio.start + audio.duration,
+  );
 function syncAudio(forceSeek = false) {
   for (const [kind, element, audio, muted] of [
     ['VOICE', voiceElement.value, currentVoice.value, rowMuted(currentVoiceEntry.value?.id ?? 'voice')],
@@ -477,7 +494,13 @@ function syncAudio(forceSeek = false) {
     const fadeInGain = fadeIn > 0 ? Math.min(1, Math.max(0, timelineTime / fadeIn)) : 1;
     const fadeOutGain =
       fadeOut > 0 ? Math.min(1, Math.max(0, (audio.duration - timelineTime) / fadeOut)) : 1;
-    element.volume = Math.max(0, Math.min(1, audio.volume * Math.min(fadeInGain, fadeOutGain)));
+    const ducking =
+      kind === 'MUSIC' &&
+      (narrationPlayingAt(currentVoice.value, currentVoiceEntry.value?.id ?? 'voice') ||
+        narrationPlayingAt(currentCaptionVoice.value, currentCaptionVoiceEntry.value?.id ?? ''))
+        ? 0.35
+        : 1;
+    element.volume = Math.max(0, Math.min(1, audio.volume * ducking * Math.min(fadeInGain, fadeOutGain)));
     if (element.readyState < HTMLMediaElement.HAVE_METADATA) {
       if (element.dataset.timelinePriming === audio.fileObjectId) continue;
       element.pause();

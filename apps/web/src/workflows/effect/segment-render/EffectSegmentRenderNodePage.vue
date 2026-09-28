@@ -4294,26 +4294,51 @@ select:disabled {
   border-radius: inherit;
 }
 .material-card-actions {
-  display: flex;
-  min-height: 35px;
-  padding: 0 10px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 9px;
-  flex-wrap: wrap;
+  display: grid;
+  min-height: 38px;
+  padding: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   background: #fafbfd;
   border-top: 1px solid #edf0f5;
 }
 .material-card-actions button {
-  padding: 0;
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 4px;
+  align-items: center;
+  justify-content: center;
   color: #425679;
   background: transparent;
   border: 0;
+  border-left: 1px solid #edf0f5;
   font-size: 8px;
   font-weight: 700;
+  white-space: nowrap;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease;
+}
+.material-card-actions button:first-child {
+  border-left: 0;
+}
+.material-card-actions button:hover:not(:disabled) {
+  color: #2563eb;
+  background: #f1f6ff;
+}
+.material-card-actions button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid #7aa2f4;
+  outline-offset: -2px;
 }
 .material-card-actions button:last-child {
   color: #d5535b;
+}
+.material-card-actions button:last-child:hover:not(:disabled) {
+  color: #bd3640;
+  background: #fff4f4;
 }
 .segment-batch-empty,
 .segment-empty-filter {

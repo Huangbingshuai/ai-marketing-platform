@@ -11,18 +11,20 @@ export const BRANCH_TREE_STAGES = [
   { key: 'INFORMATION_EXTRACTION', nodeId: 'INFORMATION_EXTRACTION', name: 'AI 信息提炼' },
   { key: 'PROMPT_GENERATION', nodeId: 'PROMPT_GENERATION', name: 'Prompt 生成' },
   { key: 'SEGMENT_RENDER', nodeId: 'SEGMENT_RENDER', name: '视频渲染' },
-  { key: 'MIX_TEMPLATE', nodeId: 'TEMPLATE_MIX', name: '模板' },
+  { key: 'MIX_TEMPLATE', nodeId: 'TEMPLATE_MIX', name: '混剪模板' },
   { key: 'MIX_FILL', nodeId: 'TEMPLATE_MIX', name: '智能填充' },
   { key: 'MIX_PACKAGING', nodeId: 'TEMPLATE_MIX', name: '智能成片包装' },
   { key: 'FINAL_OUTPUT', nodeId: 'FINAL_OUTPUT', name: '成片输出' },
 ] as const satisfies readonly { key: string; nodeId: EffectWorkflowBranchNodeId; name: string }[];
 export type BranchStageKey = (typeof BRANCH_TREE_STAGES)[number]['key'];
-export const BRANCH_TREE_AXIS_WIDTH = 218;
+export const BRANCH_TREE_AXIS_WIDTH = 178;
+export const BRANCH_TREE_ROOT_TOP = 64;
 export const BRANCH_TREE_NODE_WIDTH = 128;
 export const BRANCH_TREE_NODE_HEIGHT = 72;
 export const BRANCH_TREE_LEAF_GAP = 188;
+export const BRANCH_TREE_SIDE_PADDING = 160;
 export const BRANCH_TREE_ROW_GAP = 116;
-export const BRANCH_TREE_TOP = 72;
+export const BRANCH_TREE_TOP = 184;
 
 export type BranchTreeNode = {
   key: string;
@@ -46,9 +48,9 @@ export type BranchTreeEdge = {
   key: string;
   path: string;
   onActivePath: boolean;
-  pending: boolean;
 };
 export type EffectBranchLayout = {
+  root: { x: number; y: number };
   nodes: BranchTreeNode[];
   edges: BranchTreeEdge[];
   width: number;
@@ -68,10 +70,7 @@ const forkStageIndex = (branch: EffectWorkflowBranch): number => {
   );
 };
 
-export function buildEffectBranchLayout(
-  branches: EffectWorkflowBranch[],
-  axisWidth = BRANCH_TREE_AXIS_WIDTH,
-): EffectBranchLayout {
+export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): EffectBranchLayout {
   const byId = new Map(branches.map((branch) => [branch.workflowRunId, branch]));
   const children = new Map<string | null, EffectWorkflowBranch[]>();
   for (const branch of branches) {
@@ -113,23 +112,14 @@ export function buildEffectBranchLayout(
   };
   const active = branches.find((branch) => branch.isActive);
   const nodes: BranchTreeNode[] = [];
-  const templateFor = (branch: EffectWorkflowBranch): (EffectWorkflowBranchTemplate | null)[] => {
+  const templateFor = (branch: EffectWorkflowBranch): EffectWorkflowBranchTemplate[] => {
     if (branch.forkTemplateId && forkStageIndex(branch) >= 4) {
       const scoped = branch.templates.find(
         (template) => template.templateId === branch.forkTemplateId,
       );
-      return [
-        scoped ?? {
-          templateId: branch.forkTemplateId,
-          name: '模板',
-          fillRevision: null,
-          packagingRevision: null,
-          timelineVariantCount: 0,
-          packagingVariantCount: 0,
-        },
-      ];
+      return scoped ? [scoped] : [];
     }
-    return branch.templates.length ? branch.templates : [null];
+    return branch.templates;
   };
   for (const branch of ordered) {
     const start = branch.parentWorkflowRunId ? forkStageIndex(branch) : 0;
@@ -140,6 +130,7 @@ export function buildEffectBranchLayout(
     ) {
       const stage = BRANCH_TREE_STAGES[stageIndex]!;
       const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
+      if (!state?.artifactCount) continue;
       const ownerId = active ? ownerAt(active, stageIndex, null).workflowRunId : null;
       nodes.push({
         key: nodeKey(branch.workflowRunId, stage.key, null),
@@ -161,7 +152,7 @@ export function buildEffectBranchLayout(
       });
     }
     for (const template of templateFor(branch)) {
-      const templateId = template?.templateId ?? null;
+      const templateId = template.templateId;
       for (
         let stageIndex = Math.max(4, start);
         stageIndex < BRANCH_TREE_STAGES.length;
@@ -169,6 +160,8 @@ export function buildEffectBranchLayout(
       ) {
         const stage = BRANCH_TREE_STAGES[stageIndex]!;
         const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
+        const confirmedFillCount = template?.timelineVariantCount ?? 0;
+        const draftFillReady = Boolean(template?.draftFillReady && confirmedFillCount === 0);
         const count =
           stage.key === 'MIX_TEMPLATE'
             ? Number(
@@ -176,12 +169,11 @@ export function buildEffectBranchLayout(
                   (template.templateRevision != null || !('templateRevision' in template)),
               )
             : stage.key === 'MIX_FILL'
-              ? (template?.timelineVariantCount ?? 0)
+              ? Math.max(confirmedFillCount, draftFillReady ? 1 : 0)
               : stage.key === 'MIX_PACKAGING'
                 ? (template?.packagingVariantCount ?? 0)
-                : (template?.deliveryCount ??
-                  (branch.templates.length === 1 ? state?.artifactCount : 0) ??
-                  0);
+                : (template?.deliveryCount ?? 0);
+        if (stage.key !== 'MIX_TEMPLATE' && count === 0) continue;
         const revision =
           stage.key === 'MIX_TEMPLATE'
             ? (template?.templateRevision ?? null)
@@ -189,9 +181,7 @@ export function buildEffectBranchLayout(
               ? (template?.fillRevision ?? null)
               : stage.key === 'MIX_PACKAGING'
                 ? (template?.packagingRevision ?? null)
-                : (template?.deliveryRevision ??
-                  (branch.templates.length === 1 ? state?.revision : null) ??
-                  null);
+                : (template?.deliveryRevision ?? null);
         const revisions =
           stage.key === 'MIX_TEMPLATE'
             ? template?.templateRevisions
@@ -199,8 +189,7 @@ export function buildEffectBranchLayout(
               ? template?.fillRevisions
               : stage.key === 'MIX_PACKAGING'
                 ? template?.packagingRevisions
-                : (template?.deliveryRevisions ??
-                  (branch.templates.length === 1 ? state?.revisions : undefined));
+                : template?.deliveryRevisions;
         const ownerId = active ? ownerAt(active, stageIndex, templateId).workflowRunId : null;
         nodes.push({
           key: nodeKey(branch.workflowRunId, stage.key, templateId),
@@ -209,18 +198,24 @@ export function buildEffectBranchLayout(
           nodeId: stage.nodeId,
           stageIndex,
           templateId,
-          templateName: template?.name ?? null,
+          templateName: template.name,
           createdAt:
-            stage.key === 'MIX_FILL'
-              ? (template?.fillCreatedAt ?? null)
-              : stage.key === 'MIX_PACKAGING'
-                ? (template?.packagingCreatedAt ?? null)
-                : stage.key === 'FINAL_OUTPUT'
-                  ? (template?.deliveryCreatedAt ?? null)
-                  : null,
+            stage.key === 'MIX_TEMPLATE'
+              ? (template?.templateCreatedAt ?? null)
+              : stage.key === 'MIX_FILL'
+                ? (template?.fillCreatedAt ?? null)
+                : stage.key === 'MIX_PACKAGING'
+                  ? (template?.packagingCreatedAt ?? null)
+                  : stage.key === 'FINAL_OUTPUT'
+                    ? (template?.deliveryCreatedAt ?? null)
+                    : null,
           x: 0,
           y: BRANCH_TREE_TOP + stageIndex * BRANCH_TREE_ROW_GAP,
-          status: count > 0 ? (state?.status ?? 'CONFIRMED') : 'PENDING',
+          status:
+            (stage.key === 'MIX_TEMPLATE' && count === 0) ||
+            (stage.key === 'MIX_FILL' && draftFillReady)
+              ? 'PENDING'
+              : (state?.status ?? 'CONFIRMED'),
           artifactCount: count,
           revision,
           revisions,
@@ -239,13 +234,16 @@ export function buildEffectBranchLayout(
     if (node.stageIndex === 0) continue;
     const branch = byId.get(node.workflowRunId);
     if (!branch) continue;
-    const previousStage = BRANCH_TREE_STAGES[node.stageIndex - 1]!;
-    const previousTemplateId = node.stageIndex === 4 ? null : node.templateId;
-    const source = ownerAt(branch, node.stageIndex - 1, previousTemplateId);
-    const parentKey = nodeKey(source.workflowRunId, previousStage.key, previousTemplateId);
-    if (!nodeByKey.has(parentKey)) continue;
-    parentByKey.set(node.key, parentKey);
-    childrenByKey.set(parentKey, [...(childrenByKey.get(parentKey) ?? []), node.key]);
+    for (let previousIndex = node.stageIndex - 1; previousIndex >= 0; previousIndex--) {
+      const previousStage = BRANCH_TREE_STAGES[previousIndex]!;
+      const previousTemplateId = previousIndex < 4 ? null : node.templateId;
+      const source = ownerAt(branch, previousIndex, previousTemplateId);
+      const parentKey = nodeKey(source.workflowRunId, previousStage.key, previousTemplateId);
+      if (!nodeByKey.has(parentKey)) continue;
+      parentByKey.set(node.key, parentKey);
+      childrenByKey.set(parentKey, [...(childrenByKey.get(parentKey) ?? []), node.key]);
+      break;
+    }
   }
   const roots = nodes.filter((node) => !parentByKey.has(node.key));
   let nextLeaf = 0;
@@ -259,13 +257,29 @@ export function buildEffectBranchLayout(
     const descendantXs = descendants.map(place);
     node.x = descendantXs.length
       ? (descendantXs[0]! + descendantXs[descendantXs.length - 1]!) / 2
-      : axisWidth + BRANCH_TREE_NODE_WIDTH / 2 + nextLeaf++ * BRANCH_TREE_LEAF_GAP;
+      : BRANCH_TREE_SIDE_PADDING + nextLeaf++ * BRANCH_TREE_LEAF_GAP;
     return node.x;
   };
   for (const root of roots) place(root);
   for (const node of nodes) if (!positioned.has(node.key)) place(node);
 
+  const width = BRANCH_TREE_SIDE_PADDING * 2 + Math.max(0, nextLeaf - 1) * BRANCH_TREE_LEAF_GAP;
+  const sourceRoots = roots;
+  const root = {
+    x: width / 2,
+    y: BRANCH_TREE_ROOT_TOP,
+  };
   const edges: BranchTreeEdge[] = [];
+  for (const node of sourceRoots) {
+    const fromY = root.y + BRANCH_TREE_NODE_HEIGHT / 2;
+    const toY = node.y - BRANCH_TREE_NODE_HEIGHT / 2 - 5;
+    const middle = (fromY + toY) / 2;
+    edges.push({
+      key: `project-root->${node.key}`,
+      path: `M ${root.x} ${fromY} C ${root.x} ${middle}, ${node.x} ${middle}, ${node.x} ${toY}`,
+      onActivePath: node.onActivePath,
+    });
+  }
   for (const node of nodes) {
     const parentKey = parentByKey.get(node.key);
     const parent = parentKey ? nodeByKey.get(parentKey) : null;
@@ -277,13 +291,13 @@ export function buildEffectBranchLayout(
       key: `${parent.key}->${node.key}`,
       path: `M ${parent.x} ${fromY} C ${parent.x} ${middle}, ${node.x} ${middle}, ${node.x} ${toY}`,
       onActivePath: parent.onActivePath && node.onActivePath,
-      pending: parent.status === 'PENDING' || node.status === 'PENDING',
     });
   }
   return {
+    root,
     nodes,
     edges,
-    width: Math.max(720, axisWidth + Math.max(1, nextLeaf) * BRANCH_TREE_LEAF_GAP + 90),
+    width,
     height: BRANCH_TREE_TOP + (BRANCH_TREE_STAGES.length - 1) * BRANCH_TREE_ROW_GAP + 88,
   };
 }

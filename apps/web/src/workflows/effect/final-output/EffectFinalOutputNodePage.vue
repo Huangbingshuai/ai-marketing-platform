@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onBeforeUnmount, ref, watch } from 'vue';
-import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Clapperboard, Download, Film, Layers, LoaderCircle, Play, RefreshCw } from '@lucide/vue';
+import { computed, nextTick, onActivated, onDeactivated, onBeforeUnmount, ref, watch } from 'vue';
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, X } from '@lucide/vue';
 import type {
   ApiResponse,
   EffectTemplateMixMaterial,
@@ -50,9 +50,13 @@ const loading = ref(true),
   busy = ref(false),
   validating = ref(false),
   itemRerenderingId = ref(''),
-  playingItemId = ref(''),
+  previewItem = ref<FinalOutputRun['items'][number] | null>(null),
+  previewLoading = ref(false),
+  previewError = ref(''),
   error = ref(''),
   mixError = ref('');
+const previewCloseButton = ref<HTMLButtonElement | null>(null);
+let previewDialogTrigger: HTMLElement | null = null;
 const templates = computed(() => {
   const latestByTemplate = new Map<string, FinalOutputRun>();
   for (const outputRun of runs.value) {
@@ -129,11 +133,11 @@ const canValidate = computed(() => Boolean(
   ),
 ));
 const validateStatusTitle = computed(() => {
-  if (!run.value) return '等待上游成片';
+  if (!run.value) return '等待成片输出';
   if (run.value.validated) return '当前模板已完成校验';
   if (run.value.status === 'COMPLETED')
-    return run.value.items.some((item) => item.stale) ? '成片来源已更新' : '成片已就绪，待完成校验';
-  return '等待当前模板全部成片导出';
+    return run.value.items.some((item) => item.stale) ? '成片来源已更新' : '当前模板待完成校验';
+  return run.value.status === 'PENDING_RENDER' ? '等待导出成片' : '等待成片导出完成';
 });
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
 const items = computed(() => run.value?.items.slice((page.value - 1) * pageSize.value, page.value * pageSize.value) ?? []);
@@ -150,8 +154,31 @@ const displayName = (item: FinalOutputRun['items'][number]) => {
   const index = run.value?.items.findIndex(({ variantId }) => variantId === item.variantId) ?? -1;
   return index < 0 ? '成片' : `成片 ${String(index + 1).padStart(2, '0')}`;
 };
-const previewItem = (variantId: string) => {
+const openTimelinePreview = (variantId: string) => {
   if (run.value) emit('preview', { templateId: run.value.templateId, variantId });
+};
+const activateOutputCard = (item: FinalOutputRun['items'][number], event: Event) => {
+  if (!item.fileObjectId) {
+    openTimelinePreview(item.variantId);
+    return;
+  }
+  previewDialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  previewItem.value = item;
+  previewLoading.value = true;
+  previewError.value = '';
+  void nextTick(() => previewCloseButton.value?.focus());
+};
+const closePreviewDialog = (restoreFocus = true) => {
+  previewItem.value = null;
+  previewLoading.value = false;
+  previewError.value = '';
+  const trigger = previewDialogTrigger;
+  previewDialogTrigger = null;
+  if (restoreFocus) void nextTick(() => trigger?.isConnected && trigger.focus());
+};
+const handlePreviewVideoError = () => {
+  previewLoading.value = false;
+  previewError.value = '成片加载失败，请稍后重试';
 };
 const progress = computed(() =>
   run.value?.items.length
@@ -372,6 +399,7 @@ function stop() {
   ++mixGeneration;
   controller?.abort();
   mixController?.abort();
+  closePreviewDialog(false);
   clearTimeout(timer);
 }
 async function validateOutput() {
@@ -404,6 +432,7 @@ watch(
     runs.value = [];
     selectedTemplateId.value = '';
     selectedRunId.value = '';
+    closePreviewDialog(false);
     settingsByTemplate.value = new Map();
     selectedItemIds.value = new Set();
     selectionMode.value = false;
@@ -426,9 +455,10 @@ watch(selectedRunId, () => {
   selectedItemIds.value = new Set();
   selectionMode.value = false;
 });
-watch(page, () => { playingItemId.value = ''; });
+watch(page, () => closePreviewDialog(false));
 watch(() => run.value?.id, () => {
   page.value = 1;
+  closePreviewDialog(false);
   selectedItemIds.value = new Set();
   selectionMode.value = false;
   if (run.value) {
@@ -633,6 +663,11 @@ onBeforeUnmount(stop);
               selectable: selectionMode && item.status === 'COMPLETED' && Boolean(item.fileObjectId),
               selected: selectedItemIds.has(item.id),
             }"
+            tabindex="0"
+            :aria-label="`${item.fileObjectId ? '播放' : '预览'}${displayName(item)}`"
+            @click="activateOutputCard(item, $event)"
+            @keydown.enter.self.prevent="activateOutputCard(item, $event)"
+            @keydown.space.self.prevent="activateOutputCard(item, $event)"
           >
             <div class="output-preview" :class="statusTone(item.status)">
               <label
@@ -644,47 +679,20 @@ onBeforeUnmount(stop);
                   type="checkbox"
                   :checked="selectedItemIds.has(item.id)"
                   :aria-label="`选择${displayName(item)}下载`"
-                  @change="toggleItemSelection(item.id)"
+                  @change.stop="toggleItemSelection(item.id)"
                 />
               </label>
-              <video
-                v-if="item.fileObjectId && playingItemId === item.id"
-                :src="fileUrl(item.fileObjectId)"
-                controls
-                preload="metadata"
-                autoplay
-                @ended="playingItemId = ''"
-                :aria-label="`${displayName(item)} 成片播放`"
-              />
-              <button
-                v-else-if="previewClips(item).length || !item.fileObjectId"
-                class="preview-trigger"
-                :class="{ 'has-cover': Boolean(item.cover) }"
-                type="button"
-                :aria-label="`${item.fileObjectId ? '播放' : '预览'}${displayName(item)}`"
-                :title="item.fileObjectId ? '播放最终成片' : '在混剪工作台预览这条成片的时间轴与包装'"
-                @click="item.fileObjectId ? (playingItemId = item.id) : previewItem(item.variantId)"
-              >
-                <span v-if="previewClips(item).length" class="preview-cover preview-montage">
-                  <EffectTemplateMixThumbnail
-                    v-for="(clip, clipIndex) in previewClips(item)"
-                    :key="`${item.id}:${clip.fileObjectId}:${clip.contentHash}:${page}`"
-                    :source="fileUrl(clip.fileObjectId)"
-                    :time="clip.time"
-                    :version="previewVersion(clip)"
-                    :alt="`${displayName(item)} 第 ${clipIndex + 1} 段画面`"
-                  />
-                </span>
-                <Clapperboard v-else :size="25" />
-                <span class="preview-label">{{ item.fileObjectId ? '播放成片' : '预览成片' }}</span>
-              </button>
-              <video
-                v-else-if="item.fileObjectId"
-                :src="fileUrl(item.fileObjectId)"
-                controls
-                preload="metadata"
-                :aria-label="`${displayName(item)} 成片播放`"
-              />
+              <span v-if="previewClips(item).length" class="preview-cover preview-montage" aria-hidden="true">
+                <EffectTemplateMixThumbnail
+                  v-for="(clip, clipIndex) in previewClips(item)"
+                  :key="`${item.id}:${clip.fileObjectId}:${clip.contentHash}:${page}`"
+                  :source="fileUrl(clip.fileObjectId)"
+                  :time="clip.time"
+                  :version="previewVersion(clip)"
+                  :alt="`${displayName(item)} 第 ${clipIndex + 1} 段画面`"
+                />
+              </span>
+              <span class="preview-play-icon" aria-hidden="true"><Play :size="22" /></span>
               <small v-if="run.status === 'PENDING_RENDER'">等待导出</small>
               <small v-else-if="item.status !== 'COMPLETED'">{{ item.progress }}%</small>
             </div>
@@ -718,6 +726,7 @@ onBeforeUnmount(stop);
                 class="download-button"
                 :href="fileUrl(item.fileObjectId) + '?download=true'"
                 :download="`${displayName(item)}.mp4`"
+                @click.stop
               ><Download :size="14" />下载成片</a>
               <button
                 v-if="run.status !== 'PENDING_RENDER'"
@@ -725,7 +734,7 @@ onBeforeUnmount(stop);
                 type="button"
                 :disabled="busy || active || Boolean(itemRerenderingId)"
                 title="按这条成片已保存的规格重新渲染"
-                @click="rerenderItem(item)"
+                @click.stop="rerenderItem(item)"
               >
                 <LoaderCircle v-if="itemRerenderingId === item.id" class="spin" :size="14" />
                 <RefreshCw v-else :size="14" />{{ itemRerenderingId === item.id ? '重新渲染中…' : '重新渲染' }}
@@ -754,6 +763,19 @@ onBeforeUnmount(stop);
           <span>共 {{ run.counts.total }} 条</span>
           </nav>
       </section>
+      <WorkflowNodeFooter
+        back-label="返回模板混剪"
+        :complete="Boolean(run.validated)"
+        :status-title="validateStatusTitle"
+        :status-detail="`步骤 6 / 6 · 当前模板：${selectedTemplate?.templateName ?? run.templateName}`"
+        :validate-disabled="!canValidate || busy"
+        :validating="validating"
+        validate-label="完成校验"
+        next-label=""
+        :show-next="false"
+        @back="$emit('back')"
+        @validate="validateOutput"
+      />
           </template>
           <section v-else class="template-readiness" role="status">
             <span class="state-icon"><Film :size="25" /></span>
@@ -768,19 +790,55 @@ onBeforeUnmount(stop);
       </div>
     </template>
 
-    <WorkflowNodeFooter
-      back-label="返回模板混剪"
-      :complete="Boolean(run?.validated)"
-      :status-title="validateStatusTitle"
-      :status-detail="`步骤 6 / 6 · ${selectedTemplate?.templateName ?? '成片输出'}`"
-      :validate-disabled="!canValidate || busy"
-      :validating="validating"
-      validate-label="完成校验"
-      next-label=""
-      :show-next="false"
-      @back="$emit('back')"
-      @validate="validateOutput"
-    />
+    <Teleport to="body">
+      <div
+        v-if="previewItem"
+        class="output-dialog-backdrop"
+        @mousedown.self="closePreviewDialog()"
+      >
+        <section
+          class="output-preview-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="output-preview-dialog-title"
+          @keydown.esc="closePreviewDialog()"
+        >
+          <header>
+            <div>
+              <h2 id="output-preview-dialog-title">{{ displayName(previewItem) }} · 成片预览</h2>
+              <p>{{ previewItem.duration.toFixed(1) }} 秒 · {{ run?.resolution }} · {{ run?.frameRate }} fps · H.264 / AAC</p>
+            </div>
+            <button
+              ref="previewCloseButton"
+              class="output-preview-dialog__close"
+              type="button"
+              aria-label="关闭成片预览"
+              @click="closePreviewDialog()"
+            ><X :size="17" /></button>
+          </header>
+          <div class="output-dialog__video-frame">
+            <video
+              v-if="previewItem.fileObjectId && !previewError"
+              :src="fileUrl(previewItem.fileObjectId)"
+              controls
+              autoplay
+              playsinline
+              preload="metadata"
+              aria-label="成片视频播放"
+              @canplay="previewLoading = false"
+              @error="handlePreviewVideoError"
+            />
+            <span v-if="previewLoading" class="output-dialog__loading" role="status">
+              <LoaderCircle class="spin" :size="32" />
+              正在加载成片…
+            </span>
+            <span v-else-if="previewError" class="output-dialog__error" role="alert">
+              <AlertCircle :size="25" />{{ previewError }}
+            </span>
+          </div>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -803,8 +861,7 @@ onBeforeUnmount(stop);
 .workspace-heading,
 .output-card__title,
 .item-progress,
-.prompt-pagination,
-.output-footer {
+.prompt-pagination {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -1209,8 +1266,6 @@ progress {
   font-size: 14px;
 }
 .output-workspace {
-  position: sticky;
-  top: 12px;
   margin-top: 15px;
   overflow: hidden;
   background: #fff;
@@ -1297,6 +1352,7 @@ progress {
   border: 1px solid #e1e6ee;
   border-radius: 12px;
   transition: 0.18s ease;
+  cursor: pointer;
 }
 .output-card:hover {
   border-color: #aac2f2;
@@ -1306,12 +1362,13 @@ progress {
 .output-card.abnormal {
   border-color: #f0b9b3;
 }
-.output-card.selectable {
-  cursor: default;
-}
 .output-card.selected {
   border-color: #7da7ff;
   box-shadow: 0 0 0 2px #2563eb1c;
+}
+.output-card:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 .output-preview {
   position: relative;
@@ -1366,31 +1423,6 @@ progress {
   object-fit: contain;
   background: #111827;
 }
-.preview-trigger {
-  position: relative;
-  display: flex;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  padding: 12px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 9px;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  border-radius: 10px;
-  cursor: pointer;
-  font: inherit;
-}
-.preview-trigger.has-cover::after {
-  position: absolute;
-  inset: 40% 0 0;
-  background: linear-gradient(transparent, #11182799);
-  content: '';
-  pointer-events: none;
-}
 .preview-cover {
   position: absolute;
   inset: 0;
@@ -1408,22 +1440,115 @@ progress {
   height: 100%;
   object-fit: cover;
 }
-.preview-trigger > svg,
-.preview-label {
+.preview-play-icon {
   position: relative;
   z-index: 1;
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  color: #fff;
+  background: #172033a8;
+  border: 1px solid #ffffffa8;
+  border-radius: 50%;
+  box-shadow: 0 4px 14px #17203345;
+  transition: transform 0.16s ease, background-color 0.16s ease;
 }
-.preview-trigger.has-cover .preview-label {
-  align-self: flex-end;
-  padding: 5px 8px;
+.output-card:hover .preview-play-icon,
+.output-card:focus-visible .preview-play-icon {
+  background: #2563ebd9;
+  transform: scale(1.08);
+}
+.output-dialog-backdrop {
+  position: fixed;
+  z-index: 1400;
+  inset: 0;
+  display: grid;
+  padding: 20px;
+  place-items: center;
+  background: #0f172a99;
+  backdrop-filter: blur(4px);
+}
+.output-preview-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 40px);
+  padding: 0 16px 16px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 18px;
+  box-shadow: 0 24px 70px #0f172a38;
+}
+.output-preview-dialog > header {
+  display: flex;
+  padding: 18px 2px 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.output-preview-dialog h2,
+.output-preview-dialog p {
+  margin: 0;
+}
+.output-preview-dialog h2 {
+  color: #253047;
+  font-size: 17px;
+}
+.output-preview-dialog p {
+  margin-top: 5px;
+  color: #8490a4;
+  font-size: 11px;
+}
+.output-preview-dialog__close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  place-items: center;
+  color: #7b8798;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.output-preview-dialog__close:hover {
+  color: #253047;
+  background: #f1f5f9;
+}
+.output-dialog__video-frame {
+  position: relative;
+  display: grid;
+  width: auto;
+  height: min(62vh, 640px);
+  max-width: 100%;
+  aspect-ratio: 9 / 16;
+  margin: 0 auto;
+  place-items: center;
+  overflow: hidden;
+  color: #5f7cae;
+  background: #111827;
+  border-radius: 12px;
+}
+.output-dialog__video-frame video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.output-dialog__loading,
+.output-dialog__error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  padding: 20px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  color: #fff;
   background: #111827aa;
-  border-radius: 7px;
-}
-.preview-trigger:hover,
-.preview-trigger:focus-visible {
-  background: #ffffff24;
-  outline: 2px solid #ffffffaa;
-  outline-offset: 2px;
+  font-size: 12px;
+  text-align: center;
 }
 .output-preview small {
   position: absolute;
@@ -1573,13 +1698,6 @@ progress {
   font-size: 12px;
   white-space: nowrap;
 }
-.output-footer {
-  margin-top: 14px;
-  justify-content: space-between;
-  gap: 12px;
-  color: #7d899d;
-  font-size: 11px;
-}
 @media (max-width: 1200px) {
   .output-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -1616,8 +1734,7 @@ progress {
   }
   .output-heading,
   .output-heading__title,
-  .workspace-heading,
-  .output-footer {
+  .workspace-heading {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -1692,9 +1809,6 @@ progress {
   }
   .output-layout {
     gap: 12px;
-  }
-  .output-footer > * {
-    width: 100%;
   }
 }
 @media (max-width: 480px) {

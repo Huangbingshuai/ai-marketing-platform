@@ -240,6 +240,8 @@ export type EffectTemplateMixWorkspace = {
 };
 export type EffectTemplateMixTemplateEntry = {
   id: string;
+  /** First persisted creation time; absent for legacy drafts. */
+  createdAt?: string;
   /** Transient while smart-fill is queued/running. */
   aiFillLocked?: boolean;
   /** Hash of template configuration used by the latest successful smart-fill. */
@@ -254,6 +256,7 @@ export type EffectTemplateMixDraft = {
   schemaVersion: 1;
   templates: {
     id: string;
+    createdAt?: string;
     aiFillLocked?: boolean;
     filledTemplateHash?: string;
     packagingLocked?: boolean;

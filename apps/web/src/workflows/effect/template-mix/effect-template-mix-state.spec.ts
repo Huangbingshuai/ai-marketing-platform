@@ -1,5 +1,6 @@
 import type { EffectTemplateMixVariant, EffectTemplateMixWorkspace } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
+import { serializeEffectTemplateMixDraft } from './api/effect-template-mix.api';
 import {
   assignEffectTemplateMixCaptionLanes,
   cloneMix,
@@ -37,6 +38,14 @@ const variant = (value: EffectTemplateMixWorkspace, id: string): EffectTemplateM
 });
 
 describe('effect template mix presentation state', () => {
+  it('keeps the server-recorded template creation time when saving its draft again', () => {
+    const entry = createEffectTemplateMixEntry('跑量模板');
+    entry.createdAt = '2026-09-28T01:00:00.000Z';
+    expect(serializeEffectTemplateMixDraft([entry], entry.id).templates[0]?.createdAt).toBe(
+      entry.createdAt,
+    );
+  });
+
   it('creates one lane per manual caption track above the existing narration subtitle lane', () => {
     const lanes = assignEffectTemplateMixCaptionLanes(
       [

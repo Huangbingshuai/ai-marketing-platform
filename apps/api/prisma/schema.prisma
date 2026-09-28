@@ -326,6 +326,7 @@ model Project {
   workflowRuns               WorkflowRun[]
   workflowNodeStates         WorkflowNodeState[]
   workingArtifacts           WorkingArtifact[]
+  workingArtifactRevisions    WorkingArtifactRevisionSnapshot[]
   fileObjects                FileObject[]
   effectImportUploadSessions EffectImportUploadSession[]
 
@@ -387,6 +388,7 @@ model WorkflowRun {
   forkNodeId                 String?                     @db.VarChar(160)
   forkTemplateId             String?                     @db.VarChar(160)
   branchLabel                String?                     @db.VarChar(160)
+  branchPublishedAt          DateTime?
   workflow                   AssetWorkflow
   workflowSpace              AssetWorkflowSpace
   status                     WorkflowRunStatus           @default(ACTIVE)
@@ -401,6 +403,7 @@ model WorkflowRun {
   childWorkflowRuns          WorkflowRun[]               @relation("WorkflowRunBranches")
   nodeStates                 WorkflowNodeState[]
   workingArtifacts           WorkingArtifact[]
+  workingArtifactRevisions    WorkingArtifactRevisionSnapshot[]
   fileObjects                FileObject[]
   effectImportUploadSessions EffectImportUploadSession[]
   effectWorkspace            EffectImportWorkspace?
@@ -483,6 +486,44 @@ model WorkingArtifact {
   @@map("working_artifacts")
 }
 
+// Immutable confirmed revisions used by effect workflow branches. The mutable
+// WorkingArtifact row remains the latest pointer for existing readers.
+model WorkingArtifactRevisionSnapshot {
+  id                String   @id @default(uuid()) @db.Uuid
+  projectId         String   @db.Uuid
+  workflowRunId     String   @db.Uuid
+  workingArtifactId String   @db.Uuid
+  nodeId            String   @db.VarChar(160)
+  artifactKey       String   @db.VarChar(500)
+  revision          Int
+  contentHash       String   @db.Char(64)
+  snapshot          Json
+  confirmedAt       DateTime @default(now())
+  files             WorkingArtifactRevisionFile[]
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, map: "working_artifact_revisions_project_fkey")
+  workflowRun       WorkflowRun @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade, map: "working_artifact_revisions_run_fkey")
+
+  @@unique([projectId, workflowRunId, nodeId, artifactKey, revision], map: "working_artifact_revisions_scope_key")
+  @@index([projectId, workingArtifactId, revision], map: "working_artifact_revisions_artifact_idx")
+  @@map("working_artifact_revision_snapshots")
+}
+
+model WorkingArtifactRevisionFile {
+  id             String                          @id @default(uuid()) @db.Uuid
+  projectId      String                          @db.Uuid
+  workflowRunId  String                          @db.Uuid
+  snapshotId     String                          @db.Uuid
+  fileObjectId   String                          @db.Uuid
+  role           String                          @db.VarChar(80)
+  sortOrder      Int
+  snapshot       WorkingArtifactRevisionSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  fileObject     FileObject                       @relation(fields: [projectId, fileObjectId], references: [projectId, id], onDelete: Restrict, map: "working_artifact_revision_files_project_file_fkey")
+
+  @@unique([snapshotId, fileObjectId, role, sortOrder], map: "working_artifact_revision_files_binding_key")
+  @@index([projectId, fileObjectId], map: "working_artifact_revision_files_lookup_idx")
+  @@map("working_artifact_revision_files")
+}
+
 model FileObject {
   id               String                   @id @default(uuid()) @db.Uuid
   projectId        String                   @db.Uuid
@@ -500,6 +541,7 @@ model FileObject {
   project          Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workflowRun      WorkflowRun              @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
   artifactLinks    WorkingArtifactFile[]
+  revisionLinks    WorkingArtifactRevisionFile[]
   materials        EffectImportMaterial[]
   uploadItems      EffectImportUploadItem[]
   packagingFiles   EffectPackagingFile[]
@@ -523,7 +565,7 @@ model WorkingArtifactFile {
   sortOrder         Int             @default(0)
   createdAt         DateTime        @default(now())
   workingArtifact   WorkingArtifact @relation(fields: [projectId, workflowRunId, workingArtifactId], references: [projectId, workflowRunId, id], onDelete: Cascade)
-  fileObject        FileObject      @relation(fields: [projectId, workflowRunId, fileObjectId], references: [projectId, workflowRunId, id], onDelete: Restrict)
+  fileObject        FileObject      @relation(fields: [projectId, fileObjectId], references: [projectId, id], onDelete: Restrict, map: "working_artifact_files_project_file_fkey")
 
   @@unique([projectId, workingArtifactId, fileObjectId])
   @@index([projectId, workflowRunId, workingArtifactId, sortOrder])
@@ -544,7 +586,7 @@ model WorkingArtifactDependency {
   sourceHash          String?                             @db.Char(64)
   createdAt           DateTime                            @default(now())
   dependentArtifact   WorkingArtifact                     @relation("WorkingArtifactDependencies", fields: [projectId, workflowRunId, dependentArtifactId], references: [projectId, workflowRunId, id], onDelete: Cascade)
-  sourceArtifact      WorkingArtifact?                    @relation("WorkingArtifactDependencySources", fields: [projectId, workflowRunId, sourceArtifactId], references: [projectId, workflowRunId, id], onDelete: Restrict)
+  sourceArtifact      WorkingArtifact?                    @relation("WorkingArtifactDependencySources", fields: [projectId, sourceArtifactId], references: [projectId, id], onDelete: Restrict, map: "working_artifact_dependencies_project_source_fkey")
 
   @@unique([projectId, dependentArtifactId, sourceType, sourceKey])
   @@index([projectId, workflowRunId, sourceType, sourceKey])
@@ -695,7 +737,7 @@ model EffectImportMaterial {
   updatedAt          DateTime                        @updatedAt
   product            EffectImportProduct             @relation(fields: [projectId, productId], references: [projectId, id], onDelete: Cascade)
   workflowRun        WorkflowRun                     @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
-  fileObject         FileObject?                     @relation(fields: [projectId, workflowRunId, fileObjectId], references: [projectId, workflowRunId, id], onDelete: Restrict)
+  fileObject         FileObject?                     @relation(fields: [projectId, fileObjectId], references: [projectId, id], onDelete: Restrict, map: "effect_import_materials_project_file_fkey")
 
   @@unique([projectId, id])
   @@index([projectId, productId, type])
