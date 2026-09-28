@@ -33,6 +33,24 @@ export class EffectPackagingRepository {
       include: PACKAGING_INCLUDE,
     });
   }
+  getItem(projectId: string, runId: string, itemId: string) {
+    return this.db.effectPackagingItem.findFirst({
+      where: { projectId, runId, id: itemId },
+      include: { run: { select: { workflowRunId: true, templateId: true } } },
+    });
+  }
+  sourceArtifacts(projectId: string, workflowRunId: string, artifactIds: string[]) {
+    if (!artifactIds.length) return Promise.resolve([]);
+    return this.db.workingArtifact.findMany({
+      where: {
+        projectId,
+        workflowRunId,
+        id: { in: artifactIds },
+        workflowRun: { status: { in: ['ACTIVE', 'PAUSED'] } },
+      },
+      select: { id: true, revision: true, freshness: true, availability: true },
+    });
+  }
   async list(projectId: string, workflowRunId: string, templateId: string) {
     const latest = await this.db.effectPackagingItem.findMany({
       where: { projectId, run: { workflowRunId, templateId } },

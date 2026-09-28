@@ -98,6 +98,38 @@ describe('packaging workflow progress', () => {
     expect(packagingActionText(true, null)).toBe('重新成片包装');
     expect(packagingActionText(false, 'RUNNING')).toBe('智能成片包装');
   });
+  it('labels a finished run that is not fully ready as a rerun too', () => {
+    // A partial run ends without the validate gate opening, so the only way forward is running
+    // packaging again — the button has to say so instead of reading "智能成片包装".
+    for (const status of ['PARTIAL', 'FAILED', 'CANCELLED'] as const)
+      expect(packagingActionText(false, status)).toBe('重新成片包装');
+    expect(packagingActionText(false, 'QUEUED')).toBe('智能成片包装');
+    expect(packagingActionText(false, null)).toBe('智能成片包装');
+  });
+  it('names the real validate blocker instead of telling the user to wait', () => {
+    expect(page).toContain('const validateStatusTitle = computed(');
+    expect(page).toContain(':status-title="validateStatusTitle"');
+    expect(page).not.toContain('请等待全部成片包装成功且未过期');
+    expect(page).toContain('成片包装未全部就绪，请在包装面板中恢复未完成项');
+    expect(page).toContain('成片包装进行中，请等待完成');
+  });
+  it('submits a film whose packaging failed instead of blocking the whole batch', () => {
+    // A run that ends PARTIAL used to leave the validate button disabled with nothing left to wait
+    // for. The conclusion is now per film: packaged, or ended without a result — both submittable.
+    expect(component).toContain("type Conclusion = 'PACKAGED' | 'FAILED' | 'PENDING';");
+    expect(component).toContain("return ['FAILED', 'CANCELLED'].includes(item.status)");
+    expect(component).toContain("conclusions.value.every((entry) => entry.state !== 'PENDING')");
+    expect(component).toContain(
+      'failures: [failures: { variantId: string; name: string; message: string }[]];',
+    );
+    expect(component).toContain("watch(failures, (value) => emit('failures', value), { immediate: true });");
+    // The node has to say it out loud; a silent film is otherwise indistinguishable from a broken one.
+    expect(page).toContain('@failures="packagingFailures = $event"');
+    expect(page).toContain('data-testid="packaging-failure-banner"');
+    expect(page).toContain('这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐');
+    expect(page).toContain('条失败将按无包装成片提交（仅画面）');
+    expect(page).toContain('包装失败 · 将仅出画面');
+  });
   it('shows up to four real, human-readable examples from packaging checkpoints', () => {
     const source = {
       slots: [{ id: 'slot-1', label: '产品展示', duration: 8 }],

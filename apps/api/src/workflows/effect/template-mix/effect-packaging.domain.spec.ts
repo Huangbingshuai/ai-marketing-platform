@@ -574,6 +574,26 @@ describe('packaging snapshots and validation', () => {
     b.offsets.s = 1;
     expect(visualHash(a)).not.toBe(visualHash(b));
   });
+  it('keeps narration packaging current when independent music or detached audio changes', () => {
+    const original = variant();
+    const edited = variant();
+    edited.detachedAudios = [
+      {
+        id: 'library-music',
+        sourceAssetId: 'music-asset',
+        fileObjectId: 'music-file',
+        name: '轻快配乐.mp3',
+        sourceDuration: 30,
+        start: 0,
+        offset: 0,
+        duration: 10,
+        volume: 0.5,
+      },
+    ];
+
+    expect(visualHash(original)).toBe(visualHash(edited));
+    expect(matchesVisualHash(edited, visualHash(original), original)).toBe(true);
+  });
   it('treats explicit default lanes as unchanged and reads legacy frozen hashes safely', () => {
     const implicit = variant();
     const explicit = { ...variant(), videoLanes: { s: 0 } };
@@ -679,8 +699,13 @@ describe('packaging snapshots and validation', () => {
     expect(() => validatePackagingCheckpoint(snapshot(), checkpoint(), true)).not.toThrow());
   it('accepts an integer count of repaired script slots and rejects forged timing metrics', () => {
     const cp = checkpoint();
-    cp.timings = { _item: { scriptSeconds: 18.5, scriptRepairSlots: 1 } };
+    cp.timings = { _item: { scriptSeconds: 18.5, scriptRepairSlots: 1,
+      musicDownloadSeconds: 1.2, musicTranscodeSeconds: 2.4, musicUploadSeconds: 3.6,
+      apiHeartbeatSeconds: 0.3, checkpointSeconds: 0.4, captionSeconds: 0.01 } };
     expect(() => validatePackagingCheckpoint(snapshot(), cp)).not.toThrow();
+    cp.timings._item!.musicUploadSeconds = -1;
+    expect(() => validatePackagingCheckpoint(snapshot(), cp)).toThrow();
+    cp.timings._item!.musicUploadSeconds = 3.6;
     cp.timings._item!.scriptRepairSlots = 1.5;
     expect(() => validatePackagingCheckpoint(snapshot(), cp)).toThrow();
   });
@@ -852,7 +877,12 @@ describe('packaging snapshots and validation', () => {
         { id: 'line-2', text: '卖点', start: 7.5, end: 9 },
       ],
     };
-    expect(() => validatePackagingCheckpoint(snapshot(), overlapping, true, true)).toThrow();
+    expect(() => validatePackagingCheckpoint(snapshot(), overlapping, true, true)).not.toThrow();
+    const fixedTrackOverlap: PackagingCheckpoint = {
+      ...overlapping,
+      captions: overlapping.captions!.map((caption) => ({ ...caption, trackId: 'fixed-row' })),
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), fixedTrackOverlap, true, true)).toThrow();
   });
   it('lets subtitles on different tracks overlap, while one track still refuses it', () => {
     const track = 'subtitle-track-0000000000001-a';
@@ -889,6 +919,18 @@ describe('packaging snapshots and validation', () => {
       captions: [{ id: 'line-1', text: '商品', start: 0, end: 2.4, trackId: 'not valid!' }],
     };
     expect(() => validatePackagingCheckpoint(snapshot(), malformed, true, true)).toThrow();
+    // A cleared row has to reach the validator as an absent field rather than as a `null`: the shape
+    // check above refuses anything that is not a string, and the cast is the only way to hand it the
+    // `null` the contract allows. That is why the service resolves `null` to "no track" first, and
+    // why the ordering is pinned here — a clear answered with a 400 is exactly what it would look
+    // like if the resolution ever moved after this call.
+    const literalNull: PackagingCheckpoint = {
+      ...checkpoint(),
+      captions: [
+        { id: 'line-1', text: '商品', start: 0, end: 2.4, trackId: null as unknown as string },
+      ],
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), literalNull, true, true)).toThrow();
   });
   it('treats a deleted music bed as a normal, renderable checkpoint', () => {
     const silent = checkpoint();

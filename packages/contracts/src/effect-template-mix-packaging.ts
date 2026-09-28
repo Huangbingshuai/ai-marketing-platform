@@ -129,11 +129,20 @@ export type PackagingAudioEdit = {
   fadeOut?: number;
 };
 /** Only user-editable caption fields are accepted; segment lineage stays server-owned. */
-export type PackagingCaptionEdit = Pick<EffectTemplateMixCaption, 'id' | 'text' | 'start' | 'end'> &
-  Pick<EffectTemplateMixCaption, 'manual' | 'trackId'>;
+export type PackagingCaptionEdit = Pick<
+  EffectTemplateMixCaption,
+  'id' | 'text' | 'start' | 'end'
+> & {
+  manual?: boolean;
+  /**
+   * The row the caption sits on. A track of its own; `null` sends it back to the implicit row the
+   * pipeline lays out edge to edge, and an absent field leaves the row exactly as it is.
+   */
+  trackId?: string | null;
+};
 /**
  * Where one caption sits in the frame. Values are normalised so a box survives a change
- * of output size; absent means "pipeline default" (bottom-centred, 40px margins).
+ * of output size; absent means "pipeline default" (bottom-centred, 3% bottom margin).
  *
  * Kept beside `captions` instead of on them because a component redo regenerates the
  * caption list, while the editor's geometry has to survive it.
@@ -195,11 +204,18 @@ export type PackagingCheckpoint = {
   voiceSlotRetries?: Record<string, 1>;
   slotVision?: Record<string, { key: string; description: string }>;
   timings?: Record<string, { preprocessingSeconds?: number; visionSeconds?: number;
-    scriptSeconds?: number; scriptRepairSlots?: number; voiceSeconds?: number; musicWaitSeconds?: number;
-    localQueueSeconds?: number;
+    scriptSeconds?: number; scriptRepairSlots?: number; voiceSeconds?: number; voiceRepairSeconds?: number;
+    musicWaitSeconds?: number;
+    localQueueSeconds?: number; apiHeartbeatSeconds?: number; checkpointSeconds?: number;
+    voiceUploadSeconds?: number; musicDownloadSeconds?: number; musicPreprocessQueueSeconds?: number;
+    musicTranscodeSeconds?: number; musicUploadSeconds?: number; captionSeconds?: number;
     cacheHit?: boolean }>;
-  /** Persist before polling. Unknown submission outcomes must never be auto-resubmitted. */
-  musicTaskId?: string;
+  /**
+   * Persist before polling. Unknown submission outcomes must never be auto-resubmitted.
+   * `null` means the supplier reported the task as terminally failed, so a retry submits a new song
+   * instead of polling the dead one.
+   */
+  musicTaskId?: string | null;
   musicSubmissionPending?: boolean;
   vision?: { slotId?: string; start: number; end: number; description: string }[];
   script?: PackagingLine[];

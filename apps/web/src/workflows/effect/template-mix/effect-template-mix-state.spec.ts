@@ -6,6 +6,8 @@ import {
   createEffectTemplateMixEntry,
   EFFECT_TEMPLATE_MIX_TRANSITIONS,
   EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY,
+  effectTemplateMixCaptionRowKeys,
+  effectTemplateMixCaptionTrackKey,
   effectTemplateMixTiming,
   effectTemplateMixTransitionDuration,
   formatEffectTemplateMixTime,
@@ -61,6 +63,54 @@ describe('effect template mix presentation state', () => {
     expect(lanes.get('manual-older')).toBe(1);
     expect(lanes.get('generated-1')).toBe(2);
     expect(lanes.get('generated-2')).toBe(2);
+  });
+
+  it('names the group that owns each drawn row, newest track first', () => {
+    expect(
+      effectTemplateMixCaptionRowKeys(
+        [
+          { id: 'generated-1', start: 0, end: 3 },
+          { id: 'generated-2', start: 4, end: 5 },
+          {
+            id: 'manual-older',
+            manual: true,
+            trackId: 'subtitle-track-0000000000001-test',
+            start: 0,
+            end: 3,
+          },
+          {
+            id: 'manual-newest',
+            manual: true,
+            trackId: 'subtitle-track-0000000000002-test',
+            start: 10,
+            end: 12,
+          },
+        ],
+        30,
+      ),
+    ).toEqual([
+      'track:subtitle-track-0000000000002-test',
+      'track:subtitle-track-0000000000001-test',
+      'legacy-generated',
+    ]);
+  });
+
+  it('gives every row of a multi-row group the same key, so any of them can be joined', () => {
+    // Two legacy cards overlap in time, so the packer spreads them over two rows — but both rows
+    // still belong to the implicit group, which is what a drop on either of them has to report.
+    const captions = [
+      { id: 'a', start: 0, end: 5 },
+      { id: 'b', start: 1, end: 6 },
+    ];
+    expect(effectTemplateMixCaptionRowKeys(captions, 30)).toEqual([
+      'legacy-generated',
+      'legacy-generated',
+    ]);
+    expect(effectTemplateMixCaptionTrackKey(captions[0]!)).toBe('legacy-generated');
+    expect(effectTemplateMixCaptionTrackKey({ id: 'm', manual: true })).toBe('manual:m');
+    expect(effectTemplateMixCaptionTrackKey({ id: 'm', manual: true, trackId: 't1' })).toBe(
+      'track:t1',
+    );
   });
 
   it('keeps a new template without a project until AI fill completes', () => {

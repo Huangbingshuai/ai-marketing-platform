@@ -84,6 +84,7 @@ function harness(templateVoiceProfileId?: string) {
     },
   };
   const mix = {
+    currentVariant: vi.fn().mockResolvedValue(v),
     workspace: vi.fn().mockResolvedValue({
       draftRevision: 1,
       draft: {
@@ -120,6 +121,10 @@ function harness(templateVoiceProfileId?: string) {
   };
   const repo = {
     get: vi.fn(),
+    getItem: vi.fn(),
+    sourceArtifacts: vi.fn().mockResolvedValue([]),
+    authorized: vi.fn().mockResolvedValue(undefined),
+    checkpoint: vi.fn().mockResolvedValue({ accepted: true }),
     retry: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
     updateCheckpoint: vi.fn(),
     list: vi.fn().mockResolvedValue([]),
@@ -129,6 +134,7 @@ function harness(templateVoiceProfileId?: string) {
       effectPackagingRun: { findUnique: vi.fn().mockResolvedValue(null) },
       effectPackagingFile: {
         count: vi.fn().mockResolvedValue(0),
+        findMany: vi.fn().mockResolvedValue([]),
         findUnique: vi.fn().mockResolvedValue(null),
       },
       effectVoicePreview: { findFirst: vi.fn().mockResolvedValue(null) },
@@ -185,6 +191,69 @@ function completedRun() {
   return { id: 'run', workflowRunId: 'w', templateId: 't', items: [completedItem()] };
 }
 describe('packaging service output boundary', () => {
+  it('checks only the requested item and its current visual/artifact source', async () => {
+    const { service, repo, mix, working } = harness();
+    const item = completedItem();
+    repo.getItem.mockResolvedValue({ ...item, run: { workflowRunId: 'w', templateId: 't' } });
+    expect((await service.workerItem('p', 'run', 'attempt', 'item')).item.id).toBe('item');
+    expect(repo.get).not.toHaveBeenCalled();
+    expect(repo.getItem).toHaveBeenCalledWith('p', 'run', 'item');
+    expect(mix.currentVariant).toHaveBeenCalledWith('p', 'w', 't', 'v');
+    expect(mix.workspace).not.toHaveBeenCalled();
+    expect(repo.sourceArtifacts).toHaveBeenCalledWith('p', 'w', []);
+    expect(working.listArtifacts).not.toHaveBeenCalled();
+
+    mix.currentVariant.mockResolvedValue(null);
+    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('已过期');
+    mix.currentVariant.mockResolvedValue(v);
+    (item.snapshot as PackagingSnapshot).dependencies = [{
+      artifactId: 'missing', artifactKey: 'timeline-project:t:v', revision: 1,
+      contentHash: 'missing', nodeId: 'TEMPLATE_MIX',
+    }];
+    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('已过期');
+    repo.sourceArtifacts.mockResolvedValue([{
+      id: 'missing', revision: 1, freshness: 'CURRENT', availability: 'AVAILABLE',
+    }]);
+    expect((await service.workerItem('p', 'run', 'attempt', 'item')).item.id).toBe('item');
+    repo.sourceArtifacts.mockResolvedValue([{
+      id: 'missing', revision: 2, freshness: 'CURRENT', availability: 'AVAILABLE',
+    }]);
+    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('已过期');
+  });
+  it('checks all distinct audio files in one project- and source-scoped query', async () => {
+    const { service, repo } = harness();
+    const item = completedItem();
+    const snapshot = item.snapshot as PackagingSnapshot;
+    const patch = { voices: item.checkpoint.voices, music: item.checkpoint.music } as PackagingCheckpoint;
+    vi.spyOn(service, 'workerItem').mockResolvedValue({
+      item, snapshot, run: { workflowRunId: 'w', templateId: 't' },
+    } as never);
+    // Existing checkpoint is accepted by the domain validator for an in-progress save.
+    repo.db.effectPackagingFile.findMany.mockResolvedValue([
+      { fileObjectId: 'voice' }, { fileObjectId: 'music' },
+    ]);
+    await service.checkpoint('p', 'run', 'attempt', 'item', 'VOICE', patch);
+    expect(repo.db.effectPackagingFile.findMany).toHaveBeenCalledOnce();
+    expect(repo.db.effectPackagingFile.findMany).toHaveBeenCalledWith({
+      where: {
+        projectId: 'p', fileObjectId: { in: ['voice', 'music'] },
+        item: { variantId: 'v', sourceTimelineHash: item.sourceTimelineHash,
+          run: { workflowRunId: 'w', templateId: 't' } },
+      },
+      select: { fileObjectId: true },
+    });
+    repo.db.effectPackagingFile.findMany.mockResolvedValue([{ fileObjectId: 'voice' }]);
+    await expect(service.checkpoint('p', 'run', 'attempt', 'item', 'VOICE', patch)).rejects.toThrow('不属于当前成片');
+    expect(repo.checkpoint).toHaveBeenCalledTimes(1);
+  });
+  it('records a failure even if its frozen source has become stale', async () => {
+    const { service, repo } = harness();
+    repo.getItem.mockResolvedValue({ id: 'item' });
+    vi.spyOn(service, 'workerItem').mockRejectedValue(new ConflictException('已过期'));
+    await service.checkpoint('p', 'run', 'attempt', 'item', 'VOICE', {}, '生成失败');
+    expect(service.workerItem).not.toHaveBeenCalled();
+    expect(repo.checkpoint).toHaveBeenCalledWith('p', 'run', 'attempt', 'item', 'VOICE', {}, '生成失败');
+  });
   it('refuses packaging until a template change has been refilled', async () => {
     const { service, repo, mix } = harness();
     mix.workspace.mockResolvedValue({
@@ -690,7 +759,7 @@ describe('packaging service output boundary', () => {
     expect(result.id).toBe('item');
     expect(result.updatedAt).toBe('2026-01-01T00:00:01.000Z');
   });
-  it('keeps package audio editable after the user moves a video clip', async () => {
+  it('keeps package audio editable after moving video and adding project music', async () => {
     const { service, repo, mix } = harness();
     const item = completedItem();
     const slot = {
@@ -714,7 +783,22 @@ describe('packaging service output boundary', () => {
           id: 't',
           workspace: {
             template: { name: '模板', editVersion: 1, slots: [slot] },
-            variants: [{ ...frozen, timelineStarts: { slot: 3 }, videoLanes: { slot: 2 } }],
+            variants: [{
+              ...frozen,
+              timelineStarts: { slot: 3 },
+              videoLanes: { slot: 2 },
+              detachedAudios: [{
+                id: 'music-1',
+                sourceAssetId: 'asset-music',
+                fileObjectId: 'file-music',
+                name: '项目配乐.mp3',
+                sourceDuration: 30,
+                start: 4,
+                offset: 0,
+                duration: 10,
+                volume: 0.6,
+              }],
+            }],
           },
         }],
       },
@@ -979,6 +1063,31 @@ describe('packaging service output boundary', () => {
       start: 0,
       end: 2.4,
     });
+
+    // An explicit `null` is the implicit row rather than an omission, so it clears the track: that is
+    // what lets a card pulled onto a row of its own come back down to the row it came from.
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      captions: [{ id: 'line-1', text: '商品改', start: 0, end: 2.4, trackId: null }],
+    });
+    const [, , cleared] = repo.updateCheckpoint.mock.calls[2]!;
+    expect(cleared.captions![0]).toEqual({ id: 'line-1', text: '商品改', start: 0, end: 2.4 });
+  });
+  it('moves a card onto another row when the client names one', async () => {
+    const { service, repo } = harness();
+    const stored = completedItem();
+    stored.checkpoint.captions = [
+      { id: 'line-1', text: '商品', start: 0, end: 2.4, trackId: 'subtitle-track-1' },
+    ];
+    repo.get.mockResolvedValue({ ...completedRun(), items: [stored] });
+    repo.updateCheckpoint.mockResolvedValue(completedItem());
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      captions: [{ id: 'line-1', text: '商品', start: 0, end: 2.4, trackId: 'subtitle-track-2' }],
+    });
+    const [, , moved] = repo.updateCheckpoint.mock.calls[0]!;
+    // The card follows the row it was dropped on instead of staying pinned to the one it came from.
+    expect(moved.captions![0]!.trackId).toBe('subtitle-track-2');
   });
   it('preserves server-owned segmented-caption lineage when only caption timing is edited', async () => {
     const { service, repo } = harness();
@@ -1090,7 +1199,7 @@ describe('packaging service output boundary', () => {
     ).rejects.toThrow('字幕不存在');
     expect(repo.updateCheckpoint).not.toHaveBeenCalled();
   });
-  it('refuses to edit unfinished or stale packaging', async () => {
+  it('refuses unfinished packaging but allows editing a completed stale snapshot', async () => {
     const { service, repo } = harness();
     const running = completedItem();
     running.status = 'RUNNING';
@@ -1101,10 +1210,11 @@ describe('packaging service output boundary', () => {
     const changed = completedItem();
     changed.sourceTimelineHash = 'changed';
     repo.get.mockResolvedValue({ ...completedRun(), items: [changed] });
+    repo.updateCheckpoint.mockResolvedValue(changed);
     await expect(
       service.updateAudio('p', 'run', 'item', { expectedUpdatedAt: '2026-01-01T00:00:00.000Z' }),
-    ).rejects.toThrow('源时间轴');
-    expect(repo.updateCheckpoint).not.toHaveBeenCalled();
+    ).resolves.toBeDefined();
+    expect(repo.updateCheckpoint).toHaveBeenCalledOnce();
   });
   it('surfaces optimistic-lock conflicts instead of retrying the write', async () => {
     const { service, repo } = harness();

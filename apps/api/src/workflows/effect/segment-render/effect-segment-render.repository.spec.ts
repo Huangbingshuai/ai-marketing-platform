@@ -138,4 +138,66 @@ describe('EffectSegmentRenderRepository', () => {
       }),
     );
   });
+
+  it('gives the validate commit a budget above the Prisma default and retries a transient clash', async () => {
+    const transient = Object.assign(new Error('Transaction already closed'), { code: 'P2028' });
+    const prisma = {
+      $transaction: vi
+        .fn()
+        .mockRejectedValueOnce(transient)
+        .mockResolvedValueOnce({ kind: 'COMMITTED', artifacts: [] }),
+    };
+    const repository = new EffectSegmentRenderRepository(prisma as never);
+
+    const result = await repository.commitValidatedBatch(
+      runningTask.projectId,
+      runningTask.batchId,
+      4,
+      { artifactId: 'a', revision: 3, contentHash: 'a'.repeat(64) },
+      { artifactId: 'b', revision: 2, contentHash: 'b'.repeat(64) },
+      [],
+    );
+
+    expect(result).toEqual({ kind: 'COMMITTED', artifacts: [] });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    const options = prisma.$transaction.mock.calls[0]![1] as { maxWait: number; timeout: number };
+    expect(options.timeout).toBeGreaterThan(5_000);
+    expect(options.maxWait).toBeGreaterThan(2_000);
+  });
+
+  it('reports an unrecoverable clash as a conflict instead of letting it escape as an internal error', async () => {
+    const transient = Object.assign(new Error('deadlock detected'), { code: 'P2034' });
+    const prisma = { $transaction: vi.fn().mockRejectedValue(transient) };
+    const repository = new EffectSegmentRenderRepository(prisma as never);
+
+    const result = await repository.commitValidatedBatch(
+      runningTask.projectId,
+      runningTask.batchId,
+      4,
+      { artifactId: 'a', revision: 3, contentHash: 'a'.repeat(64) },
+      { artifactId: 'b', revision: 2, contentHash: 'b'.repeat(64) },
+      [],
+    );
+
+    expect(result).toEqual({ kind: 'CONFLICT' });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry or swallow a failure that is not a transient clash', async () => {
+    const broken = new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+    const prisma = { $transaction: vi.fn().mockRejectedValue(broken) };
+    const repository = new EffectSegmentRenderRepository(prisma as never);
+
+    await expect(
+      repository.commitValidatedBatch(
+        runningTask.projectId,
+        runningTask.batchId,
+        4,
+        { artifactId: 'a', revision: 3, contentHash: 'a'.repeat(64) },
+        { artifactId: 'b', revision: 2, contentHash: 'b'.repeat(64) },
+        [],
+      ),
+    ).rejects.toThrow('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
 });

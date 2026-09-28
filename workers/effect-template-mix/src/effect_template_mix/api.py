@@ -17,9 +17,10 @@ from .models import (
 
 
 class ApiError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool) -> None:
+    def __init__(self, message: str, *, retryable: bool, status_code: int | None = None) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.status_code = status_code
 
 
 def _unwrap(value: Any) -> Any:
@@ -58,7 +59,7 @@ class InternalApi:
                         message = value.strip()
             except Exception:
                 pass
-            raise ApiError(message, retryable=response.status_code >= 500)
+            raise ApiError(message, retryable=response.status_code >= 500, status_code=response.status_code)
         return _unwrap(response.json()) if response.content else None
 
     async def claim(self, project_id: str, run_id: str) -> Claim:

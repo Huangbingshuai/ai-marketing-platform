@@ -52,6 +52,9 @@ function isMp3File(file: File): boolean {
 function isMp3Asset(asset: Asset): boolean {
   return /\.mp3$/i.test(asset.originalFileName);
 }
+function displayMusicName(name: string): string {
+  return name.replace(/\.mp3$/i, '');
+}
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
   const total = Math.floor(seconds);
@@ -304,8 +307,7 @@ onBeforeUnmount(() => {
             /></span>
           </span>
           <span class="music-card-copy">
-            <strong :title="asset.name">{{ asset.name }}</strong>
-            <small>{{ asset.notes || '项目音乐' }}</small>
+            <strong :title="displayMusicName(asset.name)">{{ displayMusicName(asset.name) }}</strong>
             <em>{{ !isMp3Asset(asset) ? '不支持的格式' : durations[asset.id] ? formatTime(durations[asset.id]!) : '读取时长…' }}</em>
           </span>
           <audio

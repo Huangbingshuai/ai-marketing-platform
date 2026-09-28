@@ -190,36 +190,37 @@ export class EffectFinalOutputService {
           : [];
         const rows = variants.map((variant) => {
           const item = history.find((i) => i.variantId === variant.id);
-          if (
-            !item ||
-            item.status !== 'COMPLETED' ||
-            !matchesVisualHash(variant, item.sourceTimelineHash,
-              (item.snapshot as unknown as PackagingSnapshot).variant)
-          )
-            throw new ConflictException(`${variant.name} 包装缺失、失败或过期；必须全部成功后提交`);
+          if (!item) throw new ConflictException(`${variant.name} 还没有包装结果；请先生成包装`);
+          if (!matchesVisualHash(variant, item.sourceTimelineHash,
+            (item.snapshot as unknown as PackagingSnapshot).variant))
+            throw new ConflictException(`${variant.name} 的包装已过期；请重新生成包装`);
+          // A run that ended without every film succeeding must not hold the whole template hostage:
+          // the user asked for these films, so a film whose packaging failed is submitted as a
+          // picture-only one — no narration, captions or bed — and the failure is surfaced next to
+          // it. Recovering that item and confirming once more adds its audio back as a new output.
+          if (!['COMPLETED', 'FAILED', 'CANCELLED'].includes(item.status))
+            throw new ConflictException(`${variant.name} 仍在包装中；请等待包装结束后提交`);
           const snapshot = item.snapshot as unknown as PackagingSnapshot;
-          const checkpoint = item.checkpoint as PackagingCheckpoint;
-          // Accept editor-edited audio geometry; worker writes stay strictly validated.
-          requireSlotPackaging(snapshot, checkpoint);
-          if (
-            snapshot.dependencies.some(
-              (d) =>
-                !sources.some(
-                  (a) =>
-                    a.id === d.artifactId &&
-                    a.revision === d.revision &&
-                    a.contentHash === d.contentHash &&
-                    a.freshness === 'CURRENT' &&
-                    a.availability === 'AVAILABLE',
-                ),
-            )
-          )
+          const packaged = item.status === 'COMPLETED';
+          const checkpoint: PackagingCheckpoint = packaged
+            ? (item.checkpoint as PackagingCheckpoint)
+            : { voices: {}, captions: [] };
+          if (packaged)
+            // Accept editor-edited audio geometry; worker writes stay strictly validated.
+            requireSlotPackaging(snapshot, checkpoint);
+          if (snapshot.dependencies.some((dependency) => !sources.some((artifact) =>
+            artifact.id === dependency.artifactId &&
+            artifact.revision === dependency.revision &&
+            artifact.contentHash === dependency.contentHash &&
+            artifact.freshness === 'CURRENT' &&
+            artifact.availability === 'AVAILABLE')))
             throw new ConflictException('包装上游来源已过期，请恢复包装');
           return {
             item,
             snapshot,
             checkpoint,
             variant,
+            unpackaged: !packaged,
             overlays: liveOverlays(variant, workspace.materials, overlayArtifacts),
           };
         });
@@ -368,6 +369,7 @@ export class EffectFinalOutputService {
               sourceTimelineHash: visualHash(row.snapshot.variant),
             },
             packaging: cp,
+            unpackaged: row.unpackaged,
             dependencies: [
               ...dependencies,
               {
@@ -457,6 +459,14 @@ export class EffectFinalOutputService {
   private toDto(
     run: Prisma.EffectFinalOutputRunGetPayload<{ include: typeof include }>,
     templateName?: string,
+    artifacts: Array<{
+      id: string;
+      revision: number;
+      contentHash: string | null;
+      freshness: string;
+      availability: string;
+    }> = [],
+    workspace?: Awaited<ReturnType<EffectTemplateMixService['workspace']>>,
   ): FinalOutputRun {
     return {
       id: run.id,
@@ -474,6 +484,22 @@ export class EffectFinalOutputService {
         )
         .map((i) => {
           const snapshot = i.snapshot as unknown as FinalOutputSnapshot;
+          const currentVariant = workspace?.draft?.templates
+            .find((entry) => entry.id === run.templateId)
+            ?.workspace.variants.find((variant) => variant.id === i.variantId);
+          const stale = (snapshot.dependencies ?? []).some((dependency) =>
+            !artifacts.some((artifact) =>
+              artifact.id === dependency.artifactId &&
+              artifact.revision === dependency.revision &&
+              artifact.contentHash === dependency.contentHash &&
+              artifact.freshness === 'CURRENT' &&
+              artifact.availability === 'AVAILABLE',
+            ),
+          ) || !currentVariant || !matchesVisualHash(
+            currentVariant,
+            snapshot.timeline.sourceTimelineHash,
+            snapshot.timeline.variant,
+          );
           const firstBoundSlot = snapshot.timeline.variant.slots.find(
             ({ id }) => Boolean(snapshot.timeline.variant.bindings[id]),
           );
@@ -495,6 +521,8 @@ export class EffectFinalOutputService {
             errorMessage: i.errorMessage,
             fileObjectId: i.fileObjectId,
             assetId: i.assetId,
+            unpackaged: Boolean((i.snapshot as unknown as FinalOutputSnapshot).unpackaged),
+            stale,
           };
         }),
       counts: {
@@ -511,9 +539,10 @@ export class EffectFinalOutputService {
     const run = await this.db.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
     if (!run) throw new NotFoundException('成片输出任务不存在');
     const workspace = await this.mix.workspace(projectId, run.workflowRunId);
+    const artifacts = await this.working.listArtifacts(projectId, { workflowRunId: run.workflowRunId });
     const templateName = workspace.draft?.templates.find((entry) => entry.id === run.templateId)
       ?.workspace.template.name;
-    return this.toDto(run, templateName);
+    return this.toDto(run, templateName, artifacts, workspace);
   }
   async list(projectId: string, workflowRunId: string) {
     const runs = await this.db.effectFinalOutputRun.findMany({
@@ -524,10 +553,11 @@ export class EffectFinalOutputService {
     });
     if (!runs.length) return [];
     const workspace = await this.mix.workspace(projectId, workflowRunId);
+    const artifacts = await this.working.listArtifacts(projectId, { workflowRunId });
     const templateNames = new Map(
       workspace.draft?.templates.map((entry) => [entry.id, entry.workspace.template.name]) ?? [],
     );
-    return runs.map((run) => this.toDto(run, templateNames.get(run.templateId)));
+    return runs.map((run) => this.toDto(run, templateNames.get(run.templateId), artifacts, workspace));
   }
   async claim(projectId: string, id: string) {
     return this.db.$transaction(async (tx) => {
@@ -596,38 +626,21 @@ export class EffectFinalOutputService {
     templateId: string,
     snapshot: FinalOutputSnapshot,
   ) {
-    requireSlotPackaging(snapshot.timeline, snapshot.packaging);
-    const deps = snapshot.dependencies;
-    const rows = await tx.workingArtifact.findMany({
-      where: { projectId, workflowRunId, id: { in: deps.map((d) => d.artifactId) } },
-    });
-    if (
-      deps.some(
-        (d) =>
-          !rows.some(
-            (a) =>
-              a.id === d.artifactId &&
-              a.revision === d.revision &&
-              a.contentHash === d.contentHash &&
-              a.freshness === 'CURRENT' &&
-              a.availability === 'AVAILABLE',
-          ),
+    // A film confirmed without a package carries an intentionally empty one: no narration layout,
+    // no captions, no bed. The slot rules describe a narrated package and would reject it, so keep
+    // a small structural check here; all frozen source files are checked for availability below.
+    if (snapshot.unpackaged) {
+      if (
+        !snapshot.packaging ||
+        typeof snapshot.packaging.voices !== 'object' ||
+        snapshot.packaging.voices === null ||
+        !Array.isArray(snapshot.packaging.captions)
       )
-    )
-      throw new ConflictException('画面或包装已过期，请回模板混剪恢复');
-    const state = await tx.workflowNodeState.findUnique({
-      where: {
-        projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX' },
-      },
-    });
-    const draft = state?.state as unknown as {
-      templates?: { id: string; workspace: { variants: PackagingSnapshot['variant'][] } }[];
-    };
-    const variant = draft?.templates
-      ?.find((t) => t.id === templateId)
-      ?.workspace.variants.find((v) => v.id === snapshot.timeline.variant.id);
-    if (!variant || !matchesVisualHash(variant, snapshot.timeline.sourceTimelineHash, snapshot.timeline.variant))
-      throw new ConflictException('画面草稿已改变，请回模板混剪恢复');
+        throw new ConflictException('无包装成片的结构无效');
+    } else requireSlotPackaging(snapshot.timeline, snapshot.packaging);
+    // Rendering consumes the file IDs frozen into the output snapshot, not the current working
+    // artifacts or mutable timeline. This is what lets users re-export an old film after upstream
+    // edits while still reporting its stale status in the UI.
     const ids = [
       ...new Set([
         ...snapshot.timeline.clips.map((c) => c.fileObjectId),

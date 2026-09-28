@@ -42,6 +42,9 @@ class Settings(BaseSettings):
         ge=1,
         le=4,
     )
+    packaging_item_concurrency: int = Field(default=6, alias="TEMPLATE_MIX_PACKAGING_ITEM_CONCURRENCY", ge=1, le=8)
+    packaging_model_concurrency: int = Field(default=4, alias="TEMPLATE_MIX_PACKAGING_MODEL_CONCURRENCY", ge=1, le=8)
+    packaging_tts_concurrency: int = Field(default=4, alias="TEMPLATE_MIX_PACKAGING_TTS_CONCURRENCY", ge=1, le=12)
     max_video_bytes: int = Field(default=512 * 1024 * 1024, alias="TEMPLATE_MIX_MAX_VIDEO_BYTES", ge=1)
     final_output_max_concurrency: int = Field(default=2, alias="FINAL_OUTPUT_MAX_CONCURRENCY", ge=1, le=4)
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

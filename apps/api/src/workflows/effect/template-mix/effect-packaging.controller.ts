@@ -94,7 +94,9 @@ export class PackagingCaptionEditDto {
   @Type(() => Number) @IsNumber() @Min(0) start!: number;
   @Type(() => Number) @IsNumber() @Min(0) end!: number;
   @IsOptional() @IsBoolean() manual?: boolean;
-  @IsOptional() @IsString() @Matches(/^[a-zA-Z0-9_-]{1,80}$/u) trackId?: string;
+  // `null` is the implicit caption row, so it is a value rather than an omission; `@IsOptional()`
+  // skips both, which is what lets a clear and a "leave it alone" travel through one field.
+  @IsOptional() @IsString() @Matches(/^[a-zA-Z0-9_-]{1,80}$/u) trackId?: string | null;
 }
 /** Normalised caption geometry; ranges mirror the domain check that backs this up. */
 export class PackagingCaptionBoxDto {

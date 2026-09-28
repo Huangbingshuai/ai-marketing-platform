@@ -195,6 +195,7 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     {
       findNodeState: vi.fn().mockResolvedValue(settingsNode),
       saveNodeState: vi.fn(),
+      listArtifacts: vi.fn().mockResolvedValue([]),
     } as never,
   );
   return { service, repository, storage };
@@ -404,6 +405,59 @@ describe('EffectSegmentRenderService', () => {
     expect(result.batch.refreshScope).toBe('SELECTIVE');
     expect(result.batch.tasks.filter(({ needsUpdate }) => needsUpdate).map(({ promptId }) => promptId))
       .toEqual([item.id]);
+  });
+
+  it('lets a batch that already matches the current Prompt be validated while its copies are uncommitted', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-uncommitted',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    repository.batch.mockResolvedValue(created.batch);
+    // A rerender delivers new clips but does not commit them: their working copies stay STALE until
+    // the user validates. That pending commit must not read as "the Prompt moved on", otherwise the
+    // rerender entry point is the only enabled action and it can never be validated.
+    repository.renderArtifact.mockResolvedValue({
+      freshness: 'STALE',
+      availability: 'AVAILABLE',
+    });
+
+    const result = await service.batch('project-a', created.batch.id);
+
+    expect(result.batch.stale).toBe(false);
+    expect(result.batch.refreshScope).toBe('NONE');
+    expect(result.batch.commitStatus).toBe('STALE');
+  });
+
+  it('reports a commit clash as a retryable conflict instead of an internal error', async () => {
+    const { service, repository } = serviceWith({
+      commitValidatedBatch: vi.fn().mockResolvedValue({ kind: 'CONFLICT' }),
+    });
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-conflict',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    Object.assign(created.batch.tasks[0], {
+      status: 'COMPLETED',
+      repairStatus: null,
+      outputFileObjectId: '33333333-3333-4333-8333-333333333333',
+      outputStorageKey: 'staging/clip.mp4',
+      outputFileName: 'P001.mp4',
+      outputMimeType: 'video/mp4',
+      outputSizeBytes: 1024,
+      outputContentHash: 'e'.repeat(64),
+    });
+    repository.batch.mockResolvedValue(created.batch);
+
+    await expect(
+      service.validate('project-a', created.batch.id, created.batch.revision),
+    ).rejects.toThrow('校验提交遇到并发写入，请稍后重试');
   });
 
   it('creates fifty independent tasks while freezing the same complete image set for every Prompt', async () => {

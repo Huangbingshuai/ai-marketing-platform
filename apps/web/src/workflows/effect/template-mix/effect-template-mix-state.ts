@@ -405,19 +405,42 @@ export const effectTemplateMixTiming = (
 type CaptionLaneInput = Pick<EffectTemplateMixCaption, 'id' | 'start' | 'end'> &
   Partial<Pick<EffectTemplateMixCaption, 'manual' | 'trackId'>>;
 
-/** Keep explicit subtitle tracks on separate lanes, placing the newest user track above legacy captions. */
-export const assignEffectTemplateMixCaptionLanes = (
+/**
+ * The row a subtitle belongs to, as a key rather than a row number. A card with a track of its own
+ * stands alone; a manual card that has none is a group of one; everything else shares the implicit
+ * row the pipeline lays out edge to edge. The web packer, the checkpoint validator and the renderer
+ * all group captions by exactly this string, so all three agree by construction.
+ */
+export const effectTemplateMixCaptionTrackKey = (caption: {
+  id: string;
+  manual?: boolean;
+  trackId?: string;
+}): string =>
+  caption.trackId
+    ? `track:${caption.trackId}`
+    : caption.manual
+      ? `manual:${caption.id}`
+      : 'legacy-generated';
+
+type CaptionLanePlacement = {
+  key: string;
+  laneCount: number;
+  captions: { caption: CaptionLaneInput; lane: number }[];
+};
+
+/**
+ * Group the captions into rows and give every group the band of lanes it occupies. An explicit track
+ * is drawn above a manual card, which is drawn above the legacy row; within a kind the newest track
+ * comes first, so a track minted just now is the topmost row.
+ */
+const captionLanePlacements = (
   captions: readonly CaptionLaneInput[],
   fps: number,
-): Map<string, number> => {
+): CaptionLanePlacement[] => {
   type Group = { key: string; order: number; rows: CaptionLaneInput[] };
   const groups = new Map<string, Group>();
   for (const caption of captions) {
-    const key = caption.trackId
-      ? `track:${caption.trackId}`
-      : caption.manual
-        ? `manual:${caption.id}`
-        : 'legacy-generated';
+    const key = effectTemplateMixCaptionTrackKey(caption);
     const order = caption.trackId ? 0 : caption.manual ? 1 : 2;
     const group = groups.get(key) ?? { key, order, rows: [] };
     group.rows.push(caption);
@@ -426,22 +449,49 @@ export const assignEffectTemplateMixCaptionLanes = (
   const sortedGroups = [...groups.values()].sort(
     (left, right) => left.order - right.order || right.key.localeCompare(left.key),
   );
-  const lanes = new Map<string, number>();
+  const placements: CaptionLanePlacement[] = [];
   let laneOffset = 0;
   for (const group of sortedGroups) {
     const laneEnds: number[] = [];
+    const placed: { caption: CaptionLaneInput; lane: number }[] = [];
     for (const caption of [...group.rows].sort(
       (left, right) => left.start - right.start || left.id.localeCompare(right.id),
     )) {
       const available = laneEnds.findIndex((end) => end <= caption.start + 1 / fps);
       const localLane = available >= 0 ? available : laneEnds.length;
       laneEnds[localLane] = Math.max(caption.start, caption.end);
-      lanes.set(caption.id, laneOffset + localLane);
+      placed.push({ caption, lane: laneOffset + localLane });
     }
-    laneOffset += Math.max(1, laneEnds.length);
+    const laneCount = Math.max(1, laneEnds.length);
+    placements.push({ key: group.key, laneCount, captions: placed });
+    laneOffset += laneCount;
   }
+  return placements;
+};
+
+/** Keep explicit subtitle tracks on separate lanes, placing the newest user track above legacy captions. */
+export const assignEffectTemplateMixCaptionLanes = (
+  captions: readonly CaptionLaneInput[],
+  fps: number,
+): Map<string, number> => {
+  const lanes = new Map<string, number>();
+  for (const placement of captionLanePlacements(captions, fps))
+    for (const { caption, lane } of placement.captions) lanes.set(caption.id, lane);
   return lanes;
 };
+
+/**
+ * The rows of the subtitle area in the order they are drawn: one entry per lane, each naming the
+ * group that lane belongs to. This is what turns a vertical drop position into a row the editor can
+ * be asked to join, rather than only into "give the card a row of its own".
+ */
+export const effectTemplateMixCaptionRowKeys = (
+  captions: readonly CaptionLaneInput[],
+  fps: number,
+): string[] =>
+  captionLanePlacements(captions, fps).flatMap((placement) =>
+    Array.from({ length: placement.laneCount }, () => placement.key),
+  );
 export const formatEffectTemplateMixTime = (seconds: number): string => {
   const ticks = Math.max(0, Math.round(seconds * 10));
   return (

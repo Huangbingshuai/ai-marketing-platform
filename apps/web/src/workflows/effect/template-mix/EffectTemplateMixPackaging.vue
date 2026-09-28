@@ -12,11 +12,11 @@ import {
 import { createPackagingPoller, packagingPollErrorMessage } from './effect-packaging-poller';
 import type { PackagingStage } from './effect-packaging-progress';
 import { packagingPlaybackError } from './effect-packaging-audio';
+import { packagingSourceMatches } from './effect-packaging-source';
 import {
   PACKAGING_STAGES,
   PACKAGING_STAGE_LABELS,
   packagingAudioFade,
-  packagingVisualTimeline,
   packagingSlotBoundaryError,
 } from '@ai-marketing/contracts';
 import type {
@@ -52,6 +52,8 @@ const emit = defineEmits<{
   ready: [ready: boolean];
   started: [];
   status: [status: PackagingRun['status'] | null];
+  /** Films whose packaging failed; they will still be submitted, playing picture only. */
+  failures: [failures: { variantId: string; name: string; message: string }[]];
 }>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const visible = ref(false),
@@ -126,14 +128,11 @@ const statusLabel: Record<string, string> = {
   FAILED: '失败',
   CANCELLED: '已取消',
 };
-const signature = (variant: EffectTemplateMixVariant) =>
-  JSON.stringify(packagingVisualTimeline(variant));
 function currentItem(item: PackagingItem): PackagingItem {
   const variant = props.variants.find((v) => v.id === item.variantId);
   return {
     ...item,
-    stale:
-      item.stale || !variant || JSON.stringify(item.sourceVisualTimeline) !== signature(variant),
+    stale: item.stale || !variant || !packagingSourceMatches(item.sourceVisualTimeline, variant),
   };
 }
 const selected = computed(() => {
@@ -159,23 +158,46 @@ const packageableVariants = computed(() =>
       variant.slots.length > 0 && variant.slots.every((slot) => Boolean(variant.bindings[slot.id])),
   ),
 );
+/**
+ * How a variant's packaging ended, as far as 完成校验 is concerned. `FAILED` still counts as an
+ * answer: the film is submitted as a picture-only one rather than holding the whole batch hostage.
+ */
+type Conclusion = 'PACKAGED' | 'FAILED' | 'PENDING';
+function conclusion(variant: EffectTemplateMixVariant): { state: Conclusion; item?: PackagingItem } {
+  const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === variant.id);
+  if (!item) return { state: 'PENDING' };
+  // A stale source cannot be newly submitted, but already-produced output remains available on its
+  // own output card with a non-blocking stale marker.
+  if (currentItem(item).stale || packagingSlotBoundaryError(variant)) return { state: 'PENDING' };
+  if (item.status === 'COMPLETED')
+    return item.checkpoint.narrationLayoutVersion === 'SLOT_V1'
+      ? { state: 'PACKAGED', item }
+      : { state: 'PENDING' };
+  return ['FAILED', 'CANCELLED'].includes(item.status)
+    ? { state: 'FAILED', item }
+    : { state: 'PENDING' };
+}
+const conclusions = computed(() =>
+  packageableVariants.value.map((variant) => ({ variant, ...conclusion(variant) })),
+);
 const allReady = computed(
   () =>
     !active.value &&
     !loadError.value &&
     packageableVariants.value.length > 0 &&
-    packageableVariants.value.every((v) => {
-      const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === v.id);
-      return (
-        item &&
-        item.status === 'COMPLETED' &&
-        !currentItem(item).stale &&
-        item.checkpoint.narrationLayoutVersion === 'SLOT_V1' &&
-        !packagingSlotBoundaryError(v)
-      );
-    }),
+    conclusions.value.every((entry) => entry.state !== 'PENDING'),
+);
+const failures = computed(() =>
+  conclusions.value
+    .filter((entry) => entry.state === 'FAILED')
+    .map((entry) => ({
+      variantId: entry.variant.id,
+      name: entry.variant.name,
+      message: entry.item?.errorMessage || '包装失败',
+    })),
 );
 watch(allReady, (ready) => emit('ready', ready), { immediate: true });
+watch(failures, (value) => emit('failures', value), { immediate: true });
 
 const poller = createPackagingPoller({
   async read(signal) {

@@ -148,6 +148,14 @@ const selectedPackaging = ref<PackagingItem | null>(null);
 const packagingPreviewEnabled = ref(false);
 const packagingReady = ref(false);
 const packagingRunStatus = ref<PackagingRun['status'] | null>(null);
+/**
+ * Films the packaging gave up on. They no longer block 完成校验 — they are submitted as picture-only
+ * ones — but a film that quietly loses its narration is a surprise, so every one of them is named.
+ */
+const packagingFailures = ref<{ variantId: string; name: string; message: string }[]>([]);
+const packagingFailureByVariant = computed(
+  () => new Map(packagingFailures.value.map((failure) => [failure.variantId, failure])),
+);
 const packagingLockNotice = computed(() => packagingLockMessage(packagingRunStatus.value));
 const packagingActionLabel = computed(() =>
   packagingActionText(packagingReady.value, packagingRunStatus.value),
@@ -467,7 +475,7 @@ const restoreTimelineSnapshot = (snapshot: TimelineEditSnapshot): void => {
   // whole story — writing back only the variant would leave the text unchanged and read as "undo did
   // nothing". `editPackagingAudio`'s baseline rule is reused so the revert is diffed against what the
   // server actually holds: an edit still inside the debounce window has nothing to send, a saved one
-  // does. A stale item is read-only, so there the local copy is left alone rather than half-restored.
+  // does. The completed packaging remains writable even when its source is marked stale.
   const packaging = snapshot.packaging;
   const item = selectedPackaging.value;
   if (
@@ -475,8 +483,7 @@ const restoreTimelineSnapshot = (snapshot: TimelineEditSnapshot): void => {
     item &&
     item.id === packaging.itemId &&
     item.runId &&
-    item.status === 'COMPLETED' &&
-    !item.stale
+    item.status === 'COMPLETED'
   ) {
     if (audioBaseline?.itemId !== item.id) {
       audioBaseline = {
@@ -992,6 +999,54 @@ const displayedMaterials = computed(() => {
   const start = (safePage - 1) * materialPageSize.value;
   return filteredMaterials.value.slice(start, start + materialPageSize.value);
 });
+/**
+ * A stale clip is still a real, playable, packageable file — it is only its Prompt that moved on —
+ * so the pool keeps listing it and the user keeps every manual ability over it. What it cannot do is
+ * get picked by smart fill, which reads materials through `sourceArtifacts` and therefore only ever
+ * sees current ones. That difference has to be visible before the button is pressed: otherwise the
+ * user counts a hundred clips in the pool and is told there are not enough of them.
+ */
+const availableMaterials = computed(
+  () => workspace.value?.materials.filter(({ available }) => available) ?? [],
+);
+const expiredMaterialCount = computed(
+  () => (workspace.value?.materials.length ?? 0) - availableMaterials.value.length,
+);
+/**
+ * Smart fill gives every slot it has to fill a *distinct* current clip of at least the slot's length,
+ * so "fewer current clips than slots" and "a slot longer than every current clip" are both certain
+ * failures. Both are necessary conditions of the server's assignment, so disabling the button on them
+ * can never refuse a fill the server would have accepted — it only swaps the generic
+ * "剩余未使用素材不足以再生成一条完整成片" for the actual reason.
+ */
+const aiFillBlockReason = computed<string | null>(() => {
+  const entry = activeEntry.value;
+  const slots = entry?.workspace.template.slots ?? [];
+  if (!entry || !slots.length) return null;
+  if (!workspace.value?.materials.length)
+    return '上一步没有已确认的视频素材，请先在视频渲染节点生成素材。';
+  const variant = selectedVariant.value;
+  const lockedSlotIds = new Set(variant?.manualSlotIds ?? []);
+  const lockedMaterialIds = new Set(
+    [...lockedSlotIds]
+      .map((slotId) => variant?.bindings[slotId] ?? '')
+      .filter((materialId) => Boolean(materialId)),
+  );
+  const candidates = availableMaterials.value.filter(({ id }) => !lockedMaterialIds.has(id));
+  const unlockedSlots = slots.filter(({ id }) => !lockedSlotIds.has(id));
+  const expired = expiredMaterialCount.value;
+  const detail = expired ? `，其中 ${expired} 条已过期（对应的 Prompt 已更新）` : '';
+  if (!candidates.length)
+    return `当前没有可用素材${detail}；请先在视频渲染节点重新生成素材后再智能填充。`;
+  if (candidates.length < unlockedSlots.length)
+    return `当前可用素材 ${candidates.length} 条${detail}，不足 ${unlockedSlots.length} 个待填槽位；请先在视频渲染节点重新生成素材后再智能填充。`;
+  const shortSlot = unlockedSlots.find(
+    (slot) => !candidates.some((material) => material.duration + 0.001 >= slot.duration),
+  );
+  if (shortSlot)
+    return `当前可用素材都短于「${shortSlot.label}」所需的 ${shortSlot.duration} 秒${detail}；请先在视频渲染节点重新生成更长的素材。`;
+  return null;
+});
 const selectedBindingMetadata = computed(() =>
   selectedSlot.value ? selectedVariant.value?.bindingMetadata?.[selectedSlot.value.id] : undefined,
 );
@@ -1038,6 +1093,27 @@ const validated = computed(
     committedVersions[activeTemplateId.value] === workspace.value?.editVersion &&
     saveState.value === 'saved',
 );
+/**
+ * The footer has to name the real blocker. The old single fallback told the user to wait for the
+ * packaging to succeed, but a finished-and-partly-failed run has nothing left to wait for — only
+ * failed items to recover from inside the packaging panel — so the user was left staring at a
+ * disabled validate button with no idea why.
+ */
+const validateStatusTitle = computed(() => {
+  if (validated.value && packagingReady.value) return '当前模板已确认';
+  if (pendingCount.value) return '仍有工程待同步';
+  if (!complete.value) return '请先补齐所有素材槽位';
+  // Ready with failures is still ready: saying "就绪" alone would hide that some films will play
+  // without narration, so the count is spelled out before the button is pressed.
+  if (packagingReady.value)
+    return packagingFailures.value.length
+      ? `成片包装就绪，其中 ${packagingFailures.value.length} 条失败将按无包装成片提交（仅画面）`
+      : '全部成片包装就绪';
+  if (packagingRunStatus.value === null) return '请先在包装面板中为全部成片生成包装';
+  return ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value)
+    ? '成片包装进行中，请等待完成'
+    : '成片包装未全部就绪，请在包装面板中恢复未完成项';
+});
 const aiStageOrder: EffectTemplateMixAiRun['stage'][] = [
   'CLASSIFYING',
   'MATCHING',
@@ -1558,14 +1634,20 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
   const captions =
     JSON.stringify(current.captions ?? []) === JSON.stringify(baseline.captions ?? [])
       ? null
-      : (current.captions ?? []).map(({ id, text, start, end, manual, trackId }) => ({
-          id,
-          text,
-          start,
-          end,
-          ...(manual ? { manual: true } : {}),
-          ...(trackId ? { trackId } : {}),
-        }));
+      : (current.captions ?? []).map(({ id, text, start, end, manual, trackId }) => {
+          const previous = baseline.captions?.find((caption) => caption.id === id);
+          return {
+            id,
+            text,
+            start,
+            end,
+            ...(manual ? { manual: true } : {}),
+            // Dropping the field is not the same as sending it back to the implicit row: the server
+            // reads an absent `trackId` as "leave it where it is", so a row that was cleared has to
+            // say so out loud.
+            ...(trackId ? { trackId } : previous?.trackId ? { trackId: null } : {}),
+          };
+        });
   // Only the boxes this editor touched, so an unrelated drag never rewrites the others.
   const boxes: Record<string, PackagingCaptionBox> = {};
   for (const [id, box] of Object.entries(current.captionBoxes ?? {})) {
@@ -1708,12 +1790,6 @@ const editPackagingAudio = (mutate: (checkpoint: PackagingCheckpoint) => void): 
   const item = selectedPackaging.value;
   if (!item || !item.runId || item.status !== 'COMPLETED') {
     showNotice('包装尚未完成，无法编辑音频轨道', 'warning');
-    return;
-  }
-  // The server rejects a write against a checkpoint whose timeline has moved on, so say why here
-  // instead of letting the request come back as a conflict.
-  if (item.stale) {
-    showNotice('时间轴已改变，当前包装已过期，请重新生成包装后再编辑', 'warning');
     return;
   }
   if (audioBaseline?.itemId !== item.id) {
@@ -2101,19 +2177,19 @@ const onWorkbenchPointerDown = (event: PointerEvent): void => {
   if (target instanceof Node && captionTextInput.value?.contains(target)) return;
   if (document.activeElement === captionTextInput.value) captionTextInput.value?.blur();
 };
-/** Matches the burned-in default: lower bottom-centre, wrapping at 90% of the frame width. */
-const DEFAULT_CAPTION_BOX: PackagingCaptionBox = { x: 0.5, y: 0.05, width: 0.9, scale: 1 };
+/** Matches the burned-in default: near the bottom-centre, wrapping at 90% of the frame width. */
+const DEFAULT_CAPTION_BOX: PackagingCaptionBox = { x: 0.5, y: 0.03, width: 0.9, scale: 1 };
 const CAPTION_SNAP = 0.015;
 /** Width of the invisible left/right grab zones that stretch the frame instead of moving it. */
 const CAPTION_EDGE_GRAB = 10;
 const captionBox = (id: string): PackagingCaptionBox =>
   selectedPackaging.value?.checkpoint.captionBoxes?.[id] ?? DEFAULT_CAPTION_BOX;
 /**
- * Geometry lands on the checkpoint, so it is only offered once packaging has finished and still
- * matches the timeline — a stale checkpoint is shown on the timeline but never written to.
+ * Geometry lands on the checkpoint, so it is only offered once packaging has finished. A stale
+ * checkpoint remains editable as a frozen snapshot; its source status is shown separately.
  */
 const captionEditable = computed(
-  () => selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale && !projectEditLocked.value,
+  () => selectedPackaging.value?.status === 'COMPLETED' && !projectEditLocked.value,
 );
 const captionTextEditable = computed(
   () => !projectEditLocked.value && (!selectedPackaging.value || captionEditable.value),
@@ -3952,11 +4028,12 @@ const movePackagingAudio = (
       : { clipId, row, start, ...(insertRow === undefined ? {} : { insertRow }) },
   ]);
 /**
- * Give a subtitle a row of its own, by moving it onto a brand new track and leaving it where it was
- * let go. Caption rows are derived from the caption's own track rather than stored, so a new row *is*
- * a new `trackId` — the lane it lands on follows from that, and no row number has to be written.
+ * Put a subtitle on a row and leave it where it was let go. Caption rows are derived from the
+ * caption's own track rather than stored, so "which row" *is* "which `trackId`" — the lane it lands
+ * on follows from that, and no row number has to be written. A `null` track is the implicit row the
+ * pipeline lays out edge to edge, so clearing the field is how a card comes back down to it.
  */
-const splitCaptionTrack = (captionId: string, start: number): void => {
+const writeCaptionRow = (captionId: string, start: number, trackId: string | null): void => {
   const packaging = selectedPackaging.value;
   const variant = selectedVariant.value;
   if (projectEditLocked.value) return;
@@ -3970,24 +4047,46 @@ const splitCaptionTrack = (captionId: string, start: number): void => {
   const next = quantizeTimelineTime(start);
   // A subtitle carries its own length, so it keeps it: only the row and the time were asked for.
   const length = Math.max(1 / TIMELINE_FPS, caption.end - caption.start);
-  const trackId = `subtitle-track-${Date.now().toString().padStart(13, '0')}-${crypto.randomUUID()}`;
   if (packaging) {
     // Written through the packaging editor rather than onto the object the lookup returned, because
     // that is what captures the checkpoint baseline the save is later diffed against.
     editPackagingAudio((checkpoint) => {
       const target = checkpoint.captions?.find((item) => item.id === captionId);
       if (!target) return;
-      target.trackId = trackId;
+      if (trackId === null) delete target.trackId;
+      else target.trackId = trackId;
       target.start = next;
       target.end = next + length;
     });
   } else {
-    caption.trackId = trackId;
+    if (trackId === null) delete caption.trackId;
+    else caption.trackId = trackId;
     caption.start = next;
     caption.end = next + length;
     bump();
   }
   void nextTick().then(() => timelineRef.value?.scrollToCaption(captionId, next, length));
+};
+
+/**
+ * Give a subtitle a row of its own, by moving it onto a brand new track and leaving it where it was
+ * let go. This is the answer to a landing no existing row can take.
+ */
+const splitCaptionTrack = (captionId: string, start: number): void => {
+  const trackId = `subtitle-track-${Date.now().toString().padStart(13, '0')}-${crypto.randomUUID()}`;
+  writeCaptionRow(captionId, start, trackId);
+};
+
+/**
+ * Move a subtitle onto a row the timeline named. The row arrives as the same key the packer groups
+ * captions by, so the implicit row is a clear and another card's row is that card's track. A manual
+ * card's row key carries that card's own id, so it can never be joined and falls back to a new track.
+ */
+const moveCaptionToRow = (captionId: string, start: number, rowKey: string): void => {
+  if (rowKey === 'legacy-generated') return writeCaptionRow(captionId, start, null);
+  if (rowKey.startsWith('track:'))
+    return writeCaptionRow(captionId, start, rowKey.slice('track:'.length));
+  splitCaptionTrack(captionId, start);
 };
 /**
  * A library track let go on top of a separated audio clip takes its place. The clip keeps its own
@@ -4167,10 +4266,9 @@ const deleteSelectedTimelineItem = (): void => {
   const selectedCaptions = [...selectedCaptionIds.value];
   if (selectedCaptions.length) {
     if (selectedPackaging.value) {
-      // A stale or unfinished packaging shows its captions but does not accept edits, so say so
-      // rather than swallowing the key.
+      // Only an unfinished packaging is read-only; staleness is an informational source marker.
       if (!captionEditable.value) {
-        showNotice('当前包装已过期或未完成，字幕不可编辑', 'warning');
+        showNotice('当前包装尚未完成，字幕不可编辑', 'warning');
         return;
       }
       editPackagingAudio((checkpoint) => {
@@ -4312,6 +4410,12 @@ const startAiFill = async (
     return;
   }
   if (!workspace.value || mutating.value || activeAiRun.value) return;
+  // Retry and other entry points bypass the disabled button, so the reason is checked here too —
+  // sending the request would only come back as the generic "剩余未使用素材不足".
+  if (!refreshAffectedSlots && aiFillBlockReason.value) {
+    showNotice(aiFillBlockReason.value, 'warning');
+    return;
+  }
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
   const templateId = activeTemplateId.value;
   const variantId = target?.id;
@@ -4375,7 +4479,7 @@ const addCaption = (): void => {
     return;
   }
   if (!canAddCaption.value) {
-    showNotice('当前包装正在运行或已经过期，暂时不能新增字幕', 'warning');
+    showNotice('当前包装正在运行，暂时不能新增字幕', 'warning');
     return;
   }
   const start = quantizeTimelineTime(playhead.value);
@@ -5196,8 +5300,14 @@ defineExpose({ flushPendingEdits });
           </div>
           <footer>
             <div>
-              <p v-if="workspace.materials.length">
-                已载入 {{ workspace.materials.length }} 个已确认视频片段。
+              <p v-if="availableMaterials.length">
+                已载入 {{ availableMaterials.length }} 个已确认视频片段<template
+                  v-if="expiredMaterialCount"
+                  >，另有 {{ expiredMaterialCount }} 条已过期</template
+                >。
+              </p>
+              <p v-else-if="expiredMaterialCount" class="warning">
+                {{ expiredMaterialCount }} 条素材已全部过期（对应的 Prompt 已更新），请先在视频渲染节点重新生成，否则无法完成填充。
               </p>
               <p v-else class="warning">上一步没有已确认视频片段，可配置模板，但无法完成填充。</p>
               <small v-if="workspace.variants.length"
@@ -5279,8 +5389,9 @@ defineExpose({ flushPendingEdits });
                 mutating ||
                 Boolean(activeAiRun) ||
                 packagingLocked ||
-                workspace.materials.length < 6
+                Boolean(aiFillBlockReason)
               "
+              :title="aiFillBlockReason ?? '按模板规则为每个槽位挑选一条不重复的当前素材'"
               @click="refill"
             >
               <LoaderCircle v-if="activeAiRun" class="spin" :size="15" />
@@ -5324,6 +5435,22 @@ defineExpose({ flushPendingEdits });
           <AlertCircle
             :size="15"
           />模板配置已变更，当前及未更新的成片需按新模板重新填充。重填会保留该成片现有六槽位素材归属。
+        </div>
+        <div
+          v-if="packagingFailures.length"
+          class="template-lock-banner warning"
+          role="alert"
+          data-testid="packaging-failure-banner"
+        >
+          <AlertCircle :size="15" />{{ packagingFailures.length }} 条成片包装失败：{{
+            packagingFailures
+              .map((failure) => failure.name)
+              .slice(0, 3)
+              .join('、')
+          }}{{ packagingFailures.length > 3 ? ' 等' : '' }}。仍可完成校验，这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐。
+          <button class="button compact" type="button" @click="openPackaging('WORKFLOW')">
+            打开包装面板恢复
+          </button>
         </div>
         <div v-if="failedAiRun" class="ai-run-card editor-run failed" role="alert">
           <AlertCircle :size="18" />
@@ -5394,6 +5521,11 @@ defineExpose({ flushPendingEdits });
                   {{ option.label }} <small>{{ option.count }}</small>
                 </button>
               </div>
+              <p v-if="expiredMaterialCount" class="material-expired-banner" role="status">
+                <AlertCircle
+                  :size="14"
+                />{{ expiredMaterialCount }} 条素材已过期（对应的 Prompt 已更新），智能填充不会使用它们；请先在视频渲染节点重新生成。
+              </p>
               <div v-if="filteredMaterials.length" ref="materialGrid" class="material-grid">
                 <article
                   v-for="material in displayedMaterials"
@@ -5401,6 +5533,7 @@ defineExpose({ flushPendingEdits });
                   :class="{
                     selected: auditionMaterial?.id === material.id,
                     used: materialUsageLabel(material.id),
+                    expired: !material.available,
                     disabled: !selectedVariant || projectEditLocked,
                     dragging: draggingMaterialId === material.id,
                   }"
@@ -5422,7 +5555,14 @@ defineExpose({ flushPendingEdits });
                     <div class="material-name-row">
                       <b :title="material.name">{{ material.name }}</b>
                       <span
-                        v-if="classificationForMaterial(material.id)"
+                        v-if="!material.available"
+                        class="material-expired-badge"
+                        title="对应的 Prompt 已更新，智能填充不会使用；请先在视频渲染节点重新生成这条素材"
+                      >
+                        已过期
+                      </span>
+                      <span
+                        v-else-if="classificationForMaterial(material.id)"
                         class="material-ai-role"
                         :class="{ low: classificationForMaterial(material.id)!.matchScore < 0.6 }"
                         :title="`AI 归槽分 ${(classificationForMaterial(material.id)!.matchScore * 100).toFixed(0)}`"
@@ -5640,7 +5780,7 @@ defineExpose({ flushPendingEdits });
                     :style="timelinePlayerStyle(slot.id)"
                     :src="materialForSlot(slot.id)?.contentUrl"
                     :volume="
-                      packagingPreviewEnabled && selectedPackaging && !selectedPackaging.stale
+                      packagingPreviewEnabled && selectedPackaging
                         ? 0.15
                         : (selectedVariant?.originalVolume ?? 1)
                     "
@@ -5922,12 +6062,18 @@ defineExpose({ flushPendingEdits });
                   variant,
                   variant.id === selectedVariant?.id,
                   packagingReady,
+                  packagingFailureByVariant.get(variant.id)?.message,
                 ]"
-                :class="{ active: variant.id === selectedVariant?.id }"
+                :class="{
+                  active: variant.id === selectedVariant?.id,
+                  failed: packagingFailureByVariant.has(variant.id),
+                }"
                 :title="`${variantDisplayName(variant, index)} · ${variantDuration(variant).toFixed(1)}s · ${
-                  variant.conflictSlotIds.length
-                    ? variant.conflictSlotIds.length + ' 个缺口'
-                    : '时间轴完整'
+                  packagingFailureByVariant.get(variant.id)
+                    ? `包装失败：${packagingFailureByVariant.get(variant.id)!.message}`
+                    : variant.conflictSlotIds.length
+                      ? variant.conflictSlotIds.length + ' 个缺口'
+                      : '时间轴完整'
                 } · ${
                   variant.status === 'PENDING'
                     ? '待同步'
@@ -5954,15 +6100,24 @@ defineExpose({ flushPendingEdits });
                     :class="{
                       pending: variant.status === 'PENDING',
                       incomplete: variant.conflictSlotIds.length > 0,
+                      failed: packagingFailureByVariant.has(variant.id),
                     }"
                     :title="
-                      variant.status === 'PENDING'
-                        ? '待同步'
-                        : variant.conflictSlotIds.length
-                          ? '待补齐'
-                          : '可精修'
+                      packagingFailureByVariant.get(variant.id)
+                        ? `包装失败：${packagingFailureByVariant.get(variant.id)!.message}`
+                        : variant.status === 'PENDING'
+                          ? '待同步'
+                          : variant.conflictSlotIds.length
+                            ? '待补齐'
+                            : '可精修'
                     "
                   />
+                  <small
+                    v-if="packagingFailureByVariant.has(variant.id)"
+                    class="project-package-failure"
+                  >
+                    包装失败 · 将仅出画面
+                  </small>
                 </div>
               </article>
               <div v-if="!workspace.variants.length" class="project-empty">
@@ -6085,6 +6240,7 @@ defineExpose({ flushPendingEdits });
             @ready="packagingReady = $event"
             @started="handlePackagingStarted"
             @status="packagingRunStatus = $event"
+            @failures="packagingFailures = $event"
           />
         </div>
         <div v-if="editingCaption" class="caption-text-editor">
@@ -6212,6 +6368,7 @@ defineExpose({ flushPendingEdits });
           @insert-material-track="insertMaterialTrack"
           @replace-audio-with-music="replaceAudioWithMusic"
           @split-caption-track="splitCaptionTrack"
+          @move-caption-to-row="moveCaptionToRow"
           @apply-transition="changeTransitionForSlot"
           @open-transition="openTransitionPanel"
           @redo="redoTimelineEdit"
@@ -6253,17 +6410,7 @@ defineExpose({ flushPendingEdits });
         v-if="view === 'EDITOR' && workspace"
         back-label="上一步"
         :complete="validated && packagingReady"
-        :status-title="
-          validated && packagingReady
-            ? '当前模板已确认'
-            : pendingCount
-              ? '仍有工程待同步'
-              : complete
-                ? packagingReady
-                  ? '全部成片包装就绪'
-                  : '请等待全部成片包装成功且未过期'
-                : '请先补齐所有素材槽位'
-        "
+        :status-title="validateStatusTitle"
         :status-detail="'步骤 5 / 6 · ' + workspace.template.name"
         :validate-disabled="!canValidate"
         :validating="validating"
@@ -7063,6 +7210,31 @@ button:disabled {
   border-color: #b9c9df;
   background: #f8fafc;
 }
+.material-grid article.expired {
+  border-style: dashed;
+  border-color: #e3c489;
+  background: #fffdf6;
+}
+.material-grid article.expired .thumb {
+  filter: grayscale(0.55);
+  opacity: 0.72;
+}
+.material-expired-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 7px 9px;
+  color: #82550f;
+  background: #fff8e8;
+  border: 1px solid #f2d69b;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.material-expired-banner svg {
+  flex: none;
+}
 .material-grid article.dragging {
   border-color: #2563eb;
   box-shadow: 0 0 0 2px #bfdbfe;
@@ -7143,6 +7315,16 @@ button:disabled {
 .material-ai-role.low {
   color: #a45318;
   background: #fff1dc;
+}
+.material-expired-badge {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: #a45318;
+  background: #fff1dc;
+  font-size: 8px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 .material-copy b {
   overflow: hidden;
@@ -8242,6 +8424,22 @@ button:disabled {
 }
 .project-status.incomplete {
   background: #ef4444;
+}
+.project-status.failed {
+  background: #ef4444;
+}
+/* The failure note gets its own line under the name, so a long message cannot push the dot out. */
+.project-card-info {
+  flex-wrap: wrap;
+}
+.projects article .project-package-failure {
+  flex: 1 0 100%;
+  color: #fca5a5;
+  font-size: 10px;
+  line-height: 1.2;
+}
+.projects article.failed {
+  border-color: #ef4444;
 }
 .project-empty {
   width: 100%;

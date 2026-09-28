@@ -31,6 +31,10 @@ describe('effect template-mix music library', () => {
 
   it('shows imported music with native playback and cancels requests when scope changes', () => {
     expect(source).toContain(':src="asset.contentUrl"');
+    expect(source).toContain("return name.replace(/\\.mp3$/i, '');");
+    expect(source).toContain('displayMusicName(asset.name)');
+    expect(source).not.toContain('项目音乐');
+    expect(source).not.toContain('<small>{{ asset.notes');
     expect(source).toContain('watch(');
     expect(source).toContain('listController?.abort()');
     expect(source).toContain('uploadController?.abort()');

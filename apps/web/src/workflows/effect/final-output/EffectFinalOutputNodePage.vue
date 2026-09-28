@@ -100,9 +100,9 @@ const templates = computed(() => {
     return {
       templateId: entry.id,
       templateName: entry.workspace.template.name,
-      // Keep superseded output runs in persistence, but don't present them as the
-      // current result after the source package/timeline became stale.
-      run: entry.packagingLocked ? outputRun : undefined,
+      // A previously confirmed film remains accessible after its source moves on; each film carries
+      // its own stale marker so users can distinguish old output without losing it.
+      run: outputRun,
       pendingLabel,
       pendingTitle,
       pendingDetail,
@@ -655,8 +655,18 @@ onBeforeUnmount(stop);
                 <span class="status-pill" :class="statusTone(item.status)">
                   {{ labels[item.status] }}
                 </span>
+                <span v-if="item.stale" class="status-pill stale" title="此成片使用的上游素材已更新；当前成片仍可预览、下载和重新渲染">素材已过期</span>
+                <!--
+                  A film confirmed without a package plays silent by design. Without this the viewer
+                  would read the missing narration as a broken render.
+                -->
+                <span
+                  v-if="item.unpackaged"
+                  class="status-pill unpackaged"
+                  title="这条成片的包装未成功，以无包装成片提交：只有画面，没有口播、字幕与配乐"
+                >无包装</span>
               </div>
-              <p class="output-meta">{{ run.status === 'PENDING_RENDER' ? `预计 ${item.duration.toFixed(1)} 秒 · 待导出` : `${item.duration.toFixed(1)} 秒 · H.264 / AAC · 内嵌字幕` }}</p>
+              <p class="output-meta">{{ run.status === 'PENDING_RENDER' ? `预计 ${item.duration.toFixed(1)} 秒 · 待导出` : `${item.duration.toFixed(1)} 秒 · H.264 / AAC · ${item.unpackaged ? '无口播 / 字幕 / 配乐' : '内嵌字幕'}` }}</p>
               <div v-if="run.status !== 'PENDING_RENDER' && item.status !== 'COMPLETED'" class="item-progress">
                 <progress :value="item.progress" max="100" :aria-label="`${displayName(item)} 进度`" />
                 <strong>{{ item.progress }}%</strong>
@@ -1408,6 +1418,8 @@ progress {
 .status-pill.success { color: #168365; background: #eaf8f2; }
 .status-pill.running { color: #2563eb; background: #edf4ff; }
 .status-pill.danger { color: #bc4b50; background: #fff0ef; }
+.status-pill.unpackaged { color: #92650c; background: #fdf6e3; }
+.status-pill.stale { color: #8a5a00; background: #fff4d6; }
 .output-meta {
   margin: 6px 0 0;
   color: #8490a4;

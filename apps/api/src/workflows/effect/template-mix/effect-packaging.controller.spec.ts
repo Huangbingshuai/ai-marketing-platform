@@ -33,6 +33,21 @@ describe('packaging audio update DTO', () => {
     });
   });
 
+  it('accepts a cleared row as a value rather than an omission', async () => {
+    // Sending the field back to the implicit row is a clear, not a missing field, so `null` has to
+    // survive the whitelist — `@IsOptional()` skips it exactly as it skips an omission, and the
+    // service is what tells the two apart.
+    const dto = plainToInstance(UpdatePackagingAudioDto, {
+      expectedUpdatedAt: '2026-09-24T00:00:00.000Z',
+      captions: [{ id: 'manual-caption', text: '商品', start: 0, end: 3, trackId: null }],
+    });
+
+    const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+
+    expect(errors).toEqual([]);
+    expect(dto.captions?.[0]?.trackId).toBeNull();
+  });
+
   it('continues rejecting caption fields outside the editor contract', async () => {
     const dto = plainToInstance(UpdatePackagingAudioDto, {
       expectedUpdatedAt: '2026-09-24T00:00:00.000Z',

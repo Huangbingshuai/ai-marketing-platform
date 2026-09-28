@@ -94,6 +94,7 @@ function harness(count = 1) {
       count: vi.fn().mockResolvedValue(3),
       create: vi.fn().mockResolvedValue({ id: 'new-file' }),
       delete: vi.fn().mockResolvedValue({ id: 'new-file' }),
+      findFirstOrThrow: vi.fn(),
     },
     asset: {
       create: vi.fn().mockResolvedValue({ id: 'asset-created' }),
@@ -134,6 +135,7 @@ function harness(count = 1) {
     workspace: vi.fn().mockResolvedValue({ materials: [{ fileObjectId: 'video', ratio: '3:4' }] }),
   };
   const working = {
+    listArtifacts: vi.fn().mockResolvedValue(sources),
     commitValidatedArtifactsInTransaction: vi
       .fn()
       .mockImplementation(async (_tx, _p, _w, _n, list) =>
@@ -163,6 +165,7 @@ function harness(count = 1) {
       return { key: 'stored/new.mp4', sizeBytes: 64 };
     }),
     delete: vi.fn().mockResolvedValue(undefined),
+    open: vi.fn().mockResolvedValue({ stream: null, contentLength: 12 }),
   };
   // Real transactions roll back on throw; mirror that so "failure keeps the previous output" is
   // actually observable instead of leaving half-applied writes in the fixture.
@@ -312,17 +315,97 @@ describe('atomic full packaging completion', () => {
       );
     },
   );
-  it.each(['FAILED', 'CANCELLED', 'RUNNING', 'QUEUED'])(
-    'does not partially commit when even the last item is %s',
+  it.each(['RUNNING', 'QUEUED'])(
+    'waits instead of submitting while the last item is still %s',
     async (status) => {
       const { service, rows, working, db } = harness(100);
       rows[99]!.status = status;
-      await expect(service.complete('p', 't', request)).rejects.toThrow('全部成功');
+      await expect(service.complete('p', 't', request)).rejects.toThrow('仍在包装中');
       expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
       expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
     },
   );
-  it('refuses changed draft, stale source, missing files before any commit', async () => {
+  it.each(['FAILED', 'CANCELLED'])(
+    'submits the %s film as a picture-only one instead of blocking the batch',
+    async (status) => {
+      const { service, rows, db, working } = harness(100);
+      rows[99]!.status = status;
+      // The failure is the film's own problem; the other 99 were packaged and the user asked for all
+      // of them, so the run goes ahead and the silent film is marked as such.
+      await service.complete('p', 't', request);
+      expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalledTimes(101);
+      const items = db.effectFinalOutputRun.create.mock.calls[0]![0].data.items.create as {
+        snapshot: FinalOutputSnapshot;
+      }[];
+      expect(items).toHaveLength(100);
+      expect(items[99]!.snapshot).toMatchObject({
+        unpackaged: true,
+        // The worker reads these keys unconditionally, so an empty shape is what "no package" means.
+        packaging: { voices: {}, captions: [] },
+      });
+      // The packaged neighbours keep their narration.
+      expect(items[0]!.snapshot.packaging.voices!['line']).toBeDefined();
+      expect(items[0]!.snapshot.unpackaged).toBe(false);
+    },
+  );
+  it('requires refreshing a stale package before creating a new output run', async () => {
+    const { service, rows, working } = harness();
+    rows[0]!.status = 'FAILED';
+    rows[0]!.sourceTimelineHash = 'hash-of-an-older-timeline';
+    await expect(service.complete('p', 't', request)).rejects.toThrow('的包装已过期');
+    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+  });
+  it('tells the output list why a film plays without sound', async () => {
+    const { service, rows, outputRun } = harness(2);
+    rows[1]!.status = 'FAILED';
+    await service.complete('p', 't', request);
+    outputRun.status = 'PENDING_RENDER';
+    // The frozen snapshot is the only place the reason survives, so the list has to read it back.
+    const result = await service.get('p', 'out');
+    expect(result.items.map((item) => [item.name, item.unpackaged])).toEqual([
+      ['成片0', false],
+      ['成片1', true],
+    ]);
+  });
+  it('marks an output item stale without hiding the frozen result', async () => {
+    const { service, outputRun, mix } = harness();
+    const variant = {
+      id: 'v0', name: '成片0', slots: [], bindings: {}, bindingRevisions: {}, offsets: {},
+    } as unknown as EffectTemplateMixVariant;
+    outputRun.items = [{
+      id: 'film-item',
+      variantId: 'v0',
+      name: '成片0',
+      status: 'COMPLETED',
+      progress: 100,
+      errorMessage: null,
+      fileObjectId: 'rendered-file',
+      assetId: null,
+      snapshot: {
+        timeline: {
+          variant,
+          sourceTimelineHash: 'old-hash',
+          duration: 10,
+          clips: [{ slotId: 's', start: 0, duration: 10, fileObjectId: 'video' }],
+          dependencies: [],
+        },
+        packaging: { voices: {}, captions: [] },
+        dependencies: [{ artifactId: 'old-source', revision: 1, contentHash: 'old-hash' }],
+        aspectRatio: '9:16',
+        originalVolume: 0.15,
+        resolution: '720p',
+        frameRate: 30,
+      },
+    }];
+    mix.workspace.mockResolvedValue({
+      materials: [],
+      draft: { templates: [{ id: 't', workspace: { template: { name: '模板' }, variants: [variant] } }] },
+    } as never);
+    const result = await service.get('p', 'out');
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ id: 'film-item', status: 'COMPLETED', stale: true });
+  });
+  it('still refuses changed draft, stale sources and missing files before any commit', async () => {
     const { service, state, sources, db, working } = harness();
     state.revision = 2;
     await expect(service.complete('p', 't', request)).rejects.toThrow('草稿');
@@ -525,7 +608,7 @@ describe('atomic full packaging completion', () => {
       expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
     },
   );
-  it('refuses a re-export when the upstream package went stale, without touching state', async () => {
+  it('allows re-exporting the frozen film after its upstream package went stale', async () => {
     const { service, db, outputRun } = harness(2);
     await service.complete('p', 't', request);
     outputRun.status = 'COMPLETED';
@@ -538,11 +621,10 @@ describe('atomic full packaging completion', () => {
       ),
     );
 
-    await expect(service.start('p', 'out', { resolution: '1080p', frameRate: 50 })).rejects.toThrow('过期');
-
-    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
-    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
-    expect(outputRun.status).toBe('COMPLETED');
+    await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).toHaveBeenCalled();
+    expect(outputRun.status).toBe('QUEUED');
   });
   it('old attempt tokens cannot renew or write progress', async () => {
     const { service, db } = harness();
@@ -597,6 +679,62 @@ async function exportedRun(count = 2) {
   return { ...context, items };
 }
 
+describe('picture-only output items', () => {
+  /** An exported batch whose first item was confirmed without a package. */
+  async function unpackaged() {
+    const context = await exportedRun();
+    const { db, items } = context;
+    const item = items[0]!;
+    const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+    snapshot.unpackaged = true;
+    snapshot.packaging = { voices: {}, captions: [] } as unknown as PackagingCheckpoint;
+    // Only the picture is downloaded now: an empty package contributes no audio ids.
+    db.fileObject.count.mockResolvedValue(1);
+    db.fileObject.findFirstOrThrow.mockResolvedValue({
+      storageKey: 'stored/video.mp4',
+      mimeType: 'video/mp4',
+      sha256: 'a'.repeat(64),
+    });
+    db.effectFinalOutputItem.findFirst.mockResolvedValue({
+      ...item,
+      status: 'QUEUED',
+      run: { workflowRunId: 'w', templateId: 't' },
+    });
+    return { ...context, item };
+  }
+
+  it('lets the worker fetch its sources and report progress', async () => {
+    const { service, db } = await unpackaged();
+    // `current()` used to apply the narrated-package rules to every item, so a picture-only film
+    // died on its very first progress ping with "输出来源或结果校验失败，请回模板混剪恢复".
+    await service.progress('p', 'out', 'token', 'item-0', 1);
+    expect(db.effectFinalOutputItem.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'RUNNING', progress: 1 }),
+      }),
+    );
+    const file = await service.content('p', 'out', 'token', 'item-0', 'video');
+    expect(file.mimeType).toBe('video/mp4');
+    expect(file.sha256).toBe('a'.repeat(64));
+  });
+
+  it('rejects a picture-only snapshot missing the keys the renderer reads', async () => {
+    const { service, db, item } = await unpackaged();
+    db.effectFinalOutputItem.findFirst.mockResolvedValue({
+      ...item,
+      status: 'QUEUED',
+      run: { workflowRunId: 'w', templateId: 't' },
+      // The worker does `packaging['voices'].values()` and `packaging['captions']`, so a snapshot
+      // that dropped either would fail deep inside the render instead of here.
+      snapshot: { ...(item.snapshot as object), packaging: { captions: [] } },
+    });
+    await expect(service.progress('p', 'out', 'token', 'item-0', 1)).rejects.toThrow(
+      '无包装成片的结构无效',
+    );
+    expect(db.effectFinalOutputItem.updateMany).not.toHaveBeenCalled();
+  });
+});
+
 describe('single item re-render', () => {
   it('resets exactly one item, keeps its own snapshot and enqueues once', async () => {
     const { service, db, items } = await exportedRun();
@@ -631,12 +769,12 @@ describe('single item re-render', () => {
     await expect(service.renderItem('p', 'out', 'missing')).rejects.toThrow('条目不存在');
     expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
   });
-  it('refuses a stale upstream before resetting the item', async () => {
+  it('re-renders a frozen item after its upstream artifacts become stale', async () => {
     const { service, db, items } = await exportedRun();
     db.workingArtifact.findMany.mockResolvedValue(currentRows(items).slice(0, 1));
-    await expect(service.renderItem('p', 'out', 'item-0')).rejects.toThrow('过期');
-    expect(items[0]!.status).toBe('COMPLETED');
-    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+    await service.renderItem('p', 'out', 'item-0');
+    expect(items[0]!.status).toBe('QUEUED');
+    expect(db.jobOutbox.upsert).toHaveBeenCalled();
   });
 });
 

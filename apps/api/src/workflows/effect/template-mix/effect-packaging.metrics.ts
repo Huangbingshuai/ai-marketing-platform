@@ -6,7 +6,7 @@ export function packagingExecution(
   startedAt: Date | null,
   completedAt: Date | null,
   status: string,
-  concurrency = 4,
+  concurrency = 6,
   now = Date.now(),
   captionsOnly = false,
 ): PackagingExecution {
@@ -32,7 +32,7 @@ export function packagingExecution(
       ? null
       : rate
         ? Math.ceil((pending / rate) * 60)
-        : Math.ceil(pending / Math.max(1, Math.min(4, concurrency))) * (captionsOnly ? 8 : 80);
+        : Math.ceil(pending / Math.max(1, Math.min(8, concurrency))) * (captionsOnly ? 8 : 80);
   return {
     performance: packagingPerformance(items),
     progressPercent: items.length

@@ -20,10 +20,29 @@ from pydantic import BaseModel, ConfigDict
 from .api import ApiError, InternalApi
 from .packaging_media import slot_frames, music_wav, pcm_wav, visible_intervals
 from .packaging_captions import captions_for_voice, voice_text_parts
-from .packaging_provider import MusicRateLimited, PackagingError, PackagingProvider, PackagingTransientError
+from .packaging_provider import MusicRateLimited, MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError
 from .provider import ArkProvider, ProviderError, ProviderOutputError
 
 LOGGER = logging.getLogger(__name__)
+
+
+def safe_error_chain(error: BaseException) -> str:
+    """Expose nested failure types and HTTP status without logging provider payloads or URLs."""
+    parts: list[str] = []
+
+    def visit(current: BaseException) -> None:
+        if isinstance(current, BaseExceptionGroup):
+            for child in current.exceptions[:8]:
+                visit(child)
+            return
+        status = current.status_code if isinstance(current, ApiError) else None
+        label = type(current).__name__ + (f'({status})' if status is not None else '')
+        parts.append(label)
+        if current.__cause__ is not None and len(parts) < 8:
+            visit(current.__cause__)
+
+    visit(error)
+    return ','.join(parts[:8])
 
 
 class VoiceFitOverrun(PackagingError):
@@ -32,6 +51,14 @@ class VoiceFitOverrun(PackagingError):
     def __init__(self, slot_id: str, measured: float, available: float) -> None:
         super().__init__('真实配音缩句一次后仍超出可用时间，请重做本条口播')
         self.slot_id, self.measured, self.available = slot_id, measured, available
+
+
+class VoiceFitRewrite(PackagingError):
+    """The repair model rewrote a field the prompt forbade, so its answer cannot be saved.
+
+    The line's identity, timing and fact links are protected deterministically; a non-compliant
+    sample is a model defect rather than a verdict on the film, so a fresh sample may comply.
+    """
 
 
 async def recover_packaging_item(item: dict[str, Any], process: Callable[[], Awaitable[None]],
@@ -44,7 +71,8 @@ async def recover_packaging_item(item: dict[str, Any], process: Callable[[], Awa
             return
         except Exception as exc:
             cp = item['checkpoint']
-            retryable = (isinstance(exc, (PackagingTransientError, httpx.TransportError, ProviderOutputError)) or
+            retryable = (isinstance(exc, (PackagingTransientError, MusicTaskFailed, VoiceFitRewrite,
+                                          httpx.TransportError, ProviderOutputError)) or
                          isinstance(exc, ProviderError) and exc.retryable)
             count = cp.get('automaticRetries', 0)
             if not retryable or count >= 2 or cp.get('musicSubmissionPending'):
@@ -434,7 +462,7 @@ async def shorten_voice_line(ark: ArkProvider, snapshot: dict[str, Any], cp: dic
     }, ensure_ascii=False)}], ScriptRow, 'packaging_voice_fit', max_output_tokens=2048, max_attempts=1)
     line = revised.model_dump()
     if any(line[key] != original[key] for key in ('id', 'slotId', 'start', 'end', 'factIds')):
-        raise PackagingError('配音缩句改变了句子身份、时间或来源，已停止本条')
+        raise VoiceFitRewrite('配音缩句改变了句子身份、时间或来源，已停止本条')
     lines = [*cp['script']]
     lines[index] = line
     result = ScriptOutput.model_validate({'lines': lines, 'musicBrief': cp['musicBrief']})
@@ -445,11 +473,12 @@ async def shorten_voice_line(ark: ArkProvider, snapshot: dict[str, Any], cp: dic
 
 class PackagingHandler:
     def __init__(self, api: InternalApi, ark: ArkProvider, provider: PackagingProvider, max_video_bytes: int,
-                 concurrency: int = 4) -> None:
+                 concurrency: int = 6, model_concurrency: int = 4, tts_concurrency: int = 4) -> None:
         self.api, self.ark, self.provider, self.max_video_bytes = api, ark, provider, max_video_bytes
-        self.concurrency = max(1, min(4, concurrency))
+        self.concurrency = max(1, min(8, concurrency))
         self.preprocessing = asyncio.Semaphore(2)
-        self.requests = asyncio.Semaphore(self.concurrency)
+        self.model_requests = asyncio.Semaphore(max(1, min(8, model_concurrency)))
+        self.requests = asyncio.Semaphore(max(1, min(12, tts_concurrency)))
         self.vision_cache: dict[str, str] = {}
         self.vision_pending: dict[str, asyncio.Future[str]] = {}
 
@@ -512,7 +541,7 @@ class PackagingHandler:
                 completed.result()
             await message.ack()
         except Exception as exc:
-            LOGGER.warning('packaging run interrupted error=%s', type(exc).__name__)
+            LOGGER.warning('packaging run interrupted errors=%s', safe_error_chain(exc))
             # Already-claimed runs are recovered from their expired lease, retaining checkpoints.
             await message.nack(requeue=not message.redelivered)
         finally:
@@ -533,12 +562,22 @@ class PackagingHandler:
         write_lock = asyncio.Lock()
 
         async def guard() -> None:
-            await self.api.request('PUT', f'{root}/heartbeat', headers=headers, json={'projectId': project_id})
+            started = time.monotonic()
+            try:
+                await self.api.request('PUT', f'{root}/heartbeat', headers=headers, json={'projectId': project_id})
+            finally:
+                row = timings.setdefault('_item', {})
+                row['apiHeartbeatSeconds'] = row.get('apiHeartbeatSeconds', 0) + time.monotonic() - started
 
         async def save(stage: str, patch: dict[str, Any]) -> None:
             async with write_lock:
-                await self.api.request('PUT', f'{endpoint}/checkpoint', headers=headers,
-                    json={'projectId': project_id, 'stage': stage, 'checkpoint': patch})
+                started = time.monotonic()
+                try:
+                    await self.api.request('PUT', f'{endpoint}/checkpoint', headers=headers,
+                        json={'projectId': project_id, 'stage': stage, 'checkpoint': patch})
+                finally:
+                    row = timings.setdefault('_item', {})
+                    row['checkpointSeconds'] = row.get('checkpointSeconds', 0) + time.monotonic() - started
                 merged_voices = {**cp.get('voices', {}), **patch.get('voices', {})}
                 cp.update(patch)
                 if merged_voices:
@@ -554,7 +593,8 @@ class PackagingHandler:
         @asynccontextmanager
         async def paid_request(slot_id: str, stage: str) -> AsyncIterator[None]:
             queued = time.monotonic()
-            async with self.requests:
+            semaphore = self.requests if stage == 'voiceSeconds' else self.model_requests
+            async with semaphore:
                 row = timings.setdefault(slot_id, {})
                 row['localQueueSeconds'] = row.get('localQueueSeconds', 0) + time.monotonic() - queued
                 await guard()  # Re-check after queue wait, immediately before spending.
@@ -637,7 +677,7 @@ class PackagingHandler:
                     attempts = cp.setdefault('voiceFitAttempts', {})
                     attempts[line['slotId']] = 1
                     await save('VOICE', {'voiceFitAttempts': attempts})
-                    async with paid_request(line['slotId'], 'voiceSeconds'):
+                    async with paid_request(line['slotId'], 'voiceRepairSeconds'):
                         line = await shorten_voice_line(self.ark, snapshot, cp, index, duration, limit - line['start'], guard)
                     async with write_lock:
                         revised_lines = [*cp['script']]
@@ -649,7 +689,10 @@ class PackagingHandler:
                     data, duration, frames = await synthesize_clauses(line)
                     if line['start'] + duration > limit:
                         raise VoiceFitOverrun(line['slotId'], duration, limit - line['start'])
+                upload_started = time.monotonic()
                 file_id = await upload('voice-' + line['id'], data, frames)
+                row = timings.setdefault(line['slotId'], {})
+                row['voiceUploadSeconds'] = row.get('voiceUploadSeconds', 0) + time.monotonic() - upload_started
                 voices[line['id']] = {'fileObjectId': file_id, 'start': line['start'], 'duration': duration,
                     'volume': 1, 'segmentFrames': frames}
                 if snapshot.get('voiceProfile'):
@@ -673,6 +716,12 @@ class PackagingHandler:
                         await guard()
                         try:
                             url = await self.provider.query_music(cp['musicTaskId'])
+                        except MusicTaskFailed:
+                            # The supplier ended this task; polling it again can only repeat the
+                            # verdict. Forget the dead task so the bounded item recovery submits a
+                            # fresh song instead of replaying the same failure.
+                            await save('MUSIC', {'musicTaskId': None})
+                            raise
                         except MusicRateLimited:
                             # Query is read-only; keep the saved TaskID and bounded
                             # polling deadline, rather than submitting another song.
@@ -683,10 +732,19 @@ class PackagingHandler:
                         await asyncio.sleep(5)
                 timings.setdefault('_item', {})['musicWaitSeconds'] = time.monotonic() - music_started
                 await save('MUSIC', {'timings': timings})
+                started = time.monotonic()
                 source_music = await self.provider.download_music(url)
+                item_times = timings.setdefault('_item', {})
+                item_times['musicDownloadSeconds'] = item_times.get('musicDownloadSeconds', 0) + time.monotonic() - started
+                queued = time.monotonic()
                 async with self.preprocessing:
+                    item_times['musicPreprocessQueueSeconds'] = item_times.get('musicPreprocessQueueSeconds', 0) + time.monotonic() - queued
+                    started = time.monotonic()
                     data = await music_wav(source_music, directory, snapshot['duration'])
+                    item_times['musicTranscodeSeconds'] = item_times.get('musicTranscodeSeconds', 0) + time.monotonic() - started
+                started = time.monotonic()
                 file_id = await upload('music', data)
+                item_times['musicUploadSeconds'] = item_times.get('musicUploadSeconds', 0) + time.monotonic() - started
                 await save('CAPTIONS', {'music': {'fileObjectId': file_id, 'start': 0, 'duration': snapshot['duration'], 'volume': .12}, 'timings': timings})
 
             # Music and the six independent voice clips are external waits. Persist every
@@ -728,6 +786,7 @@ class PackagingHandler:
                 await save('VOICE', {'script': revised_lines, 'voiceFitAttempts': fit_attempts,
                     'voiceSlotRetries': retry_counts, 'timings': timings})
                 LOGGER.info('packaging voice slot recovery item=%s slots=%s', item['id'], len(failed_ids))
+            caption_started = time.monotonic()
             cp['voices'] = voices
             caption_layout = ('SEGMENT_V3' if all(voice.get('segmentFrames') for voice in voices.values())
                 else 'SEGMENT_V2')
@@ -752,7 +811,9 @@ class PackagingHandler:
                 captions.sort(key=lambda caption: caption['start'])
                 await save('CAPTIONS', {'captions': captions, 'captionLayoutVersion': caption_layout,
                     'captionBoxes': boxes})
-            await save('READY', {})
+            item_times = timings.setdefault('_item', {})
+            item_times['captionSeconds'] = item_times.get('captionSeconds', 0) + time.monotonic() - caption_started
+            await save('READY', {'timings': timings})
 
     async def slot_vision(self, snapshot: dict[str, Any], cp: dict[str, Any], endpoint: str,
                           headers: dict[str, str], project_id: str, directory: Path,
@@ -798,7 +859,7 @@ class PackagingHandler:
                     content.append({'type': 'input_text', 'text': 'slotId: ' + clip['slotId']})
                     content.extend({'type': 'input_image', 'image_url': 'data:image/jpeg;base64,' + base64.b64encode(frame).decode()} for frame in frames)
                 queued = time.monotonic()
-                async with self.requests:
+                async with self.model_requests:
                     started = time.monotonic()
                     await guard()
                     result = await self.ark.structured(content, SlotVisionOutput, 'packaging_vision', max_output_tokens=4096, max_attempts=1)
@@ -834,7 +895,7 @@ class PackagingHandler:
 async def run_packaging_shards(items: list[dict[str, Any]], concurrency: int,
                                execute: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
     """Shards remain recovery groups; refill globally without a slowest-item barrier."""
-    semaphore = asyncio.Semaphore(max(1, min(4, concurrency)))
+    semaphore = asyncio.Semaphore(max(1, min(8, concurrency)))
     stopped = False
 
     async def bounded(item: dict[str, Any]) -> None:

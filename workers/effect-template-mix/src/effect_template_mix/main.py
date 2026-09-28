@@ -27,7 +27,8 @@ async def serve() -> None:
     )
     packaging_provider = PackagingProvider(settings.tts_api_key.get_secret_value(), settings.tts_speaker,
         settings.tts_resource_id, settings.music_access_key.get_secret_value(), settings.music_secret_key.get_secret_value(), settings.music_action)
-    packaging = PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes, settings.ai_max_concurrency)
+    packaging = PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes,
+        settings.packaging_item_concurrency, settings.packaging_model_concurrency, settings.packaging_tts_concurrency)
     consumer = Consumer(
         settings.rabbitmq_url.get_secret_value(),
         settings.queue_name,

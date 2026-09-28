@@ -55,6 +55,8 @@ import {
   assignEffectTemplateMixCaptionLanes,
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
   EFFECT_TEMPLATE_MIX_TRANSITIONS,
+  effectTemplateMixCaptionRowKeys,
+  effectTemplateMixCaptionTrackKey,
   effectTemplateMixTransitionDuration,
 } from './effect-template-mix-state';
 import EffectTemplateMixFilmstrip from './EffectTemplateMixFilmstrip.vue';
@@ -118,6 +120,12 @@ const emit = defineEmits<{
    * giving it a row of its own means minting a new track for it — there is no lane number to pass.
    */
   splitCaptionTrack: [captionId: string, start: number];
+  /**
+   * A subtitle let go on a row that already exists and can take it. The row travels as the same key
+   * the packer groups captions by, so the workbench writes it back without having to know how rows
+   * are ordered or that a row is a track at all.
+   */
+  moveCaptionToRow: [captionId: string, start: number, rowKey: string];
   /** A library track let go on top of an audio clip: take the clip's place, keeping its own length. */
   replaceAudioWithMusic: [clipId: string, music: MusicAssetDrop];
   moveAudioClips: [moves: Array<{ clipId: string; start: number; row?: number }>];
@@ -632,10 +640,9 @@ const captionLaneCount = computed(() =>
 const fileUrl = (id: string): string =>
   props.projectId ? apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`) : '';
 // Only a finished item can be saved, so unfinished drafts must not offer edit gestures. A stale
-// item still shows its captions and audio — dropping them here would wipe the arrangement the user
-// is looking at — but its checkpoint no longer matches the timeline, so it stays read-only.
+// checkpoint stays visible and editable as a frozen snapshot; its source state is informational.
 const audioEditable = computed(
-  () => !props.readOnly && props.packaging?.status === 'COMPLETED' && !props.packaging.stale,
+  () => !props.readOnly && props.packaging?.status === 'COMPLETED',
 );
 /** Kept on the timeline but marked, so the stale rows read as "out of date", not as "current". */
 const packagingStale = computed(() => Boolean(props.packaging?.stale));
@@ -827,6 +834,29 @@ const snapDraggedBlock = (
     }
   }
   return best ? { guide: best.guide, start: best.start } : { guide: null, start: rawStart };
+};
+/**
+ * Lines one moving edge up with the nearest other head or tail. A trim drags a single end of a block
+ * rather than the whole of it, so it cannot use `snapDraggedBlock`'s head-and-tail pair; the guide is
+ * reported the same way, so a trim and a move draw the identical line. `window` is the span the
+ * caller already lets that end take, because a snap that would leave it is not a snap the user sees.
+ */
+const snapEdgeTime = (
+  time: number,
+  ignored: Set<string>,
+  window: { max: number; min: number },
+): { guide: number | null; time: number } => {
+  if (!snapEnabled.value) return { guide: null, time };
+  const threshold = 7 / pixelsPerSecond.value;
+  let best: { distance: number; guide: number } | null = null;
+  for (const edge of snapEdges.value) {
+    if (ignored.has(edge.ownerId)) continue;
+    const distance = Math.abs(edge.time - time);
+    if (distance > threshold || edge.time < window.min || edge.time > window.max) continue;
+    if (best && best.distance <= distance) continue;
+    best = { distance, guide: edge.time };
+  }
+  return best ? { guide: best.guide, time: best.guide } : { guide: null, time };
 };
 
 /** How close, in px, the pointer must come to a track border before it becomes an insert target. */
@@ -2152,45 +2182,48 @@ const beginAudioVolume = (event: PointerEvent, audio: TimelineAudio): void => {
 };
 
 /**
- * The track a subtitle belongs to. A card with a track of its own stands alone; a manual card that
- * has none is a group of one; everything else is the legacy narration row the pipeline lays out
- * edge to edge. This is the same key `assignEffectTemplateMixCaptionLanes` packs rows with, and the
- * same one the checkpoint and the renderer check overlaps against, so all four agree by construction.
+ * Whether a subtitle would come to rest on top of another card on the row named by `key`. Two cards
+ * on one row may never overlap — the checkpoint is rejected (`effect-packaging.domain.ts`) and the
+ * renderer refuses the film outright with `字幕越界或重叠` — while two cards on different rows are
+ * drawn on different lanes and are free to be on screen together. A landing that collides is
+ * answered by giving the card a row of its own, which is the subtitle counterpart of a video clip
+ * finding another lane; that is why this asks about the row rather than fencing the drag.
  */
-const captionTrackKeyOf = (caption: EffectTemplateMixCaption): string =>
-  caption.trackId
-    ? `track:${caption.trackId}`
-    : caption.manual === true
-      ? `manual:${caption.id}`
-      : 'legacy-generated';
-
-/**
- * Whether a subtitle would come to rest on top of another card it shares a track with. Two cards on
- * one track may never overlap — the checkpoint is rejected (`effect-packaging.domain.ts`) and the
- * renderer refuses the film outright with `字幕越界或重叠` — while two cards on different tracks are
- * drawn on different rows and are free to be on screen together. A landing that collides is answered
- * by giving the card a track of its own, which is the subtitle counterpart of a video clip finding
- * another lane; that is why this asks about the track rather than fencing the drag.
- */
-const captionOverlapsOwnTrack = (
+const captionOverlapsTrack = (
   clipId: string,
   start: number,
   duration: number,
+  key: string,
   moving: ReadonlySet<string> = new Set([clipId]),
 ): boolean => {
   const entries = timelineCaptionEntries.value;
-  const dragged = entries.find((entry) => entry.id === clipId)?.caption;
-  if (!dragged) return false;
-  const key = captionTrackKeyOf(dragged);
   const end = start + duration;
   // The row packer treats two cards as sharing a row when one starts within a frame of the other's
   // end, so the same tolerance is what decides whether this landing is a real overlap.
   return entries.some(
     (entry) =>
       !moving.has(entry.id) &&
-      captionTrackKeyOf(entry.caption) === key &&
+      effectTemplateMixCaptionTrackKey(entry.caption) === key &&
       start < entry.caption.end - 1 / props.fps &&
       entry.caption.start < end - 1 / props.fps,
+  );
+};
+
+/** Whether a subtitle would land on top of another card on the row it is already on. */
+const captionOverlapsOwnTrack = (
+  clipId: string,
+  start: number,
+  duration: number,
+  moving: ReadonlySet<string> = new Set([clipId]),
+): boolean => {
+  const dragged = timelineCaptionEntries.value.find((entry) => entry.id === clipId)?.caption;
+  if (!dragged) return false;
+  return captionOverlapsTrack(
+    clipId,
+    start,
+    duration,
+    effectTemplateMixCaptionTrackKey(dragged),
+    moving,
   );
 };
 
@@ -2533,6 +2566,8 @@ function onWindowPointerMove(event: PointerEvent): void {
     const drag = audioDrag.value;
     const minimumDuration = Math.min(AUDIO_MIN_DURATION, 1 / props.fps);
     const delta = quantizeToFrame((event.clientX - drag.startClientX) / pixelsPerSecond.value);
+    // Nothing a gesture moves may snap to itself, nor to the rest of a group travelling with it.
+    const ignoredIds = new Set([drag.id, ...dragGroupIds(drag.id)]);
     if (drag.mode === 'VOLUME') {
       const ratio = 1 - (event.clientY - drag.volumeTop) / Math.max(1, drag.volumeHeight);
       // Whole decibels, matching the editor row's step, so the strip and the row agree on the value.
@@ -2548,12 +2583,10 @@ function onWindowPointerMove(event: PointerEvent): void {
       // One rule for every block: magnetic alignment against the other timeline edges, with the
       // guide line saying what it caught. Subtitles are included — frame quantization above already
       // guarantees a valid frame boundary when the edit is saved, so snapping is a help, not a risk.
-      const snapped = snapDraggedBlock(
-        requested,
-        drag.initialDuration,
-        new Set([drag.id, ...dragGroupIds(drag.id)]),
-        { maxStart, minStart: drag.minStart },
-      );
+      const snapped = snapDraggedBlock(requested, drag.initialDuration, ignoredIds, {
+        maxStart,
+        minStart: drag.minStart,
+      });
       drag.currentStart = snapped.start;
       snapGuideTime.value = snapped.guide;
       // Free vertical travel, exactly like a video clip: the ghost follows the pointer pixel for
@@ -2585,31 +2618,44 @@ function onWindowPointerMove(event: PointerEvent): void {
       drag.insertRow = insertTarget?.kind === 'AUDIO' ? insertTarget.row : null;
       drag.insertCaptionTrack = insertTarget?.kind === 'CAPTION';
     } else if (drag.mode === 'LEFT') {
-      // The left edge can only reveal source that was trimmed away, or empty timeline.
-      const minimumDelta = Math.max(drag.minStart - drag.initialStart, -drag.initialOffset);
-      const requested = Math.max(
-        minimumDelta,
-        Math.min(drag.initialDuration - minimumDuration, delta),
-      );
-      drag.currentStart = Math.max(0, drag.initialStart + requested);
+      // An audio clip's head can only reveal source that was trimmed away, so it is pinned to its
+      // source in-point. A subtitle is pure text and has no source at all — its `sourceDuration` is
+      // infinite — which is what lets its head travel back as freely as a video clip's rather than
+      // staying where it already is.
+      const headFloor =
+        drag.initialSourceDuration === Number.POSITIVE_INFINITY
+          ? drag.minStart
+          : Math.max(drag.minStart, drag.initialStart - drag.initialOffset);
+      const headCeiling = drag.initialStart + drag.initialDuration - minimumDuration;
+      const requested = Math.max(headFloor, Math.min(headCeiling, drag.initialStart + delta));
+      // A trim draws the same guide a move does, so the head can be parked exactly on the clip it
+      // meets rather than a few frames short of it.
+      const snapped = snapEdgeTime(requested, ignoredIds, { max: headCeiling, min: headFloor });
+      drag.currentStart = snapped.time;
       drag.currentOffset = Math.max(
         0,
         drag.initialOffset + (drag.currentStart - drag.initialStart),
       );
       drag.currentDuration = drag.initialDuration - (drag.currentStart - drag.initialStart);
+      snapGuideTime.value = snapped.guide;
     } else {
       drag.currentOffset = drag.initialOffset;
       drag.currentStart = drag.initialStart;
       // Stretching the tail is how a clip is made to reach past the last of the material, so the
-      // film's current length is not a bound here either.
-      drag.currentDuration = Math.max(
-        minimumDuration,
-        Math.min(
-          drag.initialSourceDuration - drag.initialOffset,
-          drag.maxEnd - drag.initialStart,
-          drag.initialDuration + delta,
-        ),
+      // film's current length is not a bound here either; the ceiling is the rest of the source, and
+      // a subtitle has none, so its tail is bounded by nothing but its own minimum length.
+      const tailCeiling = Math.min(
+        drag.initialStart + drag.initialSourceDuration - drag.initialOffset,
+        drag.maxEnd,
       );
+      const tailFloor = drag.initialStart + minimumDuration;
+      const requested = Math.max(
+        tailFloor,
+        Math.min(tailCeiling, drag.initialStart + drag.initialDuration + delta),
+      );
+      const snapped = snapEdgeTime(requested, ignoredIds, { max: tailCeiling, min: tailFloor });
+      drag.currentDuration = snapped.time - drag.initialStart;
+      snapGuideTime.value = snapped.guide;
     }
     drag.moved =
       Math.abs(event.clientX - drag.startClientX) > 2 ||
@@ -2698,16 +2744,30 @@ function onWindowPointerUp(): void {
         Math.max(0, (audio.initialRows[id] ?? audioRowOf(id)) + rowDelta);
       if (!group.length) {
         if (isCaption) {
-          // Three landings ask for a track of its own: let go on a row border, come to rest on a row
-          // the card was not on, or land on top of another card it shares a track with. Anything
-          // else is a plain move in time.
-          const rowChanged = rowMove && audio.currentRow !== audio.initialRows[audio.id]!;
+          const captionId = audio.id.slice('caption:'.length);
+          // The rows as they are drawn, so the row the card was let go over can be named rather than
+          // guessed at. A drop past either end of them has no key at all, which is the "somewhere
+          // there is no row yet" case.
+          const own = timelineCaptionEntries.value.find((entry) => entry.id === audio.id)?.caption;
+          const ownKey = own ? effectTemplateMixCaptionTrackKey(own) : '';
+          const targetKey = effectTemplateMixCaptionRowKeys(timelineCaptions.value, props.fps)[
+            audio.currentRow
+          ];
+          const overlaps = (key: string): boolean =>
+            captionOverlapsTrack(audio.id, audio.currentStart, audio.initialDuration, key);
+          // A landing that no existing row can take is answered with a track of its own: let go on a
+          // row border, let go past the last row, or come to rest on top of a card on the target row.
+          // A landing on a row that can take it joins that row instead, which is what lets a card
+          // that was sent up to a row of its own come back down again.
           if (
             audio.insertCaptionTrack ||
-            rowChanged ||
-            captionOverlapsOwnTrack(audio.id, audio.currentStart, audio.initialDuration)
+            targetKey === undefined ||
+            (targetKey !== ownKey && overlaps(targetKey))
           )
-            emit('splitCaptionTrack', audio.id.slice('caption:'.length), audio.currentStart);
+            emit('splitCaptionTrack', captionId, audio.currentStart);
+          else if (targetKey !== ownKey)
+            emit('moveCaptionToRow', captionId, audio.currentStart, targetKey);
+          else if (overlaps(ownKey)) emit('splitCaptionTrack', captionId, audio.currentStart);
           else emit('moveAudioClip', audio.id, audio.currentStart);
         } else if (audio.insertRow !== null) {
           // Let go on a border: the clip takes the row opened there, and the row it was over is not
@@ -3207,6 +3267,7 @@ onBeforeUnmount(() => {
               >
                 <Captions class="caption-clip-icon" :size="13" aria-hidden="true" />
                 <span class="caption-clip-text">{{ entry.caption.text || '新字幕' }}</span>
+                <span v-if="packagingStale" class="clip-stale-badge">过期</span>
                 <template v-if="audioEditable && selectedAudioIds.includes(entry.id)">
                   <button
                     class="edge-trim-handle edge-trim-left"
@@ -3281,6 +3342,7 @@ onBeforeUnmount(() => {
                     >
                       {{ formatTimecode(activeSlotDuration(slot.id)) }}
                     </time>
+                    <span v-if="packagingStale" class="clip-stale-badge">过期</span>
                     <div class="clip-info">
                       <b>{{ materialForSlot(slot.id)?.code }}</b>
                       <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span>
@@ -3440,6 +3502,7 @@ onBeforeUnmount(() => {
                 :style="audioFadeStyle(audio, 'LEFT')"
                 aria-hidden="true"
               />
+              <span v-if="packagingStale" class="clip-stale-badge">过期</span>
               <span
                 v-if="audio.fadeOut > 0"
                 class="audio-fade-mask audio-fade-out"
@@ -4264,11 +4327,19 @@ onBeforeUnmount(() => {
 .audio-clip.is-dragging {
   z-index: 8;
 }
-/* The checkpoint behind these no longer matches the timeline, so they are dimmed rather than
-   hidden: the arrangement stays readable while the packaging panel asks for a fresh run. */
-.caption-clip.is-stale,
-.audio-clip.is-stale {
-  opacity: 0.5;
+/* Stale is an informational badge, never a visual lock/disabled treatment. */
+.clip-stale-badge {
+  position: absolute;
+  z-index: 3;
+  top: 2px;
+  right: 3px;
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: #fff4d6;
+  color: #8a5a00;
+  font-size: 9px;
+  line-height: 13px;
+  pointer-events: none;
 }
 /* Captions read as standalone rounded cards, not as labels painted on the lane. */
 .caption-clip {

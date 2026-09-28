@@ -18,6 +18,10 @@ import httpx
 
 LOGGER = logging.getLogger(__name__)
 
+# `QuerySong` answers 0/1 while the song is still being produced and 2 once it is usable; 3 is the
+# supplier's terminal failure. Any other value is treated as a reply we cannot act on.
+MUSIC_FAILED_STATUS = 3
+
 
 class PackagingError(RuntimeError):
     """Only sanitized, user-readable messages may cross the API boundary."""
@@ -29,6 +33,20 @@ class MusicRateLimited(PackagingError):
 
 class PackagingTransientError(PackagingError):
     """A recoverable request failure; never overrides ambiguous music-submit protection."""
+
+
+class MusicTaskFailed(PackagingError):
+    """The supplier reported this song as terminally failed, not as still being produced.
+
+    Unlike an ambiguous submission this is a definitive answer, so the item recovery budget may
+    spend a new submission on it: polling a dead task can only ever return the same verdict.
+    """
+
+
+def safe_token(raw: Any) -> str:
+    """Bounded, credential-free echo of a supplier field for logs."""
+    text = str(raw if raw is not None else '')
+    return text if re.fullmatch(r'[a-zA-Z0-9_.:-]{0,160}', text) else 'redacted'
 
 
 def signed_headers(action: str, body: bytes, access_key: str, secret_key: str,
@@ -136,11 +154,8 @@ class PackagingProvider:
         error = metadata.get('Error') or {}
         if value.get('Code') != 0 or error:
             # Do not expose supplier response text, signed URLs or credentials.
-            def safe_code(raw: Any) -> str:
-                text = str(raw or '')
-                return text if re.fullmatch(r'[a-zA-Z0-9_.:-]{0,160}', text) else 'redacted'
             LOGGER.warning('packaging music rejected action=%s code=%s error_code=%s request_id=%s',
-                action, safe_code(value.get('Code')), safe_code(error.get('Code')), safe_code(metadata.get('RequestId')))
+                action, safe_token(value.get('Code')), safe_token(error.get('Code')), safe_token(metadata.get('RequestId')))
             result = value.get('Result')
             if (value.get('Code') == 200023 and error.get('Code') == 'APIOutOfQps'
                     and (result is None or isinstance(result, dict) and not result.get('TaskID'))):
@@ -169,7 +184,14 @@ class PackagingProvider:
         if status in (0, 1):
             return None
         if status != 2:
-            raise PackagingError('纯音乐生成失败，请重做本条音乐')
+            # The numeric status is the only thing that separates a dead task from a reply we simply
+            # did not understand, so it is logged (filtered, never the supplier's own text).
+            LOGGER.warning('packaging music task unusable task_id=%s status=%s', task_id, safe_token(status))
+            if status == MUSIC_FAILED_STATUS:
+                raise MusicTaskFailed('纯音乐生成失败，请重做本条音乐')
+            # An unknown status is not evidence of a finished song, and resubmitting here would pay
+            # for a task that may still be running. Keep the task and let the poller try again.
+            raise PackagingTransientError('音乐任务状态未知，保留原任务自动恢复')
         song = result.get('SongDetail') or {}
         if str(song.get('Lyrics') or '').strip():
             raise PackagingError('纯音乐结果包含歌词，已拒绝使用')

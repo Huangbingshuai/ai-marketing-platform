@@ -3,6 +3,7 @@ import {
   Catch,
   HttpException,
   HttpStatus,
+  Logger,
   type ArgumentsHost,
   type ExceptionFilter,
 } from '@nestjs/common';
@@ -71,6 +72,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
           : '服务器内部错误';
     const requestIdHeader = response.getHeader('x-request-id');
     const requestId = Array.isArray(requestIdHeader) ? requestIdHeader[0] : requestIdHeader;
+    // This filter takes over from Nest's own handler, which is the thing that normally prints unhandled
+    // stacks. Without this line an unexpected 500 leaves no trace anywhere — the response body says only
+    // "服务器内部错误", so there is nothing to debug with. Log the stack; keep the body as it is.
+    if (!(exception instanceof HttpException))
+      logger.error(
+        `[${String(requestId)}] ${exception instanceof Error ? exception.stack : String(exception)}`,
+      );
 
     response.status(status).json({
       success: false,
@@ -81,3 +89,5 @@ export class HttpExceptionFilter implements ExceptionFilter {
     });
   }
 }
+
+const logger = new Logger(HttpExceptionFilter.name);

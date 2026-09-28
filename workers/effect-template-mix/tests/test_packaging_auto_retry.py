@@ -2,8 +2,8 @@ from typing import Any
 from unittest.mock import AsyncMock
 import httpx
 import pytest
-from effect_template_mix.packaging import recover_packaging_item
-from effect_template_mix.packaging_provider import PackagingError, PackagingTransientError
+from effect_template_mix.packaging import VoiceFitRewrite, recover_packaging_item
+from effect_template_mix.packaging_provider import MusicTaskFailed, PackagingError, PackagingTransientError
 from effect_template_mix.provider import ProviderError, ProviderOutputError
 from effect_template_mix.api import ApiError
 
@@ -26,6 +26,18 @@ async def test_budget_survives_restart(initial: int, calls: int) -> None:
         await recover_packaging_item(item, process, AsyncMock(), 0)
     assert process.call_count == calls
     assert item['checkpoint']['automaticRetries'] == 2
+
+
+@pytest.mark.parametrize('error', [VoiceFitRewrite('rewritten'), MusicTaskFailed('song failed')])
+async def test_item_defects_a_fresh_attempt_can_fix_are_retried(error: Exception) -> None:
+    # Both are plain `PackagingError`s, so keying recovery on the transient subclasses alone left a
+    # repairable item permanently failed: one bad model sample, or one dead song, ended the film.
+    item: dict[str, Any] = {'id': 'item', 'stage': 'VOICE', 'checkpoint': {}}
+    process, persist = AsyncMock(side_effect=[error, None]), AsyncMock()
+    await recover_packaging_item(item, process, persist, 0)
+    assert process.call_count == 2
+    persist.assert_awaited_once_with(1)
+    assert item['checkpoint']['automaticRetries'] == 1
 
 
 @pytest.mark.parametrize('error', [PackagingError('permanent'), ProviderError('invalid', retryable=False), ApiError('lease', retryable=True)])

@@ -33,9 +33,16 @@ export const visualHash = (variant: EffectTemplateMixVariant) =>
  */
 const packagingVisualSource = (variant: EffectTemplateMixVariant) => {
   const timeline = packagingVisualTimeline(variant);
-  const { timelineStarts: _starts, videoLanes: _lanes, slots, ...source } = timeline;
+  const {
+    timelineStarts: _starts,
+    videoLanes: _lanes,
+    detachedAudios: _detachedAudios,
+    slots,
+    ...source
+  } = timeline;
   // Transitions, roles, labels, track and timeline positions affect the picture edit, not which
-  // source material a narration was generated for. Keep slot identity and duration as dependencies.
+  // source material a narration was generated for. Independent audio is a separate editable track,
+  // not a source dependency of the narration. Keep slot identity and duration as dependencies.
   return { ...source, slots: slots.map(({ id, duration }) => ({ id, duration })) };
 };
 
@@ -380,13 +387,19 @@ export function validatePackagingCheckpoint(
       for (const [key, value] of Object.entries(row)) {
         if (key === 'cacheHit') { if (typeof value !== 'boolean') fail(); }
         else if (key === 'scriptRepairSlots') { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(); }
-        else if (!['preprocessingSeconds', 'visionSeconds', 'scriptSeconds', 'voiceSeconds', 'musicWaitSeconds', 'localQueueSeconds'].includes(key) ||
+        else if (!['preprocessingSeconds', 'visionSeconds', 'scriptSeconds', 'voiceSeconds', 'voiceRepairSeconds',
+          'musicWaitSeconds', 'localQueueSeconds',
+          'apiHeartbeatSeconds', 'checkpointSeconds', 'voiceUploadSeconds', 'musicDownloadSeconds',
+          'musicPreprocessQueueSeconds', 'musicTranscodeSeconds', 'musicUploadSeconds', 'captionSeconds'].includes(key) ||
           typeof value !== 'number' || !Number.isFinite(value) || value < 0) fail();
       }
     }
   }
+  // `null` is the worker's explicit "the supplier rejected this task" marker: the id is kept in the
+  // shape so a fresh submission can replace it, but nothing may poll the dead task again.
   if (
     checkpoint.musicTaskId !== undefined &&
+    checkpoint.musicTaskId !== null &&
     (typeof checkpoint.musicTaskId !== 'string' ||
       !/^[a-zA-Z0-9_-]{1,200}$/.test(checkpoint.musicTaskId))
   )

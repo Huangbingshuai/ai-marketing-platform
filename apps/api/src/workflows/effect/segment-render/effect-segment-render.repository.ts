@@ -46,6 +46,22 @@ const posterMetadata = (
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
 const isUniqueConflict = (error: unknown): boolean =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
+// The validate commit writes every clip artifact plus the batch artifact — a hundred rows across four
+// tables — and takes a row lock on the batch first, so any concurrent writer can park it in lock waiting.
+// Prisma's 5s default budget aborts the transaction then, and that abort used to surface as a bare 500
+// "服务器内部错误", which told the user nothing about retrying. Give the commit a budget that fits its
+// size, retry a transient clash once, and let the caller report whatever is left as a conflict.
+const COMMIT_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
+const COMMIT_TRANSACTION_ATTEMPTS = 2;
+const COMMIT_TRANSACTION_RETRY_DELAY_MS = 200;
+const isTransientTransactionError = (error: unknown): boolean => {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const { code } = error as { code?: unknown };
+    if (code === 'P2028' || code === 'P2034') return true;
+  }
+  const message = error instanceof Error ? error.message : '';
+  return /deadlock|could not serialize|Transaction already closed|Transaction API error/i.test(message);
+};
 
 export const effectSegmentRenderBatchInclude = {
   product: true,
@@ -1544,78 +1560,110 @@ export class EffectSegmentRenderRepository {
     sourcePackage: { artifactId: string; revision: number; contentHash: string },
     artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
   ) {
-    return this.prisma.$transaction(async (transaction) => {
-      await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "effect_segment_render_batches"
-        WHERE "projectId" = ${projectId}::uuid
-          AND "id" = ${batchId}::uuid
-        FOR UPDATE
-      `;
-      const batch = await transaction.effectSegmentRenderBatch.findFirst({
-        where: { projectId, id: batchId },
-        include: { tasks: true },
-      });
-      if (!batch) return { kind: 'NOT_FOUND' as const };
-      if (batch.revision !== expectedRevision) return { kind: 'REVISION_CONFLICT' as const };
-      if (batch.tasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
-        return { kind: 'NOT_READY' as const };
-      const prompt = await transaction.workingArtifact.findFirst({
-        where: {
-          projectId,
-          workflowRunId: batch.workflowRunId,
-          id: sourcePrompt.artifactId,
-          nodeId: 'PROMPT_GENERATION',
-          artifactKey: 'prompt-batch:' + batch.productId,
-          revision: sourcePrompt.revision,
-          contentHash: sourcePrompt.contentHash,
-          freshness: 'CURRENT',
-          availability: 'AVAILABLE',
-        },
-      });
-      if (!prompt) return { kind: 'PROMPT_CONFLICT' as const };
-      const source = await transaction.workingArtifact.findFirst({
-        where: {
-          projectId,
-          workflowRunId: batch.workflowRunId,
-          id: sourcePackage.artifactId,
-          nodeId: 'SOURCE_IMPORT',
-          artifactKey: 'source-package:' + batch.productId,
-          revision: sourcePackage.revision,
-          contentHash: sourcePackage.contentHash,
-          freshness: 'CURRENT',
-          availability: 'AVAILABLE',
-        },
-      });
-      if (!source) return { kind: 'SOURCE_CONFLICT' as const };
-      if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
-      await transaction.effectSegmentRenderBatch.update({
-        where: { projectId_id: { projectId, id: batchId } },
-        data: {
-          sourcePromptArtifactId: sourcePrompt.artifactId,
-          sourcePromptRevision: sourcePrompt.revision,
-          sourcePromptHash: sourcePrompt.contentHash,
-        },
-      });
-      const committed = await this.workingRepository.commitValidatedArtifactsInTransaction(
-        transaction,
-        projectId,
-        batch.workflowRunId,
-        'SEGMENT_RENDER',
-        artifacts,
-      );
-      await transaction.effectSegmentRenderBatch.update({
-        where: { projectId_id: { projectId, id: batchId } },
-        data: { committedAt: new Date() },
-      });
-      return {
-        kind: 'COMMITTED' as const,
-        artifacts: committed.map((item) => ({
-          artifactId: item.record.id,
-          artifactKey: item.artifactKey,
-          revision: item.record.revision,
-          unchanged: item.unchanged,
-        })),
-      };
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          (transaction) =>
+            this.commitValidatedBatchTransaction(
+              transaction,
+              projectId,
+              batchId,
+              expectedRevision,
+              sourcePrompt,
+              sourcePackage,
+              artifacts,
+            ),
+          COMMIT_TRANSACTION_OPTIONS,
+        );
+      } catch (error) {
+        if (!isTransientTransactionError(error)) throw error;
+        if (attempt >= COMMIT_TRANSACTION_ATTEMPTS) return { kind: 'CONFLICT' as const };
+        await new Promise((resolve) => {
+          setTimeout(resolve, COMMIT_TRANSACTION_RETRY_DELAY_MS * attempt);
+        });
+      }
+    }
+  }
+
+  private async commitValidatedBatchTransaction(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    batchId: string,
+    expectedRevision: number,
+    sourcePrompt: { artifactId: string; revision: number; contentHash: string },
+    sourcePackage: { artifactId: string; revision: number; contentHash: string },
+    artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
+  ) {
+    await transaction.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "effect_segment_render_batches"
+      WHERE "projectId" = ${projectId}::uuid
+        AND "id" = ${batchId}::uuid
+      FOR UPDATE
+    `;
+    const batch = await transaction.effectSegmentRenderBatch.findFirst({
+      where: { projectId, id: batchId },
+      include: { tasks: true },
     });
+    if (!batch) return { kind: 'NOT_FOUND' as const };
+    if (batch.revision !== expectedRevision) return { kind: 'REVISION_CONFLICT' as const };
+    if (batch.tasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
+      return { kind: 'NOT_READY' as const };
+    const prompt = await transaction.workingArtifact.findFirst({
+      where: {
+        projectId,
+        workflowRunId: batch.workflowRunId,
+        id: sourcePrompt.artifactId,
+        nodeId: 'PROMPT_GENERATION',
+        artifactKey: 'prompt-batch:' + batch.productId,
+        revision: sourcePrompt.revision,
+        contentHash: sourcePrompt.contentHash,
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      },
+    });
+    if (!prompt) return { kind: 'PROMPT_CONFLICT' as const };
+    const source = await transaction.workingArtifact.findFirst({
+      where: {
+        projectId,
+        workflowRunId: batch.workflowRunId,
+        id: sourcePackage.artifactId,
+        nodeId: 'SOURCE_IMPORT',
+        artifactKey: 'source-package:' + batch.productId,
+        revision: sourcePackage.revision,
+        contentHash: sourcePackage.contentHash,
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      },
+    });
+    if (!source) return { kind: 'SOURCE_CONFLICT' as const };
+    if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+    await transaction.effectSegmentRenderBatch.update({
+      where: { projectId_id: { projectId, id: batchId } },
+      data: {
+        sourcePromptArtifactId: sourcePrompt.artifactId,
+        sourcePromptRevision: sourcePrompt.revision,
+        sourcePromptHash: sourcePrompt.contentHash,
+      },
+    });
+    const committed = await this.workingRepository.commitValidatedArtifactsInTransaction(
+      transaction,
+      projectId,
+      batch.workflowRunId,
+      'SEGMENT_RENDER',
+      artifacts,
+    );
+    await transaction.effectSegmentRenderBatch.update({
+      where: { projectId_id: { projectId, id: batchId } },
+      data: { committedAt: new Date() },
+    });
+    return {
+      kind: 'COMMITTED' as const,
+      artifacts: committed.map((item) => ({
+        artifactId: item.record.id,
+        artifactKey: item.artifactKey,
+        revision: item.record.revision,
+        unchanged: item.unchanged,
+      })),
+    };
   }
 }

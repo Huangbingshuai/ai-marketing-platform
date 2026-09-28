@@ -358,6 +358,74 @@ const materialFrom = (
   };
 };
 
+/**
+ * Every material an existing project still points at. A superseded clip stays reachable this way: it
+ * is genuinely expired (its Prompt moved on and the refresh flow refuses to rebind it), and dropping
+ * it from the pool would blank the slot instead of showing it as expired.
+ */
+const boundMaterialIds = (variants: Iterable<EffectTemplateMixVariant>): ReadonlySet<string> => {
+  const ids = new Set<string>();
+  for (const variant of variants)
+    for (const materialId of Object.values(variant.bindings)) if (materialId) ids.add(materialId);
+  return ids;
+};
+
+/**
+ * A re-render replaces a product's batch wholesale, and nothing ever deletes the superseded batch's
+ * clips: their `render-clip:*` rows stay in `working_artifacts` for good. Enumerating that key prefix
+ * therefore grew the mix pool by a full batch on every re-render, and the leftovers — stale as soon as
+ * the Prompt they came from changed — were counted as "expired materials" the user could never use.
+ *
+ * Keep what a render node actually offers: the clips its committed `render-batch:*` payloads list,
+ * stale ones included, so a Prompt edit still surfaces as expired; plus whatever is still current,
+ * which is what smart fill can pick; plus `keepIds`, the clips existing projects are bound to.
+ * Returns `null` when no batch payload is readable, so an unexpected shape falls back to the
+ * unfiltered set rather than hiding materials.
+ */
+const currentMaterialKeys = (
+  artifacts: readonly WorkingArtifact[],
+  keepIds: ReadonlySet<string>,
+): ReadonlySet<string> | null => {
+  const keys = new Set<string>();
+  let sawBatch = false;
+  for (const artifact of artifacts) {
+    if (artifact.nodeId !== 'SEGMENT_RENDER' || !artifact.artifactKey.startsWith('render-batch:'))
+      continue;
+    const clips = payload(artifact).clips;
+    if (!Array.isArray(clips)) continue;
+    sawBatch = true;
+    for (const raw of clips) {
+      const taskId = object(raw)?.taskId;
+      if (typeof taskId === 'string' && taskId) keys.add(`render-clip:${taskId}`);
+    }
+  }
+  if (!sawBatch) return null;
+  for (const artifact of artifacts) {
+    if (
+      artifact.nodeId === 'SEGMENT_RENDER' &&
+      artifact.artifactKey.startsWith('render-clip:') &&
+      ((artifact.freshness === 'CURRENT' && artifact.availability === 'AVAILABLE') ||
+        keepIds.has(artifact.id))
+    )
+      keys.add(artifact.artifactKey);
+  }
+  return keys;
+};
+
+const materialsFromArtifacts = (
+  artifacts: readonly WorkingArtifact[],
+  keepIds: ReadonlySet<string> = new Set(),
+): EffectTemplateMixMaterial[] => {
+  // Prompt sources live on `prompt-batch:*`, so they have to be read from the full list before the
+  // pool is narrowed down to render clips.
+  const promptSources = promptSourcesFromArtifacts(artifacts);
+  const poolKeys = currentMaterialKeys(artifacts, keepIds);
+  return artifacts
+    .filter((artifact) => poolKeys === null || poolKeys.has(artifact.artifactKey))
+    .map((artifact) => materialFrom(artifact, promptSources))
+    .filter((item): item is EffectTemplateMixMaterial => Boolean(item));
+};
+
 const toAiRun = (run: {
   id: string;
   templateId: string;
@@ -679,6 +747,19 @@ export class EffectTemplateMixService {
       lockedTemplateIds,
       packagingLockedIds,
     );
+  }
+
+  /** Worker hot path: read the saved visual draft without building the material pool or UI state. */
+  async currentVariant(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+    variantId: string,
+  ): Promise<EffectTemplateMixVariant | null> {
+    const state = await this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX');
+    if (!state) return null;
+    return draftOf(state.state).templates.find((entry) => entry.id === templateId)
+      ?.workspace.variants.find((variant) => variant.id === variantId) ?? null;
   }
 
   /**
@@ -2193,12 +2274,12 @@ export class EffectTemplateMixService {
         HttpStatus.CONFLICT,
         'CONFLICT',
       );
-    const promptSources = promptSourcesFromArtifacts(artifactData.items);
     const workspace: EffectTemplateMixWorkspace = {
       ...entry!.workspace,
-      materials: artifactData.items
-        .map((artifact) => materialFrom(artifact, promptSources))
-        .filter((item): item is EffectTemplateMixMaterial => Boolean(item)),
+      materials: materialsFromArtifacts(
+        artifactData.items,
+        boundMaterialIds(entry!.workspace.variants),
+      ),
     };
     mutation(workspace);
     entry!.workspace = {
@@ -2231,10 +2312,10 @@ export class EffectTemplateMixService {
     lockedTemplateIds: string[] = [],
     packagingLockedIds: string[] = [],
   ): EffectTemplateMixWorkspaceData {
-    const promptSources = promptSourcesFromArtifacts(artifacts);
-    const materials = artifacts
-      .map((artifact) => materialFrom(artifact, promptSources))
-      .filter((item): item is EffectTemplateMixMaterial => Boolean(item));
+    const materials = materialsFromArtifacts(
+      artifacts,
+      boundMaterialIds(draft.templates.flatMap((entry) => entry.workspace.variants)),
+    );
     const availableMaterialIds = new Set(
       materials.filter(({ available }) => available).map(({ id }) => id),
     );

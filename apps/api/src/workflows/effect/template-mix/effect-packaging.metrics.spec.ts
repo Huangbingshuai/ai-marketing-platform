@@ -40,10 +40,10 @@ describe('server packaging throughput', () => {
           completedAt: null,
         }) as PackagingItem,
     );
-  it('initial target is 2000 seconds, explicitly an estimate', () => {
+  it('uses six bounded items for the initial baseline estimate', () => {
     expect(packagingExecution(rows(), null, null, 'QUEUED')).toMatchObject({
       queued: 100,
-      estimatedRemainingSeconds: 2000,
+      estimatedRemainingSeconds: 1360,
       estimateBasis: 'BASELINE',
       throughputPerMinute: null,
     });

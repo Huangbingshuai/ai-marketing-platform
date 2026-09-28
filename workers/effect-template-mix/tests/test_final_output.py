@@ -30,11 +30,11 @@ def test_caption_escaping_and_bounds() -> None:
         captions_ass([{'text': '商品', 'start': .2, 'end': 1.2}], 720, 960, 1)
 
 
-def test_default_caption_position_uses_lower_five_percent_bottom_margin() -> None:
+def test_default_caption_position_uses_lower_three_percent_bottom_margin() -> None:
     ass = captions_ass([{'text': '默认位置', 'start': .2, 'end': .9}], 720, 960, 1)
     style = next(line for line in ass.splitlines() if line.startswith('Style: Default'))
-    # 5% of a 960px frame; editor preview uses the same normalized bottom offset.
-    assert style.endswith(',48,1')
+    # 3% of a 960px frame; editor preview uses the same normalized bottom offset.
+    assert style.endswith(',29,1')
 
 
 def test_editor_reworded_subtitle_burns_its_own_text_not_the_narration() -> None:
@@ -292,6 +292,31 @@ async def test_timeline_gap_renders_black_and_keeps_the_frozen_duration(tmp_path
     assert (await average_rgb(.5))[0] > 100  # the first clip
     assert max(await average_rgb(1.5)) < 30  # the gap between them is black
     assert (await average_rgb(2.5))[0] > 100  # the second clip
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+async def test_film_confirmed_without_a_package_renders_picture_only(tmp_path: Path, monkeypatch: Any) -> None:
+    """A failed film is still submitted, so its empty package has to be a renderable state.
+
+    The API sends `{voices: {}, captions: []}` and no music at all; both keys are read
+    unconditionally, so the render must produce a normal film whose tail is black, not fail.
+    """
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    red = tmp_path / 'red.mp4'
+    await encode(['-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=30:d=1', '-an',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(red)], tmp_path)
+    snapshot = {'timeline': {'duration': 2, 'clips': [
+            {'fileObjectId': 'red', 'start': 0, 'duration': 1, 'offset': 0, 'lane': 0,
+             'transition': '硬切', 'transitionDuration': 0}]},
+        'aspectRatio': '4:3', 'originalVolume': 0, 'resolution': '480p', 'frameRate': 30,
+        'unpackaged': True, 'packaging': {'voices': {}, 'captions': []}}
+    output = await render(snapshot, {'red': red}, tmp_path, AsyncMock())
+    info = await probe(output)
+    assert abs(float(info['format']['duration']) - 2) < .1
+    # The mix still has one branch (`[original]`), so the film keeps a real AAC track instead of
+    # losing its audio stream and failing the encoder check further down.
+    assert any(stream.get('codec_name') == 'aac' for stream in info['streams'])
+    assert not (tmp_path / 'captions.ass').read_text(encoding='utf-8').count('Dialogue:')
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')

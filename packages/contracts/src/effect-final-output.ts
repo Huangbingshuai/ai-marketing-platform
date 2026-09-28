@@ -31,6 +31,11 @@ export type FinalOutputDependency = {
 export type FinalOutputSnapshot = {
   timeline: PackagingSnapshot;
   packaging: PackagingCheckpoint;
+  /**
+   * The film's packaging failed, so it was confirmed as a picture-only film: no narration, captions
+   * or bed. Recorded so the output list can say why it plays silent instead of looking broken.
+   */
+  unpackaged?: boolean;
   dependencies: FinalOutputDependency[];
   aspectRatio: string;
   originalVolume: number;
@@ -49,6 +54,10 @@ export type FinalOutputItem = {
   assetId: string | null;
   errorMessage: string | null;
   progress: number;
+  /** Confirmed without a package, so this film is expected to play with picture only. */
+  unpackaged?: boolean;
+  /** A consumed upstream material/revision has changed; the frozen film remains usable. */
+  stale?: boolean;
 };
 export type FinalOutputRun = {
   id: string;

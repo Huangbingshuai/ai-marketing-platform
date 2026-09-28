@@ -216,14 +216,16 @@ export class EffectPackagingService {
       const asset = musicAssets.find(({ id }) => id === audio.sourceAssetId);
       const file = asset ? musicFileByStorageKey.get(asset.storageKey) : undefined;
       const audioMime = (asset?.mimeType ?? file?.mimeType ?? '').toLowerCase();
-      const audioExtension = /\.(mp3|wav|m4a|aac|flac|ogg|opus|wma)$/i.test(asset?.originalFileName ?? '');
+      const audioExtension = /\.(mp3|wav|m4a|aac|flac|ogg|opus|wma)$/i.test(
+        asset?.originalFileName ?? '',
+      );
       if (
         !asset ||
         !file ||
         file.sizeBytes !== asset.sizeBytes ||
         (!audioMime.startsWith('audio/') && !audioExtension) ||
         !Number.isFinite(audio.sourceDuration) ||
-        (audio.fileObjectId !== file.id)
+        audio.fileObjectId !== file.id
       )
         throw new BadRequestException('音乐素材已失效或不属于当前项目，请重新导入');
       musicSources.set(asset.id, { fileObjectId: file.id, sourceDuration: audio.sourceDuration! });
@@ -448,7 +450,7 @@ export class EffectPackagingService {
         run.startedAt,
         run.completedAt,
         run.status,
-        Number(process.env.TEMPLATE_MIX_AI_MAX_CONCURRENCY) || 4,
+        Number(process.env.TEMPLATE_MIX_PACKAGING_ITEM_CONCURRENCY) || 6,
         Date.now(),
         run.items.length > 0 &&
           run.items.every(
@@ -464,12 +466,7 @@ export class EffectPackagingService {
       },
     };
   }
-  /**
-   * A completed item the editor may still write to. Editing is only legal while the frozen visual
-   * source still matches the draft and every artifact it consumed is still current — the rule the
-   * audio-edit route has always applied, shared here so a second editor write path cannot drift
-   * from it.
-   */
+  /** A completed checkpoint remains editable after its source moves on; staleness is provenance, not a lock. */
   private async editableItem(projectId: string, runId: string, itemId: string) {
     const raw = await this.repo.get(projectId, runId);
     const item = raw?.items.find((i) => i.id === itemId);
@@ -482,22 +479,7 @@ export class EffectPackagingService {
     const snapshot = item.snapshot as unknown as PackagingSnapshot;
     const entry = workspace.draft.templates.find((t) => t.id === raw.templateId);
     const variant = entry?.workspace.variants.find((v) => v.id === item.variantId);
-    if (
-      !entry ||
-      !variant ||
-      !matchesVisualHash(variant, item.sourceTimelineHash, snapshot.variant) ||
-      snapshot.dependencies.some(
-        (d) =>
-          !artifacts.some(
-            (a) =>
-              a.id === d.artifactId &&
-              a.revision === d.revision &&
-              a.freshness === 'CURRENT' &&
-              a.availability === 'AVAILABLE',
-          ),
-      )
-    )
-      throw new ConflictException('源时间轴已改变，请重新生成包装后再编辑音频');
+    if (!entry || !variant) throw new ConflictException('对应的混剪工程不存在，无法编辑音频');
     return { raw, item, snapshot, workspace, artifacts, entry, variant };
   }
   /** Editor audio edits: only geometry/volume are trusted, never the client's file identity. */
@@ -602,8 +584,10 @@ export class EffectPackagingService {
             const previous = oldCaptionsById.get(id);
             // A track of its own is editor geometry, exactly like `start`/`end`: it is what makes a
             // subtitle a row of its own, and a narration card may have one just as a manual card may.
-            // It is never dropped once set, so a card cannot silently lose its row.
-            const resolvedTrackId = previous?.trackId ?? trackId;
+            // An id adopts that row, an explicit `null` clears it back to the implicit one, and
+            // leaving the field out keeps the row as it is — so a card can neither lose its row by
+            // accident nor stay pinned to one it has been moved off.
+            const resolvedTrackId = trackId === null ? undefined : (trackId ?? previous?.trackId);
             return {
               id,
               ...(previous?.manual || (!previous && manual === true) ? { manual: true } : {}),
@@ -818,13 +802,24 @@ export class EffectPackagingService {
   }
   async workerItem(projectId: string, runId: string, token: string, itemId: string) {
     await this.repo.authorized(projectId, runId, token);
-    const run = await this.repo.get(projectId, runId);
-    const item = run?.items.find((i) => i.id === itemId);
-    if (!run || !item) throw new NotFoundException('包装成片不存在');
-    const state = await this.get(projectId, runId);
-    if (state.items.find((i) => i.id === itemId)?.stale)
+    const item = await this.repo.getItem(projectId, runId, itemId);
+    if (!item) throw new NotFoundException('包装成片不存在');
+    const run = item.run;
+    const snapshot = item.snapshot as unknown as PackagingSnapshot;
+    const [variant, artifacts] = await Promise.all([
+      this.mix.currentVariant(projectId, run.workflowRunId, run.templateId, item.variantId),
+      this.repo.sourceArtifacts(projectId, run.workflowRunId,
+        [...new Set(snapshot.dependencies.map((dependency) => dependency.artifactId))]),
+    ]);
+    if (!variant ||
+      !matchesVisualHash(variant, item.sourceTimelineHash, snapshot.variant) ||
+      snapshot.dependencies.some((dependency) => !artifacts.some((artifact) =>
+        artifact.id === dependency.artifactId &&
+        artifact.revision === dependency.revision &&
+        artifact.freshness === 'CURRENT' &&
+        artifact.availability === 'AVAILABLE')))
       throw new ConflictException('源时间轴已改变，本条包装已过期');
-    return { run, item, snapshot: item.snapshot as unknown as PackagingSnapshot };
+    return { run, item, snapshot };
   }
   async checkpoint(
     projectId: string,
@@ -836,13 +831,13 @@ export class EffectPackagingService {
     errorMessage?: string,
   ) {
     // Failure writes must be accepted even when the source changed during execution.
-    await this.repo.authorized(projectId, runId, token);
-    const raw = await this.repo.get(projectId, runId);
-    const item = raw?.items.find((i) => i.id === itemId);
-    if (!item) throw new NotFoundException('包装成片不存在');
-    if (errorMessage)
+    if (errorMessage) {
+      await this.repo.authorized(projectId, runId, token);
+      if (!(await this.repo.getItem(projectId, runId, itemId)))
+        throw new NotFoundException('包装成片不存在');
       return this.repo.checkpoint(projectId, runId, token, itemId, stage, {}, errorMessage);
-    const { snapshot } = await this.workerItem(projectId, runId, token, itemId);
+    }
+    const { snapshot, item, run } = await this.workerItem(projectId, runId, token, itemId);
     const old = item.checkpoint as PackagingCheckpoint;
     const next = { ...old, ...patch, voices: { ...old.voices, ...patch.voices } };
     validatePackagingCheckpoint(
@@ -851,25 +846,26 @@ export class EffectPackagingService {
       stage === 'READY',
       !!snapshot.redoSlotId || !!snapshot.redoCaptionsOnly,
     );
-    const ids = [...Object.values(next.voices ?? {}), ...(next.music ? [next.music] : [])].map(
+    const ids = [...new Set([...Object.values(next.voices ?? {}), ...(next.music ? [next.music] : [])].map(
       (a) => a.fileObjectId,
-    );
+    ))];
     // Partial redos may reuse files from an earlier run of this exact variant and visual source.
-    for (const fileObjectId of ids)
-      if (
-        !(await this.repo.db.effectPackagingFile.count({
-          where: {
-            projectId,
-            fileObjectId,
-            item: {
-              variantId: item.variantId,
-              sourceTimelineHash: item.sourceTimelineHash,
-              run: { workflowRunId: raw!.workflowRunId, templateId: raw!.templateId },
-            },
+    if (ids.length) {
+      const owned = await this.repo.db.effectPackagingFile.findMany({
+        where: {
+          projectId,
+          fileObjectId: { in: ids },
+          item: {
+            variantId: item.variantId,
+            sourceTimelineHash: item.sourceTimelineHash,
+            run: { workflowRunId: run.workflowRunId, templateId: run.templateId },
           },
-        }))
-      )
+        },
+        select: { fileObjectId: true },
+      });
+      if (new Set(owned.map((file) => file.fileObjectId)).size !== ids.length)
         throw new BadRequestException('音频资产不属于当前成片');
+    }
     return this.repo.checkpoint(projectId, runId, token, itemId, stage, patch);
   }
   async content(projectId: string, runId: string, token: string, itemId: string, fileId: string) {

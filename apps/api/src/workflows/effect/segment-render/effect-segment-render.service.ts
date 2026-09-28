@@ -445,9 +445,13 @@ export class EffectSegmentRenderService {
     const batchInput = artifacts.find(
       ({ artifactKey }) => artifactKey === 'render-batch:' + record.productId,
     )?.input;
-    const stale = Boolean(
-      upstreamStale || taskIdsNeedingUpdate.size > 0 || artifact?.freshness !== 'CURRENT',
-    );
+    // "Stale" means the batch no longer renders the current Prompt — that is the only thing a rerender
+    // can fix, and the only thing the rerender entry points are offered for. The artifact's own
+    // freshness must stay out of it: the committed working copies are marked STALE *by* an upstream
+    // change and are made CURRENT *by* a validation commit, so folding that flag in would make every
+    // rerendered batch read as stale forever — validation is gated on `!stale`, so the commit that
+    // would clear it could never run. `commitStatus` already reports the uncommitted working copies.
+    const stale = Boolean(upstreamStale || taskIdsNeedingUpdate.size > 0);
     const refreshScope = !stale
       ? 'NONE'
       : upstreamStale || !taskIdsNeedingUpdate.size || hasUnrenderedPrompts || hasRemovedPrompts
@@ -1986,6 +1990,7 @@ export class EffectSegmentRenderService {
     if (result.kind === 'PROMPT_CONFLICT') throw conflict('Prompt 批次已更新，请重新创建渲染批次');
     if (result.kind === 'SOURCE_CONFLICT') throw conflict('产品资料包已更新，请重新创建渲染批次');
     if (result.kind === 'NOT_READY') throw conflict('视频渲染批次尚未完成');
+    if (result.kind === 'CONFLICT') throw conflict('校验提交遇到并发写入，请稍后重试');
     if (result.kind === 'NOT_FOUND') throw notFound('视频渲染批次不存在');
     return {
       valid: true,

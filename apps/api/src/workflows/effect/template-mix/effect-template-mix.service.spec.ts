@@ -123,6 +123,15 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('reads only the saved variant for packaging hot-path source checks', async () => {
+    const { service, working } = harness();
+    expect((await service.currentVariant('project', 'run', templateId, variantId))?.id).toBe(variantId);
+    expect(working.getNodeStateOrNull).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
+    expect(working.listArtifacts).not.toHaveBeenCalled();
+    expect(await service.currentVariant('project', 'run', templateId, 'missing')).toBeNull();
+    working.getNodeStateOrNull.mockResolvedValue(null);
+    expect(await service.currentVariant('project', 'run', templateId, variantId)).toBeNull();
+  });
   it('projects persisted stage shard counts and a few real inputs and outputs', async () => {
     const now = new Date('2026-09-23T04:00:00.000Z');
     const inputSnapshot = {
@@ -486,6 +495,73 @@ describe('EffectTemplateMixService', () => {
       promptText: '展示腊肠切片的油润质感',
       promptCreativeCore: '暖色餐桌上的产品特写',
     });
+  });
+
+  const batchArtifact = (taskIds: string[]) =>
+    ({
+      id: 'batch-artifact',
+      nodeId: 'SEGMENT_RENDER',
+      artifactKey: 'render-batch:product',
+      kind: 'STRUCTURED',
+      revision: 2,
+      availability: 'AVAILABLE',
+      freshness: 'CURRENT',
+      payload: { schemaVersion: 1, productId: 'product', clips: taskIds.map((taskId) => ({ taskId })) },
+    }) as unknown as WorkingArtifact;
+  const workspaceWith = async (items: WorkingArtifact[]) => {
+    const working = {
+      getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
+      listArtifacts: vi.fn().mockResolvedValue({ items, total: items.length }),
+    };
+    const service = new EffectTemplateMixService(working as unknown as WorkflowWorkingService);
+    return service.workspace('project', 'run');
+  };
+
+  it('keeps a superseded batch’s clips out of the pool instead of counting them as expired', async () => {
+    // A re-render replaces the batch and leaves the old clips behind; only the batch's own clips are
+    // still offered by the render node, so the leftover must not read as an expired material.
+    const superseded = {
+      ...source,
+      id: 'superseded-clip',
+      artifactKey: 'render-clip:task-2',
+      freshness: 'STALE',
+    } as WorkingArtifact;
+
+    const result = await workspaceWith([batchArtifact(['task-1']), source, superseded]);
+
+    expect(result.materials.map(({ id }) => id)).toEqual([sourceId]);
+  });
+
+  it('still reports a stale clip the current batch lists so a Prompt edit stays visible', async () => {
+    const result = await workspaceWith([
+      batchArtifact(['task-1']),
+      { ...source, freshness: 'STALE' } as WorkingArtifact,
+    ]);
+
+    expect(result.materials).toEqual([
+      expect.objectContaining({ id: sourceId, available: false }),
+    ]);
+  });
+
+  it('keeps a superseded clip an existing project is bound to and shows it as expired', async () => {
+    // The draft binds this clip, so hiding it would blank the slot instead of telling the user the
+    // project still points at a material whose Prompt moved on.
+    const result = await workspaceWith([
+      batchArtifact(['task-9']),
+      { ...source, freshness: 'STALE' } as WorkingArtifact,
+    ]);
+
+    expect(result.materials).toEqual([
+      expect.objectContaining({ id: sourceId, available: false }),
+    ]);
+  });
+
+  it('keeps a current clip the batch no longer lists so a bound variant still resolves', async () => {
+    // A same-Prompt re-render leaves the previous clips CURRENT, and smart fill reads through
+    // `sourceArtifacts`, so it can still pick them: the pool has to keep them reachable.
+    const result = await workspaceWith([batchArtifact(['task-9']), source]);
+
+    expect(result.materials).toEqual([expect.objectContaining({ id: sourceId, available: true })]);
   });
 
   it('creates and fills exactly one project inside the requested template', async () => {

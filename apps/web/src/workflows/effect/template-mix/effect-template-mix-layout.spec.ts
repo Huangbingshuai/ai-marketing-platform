@@ -151,7 +151,17 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('detachedTrackMuted');
     expect(pageSource).toContain('@toggle-audio-mute="setTimelineTrackMute"');
     expect(pageSource).toContain('startPlaybackAudio');
-    expect(pageSource).toContain('workspace.materials.length < 6');
+    // Smart fill only ever picks current clips, so the button has to be gated on how many of those
+    // exist — counting every material let a hundred stale clips keep it clickable, and the request
+    // then came back as "剩余未使用素材不足以再生成一条完整成片".
+    expect(pageSource).not.toContain('workspace.materials.length < 6');
+    expect(pageSource).toContain('Boolean(aiFillBlockReason)');
+    expect(pageSource).toContain('const availableMaterials = computed(');
+    expect(pageSource).toContain('const expiredMaterialCount = computed(');
+    expect(pageSource).toContain('const aiFillBlockReason = computed<string | null>(');
+    expect(pageSource).toContain('if (!refreshAffectedSlots && aiFillBlockReason.value) {');
+    expect(pageSource).toContain('class="material-expired-banner"');
+    expect(pageSource).toContain('class="material-expired-badge"');
     expect(pageSource).not.toContain(
       '!selectedVariant ||\n                workspace.materials.length < 6',
     );
@@ -465,15 +475,13 @@ describe('effect template mix workbench layout', () => {
     // would overlap a card on its own track is answered by giving it a track of its own — the
     // subtitle counterpart of a video clip finding another lane.
     expect(timelineSource).not.toContain('const captionBounds');
-    expect(timelineSource).toContain(
-      'const captionTrackKeyOf = (caption: EffectTemplateMixCaption): string =>',
-    );
-    // The track key is the one the row packer and the checkpoint both group by, spelled the same way
-    // in all three places so they cannot drift.
-    expect(timelineSource).toContain('? `track:${caption.trackId}`');
-    expect(timelineSource).toContain(": 'legacy-generated';");
+    // The track key is the one the row packer and the checkpoint both group by. It used to be spelled
+    // out here a third time; it now comes from the packer's own definition so the two cannot drift.
+    expect(timelineSource).toContain('effectTemplateMixCaptionTrackKey,');
+    expect(timelineSource).not.toContain('const captionTrackKeyOf');
+    expect(timelineSource).toContain('const captionOverlapsTrack = (');
+    expect(timelineSource).toContain('effectTemplateMixCaptionTrackKey(entry.caption) === key');
     expect(timelineSource).toContain('const captionOverlapsOwnTrack = (');
-    expect(timelineSource).toContain('captionTrackKeyOf(entry.caption) === key');
     expect(timelineSource).toContain(
       'sourceDuration: Number.POSITIVE_INFINITY,\n  minStart: 0,\n  maxEnd: Number.POSITIVE_INFINITY,',
     );
@@ -490,25 +498,34 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('drag.ghostTop - initialLane * CAPTION_LANE_HEIGHT');
     // A subtitle's row is derived from its track rather than stored, so it takes part in the row
     // gesture like anything else — but the row it lands on is never reported as an audio row it does
-    // not have: minting a track is what gives it one.
+    // not have: naming a track is what gives it one.
     expect(timelineSource).toContain('const rowMove = audio.initialRows[audio.id] !== undefined;');
+    // The drop position is resolved to a row rather than only to "the card was moved", so a card can
+    // be put back on a row that already exists instead of every vertical move minting a new one.
     expect(timelineSource).toContain(
-      'const rowChanged = rowMove && audio.currentRow !== audio.initialRows[audio.id]!;',
+      'const targetKey = effectTemplateMixCaptionRowKeys(timelineCaptions.value, props.fps)[',
     );
+    expect(timelineSource).toContain(
+      "emit('moveCaptionToRow', captionId, audio.currentStart, targetKey);",
+    );
+    expect(timelineSource).toContain(
+      'moveCaptionToRow: [captionId: string, start: number, rowKey: string];',
+    );
+    expect(timelineSource).not.toContain('const rowChanged = rowMove &&');
     // Its rows are separate strips, so a card carried off its own has to ride above the row below it.
     expect(timelineSource).toContain(
       '.caption-clip.is-dragging,\n.audio-clip.is-dragging {\n  z-index: 8;\n}',
     );
     // A group slides rigidly and reports once, so the workbench records one undo step for the gesture
     // rather than one per caption.
-    expect(timelineSource).toContain(
-      'const shared = Math.max(delta, -earliest);',
-    );
+    expect(timelineSource).toContain('const shared = Math.max(delta, -earliest);');
     // A member of the set that would land on a card outside it is given a track of its own instead
     // of riding along, and the set is measured as a whole so a sibling that is moving too is not
     // what a member is checked against.
     expect(timelineSource).toContain('const moving = new Set(group);');
-    expect(timelineSource).toContain('if (captionOverlapsOwnTrack(id, start, length, moving)) split.push(id);');
+    expect(timelineSource).toContain(
+      'if (captionOverlapsOwnTrack(id, start, length, moving)) split.push(id);',
+    );
     expect(timelineSource).toContain("if (riders.length) emit('moveAudioClips', riders);");
     expect(timelineSource).toContain('drag.maxEnd - drag.initialDuration');
     expect(timelineSource).toContain("emit('moveAudioClip'");
@@ -558,10 +575,10 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('audioBaseline?.itemId === current.id) void flushAudioEdit();');
     expect(pageSource).toContain('if (audioBaseline?.itemId === targetId) audioBaseline = null;');
     expect(timelineSource).toContain('() => props.packaging?.id');
-    // Only a finished current item can be saved, so read-only checkpoints expose selection but not
-    // drag/trim handles.
+    // A completed snapshot remains editable even when its upstream marker is stale; unfinished
+    // checkpoints still expose selection but not drag/trim handles.
     expect(timelineSource).toContain(
-      "() => props.packaging?.status === 'COMPLETED' && !props.packaging.stale,",
+      "() => !props.readOnly && props.packaging?.status === 'COMPLETED',",
     );
     expect(timelineSource).toContain('editable: audioEditable.value');
     expect(timelineSource).toContain('v-if="audioEditable && selectedAudioIds.includes(entry.id)"');
@@ -780,45 +797,55 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain(
       "emit('moveAudioClip', audio.id, audio.currentStart, audio.insertRow, audio.insertRow);",
     );
-    expect(pageSource).toContain(
-      'insertRow === undefined\n        ? resolveAudioPlacement(',
-    );
+    expect(pageSource).toContain('insertRow === undefined\n        ? resolveAudioPlacement(');
     expect(pageSource).toContain(
       'movePackagingAudios([\n    row === undefined\n      ? { clipId, start }\n      : { clipId, row, start, ...(insertRow === undefined ? {} : { insertRow }) },\n  ]);',
     );
     // The view only forces the vertical position: the clip was just let go under the pointer, so
     // scrolling sideways would carry it away from where the user dropped it.
     expect(timelineSource).not.toContain('clientWidth / 3');
-    expect(timelineSource).toContain('else if (left < element.scrollLeft + margin) element.scrollLeft = Math.max(0, left - margin);');
+    expect(timelineSource).toContain(
+      'else if (left < element.scrollLeft + margin) element.scrollLeft = Math.max(0, left - margin);',
+    );
   });
   it('gives a subtitle its own row and lets a music track replace a clip it was dropped on', () => {
     // A caption row is derived from the caption's track, so a new row is a new track and nothing else.
-    expect(timelineSource).toContain(
-      "splitCaptionTrack: [captionId: string, start: number];",
-    );
-    expect(timelineSource).toContain(
-      "emit('splitCaptionTrack', audio.id.slice('caption:'.length), audio.currentStart);",
-    );
+    expect(timelineSource).toContain('splitCaptionTrack: [captionId: string, start: number];');
+    expect(timelineSource).toContain("emit('splitCaptionTrack', captionId, audio.currentStart);");
     expect(pageSource).toContain('@split-caption-track="splitCaptionTrack"');
-    expect(pageSource).toContain('const splitCaptionTrack = (captionId: string, start: number): void => {');
+    expect(pageSource).toContain(
+      'const splitCaptionTrack = (captionId: string, start: number): void => {',
+    );
     expect(pageSource).toContain('const trackId = `subtitle-track-${Date.now()');
     // The subtitle keeps its own length; only the row and the time were asked for.
-    expect(pageSource).toContain('const length = Math.max(1 / TIMELINE_FPS, caption.end - caption.start);');
+    expect(pageSource).toContain(
+      'const length = Math.max(1 / TIMELINE_FPS, caption.end - caption.start);',
+    );
     // A checkpoint caption goes through the packaging editor, which is what captures the baseline the
     // save is diffed against — writing it straight onto the checkpoint would never be persisted.
-    expect(pageSource).toContain('editPackagingAudio((checkpoint) => {\n      const target = checkpoint.captions?.find((item) => item.id === captionId);');
+    expect(pageSource).toContain(
+      'editPackagingAudio((checkpoint) => {\n      const target = checkpoint.captions?.find((item) => item.id === captionId);',
+    );
     // Caption rows are separate strips, so the row is measured from the first strip plus its lane.
-    expect(timelineSource).toContain('const scrollToCaption = (captionId: string, time: number, duration = 0): void => {');
-    expect(timelineSource).toContain('element.scrollTop = Math.max(\n      0,\n      rowTop - element.clientHeight / 2 + CAPTION_LANE_HEIGHT / 2,\n    );');
+    expect(timelineSource).toContain(
+      'const scrollToCaption = (captionId: string, time: number, duration = 0): void => {',
+    );
+    expect(timelineSource).toContain(
+      'element.scrollTop = Math.max(\n      0,\n      rowTop - element.clientHeight / 2 + CAPTION_LANE_HEIGHT / 2,\n    );',
+    );
     expect(timelineSource).toContain('scrollToCaption,\n  scrollToLane,');
-    expect(pageSource).toContain('scrollToCaption: (captionId: string, time: number, duration?: number) => void;');
+    expect(pageSource).toContain(
+      'scrollToCaption: (captionId: string, time: number, duration?: number) => void;',
+    );
     expect(pageSource).toContain('timelineRef.value?.scrollToCaption(captionId, next, length)');
     // A library track let go on top of a clip takes its place instead of opening a row beside it.
     expect(timelineSource).toContain(
       'replaceAudioWithMusic: [clipId: string, music: MusicAssetDrop];',
     );
-    expect(timelineSource).toContain("if (replaceClipId) {\n    emit('replaceAudioWithMusic', replaceClipId, data);");
-    expect(timelineSource).toContain('const musicDropClipId = ref(\'\');');
+    expect(timelineSource).toContain(
+      "if (replaceClipId) {\n    emit('replaceAudioWithMusic', replaceClipId, data);",
+    );
+    expect(timelineSource).toContain("const musicDropClipId = ref('');");
     // The clip under the pointer is read from the drag itself, the same way the video track reads it,
     // and the row's own padding falls back to the pointer's time.
     expect(timelineSource).toContain(
@@ -884,30 +911,80 @@ describe('effect template mix workbench layout', () => {
     // gone, so a subtitle catches the same edges with the same line saying what it caught.
     expect(timelineText).not.toContain('snapGuideTime.value = null;\n      }');
     expect(timelineText).toContain(
-      "const snapped = snapDraggedBlock(\n        requested,\n        drag.initialDuration,\n        new Set([drag.id, ...dragGroupIds(drag.id)]),\n        { maxStart, minStart: drag.minStart },\n      );",
+      'const snapped = snapDraggedBlock(requested, drag.initialDuration, ignoredIds, {\n        maxStart,\n        minStart: drag.minStart,\n      });',
     );
-    // The three landings that mint a track, and the plain time move that does not.
+    // Dragging a caption's left or right edge catches the same edges a move does and draws the same
+    // guide: the trim branches used to move the edge with no magnet and no line at all.
     expect(timelineText).toContain(
-      'audio.insertCaptionTrack ||\n            rowChanged ||\n            captionOverlapsOwnTrack(audio.id, audio.currentStart, audio.initialDuration)',
+      'const snapEdgeTime = (\n  time: number,\n  ignored: Set<string>,\n  window: { max: number; min: number },\n): { guide: number | null; time: number } => {',
     );
-    expect(timelineText).toContain('else emit(\'moveAudioClip\', audio.id, audio.currentStart);');
+    expect(timelineText).toContain(
+      'const snapped = snapEdgeTime(requested, ignoredIds, { max: headCeiling, min: headFloor });',
+    );
+    expect(timelineText).toContain(
+      'const snapped = snapEdgeTime(requested, ignoredIds, { max: tailCeiling, min: tailFloor });',
+    );
+    // A subtitle has no source, so its head is free to travel back to the start of the timeline
+    // instead of being pinned to where it already was — dragging its left edge left used to do
+    // nothing at all, which is half of why no guide could ever appear there.
+    expect(timelineText).toContain(
+      'const headFloor =\n        drag.initialSourceDuration === Number.POSITIVE_INFINITY\n          ? drag.minStart\n          : Math.max(drag.minStart, drag.initialStart - drag.initialOffset);',
+    );
+    // One ignored set for the whole gesture, so a block never snaps to itself or to its own group.
+    expect(timelineText).toContain(
+      'const ignoredIds = new Set([drag.id, ...dragGroupIds(drag.id)]);',
+    );
+    // The landings that mint a track, and the plain time move that does not. A drop on a row that can
+    // take the card joins that row instead, which is the half that lets a card come back down.
+    expect(timelineText).toContain(
+      'audio.insertCaptionTrack ||\n            targetKey === undefined ||\n            (targetKey !== ownKey && overlaps(targetKey))',
+    );
+    expect(timelineText).toContain(
+      "else if (targetKey !== ownKey)\n            emit('moveCaptionToRow', captionId, audio.currentStart, targetKey);",
+    );
+    expect(timelineText).toContain(
+      "else if (overlaps(ownKey)) emit('splitCaptionTrack', captionId, audio.currentStart);\n          else emit('moveAudioClip', audio.id, audio.currentStart);",
+    );
     // A track of its own is editor geometry, so the editor writes it for either kind of card — the
     // server used to drop it silently, which is why a subtitle could never leave its row.
     expect(pageText).toContain('const trackId = `subtitle-track-${Date.now()');
+    // Coming back down is a clear rather than a new track, and the row arrives as the packer's own key.
+    expect(pageText).toContain(
+      'const writeCaptionRow = (captionId: string, start: number, trackId: string | null): void => {',
+    );
+    expect(pageText).toContain('if (trackId === null) delete target.trackId;');
+    expect(pageText).toContain(
+      'const moveCaptionToRow = (captionId: string, start: number, rowKey: string): void => {',
+    );
+    expect(pageText).toContain(
+      "if (rowKey === 'legacy-generated') return writeCaptionRow(captionId, start, null);",
+    );
+    expect(pageText).toContain(
+      "return writeCaptionRow(captionId, start, rowKey.slice('track:'.length));",
+    );
+    expect(pageText).toContain('@move-caption-to-row="moveCaptionToRow"');
+    // Dropping the field is not the same as clearing it: the server reads an absent `trackId` as
+    // "leave the row alone", so a cleared row has to say `null` out loud.
+    expect(pageText).toContain(
+      '...(trackId ? { trackId } : previous?.trackId ? { trackId: null } : {}),',
+    );
     // Audio selection is authoritative: falling through to the video slot is what made Delete on a
     // narration remove an unrelated slot, or nothing at all.
     expect(pageText).toContain('const deleteSelectedAudioClips = (clipIds: string[]): void => {');
-    expect(pageText).toContain('if (selectedAudioClipIds.value.length) {\n    deleteSelectedAudioClips([...selectedAudioClipIds.value]);\n    return;\n  }');
+    expect(pageText).toContain(
+      'if (selectedAudioClipIds.value.length) {\n    deleteSelectedAudioClips([...selectedAudioClipIds.value]);\n    return;\n  }',
+    );
     expect(pageText).toContain('if (removesMusic) delete next.music;');
-    expect(pageText).toContain('if (removesVoice) for (const id of voiceIds) delete next.voices?.[id];');
+    expect(pageText).toContain(
+      'if (removesVoice) for (const id of voiceIds) delete next.voices?.[id];',
+    );
     expect(pageText).toContain('delete next.captionVoices?.[id];');
     // A narration is an optional overlay on its line, so it deletes like any other clip: the line and
     // its subtitle stay. Only an id the checkpoint does not know is refused, out loud.
     expect(pageText).not.toContain('口播由脚本行生成，不能删除');
     expect(pageText).toContain("showNotice('该音频片段不能删除', 'warning');");
-    // A stale packaging shows its captions but does not accept edits, and that refusal has to be
-    // visible too.
-    expect(pageText).toContain("showNotice('当前包装已过期或未完成，字幕不可编辑', 'warning');");
+    // An unfinished packaging remains visibly read-only; stale sources do not swallow user edits.
+    expect(pageText).toContain("showNotice('当前包装尚未完成，字幕不可编辑', 'warning');");
     // The three places that select an audio clip directly bypass the timeline's own selection, so a
     // stale caption set would otherwise still be what Delete acts on.
     expect(pageText).toContain(
@@ -946,7 +1023,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('class="player-caption"');
     expect(pageSource).toContain('stageCaptionFontSize');
     expect(pageSource).toContain('const DEFAULT_CAPTION_BOX: PackagingCaptionBox');
-    expect(pageSource).toContain('y: 0.05, width: 0.9');
+    expect(pageSource).toContain('y: 0.03, width: 0.9');
     expect(pageSource).toContain('const captionBoxStyle = (id: string)');
     // Clicking a card opens a single-line text editor in the row above the timeline.
     expect(pageSource).toContain('const editingCaption');
@@ -1374,22 +1451,21 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain(
       ':packaging="selectedPackaging?.stale ? null : selectedPackaging"',
     );
-    // Stale geometry is shown but never written: the server rejects a write whose timeline moved on.
+    // Stale geometry remains editable because the checkpoint is a user-owned frozen snapshot.
     expect(pageSource).toContain(
-      "selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale",
+      "selectedPackaging.value?.status === 'COMPLETED' && !projectEditLocked.value",
     );
-    expect(pageSource).toContain('if (item.stale) {');
-    expect(pageSource).toContain('时间轴已改变，当前包装已过期，请重新生成包装后再编辑');
-    // The timeline reads the same flag: kept, dimmed, and without the edit gestures.
+    expect(pageSource).not.toContain('时间轴已改变，当前包装已过期，请重新生成包装后再编辑');
+    // The timeline keeps the badge and the edit gestures; stale clips are no longer dimmed.
     expect(timelineSource).toContain(
-      "() => props.packaging?.status === 'COMPLETED' && !props.packaging.stale,",
+      "() => !props.readOnly && props.packaging?.status === 'COMPLETED',",
     );
     expect(timelineSource).toContain(
       'const packagingStale = computed(() => Boolean(props.packaging?.stale));',
     );
     expect(timelineSource).toContain("'is-stale': packagingStale,");
-    expect(timelineSource).toContain('.caption-clip.is-stale,\n.audio-clip.is-stale {');
-    expect(timelineSource).toContain('opacity: 0.5;');
+    expect(timelineSource).toContain('.clip-stale-badge {');
+    expect(timelineSource).not.toContain('.caption-clip.is-stale,\n.audio-clip.is-stale {');
   });
   it('lets a snapped caption be dragged back off the line', () => {
     // Once the caption nearly fills the frame the centre and both borders collapse together, so a

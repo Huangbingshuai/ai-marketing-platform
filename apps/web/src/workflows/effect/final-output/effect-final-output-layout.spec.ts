@@ -52,4 +52,22 @@ describe('effect final output re-render layout', () => {
     );
     expect(pageSource.match(/requestActionConfirmation\(/gu)).toHaveLength(2);
   });
+
+  it('says a film plays silent because it was submitted without a package', () => {
+    // A picture-only film looks like a broken render unless the card explains itself.
+    expect(pageSource).toContain('v-if="item.unpackaged"');
+    expect(pageSource).toContain('class="status-pill unpackaged"');
+    expect(pageSource).toContain(
+      'title="这条成片的包装未成功，以无包装成片提交：只有画面，没有口播、字幕与配乐"',
+    );
+    expect(pageSource).toContain("item.unpackaged ? '无口播 / 字幕 / 配乐' : '内嵌字幕'");
+    expect(pageSource).toContain('.status-pill.unpackaged {');
+  });
+
+  it('keeps stale films visible and labels each one without disabling export controls', () => {
+    expect(pageSource).toContain('run: outputRun,');
+    expect(pageSource).toContain('v-if="item.stale" class="status-pill stale"');
+    expect(pageSource).toContain('素材已过期');
+    expect(pageSource).toContain('.status-pill.stale {');
+  });
 });

@@ -30,6 +30,7 @@ function harness() {
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    workingArtifact: { findMany: vi.fn().mockResolvedValue([]) },
     effectTemplateMixAiRun: { count: vi.fn().mockResolvedValue(0) },
     workflowNodeState: {
       findUnique: vi.fn().mockResolvedValue({ id: 'state', revision: 1, state: testDraft }),
@@ -44,6 +45,27 @@ function harness() {
   return { db, repo };
 }
 describe('packaging lease and durable task repository', () => {
+  it('loads one worker item scoped by project and run without hydrating the batch', async () => {
+    const { db, repo } = harness();
+    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i' });
+    expect(await repo.getItem('p', 'r', 'i')).toEqual({ id: 'i' });
+    expect(db.effectPackagingItem.findFirst).toHaveBeenCalledWith({
+      where: { projectId: 'p', runId: 'r', id: 'i' },
+      include: { run: { select: { workflowRunId: true, templateId: true } } },
+    });
+    expect(db.effectPackagingRun.findFirst).not.toHaveBeenCalled();
+  });
+  it('reads only required source revisions from the same active workflow run', async () => {
+    const { db, repo } = harness();
+    await repo.sourceArtifacts('p', 'w', ['a', 'b']);
+    expect(db.workingArtifact.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'p', workflowRunId: 'w', id: { in: ['a', 'b'] },
+        workflowRun: { status: { in: ['ACTIVE', 'PAUSED'] } } },
+      select: { id: true, revision: true, freshness: true, availability: true },
+    });
+    await repo.sourceArtifacts('p', 'w', []);
+    expect(db.workingArtifact.findMany).toHaveBeenCalledTimes(1);
+  });
   it('inherits composite run/project relation fields for nested items', async () => {
     const { db, repo } = harness();
     const snapshot = {

@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from effect_template_mix.api import InternalApi
+from effect_template_mix.api import ApiError, InternalApi
 from effect_template_mix.packaging import PackagingHandler, ScriptOutput, ScriptRow, VisionOutput, plan_script, script_structure_issues, shorten_voice_line, valid_vision, vision_frame_windows, valid_frame_vision
 from effect_template_mix.packaging_media import pcm_wav, visible_intervals
-from effect_template_mix.packaging_provider import PackagingError, PackagingProvider, signed_headers
+from effect_template_mix.packaging_provider import MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError, signed_headers
 from effect_template_mix.provider import ArkProvider
 from effect_template_mix.consumer import Consumer
-from effect_template_mix.packaging import FrameVisionOutput, NarrationPlan, NarrationRepair, materialize_script, narration_windows, run_packaging_shards, understand_frames
+from effect_template_mix.packaging import FrameVisionOutput, NarrationPlan, NarrationRepair, materialize_script, narration_windows, run_packaging_shards, safe_error_chain, understand_frames
 from types import SimpleNamespace
 
 
@@ -77,6 +77,22 @@ async def test_music_pending_statuses(status: int) -> None:
     adapter = provider(lambda _: httpx.Response(200, json={'Code': 0, 'Result': {'Status': status}}))
     assert await adapter.query_music('t') is None
     await adapter.close()
+
+
+async def test_music_terminal_failure_is_distinct_from_a_reply_we_cannot_read() -> None:
+    def answering(status: Any) -> PackagingProvider:
+        return provider(lambda _: httpx.Response(200, json={'Code': 0, 'Result': {'TaskID': 't', 'Status': status}}))
+    dead = answering(3)
+    with pytest.raises(MusicTaskFailed):
+        await dead.query_music('t')
+    await dead.close()
+    # Only an explicit failure may spend a new submission; an unknown or missing status keeps the
+    # saved TaskID so the poller retries instead of paying for a song that may still be running.
+    for status in (9, None, '2'):
+        unknown = answering(status)
+        with pytest.raises(PackagingTransientError, match='保留原任务'):
+            await unknown.query_music('t')
+        await unknown.close()
 
 
 async def test_music_missing_service_reports_actionable_safe_error(caplog: Any) -> None:
@@ -405,6 +421,43 @@ async def test_music_wait_overlaps_tts_and_reuses_both_checkpoints(monkeypatch: 
     assert adapter.submit_music.await_count == adapter.voice.await_count == 1
 
 
+async def test_dead_music_task_is_forgotten_so_recovery_submits_a_new_song(monkeypatch: Any) -> None:
+    from effect_template_mix import packaging
+    api = AsyncMock(spec=InternalApi)
+    api.request.return_value = {'fileObjectId': 'saved-audio'}
+    adapter = AsyncMock(spec=PackagingProvider)
+    adapter.query_music.side_effect = MusicTaskFailed('纯音乐生成失败，请重做本条音乐')
+    row = item()
+    row['checkpoint'].pop('music')
+    row['checkpoint']['voices'] = {'line-1': {'fileObjectId': 'voice', 'start': 1, 'duration': 2, 'volume': 1}}
+    row['checkpoint']['musicTaskId'] = 'dead-task'
+    worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000)
+    with pytest.raises(MusicTaskFailed):
+        await worker.process_item('/run', {}, 'project', row)
+    # The dead id is dropped, so the next attempt submits rather than replaying the same verdict.
+    assert row['checkpoint']['musicTaskId'] is None
+    assert row['stage'] == 'MUSIC'
+    adapter.submit_music.assert_not_called()
+
+    async def converted(*_: Any) -> bytes:
+        return b'RIFF-test-wav'
+
+    monkeypatch.setattr(packaging, 'music_wav', converted)
+    adapter.submit_music.return_value = 'fresh-task'
+    adapter.query_music.side_effect = None
+    adapter.query_music.return_value = 'https://example.test/music.wav'
+    adapter.download_music.return_value = b'music'
+    await worker.process_item('/run', {}, 'project', row)
+    adapter.submit_music.assert_awaited_once()
+    assert row['checkpoint']['musicTaskId'] == 'fresh-task'
+    assert row['stage'] == 'READY'
+    item_timings = row['checkpoint']['timings']['_item']
+    for metric in ('musicWaitSeconds', 'musicDownloadSeconds', 'musicPreprocessQueueSeconds',
+                   'musicTranscodeSeconds', 'musicUploadSeconds', 'apiHeartbeatSeconds',
+                   'checkpointSeconds', 'captionSeconds'):
+        assert item_timings[metric] >= 0
+
+
 async def test_unknown_music_submission_never_auto_resubmits() -> None:
     api = AsyncMock(spec=InternalApi)
     adapter = AsyncMock(spec=PackagingProvider)
@@ -566,6 +619,35 @@ async def test_hundred_items_refill_four_global_slots_without_shard_barriers() -
     assert maximum == 4
     assert len(launched) == len(set(launched)) == 100
     assert later_before_first_finished  # Later shards start before a slow first item finishes.
+
+
+async def test_packaging_pool_can_use_six_items_without_crossing_its_limit() -> None:
+    active = maximum = 0
+
+    async def execute(_row: dict[str, Any]) -> None:
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(.001)
+        active -= 1
+
+    rows = [{'shardIndex': index // 4, 'status': 'QUEUED'} for index in range(100)]
+    await run_packaging_shards(rows, 6, execute)
+    assert maximum == 6
+
+
+def test_nested_run_error_log_contains_types_and_status_not_provider_payload() -> None:
+    error = ExceptionGroup('sensitive payload', [ApiError('secret-url', retryable=True, status_code=502)])
+    assert safe_error_chain(error) == 'ApiError(502)'
+
+
+def test_packaging_uses_independent_model_and_voice_limits() -> None:
+    worker = PackagingHandler(AsyncMock(spec=InternalApi), AsyncMock(spec=ArkProvider),
+        AsyncMock(spec=PackagingProvider), 1000, concurrency=6, model_concurrency=3, tts_concurrency=8)
+    assert worker.concurrency == 6
+    assert worker.model_requests._value == 3
+    assert worker.requests._value == 8
+    assert worker.preprocessing._value == 2
 
 
 async def test_missing_configuration_fails_without_calling_ark() -> None:
