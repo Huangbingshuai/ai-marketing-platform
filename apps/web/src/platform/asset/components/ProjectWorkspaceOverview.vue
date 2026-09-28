@@ -83,8 +83,8 @@ const latestState = computed(
     )[0],
 );
 const visibleArtifacts = computed(() => aggregateWorkspaceArtifacts(artifacts.value));
-const renderBatchArtifact = computed(() =>
-  visibleArtifacts.value.find(isRenderBatchArtifact) ?? null,
+const renderBatchArtifact = computed(
+  () => visibleArtifacts.value.find(isRenderBatchArtifact) ?? null,
 );
 const finalVideoCounts = computed(() => finalVideoArtifactCounts(artifacts.value));
 const currentNodeIndex = computed(() => {
@@ -137,6 +137,17 @@ const hasNodeContent = (definition: WorkflowNodeDefinition): boolean =>
 
 const nodeDetail = (definition: WorkflowNodeDefinition): string => {
   const state = stateByNode.value.get(definition.id);
+  if (definition.id === 'SOURCE_IMPORT') {
+    const packages = artifacts.value.filter(
+      (artifact) =>
+        artifact.nodeId === 'SOURCE_IMPORT' && artifact.artifactKey.startsWith('source-package:'),
+    );
+    if (packages.length === 1)
+      return `已确认版本 ${packages[0]!.revision} · ${formatTime(packages[0]!.updatedAt)}`;
+    if (packages.length > 1) return `已确认 ${packages.length} 个资料包`;
+    if (state) return `草稿已保存 · ${formatTime(state.savedAt)}`;
+    return '暂无已保存内容';
+  }
   if (definition.id === 'FINAL_OUTPUT' && finalVideoCounts.value.total > 0) {
     const { completed, stale, total, unavailable } = finalVideoCounts.value;
     const details = [`已渲染 ${completed}/${total} 条成片`];

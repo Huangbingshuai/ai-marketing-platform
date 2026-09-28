@@ -139,6 +139,10 @@ describe('effect import identity boundary', () => {
     expect(pageSource).toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('title="产品资料草稿"');
     expect(pageSource).toContain('<WorkflowNodeFooter');
+    expect(pageSource).toContain('已确认版本 ${singleProduct.sourcePackageRevision}');
+    expect(pageSource).toContain("'资料包尚未确认'");
+    expect(pageSource).not.toContain('`revision ${draft?.revision ?? 0}`');
+    expect(pageSource).not.toContain('relockDownstreamNode');
     expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');
     expect(pageSource).toContain('@validate="validateDraft"');
     expect(pageSource).toContain('@next="advanceDraft"');
@@ -244,14 +248,9 @@ describe('effect import automatic draft saving', () => {
     expect(pageSource).not.toContain('保存到项目资产库');
   });
 
-  it('preserves the node-state revision when an edit only relocks downstream nodes', () => {
-    const relockSource = pageSource.match(
-      /const relockDownstreamNode = \(\): void => \{[\s\S]*?\n\};/,
-    )?.[0];
-
-    expect(relockSource).toBeDefined();
-    expect(relockSource).not.toContain('nodeStateRevision.value = 0');
-    expect(relockSource).not.toContain("lastSavedNodeState = ''");
+  it('preserves autosave concurrency state without locking downstream on draft edits', () => {
+    expect(pageSource).not.toContain('relockDownstreamNode');
+    expect(pageSource).toContain('nodeStateRevision.value = response.data.nodeState.revision');
     expect(pageSource).toMatch(
       /const loadProject = async[\s\S]*nodeStateRevision\.value = 0;[\s\S]*lastSavedNodeState = '';/,
     );

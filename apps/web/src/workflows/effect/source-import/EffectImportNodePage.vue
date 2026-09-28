@@ -3,6 +3,7 @@ import {
   DEFAULT_EFFECT_VIDEO_CONFIG,
   type BatchRetryEffectImportProductsData,
   type EffectImportDraft,
+  type EffectWorkflowBranchTreeData,
   type EffectImportMaterial,
   type EffectImportMaterialMutationData,
   type EffectImportMode,
@@ -34,8 +35,10 @@ import { isAbortError } from '../../../api/http-client';
 import { projectContextKey } from '../../../platform/project/project-context';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
+  activateEffectWorkflowBranch,
   activateWorkflowNode,
   getActiveWorkflowRunOverview,
+  getEffectWorkflowBranchTree,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
 import { workflowNodeBaseId } from '../../../platform/workflow/workflow-node-id';
@@ -77,6 +80,7 @@ import {
 } from './api/effect-import.api';
 import BatchManifestImportDialog from './components/BatchManifestImportDialog.vue';
 import EffectWorkflowCanvas from './components/EffectWorkflowCanvas.vue';
+import EffectWorkflowBranchTree from './components/EffectWorkflowBranchTree.vue';
 import ProductImportEditor from './components/ProductImportEditor.vue';
 import {
   cloneVideoConfig,
@@ -108,6 +112,12 @@ const removedProducts = ref<EffectImportRemovedProduct[]>([]);
 const saveState = ref<EffectImportSaveState>('clean');
 const transitioning = ref(false);
 const pendingStep = ref<number | null>(null);
+const branchTreeOpen = ref(false);
+const branchTree = ref<EffectWorkflowBranchTreeData | null>(null);
+const branchTreeLoading = ref(false);
+const branchTreeError = ref('');
+const branchSwitching = ref(false);
+let branchController: AbortController | null = null;
 const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
@@ -368,14 +378,6 @@ const saveWorkflowNodeState = async (keepalive = false): Promise<boolean> => {
 const isCurrentContext = (projectId: string, generation: number): boolean =>
   loadedProjectId.value === projectId && generationGate.current(generation);
 
-const relockDownstreamNode = (): void => {
-  if (!workspace.value) return;
-  workspace.value.currentNode = 'SOURCE_IMPORT';
-  workspace.value.nodeStatuses.SOURCE_IMPORT = 'CURRENT';
-  workspace.value.nodeStatuses.AI_INFO_EXTRACTION = 'LOCKED';
-  activeStep.value = 0;
-};
-
 const syncWorkspaceSummary = (): void => {
   if (!workspace.value || !draft.value) return;
   const summary = workspace.value.drafts[draft.value.mode];
@@ -406,7 +408,6 @@ const markDraftMutation = (revision: number): void => {
   draft.value.validationIssues = [];
   draft.value.issueCount = 0;
   draft.value.updatedAt = new Date().toISOString();
-  relockDownstreamNode();
   syncWorkspaceSummary();
 };
 
@@ -455,7 +456,6 @@ const restorePendingDraftEdits = (): void => {
     const pending = productDraftBuffer.get(productId);
     if (pending) syncEditableProductSnapshot(productId, pending.value);
   });
-  if (globalPending || productDraftBuffer.has()) relockDownstreamNode();
 };
 
 const applyMaterialMutation = (
@@ -593,6 +593,9 @@ const refreshRemovedProducts = async (): Promise<void> => {
 };
 
 const loadProject = async (projectId: string): Promise<void> => {
+  branchController?.abort();
+  branchTreeOpen.value = false;
+  branchTree.value = null;
   clearPendingTimers();
   clearEffectWorkspacePrefetches();
   activationSequence += 1;
@@ -697,7 +700,6 @@ const flushGlobalConfig = async (persistNodeState = true): Promise<boolean> => {
         draft.value.globalConfig = cloneVideoConfig(latest.value);
         draft.value.validatedRevision = null;
       }
-      relockDownstreamNode();
     },
   );
   if (!result) return false;
@@ -714,7 +716,6 @@ const scheduleProductSave = (productId: string, snapshot: EditableProductSnapsho
   productDraftBuffer.edit(productId, snapshot);
   saveState.value = 'dirty';
   if (draft.value) draft.value.validatedRevision = null;
-  relockDownstreamNode();
   clearTimeout(productTimers.get(productId));
   productTimers.set(
     productId,
@@ -1390,7 +1391,60 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
   }
 };
 
-const previewFinalOutputItem = async (selection: { templateId: string; variantId: string }): Promise<void> => {
+const loadBranchTree = async (): Promise<void> => {
+  if (!currentProjectId.value) return;
+  branchController?.abort();
+  branchController = new AbortController();
+  const projectId = currentProjectId.value;
+  branchTreeLoading.value = true;
+  branchTreeError.value = '';
+  try {
+    const result = await getEffectWorkflowBranchTree(projectId, branchController.signal);
+    if (currentProjectId.value === projectId) branchTree.value = result.data;
+  } catch (error) {
+    if (!isAbortError(error))
+      branchTreeError.value = error instanceof Error ? error.message : '加载版本分支失败';
+  } finally {
+    branchTreeLoading.value = false;
+  }
+};
+const openBranchTree = (): void => {
+  branchTreeOpen.value = true;
+  void loadBranchTree();
+};
+const closeBranchTree = (): void => {
+  if (branchSwitching.value) return;
+  branchTreeOpen.value = false;
+  branchController?.abort();
+};
+const selectBranch = async (workflowRunId: string): Promise<void> => {
+  if (!currentProjectId.value || branchSwitching.value) return;
+  if (workspace.value?.workflowRunId === workflowRunId) {
+    closeBranchTree();
+    return;
+  }
+  branchSwitching.value = true;
+  const projectId = currentProjectId.value;
+  try {
+    if (!(await flushPendingEdits()) || hasPendingDraftEdits()) {
+      showNotice('节点草稿保存失败，已阻止分支切换', 'error');
+      return;
+    }
+    await activateEffectWorkflowBranch(projectId, workflowRunId);
+    branchTreeOpen.value = false;
+    branchController?.abort();
+    await loadProject(projectId);
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '切换版本分支失败', 'error');
+  } finally {
+    branchSwitching.value = false;
+  }
+};
+
+const previewFinalOutputItem = async (selection: {
+  templateId: string;
+  variantId: string;
+}): Promise<void> => {
   const workflowRunId = workspace.value?.workflowRunId;
   if (!currentProjectId.value || !workflowRunId) return;
   mixPreviewTarget.value = {
@@ -1470,6 +1524,7 @@ defineExpose({
 });
 
 onBeforeUnmount(() => {
+  branchController?.abort();
   window.removeEventListener('beforeunload', warnBeforeUnload);
   clearPendingTimers();
   clearTimeout(noticeTimer);
@@ -1509,7 +1564,21 @@ onBeforeUnmount(() => {
     </section>
 
     <template v-else>
-      <EffectWorkflowCanvas :active-step="activeStep" @select="selectWorkflowStep" />
+      <EffectWorkflowCanvas
+        :active-step="activeStep"
+        @select="selectWorkflowStep"
+        @branches="openBranchTree"
+      />
+      <EffectWorkflowBranchTree
+        v-if="branchTreeOpen"
+        :tree="branchTree"
+        :loading="branchTreeLoading"
+        :error="branchTreeError"
+        :switching="branchSwitching"
+        @close="closeBranchTree"
+        @retry="loadBranchTree"
+        @select="selectBranch"
+      />
 
       <Transition name="node-switch">
         <div
@@ -1776,7 +1845,10 @@ onBeforeUnmount(() => {
             "
             :status-detail="
               [
-                `revision ${draft?.revision ?? 0}`,
+                singleProduct?.sourcePackageRevision !== null &&
+                singleProduct?.sourcePackageRevision !== undefined
+                  ? `已确认版本 ${singleProduct.sourcePackageRevision}`
+                  : '资料包尚未确认',
                 `${draft?.productCount ?? 0} 个产品`,
                 failedProductCount ? `${failedProductCount} 个产品存在失败资料` : '',
               ]

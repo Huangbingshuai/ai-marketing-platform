@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { Check, ChevronRight } from '@lucide/vue';
+import { Check, ChevronRight, GitBranch } from '@lucide/vue';
 import { computed } from 'vue';
 
 const props = defineProps<{
   activeStep: number;
 }>();
-const emit = defineEmits<{ select: [step: number] }>();
+const emit = defineEmits<{ select: [step: number]; branches: [] }>();
 
 const nodes = [
   {
@@ -66,9 +66,14 @@ const nodeState = (index: number): NodeState => {
         <h2>{{ currentNode.title }}</h2>
         <p>{{ currentNode.description }}</p>
       </div>
-      <div class="effect-flow__progress" aria-label="当前步骤">
-        <strong>{{ currentStepLabel }}</strong
-        ><span>/ 06</span>
+      <div class="effect-flow__actions">
+        <button type="button" class="effect-flow__branch-button" @click="emit('branches')">
+          <GitBranch :size="15" aria-hidden="true" />查看版本分支树
+        </button>
+        <div class="effect-flow__progress" aria-label="当前步骤">
+          <strong>{{ currentStepLabel }}</strong
+          ><span>/ 06</span>
+        </div>
       </div>
     </header>
 
@@ -148,6 +153,26 @@ const nodeState = (index: number): NodeState => {
   align-items: baseline;
   color: #253047;
 }
+.effect-flow__actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.effect-flow__branch-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 11px;
+  color: #2455b8;
+  background: #f6f9ff;
+  border: 1px solid #cbdafa;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.effect-flow__branch-button:hover { background: #eaf1ff; }
+.effect-flow__branch-button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .effect-flow__progress strong {
   color: #2563eb;
   font-size: 30px;
@@ -280,5 +305,8 @@ const nodeState = (index: number): NodeState => {
   .effect-flow__title-row p {
     max-width: 72vw;
   }
+  .effect-flow__title-row { gap: 8px; }
+  .effect-flow__actions { align-items: flex-end; flex-direction: column-reverse; gap: 5px; }
+  .effect-flow__branch-button { white-space: nowrap; }
 }
 </style>

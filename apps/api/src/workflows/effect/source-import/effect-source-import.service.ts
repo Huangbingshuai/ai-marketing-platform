@@ -506,7 +506,7 @@ export class EffectSourceImportService {
     const byKey = new Map(artifacts.map((artifact) => [artifact.artifactKey, artifact]));
     for (const product of record.products) {
       const presented = value.products.find((item) => item.id === product.id);
-      if (!presented || !normalizeProductName(product.name)) continue;
+      if (!presented) continue;
       const candidates = this.artifactCandidates(product);
       const source = byKey.get(`source-package:${product.id}`);
       const config = byKey.get(`effective-video-config:${product.id}`);
@@ -527,7 +527,9 @@ export class EffectSourceImportService {
     return value;
   }
 
-  private workspaceValue(record: EffectWorkspaceRecord): GetEffectImportWorkspaceData['workspace'] {
+  private async workspaceValue(
+    record: EffectWorkspaceRecord,
+  ): Promise<GetEffectImportWorkspaceData['workspace']> {
     const single = record.drafts.find((draft) => draft.mode === 'SINGLE');
     const batch = record.drafts.find((draft) => draft.mode === 'BATCH');
     if (!single || !batch)
@@ -537,7 +539,17 @@ export class EffectSourceImportService {
         'INTERNAL_ERROR',
       );
     const current = record.currentMode === 'SINGLE' ? single : batch;
-    const completed = current.status === 'COMPLETED';
+    const committedPackages = await this.repository.sourceWorkingArtifacts(
+      record.projectId,
+      record.workflowRunId,
+    );
+    const completed =
+      current.status === 'COMPLETED' ||
+      committedPackages.some(
+        (artifact) =>
+          artifact.artifactKey.startsWith('source-package:') &&
+          artifact.availability === 'AVAILABLE',
+      );
     return {
       id: record.id,
       projectId: record.projectId,
@@ -568,7 +580,10 @@ export class EffectSourceImportService {
 
   async getWorkspace(projectId: string): Promise<GetEffectImportWorkspaceData> {
     const record = await this.initialized(projectId);
-    return { workspace: this.workspaceValue(record), defaultConfig: DEFAULT_EFFECT_VIDEO_CONFIG };
+    return {
+      workspace: await this.workspaceValue(record),
+      defaultConfig: DEFAULT_EFFECT_VIDEO_CONFIG,
+    };
   }
 
   async switchMode(
@@ -583,7 +598,7 @@ export class EffectSourceImportService {
     const draft = await this.repository.draft(projectId, modeValue);
     if (!draft) throw notFound();
     return {
-      workspace: this.workspaceValue(record),
+      workspace: await this.workspaceValue(record),
       draft: await this.draftWithCommitState(draft),
     };
   }

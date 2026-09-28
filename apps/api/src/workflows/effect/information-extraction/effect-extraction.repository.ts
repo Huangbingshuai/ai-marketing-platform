@@ -98,15 +98,15 @@ export class EffectExtractionRepository {
   }
 
   async currentDependencySnapshot(projectId: string, productId: string) {
-    const workspace = await this.prisma.effectImportWorkspace.findUnique({
-      where: { projectId },
+    const product = await this.prisma.effectImportProduct.findFirst({
+      where: { projectId, id: productId },
       select: { workflowRunId: true },
     });
-    if (!workspace) return null;
+    if (!product) return null;
     const artifacts = await this.prisma.workingArtifact.findMany({
       where: {
         projectId,
-        workflowRunId: workspace.workflowRunId,
+        workflowRunId: product.workflowRunId,
         nodeId: 'SOURCE_IMPORT',
         artifactKey: `source-package:${productId}`,
       },
@@ -119,7 +119,7 @@ export class EffectExtractionRepository {
       where: {
         projectId_workflowRunId_nodeId: {
           projectId,
-          workflowRunId: workspace.workflowRunId,
+          workflowRunId: product.workflowRunId,
           nodeId: 'INFORMATION_EXTRACTION',
         },
       },
@@ -222,7 +222,7 @@ export class EffectExtractionRepository {
           updatedAt: material.updatedAt.toISOString(),
         }));
       const workspace = await transaction.effectImportWorkspace.findUnique({
-        where: { projectId },
+        where: { projectId_id: { projectId, id: draft.workspaceId } },
         select: { workflowRunId: true },
       });
       if (!workspace) return { kind: 'NOT_FOUND' as const };

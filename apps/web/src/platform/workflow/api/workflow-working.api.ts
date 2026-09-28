@@ -1,16 +1,138 @@
 import type {
+  ActivateEffectWorkflowBranchData,
   ActivateWorkflowNodeData,
   ApiResponse,
+  EffectWorkflowBranchTreeData,
+  EffectWorkflowBranchNodeId,
   PutWorkflowNodeStateData,
   PutWorkflowNodeStateRequest,
   WorkingArtifactListData,
   WorkingArtifactListQuery,
+  WorkingArtifact,
   WorkflowNodeState,
   WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
 import { requestJson } from '../../../api/http-client';
 
 const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
+
+const branchRevisionPrefixes: Record<EffectWorkflowBranchNodeId, string> = {
+  SOURCE_IMPORT: 'source-package:',
+  INFORMATION_EXTRACTION: 'marketing-insight:',
+  PROMPT_GENERATION: 'prompt-batch:',
+  SEGMENT_RENDER: 'render-batch:',
+  TEMPLATE_MIX: 'mix-template:',
+  FINAL_OUTPUT: 'final-delivery:',
+};
+const revisionsOf = (artifacts: WorkingArtifact[]): number[] =>
+  [...new Set(artifacts.map((artifact) => artifact.revision))].sort((a, b) => a - b);
+const singleRevision = (revisions: number[]): number | null =>
+  revisions.length === 1 ? revisions[0]! : null;
+const artifactCreatedAt = (artifacts: WorkingArtifact[]): string | null =>
+  artifacts.length
+    ? new Date(
+        Math.min(...artifacts.map((artifact) => Date.parse(artifact.createdAt))),
+      ).toISOString()
+    : null;
+
+// Compatibility for a running older API process whose branch DTO predates revision fields.
+// Read confirmed revisions from its authoritative project-scoped WorkingArtifact endpoint.
+const restoreRootBranchRevisions = async (
+  projectId: string,
+  tree: EffectWorkflowBranchTreeData,
+  signal?: AbortSignal,
+): Promise<EffectWorkflowBranchTreeData> => {
+  const branches = await Promise.all(
+    tree.branches.map(async (branch) => {
+      if (
+        branch.parentWorkflowRunId ||
+        !branch.nodes.some(
+          (node) =>
+            node.artifactCount > 0 &&
+            ((node.revision === undefined && !node.revisions?.length) ||
+              node.artifactCreatedAt === undefined),
+        )
+      )
+        return branch;
+      const result = await listWorkingArtifacts(
+        projectId,
+        {
+          workflowRunId: branch.workflowRunId,
+          workflow: 'EFFECT',
+          space: 'EFFECT',
+        },
+        signal,
+      );
+      const artifacts = result.data.items;
+      const matching = (prefix: string) =>
+        artifacts.filter((artifact) => artifact.artifactKey.startsWith(prefix));
+      const revisionsFor = (prefix: string) => revisionsOf(matching(prefix));
+      return {
+        ...branch,
+        nodes: branch.nodes.map((node) => {
+          const revisions = revisionsFor(branchRevisionPrefixes[node.nodeId]);
+          return {
+            ...node,
+            revisions,
+            revision: singleRevision(revisions),
+            artifactCreatedAt: artifactCreatedAt(matching(branchRevisionPrefixes[node.nodeId])),
+          };
+        }),
+        templates: branch.templates.map((template) => {
+          const templateRevisions = revisionsFor(`mix-template:${template.templateId}`);
+          const fillRevisions = revisionsFor(`timeline-project:${template.templateId}:`);
+          const packagingRevisions = revisionsFor(`timeline-package:${template.templateId}:`);
+          const deliveries = artifacts.filter(
+            (artifact) => artifact.artifactKey === `final-delivery:${template.templateId}`,
+          );
+          const deliveryRevisions = revisionsOf(deliveries);
+          return {
+            ...template,
+            templateRevision: singleRevision(templateRevisions),
+            templateRevisions,
+            fillRevision: singleRevision(fillRevisions),
+            fillRevisions,
+            fillCreatedAt: artifactCreatedAt(matching(`timeline-project:${template.templateId}:`)),
+            packagingRevision: singleRevision(packagingRevisions),
+            packagingRevisions,
+            packagingCreatedAt: artifactCreatedAt(
+              matching(`timeline-package:${template.templateId}:`),
+            ),
+            deliveryRevision: singleRevision(deliveryRevisions),
+            deliveryRevisions,
+            deliveryCount: deliveries.length,
+            deliveryCreatedAt: artifactCreatedAt(deliveries),
+          };
+        }),
+      };
+    }),
+  );
+  return { ...tree, branches };
+};
+
+export const getEffectWorkflowBranchTree = async (
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectWorkflowBranchTreeData>> => {
+  const result = await requestJson<ApiResponse<EffectWorkflowBranchTreeData>>(
+    `${projectPath(projectId)}/workflow-runs/effect/branches`,
+    {
+      operation: '加载效果类版本分支树',
+      signal,
+    },
+  );
+  return { ...result, data: await restoreRootBranchRevisions(projectId, result.data, signal) };
+};
+
+export const activateEffectWorkflowBranch = (
+  projectId: string,
+  workflowRunId: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<ActivateEffectWorkflowBranchData>> =>
+  requestJson(
+    `${projectPath(projectId)}/workflow-runs/effect/branches/${encodeURIComponent(workflowRunId)}/activate`,
+    { method: 'POST', operation: '切换效果类版本分支', signal },
+  );
 
 export const activateWorkflowNode = (
   projectId: string,

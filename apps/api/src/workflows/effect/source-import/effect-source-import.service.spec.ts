@@ -61,6 +61,7 @@ const serviceWith = (
       enqueueStorageCleanup: vi.fn().mockResolvedValue(undefined),
       deleteStorageCleanup: vi.fn().mockResolvedValue(undefined),
       failStorageCleanup: vi.fn().mockResolvedValue(undefined),
+      sourceWorkingArtifacts: vi.fn().mockResolvedValue([]),
       ...repository,
     } as EffectSourceImportRepository,
     {
@@ -308,6 +309,83 @@ describe('EffectSourceImportService', () => {
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       DEFAULT_EFFECT_VIDEO_CONFIG,
     );
+
+    const withCommittedPackage = serviceWith({
+      initialize,
+      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
+        {
+          artifactKey: 'source-package:product-a',
+          revision: 2,
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        },
+      ]),
+    } as Partial<EffectSourceImportRepository>);
+    const editedDraftWorkspace = await withCommittedPackage.getWorkspace(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    );
+    expect(editedDraftWorkspace.workspace.drafts.SINGLE.status).toBe('DRAFT');
+    expect(editedDraftWorkspace.workspace.nodeStatuses.AI_INFO_EXTRACTION).toBe('AVAILABLE');
+  });
+
+  it('shows the confirmed source revision even when product naming is deferred to extraction', async () => {
+    const now = new Date('2026-08-20T00:00:00.000Z');
+    const productId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const record = {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      mode: 'SINGLE',
+      status: 'DRAFT',
+      revision: 9,
+      validatedRevision: null,
+      validationIssues: [],
+      globalConfig: DEFAULT_EFFECT_VIDEO_CONFIG,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      products: [
+        {
+          id: productId,
+          projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          draftId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          status: 'ACTIVE',
+          removedAt: null,
+          purgeAfter: null,
+          name: '',
+          category: '',
+          sku: '',
+          normalizedSku: '',
+          commerceUrl: null,
+          configOverride: {},
+          sortOrder: 0,
+          sourceManifestImportId: null,
+          sourceManifestRowNumber: null,
+          materials: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    const service = serviceWith({
+      initialize: vi.fn().mockResolvedValue({}),
+      draft: vi.fn().mockResolvedValue(record),
+      workspace: vi.fn().mockResolvedValue({ workflowRunId: 'run-a' }),
+      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
+        {
+          artifactKey: `source-package:${productId}`,
+          revision: 3,
+          contentHash: 'previous-confirmed-content',
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        },
+      ]),
+    } as Partial<EffectSourceImportRepository>);
+
+    const draft = await service.getDraft('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'SINGLE');
+
+    expect(draft.revision).toBe(9);
+    expect(draft.products[0]?.sourcePackageRevision).toBe(3);
+    expect(draft.products[0]?.commitStatus).toBe('DRAFT_CHANGED');
   });
 
   it('validates a link only after the product is found in the scoped project draft', async () => {

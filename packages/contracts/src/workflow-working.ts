@@ -72,6 +72,10 @@ export type WorkingArtifactFile = {
 export type WorkflowRun = {
   id: string;
   projectId: string;
+  parentWorkflowRunId: string | null;
+  forkNodeId: string | null;
+  forkTemplateId: string | null;
+  branchLabel: string | null;
   workflow: AssetWorkflow;
   workflowSpace: AssetWorkflowSpace;
   status: WorkflowRunStatus;
@@ -80,6 +84,62 @@ export type WorkflowRun = {
   createdAt: string;
   updatedAt: string;
 };
+
+export const EFFECT_WORKFLOW_BRANCH_NODES = [
+  'SOURCE_IMPORT',
+  'INFORMATION_EXTRACTION',
+  'PROMPT_GENERATION',
+  'SEGMENT_RENDER',
+  'TEMPLATE_MIX',
+  'FINAL_OUTPUT',
+] as const;
+export type EffectWorkflowBranchNodeId = (typeof EFFECT_WORKFLOW_BRANCH_NODES)[number];
+export type EffectWorkflowBranchNodeStatus = 'CONFIRMED' | 'PENDING' | 'STALE';
+export type EffectWorkflowBranchNode = {
+  nodeId: EffectWorkflowBranchNodeId;
+  status: EffectWorkflowBranchNodeStatus;
+  artifactCount: number;
+  revision?: number | null;
+  revisions?: number[];
+  artifactCreatedAt?: string | null;
+};
+export type EffectWorkflowBranchTemplate = {
+  templateId: string;
+  name: string;
+  templateRevision?: number | null;
+  templateRevisions?: number[];
+  fillRevision: number | null;
+  fillRevisions?: number[];
+  fillCreatedAt?: string | null;
+  packagingRevision: number | null;
+  packagingRevisions?: number[];
+  packagingCreatedAt?: string | null;
+  timelineVariantCount: number;
+  packagingVariantCount: number;
+  deliveryRevision?: number | null;
+  deliveryRevisions?: number[];
+  deliveryCount?: number;
+  deliveryCreatedAt?: string | null;
+};
+export type EffectWorkflowBranch = {
+  workflowRunId: string;
+  parentWorkflowRunId: string | null;
+  forkNodeId: EffectWorkflowBranchNodeId | null;
+  forkTemplateId: string | null;
+  forkMixStage?: 'TEMPLATE' | 'FILL' | 'PACKAGING' | null;
+  label: string;
+  currentNodeId: string | null;
+  createdAt: string;
+  isActive: boolean;
+  nodes: EffectWorkflowBranchNode[];
+  templates: EffectWorkflowBranchTemplate[];
+};
+export type EffectWorkflowBranchTreeData = {
+  projectId: string;
+  activeWorkflowRunId: string | null;
+  branches: EffectWorkflowBranch[];
+};
+export type ActivateEffectWorkflowBranchData = { run: WorkflowRun };
 
 export type WorkflowNodeState = {
   id: string;

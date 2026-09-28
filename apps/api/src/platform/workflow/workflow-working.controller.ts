@@ -3,6 +3,8 @@ import { pipeline } from 'node:stream/promises';
 
 import type {
   ActivateWorkflowNodeData,
+  ActivateEffectWorkflowBranchData,
+  EffectWorkflowBranchTreeData,
   PutWorkflowNodeStateData,
   WorkingArtifactListData,
   WorkflowNodeState,
@@ -38,6 +40,21 @@ import { WorkflowWorkingService } from './workflow-working.service';
 @Controller('projects/:projectId')
 export class WorkflowWorkingController {
   constructor(@Inject(WorkflowWorkingService) private readonly service: WorkflowWorkingService) {}
+
+  @Get('workflow-runs/effect/branches')
+  getEffectBranchTree(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+  ): Promise<EffectWorkflowBranchTreeData> {
+    return this.service.getEffectBranchTree(projectId);
+  }
+
+  @Post('workflow-runs/effect/branches/:workflowRunId/activate')
+  activateEffectBranch(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+  ): Promise<ActivateEffectWorkflowBranchData> {
+    return this.service.activateEffectBranch(projectId, workflowRunId);
+  }
 
   @Get('workflow-runs/active/overview')
   getActiveRunOverview(

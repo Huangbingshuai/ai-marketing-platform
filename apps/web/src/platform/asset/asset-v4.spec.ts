@@ -86,6 +86,10 @@ describe('V4 asset center mapping', () => {
     );
     expect(projectWorkspaceOverviewSource).toContain('artifact.mainPreviewUrl');
     expect(projectWorkspaceOverviewSource).toContain('artifact.revision');
+    expect(projectWorkspaceOverviewSource).toContain(
+      "artifact.artifactKey.startsWith('source-package:')",
+    );
+    expect(projectWorkspaceOverviewSource).toContain('草稿已保存');
     expect(projectWorkspaceOverviewSource).toContain("artifact.freshness === 'STALE'");
     expect(assetDrawerSource).toContain('v-else-if="!currentOnlyDetail"');
     expect(assetPreviewSource).toContain('v-if="!isCurrentOnly"');

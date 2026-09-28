@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  activateEffectWorkflowBranch,
   activateWorkflowNode,
   getActiveWorkflowRunOverview,
+  getEffectWorkflowBranchTree,
   listWorkingArtifacts,
   putWorkflowNodeState,
 } from './workflow-working.api';
@@ -15,6 +17,88 @@ const ok = (): Response =>
   });
 
 describe('workflow working API', () => {
+  it('loads and activates effect branches through project-scoped routes', async () => {
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: { projectId: 'project/one', activeWorkflowRunId: null, branches: [] },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getEffectWorkflowBranchTree('project/one');
+    await activateEffectWorkflowBranch('project/one', 'run/one');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toContain(
+      '/projects/project%2Fone/workflow-runs/effect/branches',
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toContain(
+      '/projects/project%2Fone/workflow-runs/effect/branches/run%2Fone/activate',
+    );
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).method).toBe('POST');
+  });
+  it('restores real revisions from authoritative artifacts when an older branch endpoint omits them', async () => {
+    const branch = {
+      workflowRunId: 'run-a',
+      parentWorkflowRunId: null,
+      forkNodeId: null,
+      forkTemplateId: null,
+      label: '主干',
+      currentNodeId: 'PROMPT_GENERATION',
+      createdAt: '2026-09-28T00:00:00Z',
+      isActive: true,
+      templates: [],
+      nodes: [
+        { nodeId: 'SOURCE_IMPORT', status: 'CONFIRMED', artifactCount: 2 },
+        { nodeId: 'PROMPT_GENERATION', status: 'CONFIRMED', artifactCount: 1 },
+      ],
+    };
+    const fetchMock = vi.fn().mockImplementation(
+      async (url: string) =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: url.includes('working-artifacts')
+              ? {
+                  items: [
+                    {
+                      artifactKey: 'source-package:a',
+                      revision: 1,
+                      createdAt: '2026-09-12T00:00:00Z',
+                    },
+                    {
+                      artifactKey: 'prompt-batch:a',
+                      revision: 3,
+                      createdAt: '2026-09-13T00:00:00Z',
+                    },
+                  ],
+                  total: 2,
+                }
+              : { projectId: 'project-a', activeWorkflowRunId: 'run-a', branches: [branch] },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await getEffectWorkflowBranchTree('project-a');
+
+    expect(result.data.branches[0]?.nodes[0]).toMatchObject({
+      revision: 1,
+      revisions: [1],
+      artifactCreatedAt: '2026-09-12T00:00:00.000Z',
+    });
+    expect(result.data.branches[0]?.nodes[1]).toMatchObject({
+      revision: 3,
+      revisions: [3],
+      artifactCreatedAt: '2026-09-13T00:00:00.000Z',
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toContain('workflowRunId=run-a');
+  });
   it('activates the visible node without writing a node draft', async () => {
     const fetchMock = vi.fn().mockResolvedValue(ok());
     vi.stubGlobal('fetch', fetchMock);

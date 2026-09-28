@@ -236,7 +236,9 @@ export type EffectImportDraftSummary = {
   projectId: string;
   mode: EffectImportMode;
   status: EffectImportDraftStatus;
+  /** Autosave/concurrency counter for draft edits, not the confirmed source-package version. */
   revision: number;
+  /** Draft edit revision last validated; confirmed package revisions are on each product. */
   validatedRevision: number | null;
   productCount: number;
   issueCount: number;

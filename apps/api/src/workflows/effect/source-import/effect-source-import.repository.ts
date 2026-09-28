@@ -76,34 +76,27 @@ export class EffectSourceImportRepository {
 
   async initialize(projectId: string, config: EffectVideoConfig): Promise<EffectWorkspaceRecord> {
     return this.prisma.$transaction(async (transaction) => {
-      const existingWorkspace = await transaction.effectImportWorkspace.findUnique({
-        where: { projectId },
-        select: { workflowRunId: true },
-      });
-      let workflowRunId = existingWorkspace?.workflowRunId;
-      if (!workflowRunId) {
-        const workflowRun = await transaction.workflowRun.upsert({
-          where: {
-            projectId_workflow_workflowSpace_activeKey: {
-              projectId,
-              workflow: 'EFFECT',
-              workflowSpace: 'EFFECT',
-              activeKey: 'ACTIVE',
-            },
-          },
-          create: {
-            id: randomUUID(),
+      const workflowRun = await transaction.workflowRun.upsert({
+        where: {
+          projectId_workflow_workflowSpace_activeKey: {
             projectId,
             workflow: 'EFFECT',
             workflowSpace: 'EFFECT',
+            activeKey: 'ACTIVE',
           },
-          update: { status: 'ACTIVE', lastActiveAt: new Date() },
-          select: { id: true },
-        });
-        workflowRunId = workflowRun.id;
-      }
+        },
+        create: {
+          id: randomUUID(),
+          projectId,
+          workflow: 'EFFECT',
+          workflowSpace: 'EFFECT',
+        },
+        update: { status: 'ACTIVE', lastActiveAt: new Date() },
+        select: { id: true },
+      });
+      const workflowRunId = workflowRun.id;
       const workspace = await transaction.effectImportWorkspace.upsert({
-        where: { projectId },
+        where: { projectId_workflowRunId: { projectId, workflowRunId } },
         create: { projectId, workflowRunId },
         update: { updatedAt: new Date() },
         select: { id: true, workflowRunId: true },
@@ -123,15 +116,15 @@ export class EffectSourceImportRepository {
         skipDuplicates: true,
       });
       return transaction.effectImportWorkspace.findUniqueOrThrow({
-        where: { projectId },
+        where: { projectId_workflowRunId: { projectId, workflowRunId } },
         include: workspaceInclude,
       });
     });
   }
 
   workspace(projectId: string): Promise<EffectWorkspaceRecord | null> {
-    return this.prisma.effectImportWorkspace.findUnique({
-      where: { projectId },
+    return this.prisma.effectImportWorkspace.findFirst({
+      where: { projectId, workflowRun: { activeKey: 'ACTIVE' } },
       include: workspaceInclude,
     });
   }
@@ -156,15 +149,15 @@ export class EffectSourceImportRepository {
     expectedRevision: number,
   ): Promise<EffectWorkspaceRecord | null> {
     const result = await this.prisma.effectImportWorkspace.updateMany({
-      where: { projectId, revision: expectedRevision },
+      where: { projectId, revision: expectedRevision, workflowRun: { activeKey: 'ACTIVE' } },
       data: { currentMode: mode, revision: { increment: 1 } },
     });
     return result.count === 0 ? null : this.workspace(projectId);
   }
 
   draft(projectId: string, mode: EffectImportMode): Promise<EffectDraftRecord | null> {
-    return this.prisma.effectImportDraft.findUnique({
-      where: { projectId_mode: { projectId, mode } },
+    return this.prisma.effectImportDraft.findFirst({
+      where: { projectId, mode, workspace: { workflowRun: { activeKey: 'ACTIVE' } } },
       include: draftInclude,
     });
   }
@@ -183,7 +176,7 @@ export class EffectSourceImportRepository {
     globalConfig: EffectVideoConfig,
   ): Promise<EffectDraftRecord | null> {
     const result = await this.prisma.effectImportDraft.updateMany({
-      where: { projectId, mode, revision: expectedRevision },
+      where: { projectId, mode, revision: expectedRevision, workspace: { workflowRun: { activeKey: 'ACTIVE' } } },
       data: {
         globalConfig: json(globalConfig),
         revision: { increment: 1 },

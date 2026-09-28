@@ -1,6 +1,10 @@
 import type {
+  ActivateEffectWorkflowBranchData,
   ActivateWorkflowNodeData,
   AssetPreviewKind,
+  EffectWorkflowBranch,
+  EffectWorkflowBranchNodeId,
+  EffectWorkflowBranchTreeData,
   PutWorkflowNodeStateData,
   PutWorkflowNodeStateRequest,
   WorkingArtifact,
@@ -9,6 +13,7 @@ import type {
   WorkflowNodeState,
   WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
+import { EFFECT_WORKFLOW_BRANCH_NODES } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ApiHttpException } from '../../common/api-http-exception';
 import type { StoragePort, StorageRange, StoredStream } from '../file/storage.port';
@@ -16,6 +21,7 @@ import { STORAGE_PORT } from '../file/storage.port';
 import { normalizeMultipartFileName, safeOriginalFileName } from '../file/file-name';
 import { ProjectService } from '../project/project.service';
 import {
+  inheritedEffectArtifactVisible,
   WorkflowWorkingRepository,
   type WorkingArtifactRecord,
   type WorkingArtifactUpsertInput,
@@ -61,6 +67,10 @@ const toNodeState = (record: {
 const toRun = (record: {
   id: string;
   projectId: string;
+  parentWorkflowRunId: string | null;
+  forkNodeId: string | null;
+  forkTemplateId: string | null;
+  branchLabel: string | null;
   workflow: WorkingArtifactListQuery['workflow'];
   workflowSpace: WorkingArtifactListQuery['space'];
   status: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
@@ -71,6 +81,10 @@ const toRun = (record: {
 }) => ({
   id: record.id,
   projectId: record.projectId,
+  parentWorkflowRunId: record.parentWorkflowRunId,
+  forkNodeId: record.forkNodeId,
+  forkTemplateId: record.forkTemplateId,
+  branchLabel: record.branchLabel,
   workflow: record.workflow!,
   workflowSpace: record.workflowSpace!,
   status: record.status,
@@ -190,6 +204,207 @@ export class WorkflowWorkingService {
       run: toRun(run),
       nodeStates: run.nodeStates.map(toNodeState),
     };
+  }
+
+  async getEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
+    await this.projectService.get(projectId);
+    const runs = await this.repository.listEffectRunBranches(projectId);
+    const active = runs.find((run) => run.activeKey === 'ACTIVE') ?? null;
+    if (!active) return { projectId, activeWorkflowRunId: null, branches: [] };
+    const byId = new Map(runs.map((run) => [run.id, run]));
+    let root = active;
+    const seen = new Set<string>();
+    while (root.parentWorkflowRunId && !seen.has(root.id)) {
+      seen.add(root.id);
+      const parent = byId.get(root.parentWorkflowRunId);
+      if (!parent) break;
+      root = parent;
+    }
+    const inTree = new Set([root.id]);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const run of runs) {
+        if (run.parentWorkflowRunId && inTree.has(run.parentWorkflowRunId) && !inTree.has(run.id)) {
+          inTree.add(run.id);
+          changed = true;
+        }
+      }
+    }
+    type BranchArtifact = (typeof runs)[number]['workingArtifacts'][number];
+    const revisionsOf = (artifacts: BranchArtifact[]): number[] =>
+      [
+        ...new Set(
+          artifacts
+            .map((artifact) => artifact.revision)
+            .filter((revision): revision is number => typeof revision === 'number'),
+        ),
+      ].sort((a, b) => a - b);
+    const sharedRevision = (artifacts: BranchArtifact[]): number | null => {
+      const revisions = revisionsOf(artifacts);
+      return revisions.length === 1 ? revisions[0]! : null;
+    };
+    const artifactCreatedAt = (artifacts: BranchArtifact[]): string | null =>
+      artifacts.length
+        ? new Date(
+            Math.min(...artifacts.map((artifact) => artifact.createdAt.getTime())),
+          ).toISOString()
+        : null;
+    const revisionKeyPrefix: Record<EffectWorkflowBranchNodeId, string> = {
+      SOURCE_IMPORT: 'source-package:',
+      INFORMATION_EXTRACTION: 'marketing-insight:',
+      PROMPT_GENERATION: 'prompt-batch:',
+      SEGMENT_RENDER: 'render-batch:',
+      TEMPLATE_MIX: 'mix-template:',
+      FINAL_OUTPUT: 'final-delivery:',
+    };
+    const effectiveArtifacts = (runId: string, visited = new Set<string>()): BranchArtifact[] => {
+      if (visited.has(runId)) return [];
+      visited.add(runId);
+      const run = byId.get(runId);
+      if (!run) return [];
+      const local = [...run.workingArtifacts];
+      if (!run.parentWorkflowRunId || !inTree.has(run.parentWorkflowRunId)) return local;
+      const keys = new Set(local.map((artifact) => `${artifact.nodeId}:${artifact.artifactKey}`));
+      const inherited = effectiveArtifacts(run.parentWorkflowRunId, visited).filter((artifact) => {
+        const key = `${artifact.nodeId}:${artifact.artifactKey}`;
+        if (keys.has(key) || !inheritedEffectArtifactVisible(artifact, [run])) return false;
+        keys.add(key);
+        return true;
+      });
+      return [...local, ...inherited];
+    };
+    const branches: EffectWorkflowBranch[] = runs
+      .filter((run) => inTree.has(run.id))
+      .map((run) => {
+        const visibleArtifacts = effectiveArtifacts(run.id);
+        const forkNodeId =
+          EFFECT_WORKFLOW_BRANCH_NODES.find((node) => node === run.forkNodeId) ?? null;
+        const templatesById = new Map<string, EffectWorkflowBranch['templates'][number]>();
+        for (const artifact of visibleArtifacts) {
+          const match =
+            /^(mix-template|timeline-project|timeline-package|final-delivery):([^:]+)(?::.+)?$/.exec(
+              artifact.artifactKey,
+            );
+          if (!match || !match[2]) continue;
+          const template = templatesById.get(match[2]) ?? {
+            templateId: match[2],
+            name: `模板 ${match[2].slice(0, 8)}`,
+            templateRevision: null,
+            templateRevisions: [],
+            fillRevision: null,
+            fillRevisions: [],
+            fillCreatedAt: null,
+            packagingRevision: null,
+            packagingRevisions: [],
+            packagingCreatedAt: null,
+            timelineVariantCount: 0,
+            packagingVariantCount: 0,
+            deliveryRevision: null,
+            deliveryRevisions: [],
+            deliveryCount: 0,
+            deliveryCreatedAt: null,
+          };
+          if (match[1] === 'mix-template') {
+            template.name = artifact.name;
+            template.templateRevision = artifact.revision;
+            template.templateRevisions = [artifact.revision];
+          } else if (match[1] === 'timeline-project') template.timelineVariantCount += 1;
+          else if (match[1] === 'timeline-package') {
+            template.packagingVariantCount += 1;
+          } else {
+            template.deliveryRevision = artifact.revision;
+            template.deliveryRevisions = [artifact.revision];
+            template.deliveryCount = 1;
+          }
+          templatesById.set(match[2], template);
+        }
+        for (const template of templatesById.values()) {
+          const fills = visibleArtifacts.filter((artifact) =>
+            artifact.artifactKey.startsWith(`timeline-project:${template.templateId}:`),
+          );
+          const packages = visibleArtifacts.filter((artifact) =>
+            artifact.artifactKey.startsWith(`timeline-package:${template.templateId}:`),
+          );
+          const deliveries = visibleArtifacts.filter(
+            (artifact) => artifact.artifactKey === `final-delivery:${template.templateId}`,
+          );
+          template.fillRevisions = revisionsOf(fills);
+          template.packagingRevisions = revisionsOf(packages);
+          template.fillRevision = sharedRevision(fills);
+          template.packagingRevision = sharedRevision(packages);
+          template.fillCreatedAt = artifactCreatedAt(fills);
+          template.packagingCreatedAt = artifactCreatedAt(packages);
+          template.deliveryCreatedAt = artifactCreatedAt(deliveries);
+        }
+        return {
+          workflowRunId: run.id,
+          parentWorkflowRunId:
+            run.parentWorkflowRunId && inTree.has(run.parentWorkflowRunId)
+              ? run.parentWorkflowRunId
+              : null,
+          forkNodeId,
+          forkTemplateId: run.forkTemplateId,
+          forkMixStage:
+            forkNodeId !== 'TEMPLATE_MIX'
+              ? null
+              : run.workingArtifacts.some((artifact) =>
+                    artifact.artifactKey.startsWith('mix-template:'),
+                  )
+                ? 'TEMPLATE'
+                : run.workingArtifacts.some((artifact) =>
+                      artifact.artifactKey.startsWith('timeline-project:'),
+                    )
+                  ? 'FILL'
+                  : run.workingArtifacts.some((artifact) =>
+                        artifact.artifactKey.startsWith('timeline-package:'),
+                      )
+                    ? 'PACKAGING'
+                    : 'TEMPLATE',
+          label: run.branchLabel ?? (run.id === root.id ? '主干' : '未命名分支'),
+          currentNodeId: run.currentNodeId,
+          createdAt: run.createdAt.toISOString(),
+          isActive: run.id === active.id,
+          templates: [...templatesById.values()],
+          nodes: EFFECT_WORKFLOW_BRANCH_NODES.map((nodeId) => {
+            const local = visibleArtifacts.filter((artifact) => artifact.nodeId === nodeId);
+            const revisionArtifacts = local.filter((artifact) =>
+              artifact.artifactKey.startsWith(revisionKeyPrefix[nodeId]),
+            );
+            const count = {
+              current: local.filter((artifact) => artifact.freshness === 'CURRENT').length,
+              stale: local.filter((artifact) => artifact.freshness === 'STALE').length,
+            };
+            return {
+              nodeId,
+              status: count.current
+                ? ('CONFIRMED' as const)
+                : count.stale
+                  ? ('STALE' as const)
+                  : ('PENDING' as const),
+              artifactCount: count.current + count.stale,
+              revisions: revisionsOf(revisionArtifacts),
+              revision: sharedRevision(revisionArtifacts),
+              artifactCreatedAt: artifactCreatedAt(revisionArtifacts),
+            };
+          }),
+        };
+      });
+    return { projectId, activeWorkflowRunId: active.id, branches };
+  }
+
+  async activateEffectBranch(
+    projectId: string,
+    workflowRunId: string,
+  ): Promise<ActivateEffectWorkflowBranchData> {
+    await this.projectService.get(projectId);
+    const run = await this.repository.activateEffectRunBranch(projectId, workflowRunId);
+    if (!run)
+      throw new ApiHttpException(
+        '该分支尚未完成工作区迁移，无法安全切换',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
+    return { run: toRun(run) };
   }
 
   async getNodeState(projectId: string, workflowRunId: string, nodeId: string) {

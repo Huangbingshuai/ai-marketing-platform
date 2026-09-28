@@ -1,4 +1,6 @@
-import type {
+import {
+  EFFECT_WORKFLOW_BRANCH_NODES,
+  type EffectWorkflowBranchNodeId,
   AssetDirectory,
   AssetType,
   AssetWorkflow,
@@ -65,6 +67,32 @@ export const workingArtifactInclude = {
 export type WorkingArtifactRecord = Prisma.WorkingArtifactGetPayload<{
   include: typeof workingArtifactInclude;
 }>;
+
+type EffectForkScope = { forkNodeId: string | null; forkTemplateId: string | null };
+
+/** An ancestor is readable only before the child fork (or outside its template scope). */
+export const inheritedEffectArtifactVisible = (
+  artifact: Pick<WorkingArtifactRecord, 'nodeId' | 'artifactKey'>,
+  crossedForks: readonly EffectForkScope[],
+): boolean => {
+  const nodeIndex = EFFECT_WORKFLOW_BRANCH_NODES.indexOf(
+    artifact.nodeId as EffectWorkflowBranchNodeId,
+  );
+  if (nodeIndex < 0) return false;
+  return crossedForks.every(({ forkNodeId, forkTemplateId }) => {
+    const forkIndex = EFFECT_WORKFLOW_BRANCH_NODES.indexOf(
+      forkNodeId as EffectWorkflowBranchNodeId,
+    );
+    if (forkIndex < 0) return false;
+    if (nodeIndex < forkIndex) return true;
+    if (!forkTemplateId || forkIndex < 4) return false;
+    const templateMatch =
+      /^(?:mix-template|timeline-project|timeline-package|final-delivery|final-video):([^:]+)/.exec(
+        artifact.artifactKey,
+      );
+    return Boolean(templateMatch && templateMatch[1] !== forkTemplateId);
+  });
+};
 
 const jsonValue = (value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull =>
   value === undefined || value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue);
@@ -172,7 +200,13 @@ export class WorkflowWorkingRepository {
 
   findActiveRun(projectId: string, workflow: AssetWorkflow, space: AssetWorkflowSpace) {
     return this.prisma.workflowRun.findFirst({
-      where: { projectId, workflow, workflowSpace: space, status: { in: [...openRunStatuses] } },
+      where: {
+        projectId,
+        workflow,
+        workflowSpace: space,
+        activeKey: 'ACTIVE',
+        status: { in: [...openRunStatuses] },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -183,7 +217,13 @@ export class WorkflowWorkingRepository {
     space: AssetWorkflowSpace,
   ) {
     return this.prisma.workflowRun.findFirst({
-      where: { projectId, workflow, workflowSpace: space, status: { in: [...openRunStatuses] } },
+      where: {
+        projectId,
+        workflow,
+        workflowSpace: space,
+        activeKey: 'ACTIVE',
+        status: { in: [...openRunStatuses] },
+      },
       include: { nodeStates: { orderBy: [{ savedAt: 'asc' }, { id: 'asc' }] } },
       orderBy: { createdAt: 'desc' },
     });
@@ -192,6 +232,64 @@ export class WorkflowWorkingRepository {
   createRun(projectId: string, workflow: AssetWorkflow, space: AssetWorkflowSpace, id?: string) {
     return this.prisma.workflowRun.create({
       data: { ...(id ? { id } : {}), projectId, workflow, workflowSpace: space },
+    });
+  }
+
+  listEffectRunBranches(projectId: string) {
+    return this.prisma.workflowRun.findMany({
+      where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      include: {
+        workingArtifacts: {
+          where: { availability: 'AVAILABLE' },
+          select: {
+            nodeId: true,
+            freshness: true,
+            artifactKey: true,
+            revision: true,
+            name: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  async activateEffectRunBranch(projectId: string, targetRunId: string) {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "projects" WHERE "id" = ${projectId}::uuid FOR UPDATE`,
+      );
+      const runs = await transaction.workflowRun.findMany({
+        where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      });
+      const active = runs.find((run) => run.activeKey === 'ACTIVE');
+      const target = runs.find((run) => run.id === targetRunId);
+      if (!active || !target || target.status === 'COMPLETED') return null;
+      const byId = new Map(runs.map((run) => [run.id, run]));
+      const rootId = (id: string): string | null => {
+        const visited = new Set<string>();
+        let current = byId.get(id);
+        while (current?.parentWorkflowRunId) {
+          if (visited.has(current.id)) return null;
+          visited.add(current.id);
+          current = byId.get(current.parentWorkflowRunId);
+        }
+        return current?.id ?? null;
+      };
+      if (rootId(active.id) !== rootId(target.id)) return null;
+      // The effect import workspace is still a project-level singleton in legacy data.
+      // Do not expose a branch that the six existing node APIs cannot actually load.
+      const workspace = await transaction.effectImportWorkspace.findFirst({
+        where: { projectId, workflowRunId: target.id },
+      });
+      if (!workspace) return null;
+      if (active.id === target.id) return active;
+      await transaction.workflowRun.update({ where: { id: active.id }, data: { activeKey: null } });
+      return transaction.workflowRun.update({
+        where: { id: target.id },
+        data: { activeKey: 'ACTIVE', lastActiveAt: new Date() },
+      });
     });
   }
 
@@ -383,7 +481,7 @@ export class WorkflowWorkingRepository {
     });
   }
 
-  listArtifacts(
+  async listArtifacts(
     projectId: string,
     filters: {
       workflowRunId?: string;
@@ -391,21 +489,61 @@ export class WorkflowWorkingRepository {
       workflow?: AssetWorkflow;
       space?: AssetWorkflowSpace;
     },
-  ) {
-    return this.prisma.workingArtifact.findMany({
-      where: {
-        projectId,
-        ...(filters.workflowRunId ? { workflowRunId: filters.workflowRunId } : {}),
-        ...(filters.nodeId ? { nodeId: filters.nodeId } : {}),
-        workflowRun: {
-          status: { in: [...openRunStatuses] },
-          ...(filters.workflow ? { workflow: filters.workflow } : {}),
-          ...(filters.space ? { workflowSpace: filters.space } : {}),
-        },
+  ): Promise<WorkingArtifactRecord[]> {
+    const where: Prisma.WorkingArtifactWhereInput = {
+      projectId,
+      ...(filters.workflowRunId ? { workflowRunId: filters.workflowRunId } : {}),
+      ...(filters.nodeId ? { nodeId: filters.nodeId } : {}),
+      workflowRun: {
+        status: { in: [...openRunStatuses] },
+        ...(filters.workflow ? { workflow: filters.workflow } : {}),
+        ...(filters.space ? { workflowSpace: filters.space } : {}),
       },
+    };
+    const local = await this.prisma.workingArtifact.findMany({
+      where,
       include: workingArtifactInclude,
       orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
     });
+    if (!filters.workflowRunId) return local;
+    const run = await this.findRun(projectId, filters.workflowRunId);
+    if (run?.workflow !== 'EFFECT' || run.workflowSpace !== 'EFFECT' || !run.parentWorkflowRunId)
+      return local;
+
+    const result: WorkingArtifactRecord[] = [...local];
+    const seenKeys = new Set(local.map((item) => `${item.nodeId}:${item.artifactKey}`));
+    const visited = new Set([run.id]);
+    const crossedForks: EffectForkScope[] = [];
+    let child = run;
+    while (child.parentWorkflowRunId && !visited.has(child.parentWorkflowRunId)) {
+      crossedForks.push({
+        forkNodeId: child.forkNodeId,
+        forkTemplateId: child.forkTemplateId,
+      });
+      const parent = await this.findRun(projectId, child.parentWorkflowRunId);
+      if (!parent || parent.workflow !== 'EFFECT' || parent.workflowSpace !== 'EFFECT') break;
+      visited.add(parent.id);
+      const inherited = await this.prisma.workingArtifact.findMany({
+        where: {
+          projectId,
+          workflowRunId: parent.id,
+          ...(filters.nodeId ? { nodeId: filters.nodeId } : {}),
+        },
+        include: workingArtifactInclude,
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      });
+      for (const artifact of inherited) {
+        const key = `${artifact.nodeId}:${artifact.artifactKey}`;
+        if (seenKeys.has(key) || !inheritedEffectArtifactVisible(artifact, crossedForks)) continue;
+        result.push(artifact);
+        seenKeys.add(key);
+      }
+      child = parent;
+    }
+    return result.sort(
+      (left, right) =>
+        Date.parse(right.updatedAt.toISOString()) - Date.parse(left.updatedAt.toISOString()),
+    );
   }
 
   findArtifact(projectId: string, artifactId: string) {
@@ -852,7 +990,13 @@ export class WorkflowWorkingRepository {
         const fileObjectIds = record.files.map((item) => item.fileObjectId);
         if (fileObjectIds.length)
           await transaction.fileObject.updateMany({
-            where: { projectId, id: { in: fileObjectIds }, packagingFiles: { none: {} }, finalOutputItems: { none: {} }, voicePreviews: { none: {} } },
+            where: {
+              projectId,
+              id: { in: fileObjectIds },
+              packagingFiles: { none: {} },
+              finalOutputItems: { none: {} },
+              voicePreviews: { none: {} },
+            },
             data: { status: 'ORPHANED', orphanedAt: new Date() },
           });
       }

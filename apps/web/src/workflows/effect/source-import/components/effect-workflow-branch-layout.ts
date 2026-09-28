@@ -1,0 +1,289 @@
+import type {
+  EffectWorkflowBranch,
+  EffectWorkflowBranchNodeId,
+  EffectWorkflowBranchNodeStatus,
+  EffectWorkflowBranchTemplate,
+} from '@ai-marketing/contracts';
+
+// These are drawing layers. The actual effect workflow still has six fixed nodes.
+export const BRANCH_TREE_STAGES = [
+  { key: 'SOURCE_IMPORT', nodeId: 'SOURCE_IMPORT', name: '资料导入' },
+  { key: 'INFORMATION_EXTRACTION', nodeId: 'INFORMATION_EXTRACTION', name: 'AI 信息提炼' },
+  { key: 'PROMPT_GENERATION', nodeId: 'PROMPT_GENERATION', name: 'Prompt 生成' },
+  { key: 'SEGMENT_RENDER', nodeId: 'SEGMENT_RENDER', name: '视频渲染' },
+  { key: 'MIX_TEMPLATE', nodeId: 'TEMPLATE_MIX', name: '模板' },
+  { key: 'MIX_FILL', nodeId: 'TEMPLATE_MIX', name: '智能填充' },
+  { key: 'MIX_PACKAGING', nodeId: 'TEMPLATE_MIX', name: '智能成片包装' },
+  { key: 'FINAL_OUTPUT', nodeId: 'FINAL_OUTPUT', name: '成片输出' },
+] as const satisfies readonly { key: string; nodeId: EffectWorkflowBranchNodeId; name: string }[];
+export type BranchStageKey = (typeof BRANCH_TREE_STAGES)[number]['key'];
+export const BRANCH_TREE_AXIS_WIDTH = 218;
+export const BRANCH_TREE_NODE_WIDTH = 128;
+export const BRANCH_TREE_NODE_HEIGHT = 72;
+export const BRANCH_TREE_LEAF_GAP = 188;
+export const BRANCH_TREE_ROW_GAP = 116;
+export const BRANCH_TREE_TOP = 72;
+
+export type BranchTreeNode = {
+  key: string;
+  workflowRunId: string;
+  stageKey: BranchStageKey;
+  nodeId: EffectWorkflowBranchNodeId;
+  stageIndex: number;
+  templateId: string | null;
+  templateName: string | null;
+  createdAt: string | null;
+  x: number;
+  y: number;
+  status: EffectWorkflowBranchNodeStatus;
+  artifactCount: number;
+  revision: number | null;
+  revisions: number[] | undefined;
+  onActivePath: boolean;
+  isCurrentStage: boolean;
+};
+export type BranchTreeEdge = {
+  key: string;
+  path: string;
+  onActivePath: boolean;
+  pending: boolean;
+};
+export type EffectBranchLayout = {
+  nodes: BranchTreeNode[];
+  edges: BranchTreeEdge[];
+  width: number;
+  height: number;
+};
+
+const nodeKey = (runId: string, stageKey: BranchStageKey, templateId: string | null) =>
+  `${runId}:${stageKey}:${templateId ?? '-'}`;
+const forkStageIndex = (branch: EffectWorkflowBranch): number => {
+  if (branch.forkNodeId === 'TEMPLATE_MIX') {
+    if (branch.forkMixStage === 'PACKAGING') return 6;
+    if (branch.forkMixStage === 'FILL') return 5;
+  }
+  return Math.max(
+    0,
+    BRANCH_TREE_STAGES.findIndex((stage) => stage.nodeId === branch.forkNodeId),
+  );
+};
+
+export function buildEffectBranchLayout(
+  branches: EffectWorkflowBranch[],
+  axisWidth = BRANCH_TREE_AXIS_WIDTH,
+): EffectBranchLayout {
+  const byId = new Map(branches.map((branch) => [branch.workflowRunId, branch]));
+  const children = new Map<string | null, EffectWorkflowBranch[]>();
+  for (const branch of branches) {
+    const parentId =
+      branch.parentWorkflowRunId && byId.has(branch.parentWorkflowRunId)
+        ? branch.parentWorkflowRunId
+        : null;
+    children.set(parentId, [...(children.get(parentId) ?? []), branch]);
+  }
+  const ordered: EffectWorkflowBranch[] = [];
+  const visited = new Set<string>();
+  const visit = (branch: EffectWorkflowBranch) => {
+    if (visited.has(branch.workflowRunId)) return;
+    visited.add(branch.workflowRunId);
+    ordered.push(branch);
+    for (const child of children.get(branch.workflowRunId) ?? []) visit(child);
+  };
+  for (const root of children.get(null) ?? []) visit(root);
+  for (const branch of branches) visit(branch);
+
+  const ownerAt = (
+    branch: EffectWorkflowBranch,
+    stageIndex: number,
+    templateId: string | null,
+  ): EffectWorkflowBranch => {
+    let source = branch;
+    const seen = new Set<string>();
+    while (source.parentWorkflowRunId && !seen.has(source.workflowRunId)) {
+      seen.add(source.workflowRunId);
+      const beforeFork = stageIndex < forkStageIndex(source);
+      const otherTemplate =
+        stageIndex >= 4 && !!source.forkTemplateId && source.forkTemplateId !== templateId;
+      if (!beforeFork && !otherTemplate) break;
+      const parent = byId.get(source.parentWorkflowRunId);
+      if (!parent) break;
+      source = parent;
+    }
+    return source;
+  };
+  const active = branches.find((branch) => branch.isActive);
+  const nodes: BranchTreeNode[] = [];
+  const templateFor = (branch: EffectWorkflowBranch): (EffectWorkflowBranchTemplate | null)[] => {
+    if (branch.forkTemplateId && forkStageIndex(branch) >= 4) {
+      const scoped = branch.templates.find(
+        (template) => template.templateId === branch.forkTemplateId,
+      );
+      return [
+        scoped ?? {
+          templateId: branch.forkTemplateId,
+          name: '模板',
+          fillRevision: null,
+          packagingRevision: null,
+          timelineVariantCount: 0,
+          packagingVariantCount: 0,
+        },
+      ];
+    }
+    return branch.templates.length ? branch.templates : [null];
+  };
+  for (const branch of ordered) {
+    const start = branch.parentWorkflowRunId ? forkStageIndex(branch) : 0;
+    for (
+      let stageIndex = start;
+      stageIndex < Math.min(4, BRANCH_TREE_STAGES.length);
+      stageIndex++
+    ) {
+      const stage = BRANCH_TREE_STAGES[stageIndex]!;
+      const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
+      const ownerId = active ? ownerAt(active, stageIndex, null).workflowRunId : null;
+      nodes.push({
+        key: nodeKey(branch.workflowRunId, stage.key, null),
+        workflowRunId: branch.workflowRunId,
+        stageKey: stage.key,
+        nodeId: stage.nodeId,
+        stageIndex,
+        templateId: null,
+        templateName: null,
+        createdAt: state?.artifactCreatedAt ?? null,
+        x: 0,
+        y: BRANCH_TREE_TOP + stageIndex * BRANCH_TREE_ROW_GAP,
+        status: state?.status ?? 'PENDING',
+        artifactCount: state?.artifactCount ?? 0,
+        revision: state?.revision ?? null,
+        revisions: state?.revisions,
+        onActivePath: ownerId === branch.workflowRunId,
+        isCurrentStage: ownerId === branch.workflowRunId && active?.currentNodeId === stage.nodeId,
+      });
+    }
+    for (const template of templateFor(branch)) {
+      const templateId = template?.templateId ?? null;
+      for (
+        let stageIndex = Math.max(4, start);
+        stageIndex < BRANCH_TREE_STAGES.length;
+        stageIndex++
+      ) {
+        const stage = BRANCH_TREE_STAGES[stageIndex]!;
+        const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
+        const count =
+          stage.key === 'MIX_TEMPLATE'
+            ? Number(
+                !!template &&
+                  (template.templateRevision != null || !('templateRevision' in template)),
+              )
+            : stage.key === 'MIX_FILL'
+              ? (template?.timelineVariantCount ?? 0)
+              : stage.key === 'MIX_PACKAGING'
+                ? (template?.packagingVariantCount ?? 0)
+                : (template?.deliveryCount ??
+                  (branch.templates.length === 1 ? state?.artifactCount : 0) ??
+                  0);
+        const revision =
+          stage.key === 'MIX_TEMPLATE'
+            ? (template?.templateRevision ?? null)
+            : stage.key === 'MIX_FILL'
+              ? (template?.fillRevision ?? null)
+              : stage.key === 'MIX_PACKAGING'
+                ? (template?.packagingRevision ?? null)
+                : (template?.deliveryRevision ??
+                  (branch.templates.length === 1 ? state?.revision : null) ??
+                  null);
+        const revisions =
+          stage.key === 'MIX_TEMPLATE'
+            ? template?.templateRevisions
+            : stage.key === 'MIX_FILL'
+              ? template?.fillRevisions
+              : stage.key === 'MIX_PACKAGING'
+                ? template?.packagingRevisions
+                : (template?.deliveryRevisions ??
+                  (branch.templates.length === 1 ? state?.revisions : undefined));
+        const ownerId = active ? ownerAt(active, stageIndex, templateId).workflowRunId : null;
+        nodes.push({
+          key: nodeKey(branch.workflowRunId, stage.key, templateId),
+          workflowRunId: branch.workflowRunId,
+          stageKey: stage.key,
+          nodeId: stage.nodeId,
+          stageIndex,
+          templateId,
+          templateName: template?.name ?? null,
+          createdAt:
+            stage.key === 'MIX_FILL'
+              ? (template?.fillCreatedAt ?? null)
+              : stage.key === 'MIX_PACKAGING'
+                ? (template?.packagingCreatedAt ?? null)
+                : stage.key === 'FINAL_OUTPUT'
+                  ? (template?.deliveryCreatedAt ?? null)
+                  : null,
+          x: 0,
+          y: BRANCH_TREE_TOP + stageIndex * BRANCH_TREE_ROW_GAP,
+          status: count > 0 ? (state?.status ?? 'CONFIRMED') : 'PENDING',
+          artifactCount: count,
+          revision,
+          revisions,
+          onActivePath: ownerId === branch.workflowRunId,
+          isCurrentStage:
+            ownerId === branch.workflowRunId && active?.currentNodeId === stage.nodeId,
+        });
+      }
+    }
+  }
+
+  const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
+  const parentByKey = new Map<string, string>();
+  const childrenByKey = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (node.stageIndex === 0) continue;
+    const branch = byId.get(node.workflowRunId);
+    if (!branch) continue;
+    const previousStage = BRANCH_TREE_STAGES[node.stageIndex - 1]!;
+    const previousTemplateId = node.stageIndex === 4 ? null : node.templateId;
+    const source = ownerAt(branch, node.stageIndex - 1, previousTemplateId);
+    const parentKey = nodeKey(source.workflowRunId, previousStage.key, previousTemplateId);
+    if (!nodeByKey.has(parentKey)) continue;
+    parentByKey.set(node.key, parentKey);
+    childrenByKey.set(parentKey, [...(childrenByKey.get(parentKey) ?? []), node.key]);
+  }
+  const roots = nodes.filter((node) => !parentByKey.has(node.key));
+  let nextLeaf = 0;
+  const positioned = new Set<string>();
+  const place = (node: BranchTreeNode): number => {
+    if (positioned.has(node.key)) return node.x;
+    positioned.add(node.key);
+    const descendants = (childrenByKey.get(node.key) ?? [])
+      .map((key) => nodeByKey.get(key))
+      .filter((child): child is BranchTreeNode => !!child);
+    const descendantXs = descendants.map(place);
+    node.x = descendantXs.length
+      ? (descendantXs[0]! + descendantXs[descendantXs.length - 1]!) / 2
+      : axisWidth + BRANCH_TREE_NODE_WIDTH / 2 + nextLeaf++ * BRANCH_TREE_LEAF_GAP;
+    return node.x;
+  };
+  for (const root of roots) place(root);
+  for (const node of nodes) if (!positioned.has(node.key)) place(node);
+
+  const edges: BranchTreeEdge[] = [];
+  for (const node of nodes) {
+    const parentKey = parentByKey.get(node.key);
+    const parent = parentKey ? nodeByKey.get(parentKey) : null;
+    if (!parent) continue;
+    const fromY = parent.y + BRANCH_TREE_NODE_HEIGHT / 2;
+    const toY = node.y - BRANCH_TREE_NODE_HEIGHT / 2 - 5;
+    const middle = (fromY + toY) / 2;
+    edges.push({
+      key: `${parent.key}->${node.key}`,
+      path: `M ${parent.x} ${fromY} C ${parent.x} ${middle}, ${node.x} ${middle}, ${node.x} ${toY}`,
+      onActivePath: parent.onActivePath && node.onActivePath,
+      pending: parent.status === 'PENDING' || node.status === 'PENDING',
+    });
+  }
+  return {
+    nodes,
+    edges,
+    width: Math.max(720, axisWidth + Math.max(1, nextLeaf) * BRANCH_TREE_LEAF_GAP + 90),
+    height: BRANCH_TREE_TOP + (BRANCH_TREE_STAGES.length - 1) * BRANCH_TREE_ROW_GAP + 88,
+  };
+}

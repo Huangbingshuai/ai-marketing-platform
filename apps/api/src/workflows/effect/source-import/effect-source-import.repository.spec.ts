@@ -5,6 +5,37 @@ import type { PrismaService } from '../../../database/prisma.service';
 import { EffectSourceImportRepository } from './effect-source-import.repository';
 
 describe('EffectSourceImportRepository project isolation', () => {
+  it('keeps confirmed artifacts untouched while autosaving a product edit', async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const updateProduct = vi.fn().mockResolvedValue({ id: 'product-a' });
+    const commitValidatedArtifactsInTransaction = vi.fn();
+    const transaction = {
+      effectImportProduct: {
+        count: vi.fn().mockResolvedValue(1),
+        update: updateProduct,
+      },
+      effectImportDraft: { updateMany },
+    };
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      { commitValidatedArtifactsInTransaction } as never,
+    );
+
+    await repository.updateProduct('project-a', 'draft-a', 'product-a', 7, { name: '新名称' });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { projectId: 'project-a', id: 'draft-a', revision: 7 },
+      data: expect.objectContaining({
+        revision: { increment: 1 },
+        validatedRevision: null,
+      }),
+    });
+    expect(updateProduct).toHaveBeenCalledOnce();
+    expect(commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+  });
+
   it('initializes the active run and workspace through idempotent upserts', async () => {
     const workflowRunUpsert = vi.fn().mockResolvedValue({ id: 'run-a' });
     const workspaceUpsert = vi.fn().mockResolvedValue({
@@ -46,7 +77,7 @@ describe('EffectSourceImportRepository project isolation', () => {
     );
     expect(workspaceUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { projectId: 'project-a' },
+        where: { projectId_workflowRunId: { projectId: 'project-a', workflowRunId: 'run-a' } },
         create: { projectId: 'project-a', workflowRunId: 'run-a' },
       }),
     );

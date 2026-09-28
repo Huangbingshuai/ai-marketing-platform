@@ -1,12 +1,86 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../database/prisma.service';
 import { workflowStateHash } from './workflow-state-hash';
-import { WorkflowWorkingRepository } from './workflow-working.repository';
+import {
+  inheritedEffectArtifactVisible,
+  WorkflowWorkingRepository,
+} from './workflow-working.repository';
 
 const defaultExecutionInputHash =
   '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72';
 
 describe('WorkflowWorkingRepository', () => {
+  it('inherits only artifacts before the fork and isolates a template-scoped fork', () => {
+    const artifact = (nodeId: string, artifactKey: string) => ({ nodeId, artifactKey });
+    expect(
+      inheritedEffectArtifactVisible(artifact('SOURCE_IMPORT', 'source-package:product-a'), [
+        { forkNodeId: 'PROMPT_GENERATION', forkTemplateId: null },
+      ]),
+    ).toBe(true);
+    expect(
+      inheritedEffectArtifactVisible(artifact('PROMPT_GENERATION', 'prompt-batch:product-a'), [
+        { forkNodeId: 'PROMPT_GENERATION', forkTemplateId: null },
+      ]),
+    ).toBe(false);
+    expect(
+      inheritedEffectArtifactVisible(artifact('TEMPLATE_MIX', 'timeline-project:template-b:01'), [
+        { forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 'template-a' },
+      ]),
+    ).toBe(true);
+    expect(
+      inheritedEffectArtifactVisible(artifact('TEMPLATE_MIX', 'timeline-package:template-a:01'), [
+        { forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 'template-a' },
+      ]),
+    ).toBe(false);
+  });
+
+  it('reads confirmed ancestor artifacts without exposing forked or shadowed results', async () => {
+    const stamp = new Date('2026-09-28T00:00:00.000Z');
+    const item = (workflowRunId: string, nodeId: string, artifactKey: string) => ({
+      id: `${workflowRunId}:${artifactKey}`,
+      workflowRunId,
+      nodeId,
+      artifactKey,
+      updatedAt: stamp,
+    });
+    const child = {
+      id: 'child',
+      projectId: 'project-a',
+      workflow: 'EFFECT',
+      workflowSpace: 'EFFECT',
+      parentWorkflowRunId: 'parent',
+      forkNodeId: 'PROMPT_GENERATION',
+      forkTemplateId: null,
+    };
+    const parent = { ...child, id: 'parent', parentWorkflowRunId: null };
+    const findFirst = vi
+      .fn()
+      .mockImplementation(({ where }) =>
+        Promise.resolve(where.id === 'child' ? child : where.id === 'parent' ? parent : null),
+      );
+    const findMany = vi
+      .fn()
+      .mockImplementation(({ where }) =>
+        Promise.resolve(
+          where.workflowRunId === 'child'
+            ? [item('child', 'SOURCE_IMPORT', 'source-package:a')]
+            : [
+                item('parent', 'SOURCE_IMPORT', 'source-package:a'),
+                item('parent', 'INFORMATION_EXTRACTION', 'insight:a'),
+                item('parent', 'PROMPT_GENERATION', 'prompt-batch:a'),
+              ],
+        ),
+      );
+    const repository = new WorkflowWorkingRepository({
+      workflowRun: { findFirst },
+      workingArtifact: { findMany },
+    } as unknown as PrismaService);
+
+    const result = await repository.listArtifacts('project-a', { workflowRunId: 'child' });
+
+    expect(result.map(({ id }) => id)).toEqual(['child:source-package:a', 'parent:insight:a']);
+    expect(findFirst).toHaveBeenCalledWith({ where: { id: 'parent', projectId: 'project-a' } });
+  });
   it.each(['save', 'replace', 'hash-normalization'])(
     'does not invalidate confirmed Prompt or clips for settings %s',
     async (operation) => {
@@ -75,6 +149,7 @@ describe('WorkflowWorkingRepository', () => {
         projectId: 'project-a',
         workflow: 'EFFECT',
         workflowSpace: 'EFFECT',
+        activeKey: 'ACTIVE',
         status: { in: ['ACTIVE', 'PAUSED'] },
       },
       include: { nodeStates: { orderBy: [{ savedAt: 'asc' }, { id: 'asc' }] } },
