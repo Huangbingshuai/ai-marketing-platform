@@ -1,7 +1,12 @@
 import type { WorkingArtifact } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { aggregateWorkspaceArtifacts, renderBatchClipCount } from './project-workspace-artifacts';
+import {
+  aggregateWorkspaceArtifacts,
+  finalVideoArtifactCounts,
+  isFinalVideoArtifact,
+  renderBatchClipCount,
+} from './project-workspace-artifacts';
 
 const artifact = (
   artifactKey: string,
@@ -69,5 +74,30 @@ describe('project workspace artifact aggregation', () => {
         ),
       ),
     ).toBe(2);
+  });
+
+  it('counts confirmed final videos separately from stale or unavailable outputs', () => {
+    const completed = artifact('final-video:template:variant-1', {}, {
+      nodeId: 'FINAL_OUTPUT',
+      type: 'FINAL_VIDEO',
+    });
+    const stale = artifact('final-video:template:variant-2', {}, {
+      nodeId: 'FINAL_OUTPUT',
+      type: 'FINAL_VIDEO',
+      freshness: 'STALE',
+    });
+    const unavailable = artifact('final-video:template:variant-3', {}, {
+      nodeId: 'FINAL_OUTPUT',
+      type: 'FINAL_VIDEO',
+      availability: 'SOURCE_REMOVED',
+    });
+
+    expect(isFinalVideoArtifact(completed)).toBe(true);
+    expect(finalVideoArtifactCounts([completed, stale, unavailable])).toEqual({
+      total: 3,
+      completed: 1,
+      stale: 1,
+      unavailable: 1,
+    });
   });
 });

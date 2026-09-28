@@ -34,6 +34,7 @@ import { SPACE_LABELS, WORKFLOW_META, typeLabel } from '../asset-v4';
 import AssetPreview from './AssetPreview.vue';
 import {
   aggregateWorkspaceArtifacts,
+  finalVideoArtifactCounts,
   isRenderBatchArtifact,
   renderBatchClipCount,
 } from './project-workspace-artifacts';
@@ -85,6 +86,7 @@ const visibleArtifacts = computed(() => aggregateWorkspaceArtifacts(artifacts.va
 const renderBatchArtifact = computed(() =>
   visibleArtifacts.value.find(isRenderBatchArtifact) ?? null,
 );
+const finalVideoCounts = computed(() => finalVideoArtifactCounts(artifacts.value));
 const currentNodeIndex = computed(() => {
   const index = workflowNodes.value.findIndex(
     (node) => node.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId),
@@ -130,10 +132,18 @@ const nodeLabel = (nodeId: string): string =>
 
 const hasNodeContent = (definition: WorkflowNodeDefinition): boolean =>
   stateByNode.value.has(definition.id) ||
-  (definition.id === 'SEGMENT_RENDER' && renderBatchArtifact.value !== null);
+  (definition.id === 'SEGMENT_RENDER' && renderBatchArtifact.value !== null) ||
+  (definition.id === 'FINAL_OUTPUT' && finalVideoCounts.value.total > 0);
 
 const nodeDetail = (definition: WorkflowNodeDefinition): string => {
   const state = stateByNode.value.get(definition.id);
+  if (definition.id === 'FINAL_OUTPUT' && finalVideoCounts.value.total > 0) {
+    const { completed, stale, total, unavailable } = finalVideoCounts.value;
+    const details = [`已渲染 ${completed}/${total} 条成片`];
+    if (stale) details.push(`${stale} 条待更新`);
+    if (unavailable) details.push(`${unavailable} 条不可用`);
+    return details.join(' · ');
+  }
   if (state) return `revision ${state.revision} · ${formatTime(state.savedAt)}`;
   if (definition.id === 'SEGMENT_RENDER' && renderBatchArtifact.value)
     return `已确认 ${renderBatchClipCount(renderBatchArtifact.value)} 条视频素材`;
@@ -142,6 +152,13 @@ const nodeDetail = (definition: WorkflowNodeDefinition): string => {
 
 const nodeStatus = (definition: WorkflowNodeDefinition): string => {
   const state = stateByNode.value.get(definition.id);
+  if (definition.id === 'FINAL_OUTPUT' && finalVideoCounts.value.total > 0) {
+    const { completed, stale, total } = finalVideoCounts.value;
+    if (completed === total) return '已完成';
+    if (completed > 0) return '部分待更新';
+    if (stale > 0) return '待更新';
+    return '产物不可用';
+  }
   if (definition.id === activeNodeId.value) return '编辑中';
   if (!state) return '尚未开始';
   return '已自动保存';

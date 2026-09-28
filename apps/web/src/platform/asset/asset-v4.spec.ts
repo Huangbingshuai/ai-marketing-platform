@@ -159,4 +159,12 @@ describe('V4 asset center mapping', () => {
     expect(projectWorkspaceOverviewSource).not.toContain('definition.id === latestState?.nodeId');
     expect(projectWorkspaceOverviewSource).toContain('.draft-list button.active');
   });
+
+  it('derives final-output status from rendered video artifacts, not only saved node drafts', () => {
+    expect(projectWorkspaceOverviewSource).toContain('finalVideoArtifactCounts(artifacts.value)');
+    expect(projectWorkspaceOverviewSource).toContain("definition.id === 'FINAL_OUTPUT'");
+    expect(projectWorkspaceOverviewSource).toContain("return '已完成'");
+    expect(projectWorkspaceOverviewSource).toContain("return '待更新'");
+    expect(projectWorkspaceOverviewSource).toContain('已渲染 ${completed}/${total} 条成片');
+  });
 });

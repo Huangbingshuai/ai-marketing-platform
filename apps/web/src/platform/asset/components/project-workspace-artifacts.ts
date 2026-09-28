@@ -22,6 +22,23 @@ const productIdFromArtifact = (artifact: WorkingArtifact): string | null => {
 export const isRenderBatchArtifact = (artifact: WorkingArtifact): boolean =>
   artifact.artifactKey.startsWith('render-batch:');
 
+export const isFinalVideoArtifact = (artifact: WorkingArtifact): boolean =>
+  artifact.nodeId === 'FINAL_OUTPUT' &&
+  artifact.type === 'FINAL_VIDEO' &&
+  artifact.artifactKey.startsWith('final-video:');
+
+export const finalVideoArtifactCounts = (artifacts: readonly WorkingArtifact[]) => {
+  const outputs = artifacts.filter(isFinalVideoArtifact);
+  return {
+    total: outputs.length,
+    completed: outputs.filter(
+      ({ availability, freshness }) => availability === 'AVAILABLE' && freshness === 'CURRENT',
+    ).length,
+    stale: outputs.filter(({ freshness }) => freshness === 'STALE').length,
+    unavailable: outputs.filter(({ availability }) => availability !== 'AVAILABLE').length,
+  };
+};
+
 const isRenderClipArtifact = (artifact: WorkingArtifact): boolean =>
   artifact.artifactKey.startsWith('render-clip:');
 
