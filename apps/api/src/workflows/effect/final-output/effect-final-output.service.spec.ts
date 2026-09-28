@@ -105,6 +105,7 @@ function harness(count = 1) {
     effectFinalOutputRun: {
       findUnique: vi.fn().mockResolvedValue(null),
       findFirst: vi.fn().mockResolvedValue(outputRun),
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockImplementation(({ data }) => {
         outputRun.status = data.status;
         outputRun.items = data.items.create;
@@ -153,7 +154,14 @@ function harness(count = 1) {
     enqueueCleanup: vi.fn(),
   };
   const storage = {
-    put: vi.fn().mockResolvedValue({ key: 'stored/new.mp4', sizeBytes: 64 }),
+    put: vi.fn().mockImplementation(async (input: { stream: AsyncIterable<unknown> }) => {
+      // The real adapter consumes the upload stream before resolving. Leaving it unread lets a
+      // createReadStream open after outputFile() has removed its temporary directory.
+      for await (const _chunk of input.stream) {
+        /* consume */
+      }
+      return { key: 'stored/new.mp4', sizeBytes: 64 };
+    }),
     delete: vi.fn().mockResolvedValue(undefined),
   };
   // Real transactions roll back on throw; mirror that so "failure keeps the previous output" is
@@ -550,6 +558,20 @@ describe('atomic full packaging completion', () => {
         where: { projectId: 'p', runId: 'out', status: { in: ['QUEUED', 'RUNNING'] } },
       }),
     );
+  });
+
+  it('requeues an expired attempt without resetting completed item results', async () => {
+    const { service, db } = harness();
+    db.effectFinalOutputRun.findMany.mockResolvedValue([{ id: 'out', projectId: 'p' }]);
+    await service.recoverExpired();
+    expect(db.effectFinalOutputRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'out', status: 'RUNNING' }),
+        data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null },
+      }),
+    );
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    expect(db.effectFinalOutputItem.updateMany).not.toHaveBeenCalled();
   });
 });
 

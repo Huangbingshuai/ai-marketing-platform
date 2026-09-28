@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
@@ -70,6 +71,7 @@ const liveOverlays = (
 
 @Injectable()
 export class EffectFinalOutputService {
+  private readonly logger = new Logger(EffectFinalOutputService.name);
   constructor(
     @Inject(PrismaService) readonly db: PrismaService,
     @Inject(EffectTemplateMixService) readonly mix: EffectTemplateMixService,
@@ -537,6 +539,18 @@ export class EffectFinalOutputService {
         (run.status === 'RUNNING' && run.leaseExpiresAt && run.leaseExpiresAt > new Date())
       )
         return { terminal: true };
+      this.logger.log(
+        JSON.stringify({
+          event: 'final_output_claim',
+          projectId,
+          runId: id,
+          queueWaitMs: run.status === 'QUEUED' ? Date.now() - run.updatedAt.getTime() : null,
+          recoveryWaitMs:
+            run.status === 'RUNNING' && run.leaseExpiresAt
+              ? Math.max(0, Date.now() - run.leaseExpiresAt.getTime())
+              : null,
+        }),
+      );
       const attemptToken = randomUUID();
       await tx.effectFinalOutputRun.update({
         where: { id },
@@ -652,7 +666,11 @@ export class EffectFinalOutputService {
     const file = await this.db.fileObject.findFirstOrThrow({
       where: { projectId, workflowRunId: item.run.workflowRunId, id: fileId, status: 'AVAILABLE' },
     });
-    return { ...(await this.storage.open(file.storageKey)), mimeType: file.mimeType };
+    return {
+      ...(await this.storage.open(file.storageKey)),
+      mimeType: file.mimeType,
+      sha256: file.sha256,
+    };
   }
   async progress(
     projectId: string,

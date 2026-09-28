@@ -144,6 +144,7 @@ export class EffectFinalOutputWorkerController {
     const file = await this.service.content(query.projectId, runId, token, itemId, fileId);
     response.setHeader('content-type', file.mimeType);
     response.setHeader('content-length', file.contentLength);
+    response.setHeader('x-content-sha256', file.sha256);
     await pipeline(file.stream, response);
   }
   @Post(':runId/items/:itemId/video')

@@ -1,23 +1,35 @@
 """Confirmed timeline rendering in the existing worker. No supplier calls."""
 import asyncio
+import hashlib
 import json
 import logging
 import math
 import tempfile
+import time
 import unicodedata
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from contextvars import ContextVar
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
+import httpx
 from aio_pika.abc import AbstractIncomingMessage
 from .api import InternalApi, ApiError
+from .final_output_cache import SourceCache, retry_request
 from .packaging_media import visible_intervals
 from .packaging_provider import PackagingError
 
 LOGGER = logging.getLogger(__name__)
+SOURCE_PROBE: ContextVar[Callable[[str, Path], Awaitable[dict[str, Any]]] | None] = ContextVar('final_source_probe', default=None)
+STAGE_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar('final_stage_context', default=None)
+
+
+def stage(name: str, started: float, **values: int | str | bool) -> None:
+    LOGGER.info('final_output_stage %s', json.dumps({**(STAGE_CONTEXT.get() or {}),
+        'stage': name, 'durationMs': round((time.monotonic() - started) * 1000), **values}, ensure_ascii=False))
 TRANSITIONS = {
     '叠化': 'fade', '推镜': 'zoomin', '闪白': 'fadewhite', '缩放': 'zoomin',
     '左滑': 'slideleft', '上推': 'slideup', '擦除': 'wipeleft', '翻转': 'hlslice',
@@ -266,8 +278,12 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     intervals = visible_intervals(timeline)
     # Every source is probed once, and ffprobe only reads headers, so launch them together: run
     # serially these 13 process starts cost about as much as the render itself does now.
-    probed = await asyncio.gather(*(probe(path) for path in files.values()))
+    probing_started = time.monotonic()
+    source_probe = SOURCE_PROBE.get()
+    probed = await asyncio.gather(*(source_probe(file_id, path) if source_probe else probe(path)
+        for file_id, path in files.items()))
     media = dict(zip(files, probed))
+    stage('probe', probing_started, sourceCount=len(files))
     await progress(10)
     # One pass: each interval is trimmed straight out of its source clip inside the filter graph,
     # so the timeline is never encoded to intermediate files and decoded a second time.
@@ -411,9 +427,13 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     filters += [f'[{current}]fps={frame_rate},subtitles=captions.ass,format=yuv420p[video]']
     output = directory / 'final.mp4'
     await progress(50)
+    encoding_started = time.monotonic()
     await encode([*inputs, '-filter_complex', ';'.join(filters), '-map', '[video]', '-map', '[audio]', '-shortest', '-t', str(duration),
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(output)], directory)
+    stage('encode', encoding_started)
+    output_probe_started = time.monotonic()
     result = await probe(output)
+    stage('output_probe', output_probe_started)
     if abs(float(result['format']['duration']) - duration) > .1:
         raise PackagingError('最终视频时长与时间轴不一致')
     video_streams = [s for s in result['streams'] if s.get('codec_type') == 'video']
@@ -434,29 +454,76 @@ class FinalOutputHandler:
         self.api, self.max_video_bytes = api, max_video_bytes
         self.max_concurrency = max_concurrency
 
+    async def _download(self, endpoint: str, file_id: str, project_id: str,
+                        headers: dict[str, str], path: Path, semaphore: asyncio.Semaphore) -> tuple[int, int]:
+        async def attempt() -> int:
+            async with semaphore:
+                try:
+                    async with self.api.client.stream('GET', f'{endpoint}/files/{file_id}', headers=headers,
+                                                      params={'projectId': project_id}) as response:
+                        status = getattr(response, 'status_code', 200)
+                        if status >= 400:
+                            raise ApiError('source unavailable', retryable=status >= 500)
+                        response.raise_for_status()
+                        size = 0
+                        digest = hashlib.sha256()
+                        with path.open('wb') as output:
+                            async for chunk in response.aiter_bytes():
+                                size += len(chunk)
+                                if size > self.max_video_bytes:
+                                    raise PackagingError('输出源文件超过处理容量')
+                                digest.update(chunk)
+                                output.write(chunk)
+                        response_headers = getattr(response, 'headers', {})
+                        expected = int(response_headers.get('content-length', '0') or 0)
+                        if expected and size != expected:
+                            raise ApiError('source download interrupted', retryable=True)
+                        expected_hash = response_headers.get('x-content-sha256')
+                        if expected_hash and digest.hexdigest() != expected_hash.strip().lower():
+                            raise ApiError('source checksum mismatch', retryable=True)
+                        return size
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                    raise ApiError('source download interrupted', retryable=True) from exc
+        size, retries = await retry_request(attempt)
+        return cast(int, size), retries
+
     async def handle(self, message: AbstractIncomingMessage, request: dict[str, Any]) -> None:
         tasks: list[asyncio.Task[None]] = []
         claimed = False
         try:
             project_id, run_id = str(UUID(request['projectId'])), str(UUID(request['runId']))
             root = f'{self.api.ROOT}/final-output-runs/{run_id}'
+            claim_started = time.monotonic()
+            # Claim changes the attempt token; retrying a lost response could consume our own lease.
             claim = await self.api.request('POST', f'{root}/claim', json={'projectId': project_id})
+            stage('claim', claim_started, projectId=project_id, runId=run_id)
             if claim['terminal']:
                 await message.ack()
                 return
             headers = {'x-attempt-token': claim['attemptToken']}
+            SourceCache.sweep()
+            cache = SourceCache(project_id, run_id)
+            download_limit = asyncio.Semaphore(8)
             # A 100-item batch can outlive RabbitMQ's delivery acknowledgement window.
             # The persisted API lease and recovery scanner own redelivery after this point.
             await message.ack()
             claimed = True
             async def heartbeat() -> None:
                 while True:
-                    await self.api.request('PUT', f'{root}/heartbeat', headers=headers, json={'projectId': project_id})
+                    async def renew() -> Any:
+                        # Four 20s attempts + 1/2/4s backoff stay inside the 120s lease.
+                        async with asyncio.timeout(20):
+                            return await self.api.request('PUT', f'{root}/heartbeat', headers=headers,
+                                json={'projectId': project_id})
+                    await retry_request(renew)
                     await asyncio.sleep(25)
             async def execute(item: dict[str, Any]) -> None:
                 endpoint = f"{root}/items/{item['id']}"
                 async def progress(value: int) -> None:
-                    await self.api.request('PUT', f'{endpoint}/progress', headers=headers, json={'projectId': project_id, 'progress': value})
+                    await retry_request(lambda: self.api.request('PUT', f'{endpoint}/progress', headers=headers,
+                        json={'projectId': project_id, 'progress': value}))
+                context = STAGE_CONTEXT.set({'projectId': project_id, 'runId': run_id, 'itemId': str(item['id'])})
+                item_started = time.monotonic()
                 try:
                     await progress(1)
                     snapshot = item['snapshot']
@@ -469,28 +536,58 @@ class FinalOutputHandler:
                     with tempfile.TemporaryDirectory(prefix='effect-output-') as temporary:
                         directory = Path(temporary)
                         paths: dict[str, Path] = {}
-                        for index, file_id in enumerate(sorted(ids)):
-                            path = directory / f'input-{index}.bin'
-                            async with self.api.client.stream('GET', f'{endpoint}/files/{file_id}', headers=headers, params={'projectId': project_id}) as response:
-                                response.raise_for_status()
-                                size = 0
-                                with path.open('wb') as output:
-                                    async for chunk in response.aiter_bytes():
-                                        size += len(chunk)
-                                        if size > self.max_video_bytes:
-                                            raise PackagingError('输出源文件超过处理容量')
-                                        output.write(chunk)
-                            paths[file_id] = path
-                        output_path = await render(snapshot, paths, directory, progress)
-                        with output_path.open('rb') as rendered_file:
-                            await self.api.request('POST', f'{endpoint}/video', headers=headers, data={'projectId': project_id}, files={'file': ('final.mp4', rendered_file, 'video/mp4')})
+                        download_started = time.monotonic()
+                        item_limit = asyncio.Semaphore(4)
+                        async def source(index: int, file_id: str) -> tuple[str, Path, int, int, bool]:
+                            async with item_limit:
+                                path = directory / f'input-{index}.bin'
+                                size, retries, hit = await cache.get(file_id, path,
+                                    lambda part: self._download(endpoint, file_id, project_id, headers, part, download_limit))
+                                return file_id, path, size, retries, hit
+                        source_tasks = [asyncio.create_task(source(index, file_id))
+                            for index, file_id in enumerate(sorted(ids))]
+                        try:
+                            sources = await asyncio.gather(*source_tasks)
+                        except BaseException:
+                            for task in source_tasks:
+                                task.cancel()
+                            await asyncio.gather(*source_tasks, return_exceptions=True)
+                            raise
+                        paths = {file_id: path for file_id, path, _, _, _ in sources}
+                        stage('download', download_started, sourceCount=len(sources),
+                            downloadBytes=sum(row[2] for row in sources), retryCount=sum(row[3] for row in sources),
+                            cacheHits=sum(int(row[4]) for row in sources))
+                        probe_context = SOURCE_PROBE.set(lambda file_id, path: cache.probe(file_id, path, probe))
+                        try:
+                            output_path = await render(snapshot, paths, directory, progress)
+                        finally:
+                            SOURCE_PROBE.reset(probe_context)
+                        upload_started = time.monotonic()
+                        async def upload() -> Any:
+                            with output_path.open('rb') as rendered_file:
+                                return await self.api.request('POST', f'{endpoint}/video', headers=headers,
+                                    data={'projectId': project_id}, files={'file': ('final.mp4', rendered_file, 'video/mp4')})
+                        _, upload_retries = await retry_request(upload)
+                        stage('upload', upload_started, uploadBytes=output_path.stat().st_size, retryCount=upload_retries)
                 except ApiError as exc:
-                    if exc.retryable:
+                    if '租约已失效' in str(exc):
                         raise
-                    await self.api.request('PUT', f'{endpoint}/progress', headers=headers, json={'projectId': project_id, 'progress': 0, 'errorMessage': '输出来源或结果校验失败，请回模板混剪恢复'})
+                    LOGGER.warning('final_output_item_failed %s', json.dumps({**(STAGE_CONTEXT.get() or {}),
+                        'exceptionType': type(exc).__name__, 'retryable': exc.retryable,
+                        'retryCount': 3 if exc.retryable else 0}))
+                    await retry_request(lambda: self.api.request('PUT', f'{endpoint}/progress', headers=headers,
+                        json={'projectId': project_id, 'progress': 0,
+                              'errorMessage': '成片源文件或上传暂时不可用，请重试失败项' if exc.retryable
+                              else '输出来源或结果校验失败，请回模板混剪恢复'}))
                 except Exception as exc:
-                    LOGGER.warning('final output failed item=%s type=%s', item['id'], type(exc).__name__)
-                    await self.api.request('PUT', f'{endpoint}/progress', headers=headers, json={'projectId': project_id, 'progress': 0, 'errorMessage': str(exc) if isinstance(exc, PackagingError) else '成片渲染失败或超时，请重试失败项'})
+                    LOGGER.warning('final_output_item_failed %s', json.dumps({**(STAGE_CONTEXT.get() or {}),
+                        'exceptionType': type(exc).__name__}))
+                    await retry_request(lambda: self.api.request('PUT', f'{endpoint}/progress', headers=headers,
+                        json={'projectId': project_id, 'progress': 0,
+                              'errorMessage': str(exc) if isinstance(exc, PackagingError) else '成片渲染失败或超时，请重试失败项'}))
+                finally:
+                    stage('item', item_started)
+                    STAGE_CONTEXT.reset(context)
             async def work() -> None:
                 pending = iter(i for i in claim['items'] if i['status'] != 'COMPLETED')
                 async def consume() -> None:
@@ -499,15 +596,19 @@ class FinalOutputHandler:
                             async with asyncio.timeout(2400):
                                 await execute(item)
                         except TimeoutError:
-                            await self.api.request('PUT', f"{root}/items/{item['id']}/progress", headers=headers,
-                                json={'projectId': project_id, 'progress': 0, 'errorMessage': '单条成片输出超过 40 分钟，已停止并保留其他成功结果'})
+                            await retry_request(lambda: self.api.request('PUT', f"{root}/items/{item['id']}/progress", headers=headers,
+                                json={'projectId': project_id, 'progress': 0, 'errorMessage': '单条成片输出超过 40 分钟，已停止并保留其他成功结果'}))
                 # 4K jobs need much more decoded-frame memory than smaller exports.
                 concurrency = min(self.max_concurrency,
                     1 if any(i['snapshot'].get('resolution') == '4K' for i in claim['items']) else self.max_concurrency)
                 async with asyncio.TaskGroup() as group:
                     for _ in range(concurrency):
                         group.create_task(consume())
-                await self.api.request('POST', f'{root}/finish', headers=headers, json={'projectId': project_id})
+                # Finish clears the attempt token, so a lost success response cannot be retried
+                # with this token. The persisted terminal state remains authoritative.
+                await self.api.request('POST', f'{root}/finish', headers=headers,
+                    json={'projectId': project_id})
+                cache.cleanup()
             tasks = [asyncio.create_task(heartbeat()), asyncio.create_task(work())]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:

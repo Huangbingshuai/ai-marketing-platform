@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import suppress
 
 from .api import InternalApi
 from .config import get_settings
@@ -8,6 +9,7 @@ from .provider import ArkProvider
 from .packaging import PackagingHandler
 from .packaging_provider import PackagingProvider
 from .final_output import FinalOutputHandler
+from .final_output_cache import SourceCache
 from .caption_voice import CaptionVoiceHandler
 from .voice_preview import VoicePreviewHandler
 
@@ -41,9 +43,21 @@ async def serve() -> None:
         VoicePreviewHandler(api, packaging_provider, packaging.requests),
         CaptionVoiceHandler(api, packaging_provider, packaging.requests),
     )
+    async def sweep_output_cache() -> None:
+        while True:
+            try:
+                # Running once per minute with a 23h59m threshold bounds retention to 24h.
+                await asyncio.to_thread(SourceCache.sweep, max_age_seconds=86_340)
+            except OSError:
+                logging.getLogger(__name__).warning('final output cache sweep failed')
+            await asyncio.sleep(60)
+    cache_sweeper = asyncio.create_task(sweep_output_cache())
     try:
         await consumer.run()
     finally:
+        cache_sweeper.cancel()
+        with suppress(asyncio.CancelledError):
+            await cache_sweeper
         await consumer.close()
         await api.close()
         await provider.close()
