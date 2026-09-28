@@ -28,6 +28,10 @@ describe('effect template mix workbench layout', () => {
     );
     expect(workflowSource).toContain('v-else-if="activeStep === 4"');
   });
+  it('keeps confirmed source clips when creating the first template', () => {
+    expect(pageSource).toContain('sourceMaterials.value = data.materials;');
+    expect(pageSource).toContain('entry.workspace.materials = sourceMaterials.value;');
+  });
   it('disables batch repackaging when the template needs a refill or any packaged source is stale', () => {
     expect(pageSource).toContain('const packagingActionBlockReason = computed(() => {');
     expect(pageSource).toContain('if (entry.needsAiFill)');

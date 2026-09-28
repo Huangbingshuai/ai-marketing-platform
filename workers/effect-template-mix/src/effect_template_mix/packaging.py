@@ -96,9 +96,10 @@ async def submit_music_safely(provider: PackagingProvider, checkpoint: dict[str,
         await save('MUSIC', {'musicSubmissionPending': True})
         try:
             task_id = await provider.submit_music(checkpoint['musicBrief'], duration)
-        except MusicRateLimited:
-            # Only the adapter's exact, explicit rejection is safe to resubmit.
-            # Timeouts, transport errors and malformed responses stay pending.
+        except (MusicRateLimited, httpx.ConnectError, httpx.ConnectTimeout):
+            # Explicit rejection or a failed connection cannot have delivered the
+            # submission body. Read/write timeouts and malformed responses may
+            # have created a paid task, so those stay pending for manual review.
             await save('MUSIC', {'musicSubmissionPending': False})
             if attempt + 1 == attempts:
                 raise

@@ -53,22 +53,28 @@ async def test_transport_failure_is_not_mislabeled_as_model_structure(failure: A
     await ark.close()
 
 
-@pytest.mark.parametrize('failure', ['rate-limit', 'timeout', 'malformed', 'exhausted', 'cancel'])
+@pytest.mark.parametrize('failure', ['rate-limit', 'connect', 'connect-timeout', 'timeout', 'malformed', 'exhausted', 'cancel'])
 async def test_submission_recovery_preserves_uncertainty_and_checks_cancel(failure: str) -> None:
     adapter = AsyncMock(spec=PackagingProvider)
     cp: dict[str, Any] = {'musicBrief': '纯器乐'}
     async def save(_: str, patch: dict[str, Any]) -> None:
         cp.update(patch)
     guard = AsyncMock()
-    if failure in ('rate-limit', 'cancel'):
-        adapter.submit_music.side_effect = [MusicRateLimited('限流'), 'saved-task']
+    if failure in ('rate-limit', 'connect', 'connect-timeout', 'cancel'):
+        first_failure = {
+            'rate-limit': MusicRateLimited('限流'),
+            'connect': httpx.ConnectError('not connected'),
+            'connect-timeout': httpx.ConnectTimeout('not connected'),
+            'cancel': MusicRateLimited('限流'),
+        }[failure]
+        adapter.submit_music.side_effect = [first_failure, 'saved-task']
         if failure == 'cancel':
             guard.side_effect = [None, RuntimeError('cancelled')]
     else:
         adapter.submit_music.side_effect = {
             'timeout': httpx.ReadTimeout('unknown'), 'malformed': PackagingError('invalid'),
             'exhausted': MusicRateLimited('限流')}[failure]
-    if failure == 'rate-limit':
+    if failure in ('rate-limit', 'connect', 'connect-timeout'):
         assert await submit_music_safely(adapter, cp, 43, save, guard, backoff_seconds=0) == 'saved-task'
         assert cp['musicTaskId'] == 'saved-task' and cp['musicSubmissionPending'] is False
         assert adapter.submit_music.await_count == 2

@@ -142,6 +142,8 @@ type TemplateUi = { selectedSlotId: string; selectedVariantId: string };
 const pageState = ref<'ERROR' | 'LOADING' | 'READY'>('LOADING');
 const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
+// Keep the confirmed pool even when a project has no templates yet.
+const sourceMaterials = ref<EffectTemplateMixMaterial[]>([]);
 const activeTemplateId = ref('');
 const draftRevision = ref<number | null>(null);
 const packagingPanel = ref<InstanceType<typeof EffectTemplateMixPackaging> | null>(null);
@@ -1365,6 +1367,7 @@ const installWorkspaceData = (
 ): void => {
   clearTimelineHistory();
   resetTimelinePlayerState();
+  sourceMaterials.value = data.materials;
   catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
   draftRevision.value = data.draftRevision;
   activeTemplateId.value =
@@ -2751,8 +2754,7 @@ const addTemplate = (): void => {
     return;
   }
   const entry = createEffectTemplateMixEntry(name);
-  entry.workspace.materials =
-    workspace.value?.materials ?? catalog.value[0]?.workspace.materials ?? [];
+  entry.workspace.materials = sourceMaterials.value;
   catalog.value.push(entry);
   uiByTemplate[entry.id] = {
     selectedSlotId: entry.workspace.template.slots[0]?.id ?? '',
