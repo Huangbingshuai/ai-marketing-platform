@@ -428,7 +428,7 @@ describe('slot-bound narration layout', () => {
     );
     expect(visualHash({ ...stacked, slots: plain.slots })).toBe(visualHash(plain));
   });
-  it('reads a row shift as the same picture, but a reorder as a new one', () => {
+  it('keeps packaging current when clips are moved or reordered on the visual timeline', () => {
     const two = variant();
     two.slots.push({ ...two.slots[0]!, id: 's2', role: 'END' });
     two.bindings.s2 = 'clip';
@@ -436,10 +436,14 @@ describe('slot-bound narration layout', () => {
     two.offsets.s2 = 0;
     two.timelineStarts = { s: 0, s2: 10 };
     const apart = { ...two, videoLanes: { s: 0, s2: 1 } };
-    // Opening an overlay row pushes every narrated row down together, which is not a change to the
-    // picture — only their order is.
+    // Track placement and order are live editor state; packaging audio remains independent.
     expect(visualHash({ ...apart, videoLanes: { s: 1, s2: 2 } })).toBe(visualHash(apart));
-    expect(visualHash({ ...apart, videoLanes: { s: 1, s2: 0 } })).not.toBe(visualHash(apart));
+    expect(visualHash({ ...apart, videoLanes: { s: 1, s2: 0 } })).toBe(visualHash(apart));
+    expect(visualHash({ ...apart, timelineStarts: { s: 2, s2: 12 } })).toBe(visualHash(apart));
+    expect(visualHash({ ...apart, slots: apart.slots.map((slot) => ({ ...slot, transition: '叠化' })) }))
+      .toBe(visualHash(apart));
+    expect(visualHash({ ...apart, slots: apart.slots.map((slot) => ({ ...slot, duration: slot.duration + 1 })) }))
+      .not.toBe(visualHash(apart));
   });
   it('reports the overlays separately, so the render can still tell two of them apart', () => {
     const stacked = overlaid();
@@ -584,7 +588,7 @@ describe('packaging snapshots and validation', () => {
     // A row is only an order, and a lone clip has no order to change: renumbering it is the same
     // picture, so the legacy fallback is allowed to read it as unchanged.
     expect(matchesVisualHash({ ...explicit, videoLanes: { s: 1 } }, legacy, explicit)).toBe(true);
-    // Reordering clips is a different picture, so the fallback must not swallow it.
+    // Legacy hashes are accepted after repositioning; a source trim still invalidates the package.
     const stacked = {
       ...explicit,
       slots: [...explicit.slots, { ...explicit.slots[0]!, id: 's2', role: 'END' as const }],
@@ -599,7 +603,7 @@ describe('packaging snapshots and validation', () => {
     });
     expect(
       matchesVisualHash({ ...stacked, videoLanes: { s: 1, s2: 0 } }, stackedLegacy, stacked),
-    ).toBe(false);
+    ).toBe(true);
     expect(matchesVisualHash({ ...explicit, offsets: { s: 1 } }, legacy, explicit)).toBe(false);
   });
   it('ignores starts the sequential layout would have produced anyway', () => {
@@ -609,10 +613,10 @@ describe('packaging snapshots and validation', () => {
     const materialized = { ...variant(), timelineStarts: { s: 0 } };
     expect(visualHash(implicit)).toBe(visualHash(materialized));
     expect(matchesVisualHash(materialized, visualHash(implicit), implicit)).toBe(true);
-    // A start that really moves the clip is a different picture.
-    expect(visualHash({ ...variant(), timelineStarts: { s: 5 } })).not.toBe(visualHash(implicit));
+    // A moved clip is live placement and does not expire otherwise-compatible packaging.
+    expect(visualHash({ ...variant(), timelineStarts: { s: 5 } })).toBe(visualHash(implicit));
   });
-  it('walks overlays when deciding which starts are redundant', () => {
+  it('keeps overlay placement out of package validity while preserving slot source identity', () => {
     const withOverlay = (timelineStarts: Record<string, number>) => {
       const base = variant();
       return {
@@ -630,11 +634,10 @@ describe('packaging snapshots and validation', () => {
         timelineStarts,
       };
     };
-    // 10 + 3 = 13 is where the third slot lands sequentially. Had the walk forgotten the overlay it
-    // would answer 10, and the explicit 13 would then read as a real move.
+    // Adding, moving, or removing a picture-only overlay changes the live render, not the package.
     const sequential = withOverlay({ s: 0, o: 10, s2: 13 });
     expect(visualHash(sequential)).toBe(visualHash(withOverlay({})));
-    expect(visualHash(withOverlay({ s: 0, o: 10, s2: 10 }))).not.toBe(visualHash(sequential));
+    expect(visualHash(withOverlay({ s: 0, o: 10, s2: 10 }))).toBe(visualHash(sequential));
   });
   it('reads a package confirmed before starts were normalized as the same picture', () => {
     // The editor materialized the sequential start, and the package was hashed with it in place.
@@ -644,10 +647,10 @@ describe('packaging snapshots and validation', () => {
       timelineStarts: { s: 0 },
     });
     expect(matchesVisualHash(materialized, confirmed, materialized)).toBe(true);
-    // A start that really moved was never redundant, so it must still expire the package.
+    // Even old checkpoints stay editable after the clip is moved.
     expect(
       matchesVisualHash({ ...variant(), timelineStarts: { s: 5 } }, confirmed, materialized),
-    ).toBe(false);
+    ).toBe(true);
   });
   it.each([1, 10, 100])(
     'groups %i variants with stable identities and bounded capacity',
@@ -833,7 +836,7 @@ describe('packaging snapshots and validation', () => {
     };
     expect(() => validatePackagingCheckpoint(snapshot(), overlong)).toThrow();
   });
-  it('rejects captions that overlap after independent movement', () => {
+  it('automatically stacks overlapping generated captions after independent movement', () => {
     const overlapping: PackagingCheckpoint = {
       ...checkpoint(),
       script: [

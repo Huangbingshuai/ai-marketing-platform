@@ -690,6 +690,49 @@ describe('packaging service output boundary', () => {
     expect(result.id).toBe('item');
     expect(result.updatedAt).toBe('2026-01-01T00:00:01.000Z');
   });
+  it('keeps package audio editable after the user moves a video clip', async () => {
+    const { service, repo, mix } = harness();
+    const item = completedItem();
+    const slot = {
+      id: 'slot', label: '产品', role: 'PRODUCT', purpose: 'PRODUCT_DISPLAY',
+      duration: 10, transition: '硬切',
+    } as const;
+    const frozen = {
+      ...v,
+      slots: [slot],
+      bindings: { slot: 'clip' },
+      bindingRevisions: { slot: 1 },
+      offsets: { slot: 0 },
+    } as EffectTemplateMixVariant;
+    item.sourceTimelineHash = visualHash(frozen);
+    (item.snapshot as PackagingSnapshot).sourceTimelineHash = item.sourceTimelineHash;
+    (item.snapshot as PackagingSnapshot).variant = frozen;
+    mix.workspace.mockResolvedValue({
+      draftRevision: 1,
+      draft: {
+        templates: [{
+          id: 't',
+          workspace: {
+            template: { name: '模板', editVersion: 1, slots: [slot] },
+            variants: [{ ...frozen, timelineStarts: { slot: 3 }, videoLanes: { slot: 2 } }],
+          },
+        }],
+      },
+    } as never);
+    repo.get.mockResolvedValue({ ...completedRun(), items: [item] });
+    const saved = completedItem();
+    saved.updatedAt = new Date('2026-01-01T00:00:01.000Z');
+    repo.updateCheckpoint.mockResolvedValue(saved);
+
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      music: { start: 4, duration: 10, volume: 0.2 },
+    });
+
+    const [, , written] = repo.updateCheckpoint.mock.calls[0]!;
+    expect(written.voices!['line-1']).toMatchObject({ start: 0, duration: 2.4 });
+    expect(written.music).toMatchObject({ start: 4, duration: 10, volume: 0.2 });
+  });
   it('stores editor fades and never invents a 0 where the client sent none', async () => {
     const { service, repo } = harness();
     const item = completedItem();

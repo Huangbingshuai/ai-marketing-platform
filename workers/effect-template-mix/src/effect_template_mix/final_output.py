@@ -169,8 +169,46 @@ def wrap_caption(text: str, limit_em: float) -> list[str]:
     return lines
 
 
+def _caption_lanes(captions: list[dict[str, Any]], fps: int) -> dict[str, int]:
+    """Match the editor's interval packing for explicit, manual, and generated subtitle rows."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for index, row in enumerate(captions):
+        row_id = str(row.get('id', f'caption-{index}'))
+        packed = {**row, '_renderId': row_id}
+        group = (f"track:{row['trackId']}" if row.get('trackId')
+                 else f"manual:{row_id}" if row.get('manual') is True else 'legacy-generated')
+        groups.setdefault(group, []).append(packed)
+    group_order = [
+        *sorted((key for key in groups if key.startswith('track:')), reverse=True),
+        *sorted((key for key in groups if key.startswith('manual:')), reverse=True),
+        *(['legacy-generated'] if 'legacy-generated' in groups else []),
+    ]
+    lanes: dict[str, int] = {}
+    lane_offset = 0
+    for group in group_order:
+        rows = groups[group]
+        ends: list[float] = []
+        for row in sorted(rows, key=lambda item: (item['start'], item['_renderId'])):
+            start, end = float(row['start']), float(row['end'])
+            if row.get('trackId') and any(
+                other is not row and start < float(other['end']) - 0.001
+                and float(other['start']) < end - 0.001 for other in rows
+            ):
+                raise PackagingError('字幕越界或重叠')
+            available = next((index for index, lane_end in enumerate(ends)
+                              if lane_end <= start + 1 / max(1, fps)), -1)
+            local_lane = available if available >= 0 else len(ends)
+            if local_lane == len(ends):
+                ends.append(end)
+            else:
+                ends[local_lane] = max(start, end)
+            lanes[str(row['_renderId'])] = lane_offset + local_lane
+        lane_offset += max(1, len(ends))
+    return lanes
+
+
 def captions_ass(captions: list[dict[str, Any]], width: int, height: int, duration: float,
-                 boxes: dict[str, dict[str, float]] | None = None) -> str:
+                 boxes: dict[str, dict[str, float]] | None = None, fps: int = 30) -> str:
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -183,26 +221,25 @@ Style: Default,Noto Sans CJK SC,{max(24, round(width / 22))},&H00FFFFFF,&H00FFFF
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     boxes = boxes or {}
-    # Two cards may share a row only when they share a track, which is the same grouping the editor
-    # packs rows with and the checkpoint validates against: an explicit track, a manual card's own
-    # id, or the legacy narration row. Cards from different tracks are drawn on different rows and
-    # are allowed on screen together, so the bound is per track rather than per kind.
-    previous: dict[str, float] = {}
-    for row in captions:
+    lanes = _caption_lanes(captions, fps)
+    font_size = max(24, round(width / 22))
+    lane_step = max(28, round(font_size * 1.35))
+    for index, row in enumerate(captions):
         start, end = row['start'], row['end']
-        group = (f"track:{row['trackId']}" if row.get('trackId')
-                 else f"manual:{row['id']}" if row.get('manual') is True else 'legacy-generated')
         if not (math.isfinite(start) and math.isfinite(end)
-                and previous.get(group, 0.0) <= start < end <= duration + .001):
+                and 0 <= start < end <= duration + .001):
             raise PackagingError('字幕越界或重叠')
-        previous[group] = end
         raw = str(row['text'])
         if not raw.strip():
             continue
         # A caption without an id simply has no editor geometry and keeps the default style.
         box = boxes.get(str(row.get('id', '')))
+        lane = lanes.get(str(row.get('id', f'caption-{index}')), 0)
+        # Event margin 0 inherits the configured default style margin; later rows add a full
+        # line-height above that baseline rather than a tiny offset from the frame edge.
+        lane_bottom = 0 if lane == 0 else round(height * .03) + lane * lane_step
         if not box:
-            header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{escape_ass(raw)}\n"
+            header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,{lane_bottom},,{escape_ass(raw)}\n"
             continue
         size = max(8, round(max(24, round(width / 22)) * float(box['scale'])))
         wrap = max(1, round(float(box['width']) * width))
@@ -210,7 +247,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         lines = wrap_caption(raw, max(1.0, wrap / size * 0.98))
         left = max(0, min(round(float(box['x']) * width - wrap / 2), width - wrap))
         block = round(len(lines) * size * 1.35)
-        bottom = max(0, min(round(float(box['y']) * height), max(0, height - block)))
+        bottom = max(0, min(round(float(box['y']) * height) + lane * lane_step,
+                             max(0, height - block)))
         text = f'{{\\fs{size}}}' + '\\N'.join(escape_ass(line) for line in lines)
         header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,{left},{width - wrap - left},{bottom},,{text}\n"
     return header
@@ -366,7 +404,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         f'amix=inputs={1 + (1 if music else 0) + len(voices) + len(detached)}:normalize=0:duration=longest,'
         f'alimiter=limit=0.95,atrim=duration={duration}[audio]']
     (directory / 'captions.ass').write_text(
-        captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes')), encoding='utf-8')
+        captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes'), frame_rate), encoding='utf-8')
     # Re-apply the selected constant frame rate after concat/xfade. Every interval branch is CFR,
     # but concat can yield a non-integer average rate when adjacent slot durations end between
     # frame boundaries.

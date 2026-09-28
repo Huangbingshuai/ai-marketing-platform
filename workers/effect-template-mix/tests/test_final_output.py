@@ -79,19 +79,25 @@ def test_manual_subtitle_lane_can_overlap_narration_but_skips_empty_drafts() -> 
 
 
 def test_subtitles_share_a_row_only_when_they_share_a_track() -> None:
-    """The row a card is drawn on is the unit the editor packs, the checkpoint validates and the
-    renderer checks, so a card is free to overlap anything that is not on its own row."""
+    """Implicit captions are interval-packed; a user-selected track remains one fixed row."""
     # Two cards on different explicit tracks are on screen together, by design.
     events = [line for line in captions_ass([
         {'id': 'a', 'text': '甲', 'start': 0, 'end': 3, 'trackId': 'row-1'},
         {'id': 'b', 'text': '乙', 'start': 2, 'end': 4, 'trackId': 'row-2'},
     ], 720, 960, 4).splitlines() if line.startswith('Dialogue:')]
     assert len(events) == 2
-    # The legacy narration row is a row like any other, so two untouched cards still may not overlap.
+    # Moved narration subtitles can overlap; the renderer places them on separate rows.
+    generated = [line for line in captions_ass([
+        {'id': 'a', 'text': '甲', 'start': 0, 'end': 3},
+        {'id': 'b', 'text': '乙', 'start': 2, 'end': 4},
+    ], 720, 960, 4).splitlines() if line.startswith('Dialogue:')]
+    assert len(generated) == 2
+    assert generated[0].split(',')[7] != generated[1].split(',')[7]
+    # A fixed user track is still a hard same-row constraint.
     with pytest.raises(PackagingError):
         captions_ass([
-            {'id': 'a', 'text': '甲', 'start': 0, 'end': 3},
-            {'id': 'b', 'text': '乙', 'start': 2, 'end': 4},
+            {'id': 'a', 'text': '甲', 'start': 0, 'end': 3, 'trackId': 'same-row'},
+            {'id': 'b', 'text': '乙', 'start': 2, 'end': 4, 'trackId': 'same-row'},
         ], 720, 960, 4)
     # And a row may not run off the end of the film, however it is keyed.
     with pytest.raises(PackagingError):

@@ -25,7 +25,19 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 export const visualHash = (variant: EffectTemplateMixVariant) =>
-  workflowStateHash(packagingVisualTimeline(variant));
+  workflowStateHash(packagingVisualSource(variant));
+
+/**
+ * Packaging is tied to which source frames and slot durations were used, not where the editor later
+ * places those clips. Placement is read live at final render time, just like an NLE timeline.
+ */
+const packagingVisualSource = (variant: EffectTemplateMixVariant) => {
+  const timeline = packagingVisualTimeline(variant);
+  const { timelineStarts: _starts, videoLanes: _lanes, slots, ...source } = timeline;
+  // Transitions, roles, labels, track and timeline positions affect the picture edit, not which
+  // source material a narration was generated for. Keep slot identity and duration as dependencies.
+  return { ...source, slots: slots.map(({ id, duration }) => ({ id, duration })) };
+};
 
 export const slotVisionKey = (clip: PackagingSnapshot['clips'][number]) =>
   createHash('sha256').update(JSON.stringify(['slot-frames-3-320-v1', clip.contentHash,
@@ -39,8 +51,7 @@ export function matchesVisualHash(variant: EffectTemplateMixVariant, hash: strin
   return (
     workflowStateHash({
       ...packagingVisualTimeline(frozen),
-      // Both of these are editor materialization the timeline above normalizes away — the sequential
-      // starts and the lane numbers. A package confirmed before that was hashed with them in place.
+      // Read checkpoints written before placement was removed from the package source hash.
       timelineStarts: packagingStoredTimelineStarts(frozen),
       videoLanes: frozen.videoLanes ?? {},
     }) === hash
@@ -518,11 +529,8 @@ export function validatePackagingCheckpoint(
     if (!Array.isArray(checkpoint.captions)) fail();
     if (checkpoint.captions.length > 500) fail();
     if (new Set(checkpoint.captions.map((c) => c.id)).size !== checkpoint.captions.length) fail();
-    // Two cards may share a row only when they share a track. The key is the one the editor packs
-    // rows with (`assignEffectTemplateMixCaptionLanes`): an explicit track, a manual card's own id,
-    // or the legacy narration row. Cards from different tracks are drawn on different rows and are
-    // free to be on screen together, which is why the bound is per track rather than per kind.
-    const previousEnd = new Map<string, number>();
+    // Explicit subtitle tracks are fixed rows and cannot overlap. Implicit/generated captions are
+    // automatically interval-packed into display rows by both the editor and the renderer.
     const segmentsByLine = new Map<string, typeof checkpoint.captions>();
     for (const c of checkpoint.captions) {
       const manual = c.manual === true;
@@ -574,15 +582,17 @@ export function validatePackagingCheckpoint(
           (c.start < (script?.start ?? 0) || c.end > (script?.end ?? 0) + 0.001))
       )
         fail();
-      // Segments must never show together, even on the Worker write path — within one track. Two
-      // cards on different tracks are on different rows and may deliberately overlap.
-      const track = c.trackId
-        ? `track:${c.trackId}`
-        : manual
-          ? `manual:${c.id}`
-          : 'legacy-generated';
-      if ((edited || segmentedCaptions) && c.start < (previousEnd.get(track) ?? 0) - 0.001) fail();
-      previousEnd.set(track, Math.max(previousEnd.get(track) ?? 0, c.end));
+      // A user-chosen row is a hard constraint. The implicit narration row is only a grouping:
+      // overlapping captions are placed on additional display lanes, matching the timeline UI.
+      if (c.trackId) {
+        if (checkpoint.captions.some((other) =>
+          other.id !== c.id && other.trackId === c.trackId &&
+          c.start < other.end - 0.001 && other.start < c.end - 0.001)) fail();
+      }
+      if (segmentedCaptions && !manual && checkpoint.captions.some((other) =>
+        other.id !== c.id && !other.manual &&
+        (other.voiceLineId ?? other.id) === lineId &&
+        c.start < other.end - 0.001 && other.start < c.end - 0.001)) fail();
       if (segmentedCaptions && !manual) {
         const parts = segmentsByLine.get(lineId!) ?? [];
         parts.push(c);
