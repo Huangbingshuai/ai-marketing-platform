@@ -456,6 +456,108 @@ export class EffectFinalOutputService {
     return this.get(projectId, id);
   }
 
+  async completeOutput(projectId: string, id: string): Promise<FinalOutputRun> {
+    await this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+      const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
+      if (!run) throw new NotFoundException('成片输出任务不存在');
+      if (run.status !== 'COMPLETED' || !run.items.length ||
+        run.items.some((item) => item.status !== 'COMPLETED' || !item.fileObjectId || !item.assetId))
+        throw new ConflictException('请等待当前模板的全部成片成功导出后再完成校验');
+
+      // The draft and committed sources cannot change between validation and the manifest commit.
+      await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${run.workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM working_artifacts WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${run.workflowRunId}::uuid ORDER BY id FOR UPDATE`;
+      const workspace = await this.mix.workspace(projectId, run.workflowRunId);
+      const artifacts = await tx.workingArtifact.findMany({
+        where: { projectId, workflowRunId: run.workflowRunId },
+        include: workingArtifactInclude,
+      });
+      const templateName = workspace.draft?.templates.find((entry) => entry.id === run.templateId)
+        ?.workspace.template.name;
+      const result = this.toDto(run, templateName, artifacts, workspace);
+      if (result.items.some((item) => item.stale))
+        throw new ConflictException('当前模板有来源已更新的成片，请返回模板混剪处理后重新导出');
+
+      const ordered = [...run.items].sort((a, b) =>
+        a.name.localeCompare(b.name, 'zh-CN', { numeric: true }) || a.id.localeCompare(b.id),
+      );
+      const fileIds = [...new Set(ordered.map((item) => item.fileObjectId!))];
+      const assetIds = [...new Set(ordered.map((item) => item.assetId!))];
+      const [files, assets] = await Promise.all([
+        tx.fileObject.findMany({ where: {
+          projectId, workflowRunId: run.workflowRunId, id: { in: fileIds }, status: 'AVAILABLE',
+        } }),
+        tx.asset.findMany({ where: {
+          projectId, id: { in: assetIds }, type: 'FINAL_VIDEO', status: 'AVAILABLE',
+        } }),
+      ]);
+      const fileById = new Map(files.map((file) => [file.id, file]));
+      const assetById = new Map(assets.map((asset) => [asset.id, asset]));
+      const entries = ordered.map((item) => {
+        const key = `final-video:${run.templateId}:${item.variantId}`;
+        const artifact = artifacts.find((candidate) =>
+          candidate.nodeId === 'FINAL_OUTPUT' && candidate.artifactKey === key);
+        const file = fileById.get(item.fileObjectId!);
+        const asset = assetById.get(item.assetId!);
+        if (!artifact || artifact.freshness !== 'CURRENT' || artifact.availability !== 'AVAILABLE' ||
+          !artifact.files.some((linked) => linked.fileObjectId === item.fileObjectId) ||
+          !file || !asset || asset.sourceArtifactId !== artifact.id ||
+          asset.storageKey !== file.storageKey)
+          throw new ConflictException(`${item.name} 的成片文件或交付资产不可用，请重新渲染`);
+        return { item, artifact, file, asset };
+      });
+      await this.working.commitValidatedArtifactsInTransaction(
+        tx,
+        projectId,
+        run.workflowRunId,
+        'FINAL_OUTPUT',
+        [{
+          artifactKey: `final-delivery:${run.templateId}`,
+          input: {
+            kind: 'STRUCTURED',
+            name: `${templateName ?? '混剪模板'} · 成片交付清单`,
+            directory: 'REPORTS_DELIVERABLES',
+            type: 'DELIVERY_MANIFEST',
+            payload: {
+              schemaVersion: 1,
+              templateId: run.templateId,
+              runId: run.id,
+              resolution: result.resolution,
+              frameRate: result.frameRate,
+              items: entries.map(({ item, artifact }) => ({
+                id: item.id,
+                variantId: item.variantId,
+                name: item.name,
+                fileObjectId: item.fileObjectId,
+                assetId: item.assetId,
+                artifactId: artifact.id,
+                artifactRevision: artifact.revision,
+              })),
+            },
+            files: entries.map(({ file }, sortOrder) => ({
+              fileObjectId: file.id,
+              role: 'VIDEO',
+              sortOrder,
+              originalFileName: file.originalFileName,
+              mimeType: file.mimeType,
+              sha256: file.sha256,
+            })),
+            dependencies: entries.map(({ artifact }) => ({
+              sourceType: 'WORKING_ARTIFACT',
+              sourceNodeId: 'FINAL_OUTPUT',
+              sourceArtifactId: artifact.id,
+              sourceKey: artifact.artifactKey,
+              sourceRevision: artifact.revision,
+              sourceHash: artifact.contentHash,
+            })),
+          },
+        }],
+      );
+    }, { timeout: 120_000 });
+    return this.get(projectId, id);
+  }
+
   private toDto(
     run: Prisma.EffectFinalOutputRunGetPayload<{ include: typeof include }>,
     templateName?: string,
@@ -465,13 +567,55 @@ export class EffectFinalOutputService {
       contentHash: string | null;
       freshness: string;
       availability: string;
+      artifactKey?: string;
+      nodeId?: string;
+      payload?: unknown;
     }> = [],
     workspace?: Awaited<ReturnType<EffectTemplateMixService['workspace']>>,
   ): FinalOutputRun {
+    const staleForItem = (item: (typeof run.items)[number]): boolean => {
+      const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+      const currentVariant = workspace?.draft?.templates
+        .find((entry) => entry.id === run.templateId)
+        ?.workspace.variants.find((variant) => variant.id === item.variantId);
+      return (snapshot.dependencies ?? []).some((dependency) =>
+        !artifacts.some((artifact) =>
+          artifact.id === dependency.artifactId &&
+          artifact.revision === dependency.revision &&
+          artifact.contentHash === dependency.contentHash &&
+          artifact.freshness === 'CURRENT' &&
+          artifact.availability === 'AVAILABLE',
+        ),
+      ) || !currentVariant || !matchesVisualHash(
+        currentVariant,
+        snapshot.timeline.sourceTimelineHash,
+        snapshot.timeline.variant,
+      );
+    };
+    const delivery = artifacts.find((artifact) =>
+      artifact.nodeId === 'FINAL_OUTPUT' &&
+      artifact.artifactKey === `final-delivery:${run.templateId}` &&
+      artifact.freshness === 'CURRENT' &&
+      artifact.availability === 'AVAILABLE',
+    );
+    const payload = delivery?.payload as
+      | { runId?: string; items?: Array<{ id: string; fileObjectId: string; assetId: string }> }
+      | undefined;
+    const delivered = new Map(
+      Array.isArray(payload?.items) ? payload.items.map((item) => [item.id, item] as const) : [],
+    );
+    const validated = run.status === 'COMPLETED' && run.items.length > 0 &&
+      payload?.runId === run.id && delivered.size === run.items.length &&
+      run.items.every((item) =>
+        item.status === 'COMPLETED' && !staleForItem(item) &&
+        delivered.get(item.id)?.fileObjectId === item.fileObjectId &&
+        delivered.get(item.id)?.assetId === item.assetId,
+      );
     return {
       id: run.id,
       templateId: run.templateId,
       templateName: templateName || `模板 ${run.templateId.slice(0, 8)}`,
+      validated,
       resolution: (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.resolution ?? '720p',
       frameRate: (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.frameRate ?? 30,
       workflowRunId: run.workflowRunId,
@@ -484,22 +628,7 @@ export class EffectFinalOutputService {
         )
         .map((i) => {
           const snapshot = i.snapshot as unknown as FinalOutputSnapshot;
-          const currentVariant = workspace?.draft?.templates
-            .find((entry) => entry.id === run.templateId)
-            ?.workspace.variants.find((variant) => variant.id === i.variantId);
-          const stale = (snapshot.dependencies ?? []).some((dependency) =>
-            !artifacts.some((artifact) =>
-              artifact.id === dependency.artifactId &&
-              artifact.revision === dependency.revision &&
-              artifact.contentHash === dependency.contentHash &&
-              artifact.freshness === 'CURRENT' &&
-              artifact.availability === 'AVAILABLE',
-            ),
-          ) || !currentVariant || !matchesVisualHash(
-            currentVariant,
-            snapshot.timeline.sourceTimelineHash,
-            snapshot.timeline.variant,
-          );
+          const stale = staleForItem(i);
           const firstBoundSlot = snapshot.timeline.variant.slots.find(
             ({ id }) => Boolean(snapshot.timeline.variant.bindings[id]),
           );

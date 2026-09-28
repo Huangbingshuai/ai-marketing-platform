@@ -8,6 +8,7 @@ import type {
   FinalOutputResolution,
   FinalOutputRun,
 } from '@ai-marketing/contracts';
+import { WorkflowNodeFooter } from '@ai-marketing/ui';
 import { apiUrl, requestJson } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import EffectTemplateMixThumbnail from '../template-mix/EffectTemplateMixThumbnail.vue';
@@ -47,6 +48,7 @@ const runs = ref<FinalOutputRun[]>([]),
 const loading = ref(true),
   mixLoading = ref(true),
   busy = ref(false),
+  validating = ref(false),
   itemRerenderingId = ref(''),
   playingItemId = ref(''),
   error = ref(''),
@@ -120,6 +122,19 @@ const selectedTemplate = computed(
 );
 const pageLoading = computed(() => loading.value || mixLoading.value);
 const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.status));
+const canValidate = computed(() => Boolean(
+  run.value && run.value.status === 'COMPLETED' && !run.value.validated &&
+  run.value.items.length > 0 && run.value.items.every((item) =>
+    item.status === 'COMPLETED' && item.fileObjectId && item.assetId && !item.stale,
+  ),
+));
+const validateStatusTitle = computed(() => {
+  if (!run.value) return '等待上游成片';
+  if (run.value.validated) return '当前模板已完成校验';
+  if (run.value.status === 'COMPLETED')
+    return run.value.items.some((item) => item.stale) ? '成片来源已更新' : '成片已就绪，待完成校验';
+  return '等待当前模板全部成片导出';
+});
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
 const items = computed(() => run.value?.items.slice((page.value - 1) * pageSize.value, page.value * pageSize.value) ?? []);
 const downloadableItems = computed(() =>
@@ -359,6 +374,30 @@ function stop() {
   mixController?.abort();
   clearTimeout(timer);
 }
+async function validateOutput() {
+  if (!run.value || !canValidate.value || busy.value) return;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const targetRunId = run.value.id;
+  const stillCurrent = () =>
+    props.projectId === projectId && props.workflowRunId === workflowRunId &&
+    run.value?.id === targetRunId;
+  validating.value = true;
+  busy.value = true;
+  try {
+    await requestJson<ApiResponse<FinalOutputRun>>(`/projects/${projectId}/workflows/effect/final-output/${targetRunId}/complete`, {
+      method: 'POST',
+      operation: '完成成片校验',
+    });
+    if (stillCurrent()) await refresh();
+  } catch (reason) {
+    if (stillCurrent())
+      error.value = reason instanceof Error ? reason.message : '成片完成校验失败';
+  } finally {
+    validating.value = false;
+    busy.value = false;
+  }
+}
 watch(
   () => [props.projectId, props.workflowRunId],
   () => {
@@ -469,7 +508,7 @@ onBeforeUnmount(stop);
               <Layers :size="18" />
               <span class="template-card__copy">
                 <strong>{{ template.templateName }}</strong>
-                <small v-if="template.run">{{ template.run.counts.total }} 条成片 · {{ labels[template.run.status] }}</small>
+                <small v-if="template.run">{{ template.run.counts.total }} 条成片 · {{ template.run.validated ? '已完成校验' : labels[template.run.status] }}</small>
                 <small v-else>{{ template.pendingLabel }}</small>
               </span>
             </button>
@@ -729,12 +768,19 @@ onBeforeUnmount(stop);
       </div>
     </template>
 
-    <footer class="output-footer">
-      <button class="secondary-button" type="button" @click="$emit('back')">
-        <ArrowLeft :size="14" />返回模板混剪
-      </button>
-      <span>步骤 6 / 6 · 失败恢复不会重渲染已成功的视频</span>
-    </footer>
+    <WorkflowNodeFooter
+      back-label="返回模板混剪"
+      :complete="Boolean(run?.validated)"
+      :status-title="validateStatusTitle"
+      :status-detail="`步骤 6 / 6 · ${selectedTemplate?.templateName ?? '成片输出'}`"
+      :validate-disabled="!canValidate || busy"
+      :validating="validating"
+      validate-label="完成校验"
+      next-label=""
+      :show-next="false"
+      @back="$emit('back')"
+      @validate="validateOutput"
+    />
   </section>
 </template>
 

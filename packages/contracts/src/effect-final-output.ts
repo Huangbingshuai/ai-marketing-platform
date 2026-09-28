@@ -64,6 +64,8 @@ export type FinalOutputRun = {
   workflowRunId: string;
   templateId: string;
   templateName: string;
+  /** The current template's rendered films were explicitly confirmed for delivery. */
+  validated?: boolean;
   resolution: FinalOutputResolution;
   frameRate: 24 | 25 | 30 | 50 | 60;
   status: FinalOutputStatus;
