@@ -42,6 +42,7 @@ import {
 
 import { ApiClientError, isAbortError, isNetworkError } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import { confirmDiscardEffectEdit } from '../shared/effect-edit-session';
 import {
   beginEffectNodeEdit,
   cancelEffectNodeEdit,
@@ -1312,6 +1313,9 @@ const beginExtractionEdit = async (): Promise<void> => {
 };
 
 const cancelExtractionEdit = async (): Promise<void> => {
+  if (!props.temporaryBranch || props.activeEditNodeId !== 'INFORMATION_EXTRACTION' || editBusy.value)
+    return;
+  if (!(await confirmDiscardEffectEdit())) return;
   if (!props.temporaryBranch || props.activeEditNodeId !== 'INFORMATION_EXTRACTION' || editBusy.value)
     return;
   editBusy.value = true;

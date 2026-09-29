@@ -62,6 +62,7 @@ import {
   getActiveWorkflowRunOverview,
 } from '../../../platform/workflow/api/workflow-working.api';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import { confirmDiscardEffectEdit } from '../shared/effect-edit-session';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import {
   buildEffectPromptGraphRows,
@@ -1630,6 +1631,8 @@ const beginPromptEdit = async (): Promise<void> => {
 
 const cancelPromptEdit = async (): Promise<void> => {
   if (editPending.value || currentRunning.value) return;
+  if (!(await confirmDiscardEffectEdit())) return;
+  if (editPending.value || currentRunning.value || !editing.value) return;
   editPending.value = true;
   try {
     const result = await cancelEffectWorkflowNodeEdit(

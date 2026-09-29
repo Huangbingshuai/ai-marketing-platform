@@ -7,6 +7,15 @@ import productEditorSource from './components/ProductImportEditor.vue?raw';
 import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from './effect-import-options';
 
 describe('effect import single-product prototype grid', () => {
+  it('keeps the edit button and changes active Runs without blanking the whole page', () => {
+    expect(pageSource).toContain('>进入编辑</button>');
+    expect(pageSource).toContain('const refreshActiveRunInPlace =');
+    expect(pageSource).toContain('const previousStep = activeStep.value');
+    expect(pageSource).toContain('activeStep.value = previousStep');
+    expect(pageSource).toContain('正在切换编辑状态');
+    expect(pageSource).toContain('@branch-activated="refreshActiveRunInPlace(currentProjectId)"');
+  });
+
   it('saves the current node draft before loading the branch tree so new templates appear immediately', () => {
     expect(pageSource).toMatch(
       /const loadBranchTree = async \(\): Promise<void> => \{[\s\S]*?await flushPendingEdits\(\)[\s\S]*?getEffectWorkflowBranchTree\(projectId, controller\.signal\)/,

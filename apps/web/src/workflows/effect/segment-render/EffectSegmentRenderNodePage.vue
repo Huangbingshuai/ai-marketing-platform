@@ -46,6 +46,7 @@ import {
 } from 'vue';
 
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import { confirmDiscardEffectEdit } from '../shared/effect-edit-session';
 import {
   beginEffectWorkflowNodeEdit,
   cancelEffectWorkflowNodeEdit,
@@ -1599,6 +1600,8 @@ const enterEdit = async (): Promise<void> => {
 };
 
 const cancelEdit = async (): Promise<void> => {
+  if (!props.editing || editTransitioning.value || operation.value || batchActive.value) return;
+  if (!(await confirmDiscardEffectEdit())) return;
   if (!props.editing || editTransitioning.value || operation.value || batchActive.value) return;
   editTransitioning.value = true;
   try {
