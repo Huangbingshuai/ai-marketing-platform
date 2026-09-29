@@ -7,6 +7,7 @@ import {
   EffectPromptRepository,
   isAllowedReplacementSellingPoint,
   promptItemsRetainedForRun,
+  shouldInvalidatePromptDependents,
   type StartPromptRunInput,
 } from './effect-prompt.repository';
 import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
@@ -22,6 +23,14 @@ const input: StartPromptRunInput = {
   expectedResultRevision: null,
   idempotencyKey: 'generate-1',
 };
+
+it('keeps a previous batch branch usable while retaining targeted-item invalidation', () => {
+  expect(shouldInvalidatePromptDependents('BATCH_GENERATE', true, false)).toBe(false);
+  expect(shouldInvalidatePromptDependents('BATCH_GENERATE', true, true)).toBe(false);
+  expect(shouldInvalidatePromptDependents('ITEM_REGENERATE', true, false)).toBe(true);
+  expect(shouldInvalidatePromptDependents('ITEM_REGENERATE', true, true)).toBe(false);
+  expect(shouldInvalidatePromptDependents('ITEM_REGENERATE', false, false)).toBe(false);
+});
 
 const runRecord = (overrides: Record<string, unknown> = {}) => ({
   id: runId,

@@ -108,6 +108,12 @@ const changedPromptIds = (previous: unknown, next: unknown): Set<string> => {
   );
 };
 
+export const shouldInvalidatePromptDependents = (
+  operation: EffectPromptOperation,
+  changed: boolean,
+  forked: boolean,
+): boolean => changed && !forked && operation !== 'BATCH_GENERATE';
+
 type PersistedEffectPromptShardPhase = 'BLUEPRINT' | 'PROMPT';
 const persistedShardPhase = (phase: EffectPromptShardPhase): PersistedEffectPromptShardPhase =>
   phase === 'CREATIVE' ? 'BLUEPRINT' : 'PROMPT';
@@ -2335,7 +2341,10 @@ export class EffectPromptRepository {
         [{ artifactKey: targetArtifactKey, input: targetInput, invalidateDependents: false }],
       );
       if (!committed) throw new Error('WORKING_ARTIFACT_COMMIT_FAILED');
-      if (!committed.unchanged && !shouldFork) {
+      // A whole new Prompt batch is a new branch/cohort, not a per-item edit to the
+      // clips used by the previous mix. Only targeted item changes invalidate those
+      // clips in place; the old branch keeps consuming its frozen source revision.
+      if (shouldInvalidatePromptDependents(result.run.operation, !committed.unchanged, shouldFork)) {
         const [renderBatch, renderClips] = await Promise.all([
           transaction.workingArtifact.findFirst({
             where: {
