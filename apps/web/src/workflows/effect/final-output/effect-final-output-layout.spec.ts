@@ -46,11 +46,28 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain('.item-rerender-button {');
   });
 
-  it('routes both actions through the shared confirmation dialog', () => {
+  it('routes every batch-changing action through the shared confirmation dialog', () => {
     expect(pageSource).toContain(
       "import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';",
     );
-    expect(pageSource.match(/requestActionConfirmation\(/gu)).toHaveLength(2);
+    // Export / re-export, single-item re-render and 局部更新 each ask before touching the batch.
+    expect(pageSource.match(/requestActionConfirmation\(/gu)).toHaveLength(3);
+  });
+
+  it('drops 完成校验: a finished batch publishes its branch on its own', () => {
+    expect(pageSource).not.toContain('validateOutput');
+    expect(pageSource).not.toContain('/complete');
+    expect(pageSource).toContain(':show-validate="false"');
+  });
+
+  it('offers 局部更新 only for an already-exported batch that has moved upstream', () => {
+    expect(pageSource).toContain('const canLocalUpdate = computed');
+    expect(pageSource).toContain('run.value.counts.stale > 0');
+    expect(pageSource).toContain('`${base.value}/${run.value.id}/local-update`');
+    expect(pageSource).toContain('确认局部更新');
+    expect(pageSource).toContain('class="secondary-button local-update-button"');
+    expect(pageSource).toContain('局部更新（{{ run.counts.stale }}）');
+    expect(pageSource).toContain('.local-update-button {');
   });
 
   it('says a film plays silent because it was submitted without a package', () => {
@@ -69,5 +86,12 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain('v-if="item.stale" class="status-pill stale"');
     expect(pageSource).toContain('素材已过期');
     expect(pageSource).toContain('.status-pill.stale {');
+  });
+
+  it('follows the fork a re-export opened instead of reading the published batch', () => {
+    // A re-export is a full update: the service forks an unpublished child and queues the batch
+    // there, so the page has to move to that Run before it reads the batch back.
+    expect(pageSource).toContain('if (response.data.workflowRunId !== props.workflowRunId) {');
+    expect(pageSource).toContain("emit('workflowRunChange');");
   });
 });

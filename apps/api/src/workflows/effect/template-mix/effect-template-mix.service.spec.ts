@@ -92,6 +92,14 @@ const source = {
 
 const harness = () => {
   const working = {
+    // A fill with no published version to protect stays in the Run it was asked for.
+    beginEffectNodeEdit: vi.fn().mockResolvedValue({
+      run: { id: 'run' },
+      parentWorkflowRunId: null,
+      productIdMap: {},
+      taskIdMap: {},
+      created: false,
+    }),
     getNodeState: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
     getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
     listArtifacts: vi.fn().mockResolvedValue({ items: [source], total: 1 }),
@@ -115,6 +123,11 @@ const harness = () => {
         unchanged: false,
       },
     ]),
+    publishEffectNodeEdit: vi.fn().mockResolvedValue({
+      run: { id: 'run' },
+      activeWorkflowRunId: 'run',
+      createdBranch: false,
+    }),
   };
   return {
     working,
@@ -924,6 +937,13 @@ describe('EffectTemplateMixService', () => {
     }));
     const working = {
       getNodeState: vi.fn().mockResolvedValue({ revision: 7, state }),
+      beginEffectNodeEdit: vi.fn().mockResolvedValue({
+        run: { id: 'run' },
+        parentWorkflowRunId: null,
+        productIdMap: {},
+        taskIdMap: {},
+        created: false,
+      }),
     };
     const create = vi.fn().mockImplementation((input) =>
       Promise.resolve({
@@ -931,6 +951,7 @@ describe('EffectTemplateMixService', () => {
         run: {
           id: 'run-id',
           templateId,
+          workflowRunId: input.workflowRunId,
           targetVariantId: null,
           outputVariantId: null,
           status: 'QUEUED',
@@ -955,6 +976,13 @@ describe('EffectTemplateMixService', () => {
     );
 
     await service.createAiRun('project', 'run', templateId, 7, 'key');
+
+    // Re-filling is a full update: it must ask for an isolated child before it reads the draft, and
+    // `always` is what makes even the project's first fill land on a branch of its own.
+    expect(working.beginEffectNodeEdit).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX', 'BATCH', {
+      always: true,
+    });
+    expect(create.mock.calls[0]![0].workflowRunId).toBe('run');
 
     const snapshot = create.mock.calls[0]![0].snapshot;
     expect(snapshot.materials[0]).toMatchObject({ prompt: '原始画面 Prompt 0' });
@@ -1062,6 +1090,115 @@ describe('EffectTemplateMixService', () => {
       ),
     );
     expect(refilling.initialClassifications).toHaveLength(6);
+
+    // A regeneration that does have a published version to protect lands in the forked child, and
+    // the DTO tells the editor which Run it has to follow.
+    working.beginEffectNodeEdit.mockResolvedValue({
+      run: { id: 'child-run' },
+      parentWorkflowRunId: 'run',
+      productIdMap: {},
+      taskIdMap: {},
+      created: true,
+    });
+    const forked = await service.createAiRun('project', 'run', templateId, 9, 'fork-key', variantId);
+    expect(create.mock.calls[3]![0].workflowRunId).toBe('child-run');
+    expect(forked.workflowRunId).toBe('child-run');
+  });
+
+  it('confirms the filled timeline as this Run’s mix version so the tree stops showing a draft', async () => {
+    // A finished smart fill is a paid regeneration of the mix node, so the timeline it just wrote is
+    // the node's version from that moment on — the same way a completed render batch confirms the
+    // render node. Without this the branch tree shows 待校验 and packaging has no version to fork from.
+    const { working } = harness();
+    const snapshot = {
+      schemaVersion: 1,
+      template: {
+        id: templateId,
+        name: '跑量模板',
+        editVersion: 2,
+        slots: [{ id: slotId, role: 'HOOK', label: '片头钩子', duration: 4, transition: '硬切' }],
+      },
+      draftRevision: 7,
+      targetVariantId: variantId,
+      maxOutputVariants: 1,
+      lockedBindings: [],
+      existingVariantBindings: [],
+      reuseCounts: {},
+      promptArtifacts: [],
+      materials: [{ id: sourceId, duration: 4, artifactId: sourceId, artifactRevision: 2 }],
+    };
+    const scores = {
+      HOOK: 0.9,
+      PAIN_POINT: 0.8,
+      PRODUCT: 0.8,
+      SELLING_POINT: 0.8,
+      TRANSFORMATION: 0.8,
+      END: 0.8,
+    };
+    const classifications = [{ materialId: sourceId, scores, reasons: {} }];
+    const selections = [
+      {
+        variantIndex: 0,
+        slotId,
+        materialId: sourceId,
+        duration: 4,
+        matchScore: 0.9,
+        matchLevel: 'HIGH',
+        classificationReason: '动作完整',
+      },
+    ];
+    const trims = [
+      {
+        variantIndex: 0,
+        slotId,
+        materialId: sourceId,
+        trimStartSeconds: 0,
+        trimReason: '动作完整',
+      },
+    ];
+    const now = new Date('2026-09-29T04:00:00.000Z');
+    const aiRuns = {
+      find: vi.fn().mockResolvedValue({
+        id: 'ai-run',
+        templateId,
+        workflowRunId: 'run',
+        targetVariantId: variantId,
+        outputVariantId: null,
+        status: 'RUNNING',
+        stage: 'FILLING',
+        progress: 80,
+        attemptToken: 'token',
+        inputSnapshot: snapshot,
+        classificationResult: classifications,
+        selectionResult: selections,
+        trimResult: trims,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: now,
+        updatedAt: now,
+      }),
+      sourceArtifacts: vi.fn().mockResolvedValue([source]),
+      completeWithDraft: vi.fn().mockResolvedValue('COMPLETED'),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRuns as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await service.completeAiRun('project', 'ai-run', 'token', trims);
+
+    expect(working.commitValidatedArtifacts).toHaveBeenCalledWith(
+      'project',
+      'run',
+      'TEMPLATE_MIX',
+      expect.arrayContaining([
+        expect.objectContaining({ artifactKey: 'mix-template:' + templateId }),
+        expect.objectContaining({
+          artifactKey: 'timeline-project:' + templateId + ':' + variantId,
+        }),
+      ]),
+    );
+    expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
   });
 
   it('creates a trim-only refresh for changed clips without changing their slot assignments', async () => {
@@ -1134,12 +1271,22 @@ describe('EffectTemplateMixService', () => {
         compatiblePurposes: ['HOOK'],
       },
     }));
-    const working = { getNodeState: vi.fn().mockResolvedValue({ revision: 11, state }) };
+    const working = {
+      getNodeState: vi.fn().mockResolvedValue({ revision: 11, state }),
+      beginEffectNodeEdit: vi.fn().mockResolvedValue({
+        run: { id: 'run' },
+        parentWorkflowRunId: null,
+        productIdMap: {},
+        taskIdMap: {},
+        created: false,
+      }),
+    };
     const create = vi.fn().mockResolvedValue({
       kind: 'CREATED',
       run: {
         id: 'refresh-run',
         templateId,
+        workflowRunId: 'run',
         targetVariantId: variantId,
         outputVariantId: null,
         status: 'QUEUED',

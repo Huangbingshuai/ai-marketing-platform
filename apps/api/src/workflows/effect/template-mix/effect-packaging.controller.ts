@@ -219,7 +219,7 @@ export class EffectPackagingWorkerController {
     @Headers('x-attempt-token') token: string,
     @Body() body: EffectTemplateMixWorkerProjectDto,
   ) {
-    return this.service.repo.finish(body.projectId, runId, token);
+    return this.service.finish(body.projectId, runId, token);
   }
   @Put(':runId/items/:itemId/checkpoint')
   checkpoint(

@@ -432,6 +432,7 @@ const materialsFromArtifacts = (
 const toAiRun = (run: {
   id: string;
   templateId: string;
+  workflowRunId: string;
   targetVariantId: string | null;
   outputVariantId: string | null;
   status: EffectTemplateMixAiRun['status'];
@@ -680,6 +681,7 @@ const toAiRun = (run: {
   return {
     id: run.id,
     templateId: run.templateId,
+    workflowRunId: run.workflowRunId,
     operation: snapshot?.trimOnly ? 'REFRESH_TRIMS' : 'FILL',
     targetVariantId: run.targetVariantId,
     outputVariantId: run.outputVariantId,
@@ -969,13 +971,24 @@ export class EffectTemplateMixService {
 
   async createAiRun(
     projectId: string,
-    workflowRunId: string,
+    sourceWorkflowRunId: string,
     templateId: string,
     expectedRevision: number,
     idempotencyKey: string,
     targetVariantId?: string,
     refreshAffectedSlots = false,
   ): Promise<EffectTemplateMixAiRun> {
+    // Re-filling is a full update. It has to run in an unpublished child so the published mix
+    // result is never mutated in place. Every successful fill is a version of its own, so this
+    // forks even for the first one — there is no user-visible validation to promote it later.
+    const edit = await this.working.beginEffectNodeEdit(
+      projectId,
+      sourceWorkflowRunId,
+      'TEMPLATE_MIX',
+      'BATCH',
+      { always: true },
+    );
+    const workflowRunId = edit.run.id;
     const [nodeState, artifacts, previousRuns, packagingLockedIds] = await Promise.all([
       this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.aiRuns!.sourceArtifacts(projectId, workflowRunId),
@@ -1964,7 +1977,33 @@ export class EffectTemplateMixService {
       );
     if (completed !== 'COMPLETED')
       throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
+    await this.confirmFilledMix(projectId, run.workflowRunId, snapshot.template.id);
     return this.aiRun(projectId, runId);
+  }
+
+  /**
+   * A smart fill is a paid regeneration of the mix node, so the template and timelines it just wrote
+   * are this Run's confirmed mix version from that moment on — the same way a finished render batch
+   * is the render node's version. Confirming them here is what turns the branch tree's draft into a
+   * version instead of a pending draft, and it is also what gives the next step (packaging) a
+   * published version to fork from. Publishing opens its own transaction, so it has to run after the
+   * draft write commits; an unchanged fill falls back to its parent instead of opening a branch.
+   */
+  private async confirmFilledMix(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+  ): Promise<void> {
+    const nodeState = await this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX');
+    const { inputs } = await this.prepareValidation(
+      projectId,
+      workflowRunId,
+      nodeState.revision,
+      templateId,
+      { partial: true },
+    );
+    await this.working.commitValidatedArtifacts(projectId, workflowRunId, 'TEMPLATE_MIX', inputs);
+    await this.working.publishEffectNodeEdit(projectId, workflowRunId, 'TEMPLATE_MIX');
   }
 
   async failAiRun(
@@ -2079,6 +2118,7 @@ export class EffectTemplateMixService {
     workflowRunId: string,
     expectedRevision: number,
     templateId: string,
+    options: { partial?: boolean } = {},
   ) {
     const nodeState = await this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX');
     if (nodeState.revision !== expectedRevision) {
@@ -2118,9 +2158,26 @@ export class EffectTemplateMixService {
     );
     const inputs: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }> = [];
     const allSourceIds = new Set<string>();
+    const confirmed: EffectTemplateMixVariant[] = [];
     for (const variant of variants) {
-      this.validateVariant(variant, sources, allSourceIds);
+      // A partial pass is how a smart fill confirms itself: the timeline it just filled is the
+      // version, and a sibling the user has not finished editing must not veto that.
+      const used = new Set<string>();
+      try {
+        this.validateVariant(variant, sources, used);
+      } catch (error) {
+        if (!options.partial) throw error;
+        continue;
+      }
+      for (const sourceId of used) allSourceIds.add(sourceId);
+      confirmed.push(variant);
     }
+    if (!confirmed.length)
+      throw new ApiHttpException(
+        '成片工程仍有素材缺口或槽位配置无效',
+        HttpStatus.BAD_REQUEST,
+        'VALIDATION_ERROR',
+      );
     const dependenciesFor = (sourceIds: Iterable<string>) => {
       const renderDependencies = [...sourceIds].map((artifactId) => {
         const source = sources.get(artifactId)!;
@@ -2153,11 +2210,11 @@ export class EffectTemplateMixService {
           workspaceVersion: entry.workspace.editVersion,
           template,
         },
-        metadata: { templateId, variantCount: variants.length },
+        metadata: { templateId, variantCount: confirmed.length },
         dependencies: dependenciesFor(allSourceIds),
       },
     });
-    for (const variant of variants) {
+    for (const variant of confirmed) {
       inputs.push({
         artifactKey: 'timeline-project:' + templateId + ':' + variant.id,
         input: {
@@ -2181,7 +2238,7 @@ export class EffectTemplateMixService {
         },
       });
     }
-    return { inputs, variants };
+    return { inputs, variants: confirmed };
   }
 
   async validate(

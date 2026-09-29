@@ -32,6 +32,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from './workflow-working.repository';
 import { workflowStateHash } from './workflow-state-hash';
+import type { EffectEditBeginOptions } from './effect-edit-session';
 
 export { workflowStateHash } from './workflow-state-hash';
 
@@ -248,10 +249,11 @@ export class WorkflowWorkingService {
   async beginEffectNodeEdit(
     projectId: string, workflowRunId: string, nodeId: string,
     purpose: 'MANUAL' | 'BATCH' = 'MANUAL',
+    options: EffectEditBeginOptions = {},
   ): Promise<EffectWorkflowEditSessionData> {
     await this.projectService.get(projectId);
     const result = await this.repository.beginEffectNodeEdit(
-      projectId, workflowRunId, this.effectEditNode(nodeId), purpose);
+      projectId, workflowRunId, this.effectEditNode(nodeId), purpose, options);
     if (!result) throw new ApiHttpException('当前分支无法进入编辑态', HttpStatus.CONFLICT, 'CONFLICT');
     const run = await this.repository.findRun(projectId, result.runId);
     if (!run) throw new ApiHttpException('编辑分支不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');

@@ -201,6 +201,11 @@ export type EffectTemplateMixSamplingCheckpoint = {
 export type EffectTemplateMixAiRun = {
   id: string;
   templateId: string;
+  /**
+   * Run the fill actually writes into. A regeneration forks an unpublished child, so this can
+   * differ from the Run the caller named; the editor has to follow it before it saves the draft.
+   */
+  workflowRunId: string;
   operation?: 'FILL' | 'REFRESH_TRIMS';
   targetVariantId: string | null;
   outputVariantId: string | null;

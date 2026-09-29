@@ -15,7 +15,17 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
+import {
+  IsArray,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { FINAL_OUTPUT_RESOLUTIONS } from '@ai-marketing/contracts';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
@@ -23,15 +33,17 @@ import { RawResponse } from '../../../common/raw-response.decorator';
 import { UploadTemporaryFileCleanupInterceptor } from '../../../platform/file/upload-temporary-file-cleanup.interceptor';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
-  EffectTemplateMixRevisionDto,
   EffectTemplateMixWorkerProjectDto,
   EffectTemplateMixWorkspaceQueryDto,
 } from '../template-mix/dto/effect-template-mix.dto';
 import { EffectTemplateMixWorkerGuard } from '../template-mix/effect-template-mix-worker.guard';
 import { EffectFinalOutputService } from './effect-final-output.service';
 
-export class CompletePackagingDto extends EffectTemplateMixRevisionDto {
-  @IsString() @MinLength(1) @MaxLength(500) idempotencyKey!: string;
+export class SyncFinalOutputDto {
+  @IsUUID('4') workflowRunId!: string;
+}
+export class LocalUpdateFinalOutputDto {
+  @IsOptional() @IsArray() @IsUUID('4', { each: true }) itemIds?: string[];
 }
 export class StartFinalOutputDto {
   @IsIn(FINAL_OUTPUT_RESOLUTIONS) resolution!: (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
@@ -46,14 +58,6 @@ const uuid = new ParseUUIDPipe({ version: '4' });
 @Controller('projects/:projectId/workflows/effect')
 export class EffectFinalOutputController {
   constructor(@Inject(EffectFinalOutputService) readonly service: EffectFinalOutputService) {}
-  @Post('template-mix/templates/:templateId/complete-packaging')
-  complete(
-    @Param('projectId', uuid) projectId: string,
-    @Param('templateId', uuid) templateId: string,
-    @Body() body: CompletePackagingDto,
-  ) {
-    return this.service.complete(projectId, templateId, body);
-  }
   @Get('final-output')
   list(
     @Param('projectId', uuid) projectId: string,
@@ -73,9 +77,17 @@ export class EffectFinalOutputController {
   ) {
     return this.service.start(projectId, runId, body);
   }
-  @Post('final-output/:runId/complete')
-  completeOutput(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {
-    return this.service.completeOutput(projectId, runId);
+  @Post('final-output/sync')
+  sync(@Param('projectId', uuid) projectId: string, @Body() body: SyncFinalOutputDto) {
+    return this.service.syncFromDraft(projectId, body.workflowRunId);
+  }
+  @Post('final-output/:runId/local-update')
+  localUpdate(
+    @Param('projectId', uuid) projectId: string,
+    @Param('runId', uuid) runId: string,
+    @Body() body: LocalUpdateFinalOutputDto,
+  ) {
+    return this.service.localUpdate(projectId, runId, body);
   }
   @Post('final-output/:runId/items/:itemId/render')
   renderItem(

@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
@@ -25,6 +26,7 @@ import { packagingVisualTimeline } from '@ai-marketing/contracts';
 import { packagingExecution } from './effect-packaging.metrics';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectTemplateMixService } from './effect-template-mix.service';
+import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 import { EffectVoiceCatalogService } from './effect-voice.catalog';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
@@ -129,14 +131,44 @@ export function parseVoiceSegmentFrames(
 
 @Injectable()
 export class EffectPackagingService {
+  private readonly logger = new Logger(EffectPackagingService.name);
   constructor(
     @Inject(EffectPackagingRepository) readonly repo: EffectPackagingRepository,
     @Inject(EffectTemplateMixService) readonly mix: EffectTemplateMixService,
     @Inject(WorkflowWorkingService) readonly working: WorkflowWorkingService,
     @Inject(STORAGE_PORT) readonly storage: StoragePort,
+    @Inject(EffectFinalOutputService)
+    readonly finalOutput: EffectFinalOutputService,
     @Inject(EffectVoiceCatalogService)
     readonly voiceCatalog: EffectVoiceCatalogService = new EffectVoiceCatalogService(),
   ) {}
+
+  /**
+   * The worker's finish callback. A finished package puts its films straight into the output node's
+   * queue and publishes the mix branch, so they are ready for export without a validation step. The
+   * sync is best-effort: a draft that moved on while the worker ran must not fail the worker.
+   */
+  async finish(projectId: string, runId: string, token: string) {
+    const result = await this.repo.finish(projectId, runId, token);
+    if (result.status === 'COMPLETED' || result.status === 'PARTIAL')
+      try {
+        await this.finalOutput.upsertFromPackaging(
+          projectId,
+          result.workflowRunId,
+          result.templateId,
+        );
+      } catch (error) {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'effect_packaging_sync_failed',
+            projectId,
+            runId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    return { accepted: true };
+  }
 
   async create(projectId: string, templateId: string, body: CreatePackagingRequest) {
     const requestHash = workflowStateHash({ ...body, templateId });
@@ -148,7 +180,19 @@ export class EffectPackagingService {
         throw new ConflictException('幂等键对应的包装请求已改变');
       return this.get(projectId, replay.id);
     }
-    const workspace = await this.mix.workspace(projectId, body.workflowRunId);
+    // Packaging is a full update of the mix node. Route it into an unpublished child so the
+    // published packaging result stays intact; the request hash above still keys on the Run the
+    // caller named, so a retry of the same request replays instead of forking again. Every
+    // successful packaging is a version of its own, so this forks even for the first one.
+    const edit = await this.working.beginEffectNodeEdit(
+      projectId,
+      body.workflowRunId,
+      'TEMPLATE_MIX',
+      'BATCH',
+      { always: true },
+    );
+    const workflowRunId = edit.run.id;
+    const workspace = await this.mix.workspace(projectId, workflowRunId);
     if (workspace.draftRevision !== body.expectedRevision)
       throw new ConflictException('草稿已改变，请刷新后重试');
     const entry = workspace.draft.templates.find((t) => t.id === templateId);
@@ -174,7 +218,7 @@ export class EffectPackagingService {
     )
       throw new BadRequestException('单槽位重做必须选择当前成片中的口播槽位');
     const artifacts = (
-      await this.working.listArtifacts(projectId, { workflowRunId: body.workflowRunId })
+      await this.working.listArtifacts(projectId, { workflowRunId })
     ).items;
     const musicAssetIds = [
       ...new Set(
@@ -251,7 +295,7 @@ export class EffectPackagingService {
     const checkpoints: PackagingCheckpoint[] = snapshots.map(() => ({
       narrationLayoutVersion: 'SLOT_V1',
     }));
-    const history = await this.repo.list(projectId, body.workflowRunId, templateId);
+    const history = await this.repo.list(projectId, workflowRunId, templateId);
     const visionCache = new Map(
       history
         .flatMap((r) => r.items)
@@ -341,7 +385,7 @@ export class EffectPackagingService {
       }
     const id = await this.repo.create({
       projectId,
-      workflowRunId: body.workflowRunId,
+      workflowRunId,
       templateId,
       idempotencyKey: body.idempotencyKey,
       requestHash,

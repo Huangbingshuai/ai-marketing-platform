@@ -1,6 +1,7 @@
-import { EFFECT_WORKFLOW_BRANCH_NODES } from '@ai-marketing/contracts';
+import { EFFECT_WORKFLOW_BRANCH_NODES, EFFECT_WORKFLOW_EDITABLE_NODES } from '@ai-marketing/contracts';
 import type {
   EffectWorkflowBranchNodeId,
+  EffectWorkflowEditableNodeId,
   AssetDirectory,
   AssetType,
   AssetWorkflow,
@@ -11,7 +12,11 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Prisma, type WorkflowNodeState } from '../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { workflowStateHash } from './workflow-state-hash';
-import { beginEffectEditInTransaction, exitEffectEditInTransaction } from './effect-edit-session';
+import {
+  beginEffectEditInTransaction,
+  exitEffectEditInTransaction,
+  type EffectEditBeginOptions,
+} from './effect-edit-session';
 import { createEffectManualBranchInTransaction } from './effect-manual-branch';
 
 export type WorkingArtifactUpsertInput = {
@@ -98,6 +103,10 @@ export const inheritedEffectArtifactVisible = (
 
 const jsonValue = (value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull =>
   value === undefined || value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue);
+
+/** Only the editable stages may open or close an isolated edit session. */
+const effectEditableNode = (nodeId: string): EffectWorkflowEditableNodeId | null =>
+  EFFECT_WORKFLOW_EDITABLE_NODES.find((node) => node === nodeId) ?? null;
 
 const openRunStatuses = ['ACTIVE', 'PAUSED'] as const;
 const cleanupGraceMs = (): number =>
@@ -268,17 +277,17 @@ export class WorkflowWorkingRepository {
     transaction: Prisma.TransactionClient, projectId: string, parentRunId: string,
     nodeId: EffectWorkflowBranchNodeId,
     purpose: 'MANUAL' | 'BATCH' = 'MANUAL',
+    options: EffectEditBeginOptions = {},
   ) {
-    if (!['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId))
-      return Promise.resolve(null);
-    return beginEffectEditInTransaction(transaction, projectId, parentRunId,
-      nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER', purpose);
+    const editable = effectEditableNode(nodeId);
+    if (!editable) return Promise.resolve(null);
+    return beginEffectEditInTransaction(transaction, projectId, parentRunId, editable, purpose, options);
   }
 
   beginEffectNodeEdit(projectId: string, parentRunId: string, nodeId: EffectWorkflowBranchNodeId,
-    purpose: 'MANUAL' | 'BATCH' = 'MANUAL') {
+    purpose: 'MANUAL' | 'BATCH' = 'MANUAL', options: EffectEditBeginOptions = {}) {
     return this.prisma.$transaction((transaction) =>
-      this.beginEffectNodeEditInTransaction(transaction, projectId, parentRunId, nodeId, purpose),
+      this.beginEffectNodeEditInTransaction(transaction, projectId, parentRunId, nodeId, purpose, options),
       { timeout: 120_000 },
     );
   }
@@ -287,10 +296,9 @@ export class WorkflowWorkingRepository {
     transaction: Prisma.TransactionClient, projectId: string, draftRunId: string,
     nodeId: EffectWorkflowBranchNodeId,
   ) {
-    if (!['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId))
-      return Promise.resolve(null);
-    return exitEffectEditInTransaction(transaction, projectId, draftRunId,
-      nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER', true);
+    const editable = effectEditableNode(nodeId);
+    if (!editable) return Promise.resolve(null);
+    return exitEffectEditInTransaction(transaction, projectId, draftRunId, editable, true);
   }
 
   publishEffectNodeEdit(projectId: string, draftRunId: string, nodeId: EffectWorkflowBranchNodeId) {
@@ -301,11 +309,10 @@ export class WorkflowWorkingRepository {
   }
 
   cancelEffectNodeEdit(projectId: string, draftRunId: string, nodeId: EffectWorkflowBranchNodeId) {
-    if (!['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId))
-      return Promise.resolve(null);
+    const editable = effectEditableNode(nodeId);
+    if (!editable) return Promise.resolve(null);
     return this.prisma.$transaction((transaction) =>
-      exitEffectEditInTransaction(transaction, projectId, draftRunId,
-        nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER', false),
+      exitEffectEditInTransaction(transaction, projectId, draftRunId, editable, false),
       { timeout: 120_000 },
     );
   }

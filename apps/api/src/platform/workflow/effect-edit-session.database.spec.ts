@@ -222,6 +222,209 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
 );
 
 it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
+  'clones the mix stage upstream but leaves its own confirmed artifacts behind',
+  async () => {
+    const db = new PrismaService(new ConfigService({
+      DATABASE_URL: process.env.DATABASE_URL ??
+        'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
+    }));
+    const repository = new WorkflowWorkingRepository(db);
+    const rollback = new Error('EFFECT_EDIT_TEST_ROLLBACK');
+    try {
+      await expect(db.$transaction(async (tx) => {
+        const source = await tx.workingArtifact.findFirstOrThrow({ where: {
+          nodeId: 'TEMPLATE_MIX', availability: 'AVAILABLE',
+          artifactKey: { startsWith: 'mix-template:' },
+          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+        }, orderBy: { updatedAt: 'desc' } });
+        const begun = await repository.beginEffectNodeEditInTransaction(
+          tx, source.projectId, source.workflowRunId, 'TEMPLATE_MIX', 'BATCH');
+        expect(begun).not.toBeNull();
+        expect(begun!.created).toBe(true);
+        const childArtifacts = await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+          availability: 'AVAILABLE',
+        }, select: { nodeId: true, artifactKey: true } });
+        // The branch has to render from the same clips, but nothing of the mix result itself may
+        // come along — the node has to look unconfirmed until the user regenerates it.
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('render-clip:'))).toBe(true);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('mix-template:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('timeline-project:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('timeline-package:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-video:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-delivery:'))).toBe(false);
+        // The template and slot configuration lives in the node draft, so it must survive the fork.
+        expect(await tx.workflowNodeState.count({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId, nodeId: 'TEMPLATE_MIX',
+        } })).toBe(1);
+        expect(await tx.workingArtifact.findUniqueOrThrow({ where: { id: source.id } }))
+          .toMatchObject({ workflowRunId: source.workflowRunId });
+        throw rollback;
+      }, { timeout: 120_000 })).rejects.toBe(rollback);
+    } finally {
+      await db.$disconnect();
+    }
+  },
+);
+
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
+  'keeps the packaging of an output branch but starts every film unrendered',
+  async () => {
+    const db = new PrismaService(new ConfigService({
+      DATABASE_URL: process.env.DATABASE_URL ??
+        'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
+    }));
+    const repository = new WorkflowWorkingRepository(db);
+    const rollback = new Error('EFFECT_EDIT_TEST_ROLLBACK');
+    try {
+      await expect(db.$transaction(async (tx) => {
+        const source = await tx.workingArtifact.findFirstOrThrow({ where: {
+          nodeId: 'FINAL_OUTPUT', availability: 'AVAILABLE',
+          artifactKey: { startsWith: 'final-video:' },
+          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+        }, orderBy: { updatedAt: 'desc' } });
+        const outputRuns = await tx.effectFinalOutputRun.findMany({ where: {
+          projectId: source.projectId, workflowRunId: source.workflowRunId,
+        }, include: { items: true } });
+        expect(outputRuns.length).toBeGreaterThan(0);
+        const begun = await repository.beginEffectNodeEditInTransaction(
+          tx, source.projectId, source.workflowRunId, 'FINAL_OUTPUT', 'BATCH');
+        expect(begun).not.toBeNull();
+        expect(begun!.created).toBe(true);
+        const childArtifacts = await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+          availability: 'AVAILABLE',
+        }, select: { artifactKey: true } });
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-video:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-delivery:'))).toBe(false);
+        // The films are downstream of the mix stage, so the branch keeps its packaging...
+        expect(await tx.effectPackagingRun.count({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId, status: 'COMPLETED',
+        } })).toBeGreaterThan(0);
+        // ...but every film has to be rendered again before the node counts as confirmed.
+        const childRuns = await tx.effectFinalOutputRun.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+        }, include: { items: true } });
+        expect(childRuns.length).toBe(new Set(outputRuns.map((run) => run.templateId)).size);
+        for (const run of childRuns) {
+          expect(run.status).toBe('PENDING_RENDER');
+          for (const item of run.items) {
+            expect(item.status).toBe('QUEUED');
+            expect(item.fileObjectId).toBeNull();
+            expect(item.assetId).toBeNull();
+          }
+        }
+        throw rollback;
+      }, { timeout: 120_000 })).rejects.toBe(rollback);
+    } finally {
+      await db.$disconnect();
+    }
+  },
+  // Cloning the packaging of every template takes well over the 5s default on a cold database.
+  60_000,
+);
+
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
+  'forks the first version of a regenerated stage when the caller asks for a branch every time',
+  async () => {
+    const db = new PrismaService(new ConfigService({
+      DATABASE_URL: process.env.DATABASE_URL ??
+        'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
+    }));
+    const repository = new WorkflowWorkingRepository(db);
+    const rollback = new Error('EFFECT_EDIT_TEST_ROLLBACK');
+    try {
+      await expect(db.$transaction(async (tx) => {
+        const source = await tx.workingArtifact.findFirstOrThrow({ where: {
+          nodeId: 'TEMPLATE_MIX', availability: 'AVAILABLE',
+          artifactKey: { startsWith: 'mix-template:' },
+          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+        }, orderBy: { updatedAt: 'desc' } });
+        const workspace = await tx.effectImportWorkspace.findFirstOrThrow({ where: {
+          projectId: source.projectId, workflowRunId: source.workflowRunId,
+        }, include: { drafts: { include: { products: true } } } });
+        // A published branch forked at the mix stage: stages 0-3 resolve back to the ancestor run,
+        // while the mix stage has no confirmed version of its own in the branch yet.
+        const branch = await tx.workflowRun.create({ data: {
+          projectId: source.projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+          parentWorkflowRunId: source.workflowRunId, forkNodeId: 'TEMPLATE_MIX',
+          branchPublishedAt: new Date(), activeKey: null,
+        } });
+        const branchWorkspace = await tx.effectImportWorkspace.create({ data: {
+          projectId: source.projectId, workflowRunId: branch.id,
+          currentMode: workspace.currentMode, revision: workspace.revision,
+        } });
+        for (const draft of workspace.drafts) {
+          const copyDraft = await tx.effectImportDraft.create({ data: {
+            projectId: source.projectId, workspaceId: branchWorkspace.id,
+            mode: draft.mode, status: draft.status,
+            globalConfig: draft.globalConfig as never,
+            revision: draft.revision, validatedRevision: draft.validatedRevision,
+            validationIssues: draft.validationIssues as never,
+            validatedAt: draft.validatedAt, completedAt: draft.completedAt,
+          } });
+          for (const product of draft.products) {
+            const copyProduct = await tx.effectImportProduct.create({ data: {
+              projectId: source.projectId, workflowRunId: branch.id,
+              draftId: copyDraft.id, status: product.status,
+              name: product.name, category: product.category, sku: product.sku,
+              normalizedSku: product.normalizedSku, commerceUrl: product.commerceUrl,
+              configOverride: product.configOverride as never, sortOrder: product.sortOrder,
+            } });
+            const materials = await tx.effectImportMaterial.findMany({ where: {
+              projectId: source.projectId, workflowRunId: source.workflowRunId,
+              productId: product.id,
+            } });
+            if (materials.length) await tx.effectImportMaterial.createMany({ data:
+              materials.map((item) => ({
+                projectId: source.projectId, workflowRunId: branch.id,
+                productId: copyProduct.id, type: item.type, status: item.status,
+                expectedFileName: item.expectedFileName,
+                originalFileName: item.originalFileName, mimeType: item.mimeType,
+                sizeBytes: item.sizeBytes, storageKey: item.storageKey,
+                fileObjectId: item.fileObjectId,
+                failureDisposition: item.failureDisposition,
+                errorCode: item.errorCode, errorMessage: item.errorMessage,
+                retryCount: item.retryCount, createdAt: item.createdAt,
+              })),
+            });
+          }
+        }
+        await tx.workflowRun.update({ where: { id: source.workflowRunId },
+          data: { activeKey: null } });
+        await tx.workflowRun.update({ where: { id: branch.id },
+          data: { activeKey: 'ACTIVE' } });
+        // Without the option this is the initial version: the branch itself is rewritten in place.
+        const plain = await repository.beginEffectNodeEditInTransaction(
+          tx, source.projectId, branch.id, 'TEMPLATE_MIX', 'BATCH');
+        expect(plain).toEqual(expect.objectContaining({ runId: branch.id, created: false }));
+        // With it, every successful regeneration is a version, so even the first one forks.
+        const begun = await repository.beginEffectNodeEditInTransaction(
+          tx, source.projectId, branch.id, 'TEMPLATE_MIX', 'BATCH', { always: true });
+        expect(begun).not.toBeNull();
+        expect(begun!.created).toBe(true);
+        expect(begun!.runId).not.toBe(branch.id);
+        expect(begun!.parentWorkflowRunId).toBe(branch.id);
+        const childArtifacts = await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+          availability: 'AVAILABLE',
+        }, select: { artifactKey: true } });
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('render-clip:'))).toBe(true);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('mix-template:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('timeline-project:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('timeline-package:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-video:'))).toBe(false);
+        expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-delivery:'))).toBe(false);
+        throw rollback;
+      }, { timeout: 120_000 })).rejects.toBe(rollback);
+    } finally {
+      await db.$disconnect();
+    }
+  },
+  60_000,
+);
+
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
   'starts an import edit from an artifact inherited across a downstream fork',
   async () => {
     const db = new PrismaService(new ConfigService({

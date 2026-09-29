@@ -51,6 +51,8 @@ const emit = defineEmits<{
   preview: [enabled: boolean];
   ready: [ready: boolean];
   started: [];
+  /** Packaging is a full update, so the service may have forked a Run the editor has to follow. */
+  runChange: [workflowRunId: string];
   status: [status: PackagingRun['status'] | null];
   /** Films whose packaging failed; they will still be submitted, playing picture only. */
   failures: [failures: { variantId: string; name: string; message: string }[]];
@@ -311,6 +313,12 @@ async function create() {
       );
       if (context.generation !== generation) return;
       pendingCreate = null;
+      // A fork happened before the task was queued: the new Run owns this packaging run, and the
+      // editor must reload there or it would keep reading the published Run's packaging.
+      if (response.data.workflowRunId !== context.workflowRunId) {
+        emit('runChange', response.data.workflowRunId);
+        return;
+      }
       poller.stop();
       runs.value = [response.data, ...runs.value.filter((r) => r.id !== response.data.id)];
       emit('started');

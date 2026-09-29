@@ -1854,6 +1854,8 @@ onBeforeUnmount(() => {
           :preview-target="mixPreviewTarget"
           @back="selectWorkflowStep(3)"
           @next="selectWorkflowStep(5)"
+          @workflow-run-change="refreshActiveRunInPlace(currentProjectId)"
+          @notice="showNotice"
         />
         <EffectFinalOutputNodePage
           v-else-if="activeStep === 5"
@@ -1862,6 +1864,7 @@ onBeforeUnmount(() => {
           :workflow-run-id="workspace?.workflowRunId ?? ''"
           @back="selectWorkflowStep(4)"
           @preview="previewFinalOutputItem"
+          @workflow-run-change="refreshActiveRunInPlace(currentProjectId)"
         />
       </KeepAlive>
 

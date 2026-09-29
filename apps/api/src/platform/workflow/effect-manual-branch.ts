@@ -5,17 +5,15 @@ import {
   type WorkingArtifactUpsertInput,
 } from './workflow-working.repository';
 import { beginEffectEditInTransaction } from './effect-edit-session';
+import {
+  clonePackagingRunsInTransaction,
+  remapClonedPackagingRunsInTransaction,
+  remapIds,
+} from './effect-branch-clone';
 
 type Tx = Prisma.TransactionClient;
 const json = (value: unknown): Prisma.InputJsonValue =>
   (value === undefined || value === null ? {} : value) as Prisma.InputJsonValue;
-const replaceIds = <T>(value: T, replacements: Record<string, string>): T => {
-  if (value === undefined || value === null) return value;
-  let serialized = JSON.stringify(value);
-  for (const [before, after] of Object.entries(replacements))
-    serialized = serialized.replaceAll(before, after);
-  return JSON.parse(serialized) as T;
-};
 
 /** A manual fork is a complete confirmed workspace, unlike a node-change fork. */
 export async function createEffectManualBranchInTransaction(
@@ -55,7 +53,7 @@ export async function createEffectManualBranchInTransaction(
   const childArtifacts = await tx.workingArtifact.findMany({ where: {
     projectId, workflowRunId: childRunId,
   } });
-  const remapKey = (key: string) => replaceIds(key, ids);
+  const remapKey = (key: string) => remapIds(key, ids);
   const copiedByKey = new Map(childArtifacts.map((item) =>
     [`${item.nodeId}:${item.artifactKey}`, item]));
   const hashes: Record<string, string> = {};
@@ -89,15 +87,15 @@ export async function createEffectManualBranchInTransaction(
       targetVariantId: source.targetVariantId, outputVariantId: source.outputVariantId,
       idempotencyKey: `manual:${childRunId}:mix:${source.id}`,
       requestHash: source.requestHash, inputHash: source.inputHash,
-      inputSnapshot: json(replaceIds(source.inputSnapshot, ids)),
+      inputSnapshot: json(remapIds(source.inputSnapshot, ids)),
       classificationResult: source.classificationResult === null ? Prisma.DbNull
-        : json(replaceIds(source.classificationResult, ids)),
+        : json(remapIds(source.classificationResult, ids)),
       selectionResult: source.selectionResult === null ? Prisma.DbNull
-        : json(replaceIds(source.selectionResult, ids)),
+        : json(remapIds(source.selectionResult, ids)),
       samplingResult: source.samplingResult === null ? Prisma.DbNull
-        : json(replaceIds(source.samplingResult, ids)),
+        : json(remapIds(source.samplingResult, ids)),
       trimResult: source.trimResult === null ? Prisma.DbNull
-        : json(replaceIds(source.trimResult, ids)),
+        : json(remapIds(source.trimResult, ids)),
       expectedDraftRevision: source.expectedDraftRevision,
       templateEditVersion: source.templateEditVersion,
       status: 'COMPLETED', stage: source.stage, progress: 100,
@@ -105,34 +103,10 @@ export async function createEffectManualBranchInTransaction(
     } });
     ids[source.id] = copy.id;
   }
-  const packagingRuns = await tx.effectPackagingRun.findMany({ where: {
-    projectId, workflowRunId: parentRunId, status: 'COMPLETED',
-    templateId: { in: [...confirmedTemplateIds] },
-  }, include: { items: { include: { files: true } } } });
-  for (const source of packagingRuns.filter((run) =>
-    run.items.some((item) => packagedVariantIds.has(item.variantId)))) {
-    const copy = await tx.effectPackagingRun.create({ data: {
-      projectId, workflowRunId: childRunId, templateId: source.templateId,
-      idempotencyKey: `manual:${childRunId}:package:${source.id}`,
-      requestHash: source.requestHash, status: 'COMPLETED',
-      completedAt: source.completedAt, startedAt: source.startedAt,
-    } });
-    ids[source.id] = copy.id;
-    for (const item of source.items.filter((entry) =>
-      entry.status === 'COMPLETED' && packagedVariantIds.has(entry.variantId))) {
-      const copiedItem = await tx.effectPackagingItem.create({ data: {
-        projectId, runId: copy.id, variantId: item.variantId, name: item.name,
-        shardIndex: item.shardIndex, sourceTimelineHash: item.sourceTimelineHash,
-        snapshot: json(replaceIds(item.snapshot, ids)), status: 'COMPLETED',
-        stage: item.stage, checkpoint: json(replaceIds(item.checkpoint, ids)),
-        startedAt: item.startedAt, completedAt: item.completedAt,
-      } });
-      ids[item.id] = copiedItem.id;
-      if (item.files.length) await tx.effectPackagingFile.createMany({ data:
-        item.files.map((file) => ({ projectId, itemId: copiedItem.id,
-          fileObjectId: file.fileObjectId, role: file.role })) });
-    }
-  }
+  const packagingRuns = await clonePackagingRunsInTransaction(
+    tx, projectId, parentRunId, childRunId, ids,
+    { templateIds: confirmedTemplateIds, variantIds: packagedVariantIds },
+  );
   const outputRuns = await tx.effectFinalOutputRun.findMany({ where: {
     projectId, workflowRunId: parentRunId, status: 'COMPLETED',
     templateId: { in: [...confirmedTemplateIds] },
@@ -153,16 +127,16 @@ export async function createEffectManualBranchInTransaction(
       sizeBytes: source.sizeBytes, storageKey: source.storageKey, hasFile: source.hasFile,
       assetClass: source.assetClass, businessType: source.businessType,
       contentKind: source.contentKind, content: source.content === null ? Prisma.DbNull
-        : json(replaceIds(source.content, ids)),
+        : json(remapIds(source.content, ids)),
       businessData: source.businessData === null ? Prisma.DbNull
-        : json(replaceIds(source.businessData, ids)),
+        : json(remapIds(source.businessData, ids)),
       views: source.views, sourceArtifactId: null, sourceRunId: null,
       sourceNode: source.sourceNode, sourceShot: source.sourceShot,
       idempotencyKey: `manual:${childRunId}:asset:${source.id}`,
       sourceProjectId: source.sourceProjectId, sourceAssetId: source.sourceAssetId,
       sourceVersion: source.sourceVersion, importedAt: source.importedAt,
       dependencies: source.dependencies === null ? Prisma.DbNull
-        : json(replaceIds(source.dependencies, ids)),
+        : json(remapIds(source.dependencies, ids)),
       archivedAt: source.archivedAt,
     } });
     ids[source.id] = copy.id;
@@ -171,9 +145,9 @@ export async function createEffectManualBranchInTransaction(
         version: version.version, changeNote: version.changeNote,
         status: version.status, qualityStatus: version.qualityStatus,
         content: version.content === null ? Prisma.DbNull
-          : json(replaceIds(version.content, ids)),
+          : json(remapIds(version.content, ids)),
         businessData: version.businessData === null ? Prisma.DbNull
-          : json(replaceIds(version.businessData, ids)),
+          : json(remapIds(version.businessData, ids)),
         originalFileName: version.originalFileName, mimeType: version.mimeType,
         sizeBytes: version.sizeBytes, storageKey: version.storageKey,
         createdAt: version.createdAt })) });
@@ -191,7 +165,7 @@ export async function createEffectManualBranchInTransaction(
       entry.status === 'COMPLETED' && finalVideoVariantIds.has(entry.variantId))) {
       const copiedItem = await tx.effectFinalOutputItem.create({ data: {
         projectId, runId: copy.id, variantId: item.variantId, name: item.name,
-        snapshot: json(replaceIds(item.snapshot, ids)), status: 'COMPLETED', progress: 100,
+        snapshot: json(remapIds(item.snapshot, ids)), status: 'COMPLETED', progress: 100,
         fileObjectId: item.fileObjectId,
         assetId: item.assetId ? ids[item.assetId] ?? null : null,
       } });
@@ -239,7 +213,7 @@ export async function createEffectManualBranchInTransaction(
             variants,
           } };
         });
-      const state = replaceIds({ ...original, templates,
+      const state = remapIds({ ...original, templates,
         activeTemplateId: templates.some((item) => item.id === original.activeTemplateId)
           ? original.activeTemplateId : (templates[0]?.id ?? ''),
       }, ids);
@@ -252,7 +226,7 @@ export async function createEffectManualBranchInTransaction(
         state: json(state), savedAt: source.savedAt,
       } });
     } else {
-      const state = replaceIds(source.state, ids);
+      const state = remapIds(source.state, ids);
       await tx.workflowNodeState.create({ data: {
         projectId, workflowRunId: childRunId, nodeId: source.nodeId,
         schemaVersion: source.schemaVersion, revision: source.revision,
@@ -273,10 +247,10 @@ export async function createEffectManualBranchInTransaction(
     .sort((left, right) => copyOrder(left.artifactKey) - copyOrder(right.artifactKey))) {
     const dependencies = source.dependencies.map((dependency) => ({
       sourceType: dependency.sourceType,
-      sourceNodeId: replaceIds(dependency.sourceNodeId, ids),
+      sourceNodeId: remapIds(dependency.sourceNodeId, ids),
       sourceArtifactId: dependency.sourceArtifactId
         ? ids[dependency.sourceArtifactId] ?? dependency.sourceArtifactId : null,
-      sourceKey: replaceIds(dependency.sourceKey, ids),
+      sourceKey: remapIds(dependency.sourceKey, ids),
       sourceRevision: dependency.sourceRevision,
       sourceHash: dependency.sourceHash
         ? hashes[dependency.sourceHash] ?? dependency.sourceHash : null,
@@ -288,8 +262,8 @@ export async function createEffectManualBranchInTransaction(
     }));
     const input: WorkingArtifactUpsertInput = {
       kind: source.kind, name: source.name, directory: source.directory, type: source.type,
-      tags: source.tags, payload: replaceIds(source.payload, ids),
-      metadata: replaceIds(source.metadata, ids),
+      tags: source.tags, payload: remapIds(source.payload, ids),
+      metadata: remapIds(source.metadata, ids),
       originalFileName: source.originalFileName, mimeType: source.mimeType,
       sizeBytes: source.sizeBytes, storageKey: source.storageKey,
       sourceRunId: source.sourceRunId ? ids[source.sourceRunId] ?? source.sourceRunId : null,
@@ -327,18 +301,7 @@ export async function createEffectManualBranchInTransaction(
       sourceRunId, sourceArtifactId,
     } });
   }
-  for (const run of packagingRuns) {
-    const copyRunId = ids[run.id];
-    if (!copyRunId) continue;
-    for (const item of run.items) {
-      const copyItemId = ids[item.id];
-      if (!copyItemId) continue;
-      await tx.effectPackagingItem.update({ where: { id: copyItemId }, data: {
-        snapshot: json(replaceIds(item.snapshot, ids)),
-        checkpoint: json(replaceIds(item.checkpoint, ids)),
-      } });
-    }
-  }
+  await remapClonedPackagingRunsInTransaction(tx, projectId, packagingRuns, ids);
   for (const run of outputRuns) {
     const copyRunId = ids[run.id];
     if (!copyRunId) continue;
@@ -346,7 +309,7 @@ export async function createEffectManualBranchInTransaction(
       const copyItemId = ids[item.id];
       if (!copyItemId) continue;
       await tx.effectFinalOutputItem.update({ where: { id: copyItemId }, data: {
-        snapshot: json(replaceIds(item.snapshot, ids)),
+        snapshot: json(remapIds(item.snapshot, ids)),
       } });
     }
   }

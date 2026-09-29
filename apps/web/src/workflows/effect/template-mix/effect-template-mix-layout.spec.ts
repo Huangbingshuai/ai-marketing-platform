@@ -109,7 +109,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('点击“添加”，在播放头位置新建字幕素材。');
     expect(pageSource).toContain('const captionItems = computed');
   });
-  it('uses the real draft, material and validation API', () => {
+  it('uses the real draft and material API', () => {
     expect(pageSource).toContain("from './api/effect-template-mix.api'");
     expect(pageSource).toContain('loadEffectTemplateMixWorkspace');
     expect(pageSource).toContain('saveEffectTemplateMixDraft');
@@ -118,11 +118,29 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('getEffectTemplateMixAiRun');
     expect(pageSource).toContain('大模型按 Prompt 归槽');
     expect(pageSource).toContain('changeTrimStart');
-    expect(pageSource).toContain('completeEffectTemplateMixPackaging');
-    expect(pageSource).toContain('completeEffectTemplateMixPackaging');
     expect(pageSource).not.toMatch(/\bfillEffectTemplateMixVariant\b/u);
     expect(pageSource).not.toContain('syncEffectTemplateMixVariants');
     expect(pageSource).not.toMatch(/Mock|MOCK|createEffectTemplateMixMock/u);
+  });
+  it('drops 完成校验: packaging alone puts the films into the output queue', () => {
+    // The button used to be the only thing that handed a film to the output node, so removing it is
+    // what makes 智能成片包装 land in 待渲染区 on its own.
+    expect(pageSource).not.toContain('completeEffectTemplateMixPackaging');
+    expect(pageSource).not.toContain('validateDraft');
+    expect(pageSource).toContain(':show-validate="false"');
+    expect(pageSource).not.toContain('const completionKey');
+    expect(pageSource).not.toContain('const canValidate');
+  });
+  it('syncs the output node when the workbench is left, and reports what moved', () => {
+    expect(pageSource).toContain('syncEffectFinalOutput');
+    expect(pageSource).toContain('const syncOutputOnExit = async (): Promise<void> => {');
+    expect(pageSource).toContain('if (!(await flushPendingEdits())) return;');
+    expect(pageSource).toContain('成片输出有 ${staleCount} 条需要局部更新');
+    expect(pageSource).toContain('已同步成片待渲染区 ${refreshedCount} 条');
+    expect(pageSource).toContain("emit('notice'");
+    expect(pageSource).toContain('const returnToFinalOutput = async (): Promise<void> => {');
+    expect(pageSource).toContain('await syncOutputOnExit();');
+    expect(pageSource).toContain('void syncOutputOnExit();');
   });
   it('never lets two draft saves share a revision', () => {
     // A drag outlives a save, so the debounce can fire again while the first request is still on the
@@ -1652,5 +1670,15 @@ describe('effect template mix workbench layout', () => {
     // alone, which is what "声音关闭" means.
     expect(timelineSource).toContain("'is-muted': trackMuted('VIDEO'),");
     expect(timelineSource).toContain('.video-clip.is-muted .clip-waveform {');
+  });
+  it('follows the fork a full update opened instead of editing the published Run', () => {
+    // Re-filling and packaging both fork an unpublished child on the server. The page has to move to
+    // that Run before it reads the draft back, or the edit lands in the published branch.
+    expect(rawPageSource).toContain('if (result.data.workflowRunId !== props.workflowRunId) {');
+    expect(rawPageSource).toContain("emit('workflowRunChange');");
+    expect(packagingSource).toContain('if (response.data.workflowRunId !== context.workflowRunId) {');
+    expect(packagingSource).toContain("emit('runChange', response.data.workflowRunId);");
+    expect(rawPageSource).toContain('const handlePackagingRunChange = (): void => {');
+    expect(rawPageSource).toContain('@run-change="handlePackagingRunChange"');
   });
 });

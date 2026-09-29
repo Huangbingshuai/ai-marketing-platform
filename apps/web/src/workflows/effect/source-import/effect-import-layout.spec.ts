@@ -14,6 +14,10 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).toContain('activeStep.value = previousStep');
     expect(pageSource).toContain('正在切换编辑状态');
     expect(pageSource).toContain('@branch-activated="refreshActiveRunInPlace(currentProjectId)"');
+    // A full update in the mix or output node forks a child Run, and those pages report it here so
+    // the canvas follows instead of leaving the user on the published branch.
+    expect(pageSource.match(/@workflow-run-change="refreshActiveRunInPlace\(currentProjectId\)"/gu))
+      .toHaveLength(5);
   });
 
   it('copies the active branch only after flushing pending drafts', () => {

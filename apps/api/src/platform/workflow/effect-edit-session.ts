@@ -1,6 +1,11 @@
 import type { EffectWorkflowEditableNodeId } from '@ai-marketing/contracts';
+import { randomUUID } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { workflowStateHash } from './workflow-state-hash';
+import {
+  clonePackagingRunsInTransaction,
+  remapIds as remap,
+} from './effect-branch-clone';
 import { workingArtifactContentHash, workingArtifactInclude, type WorkingArtifactUpsertInput } from './workflow-working.repository';
 
 type Tx = Prisma.TransactionClient;
@@ -8,27 +13,28 @@ type IdMap = Record<string, string>;
 
 const stageOrder: EffectWorkflowEditableNodeId[] = [
   'SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER',
+  'TEMPLATE_MIX', 'FINAL_OUTPUT',
 ];
-const artifactPrefix: Record<EffectWorkflowEditableNodeId, string> = {
-  SOURCE_IMPORT: 'source-package:',
-  INFORMATION_EXTRACTION: 'marketing-insight:',
-  PROMPT_GENERATION: 'prompt-batch:',
-  SEGMENT_RENDER: 'render-batch:',
+/** One stage can own several artifact families; the mix node keeps templates, timelines and packages. */
+const artifactPrefix: Record<EffectWorkflowEditableNodeId, readonly string[]> = {
+  SOURCE_IMPORT: ['source-package:'],
+  INFORMATION_EXTRACTION: ['marketing-insight:'],
+  PROMPT_GENERATION: ['prompt-batch:'],
+  SEGMENT_RENDER: ['render-batch:'],
+  TEMPLATE_MIX: ['mix-template:', 'timeline-project:', 'timeline-package:'],
+  FINAL_OUTPUT: ['final-video:', 'final-delivery:'],
 };
+const artifactKeyWhere = (nodeId: EffectWorkflowEditableNodeId) => ({
+  OR: artifactPrefix[nodeId].map((prefix) => ({ artifactKey: { startsWith: prefix } })),
+});
 const json = (value: unknown): Prisma.InputJsonValue =>
   (value === undefined || value === null ? {} : value) as Prisma.InputJsonValue;
-const remap = <T>(value: T, ids: IdMap): T => {
-  let serialized = JSON.stringify(value);
-  if (serialized === undefined) return value;
-  for (const [oldId, newId] of Object.entries(ids)) serialized = serialized.replaceAll(oldId, newId);
-  return JSON.parse(serialized) as T;
-};
 const stageDigest = async (
   tx: Tx, projectId: string, runId: string, nodeId: EffectWorkflowEditableNodeId,
 ): Promise<string> => {
   const artifacts = await tx.workingArtifact.findMany({
-    where: { projectId, workflowRunId: runId, nodeId,
-      artifactKey: { startsWith: artifactPrefix[nodeId] }, availability: 'AVAILABLE' },
+    where: { projectId, workflowRunId: runId, nodeId, availability: 'AVAILABLE',
+      ...artifactKeyWhere(nodeId) },
     select: { artifactKey: true, contentHash: true }, orderBy: { artifactKey: 'asc' },
   });
   return workflowStateHash(artifacts);
@@ -42,10 +48,21 @@ export type EffectEditBeginRecord = {
   created: boolean;
 };
 
+export type EffectEditBeginOptions = {
+  /**
+   * Regenerating the mix or output node always opens a branch, even when the node has no confirmed
+   * version yet: every successful fill, packaging or export is a version of its own, so the run that
+   * triggered it must not be rewritten in place. The upstream four nodes keep the initial-version
+   * rule because their first result is the version, not a new one.
+   */
+  always?: boolean;
+};
+
 /** Clone the mutable domain workspace before any edit or paid task is allowed to run. */
 export async function beginEffectEditInTransaction(
   tx: Tx, projectId: string, parentRunId: string, nodeId: EffectWorkflowEditableNodeId,
   purpose: 'MANUAL' | 'BATCH' = 'MANUAL',
+  options: EffectEditBeginOptions = {},
 ): Promise<EffectEditBeginRecord | null> {
   await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "projects" WHERE "id" = ${projectId}::uuid FOR UPDATE`);
   const parent = await tx.workflowRun.findFirst({
@@ -79,7 +96,7 @@ export async function beginEffectEditInTransaction(
       visited.add(cursor.id);
       const present = await tx.workingArtifact.count({ where: {
         projectId, workflowRunId: cursor.id, nodeId: stage,
-        artifactKey: { startsWith: artifactPrefix[stage] }, availability: 'AVAILABLE',
+        availability: 'AVAILABLE', ...artifactKeyWhere(stage),
       } });
       if (present) { stageSources.set(stage, cursor.id); break; }
       const forkIndex = stageOrder.indexOf(cursor.forkNodeId as EffectWorkflowEditableNodeId);
@@ -95,7 +112,8 @@ export async function beginEffectEditInTransaction(
   }
   const confirmed = stageSources.has(nodeId);
   // The initial version is committed in the existing Run. There is no parent version to protect.
-  if (!confirmed) return { runId: parent.id, parentWorkflowRunId: null,
+  // A caller that treats every regeneration as a version of its own opts out of that rule.
+  if (!confirmed && !options.always) return { runId: parent.id, parentWorkflowRunId: null,
     productIdMap: {}, taskIdMap: {}, created: false };
   const workspace = await tx.effectImportWorkspace.findFirst({
     where: { projectId, workflowRunId: parent.id }, include: { drafts: { include: { products: true } } },
@@ -358,19 +376,33 @@ export async function beginEffectEditInTransaction(
       executionInputSchemaVersion: state.executionInputSchemaVersion,
       state: json(value), savedAt: state.savedAt };
   }) });
-  const artifacts = (await Promise.all(stageOrder.slice(0, stageIndex + 1).map((stage) =>
+  // The mix and output nodes are whole downstream pipelines of their own. Copying their confirmed
+  // artifacts would make the new branch look finished before it regenerated anything, so only the
+  // upstream stages carry artifacts across; the trigger stage keeps its configuration in node state.
+  const artifactStages = stageIndex >= 4
+    ? stageOrder.slice(0, stageIndex) : stageOrder.slice(0, stageIndex + 1);
+  const artifacts = (await Promise.all(artifactStages.map((stage) =>
     tx.workingArtifact.findMany({ where: { projectId,
       workflowRunId: stageSources.get(stage) ?? parent.id,
       nodeId: stage, availability: 'AVAILABLE' },
       include: workingArtifactInclude,
     }),
   ))).flat();
+  const ordered = artifacts.sort((a, b) =>
+    stageOrder.indexOf(a.nodeId as EffectWorkflowEditableNodeId) -
+    stageOrder.indexOf(b.nodeId as EffectWorkflowEditableNodeId));
   const artifactIds: IdMap = {};
   const hashMap: IdMap = {};
   const hashReplacements: IdMap = {};
-  for (const artifact of artifacts.sort((a, b) =>
-    stageOrder.indexOf(a.nodeId as EffectWorkflowEditableNodeId) -
-    stageOrder.indexOf(b.nodeId as EffectWorkflowEditableNodeId))) {
+  // Ids are handed out before anything is written so the whole stage fits in three statements and
+  // a dependency can still name an artifact the loop has not reached yet. Dependencies go in
+  // after every artifact exists, so their foreign keys resolve whatever the order was.
+  for (const artifact of ordered) artifactIds[artifact.id] = randomUUID();
+  const artifactRows: Prisma.WorkingArtifactCreateManyInput[] = [];
+  const artifactFileRows: Prisma.WorkingArtifactFileCreateManyInput[] = [];
+  const artifactDependencyRows: Prisma.WorkingArtifactDependencyCreateManyInput[] = [];
+  for (const artifact of ordered) {
+    const id = artifactIds[artifact.id]!;
     const dependencies = artifact.dependencies.map((dependency) => ({
       sourceType: dependency.sourceType,
       sourceNodeId: dependency.sourceNodeId ? remap(dependency.sourceNodeId, ids) : null,
@@ -395,8 +427,8 @@ export async function beginEffectEditInTransaction(
       files, dependencies,
     };
     const contentHash = workingArtifactContentHash(input);
-    const copy = await tx.workingArtifact.create({ data: {
-      projectId, workflowRunId: child.id, nodeId: artifact.nodeId,
+    artifactRows.push({
+      id, projectId, workflowRunId: child.id, nodeId: artifact.nodeId,
       artifactKey: remap(artifact.artifactKey, ids), kind: artifact.kind,
       name: artifact.name, directory: artifact.directory, type: artifact.type,
       tags: artifact.tags, payload: json(input.payload), metadata: json(input.metadata),
@@ -407,19 +439,63 @@ export async function beginEffectEditInTransaction(
         ? (ids[artifact.sourceArtifactId] ?? artifact.sourceArtifactId) : null,
       revision: artifact.revision, contentHash, freshness: artifact.freshness,
       availability: artifact.availability, createdAt: artifact.createdAt,
-    } });
-    artifactIds[artifact.id] = copy.id;
+    });
     hashMap[artifact.id] = contentHash;
     hashReplacements[artifact.contentHash] = contentHash;
-    if (files.length) await tx.workingArtifactFile.createMany({ data: files.map((file) => ({
-      projectId, workflowRunId: child.id, workingArtifactId: copy.id,
+    for (const file of files) artifactFileRows.push({
+      projectId, workflowRunId: child.id, workingArtifactId: id,
       fileObjectId: file.fileObjectId, role: file.role, sortOrder: file.sortOrder,
-    })) });
-    if (dependencies.length) await tx.workingArtifactDependency.createMany({ data:
-      dependencies.map((dependency) => ({
-        projectId, workflowRunId: child.id, dependentArtifactId: copy.id, ...dependency,
-      })),
     });
+    for (const dependency of dependencies) artifactDependencyRows.push({
+      projectId, workflowRunId: child.id, dependentArtifactId: id, ...dependency,
+    });
+  }
+  if (artifactRows.length) await tx.workingArtifact.createMany({ data: artifactRows });
+  if (artifactFileRows.length) {
+    await tx.workingArtifactFile.createMany({ data: artifactFileRows });
+  }
+  if (artifactDependencyRows.length) {
+    await tx.workingArtifactDependency.createMany({ data: artifactDependencyRows });
+  }
+  if (stageIndex >= 5) {
+    // The output stage is downstream of the mix stage: the branch keeps the packaging it exports
+    // from, but every film starts unrendered so the export has to run again in this branch.
+    // Every artifact is cloned by now, so the snapshots can be re-pointed in one pass here; a
+    // packaging snapshot names artifacts and content hashes, never another packaging row.
+    await clonePackagingRunsInTransaction(tx, projectId, parent.id, child.id, ids, {
+      keyPrefix: 'edit',
+      snapshotIds: { ...ids, ...artifactIds, ...hashReplacements },
+    });
+    const outputRuns = await tx.effectFinalOutputRun.findMany({
+      where: { projectId, workflowRunId: parent.id }, include: { items: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    const seenTemplates = new Set<string>();
+    const outputRows: Prisma.EffectFinalOutputRunCreateManyInput[] = [];
+    const outputItemRows: Prisma.EffectFinalOutputItemCreateManyInput[] = [];
+    for (const source of outputRuns) {
+      if (seenTemplates.has(source.templateId)) continue;
+      seenTemplates.add(source.templateId);
+      const id = randomUUID();
+      ids[source.id] = id;
+      outputRows.push({ id, projectId, workflowRunId: child.id,
+        templateId: source.templateId,
+        idempotencyKey: `edit:${child.id}:output:${source.id}`,
+        requestHash: source.requestHash, inputHash: source.inputHash,
+        status: 'PENDING_RENDER' });
+      for (const item of source.items) {
+        const itemId = randomUUID();
+        outputItemRows.push({ id: itemId, projectId, runId: id, variantId: item.variantId,
+          name: item.name,
+          snapshot: json(remap(item.snapshot, { ...ids, ...artifactIds })),
+          status: 'QUEUED', progress: 0, fileObjectId: null, assetId: null });
+        ids[item.id] = itemId;
+      }
+    }
+    if (outputRows.length) await tx.effectFinalOutputRun.createMany({ data: outputRows });
+    if (outputItemRows.length) {
+      await tx.effectFinalOutputItem.createMany({ data: outputItemRows });
+    }
   }
   // Snapshots are frozen, but cloned domain records must point at cloned confirmed inputs.
   if (stageIndex >= 1) {
@@ -496,9 +572,8 @@ export async function exitEffectEditInTransaction(
   } });
   if (!parent) return null;
   const currentArtifacts = await tx.workingArtifact.count({ where: {
-    projectId, workflowRunId: draft.id, nodeId,
-    artifactKey: { startsWith: artifactPrefix[nodeId] }, availability: 'AVAILABLE',
-    freshness: 'CURRENT',
+    projectId, workflowRunId: draft.id, nodeId, availability: 'AVAILABLE',
+    freshness: 'CURRENT', ...artifactKeyWhere(nodeId),
   } });
   const changed = publish && draft.editBaselineHash !== await stageDigest(tx, projectId, draft.id, nodeId);
   if (changed && currentArtifacts === 0) return null;

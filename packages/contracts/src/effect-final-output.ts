@@ -14,10 +14,22 @@ export type FinalOutputStatus =
   | 'FAILED'
   | 'CANCELLED';
 
-export type CompleteEffectPackagingRequest = {
+/**
+ * Leaving the mix workbench re-syncs the output node: films that were never exported follow the
+ * current draft, and exported ones that the draft moved past are reported as needing a local update.
+ */
+export type SyncFinalOutputRequest = {
   workflowRunId: string;
-  expectedRevision: number;
-  idempotencyKey: string;
+};
+export type SyncFinalOutputData = {
+  /** Unexported films whose frozen timeline was rewritten from the current draft. */
+  refreshed: { templateId: string; itemCount: number }[];
+  /** Already exported films whose upstream moved on; they need a local re-export. */
+  needsUpdate: { templateId: string; staleCount: number }[];
+};
+/** Re-export the affected films in place, in the current branch, instead of opening a new one. */
+export type LocalUpdateFinalOutputRequest = {
+  itemIds?: string[];
 };
 export type StartFinalOutputRequest = {
   resolution: FinalOutputResolution;
@@ -71,7 +83,15 @@ export type FinalOutputRun = {
   status: FinalOutputStatus;
   createdAt: string;
   items: FinalOutputItem[];
-  counts: { total: number; queued: number; running: number; completed: number; failed: number };
+  counts: {
+    total: number;
+    queued: number;
+    running: number;
+    completed: number;
+    failed: number;
+    /** Films whose consumed upstream moved on and that a local update has to re-export. */
+    stale: number;
+  };
 };
 export type FinalOutputQueueMessage = {
   schemaVersion: 2;

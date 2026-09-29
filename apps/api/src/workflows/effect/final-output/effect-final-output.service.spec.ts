@@ -84,6 +84,19 @@ function harness(count = 1) {
     createdAt: new Date(),
     items: [] as unknown[],
   };
+  // The batch the output node is already holding un-exported, if any. `null` means the queue lookup
+  // finds nothing and the packaging callback creates a fresh run.
+  const pending = {
+    current: null as null | {
+      id: string;
+      projectId: string;
+      templateId: string;
+      workflowRunId: string;
+      status: string;
+      createdAt: Date;
+      items: { id: string; variantId: string; name: string; snapshot: unknown }[];
+    },
+  };
   const db = {
     $queryRaw: vi.fn(),
     $executeRaw: vi.fn(),
@@ -98,6 +111,7 @@ function harness(count = 1) {
     },
     asset: {
       create: vi.fn().mockResolvedValue({ id: 'asset-created' }),
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockImplementation(({ where }) => Promise.resolve({ id: where.id })),
     },
     assetVersion: { create: vi.fn().mockResolvedValue({ id: 'version' }), deleteMany: vi.fn() },
@@ -105,7 +119,10 @@ function harness(count = 1) {
     effectPackagingItem: { findMany: vi.fn().mockResolvedValue(rows) },
     effectFinalOutputRun: {
       findUnique: vi.fn().mockResolvedValue(null),
-      findFirst: vi.fn().mockResolvedValue(outputRun),
+      // Only the queue lookup filters on PENDING_RENDER; every other caller names a run by id.
+      findFirst: vi.fn().mockImplementation((args: { where?: { status?: unknown } }) =>
+        Promise.resolve(args?.where?.status === 'PENDING_RENDER' ? pending.current : outputRun),
+      ),
       findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockImplementation(({ data }) => {
         outputRun.status = data.status;
@@ -116,6 +133,10 @@ function harness(count = 1) {
       update: vi.fn().mockImplementation(({ data }) => Object.assign(outputRun, data)),
     },
     effectFinalOutputItem: {
+      create: vi.fn().mockResolvedValue({ id: 'new-item' }),
+      delete: vi.fn().mockResolvedValue({ id: 'gone' }),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn(),
       findFirst: vi.fn(),
       findUniqueOrThrow: vi.fn(),
@@ -126,7 +147,7 @@ function harness(count = 1) {
       }),
     },
     jobOutbox: { upsert: vi.fn() },
-    workflowRun: { updateMany: vi.fn() },
+    workflowRun: { updateMany: vi.fn(), findFirst: vi.fn().mockResolvedValue(null) },
     project: { findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'p', name: '项目' }) },
   };
   const inputs = variants.map((v) => ({ artifactKey: `timeline-project:t:${v.id}`, input: {} }));
@@ -154,6 +175,15 @@ function harness(count = 1) {
         })),
       ),
     enqueueCleanup: vi.fn(),
+    // No published version to protect, so the first export stays in the Run it was asked for.
+    beginEffectNodeEdit: vi.fn().mockResolvedValue({
+      runId: 'w',
+      parentWorkflowRunId: null,
+      productIdMap: {},
+      taskIdMap: {},
+      created: false,
+    }),
+    publishEffectNodeEdit: vi.fn(),
   };
   const storage = {
     put: vi.fn().mockImplementation(async (input: { stream: AsyncIterable<unknown> }) => {
@@ -187,7 +217,7 @@ function harness(count = 1) {
     working as unknown as WorkflowWorkingRepository,
     storage as unknown as StoragePort,
   );
-  return { db, service, working, storage, rows, state, sources, mix, outputRun };
+  return { db, service, working, storage, rows, state, sources, mix, outputRun, pending };
 }
 
 /** A real on-disk file so upload()'s MP4 header probe and sha256 pass. */
@@ -298,7 +328,7 @@ describe('atomic full packaging completion', () => {
     'commits all %i visuals and packages as an isolated pending template output',
     async (count) => {
       const { service, db, working, outputRun } = harness(count);
-      await service.complete('p', 't', request);
+      await service.upsertFromPackaging('p', 'w', 't');
       expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalledTimes(count + 1);
       expect(db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
       expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
@@ -320,7 +350,7 @@ describe('atomic full packaging completion', () => {
     async (status) => {
       const { service, rows, working, db } = harness(100);
       rows[99]!.status = status;
-      await expect(service.complete('p', 't', request)).rejects.toThrow('仍在包装中');
+      await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('仍在包装中');
       expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
       expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
     },
@@ -332,7 +362,7 @@ describe('atomic full packaging completion', () => {
       rows[99]!.status = status;
       // The failure is the film's own problem; the other 99 were packaged and the user asked for all
       // of them, so the run goes ahead and the silent film is marked as such.
-      await service.complete('p', 't', request);
+      await service.upsertFromPackaging('p', 'w', 't');
       expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalledTimes(101);
       const items = db.effectFinalOutputRun.create.mock.calls[0]![0].data.items.create as {
         snapshot: FinalOutputSnapshot;
@@ -352,13 +382,13 @@ describe('atomic full packaging completion', () => {
     const { service, rows, working } = harness();
     rows[0]!.status = 'FAILED';
     rows[0]!.sourceTimelineHash = 'hash-of-an-older-timeline';
-    await expect(service.complete('p', 't', request)).rejects.toThrow('的包装已过期');
+    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('的包装已过期');
     expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
   });
   it('tells the output list why a film plays without sound', async () => {
     const { service, rows, outputRun } = harness(2);
     rows[1]!.status = 'FAILED';
-    await service.complete('p', 't', request);
+    await service.upsertFromPackaging('p', 'w', 't');
     outputRun.status = 'PENDING_RENDER';
     // The frozen snapshot is the only place the reason survives, so the list has to read it back.
     const result = await service.get('p', 'out');
@@ -406,36 +436,65 @@ describe('atomic full packaging completion', () => {
     expect(result.items[0]).toMatchObject({ id: 'film-item', status: 'COMPLETED', stale: true });
   });
   it('still refuses changed draft, stale sources and missing files before any commit', async () => {
-    const { service, state, sources, db, working } = harness();
-    state.revision = 2;
-    await expect(service.complete('p', 't', request)).rejects.toThrow('草稿');
-    state.revision = 1;
+    const { service, db, sources, working } = harness();
+    // The draft revision is read twice: once to plan outside the lock, once under the row lock. A save
+    // that lands between the two is exactly what the second read is there to catch.
+    db.workflowNodeState.findUnique
+      .mockResolvedValueOnce({ revision: 1 })
+      .mockResolvedValueOnce({ revision: 2 });
+    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('草稿');
+    db.workflowNodeState.findUnique.mockResolvedValue({ revision: 1 });
     sources[0]!.revision = 2;
-    await expect(service.complete('p', 't', request)).rejects.toThrow('上游');
+    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('上游');
     sources[0]!.revision = 1;
     db.fileObject.findMany.mockResolvedValue([]);
-    await expect(service.complete('p', 't', request)).rejects.toThrow('文件');
+    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('文件');
     expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
   });
   it('rejects unsupported fact IDs without adding AI review', async () => {
     const { service, rows, working } = harness();
     rows[0]!.checkpoint.script[0]!.factIds = ['invented'];
-    await expect(service.complete('p', 't', request)).rejects.toThrow();
+    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow();
     expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
   });
-  it('reuses an identical confirmed input even with a new button key', async () => {
-    const { service, db, working } = harness();
-    db.effectFinalOutputRun.findUnique
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'out' });
-    await service.complete('p', 't', request);
-    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+  it('reuses an identical confirmed input instead of queueing a duplicate batch', async () => {
+    const { service, db } = harness();
+    // The same package submitted twice hashes to the same input, so the run it already produced is the
+    // one to keep; the second callback only re-commits the (unchanged) artifacts and republishes.
+    db.effectFinalOutputRun.findUnique.mockResolvedValue({ id: 'out' });
+    await service.upsertFromPackaging('p', 'w', 't');
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('refreshes the un-exported batch in place instead of growing one run per package', async () => {
+    const { service, db, pending, rows } = harness(1);
+    pending.current = {
+      id: 'queued-out',
+      projectId: 'p',
+      templateId: 't',
+      workflowRunId: 'w',
+      status: 'PENDING_RENDER',
+      createdAt: new Date(),
+      items: [
+        { id: 'kept', variantId: 'v0', name: '旧名', snapshot: { stale: true } },
+        { id: 'dropped', variantId: 'v9', name: '成片9', snapshot: { stale: true } },
+      ],
+    };
+    await service.upsertFromPackaging('p', 'w', 't');
+    // The variant the draft still holds is rewritten where it stands; the one that left is dropped.
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'kept' } }),
+    );
+    expect(db.effectFinalOutputItem.delete).toHaveBeenCalledWith({ where: { id: 'dropped' } });
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+    // The live package still describes the kept variant, so only the orphaned item goes away.
+    expect(rows).toHaveLength(1);
   });
   it('accepts editor-edited audio and renders it as a distinct output run', async () => {
     const canonical = harness();
-    await canonical.service.complete('p', 't', request);
+    await canonical.service.upsertFromPackaging('p', 'w', 't');
     const baseline = canonical.db.effectFinalOutputRun.create.mock.calls[0]![0].data.inputHash;
 
     const edited = harness();
@@ -449,7 +508,7 @@ describe('atomic full packaging completion', () => {
     };
     checkpoint.music = { fileObjectId: 'music', start: 1, duration: 6, volume: 0.2, offset: 0.5 };
     checkpoint.captions = [{ id: 'line', start: 3, end: 4.5, text: '商品' }];
-    await edited.service.complete('p', 't', request);
+    await edited.service.upsertFromPackaging('p', 'w', 't');
     expect(edited.db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
     const created = edited.db.effectFinalOutputRun.create.mock.calls[0]![0].data;
     expect(created.inputHash).not.toBe(baseline);
@@ -466,7 +525,7 @@ describe('atomic full packaging completion', () => {
     const checkpoint = rows[0]!.checkpoint as PackagingCheckpoint;
     checkpoint.music = { fileObjectId: 'music', start: 0, duration: 14, volume: 0.2 };
     checkpoint.captions = [{ id: 'line', start: 12, end: 13, text: '商品' }];
-    await service.complete('p', 't', request);
+    await service.upsertFromPackaging('p', 'w', 't');
     const item = db.effectFinalOutputRun.create.mock.calls[0]![0].data.items.create[0] as {
       snapshot: FinalOutputSnapshot;
     };
@@ -480,7 +539,7 @@ describe('atomic full packaging completion', () => {
   });
   it('folds a live overlay into the timeline and gives it an output run of its own', async () => {
     const plain = harness();
-    await plain.service.complete('p', 't', request);
+    await plain.service.upsertFromPackaging('p', 'w', 't');
     const baseline = plain.db.effectFinalOutputRun.create.mock.calls[0]![0].data.inputHash;
 
     const { service, db, mix, rows } = harness();
@@ -553,7 +612,7 @@ describe('atomic full packaging completion', () => {
       })),
     );
 
-    await service.complete('p', 't', request);
+    await service.upsertFromPackaging('p', 'w', 't');
     const created = db.effectFinalOutputRun.create.mock.calls[0]![0].data;
     // The visual hash is blind to overlays, so without its own key an export that added one would
     // dedupe back to the run it built before the overlay existed.
@@ -566,14 +625,18 @@ describe('atomic full packaging completion', () => {
       ],
     );
   });
-  it('rejects reused idempotency keys for different requests', async () => {
+  it('queues the batch under a deterministic key so a repackage cannot duplicate it', async () => {
     const { service, db } = harness();
-    db.effectFinalOutputRun.findUnique.mockResolvedValue({ id: 'out', requestHash: 'other' });
-    await expect(service.complete('p', 't', request)).rejects.toThrow('幂等');
+    await service.upsertFromPackaging('p', 'w', 't');
+    const created = db.effectFinalOutputRun.create.mock.calls[0]![0].data;
+    // The key is derived from the input, not from a per-click UUID: the same package always names the
+    // same version, which is what lets the unique index reject a double submit.
+    expect(created.idempotencyKey).toBe(`auto:w:t:${created.inputHash}`);
+    expect(created.requestHash).toBe(created.inputHash);
   });
   it('freezes resolution and frame rate and enqueues only after explicit export', async () => {
     const { service, db, outputRun } = harness();
-    await service.complete('p', 't', request);
+    await service.upsertFromPackaging('p', 'w', 't');
     await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
     expect(db.effectFinalOutputRun.update).toHaveBeenCalledWith({
       where: { id: 'out' },
@@ -592,7 +655,7 @@ describe('atomic full packaging completion', () => {
     're-exports a %s batch by resetting every item and rewriting the batch spec',
     async (status) => {
       const { service, db, outputRun } = harness(3);
-      await service.complete('p', 't', request);
+      await service.upsertFromPackaging('p', 'w', 't');
       outputRun.status = status;
       const items = outputRun.items as { status: string; snapshot: FinalOutputSnapshot }[];
       items.forEach((item) => { item.status = status; });
@@ -610,7 +673,7 @@ describe('atomic full packaging completion', () => {
   );
   it('allows re-exporting the frozen film after its upstream package went stale', async () => {
     const { service, db, outputRun } = harness(2);
-    await service.complete('p', 't', request);
+    await service.upsertFromPackaging('p', 'w', 't');
     outputRun.status = 'COMPLETED';
     const items = outputRun.items as { status: string; snapshot: FinalOutputSnapshot }[];
     items.forEach((item) => { item.status = 'COMPLETED'; });
@@ -625,6 +688,56 @@ describe('atomic full packaging completion', () => {
     expect(db.effectFinalOutputItem.update).toHaveBeenCalled();
     expect(db.jobOutbox.upsert).toHaveBeenCalled();
     expect(outputRun.status).toBe('QUEUED');
+  });
+  it('exports inside the forked child Run once a published version is protected', async () => {
+    const { service, db, working, outputRun } = harness();
+    await service.upsertFromPackaging('p', 'w', 't');
+    outputRun.status = 'COMPLETED';
+    db.workingArtifact.findMany.mockResolvedValue(
+      currentRows(outputRun.items as { snapshot: FinalOutputSnapshot }[]),
+    );
+    working.beginEffectNodeEdit.mockResolvedValue({
+      runId: 'child-run',
+      parentWorkflowRunId: 'w',
+      productIdMap: {},
+      taskIdMap: {},
+      created: true,
+    });
+    // The source lookup names the batch it exports; the batch lookup then has to find the copy the
+    // fork cloned into the child Run rather than the published one.
+    db.effectFinalOutputRun.findFirst.mockImplementation((args: { select?: { id?: boolean } }) =>
+      Promise.resolve(args?.select?.id ? { id: 'child-out' } : outputRun));
+
+    await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
+
+    // `always` is what makes an export branch even when it is the project's first one.
+    expect(working.beginEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'FINAL_OUTPUT', 'BATCH', {
+      always: true,
+    });
+    expect(db.effectFinalOutputRun.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'child-out' },
+    }));
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it('publishes the mix branch once its packaging is validated', async () => {
+    const { service, db, working } = harness();
+    db.workflowRun.findFirst.mockResolvedValue({
+      parentWorkflowRunId: 'w',
+      branchPublishedAt: null,
+      editSessionNodeId: 'TEMPLATE_MIX',
+    });
+    await service.upsertFromPackaging('p', 'w', 't');
+    expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'TEMPLATE_MIX');
+  });
+  it('leaves a published or unrelated Run alone when the mix validation finishes', async () => {
+    const { service, db, working } = harness();
+    db.workflowRun.findFirst.mockResolvedValue({
+      parentWorkflowRunId: 'w',
+      branchPublishedAt: null,
+      editSessionNodeId: 'FINAL_OUTPUT',
+    });
+    await service.upsertFromPackaging('p', 'w', 't');
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
   });
   it('old attempt tokens cannot renew or write progress', async () => {
     const { service, db } = harness();
@@ -660,7 +773,7 @@ describe('atomic full packaging completion', () => {
 /** Completes a batch, then hands back an exported run with stable item ids and upstream rows. */
 async function exportedRun(count = 2) {
   const context = harness(count);
-  await context.service.complete('p', 't', request);
+  await context.service.upsertFromPackaging('p', 'w', 't');
   const items = context.outputRun.items as {
     id: string;
     status: string;
@@ -900,3 +1013,244 @@ describe('re-render overwrites the previous artifact in place', () => {
     }
   });
 });
+
+/** An exported batch whose delivery manifest can actually be written. */
+async function delivered(count = 2) {
+  const context = await exportedRun(count);
+  const { db, mix, working } = context;
+  const items = context.items;
+  const variants = items.map(
+    (item) => (item.snapshot as unknown as FinalOutputSnapshot).timeline.variant,
+  );
+  mix.workspace.mockResolvedValue({
+    materials: [{ fileObjectId: 'video', ratio: '3:4' }],
+    draft: { templates: [{ id: 't', workspace: { template: { name: '模板' }, variants } }] },
+  } as never);
+  db.fileObject.findMany.mockResolvedValue(
+    items.map((item, index) => ({
+      id: item.fileObjectId!,
+      originalFileName: `成片${index}.mp4`,
+      mimeType: 'video/mp4',
+      sha256: 'f'.repeat(64),
+      storageKey: `stored/${index}.mp4`,
+    })),
+  );
+  db.asset.findMany.mockResolvedValue(
+    items.map((item, index) => ({
+      id: item.assetId!,
+      type: 'FINAL_VIDEO',
+      status: 'AVAILABLE',
+      sourceArtifactId: `final-video:t:v${index}`,
+      storageKey: `stored/${index}.mp4`,
+    })),
+  );
+  db.workingArtifact.findMany.mockResolvedValue([
+    ...currentRows(items),
+    ...items.map((item, index) => ({
+      id: `final-video:t:v${index}`,
+      artifactKey: `final-video:t:v${index}`,
+      nodeId: 'FINAL_OUTPUT',
+      revision: 1,
+      contentHash: `video-hash-${index}`,
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
+      files: [{ fileObjectId: item.fileObjectId! }],
+    })),
+  ]);
+  db.effectFinalOutputItem.findMany.mockResolvedValue(items);
+  db.workflowRun.findFirst.mockResolvedValue({
+    parentWorkflowRunId: 'parent',
+    branchPublishedAt: null,
+    editSessionNodeId: 'FINAL_OUTPUT',
+  });
+  return { ...context, items, working, variants };
+}
+
+describe('finishing a batch', () => {
+  it('writes the delivery manifest and publishes the output branch once every film succeeded', async () => {
+    const { service, working } = await delivered();
+    await expect(service.finish('p', 'out', 'token')).resolves.toEqual({ accepted: true });
+    expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      'p',
+      'w',
+      'FINAL_OUTPUT',
+      [expect.objectContaining({ artifactKey: 'final-delivery:t' })],
+    );
+    expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'FINAL_OUTPUT');
+  });
+  it('leaves a batch with a failed film unpublished', async () => {
+    const { service, db, working, items } = await delivered();
+    items[1]!.status = 'FAILED';
+    vi.clearAllMocks();
+    db.effectFinalOutputItem.findMany.mockResolvedValue(items);
+    await expect(service.finish('p', 'out', 'token')).resolves.toEqual({ accepted: true });
+    // A batch the user has to retry is not a version; only the run's own status moved.
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+  });
+  it('still accepts the finish when the manifest cannot be written', async () => {
+    const { service, db, working, items } = await delivered();
+    vi.clearAllMocks();
+    db.effectFinalOutputItem.findMany.mockResolvedValue(items);
+    // A deleted asset is the worker's problem to report, not a reason to fail its own callback.
+    db.asset.findMany.mockResolvedValue([]);
+    await expect(service.finish('p', 'out', 'token')).resolves.toEqual({ accepted: true });
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
+});
+
+describe('leaving the workbench re-syncs the output queue', () => {
+  it('refreshes an un-exported queue entry from the draft instead of reporting it', async () => {
+    const { service, db, run } = await localUpdateHarness();
+    run.status = 'PENDING_RENDER';
+    const result = await service.syncFromDraft('p', 'w');
+    expect(result).toEqual({ refreshed: [{ templateId: 't', itemCount: 1 }], needsUpdate: [] });
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'item-0' },
+        data: expect.objectContaining({ status: 'PENDING_RENDER', progress: 0, errorMessage: null }),
+      }),
+    );
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+  });
+
+  it('reports an exported film that moved instead of re-rendering it behind the user', async () => {
+    const { service, db } = await localUpdateHarness();
+    const result = await service.syncFromDraft('p', 'w');
+    expect(result).toEqual({ refreshed: [], needsUpdate: [{ templateId: 't', staleCount: 1 }] });
+    // An exported film may already be delivered, so the user decides when to re-render it.
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+  });
+
+  it('drops a queued film whose variant left the draft', async () => {
+    const { service, db, workspace, run } = await localUpdateHarness();
+    run.status = 'PENDING_RENDER';
+    workspace.draft!.templates[0]!.workspace.variants = [];
+    const result = await service.syncFromDraft('p', 'w');
+    expect(result).toEqual({ refreshed: [], needsUpdate: [] });
+    expect(db.effectFinalOutputItem.deleteMany).toHaveBeenCalledWith({
+      where: { projectId: 'p', id: 'item-0' },
+    });
+  });
+});
+
+describe('local update', () => {
+  it('re-renders only the moved films in place, without opening a branch', async () => {
+    const { service, db, working, run, items } = await localUpdateHarness();
+    await service.localUpdate('p', 'out', {});
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'item-0' },
+        data: expect.objectContaining({ status: 'QUEUED', progress: 0, errorMessage: null }),
+      }),
+    );
+    // The old file stays pointed at until the new render lands, so the film remains downloadable.
+    expect(items[0]!.fileObjectId).toBe('old-file-0');
+    expect(run.status).toBe('QUEUED');
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
+  it('refuses a batch that is still rendering or was never exported', async () => {
+    const queued = await localUpdateHarness();
+    queued.run.status = 'RUNNING';
+    await expect(queued.service.localUpdate('p', 'out', {})).rejects.toThrow('正在渲染');
+    const pending = await localUpdateHarness();
+    pending.run.status = 'PENDING_RENDER';
+    await expect(pending.service.localUpdate('p', 'out', {})).rejects.toThrow('尚未导出');
+  });
+  it('reports an unknown item id instead of re-queuing the whole batch', async () => {
+    const { service, db } = await localUpdateHarness();
+    await expect(service.localUpdate('p', 'out', { itemIds: ['nope'] })).rejects.toThrow(
+      '成片条目不存在',
+    );
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('tells the user to re-package when the draft no longer holds the film', async () => {
+    const gone = await localUpdateHarness();
+    gone.workspace.draft!.templates[0]!.workspace.variants = [];
+    await expect(gone.service.localUpdate('p', 'out', {})).rejects.toThrow('已不在当前成片工程中');
+    // A slot that can no longer be cut at all is the same answer: the picture has to be re-packaged.
+    const broken = await localUpdateHarness();
+    broken.workspace.materials = [];
+    await expect(broken.service.localUpdate('p', 'out', {})).rejects.toThrow('改动过大');
+  });
+});
+
+/**
+ * A delivered batch whose draft has moved on. The snapshot is built by the real packaging callback so
+ * a local update faces exactly the shape production hands it.
+ */
+async function localUpdateHarness() {
+  const context = harness(1);
+  // Bind the harness's own variant in place: the package froze it, and the draft the callback reads
+  // has to be the very same object for the confirmation to still match.
+  const variant = context.rows[0]!.snapshot.variant;
+  variant.bindings = { s: 'clip' };
+  variant.bindingRevisions = { s: 1 };
+  variant.offsets = { s: 0 };
+  context.rows[0]!.sourceTimelineHash = visualHash(variant);
+  const workspace = {
+    materials: [
+      {
+        id: 'clip',
+        artifactId: 'clip-artifact',
+        fileObjectId: 'video',
+        duration: 12,
+        available: true,
+        artifactRevision: 1,
+        contentHash: 'clip-hash',
+      },
+    ],
+    draft: {
+      templates: [{ id: 't', workspace: { template: { name: '模板' }, variants: [variant] } }],
+    },
+  };
+  context.mix.workspace.mockResolvedValue(workspace as never);
+  await context.service.upsertFromPackaging('p', 'w', 't');
+  const items = context.outputRun.items as {
+    id: string;
+    status: string;
+    fileObjectId?: string | null;
+    assetId?: string | null;
+  }[];
+  items.forEach((item, index) => {
+    item.id = `item-${index}`;
+    item.status = 'COMPLETED';
+    item.fileObjectId = `old-file-${index}`;
+    item.assetId = `old-asset-${index}`;
+  });
+  context.outputRun.status = 'COMPLETED';
+  // The artifacts a rebuilt clip needs: the clip itself and the Prompt it was cut from.
+  const artifacts = [
+    {
+      id: 'clip-artifact',
+      artifactKey: 'render-clip:c',
+      revision: 1,
+      contentHash: 'clip-hash',
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
+      payload: { promptId: 'pr' },
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'pr', sourceRevision: 1 }],
+    },
+    {
+      id: 'pr',
+      artifactKey: 'prompt-batch:pr',
+      revision: 1,
+      contentHash: 'prompt-hash',
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
+      payload: { items: [{ id: 'pr', content: '原始 Prompt' }] },
+      dependencies: [],
+    },
+  ];
+  context.db.workingArtifact.findMany.mockResolvedValue(artifacts);
+  // The workbench exit reads through the repository, the local update through the transaction client.
+  context.working.listArtifacts.mockResolvedValue(artifacts);
+  const run = context.outputRun;
+  context.db.effectFinalOutputRun.findMany.mockResolvedValue([run]);
+  // The queueing above is the fixture, not the behaviour under test, so the call log starts empty.
+  vi.clearAllMocks();
+  return { ...context, items, run, workspace, variant, artifacts };
+}

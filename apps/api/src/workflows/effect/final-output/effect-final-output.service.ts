@@ -10,13 +10,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
 import type {
-  CompleteEffectPackagingRequest,
   EffectTemplateMixMaterial,
+  EffectTemplateMixVariant,
+  EffectTemplateMixWorkspaceData,
   FinalOutputRun,
   FinalOutputSnapshot,
+  LocalUpdateFinalOutputRequest,
   PackagingCheckpoint,
   PackagingSnapshot,
   StartFinalOutputRequest,
+  SyncFinalOutputData,
   WorkingArtifact,
 } from '@ai-marketing/contracts';
 import {
@@ -24,6 +27,7 @@ import {
   effectTemplateMixContentDuration,
   FINAL_OUTPUT_RESOLUTIONS,
   packagingOverlayTimeline,
+  packagingTimelineDuration,
 } from '@ai-marketing/contracts';
 import { PrismaService } from '../../../database/prisma.service';
 import type { Prisma } from '../../../generated/prisma/client';
@@ -68,6 +72,40 @@ const liveOverlays = (
     ? packagingClips({ ...variant, slots }, materials, artifactVisitor(artifacts))
     : [];
 };
+/** The artifact columns every staleness check reads; the full row is only needed for overlays. */
+type ArtifactRow = {
+  id: string;
+  revision: number;
+  contentHash?: string | null;
+  freshness: string;
+  availability: string;
+  artifactKey?: string;
+  nodeId?: string;
+  payload?: unknown;
+};
+type OutputItemRow = { id: string; variantId: string; name: string; snapshot: unknown };
+/**
+ * A fingerprint of the picture an export would render. Placement is part of it because dragging a
+ * clip is an edit the user expects to see, even though it leaves the packaging source hash alone.
+ */
+const pictureHash = (clips: PackagingSnapshot['clips']) =>
+  workflowStateHash(
+    [...clips]
+      .map((clip) => ({
+        slotId: clip.slotId,
+        materialId: clip.materialId,
+        fileObjectId: clip.fileObjectId,
+        contentHash: clip.contentHash,
+        start: clip.start,
+        duration: clip.duration,
+        offset: clip.offset,
+        lane: clip.lane,
+        overlay: clip.overlay === true,
+        transition: clip.transition,
+        transitionDuration: clip.transitionDuration,
+      }))
+      .sort((a, b) => a.start - b.start || a.lane - b.lane || a.slotId.localeCompare(b.slotId)),
+  );
 
 @Injectable()
 export class EffectFinalOutputService {
@@ -114,55 +152,70 @@ export class EffectFinalOutputService {
     });
   }
 
-  async complete(
+  /**
+   * The films a template would export right now, assembled from the package the user confirmed plus
+   * the picture the draft holds. Shared by the packaging callback and the local update so both hand
+   * the renderer the same shape.
+   */
+  private async outputPlan(
     projectId: string,
+    workflowRunId: string,
     templateId: string,
-    body: CompleteEffectPackagingRequest,
-  ): Promise<FinalOutputRun> {
-    const requestHash = workflowStateHash({ templateId, ...body });
-    const existing = await this.db.effectFinalOutputRun.findUnique({
-      where: { projectId_idempotencyKey: { projectId, idempotencyKey: body.idempotencyKey } },
-    });
-    if (existing) {
-      if (existing.requestHash !== requestHash)
-        throw new ConflictException('幂等键对应的完成请求已改变');
-      return this.get(projectId, existing.id);
-    }
+    expectedRevision: number,
+  ) {
     const { inputs, variants } = await this.mix.prepareValidation(
       projectId,
-      body.workflowRunId,
-      body.expectedRevision,
+      workflowRunId,
+      expectedRevision,
       templateId,
+      // A partial pass is what lets a finished package through: the variant that was just packaged is
+      // the version, and a sibling the user has not finished editing must not veto it.
+      { partial: true },
     );
-    const workspace = await this.mix.workspace(projectId, body.workflowRunId);
-    const runId = await this.db.$transaction(
+    const workspace = await this.mix.workspace(projectId, workflowRunId);
+    return { inputs, variants, workspace };
+  }
+
+  /**
+   * The packaging callback: a finished package puts its films straight into the output node's queue,
+   * and the mix artifacts committed here are what turn an unpublished mix child into a branch. The
+   * caller swallows failures — a draft that moved on must not fail the worker's finish.
+   */
+  async upsertFromPackaging(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+  ): Promise<void> {
+    const before = await this.db.workflowNodeState.findUnique({
+      where: {
+        projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX' },
+      },
+      select: { revision: true },
+    });
+    if (!before) throw new NotFoundException('混剪草稿不存在');
+    const { inputs, variants, workspace } = await this.outputPlan(
+      projectId,
+      workflowRunId,
+      templateId,
+      before.revision,
+    );
+    await this.db.$transaction(
       async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + body.workflowRunId + ':' + templateId}))`;
-        const replay = await tx.effectFinalOutputRun.findUnique({
-          where: { projectId_idempotencyKey: { projectId, idempotencyKey: body.idempotencyKey } },
-        });
-        if (replay) {
-          if (replay.requestHash !== requestHash) throw new ConflictException('幂等请求内容已改变');
-          return replay.id;
-        }
-        await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${body.workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
-        const state = await tx.workflowNodeState.findUnique({
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + workflowRunId + ':' + templateId}))`;
+        await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
+        const locked = await tx.workflowNodeState.findUnique({
           where: {
-            projectId_workflowRunId_nodeId: {
-              projectId,
-              workflowRunId: body.workflowRunId,
-              nodeId: 'TEMPLATE_MIX',
-            },
+            projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX' },
           },
         });
-        if (state?.revision !== body.expectedRevision)
-          throw new ConflictException('草稿已变化，请刷新后重新完成校验');
+        if (locked?.revision !== before.revision)
+          throw new ConflictException('草稿已变化，请刷新后重试');
         // Lock confirmed sources through the commit; concurrent upstream edits cannot slip between validation and submission.
-        await tx.$queryRaw`SELECT id FROM working_artifacts WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${body.workflowRunId}::uuid ORDER BY id FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM working_artifacts WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${workflowRunId}::uuid ORDER BY id FOR UPDATE`;
         const active = await tx.effectPackagingRun.count({
           where: {
             projectId,
-            workflowRunId: body.workflowRunId,
+            workflowRunId: workflowRunId,
             templateId,
             status: { in: ['QUEUED', 'RUNNING'] },
           },
@@ -171,20 +224,20 @@ export class EffectFinalOutputService {
         const history = await tx.effectPackagingItem.findMany({
           where: {
             projectId,
-            run: { workflowRunId: body.workflowRunId, templateId },
+            run: { workflowRunId: workflowRunId, templateId },
             variantId: { in: variants.map((v) => v.id) },
           },
           orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }],
           distinct: ['variantId'],
         });
         const sources = await tx.workingArtifact.findMany({
-          where: { projectId, workflowRunId: body.workflowRunId },
+          where: { projectId, workflowRunId: workflowRunId },
         });
         // Overlays come from the live draft rather than the frozen snapshot, so their own artifacts
         // have to be walked here as well; the rest of the run reads provenance off the snapshot.
         const overlayArtifacts = variants.some((v) => v.slots.some((s) => s.overlay === true))
           ? ((await tx.workingArtifact.findMany({
-              where: { projectId, workflowRunId: body.workflowRunId },
+              where: { projectId, workflowRunId: workflowRunId },
               include: workingArtifactInclude,
             })) as unknown as WorkingArtifact[])
           : [];
@@ -235,17 +288,11 @@ export class EffectFinalOutputService {
             overlays: packagingOverlayTimeline(r.variant),
           })),
         );
-        const duplicate = await tx.effectFinalOutputRun.findUnique({
-          where: {
-            projectId_workflowRunId_templateId_inputHash: {
-              projectId,
-              workflowRunId: body.workflowRunId,
-              templateId,
-              inputHash,
-            },
-          },
+        const pending = await tx.effectFinalOutputRun.findFirst({
+          where: { projectId, workflowRunId, templateId, status: 'PENDING_RENDER' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          include,
         });
-        if (duplicate) return duplicate.id;
         const requiredIds = [
           ...new Set(
             rows.flatMap((r) => [
@@ -268,7 +315,7 @@ export class EffectFinalOutputService {
         const committed = await this.working.commitValidatedArtifactsInTransaction(
           tx,
           projectId,
-          body.workflowRunId,
+          workflowRunId,
           'TEMPLATE_MIX',
           inputs,
         );
@@ -300,7 +347,7 @@ export class EffectFinalOutputService {
           const packageResult = await this.working.commitValidatedArtifactsInTransaction(
             tx,
             projectId,
-            body.workflowRunId,
+            workflowRunId,
             'TEMPLATE_MIX',
             [
               {
@@ -391,27 +438,252 @@ export class EffectFinalOutputService {
             snapshot: json(snapshot),
           });
         }
-        const run = await tx.effectFinalOutputRun.create({
-          data: {
-            projectId,
-            workflowRunId: body.workflowRunId,
-            templateId,
-            idempotencyKey: body.idempotencyKey,
-            requestHash,
-            inputHash,
-            status: 'PENDING_RENDER',
-            items: { create: outputRows },
-          },
-        });
+        if (pending) {
+          // The films have not been exported yet, so the queue simply follows the new package:
+          // refreshing in place keeps one batch per template instead of growing one per packaging run.
+          const wanted = new Map(outputRows.map((row) => [row.variantId, row]));
+          for (const item of pending.items) {
+            const row = wanted.get(item.variantId);
+            if (!row) {
+              await tx.effectFinalOutputItem.delete({ where: { id: item.id } });
+              continue;
+            }
+            wanted.delete(item.variantId);
+            await tx.effectFinalOutputItem.update({
+              where: { id: item.id },
+              data: {
+                name: row.name,
+                snapshot: json(row.snapshot),
+                status: 'PENDING_RENDER',
+                progress: 0,
+                errorMessage: null,
+              },
+            });
+          }
+          for (const row of wanted.values())
+            await tx.effectFinalOutputItem.create({
+              data: { projectId, runId: pending.id, ...row },
+            });
+        } else {
+          const duplicate = await tx.effectFinalOutputRun.findUnique({
+            where: {
+              projectId_workflowRunId_templateId_inputHash: {
+                projectId,
+                workflowRunId,
+                templateId,
+                inputHash,
+              },
+            },
+          });
+          // Identical inputs were already exported from this Run; there is no new version to queue.
+          if (duplicate) return;
+          await tx.effectFinalOutputRun.create({
+            data: {
+              projectId,
+              workflowRunId,
+              templateId,
+              idempotencyKey: `auto:${workflowRunId}:${templateId}:${inputHash}`,
+              requestHash: inputHash,
+              inputHash,
+              status: 'PENDING_RENDER',
+              items: { create: outputRows },
+            },
+          });
+        }
         await tx.workflowRun.updateMany({
-          where: { id: body.workflowRunId, projectId },
+          where: { id: workflowRunId, projectId },
           data: { currentNodeId: 'FINAL_OUTPUT' },
         });
-        return run.id;
       },
       { timeout: 120_000 },
     );
-    return this.get(projectId, runId);
+    await this.publishMixBranch(projectId, workflowRunId);
+  }
+
+  /** The packaging callback publishes the mix branch; there is no user-visible validation any more. */
+  async publishMixBranch(projectId: string, workflowRunId: string): Promise<void> {
+    await this.publishEditBranch(projectId, workflowRunId, 'TEMPLATE_MIX');
+  }
+
+  /**
+   * Regenerating a node runs in an unpublished child of the version tree. Finishing that child's
+   * validation is what turns it into a real branch; an unchanged regeneration falls back to its
+   * parent instead. Publishing opens its own transaction, so it must run after the write commits.
+   */
+  private async publishEditBranch(
+    projectId: string,
+    workflowRunId: string,
+    nodeId: 'TEMPLATE_MIX' | 'FINAL_OUTPUT',
+  ): Promise<void> {
+    const run = await this.db.workflowRun.findFirst({
+      where: { projectId, id: workflowRunId },
+      select: { parentWorkflowRunId: true, branchPublishedAt: true, editSessionNodeId: true },
+    });
+    if (!run?.parentWorkflowRunId || run.branchPublishedAt || run.editSessionNodeId !== nodeId)
+      return;
+    await this.working.publishEffectNodeEdit(projectId, workflowRunId, nodeId);
+  }
+
+  /**
+   * Rewrites one film's frozen picture from the draft the user is looking at. The package's audio,
+   * captions and provenance are left exactly as confirmed: a local update re-renders the film the
+   * user just edited, it does not re-narrate it.
+   */
+  private async rewriteFilm(
+    tx: Prisma.TransactionClient,
+    item: OutputItemRow,
+    variant: EffectTemplateMixVariant,
+    workspace: EffectTemplateMixWorkspaceData,
+    artifacts: WorkingArtifact[],
+    status: 'QUEUED' | 'PENDING_RENDER',
+  ): Promise<void> {
+    const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+    let clips: PackagingSnapshot['clips'];
+    try {
+      clips = this.liveClips(variant, workspace.materials, artifacts);
+      // The package itself is unchanged, so its narration still has to fit the picture the draft now
+      // holds; a slot whose length or binding moved on needs a fresh 智能成片包装 instead.
+      if (!snapshot.unpackaged)
+        requireSlotPackaging(
+          { ...snapshot.timeline, clips, duration: packagingTimelineDuration(variant) },
+          snapshot.packaging,
+        );
+    } catch {
+      throw new ConflictException(
+        `${item.name} 的成片工程改动过大，请返回模板混剪重新执行智能成片包装后再更新`,
+      );
+    }
+    const cp = { ...snapshot.packaging };
+    delete cp.musicTaskId;
+    delete cp.musicSubmissionPending;
+    const duration = effectTemplateMixContentDuration(variant, cp);
+    if (duration > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS)
+      throw new ConflictException('成片时长超过容量上限');
+    await tx.effectFinalOutputItem.update({
+      where: { id: item.id },
+      data: {
+        status,
+        progress: 0,
+        errorMessage: null,
+        snapshot: json({
+          ...snapshot,
+          timeline: {
+            ...snapshot.timeline,
+            clips,
+            duration,
+            sourceTimelineHash: visualHash(variant),
+            variant,
+          },
+          packaging: cp,
+        }),
+      },
+    });
+  }
+
+  /**
+   * Leaving the mix workbench re-syncs the output node. Films that were never exported follow the
+   * draft, so the queue shows the picture the current timeline would produce; exported films are
+   * only reported, because re-rendering one replaces a file the user may already have delivered.
+   */
+  async syncFromDraft(projectId: string, workflowRunId: string): Promise<SyncFinalOutputData> {
+    const result: SyncFinalOutputData = { refreshed: [], needsUpdate: [] };
+    const runs = await this.db.effectFinalOutputRun.findMany({
+      where: { projectId, workflowRunId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      include,
+    });
+    if (!runs.length) return result;
+    const workspace = await this.mix.workspace(projectId, workflowRunId);
+    const artifacts = (await this.working.listArtifacts(projectId, {
+      workflowRunId,
+    })) as unknown as WorkingArtifact[];
+    for (const run of runs) {
+      const moved = run.items.filter((item) =>
+        this.filmMoved(run.templateId, item, artifacts, workspace),
+      );
+      if (!moved.length) continue;
+      if (run.status !== 'PENDING_RENDER') {
+        result.needsUpdate.push({ templateId: run.templateId, staleCount: moved.length });
+        continue;
+      }
+      const variants = workspace.draft?.templates.find(
+        (entry) => entry.id === run.templateId,
+      )?.workspace.variants;
+      let refreshed = 0;
+      for (const item of moved) {
+        const variant = variants?.find((candidate) => candidate.id === item.variantId);
+        // A variant the draft no longer holds cannot be rendered, so its queued film goes with it.
+        // A template that left the draft entirely is left alone: the queue is all that is left of it.
+        if (!variant) {
+          if (variants)
+            await this.db.effectFinalOutputItem.deleteMany({ where: { projectId, id: item.id } });
+          continue;
+        }
+        try {
+          await this.db.$transaction(
+            (tx) => this.rewriteFilm(tx, item, variant, workspace, artifacts, 'PENDING_RENDER'),
+            { timeout: 30_000 },
+          );
+          refreshed += 1;
+        } catch {
+          // The draft cannot produce this film any more; the user has to re-run 智能成片包装 for it.
+        }
+      }
+      if (refreshed) result.refreshed.push({ templateId: run.templateId, itemCount: refreshed });
+    }
+    return result;
+  }
+
+  /**
+   * Re-renders films in place after the mix draft moved on, without opening a branch: the user is
+   * correcting the films of the version already delivered, not making a new version.
+   */
+  async localUpdate(
+    projectId: string,
+    id: string,
+    body: LocalUpdateFinalOutputRequest,
+  ): Promise<FinalOutputRun> {
+    await this.db.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+        const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
+        if (!run) throw new NotFoundException('成片输出任务不存在');
+        if (run.status === 'QUEUED' || run.status === 'RUNNING')
+          throw new ConflictException('该模板正在渲染，请等待本批完成后重试');
+        if (run.status === 'PENDING_RENDER')
+          throw new ConflictException('该模板尚未导出，请先导出成片');
+        const workspace = await this.mix.workspace(projectId, run.workflowRunId);
+        const artifacts = (await tx.workingArtifact.findMany({
+          where: { projectId, workflowRunId: run.workflowRunId },
+          include: workingArtifactInclude,
+        })) as unknown as WorkingArtifact[];
+        const chosen = body.itemIds?.length
+          ? run.items.filter((item) => body.itemIds!.includes(item.id))
+          : run.items.filter((item) => this.filmMoved(run.templateId, item, artifacts, workspace));
+        if (body.itemIds?.length && chosen.length !== new Set(body.itemIds).size)
+          throw new NotFoundException('成片条目不存在');
+        if (!chosen.length) throw new ConflictException('没有需要局部更新的成片');
+        const variants = workspace.draft?.templates.find(
+          (entry) => entry.id === run.templateId,
+        )?.workspace.variants;
+        for (const item of chosen) {
+          const variant = variants?.find((candidate) => candidate.id === item.variantId);
+          if (!variant)
+            throw new ConflictException(
+              `${item.name} 已不在当前成片工程中，请返回模板混剪重新执行智能成片包装`,
+            );
+          // The film keeps its old file until the new one lands, so it stays downloadable meanwhile.
+          await this.rewriteFilm(tx, item, variant, workspace, artifacts, 'QUEUED');
+        }
+        await tx.effectFinalOutputRun.update({
+          where: { id },
+          data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null, completedAt: null },
+        });
+        await this.enqueue(tx, projectId, id);
+      },
+      { timeout: 120_000 },
+    );
+    return this.get(projectId, id);
   }
 
   async start(projectId: string, id: string, settings: StartFinalOutputRequest) {
@@ -420,9 +692,34 @@ export class EffectFinalOutputService {
       !([24, 25, 30, 50, 60] as const).includes(settings.frameRate)
     )
       throw new BadRequestException('分辨率或帧率设置无效');
+    const source = await this.db.effectFinalOutputRun.findFirst({
+      where: { projectId, id },
+      select: { workflowRunId: true, templateId: true },
+    });
+    if (!source) throw new NotFoundException('成片输出任务不存在');
+    // Exporting films is a full update of the output node: it must not overwrite films that were
+    // already delivered, so it runs in an unpublished child. That child already carries a
+    // PENDING_RENDER copy of this batch, and the batch is resolved by template so a caller holding
+    // a stale parent Run id still ends up writing into the child.
+    const edit = await this.working.beginEffectNodeEdit(
+      projectId,
+      source.workflowRunId,
+      'FINAL_OUTPUT',
+      'BATCH',
+      // Every export is a version of its own, so the batch never overwrites films already delivered
+      // — not even the first one, which the user reaches straight from an unvalidated queue.
+      { always: true },
+    );
+    if (!edit) throw new ConflictException('当前分支无法进入编辑态');
+    const batch = await this.db.effectFinalOutputRun.findFirst({
+      where: { projectId, workflowRunId: edit.runId, templateId: source.templateId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true },
+    });
+    const targetId = batch?.id ?? id;
     await this.db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
-      const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
+      await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${targetId}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+      const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id: targetId }, include });
       if (!run) throw new NotFoundException('成片输出任务不存在');
       // Export and re-export share one path: the first call starts a PENDING_RENDER batch, later
       // calls re-render a finished one. Only an in-flight batch is off limits.
@@ -432,7 +729,7 @@ export class EffectFinalOutputService {
       // batch -- otherwise every item fails asynchronously instead of returning one actionable 409.
       if (run.status !== 'PENDING_RENDER')
         for (const item of run.items)
-          await this.current(tx, projectId, run.workflowRunId, run.templateId, item.snapshot as unknown as FinalOutputSnapshot);
+          await this.current(tx, projectId, item.snapshot as unknown as FinalOutputSnapshot);
       for (const item of run.items) {
         const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
         await tx.effectFinalOutputItem.update({
@@ -446,17 +743,22 @@ export class EffectFinalOutputService {
         });
       }
       await tx.effectFinalOutputRun.update({
-        where: { id },
+        where: { id: targetId },
         data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null, completedAt: null },
       });
-      await this.enqueue(tx, projectId, id);
+      await this.enqueue(tx, projectId, targetId);
       // 100 items x upstream validation is the same order of work as complete().
     }, { timeout: 120_000 });
-    return this.get(projectId, id);
+    return this.get(projectId, targetId);
   }
 
-  async completeOutput(projectId: string, id: string): Promise<FinalOutputRun> {
-    await this.db.$transaction(async (tx) => {
+  /**
+   * Commits the delivery manifest of a batch that finished. The manifest is what the version tree
+   * reads as the output node's confirmed version, so it is written only when every film in the batch
+   * succeeded; the branch is published by the caller once this returns.
+   */
+  private async finalizeDelivery(projectId: string, id: string): Promise<string> {
+    return this.db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
       const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
       if (!run) throw new NotFoundException('成片输出任务不存在');
@@ -553,44 +855,89 @@ export class EffectFinalOutputService {
           },
         }],
       );
+      return run.workflowRunId;
     }, { timeout: 120_000 });
-    return this.get(projectId, id);
+  }
+
+  /**
+   * A film is stale once something it was rendered from moved: a consumed artifact is no longer
+   * current, its variant left the draft, or the draft no longer hashes to what the film froze.
+   */
+  private staleForItem(
+    templateId: string,
+    item: { variantId: string; snapshot: unknown },
+    artifacts: ArtifactRow[],
+    workspace?: EffectTemplateMixWorkspaceData,
+  ): boolean {
+    const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+    const currentVariant = workspace?.draft?.templates
+      .find((entry) => entry.id === templateId)
+      ?.workspace.variants.find((variant) => variant.id === item.variantId);
+    return (snapshot.dependencies ?? []).some((dependency) =>
+      !artifacts.some((artifact) =>
+        artifact.id === dependency.artifactId &&
+        artifact.revision === dependency.revision &&
+        artifact.contentHash === dependency.contentHash &&
+        artifact.freshness === 'CURRENT' &&
+        artifact.availability === 'AVAILABLE',
+      ),
+    ) || !currentVariant || !matchesVisualHash(
+      currentVariant,
+      snapshot.timeline.sourceTimelineHash,
+      snapshot.timeline.variant,
+    );
+  }
+
+  /** The clips the draft would render right now, walked through their sources the same way packaging does. */
+  private liveClips(
+    variant: EffectTemplateMixVariant,
+    materials: EffectTemplateMixMaterial[],
+    artifacts: WorkingArtifact[],
+  ): PackagingSnapshot['clips'] {
+    return packagingClips(variant, materials, artifactVisitor(artifacts)).map((clip) => ({
+      ...clip,
+      // Rows are numbered against the draft the user is looking at; the packaging snapshot's own row
+      // numbers are frozen and would place a clip beside one it should sit under.
+      lane: variant.videoLanes?.[clip.slotId] ?? clip.lane,
+    }));
+  }
+
+  /**
+   * Whether re-exporting this film would produce a different picture than the one on file. The
+   * packaging's own hash ignores placement, so the clips are compared as well — moving a clip is an
+   * edit even though it never invalidates the narration.
+   */
+  private filmMoved(
+    templateId: string,
+    item: OutputItemRow,
+    artifacts: WorkingArtifact[],
+    workspace?: EffectTemplateMixWorkspaceData,
+  ): boolean {
+    if (this.staleForItem(templateId, item, artifacts, workspace)) return true;
+    const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+    const variant = workspace?.draft?.templates
+      .find((entry) => entry.id === templateId)
+      ?.workspace.variants.find((candidate) => candidate.id === item.variantId);
+    if (!variant) return true;
+    try {
+      return (
+        pictureHash(this.liveClips(variant, workspace!.materials, artifacts)) !==
+          pictureHash(snapshot.timeline.clips) ||
+        effectTemplateMixContentDuration(variant, snapshot.packaging) !== snapshot.timeline.duration
+      );
+    } catch {
+      return true;
+    }
   }
 
   private toDto(
     run: Prisma.EffectFinalOutputRunGetPayload<{ include: typeof include }>,
     templateName?: string,
-    artifacts: Array<{
-      id: string;
-      revision: number;
-      contentHash: string | null;
-      freshness: string;
-      availability: string;
-      artifactKey?: string;
-      nodeId?: string;
-      payload?: unknown;
-    }> = [],
+    artifacts: ArtifactRow[] = [],
     workspace?: Awaited<ReturnType<EffectTemplateMixService['workspace']>>,
   ): FinalOutputRun {
-    const staleForItem = (item: (typeof run.items)[number]): boolean => {
-      const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
-      const currentVariant = workspace?.draft?.templates
-        .find((entry) => entry.id === run.templateId)
-        ?.workspace.variants.find((variant) => variant.id === item.variantId);
-      return (snapshot.dependencies ?? []).some((dependency) =>
-        !artifacts.some((artifact) =>
-          artifact.id === dependency.artifactId &&
-          artifact.revision === dependency.revision &&
-          artifact.contentHash === dependency.contentHash &&
-          artifact.freshness === 'CURRENT' &&
-          artifact.availability === 'AVAILABLE',
-        ),
-      ) || !currentVariant || !matchesVisualHash(
-        currentVariant,
-        snapshot.timeline.sourceTimelineHash,
-        snapshot.timeline.variant,
-      );
-    };
+    const staleForItem = (item: (typeof run.items)[number]): boolean =>
+      this.staleForItem(run.templateId, item, artifacts, workspace);
     const delivery = artifacts.find((artifact) =>
       artifact.nodeId === 'FINAL_OUTPUT' &&
       artifact.artifactKey === `final-delivery:${run.templateId}` &&
@@ -659,6 +1006,7 @@ export class EffectFinalOutputService {
         running: run.items.filter((i) => i.status === 'RUNNING').length,
         completed: run.items.filter((i) => i.status === 'COMPLETED').length,
         failed: run.items.filter((i) => ['FAILED', 'CANCELLED'].includes(i.status)).length,
+        stale: run.items.filter((i) => staleForItem(i)).length,
       },
     };
   }
@@ -750,8 +1098,6 @@ export class EffectFinalOutputService {
   private async current(
     tx: Prisma.TransactionClient,
     projectId: string,
-    workflowRunId: string,
-    templateId: string,
     snapshot: FinalOutputSnapshot,
   ) {
     // A film confirmed without a package carries an intentionally empty one: no narration layout,
@@ -776,9 +1122,11 @@ export class EffectFinalOutputService {
         ...audioIds(snapshot.packaging),
       ]),
     ];
+    // Scoped to the project, never to the output run: exporting opens a branch, and a branch's
+    // frozen sources still belong to the ancestor run that imported or packaged them.
     if (
       (await tx.fileObject.count({
-        where: { projectId, workflowRunId, id: { in: ids }, status: 'AVAILABLE' },
+        where: { projectId, id: { in: ids }, status: 'AVAILABLE' },
       })) !== ids.length
     )
       throw new ConflictException('输出源文件不可用');
@@ -791,7 +1139,7 @@ export class EffectFinalOutputService {
     });
     if (!item) throw new NotFoundException('输出条目不存在');
     const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
-    await this.current(this.db, projectId, item.run.workflowRunId, item.run.templateId, snapshot);
+    await this.current(this.db, projectId, snapshot);
     return { item, snapshot };
   }
   async content(projectId: string, runId: string, token: string, itemId: string, fileId: string) {
@@ -881,7 +1229,7 @@ export class EffectFinalOutputService {
           await this.heartbeat(projectId, runId, token, tx);
           await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${item.run.workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR SHARE`;
           await tx.$queryRaw`SELECT id FROM working_artifacts WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${item.run.workflowRunId}::uuid ORDER BY id FOR SHARE`;
-          await this.current(tx, projectId, item.run.workflowRunId, item.run.templateId, snapshot);
+          await this.current(tx, projectId, snapshot);
           const latest = await tx.effectFinalOutputItem.findUniqueOrThrow({
             where: { id: itemId },
           });
@@ -1063,23 +1411,37 @@ export class EffectFinalOutputService {
     }
   }
   async finish(projectId: string, id: string, token: string) {
-    return this.db.$transaction(async (tx) => {
+    const status = await this.db.$transaction(async (tx) => {
       await this.heartbeat(projectId, id, token, tx);
       const items = await tx.effectFinalOutputItem.findMany({ where: { projectId, runId: id } });
       if (items.some((i) => ['QUEUED', 'RUNNING'].includes(i.status)))
         throw new ConflictException('仍有输出未完成');
       const completed = items.filter((i) => i.status === 'COMPLETED').length;
+      const status = completed === items.length ? 'COMPLETED' : completed ? 'PARTIAL' : 'FAILED';
       await tx.effectFinalOutputRun.update({
         where: { id },
-        data: {
-          status: completed === items.length ? 'COMPLETED' : completed ? 'PARTIAL' : 'FAILED',
-          attemptToken: null,
-          leaseExpiresAt: null,
-          completedAt: new Date(),
-        },
+        data: { status, attemptToken: null, leaseExpiresAt: null, completedAt: new Date() },
       });
-      return { accepted: true };
+      return status;
     });
+    // A batch that finished is the version the user asked for, so it becomes a branch of its own.
+    // The manifest and the publish each open their own transaction: this write has to be committed
+    // before they read it, and neither may inherit its lock budget.
+    if (status === 'COMPLETED')
+      try {
+        const workflowRunId = await this.finalizeDelivery(projectId, id);
+        await this.publishEditBranch(projectId, workflowRunId, 'FINAL_OUTPUT');
+      } catch (error) {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'final_output_delivery_failed',
+            projectId,
+            runId: id,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    return { accepted: true };
   }
   async cancel(projectId: string, id: string) {
     return this.db.$transaction(async (tx) => {
@@ -1109,13 +1471,7 @@ export class EffectFinalOutputService {
           throw new ConflictException('当前输出不可恢复');
         for (const item of run.items)
           if (item.status !== 'COMPLETED')
-            await this.current(
-              tx,
-              projectId,
-              run.workflowRunId,
-              run.templateId,
-              item.snapshot as unknown as FinalOutputSnapshot,
-            );
+            await this.current(tx, projectId, item.snapshot as unknown as FinalOutputSnapshot);
         await tx.effectFinalOutputItem.updateMany({
           where: { projectId, runId: id, status: { not: 'COMPLETED' } },
           data: { status: 'QUEUED', progress: 0, errorMessage: null },
@@ -1143,13 +1499,7 @@ export class EffectFinalOutputService {
           throw new ConflictException('该模板尚未导出，请先导出成片');
         const item = run.items.find((entry) => entry.id === itemId);
         if (!item) throw new NotFoundException('成片条目不存在');
-        await this.current(
-          tx,
-          projectId,
-          run.workflowRunId,
-          run.templateId,
-          item.snapshot as unknown as FinalOutputSnapshot,
-        );
+        await this.current(tx, projectId, item.snapshot as unknown as FinalOutputSnapshot);
         // Only this item goes back to QUEUED; claim() hands the worker exactly the non-COMPLETED
         // items, so the rest of the batch is left alone.
         await tx.effectFinalOutputItem.update({

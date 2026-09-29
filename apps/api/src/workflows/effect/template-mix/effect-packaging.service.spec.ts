@@ -13,6 +13,7 @@ import type {
 } from '@ai-marketing/contracts';
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import type { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 import type { EffectTemplateMixService } from './effect-template-mix.service';
 import type { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectPackagingService, parseVoiceSegmentFrames } from './effect-packaging.service';
@@ -106,6 +107,14 @@ function harness(templateVoiceProfileId?: string) {
     }),
   };
   const working = {
+    // No published version to protect, so packaging stays in the Run it was asked for.
+    beginEffectNodeEdit: vi.fn().mockResolvedValue({
+      run: { id: 'w' },
+      parentWorkflowRunId: null,
+      productIdMap: {},
+      taskIdMap: {},
+      created: false,
+    }),
     listArtifacts: vi.fn().mockResolvedValue({ items: [visual, packaging] }),
     fileObjectContent: vi.fn().mockResolvedValue('voice-content'),
   };
@@ -126,6 +135,7 @@ function harness(templateVoiceProfileId?: string) {
     authorized: vi.fn().mockResolvedValue(undefined),
     checkpoint: vi.fn().mockResolvedValue({ accepted: true }),
     retry: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
+    finish: vi.fn(),
     updateCheckpoint: vi.fn(),
     list: vi.fn().mockResolvedValue([]),
     create: vi.fn().mockResolvedValue('new-run'),
@@ -146,13 +156,19 @@ function harness(templateVoiceProfileId?: string) {
     put: vi.fn().mockResolvedValue({ key: 'stored-key' }),
     delete: vi.fn().mockResolvedValue(undefined),
   };
+  // A finished package hands its films to the output node; the callback is a collaborator, not part
+  // of what this service computes itself.
+  const finalOutput = {
+    upsertFromPackaging: vi.fn().mockResolvedValue(undefined),
+  };
   const service = new EffectPackagingService(
     repo as unknown as EffectPackagingRepository,
     mix as unknown as EffectTemplateMixService,
     working as unknown as WorkflowWorkingService,
     storage as unknown as StoragePort,
+    finalOutput as unknown as EffectFinalOutputService,
   );
-  return { service, mix, working, repo, storage, tx, visual, packaging };
+  return { service, mix, working, repo, storage, tx, visual, packaging, finalOutput };
 }
 /** A finished item whose checkpoint matches the canonical worker output. */
 function completedItem() {
@@ -1406,5 +1422,38 @@ describe('editor-generated caption narration', () => {
     await expect(
       service.uploadCaptionVoice('p', 'run', 'item', 'ghost', { path: 'unused', size: 1 }),
     ).rejects.toThrow('字幕不存在');
+  });
+});
+
+describe('a finished package feeds the output node', () => {
+  const finished = (status: string) => ({
+    accepted: true,
+    status,
+    workflowRunId: 'w',
+    templateId: 't',
+  });
+
+  it.each(['COMPLETED', 'PARTIAL'])('queues the films once the run ends %s', async (status) => {
+    const { service, repo, finalOutput } = harness();
+    repo.finish.mockResolvedValue(finished(status));
+    // A partial run still produced films the user asked for, so it reaches the queue as well.
+    await expect(service.finish('p', 'run', 'token')).resolves.toEqual({ accepted: true });
+    expect(finalOutput.upsertFromPackaging).toHaveBeenCalledWith('p', 'w', 't');
+  });
+
+  it('does not queue anything for a run where no film succeeded', async () => {
+    const { service, repo, finalOutput } = harness();
+    repo.finish.mockResolvedValue(finished('FAILED'));
+    await expect(service.finish('p', 'run', 'token')).resolves.toEqual({ accepted: true });
+    expect(finalOutput.upsertFromPackaging).not.toHaveBeenCalled();
+  });
+
+  it('swallows a draft that moved on rather than failing the worker callback', async () => {
+    const { service, repo, finalOutput } = harness();
+    repo.finish.mockResolvedValue(finished('COMPLETED'));
+    // The user can save the draft while the worker is finishing; that must not turn into a 409 the
+    // worker would report as a failed package.
+    finalOutput.upsertFromPackaging.mockRejectedValue(new ConflictException('草稿已变化，请刷新后重试'));
+    await expect(service.finish('p', 'run', 'token')).resolves.toEqual({ accepted: true });
   });
 });

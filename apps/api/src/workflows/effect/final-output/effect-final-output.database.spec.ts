@@ -47,6 +47,8 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             await tx.workflowRun.create({
               data: { id: workflowRunId, projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
             });
+            // Exporting forks the output node, and a fork clones the workspace of the run it starts from.
+            await tx.effectImportWorkspace.create({ data: { projectId, workflowRunId } });
             const source = await tx.workingArtifact.create({
               data: {
                 projectId,
@@ -200,27 +202,59 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               new WorkflowWorkingRepository(scopedDb),
               storage,
             );
-            const body = { workflowRunId, expectedRevision: 1, idempotencyKey: 'finish' };
-            await expect(service.complete(projectId, templateId, body)).rejects.toThrow('全部成功');
+            // A package that is still running must not queue anything or commit a version.
+            await tx.effectPackagingRun.update({
+              where: { id: packaging.id },
+              data: { status: 'RUNNING' },
+            });
+            await expect(
+              service.upsertFromPackaging(projectId, workflowRunId, templateId),
+            ).rejects.toThrow('包装仍在执行');
             expect(await tx.effectFinalOutputRun.count({ where: { projectId } })).toBe(0);
             expect(
               await tx.workingArtifact.count({ where: { projectId, nodeId: 'TEMPLATE_MIX' } }),
             ).toBe(0);
+            await tx.effectPackagingRun.update({
+              where: { id: packaging.id },
+              data: { status: 'COMPLETED' },
+            });
             await tx.effectPackagingItem.updateMany({
               where: { projectId, runId: packaging.id },
               data: { status: 'COMPLETED' },
             });
-            const run = await service.complete(projectId, templateId, body);
-            expect(run.items).toHaveLength(100);
-            expect(run.status).toBe('PENDING_RENDER');
+            // The finished package alone fills the output queue; there is no validation step left.
+            await service.upsertFromPackaging(projectId, workflowRunId, templateId);
+            const queued = await service.get(
+              projectId,
+              (await tx.effectFinalOutputRun.findFirstOrThrow({ where: { projectId } })).id,
+            );
+            expect(queued.items).toHaveLength(100);
+            expect(queued.status).toBe('PENDING_RENDER');
             expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(0);
-            await service.start(projectId, run.id, { resolution: '720p', frameRate: 30 });
-            const replay = await service.complete(projectId, templateId, body);
-            expect(replay.id).toBe(run.id);
+            // Exporting is a version of its own, so even the first export opens a branch and renders
+            // into it; the queue it came from stays untouched for the version tree to read.
+            const run = await service.start(projectId, queued.id, {
+              resolution: '720p',
+              frameRate: 30,
+            });
+            expect(run.id).not.toBe(queued.id);
+            expect(run.workflowRunId).not.toBe(workflowRunId);
+            expect(run.status).toBe('QUEUED');
+            expect(run.items).toHaveLength(100);
+            expect(
+              (await tx.effectFinalOutputRun.findUniqueOrThrow({ where: { id: queued.id } })).status,
+            ).toBe('PENDING_RENDER');
+            // The same package arriving twice names the same version, so it reuses the queued batch.
+            await service.upsertFromPackaging(projectId, workflowRunId, templateId);
             expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(1);
             expect(
               await tx.workingArtifact.count({
-                where: { projectId, nodeId: 'TEMPLATE_MIX', revision: 1 },
+                where: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX', revision: 1 },
+              }),
+            ).toBe(200);
+            expect(
+              await tx.workingArtifact.count({
+                where: { projectId, workflowRunId: run.workflowRunId, nodeId: 'TEMPLATE_MIX' },
               }),
             ).toBe(200);
             const claim = await service.claim(projectId, run.id);
@@ -258,16 +292,16 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             expect(resumed.items!.filter((item) => item.status === 'COMPLETED')).toHaveLength(1);
             expect(resumed.items!.filter((item) => item.status === 'QUEUED')).toHaveLength(99);
             expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(1);
+            // An upstream revision bump must not break a render already in flight: the batch renders
+            // the file IDs frozen into its snapshot and only reports the drift as `stale` in the UI.
             await tx.workingArtifact.update({ where: { id: source.id }, data: { revision: 2 } });
-            await expect(
-              service.progress(
-                projectId,
-                run.id,
-                resumed.attemptToken!,
-                resumed.items!.find((item) => item.status === 'QUEUED')!.id,
-                10,
-              ),
-            ).rejects.toThrow('过期');
+            await service.progress(
+              projectId,
+              run.id,
+              resumed.attemptToken!,
+              resumed.items!.find((item) => item.status === 'QUEUED')!.id,
+              10,
+            );
             await tx.workingArtifact.update({ where: { id: source.id }, data: { revision: 1 } });
 
             // --- single-item re-render: overwrite in place, never a second asset row or leaked blob ---
@@ -299,10 +333,18 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               { path: rerenderPath, size: rerenderHeader.length },
             );
             expect(rerendered.fileObjectId).not.toBe(beforeRerender.fileObjectId);
+            // The replaced blob stays alive: the artifact commit keeps a revision snapshot of the
+            // previous version, and that snapshot still points at this file. Only the blob behind it
+            // is queued for cleanup, so nothing leaks and nothing the history needs is dropped.
             expect(
               (await tx.fileObject.findUniqueOrThrow({ where: { id: beforeRerender.fileObjectId! } }))
                 .status,
-            ).toBe('ORPHANED');
+            ).toBe('AVAILABLE');
+            expect(
+              await tx.workingArtifactRevisionFile.count({
+                where: { projectId, fileObjectId: beforeRerender.fileObjectId! },
+              }),
+            ).toBeGreaterThan(0);
             expect(
               (await tx.fileObject.findUniqueOrThrow({ where: { id: rerendered.fileObjectId! } }))
                 .status,

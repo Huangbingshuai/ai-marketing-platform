@@ -418,16 +418,18 @@ export class EffectPackagingRepository {
       if (run.items.some((i) => ['QUEUED', 'RUNNING'].includes(i.status)))
         throw new ConflictException('包装任务仍有未完成成片');
       const count = run.items.filter((i) => i.status === 'COMPLETED').length;
+      const status = count === run.items.length ? 'COMPLETED' : count ? 'PARTIAL' : 'FAILED';
       await tx.effectPackagingRun.update({
         where: { id },
-        data: {
-          status: count === run.items.length ? 'COMPLETED' : count ? 'PARTIAL' : 'FAILED',
-          completedAt: new Date(),
-          attemptToken: null,
-          leaseExpiresAt: null,
-        },
+        data: { status, completedAt: new Date(), attemptToken: null, leaseExpiresAt: null },
       });
-      return { accepted: true };
+      // The caller needs to know which template just finished so it can feed the output node's queue.
+      return {
+        accepted: true,
+        status,
+        workflowRunId: run.workflowRunId,
+        templateId: run.templateId,
+      };
     });
   }
   cancel(projectId: string, id: string) {

@@ -102,6 +102,8 @@ export const EFFECT_WORKFLOW_EDITABLE_NODES = [
   'INFORMATION_EXTRACTION',
   'PROMPT_GENERATION',
   'SEGMENT_RENDER',
+  'TEMPLATE_MIX',
+  'FINAL_OUTPUT',
 ] as const;
 export type EffectWorkflowEditableNodeId = (typeof EFFECT_WORKFLOW_EDITABLE_NODES)[number];
 export type EffectWorkflowEditSessionData = {

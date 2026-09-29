@@ -85,7 +85,7 @@ import {
   loadEffectTemplateMixWorkspace,
   saveEffectTemplateMixDraft,
   serializeEffectTemplateMixDraft,
-  completeEffectTemplateMixPackaging,
+  syncEffectFinalOutput,
   updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
 import { apiUrl } from '../../../api/http-client';
@@ -137,7 +137,12 @@ const props = defineProps<{
     variantId: string;
   } | null;
 }>();
-const emit = defineEmits<{ back: []; next: [] }>();
+const emit = defineEmits<{
+  back: [];
+  next: [];
+  workflowRunChange: [];
+  notice: [text: string, kind: Notice['kind']];
+}>();
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type TemplateUi = { selectedSlotId: string; selectedVariantId: string };
 
@@ -199,12 +204,10 @@ const packagingActionBlockReason = computed(() => {
     ? '本模板有成片引用了过期素材；请先在视频渲染节点更新素材，再智能填充并完成校验。'
     : null;
 });
-let completionKey: { signature: string; key: string } | null = null;
 const committedVersions = reactive<Record<string, number>>({});
 const uiByTemplate = reactive<Record<string, TemplateUi>>({});
 const view = ref<'CONFIG' | 'EDITOR'>('CONFIG');
 const saveState = ref<'dirty' | 'saved' | 'saving'>('saved');
-const validating = ref(false);
 const mutating = ref(false);
 const fillStartPending = ref(false);
 const aiRuns = ref<EffectTemplateMixAiRun[]>([]);
@@ -1138,14 +1141,6 @@ const complete = computed(
         }),
     ),
 );
-const canValidate = computed(
-  () =>
-    complete.value &&
-    packagingReady.value &&
-    !pendingCount.value &&
-    saveState.value === 'saved' &&
-    draftRevision.value !== null,
-);
 const validated = computed(
   () =>
     Boolean(workspace.value) &&
@@ -1153,10 +1148,9 @@ const validated = computed(
     saveState.value === 'saved',
 );
 /**
- * The footer has to name the real blocker. The old single fallback told the user to wait for the
- * packaging to succeed, but a finished-and-partly-failed run has nothing left to wait for — only
- * failed items to recover from inside the packaging panel — so the user was left staring at a
- * disabled validate button with no idea why.
+ * There is no validate button any more: a finished package commits the mix artifacts and queues its
+ * films by itself. The footer still has to name where the template stands, including the partially
+ * failed run that has nothing left to wait for but items to recover inside the packaging panel.
  */
 const validateStatusTitle = computed(() => {
   if (validated.value && packagingReady.value) return '当前模板已确认';
@@ -3170,11 +3164,14 @@ const applyPreviewTarget = (): void => {
   if (committedVersions[target.templateId] !== entry.workspace.editVersion)
     showNotice('当前混剪草稿已变化，播放器展示的是最新草稿画面', 'warning');
 };
-const returnToFinalOutput = (): void => {
+const returnToFinalOutput = async (): Promise<void> => {
   playing.value = false;
   pauseTimelinePlayers();
   stopPlaybackClock();
   packagingPanel.value?.stopPlaybackAudio();
+  // Leaving the workbench is what tells the output node the timeline moved, so it has to finish
+  // before the page is swapped out from under the notice it may want to show.
+  await syncOutputOnExit();
   emit('next');
 };
 const leaveEditor = (): void => {
@@ -3185,6 +3182,7 @@ const leaveEditor = (): void => {
   stopPlaybackClock();
   transitionFrame.value = '';
   view.value = 'CONFIG';
+  void syncOutputOnExit();
 };
 const selectSlot = (id: string): void => {
   if (!activeUi.value) return;
@@ -4534,6 +4532,11 @@ const handlePackagingStarted = async (): Promise<void> => {
   await load();
   if (activeEntry.value) activeEntry.value.packagingLocked = true;
 };
+/** 成片包装属于全量更新：后端先建隔离分支，编辑态必须跟着切到那个分支。 */
+const handlePackagingRunChange = (): void => {
+  showNotice('已按本次成片包装新建分支，正在切换…', 'success');
+  emit('workflowRunChange');
+};
 const preparePackaging = async (): Promise<number | null> => {
   if (selectedVariantRefreshSlotIds.value.length) {
     showNotice('请先更新已替换素材的截取区间并完成混剪校验', 'error');
@@ -4570,6 +4573,14 @@ const startAiFill = async (
       variantId,
       refreshAffectedSlots,
     );
+    // A regeneration is a full update: the service forks an unpublished child before it starts the
+    // task. The editor has to move to that child before it reads or writes the draft again, so the
+    // remounted page picks the running task up from the new Run instead of editing the published one.
+    if (result.data.workflowRunId !== props.workflowRunId) {
+      showNotice('已按本次重新生成新建分支，正在切换…', 'success');
+      emit('workflowRunChange');
+      return;
+    }
     const workspaceResponse = await loadEffectTemplateMixWorkspace(
       props.projectId,
       props.workflowRunId,
@@ -5076,27 +5087,29 @@ const toggleFullscreen = async (): Promise<void> => {
 const onFullscreenChange = (): void => {
   playerFullscreen.value = document.fullscreenElement === playerPanel.value;
 };
-const validateDraft = async (): Promise<void> => {
-  if (!activeEntry.value || draftRevision.value === null || !canValidate.value) return;
-  validating.value = true;
+/**
+ * The workbench is not an edit session: the draft is saved as it is typed, and only on the way out
+ * does the output node learn that the timeline moved. Films that were never exported follow the
+ * draft silently; already exported ones come back as needing a local update, which is a decision
+ * the user makes on the output node rather than something to do here.
+ */
+const syncOutputOnExit = async (): Promise<void> => {
+  if (!(await flushPendingEdits())) return;
   try {
-    const signature = `${props.projectId}:${props.workflowRunId}:${activeEntry.value.id}:${draftRevision.value}`;
-    if (completionKey?.signature !== signature)
-      completionKey = { signature, key: crypto.randomUUID() };
-    await completeEffectTemplateMixPackaging(
-      props.projectId,
-      props.workflowRunId,
-      draftRevision.value,
-      activeEntry.value.id,
-      completionKey.key,
-    );
-    committedVersions[activeEntry.value.id] = activeEntry.value.workspace.editVersion;
-    showNotice('全部视觉与包装已提交，已进入成片待渲染区');
-    emit('next');
+    const response = await syncEffectFinalOutput(props.projectId, props.workflowRunId);
+    const { refreshed, needsUpdate } = response.data;
+    const refreshedCount = refreshed.reduce((sum, entry) => sum + entry.itemCount, 0);
+    const staleCount = needsUpdate.reduce((sum, entry) => sum + entry.staleCount, 0);
+    if (staleCount) {
+      emit('notice', `成片输出有 ${staleCount} 条需要局部更新`, 'warning');
+      emit('workflowRunChange');
+    } else if (refreshedCount) {
+      emit('notice', `已同步成片待渲染区 ${refreshedCount} 条`, 'success');
+    }
   } catch (error) {
-    showNotice(error instanceof Error ? error.message : '提交失败', 'error');
-  } finally {
-    validating.value = false;
+    // A sync failure must not trap the user in the workbench; the output node re-reads the draft
+    // itself, so the worst case is that the films show the previous timeline until the next export.
+    emit('notice', error instanceof Error ? error.message : '同步成片待渲染区失败', 'error');
   }
 };
 const flushPendingEdits = async (): Promise<boolean> => {
@@ -6410,6 +6423,7 @@ defineExpose({ flushPendingEdits });
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
             @started="handlePackagingStarted"
+            @run-change="handlePackagingRunChange"
             @status="packagingRunStatus = $event"
             @failures="packagingFailures = $event"
             @stale-variants="onStalePackagingVariants"
@@ -6584,15 +6598,10 @@ defineExpose({ flushPendingEdits });
         :complete="validated && packagingReady"
         :status-title="validateStatusTitle"
         :status-detail="'步骤 5 / 6 · ' + workspace.template.name"
-        :validate-disabled="!canValidate"
-        :validating="validating"
-        :next-disabled="!validated || validating"
         next-label="下一步：成片输出"
-        validate-label="完成校验"
+        :show-validate="false"
         :show-next="false"
         @back="emit('back')"
-        @validate="validateDraft"
-        @next="emit('next')"
       />
     </template>
     <Teleport to="body"

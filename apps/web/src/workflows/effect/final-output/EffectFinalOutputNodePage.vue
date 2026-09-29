@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onBeforeUnmount, ref, watch } from 'vue';
-import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, X } from '@lucide/vue';
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, Wand2, X } from '@lucide/vue';
 import type {
   ApiResponse,
   EffectTemplateMixMaterial,
@@ -17,6 +17,7 @@ const props = defineProps<{ projectId: string; workflowRunId: string }>();
 const emit = defineEmits<{
   back: [];
   preview: [selection: { templateId: string; variantId: string }];
+  workflowRunChange: [];
 }>();
 const OUTPUT_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const;
 type OutputPreviewClip = {
@@ -48,7 +49,6 @@ const runs = ref<FinalOutputRun[]>([]),
 const loading = ref(true),
   mixLoading = ref(true),
   busy = ref(false),
-  validating = ref(false),
   itemRerenderingId = ref(''),
   previewItem = ref<FinalOutputRun['items'][number] | null>(null),
   previewLoading = ref(false),
@@ -97,12 +97,12 @@ const templates = computed(() => {
           ? '该模板还有未完成的混剪工程'
           : '该模板还没有待渲染成片';
     const pendingDetail = entry.needsAiFill
-      ? '返回模板混剪，先按当前模板配置重新智能填充，再完成成片包装和校验。'
+      ? '返回模板混剪，先按当前模板配置重新智能填充，再做智能成片包装。'
       : entry.packagingLocked
-        ? '成片包装已启动。返回模板混剪，等待该模板全部包装成功后，点击“完成校验并进入成片输出”。'
+        ? '成片包装已启动。返回模板混剪，等待该模板全部包装成功，成片会自动进入这里。'
         : !variants.length || hasIncompleteVariant
-          ? '返回模板混剪，补齐工程的素材槽位并完成混剪校验，然后进行成片包装。'
-          : '返回模板混剪，为该模板进行成片包装；全部包装成功后，再点击“完成校验并进入成片输出”。';
+          ? '返回模板混剪，补齐工程的素材槽位，然后进行智能成片包装。'
+          : '返回模板混剪，为该模板做智能成片包装；包装成功后成片会自动进入这里。';
     return {
       templateId: entry.id,
       templateName: entry.workspace.template.name,
@@ -126,17 +126,17 @@ const selectedTemplate = computed(
 );
 const pageLoading = computed(() => loading.value || mixLoading.value);
 const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.status));
-const canValidate = computed(() => Boolean(
-  run.value && run.value.status === 'COMPLETED' && !run.value.validated &&
-  run.value.items.length > 0 && run.value.items.every((item) =>
-    item.status === 'COMPLETED' && item.fileObjectId && item.assetId && !item.stale,
-  ),
-));
+// A batch that has never been exported is refreshed silently as the draft moves, so a local update
+// only ever applies to films the user already has — and only when something they were cut from moved.
+const canLocalUpdate = computed(() =>
+  Boolean(run.value && !['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(run.value.status) &&
+    run.value.counts.stale > 0),
+);
 const validateStatusTitle = computed(() => {
   if (!run.value) return '等待成片输出';
-  if (run.value.validated) return '当前模板已完成校验';
   if (run.value.status === 'COMPLETED')
-    return run.value.items.some((item) => item.stale) ? '成片来源已更新' : '当前模板待完成校验';
+    return run.value.counts.stale ? '成片来源已更新，可局部更新' : '本批成片已全部导出';
+  if (run.value.validated) return '本批成片已全部导出';
   return run.value.status === 'PENDING_RENDER' ? '等待导出成片' : '等待成片导出完成';
 });
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
@@ -358,11 +358,20 @@ async function startRender() {
   }
   busy.value = true;
   try {
-    await requestJson(`${base.value}/${run.value.id}/render`, {
-      method: 'POST',
-      operation: rerender ? '重新导出成片' : '开始导出成片',
-      body: { resolution: resolution.value, frameRate: frameRate.value },
-    });
+    const response = await requestJson<ApiResponse<FinalOutputRun>>(
+      `${base.value}/${run.value.id}/render`,
+      {
+        method: 'POST',
+        operation: rerender ? '重新导出成片' : '开始导出成片',
+        body: { resolution: resolution.value, frameRate: frameRate.value },
+      },
+    );
+    // Re-exporting is a full update: the service forks an unpublished child and queues the batch
+    // there, so the page has to move to that Run before it reads the batch back.
+    if (response.data.workflowRunId !== props.workflowRunId) {
+      emit('workflowRunChange');
+      return;
+    }
     await refresh();
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '启动成片渲染失败';
@@ -402,27 +411,32 @@ function stop() {
   closePreviewDialog(false);
   clearTimeout(timer);
 }
-async function validateOutput() {
-  if (!run.value || !canValidate.value || busy.value) return;
-  const projectId = props.projectId;
-  const workflowRunId = props.workflowRunId;
-  const targetRunId = run.value.id;
-  const stillCurrent = () =>
-    props.projectId === projectId && props.workflowRunId === workflowRunId &&
-    run.value?.id === targetRunId;
-  validating.value = true;
+/**
+ * Re-renders only the films whose upstream moved, in place: the user is correcting the version they
+ * already delivered, not making a new one, so nothing here forks a branch.
+ */
+async function localUpdate() {
+  if (!run.value || !canLocalUpdate.value || busy.value) return;
+  const staleCount = run.value.counts.stale;
+  const confirmed = await requestActionConfirmation({
+    eyebrow: '局部更新成片',
+    title: `重新导出 ${staleCount} 条受影响的成片？`,
+    description: '只重导上游已改动的成片，原地覆盖，不会新增分支；未受影响的成片保持不变。',
+    confirmLabel: '确认局部更新',
+    tone: 'warning',
+  });
+  if (!confirmed) return;
   busy.value = true;
   try {
-    await requestJson<ApiResponse<FinalOutputRun>>(`/projects/${projectId}/workflows/effect/final-output/${targetRunId}/complete`, {
-      method: 'POST',
-      operation: '完成成片校验',
-    });
-    if (stillCurrent()) await refresh();
+    const response = await requestJson<ApiResponse<FinalOutputRun>>(
+      `${base.value}/${run.value.id}/local-update`,
+      { method: 'POST', operation: '局部更新成片', body: {} },
+    );
+    if (response.data.workflowRunId !== props.workflowRunId) emit('workflowRunChange');
+    else await refresh();
   } catch (reason) {
-    if (stillCurrent())
-      error.value = reason instanceof Error ? reason.message : '成片完成校验失败';
+    error.value = reason instanceof Error ? reason.message : '局部更新成片失败';
   } finally {
-    validating.value = false;
     busy.value = false;
   }
 }
@@ -538,7 +552,7 @@ onBeforeUnmount(stop);
               <Layers :size="18" />
               <span class="template-card__copy">
                 <strong>{{ template.templateName }}</strong>
-                <small v-if="template.run">{{ template.run.counts.total }} 条成片 · {{ template.run.validated ? '已完成校验' : labels[template.run.status] }}</small>
+                <small v-if="template.run">{{ template.run.counts.total }} 条成片 · {{ labels[template.run.status] }}</small>
                 <small v-else>{{ template.pendingLabel }}</small>
               </span>
             </button>
@@ -582,6 +596,15 @@ onBeforeUnmount(stop);
           <LoaderCircle v-if="busy || active" class="spin" :size="15" />
           <RefreshCw v-else-if="run.status !== 'PENDING_RENDER'" :size="15" />
           <Play v-else :size="15" />{{ busy ? '正在创建任务…' : active ? `渲染中 ${run.counts.completed}/${run.counts.total}` : run.status !== 'PENDING_RENDER' ? `重新导出成片（${run.counts.total}）` : `导出成片（${run.counts.total}）` }}
+        </button>
+        <button
+          v-if="run.status !== 'PENDING_RENDER' && run.counts.stale"
+          class="secondary-button local-update-button"
+          type="button"
+          :disabled="busy || active || !canLocalUpdate"
+          @click="localUpdate"
+        >
+          <Wand2 :size="15" />局部更新（{{ run.counts.stale }}）
         </button>
       </section>
       <section v-if="run.status !== 'PENDING_RENDER' && run.status !== 'COMPLETED'" class="batch-panel" aria-label="批次输出进度">
@@ -768,13 +791,10 @@ onBeforeUnmount(stop);
         :complete="Boolean(run.validated)"
         :status-title="validateStatusTitle"
         :status-detail="`步骤 6 / 6 · 当前模板：${selectedTemplate?.templateName ?? run.templateName}`"
-        :validate-disabled="!canValidate || busy"
-        :validating="validating"
-        validate-label="完成校验"
         next-label=""
+        :show-validate="false"
         :show-next="false"
         @back="$emit('back')"
-        @validate="validateOutput"
       />
           </template>
           <section v-else class="template-readiness" role="status">
@@ -1646,6 +1666,24 @@ progress {
   cursor: pointer;
   font-size: 11px;
   font-weight: 700;
+}
+.local-update-button {
+  display: inline-flex;
+  min-height: 36px;
+  padding: 0 14px;
+  align-items: center;
+  gap: 6px;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+.local-update-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 .item-rerender-button:hover:not(:disabled) {
   color: #2563eb;
