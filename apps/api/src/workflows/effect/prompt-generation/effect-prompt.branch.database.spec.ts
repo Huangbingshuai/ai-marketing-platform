@@ -214,8 +214,12 @@ it.skipIf(
   const rollback = new Error('PROMPT_BRANCH_TEST_ROLLBACK');
   try {
     await expect(db.$transaction(async (transaction) => {
+      // The active run can be a node-scoped branch without a Prompt artifact, so select the
+      // newest run that actually owns one instead of relying on activeKey.
       const parent = await transaction.workflowRun.findFirstOrThrow({
-        where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+        where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+          workingArtifacts: { some: { nodeId: 'PROMPT_GENERATION' } } },
+        orderBy: { createdAt: 'desc' },
       });
       const product = await transaction.effectImportProduct.findFirstOrThrow({
         where: { projectId, workflowRunId: parent.id, status: 'ACTIVE' },
@@ -240,6 +244,28 @@ it.skipIf(
         where: { projectId, workflowRunId: fork.childRunId,
           nodeId: 'INFORMATION_EXTRACTION', id: fork.childInsightId },
       })).toBe(1);
+      const parentSource = await transaction.workingArtifact.findFirstOrThrow({
+        where: { projectId, workflowRunId: parent.id, nodeId: 'SOURCE_IMPORT',
+          artifactKey: `source-package:${product.id}` },
+      });
+      const childSource = await transaction.workingArtifact.findFirstOrThrow({
+        where: { projectId, workflowRunId: fork.childRunId, nodeId: 'SOURCE_IMPORT',
+          artifactKey: `source-package:${fork.childProductId}` },
+      });
+      const childWorkspace = await transaction.effectImportWorkspace.findFirstOrThrow({
+        where: { projectId, workflowRunId: fork.childRunId },
+      });
+      const childDraft = await transaction.effectImportDraft.findFirstOrThrow({
+        where: { projectId, workspaceId: childWorkspace.id },
+      });
+      const clonedExtraction = await transaction.effectExtractionRun.findFirstOrThrow({
+        where: { projectId, draftId: childDraft.id, productId: fork.childProductId },
+      });
+      const clonedDependency = (clonedExtraction.inputSnapshot as {
+        dependencies?: Array<{ sourceArtifactId?: string | null; sourceKey: string }>;
+      }).dependencies?.find((item) => item.sourceKey === `source-package:${fork.childProductId}`);
+      expect(clonedDependency?.sourceArtifactId).toBe(childSource.id);
+      expect(clonedDependency?.sourceArtifactId).not.toBe(parentSource.id);
       expect(await transaction.workingArtifact.findUniqueOrThrow({
         where: { id: oldArtifact.id }, select: { revision: true, contentHash: true },
       })).toEqual({ revision: oldArtifact.revision, contentHash: oldArtifact.contentHash });

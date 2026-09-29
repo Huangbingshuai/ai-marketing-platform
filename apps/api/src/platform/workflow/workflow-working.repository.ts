@@ -1092,34 +1092,36 @@ export class WorkflowWorkingRepository {
           where: {
             projectId,
             workflowRunId: { in: allowedRunIds },
-            ...(dependency.sourceArtifactId
-              ? { id: dependency.sourceArtifactId }
-              : {
-                  artifactKey: {
-                    in: [
-                      dependency.sourceKey,
-                      dependency.sourceKey.replace('effective-video-config:', 'global-video-config:'),
-                    ],
-                  },
-                }),
+            OR: [
+              ...(dependency.sourceArtifactId ? [{ id: dependency.sourceArtifactId }] : []),
+              {
+                artifactKey: {
+                  in: [
+                    dependency.sourceKey,
+                    dependency.sourceKey.replace('effective-video-config:', 'global-video-config:'),
+                  ],
+                },
+              },
+            ],
           },
         });
+        const keyMatches = (candidate: { artifactKey: string }): boolean =>
+          candidate.artifactKey === dependency.sourceKey ||
+          (dependency.sourceKey.startsWith('effective-video-config:') &&
+            candidate.artifactKey ===
+              dependency.sourceKey.replace('effective-video-config:', 'global-video-config:'));
         const source = lineage
           .map(({ runId, crossedForks }) =>
             candidates.find(
               (candidate) =>
                 candidate.workflowRunId === runId &&
+                keyMatches(candidate) &&
                 (crossedForks.length === 0 ||
                   inheritedEffectArtifactVisible(candidate, crossedForks)),
             ),
           )
           .find(Boolean);
-        const keyMatches =
-          source?.artifactKey === dependency.sourceKey ||
-          (dependency.sourceKey.startsWith('effective-video-config:') &&
-            source?.artifactKey ===
-              dependency.sourceKey.replace('effective-video-config:', 'global-video-config:'));
-        if (!source || !keyMatches || source.revision !== dependency.sourceRevision)
+        if (!source || source.revision !== dependency.sourceRevision)
           throw new Error('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
       } else {
         const state = await transaction.workflowNodeState.findUnique({

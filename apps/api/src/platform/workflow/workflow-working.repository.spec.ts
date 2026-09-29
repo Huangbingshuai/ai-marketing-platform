@@ -612,6 +612,83 @@ describe('WorkflowWorkingRepository', () => {
     })).rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
   });
 
+  it('resolves a stale ancestor artifact id through the matching key in the current run', async () => {
+    const child = {
+      id: 'child', projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT',
+      parentWorkflowRunId: 'parent', forkNodeId: 'PROMPT_GENERATION', forkTemplateId: null,
+    };
+    const transaction = {
+      workflowRun: {
+        findFirst: vi.fn().mockImplementation(({ where }) =>
+          where.id === 'child' ? child : where.id === 'parent'
+            ? { ...child, id: 'parent', parentWorkflowRunId: null } : null,
+        ),
+      },
+      workingArtifact: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'parent-source', projectId: 'project-a', workflowRunId: 'parent',
+            nodeId: 'SOURCE_IMPORT', artifactKey: 'source-package:parent-product', revision: 2 },
+          { id: 'child-source', projectId: 'project-a', workflowRunId: 'child',
+            nodeId: 'SOURCE_IMPORT', artifactKey: 'source-package:child-product', revision: 2 },
+        ]),
+      },
+    };
+    const repository = new WorkflowWorkingRepository({} as PrismaService);
+    const validate = repository as unknown as {
+      validateArtifactInputsInTransaction: (
+        transaction: unknown, projectId: string, workflowRunId: string,
+        input: { dependencies: Array<{ sourceType: string; sourceArtifactId: string; sourceKey: string; sourceRevision: number }> },
+      ) => Promise<void>;
+    };
+
+    await expect(validate.validateArtifactInputsInTransaction(transaction, 'project-a', 'child', {
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'parent-source',
+        sourceKey: 'source-package:child-product', sourceRevision: 2 }],
+    })).resolves.toBeUndefined();
+    expect(transaction.workingArtifact.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'project-a', workflowRunId: { in: ['child', 'parent'] },
+        OR: [
+          { id: 'parent-source' },
+          { artifactKey: { in: ['source-package:child-product', 'source-package:child-product'] } },
+        ] },
+    });
+  });
+
+  it('rejects a stale ancestor artifact id when the keyed artifact revision moved on', async () => {
+    const child = {
+      id: 'child', projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT',
+      parentWorkflowRunId: 'parent', forkNodeId: 'PROMPT_GENERATION', forkTemplateId: null,
+    };
+    const transaction = {
+      workflowRun: {
+        findFirst: vi.fn().mockImplementation(({ where }) =>
+          where.id === 'child' ? child : where.id === 'parent'
+            ? { ...child, id: 'parent', parentWorkflowRunId: null } : null,
+        ),
+      },
+      workingArtifact: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'parent-source', projectId: 'project-a', workflowRunId: 'parent',
+            nodeId: 'SOURCE_IMPORT', artifactKey: 'source-package:parent-product', revision: 2 },
+          { id: 'child-source', projectId: 'project-a', workflowRunId: 'child',
+            nodeId: 'SOURCE_IMPORT', artifactKey: 'source-package:child-product', revision: 3 },
+        ]),
+      },
+    };
+    const repository = new WorkflowWorkingRepository({} as PrismaService);
+    const validate = repository as unknown as {
+      validateArtifactInputsInTransaction: (
+        transaction: unknown, projectId: string, workflowRunId: string,
+        input: { dependencies: Array<{ sourceType: string; sourceArtifactId: string; sourceKey: string; sourceRevision: number }> },
+      ) => Promise<void>;
+    };
+
+    await expect(validate.validateArtifactInputsInTransaction(transaction, 'project-a', 'child', {
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'parent-source',
+        sourceKey: 'source-package:child-product', sourceRevision: 2 }],
+    })).rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+  });
+
   it('reuses an ancestor media object without rewriting it and rejects sibling media', async () => {
     const existing = { id: 'file-a', workflowRunId: 'parent', storageKey: 'source/key' };
     const transaction = {

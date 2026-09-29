@@ -1899,6 +1899,17 @@ export class EffectPromptRepository {
     });
     const artifactIds = new Map<string, string>();
     const artifactHashes = new Map<string, string>();
+    const artifactKeyToId = new Map<string, string>();
+    // A recorded sourceArtifactId can already point at an artifact outside this run
+    // (older clones kept a stale id). Fall back to the cloned artifact that owns the
+    // remapped sourceKey, so a re-clone repairs the reference instead of propagating it.
+    const resolveClonedArtifactId = (
+      sourceArtifactId: string | null | undefined,
+      sourceKey: string,
+    ): string | null | undefined =>
+      sourceArtifactId
+        ? (artifactIds.get(sourceArtifactId) ?? artifactKeyToId.get(sourceKey) ?? sourceArtifactId)
+        : sourceArtifactId;
     for (const artifact of oldArtifacts.sort((left, right) =>
       Number(right.nodeId === 'SOURCE_IMPORT') - Number(left.nodeId === 'SOURCE_IMPORT'),
     )) {
@@ -1917,8 +1928,10 @@ export class EffectPromptRepository {
         dependencies: artifact.dependencies.map((dependency) => ({
           sourceType: dependency.sourceType,
           sourceNodeId: dependency.sourceNodeId?.replaceAll(oldProductId, childProduct.id) ?? null,
-          sourceArtifactId: dependency.sourceArtifactId
-            ? (artifactIds.get(dependency.sourceArtifactId) ?? dependency.sourceArtifactId) : null,
+          sourceArtifactId: resolveClonedArtifactId(
+            dependency.sourceArtifactId,
+            dependency.sourceKey.replaceAll(oldProductId, childProduct.id),
+          ) ?? null,
           sourceKey: dependency.sourceKey.replaceAll(oldProductId, childProduct.id),
           sourceRevision: dependency.sourceRevision,
           sourceHash: dependency.sourceArtifactId
@@ -1927,10 +1940,11 @@ export class EffectPromptRepository {
         })),
       };
       const clonedContentHash = workingArtifactContentHash(input);
+      const clonedKey = artifact.artifactKey.replaceAll(oldProductId, childProduct.id);
       const cloned = await transaction.workingArtifact.create({
         data: {
           projectId, workflowRunId: child.id, nodeId: artifact.nodeId,
-          artifactKey: artifact.artifactKey.replaceAll(oldProductId, childProduct.id),
+          artifactKey: clonedKey,
           kind: artifact.kind, name: artifact.name, directory: artifact.directory,
           type: artifact.type, tags: artifact.tags, payload: json(input.payload),
           metadata: json(input.metadata), originalFileName: artifact.originalFileName,
@@ -1944,6 +1958,7 @@ export class EffectPromptRepository {
       });
       artifactIds.set(artifact.id, cloned.id);
       artifactHashes.set(artifact.id, clonedContentHash);
+      artifactKeyToId.set(clonedKey, cloned.id);
       if (artifact.files.length) await transaction.workingArtifactFile.createMany({
         data: artifact.files.map((file) => ({
           projectId, workflowRunId: child.id, workingArtifactId: cloned.id,
@@ -1955,8 +1970,10 @@ export class EffectPromptRepository {
           projectId, workflowRunId: child.id, dependentArtifactId: cloned.id,
           sourceType: dependency.sourceType,
           sourceNodeId: dependency.sourceNodeId?.replaceAll(oldProductId, childProduct.id) ?? null,
-          sourceArtifactId: dependency.sourceArtifactId
-            ? (artifactIds.get(dependency.sourceArtifactId) ?? dependency.sourceArtifactId) : null,
+          sourceArtifactId: resolveClonedArtifactId(
+            dependency.sourceArtifactId,
+            dependency.sourceKey.replaceAll(oldProductId, childProduct.id),
+          ) ?? null,
           sourceKey: dependency.sourceKey.replaceAll(oldProductId, childProduct.id),
           sourceRevision: dependency.sourceRevision,
           sourceHash: dependency.sourceArtifactId
@@ -1965,6 +1982,29 @@ export class EffectPromptRepository {
         })),
       });
     }
+    const remapSnapshotDependencies = (value: unknown): unknown => {
+      const snapshot = remap(value) as {
+        dependencies?: Array<{
+          sourceKey: string;
+          sourceArtifactId?: string | null;
+          sourceHash?: string | null;
+        }>;
+      };
+      if (!snapshot?.dependencies?.length) return snapshot;
+      return {
+        ...snapshot,
+        dependencies: snapshot.dependencies.map((dependency) => ({
+          ...dependency,
+          sourceArtifactId: resolveClonedArtifactId(
+            dependency.sourceArtifactId,
+            dependency.sourceKey,
+          ),
+          sourceHash: dependency.sourceArtifactId
+            ? (artifactHashes.get(dependency.sourceArtifactId) ?? dependency.sourceHash)
+            : dependency.sourceHash,
+        })),
+      };
+    };
     const sourceInsight = oldArtifacts.find((item) => item.nodeId === 'INFORMATION_EXTRACTION');
     const childInsightId = sourceInsight && artifactIds.get(sourceInsight.id);
     if (!childInsightId) throw new Error('PROMPT_BRANCH_INSIGHT_NOT_READY');
@@ -1982,7 +2022,7 @@ export class EffectPromptRepository {
           idempotencyKey: `branch:${child.id}:extraction`,
           requestHash: extraction.requestHash,
           sourceFingerprint: extraction.sourceFingerprint,
-          inputSnapshot: json(remap(extraction.inputSnapshot)),
+          inputSnapshot: json(remapSnapshotDependencies(extraction.inputSnapshot)),
           status: 'COMPLETED', progress: 100,
           warnings: json(extraction.warnings),
           completedAt: extraction.completedAt,
