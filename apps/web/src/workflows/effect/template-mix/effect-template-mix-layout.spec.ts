@@ -13,6 +13,14 @@ const pageSource = rawPageSource.replace(/\r\n/gu, '\n');
 const timelineSource = rawTimelineSource.replace(/\r\n/gu, '\n');
 
 describe('effect template mix workbench layout', () => {
+  it('uses the shared delete confirmation and gives immediate feedback while checking render readiness', () => {
+    expect(pageSource).toContain("import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';");
+    expect(pageSource).toContain('title: `删除模板「${entry.workspace.template.name}」？`');
+    expect(pageSource).not.toContain('window.confirm(');
+    expect(pageSource).toContain('模板列表 <small class="template-list__count">共 {{ catalog.length }} 个</small>');
+    expect(pageSource).toContain("showNotice('尚未检测到已完成的渲染批次，正在刷新状态…', 'warning');");
+    expect(pageSource).toContain(':disabled="checkingTemplateCreation"');
+  });
   it('leaves the transition track empty at a direct cut while keeping drop-to-add available', () => {
     expect(timelineSource).toContain(
       "variant.slots.slice(1).filter((slot) => slot.transition !== '硬切')",
@@ -368,10 +376,21 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('@change="changeProjectDuration');
     expect(pageSource).not.toContain('@change="changeTrimStart');
   });
-  it('renders loading, empty, error and real-media states', () => {
+  it('keeps the no-template view compact without creating a template', () => {
     expect(pageSource).toContain("pageState === 'LOADING'");
     expect(pageSource).toContain("pageState === 'ERROR'");
-    expect(pageSource).toContain('还没有混剪模板');
+    expect(pageSource).toContain('class="config-layout"');
+    expect(pageSource).toContain("'is-empty': !workspace");
+    expect(pageSource).toContain('class="panel config-panel config-panel--empty"');
+    expect(pageSource).toContain('在左侧新建模板后，这里会显示槽位、时长和转场配置。');
+    expect(pageSource).toContain('.config-panel--empty');
+    expect(pageSource).toContain('min-height: 240px;');
+    expect(pageSource).toContain('align-items: stretch;');
+    expect(pageSource).not.toContain('if (catalog.value.length === 0)');
+    expect(pageSource).not.toContain('还没有混剪模板');
+    expect(pageSource).not.toContain('新建第一个模板');
+    expect(pageSource).not.toContain('<div class="config-head__actions">');
+    expect(pageSource).toContain('<button class="button new-template" :disabled="checkingTemplateCreation" @click="openCreate">');
     expect(pageSource).toContain(':class="{ \'is-empty\': !workspace.variants.length }"');
     expect(pageSource).toContain('.projects > div.is-empty');
     expect(pageSource).toContain('.project-actions .button svg');

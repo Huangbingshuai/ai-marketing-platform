@@ -213,9 +213,20 @@ export const buildAssignedPools = (
     const material = byMaterial.get(item.materialId);
     return Boolean(material?.available) && !lockedMaterialIds.has(item.materialId);
   });
+  const feasibleRoles = new Map(
+    eligible.map((item) => [
+      item.materialId,
+      new Set(
+        slots
+          .filter((slot) => byMaterial.get(item.materialId)!.duration + 0.001 >= slot.duration)
+          .map((slot) => slot.role),
+      ),
+    ]),
+  );
   const assignment = balancedSlotAssignment(
     slots.map((slot) => slot.role),
     eligible,
+    feasibleRoles,
   );
   const slotByRole = new Map(slots.map((slot) => [slot.role, slot]));
   const pools = new Map<EffectTemplateMixRole, AssignedPoolItem[]>(
@@ -358,31 +369,74 @@ export const enumerateAssignedVariants = (
 export const BALANCED_SLOT_PENALTY = 0.05;
 
 /**
- * Assign every material to exactly one slot role while discouraging extreme skew.
+ * Reserve a distinct duration-feasible clip for each role when a full matching
+ * exists, then assign every remaining material to exactly one role.
  *
- * The classifier emits six independent scores per material, so a naive argmax can pile
- * every clip into a single role and starve the others. This greedy pass keeps the
- * highest-confidence materials on their preferred role but subtracts a penalty for each
- * clip a role already holds above its fair share, pushing marginal clips to their
- * next-best role. It is a best-effort balance, not a hard quota: callers should still
- * surface a warning when a role ends up with too few clips.
+ * Zero-score and too-short clips cannot satisfy coverage. When coverage is
+ * impossible, callers retain the existing explicit missing-slot error. The
+ * remaining clips keep the soft balancing penalty and their model scores.
  */
 export const balancedSlotAssignment = (
   roles: readonly EffectTemplateMixRole[],
   classifications: EffectTemplateMixAiClassification[],
+  feasibleRoles?: ReadonlyMap<string, ReadonlySet<EffectTemplateMixRole>>,
 ): Map<string, EffectTemplateMixRole> => {
   const targetPerSlot = classifications.length / Math.max(1, roles.length);
   const counts = new Map<EffectTemplateMixRole, number>(roles.map((role) => [role, 0]));
   const assignment = new Map<string, EffectTemplateMixRole>();
+  // Six slots allow an exact subset DP. This guarantees full coverage when
+  // feasible and maximizes the model's total role score across the anchors.
+  const states: Array<{ score: number; materialIds: string[] } | undefined> = Array.from(
+    { length: 1 << roles.length },
+    () => undefined,
+  );
+  states[0] = { score: 0, materialIds: [] };
+  for (const item of [...classifications].sort((a, b) =>
+    a.materialId.localeCompare(b.materialId),
+  )) {
+    for (let mask = states.length - 1; mask >= 0; mask -= 1) {
+      const current = states[mask];
+      if (!current) continue;
+      for (let roleIndex = 0; roleIndex < roles.length; roleIndex += 1) {
+        const bit = 1 << roleIndex;
+        if ((mask & bit) !== 0) continue;
+        const role = roles[roleIndex]!;
+        const score = item.scores[role];
+        if (
+          !Number.isFinite(score) ||
+          score <= 0 ||
+          (feasibleRoles && !feasibleRoles.get(item.materialId)?.has(role))
+        )
+          continue;
+        const nextMask = mask | bit;
+        const nextScore = current.score + score;
+        if (states[nextMask] && states[nextMask]!.score >= nextScore - 1e-9) continue;
+        const materialIds = [...current.materialIds];
+        materialIds[roleIndex] = item.materialId;
+        states[nextMask] = { score: nextScore, materialIds };
+      }
+    }
+  }
+  const anchors = states[states.length - 1]?.materialIds;
+  if (anchors) {
+    for (let index = 0; index < roles.length; index += 1) {
+      assignment.set(anchors[index]!, roles[index]!);
+      counts.set(roles[index]!, 1);
+    }
+  }
   const ordered = [...classifications].sort((left, right) => {
     const peak = (item: EffectTemplateMixAiClassification): number =>
       Math.max(...roles.map((role) => item.scores[role] ?? Number.NEGATIVE_INFINITY));
     return peak(right) - peak(left) || left.materialId.localeCompare(right.materialId);
   });
   for (const item of ordered) {
+    if (assignment.has(item.materialId)) continue;
     let bestRole: EffectTemplateMixRole = roles[0]!;
     let bestScore = Number.NEGATIVE_INFINITY;
-    for (const role of roles) {
+    const fittingRoles = roles.filter((role) => feasibleRoles?.get(item.materialId)?.has(role));
+    const usableRoles = fittingRoles.length ? fittingRoles : roles;
+    const positiveRoles = usableRoles.filter((role) => item.scores[role] > 0);
+    for (const role of positiveRoles.length ? positiveRoles : usableRoles) {
       const raw = item.scores[role];
       if (!Number.isFinite(raw)) continue;
       const adjusted = raw - BALANCED_SLOT_PENALTY * ((counts.get(role) ?? 0) - targetPerSlot);

@@ -268,6 +268,8 @@ export type EffectTemplateMixDraft = {
 export type EffectTemplateMixWorkspaceData = {
   draft: EffectTemplateMixDraft;
   draftRevision: number | null;
+  /** A successful render batch (or an already confirmed render pool) exists in this Run. */
+  templateCreationReady?: boolean;
   materials: EffectTemplateMixMaterial[];
   commits: {
     templateId: string;

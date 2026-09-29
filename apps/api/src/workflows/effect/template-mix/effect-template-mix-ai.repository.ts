@@ -29,6 +29,87 @@ export class EffectTemplateMixAiRepository {
     });
   }
 
+  async hasSuccessfulRenderBatch(projectId: string, workflowRunId: string): Promise<boolean> {
+    const batch = await this.prisma.effectSegmentRenderBatch.findFirst({
+      where: { projectId, workflowRunId, archivedAt: null },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: {
+        status: true,
+        sourcePromptArtifactId: true,
+        sourcePromptRevision: true,
+        sourcePromptHash: true,
+      },
+    });
+    if (batch?.status !== 'COMPLETED') return false;
+    const prompt = await this.prisma.workingArtifact.findFirst({
+      where: {
+        id: batch.sourcePromptArtifactId,
+        projectId,
+        workflowRunId,
+        nodeId: 'PROMPT_GENERATION',
+        revision: batch.sourcePromptRevision,
+        contentHash: batch.sourcePromptHash,
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      },
+      select: { id: true },
+    });
+    return Boolean(prompt);
+  }
+
+  async templateHasDownstream(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+  ): Promise<boolean> {
+    const [fill, packaging, output, artifact, branch] = await Promise.all([
+      this.prisma.effectTemplateMixAiRun.findFirst({
+        where: {
+          projectId,
+          workflowRunId,
+          templateId,
+          OR: [
+            { status: { in: ['QUEUED', 'RUNNING', 'COMPLETED'] } },
+            { outputVariantId: { not: null } },
+          ],
+        },
+        select: { id: true },
+      }),
+      this.prisma.effectPackagingRun.findFirst({
+        where: { projectId, workflowRunId, templateId },
+        select: { id: true },
+      }),
+      this.prisma.effectFinalOutputRun.findFirst({
+        where: { projectId, workflowRunId, templateId },
+        select: { id: true },
+      }),
+      this.prisma.workingArtifact.findFirst({
+        where: {
+          projectId,
+          workflowRunId,
+          OR: [
+            { artifactKey: `mix-template:${templateId}` },
+            { artifactKey: { startsWith: `timeline-project:${templateId}:` } },
+            { artifactKey: { startsWith: `timeline-package:${templateId}:` } },
+            { artifactKey: `final-delivery:${templateId}` },
+          ],
+        },
+        select: { id: true },
+      }),
+      this.prisma.workflowRun.findFirst({
+        where: {
+          projectId,
+          workflow: 'EFFECT',
+          workflowSpace: 'EFFECT',
+          forkTemplateId: templateId,
+          branchPublishedAt: { not: null },
+        },
+        select: { id: true },
+      }),
+    ]);
+    return Boolean(fill || packaging || output || artifact || branch);
+  }
+
   async lockedTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
     const rows = await this.prisma.effectTemplateMixAiRun.findMany({
       where: { projectId, workflowRunId, status: { in: ['QUEUED', 'RUNNING'] } },

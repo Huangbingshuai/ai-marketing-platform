@@ -251,6 +251,80 @@ describe('effect template mix domain', () => {
     }
   });
 
+  it('reserves six distinct feasible roles before balancing a skewed ten-clip pool', () => {
+    const slots = sixSlots();
+    const classifications = slots.map((slot, index) => ({
+      materialId: `role-${index}`,
+      scores: {
+        ...zeroScores(),
+        [slot.role]: slot.role === 'HOOK' ? 0.7 : 0.9,
+        ...(slot.role === 'HOOK' ? { SELLING_POINT: 0.95 } : {}),
+      },
+      reasons: {},
+    }));
+    classifications.push(
+      ...Array.from({ length: 4 }, (_, index) => ({
+        materialId: `product-extra-${index}`,
+        scores: { ...zeroScores(), PRODUCT: 0.95 },
+        reasons: {},
+      })),
+    );
+    const materials = classifications.map(({ materialId }) => ({
+      id: materialId,
+      duration: 4,
+      available: true,
+    }));
+    const pools = buildAssignedPools(slots, materials, classifications);
+    expect(slots.every((slot) => (pools.get(slot.role)?.length ?? 0) > 0)).toBe(true);
+    expect(pools.get('HOOK')?.[0]?.materialId).toBe('role-0');
+    const variant = enumerateAssignedVariants(slots, materials, classifications, [], 1)[0];
+    expect(variant).toHaveLength(6);
+    expect(new Set(variant?.map(({ materialId }) => materialId)).size).toBe(6);
+  });
+
+  it('chooses the higher-scoring complete matching instead of a greedy reservation', () => {
+    const slots = sixSlots().slice(0, 2);
+    const materials = ['flexible', 'hook-only'].map((id) => ({
+      id,
+      duration: 4,
+      available: true,
+    }));
+    const classifications = [
+      {
+        materialId: 'flexible',
+        scores: { ...zeroScores(), HOOK: 0.9, PAIN_POINT: 0.95 },
+        reasons: {},
+      },
+      {
+        materialId: 'hook-only',
+        scores: { ...zeroScores(), HOOK: 0.8, PAIN_POINT: 0.1 },
+        reasons: {},
+      },
+    ];
+    const pools = buildAssignedPools(slots, materials, classifications);
+    expect(pools.get('HOOK')?.[0]?.materialId).toBe('hook-only');
+    expect(pools.get('PAIN_POINT')?.[0]?.materialId).toBe('flexible');
+  });
+
+  it('reserves only duration-feasible clips and reports a genuinely empty role', () => {
+    const slots = sixSlots().map((slot) =>
+      slot.role === 'HOOK' ? { ...slot, duration: 5 } : slot,
+    );
+    const { materials, classifications } = assignedSetup(1);
+    const shortHook = materials.find(({ id }) => id === 'hook-0')!;
+    shortHook.duration = 4;
+    expect(buildAssignedPools(slots, materials, classifications).get('HOOK')).toHaveLength(0);
+    materials.push({ id: 'long-hook', duration: 5, available: true });
+    classifications.push({
+      materialId: 'long-hook',
+      scores: { ...zeroScores(), HOOK: 0.55, PRODUCT: 0.8 },
+      reasons: {},
+    });
+    const pools = buildAssignedPools(slots, materials, classifications);
+    expect(pools.get('HOOK')?.[0]?.materialId).toBe('long-hook');
+    expect(selectAssignedVariant(slots, materials, classifications)).toHaveLength(6);
+  });
+
   it('reuses clips across variants while keeping pairwise overlap within budget', () => {
     const { slots, materials, classifications } = assignedSetup(3);
     const variants = enumerateAssignedVariants(slots, materials, classifications, [], 100);

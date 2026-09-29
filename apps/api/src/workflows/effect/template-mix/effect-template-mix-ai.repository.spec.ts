@@ -47,6 +47,89 @@ const harness = (current: EffectTemplateMixDraft, revision: number) => {
   };
 };
 
+describe('EffectTemplateMixAiRepository.hasSuccessfulRenderBatch', () => {
+  it('rejects an unfinished batch without inspecting a Prompt', async () => {
+    const findBatch = vi.fn().mockResolvedValue({ status: 'RUNNING' });
+    const findPrompt = vi.fn();
+    const repository = new EffectTemplateMixAiRepository({
+      effectSegmentRenderBatch: { findFirst: findBatch },
+      workingArtifact: { findFirst: findPrompt },
+    } as unknown as PrismaService);
+
+    await expect(repository.hasSuccessfulRenderBatch('project', 'run')).resolves.toBe(false);
+    expect(findBatch).toHaveBeenCalledWith(expect.objectContaining({
+      where: { projectId: 'project', workflowRunId: 'run', archivedAt: null },
+    }));
+    expect(findPrompt).not.toHaveBeenCalled();
+  });
+
+  it('requires the successful batch to use the current confirmed Prompt', async () => {
+    const findPrompt = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'prompt' });
+    const repository = new EffectTemplateMixAiRepository({
+      effectSegmentRenderBatch: { findFirst: vi.fn().mockResolvedValue({
+        status: 'COMPLETED', sourcePromptArtifactId: 'prompt',
+        sourcePromptRevision: 2, sourcePromptHash: 'hash',
+      }) },
+      workingArtifact: { findFirst: findPrompt },
+    } as unknown as PrismaService);
+
+    await expect(repository.hasSuccessfulRenderBatch('project', 'run')).resolves.toBe(false);
+    await expect(repository.hasSuccessfulRenderBatch('project', 'run')).resolves.toBe(true);
+    expect(findPrompt).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
+      projectId: 'project', workflowRunId: 'run', id: 'prompt', revision: 2,
+      contentHash: 'hash', freshness: 'CURRENT', availability: 'AVAILABLE',
+    }) }));
+  });
+});
+
+describe('EffectTemplateMixAiRepository.templateHasDownstream', () => {
+  it('allows a template with no fill, packaging, output, artifact, or published branch', async () => {
+    const findFill = vi.fn().mockResolvedValue(null);
+    const findPackaging = vi.fn().mockResolvedValue(null);
+    const findOutput = vi.fn().mockResolvedValue(null);
+    const findArtifact = vi.fn().mockResolvedValue(null);
+    const findBranch = vi.fn().mockResolvedValue(null);
+    const repository = new EffectTemplateMixAiRepository({
+      effectTemplateMixAiRun: { findFirst: findFill },
+      effectPackagingRun: { findFirst: findPackaging },
+      effectFinalOutputRun: { findFirst: findOutput },
+      workingArtifact: { findFirst: findArtifact },
+      workflowRun: { findFirst: findBranch },
+    } as unknown as PrismaService);
+
+    await expect(repository.templateHasDownstream('project', 'run', 'template')).resolves.toBe(false);
+    expect(findFill).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ projectId: 'project', workflowRunId: 'run', templateId: 'template' }),
+    }));
+    expect(findArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ projectId: 'project', workflowRunId: 'run' }),
+    }));
+    expect(findBranch).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ projectId: 'project', forkTemplateId: 'template', branchPublishedAt: { not: null } }),
+    }));
+  });
+
+  it('blocks deletion as soon as smart fill or any downstream record exists', async () => {
+    const findFill = vi.fn().mockResolvedValue(null);
+    const findPackaging = vi.fn().mockResolvedValue(null);
+    const findOutput = vi.fn().mockResolvedValue(null);
+    const findArtifact = vi.fn().mockResolvedValue(null);
+    const findBranch = vi.fn().mockResolvedValue(null);
+    const repository = new EffectTemplateMixAiRepository({
+      effectTemplateMixAiRun: { findFirst: findFill },
+      effectPackagingRun: { findFirst: findPackaging },
+      effectFinalOutputRun: { findFirst: findOutput },
+      workingArtifact: { findFirst: findArtifact },
+      workflowRun: { findFirst: findBranch },
+    } as unknown as PrismaService);
+
+    for (const findRecord of [findFill, findPackaging, findOutput, findArtifact, findBranch]) {
+      findRecord.mockResolvedValueOnce({ id: 'existing' });
+      await expect(repository.templateHasDownstream('project', 'run', 'template')).resolves.toBe(true);
+    }
+  });
+});
+
 describe('EffectTemplateMixAiRepository.completeWithDraft', () => {
   it('merges one completed template without discarding unrelated draft edits', async () => {
     const original = draft(4, 2);

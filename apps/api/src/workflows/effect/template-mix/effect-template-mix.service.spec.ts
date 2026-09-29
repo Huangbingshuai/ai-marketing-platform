@@ -334,6 +334,87 @@ describe('EffectTemplateMixService', () => {
     expect(working.putNodeState.mock.calls[1]?.[3].state.templates[0]?.createdAt).toBe(createdAt);
   });
 
+  it('rejects a new template while the render batch has not succeeded', async () => {
+    const { service, working } = harness();
+    working.getNodeStateOrNull.mockResolvedValue(null);
+    working.listArtifacts.mockResolvedValue({ items: [], total: 0 });
+
+    await expect(service.saveDraft('project', 'run', null, draft())).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(working.putNodeState).not.toHaveBeenCalled();
+    expect((await service.workspace('project', 'run')).templateCreationReady).toBe(false);
+  });
+
+  it('allows a new template after the render batch succeeds, before render validation', async () => {
+    const { working } = harness();
+    working.getNodeStateOrNull.mockResolvedValue(null);
+    working.listArtifacts.mockResolvedValue({ items: [], total: 0 });
+    const repository = {
+      hasSuccessfulRenderBatch: vi.fn().mockResolvedValue(true),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      packagedTemplateIds: vi.fn().mockResolvedValue([]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    const saved = await service.saveDraft('project', 'run', null, draft());
+    expect(saved.templateCreationReady).toBe(true);
+    expect(working.putNodeState).toHaveBeenCalledOnce();
+  });
+
+  it('deletes an unfilled template from the draft after checking its downstream records', async () => {
+    const { working } = harness();
+    const repository = {
+      templateHasDownstream: vi.fn().mockResolvedValue(false),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      packagedTemplateIds: vi.fn().mockResolvedValue([]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    const saved = await service.saveDraft('project', 'run', 7, {
+      schemaVersion: 1, activeTemplateId: '', templates: [],
+    });
+
+    expect(repository.templateHasDownstream).toHaveBeenCalledWith('project', 'run', templateId);
+    expect(saved.draft.templates).toEqual([]);
+    expect(saved.draft.activeTemplateId).toBe('');
+    expect(working.putNodeState).toHaveBeenCalledOnce();
+  });
+
+  it('refuses to delete a template that already has smart-fill or a downstream branch', async () => {
+    const { working } = harness();
+    const repository = {
+      templateHasDownstream: vi.fn().mockResolvedValue(true),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      packagedTemplateIds: vi.fn().mockResolvedValue([]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(service.saveDraft('project', 'run', 7, {
+      schemaVersion: 1, activeTemplateId: '', templates: [],
+    })).rejects.toMatchObject({ status: 409 });
+    expect(repository.templateHasDownstream).toHaveBeenCalledWith('project', 'run', templateId);
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
   it('does not invent a creation time for a legacy template or trust a client replacement', async () => {
     const { service, working } = harness();
     const edited = draft();

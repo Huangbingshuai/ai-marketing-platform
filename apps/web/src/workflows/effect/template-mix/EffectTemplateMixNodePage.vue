@@ -58,6 +58,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   WandSparkles,
   Workflow,
   X,
@@ -88,6 +89,7 @@ import {
   updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
 import { apiUrl } from '../../../api/http-client';
+import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
   EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY,
@@ -142,8 +144,10 @@ type TemplateUi = { selectedSlotId: string; selectedVariantId: string };
 const pageState = ref<'ERROR' | 'LOADING' | 'READY'>('LOADING');
 const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
-// Keep the confirmed pool even when a project has no templates yet.
+// Keep the confirmed clip pool available while the initial template draft is bootstrapped.
 const sourceMaterials = ref<EffectTemplateMixMaterial[]>([]);
+const templateCreationReady = ref(false);
+const checkingTemplateCreation = ref(false);
 const activeTemplateId = ref('');
 const draftRevision = ref<number | null>(null);
 const packagingPanel = ref<InstanceType<typeof EffectTemplateMixPackaging> | null>(null);
@@ -299,6 +303,7 @@ const previewZoom = ref(100);
 const playerFullscreen = ref(false);
 const materialAudioPresence = reactive<Record<string, boolean | undefined>>({});
 const createOpen = ref(false);
+const deletingTemplateId = ref('');
 const workflowDialogOpen = ref(false);
 const selectedWorkflowStage = ref<EffectTemplateMixAiRun['stage'] | null>(null);
 const notice = ref<Notice | null>(null);
@@ -1259,7 +1264,34 @@ const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
   noticeTimer = setTimeout(() => (notice.value = null), 3600);
 };
 const openCreate = async (event: MouseEvent): Promise<void> => {
-  dialogTrigger.value = event.currentTarget as HTMLElement;
+  if (checkingTemplateCreation.value) return;
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  if (!templateCreationReady.value) {
+    checkingTemplateCreation.value = true;
+    showNotice('尚未检测到已完成的渲染批次，正在刷新状态…', 'warning');
+    try {
+      const response = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
+      if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return;
+      templateCreationReady.value =
+        response.data.templateCreationReady ?? response.data.materials.some((item) => item.available);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '无法检查视频渲染状态，请稍后重试', 'error');
+      return;
+    } finally {
+      checkingTemplateCreation.value = false;
+    }
+    if (!templateCreationReady.value) {
+      showNotice('请先等待当前视频渲染批次全部成功，再新建混剪模板', 'warning');
+      return;
+    }
+    if (notice.value?.text === '尚未检测到已完成的渲染批次，正在刷新状态…') {
+      clearTimeout(noticeTimer);
+      notice.value = null;
+    }
+  }
+  dialogTrigger.value = trigger;
   newTemplateName.value = nextAvailableTemplateName('新品跑量模板');
   createOpen.value = true;
   await nextTick();
@@ -1368,6 +1400,8 @@ const installWorkspaceData = (
   clearTimelineHistory();
   resetTimelinePlayerState();
   sourceMaterials.value = data.materials;
+  templateCreationReady.value =
+    data.templateCreationReady ?? data.materials.some((item) => item.available);
   catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
   draftRevision.value = data.draftRevision;
   activeTemplateId.value =
@@ -2744,6 +2778,10 @@ const resetEditorHeight = (): void => {
   timelineHeight.value = 260;
 };
 const addTemplate = (): void => {
+  if (!templateCreationReady.value) {
+    showNotice('请先等待当前视频渲染批次全部成功，再新建混剪模板', 'warning');
+    return;
+  }
   const name = newTemplateName.value.trim();
   if (!name) {
     showNotice('请输入模板名称', 'warning');
@@ -2764,6 +2802,55 @@ const addTemplate = (): void => {
   createOpen.value = false;
   view.value = 'CONFIG';
   scheduleSave();
+};
+const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<void> => {
+  if (deletingTemplateId.value) return;
+  if (
+    entry.aiFillLocked ||
+    Boolean(entry.filledTemplateHash) ||
+    entry.packagingLocked ||
+    aiRuns.value.some(
+      (run) => run.templateId === entry.id &&
+        (run.status === 'QUEUED' || run.status === 'RUNNING' || run.status === 'COMPLETED'),
+    ) ||
+    committedVersions[entry.id]
+  ) {
+    showNotice('此模板已有智能填充或下游分支，不能删除', 'warning');
+    return;
+  }
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: '删除模板',
+      title: `删除模板「${entry.workspace.template.name}」？`,
+      description: '删除后模板配置将无法恢复，此操作不会影响其他模板。',
+      confirmLabel: '确认删除',
+      tone: 'danger',
+    }))
+  )
+    return;
+  deletingTemplateId.value = entry.id;
+  try {
+    if (!(await persist())) return;
+    const remaining = catalog.value.filter(({ id }) => id !== entry.id);
+    const nextActiveId = activeTemplateId.value === entry.id
+      ? (remaining[0]?.id ?? '')
+      : activeTemplateId.value;
+    const result = await saveEffectTemplateMixDraft(
+      props.projectId,
+      props.workflowRunId,
+      draftRevision.value,
+      serializeEffectTemplateMixDraft(remaining, nextActiveId),
+    );
+    installWorkspaceData(result.data);
+    delete uiByTemplate[entry.id];
+    view.value = 'CONFIG';
+    saveState.value = 'saved';
+    showNotice('模板已删除');
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '删除模板失败，请刷新后重试', 'error');
+  } finally {
+    deletingTemplateId.value = '';
+  }
 };
 const submitTemplateOnEnter = (event: KeyboardEvent): void => {
   // Enter may still be accepting a Chinese IME candidate; only submit after composition ends.
@@ -5260,41 +5347,49 @@ defineExpose({ flushPendingEdits });
             <p>按模板规则批量搭建成片工程，再逐条进入时间轴精修</p>
           </div>
         </div>
-        <div class="config-head__actions">
-          <button class="button" @click="openCreate"><Plus :size="15" />新建模板</button>
-        </div>
       </header>
-      <section v-if="view === 'CONFIG' && !activeEntry" class="page-state">
-        <Layers3 :size="38" />
-        <h2>还没有混剪模板</h2>
-        <p>先新建模板，再使用上一步已确认的视频素材填充。</p>
-        <button class="button primary" @click="openCreate">
-          <Plus :size="15" />新建第一个模板
-        </button>
-      </section>
-      <section v-else-if="view === 'CONFIG' && workspace" class="config-layout">
+      <section
+        v-if="view === 'CONFIG'"
+        class="config-layout"
+        :class="{ 'is-empty': !workspace }"
+      >
         <aside class="panel template-list">
           <h2>
-            我的模板 <small>{{ catalog.length }}</small>
+            模板列表 <small class="template-list__count">共 {{ catalog.length }} 个</small>
           </h2>
-          <button
+          <div
             v-for="entry in catalog"
             :key="entry.id"
+            class="template-list__row"
             :class="{ active: entry.id === activeTemplateId }"
-            @click="selectTemplate(entry.id)"
           >
-            <Layers3 :size="17" /><span
-              ><b>{{ entry.workspace.template.name }}</b
-              ><small
-                >{{ entry.workspace.template.slots.length }} 个槽位 ·
-                {{ entry.workspace.variants.length }} 个工程</small
-              ></span
-            ></button
-          ><button class="button new-template" @click="openCreate">
+            <button
+              type="button"
+              class="template-list__select"
+              @click="selectTemplate(entry.id)"
+            >
+              <span
+                ><b>{{ entry.workspace.template.name }}</b
+                ><small
+                  >{{ entry.workspace.template.slots.length }} 个槽位 ·
+                  {{ entry.workspace.variants.length }} 个工程</small
+                ></span
+              >
+            </button>
+            <button
+              type="button"
+              class="template-list__delete"
+              :aria-label="`删除模板 ${entry.workspace.template.name}`"
+              :title="`删除模板 ${entry.workspace.template.name}`"
+              :disabled="Boolean(deletingTemplateId)"
+              @click="deleteTemplate(entry)"
+            ><Trash2 :size="15" /></button>
+          </div>
+          <button class="button new-template" :disabled="checkingTemplateCreation" @click="openCreate">
             <Plus :size="14" />新建模板
           </button>
         </aside>
-        <div class="panel config-panel">
+        <div v-if="workspace" class="panel config-panel">
           <header>
             <div>
               <h2>模板配置</h2>
@@ -5404,6 +5499,10 @@ defineExpose({ flushPendingEdits });
               :size="15"
             />模板配置或素材版本已变化；请逐条重新智能填充受影响的成片，完成后才能开始包装。
           </p>
+        </div>
+        <div v-else class="panel config-panel config-panel--empty">
+          <Layers3 :size="25" aria-hidden="true" />
+          <p>在左侧新建模板后，这里会显示槽位、时长和转场配置。</p>
         </div>
       </section>
 
@@ -6885,6 +6984,9 @@ button:disabled {
   grid-template-columns: 220px minmax(0, 1fr);
   gap: 10px;
 }
+.config-layout.is-empty {
+  align-items: stretch;
+}
 .template-list {
   display: flex;
   flex-direction: column;
@@ -6892,21 +6994,67 @@ button:disabled {
   padding: 15px;
 }
 .template-list h2 {
-  margin: 0;
-}
-.template-list > button:not(.button) {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 10px;
-  text-align: left;
+  margin: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.template-list__count {
+  padding: 3px 7px;
+  color: #475569;
+  background: #f1f5f9;
+  border-radius: 999px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.template-list__row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
   background: #fff;
   border: 1px solid #dce5f0;
   border-radius: 8px;
 }
-.template-list > button.active {
+.template-list__row.active {
   color: #1d4ed8;
   background: #eff6ff;
   border-color: #93c5fd;
+}
+.template-list__select {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 44px 10px 10px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+.template-list__delete {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: #64748b;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  transform: translateY(-50%);
+}
+.template-list__delete:hover:not(:disabled) {
+  color: #b91c1c;
+  background: #fff5f5;
+}
+.template-list__delete:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 .template-list span {
   display: grid;
@@ -6922,6 +7070,20 @@ button:disabled {
 .config-panel {
   padding: 14px;
   box-shadow: 0 4px 14px rgb(30 64 175 / 4%);
+}
+.config-panel--empty {
+  display: flex;
+  min-height: 240px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  color: #71809a;
+  box-shadow: none;
+}
+.config-panel--empty p {
+  margin: 0;
+  font-size: 13px;
 }
 .template-lock-banner {
   display: flex;

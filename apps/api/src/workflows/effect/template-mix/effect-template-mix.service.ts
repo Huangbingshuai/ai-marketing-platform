@@ -27,7 +27,6 @@ import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.p
 import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
 import {
   applyVariantToTemplate,
-  balancedSlotAssignment,
   buildAssignedPools,
   createEmptyVariant,
   createVariant,
@@ -742,6 +741,11 @@ export class EffectTemplateMixService {
       this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
+    const templateCreationReady = await this.templateCreationReady(
+      projectId,
+      workflowRunId,
+      artifactData.items,
+    );
     return this.toWorkspaceData(
       nodeState ? draftOf(nodeState.state) : emptyDraft(),
       nodeState?.revision ?? null,
@@ -750,7 +754,25 @@ export class EffectTemplateMixService {
       classificationSources,
       lockedTemplateIds,
       packagingLockedIds,
+      templateCreationReady,
     );
+  }
+
+  private async templateCreationReady(
+    projectId: string,
+    workflowRunId: string,
+    artifacts: WorkingArtifact[],
+  ): Promise<boolean> {
+    if (
+      artifacts.some(
+        (artifact) =>
+          artifact.nodeId === 'SEGMENT_RENDER' &&
+          artifact.artifactKey.startsWith('render-clip:') &&
+          artifact.freshness === 'CURRENT' &&
+          artifact.availability === 'AVAILABLE',
+      )
+    ) return true;
+    return (await this.aiRuns?.hasSuccessfulRenderBatch(projectId, workflowRunId)) ?? false;
   }
 
   /** Worker hot path: read the saved visual draft without building the material pool or UI state. */
@@ -797,6 +819,30 @@ export class EffectTemplateMixService {
         this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
       ]);
     const previous = previousState ? draftOf(previousState.state) : emptyDraft();
+    for (const existing of previous.templates) {
+      if (draft.templates.some((entry) => entry.id === existing.id)) continue;
+      if (
+        !this.aiRuns ||
+        (await this.aiRuns.templateHasDownstream(projectId, workflowRunId, existing.id))
+      )
+        throw new ApiHttpException(
+          '此模板已有智能填充或下游分支，不能删除',
+          HttpStatus.CONFLICT,
+          'CONFLICT',
+        );
+    }
+    const newTemplateIds = draft.templates.filter(
+      (entry) => !previous.templates.some((existing) => existing.id === entry.id),
+    );
+    if (newTemplateIds.length) {
+      const artifacts = await this.working.listArtifacts(projectId, { workflowRunId });
+      if (!(await this.templateCreationReady(projectId, workflowRunId, artifacts.items)))
+        throw new ApiHttpException(
+          '请先等待当前视频渲染批次全部成功，再新建混剪模板',
+          HttpStatus.CONFLICT,
+          'CONFLICT',
+        );
+    }
     if (introducesDuplicateTemplateName(draft, previous))
       throw new ApiHttpException(
         '模板名称不能重复，请修改后再保存',
@@ -904,6 +950,11 @@ export class EffectTemplateMixService {
       this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.sourceArtifacts(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
+    const templateCreationReady = await this.templateCreationReady(
+      projectId,
+      workflowRunId,
+      artifacts.items,
+    );
     return this.toWorkspaceData(
       draft,
       result.nodeState.revision,
@@ -912,6 +963,7 @@ export class EffectTemplateMixService {
       classificationSources,
       lockedTemplateIds,
       packagingLockedIds,
+      templateCreationReady,
     );
   }
 
@@ -2302,6 +2354,11 @@ export class EffectTemplateMixService {
       schemaVersion: 1,
       state: draft,
     });
+    const templateCreationReady = await this.templateCreationReady(
+      projectId,
+      workflowRunId,
+      artifactData.items,
+    );
     return this.toWorkspaceData(
       draft,
       saved.nodeState.revision,
@@ -2310,6 +2367,7 @@ export class EffectTemplateMixService {
       classificationSources,
       lockedTemplateIds,
       packagingLockedIds,
+      templateCreationReady,
     );
   }
 
@@ -2321,6 +2379,7 @@ export class EffectTemplateMixService {
     classificationSources: EffectTemplateMixClassificationSource[] = [],
     lockedTemplateIds: string[] = [],
     packagingLockedIds: string[] = [],
+    templateCreationReady = false,
   ): EffectTemplateMixWorkspaceData {
     const materials = materialsFromArtifacts(
       artifacts,
@@ -2403,18 +2462,21 @@ export class EffectTemplateMixService {
         })
       )
         continue;
-      const assignment = balancedSlotAssignment(AI_MIX_ROLES, classifications);
+      const pools = buildAssignedPools(
+        entry.workspace.template.slots,
+        activeMaterials,
+        classifications,
+      );
       classificationPools.push({
         templateId: run.templateId,
         runId: run.id,
         templateEditVersion: entry.workspace.template.editVersion,
         items: AI_MIX_ROLES.flatMap((role) =>
-          classifications
-            .filter(({ materialId }) => assignment.get(materialId) === role)
-            .map((classification) => ({
-              materialId: classification.materialId,
+          (pools.get(role) ?? [])
+            .map((item) => ({
+              materialId: item.materialId,
               role,
-              matchScore: classification.scores[role],
+              matchScore: item.matchScore,
             }))
             .sort(
               (left, right) =>
@@ -2428,6 +2490,7 @@ export class EffectTemplateMixService {
     return {
       draft: workspaceDraft,
       draftRevision,
+      templateCreationReady,
       materials,
       commits,
       aiRuns: aiRunRecords.map(toAiRun),
