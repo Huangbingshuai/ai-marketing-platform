@@ -34,6 +34,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { exitEffectEditInTransaction } from '../../../platform/workflow/effect-edit-session';
 import { normalizeEffectExtractionResult } from '../information-extraction/effect-extraction.validation';
 import {
   mergeEffectPromptCompletionItems,
@@ -571,7 +572,7 @@ export class EffectPromptRepository {
       let taskProductId = productId;
       if (input.operation === 'BATCH_GENERATE' && this.workingRepository) {
         const edit = await this.workingRepository.beginEffectNodeEditInTransaction(
-          transaction, projectId, workflowRunId, 'PROMPT_GENERATION',
+          transaction, projectId, workflowRunId, 'PROMPT_GENERATION', 'BATCH',
         );
         if (!edit) return { kind: 'ACTIVE_CONFLICT' as const };
         taskWorkflowRunId = edit.runId;
@@ -2165,6 +2166,11 @@ export class EffectPromptRepository {
         };
       }
       const changedIds = changedPromptIds(previousPromptArtifact?.payload, artifactInput.payload);
+      if (hiddenPromptEdit && editingRun?.editSessionPurpose === 'MANUAL' &&
+          previousPromptArtifact && previousDraft && currentDraft) {
+        return this.applyManualPromptEditInTransaction(transaction, projectId, result,
+          editingRun, previousDraft, currentDraft, artifactInput, changedIds, semanticHash);
+      }
       const shouldFork = Boolean(
         !hiddenPromptEdit &&
         previousPromptArtifact &&
@@ -2446,6 +2452,142 @@ export class EffectPromptRepository {
           unchanged: committed.unchanged,
         },
       };
+  }
+
+  private async applyManualPromptEditInTransaction(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    result: Prisma.EffectPromptResultGetPayload<{ include: { run: true } }>,
+    editRun: { id: string; parentWorkflowRunId: string | null; editIdMap: Prisma.JsonValue | null },
+    previousDraft: EffectPromptBatchResult,
+    currentDraft: EffectPromptBatchResult,
+    artifactInput: WorkingArtifactUpsertInput,
+    changedIds: Set<string>,
+    semanticHash: (draft: EffectPromptBatchResult) => string,
+  ) {
+    if (!this.workingRepository || !editRun.parentWorkflowRunId)
+      throw new Error('PROMPT_EDIT_PARENT_MISSING');
+    await transaction.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "projects" WHERE "id" = ${projectId}::uuid FOR UPDATE
+    `;
+    const parentRunId = editRun.parentWorkflowRunId;
+    const map = (editRun.editIdMap ?? {}) as { productIdMap?: Record<string, string> };
+    const parentProductId = Object.entries(map.productIdMap ?? {})
+      .find(([, childId]) => childId === result.productId)?.[0];
+    if (!parentProductId) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
+    const parentArtifact = await transaction.workingArtifact.findUnique({ where: {
+      projectId_workflowRunId_nodeId_artifactKey: {
+        projectId, workflowRunId: parentRunId, nodeId: 'PROMPT_GENERATION',
+        artifactKey: `prompt-batch:${parentProductId}`,
+      },
+    } });
+    const parentDraft = parseEffectPromptBatchResult(parentArtifact?.payload);
+    if (!parentArtifact || !parentDraft || semanticHash(parentDraft) !== semanticHash(previousDraft))
+      throw new Error('PROMPT_EDIT_PARENT_CHANGED');
+    const childInsight = await transaction.workingArtifact.findUnique({ where: {
+      projectId_workflowRunId_nodeId_artifactKey: {
+        projectId, workflowRunId: result.workflowRunId, nodeId: 'INFORMATION_EXTRACTION',
+        artifactKey: `marketing-insight:${result.productId}`,
+      },
+    } });
+    const parentInsight = await transaction.workingArtifact.findUnique({ where: {
+      projectId_workflowRunId_nodeId_artifactKey: {
+        projectId, workflowRunId: parentRunId, nodeId: 'INFORMATION_EXTRACTION',
+        artifactKey: `marketing-insight:${parentProductId}`,
+      },
+    } });
+    if (!childInsight || !parentInsight) throw new Error('PROMPT_EDIT_INSIGHT_MAPPING_MISSING');
+    const ids: Record<string, string> = {
+      [result.workflowRunId]: parentRunId,
+      [result.productId]: parentProductId,
+      [childInsight.id]: parentInsight.id,
+      [childInsight.contentHash]: parentInsight.contentHash,
+    };
+    const remap = <T>(value: T): T => {
+      if (value === undefined || value === null) return value;
+      let serialized = JSON.stringify(value);
+      for (const [before, after] of Object.entries(ids))
+        serialized = serialized.replaceAll(before, after);
+      return JSON.parse(serialized) as T;
+    };
+    const childSettings = await transaction.workflowNodeState.findUnique({ where: {
+      projectId_workflowRunId_nodeId: { projectId, workflowRunId: result.workflowRunId,
+        nodeId: `PROMPT_GENERATION:${result.productId}` },
+    } });
+    const parentSettings = await transaction.workflowNodeState.findUnique({ where: {
+      projectId_workflowRunId_nodeId: { projectId, workflowRunId: parentRunId,
+        nodeId: `PROMPT_GENERATION:${parentProductId}` },
+    } });
+    if (!childSettings || !parentSettings) throw new Error('PROMPT_EDIT_SETTINGS_MISSING');
+    const settingsState = remap(childSettings.state);
+    const settingsHash = workflowStateHash(settingsState);
+    if (settingsHash !== parentSettings.contentHash)
+      await transaction.workflowNodeState.update({ where: { id: parentSettings.id }, data: {
+        state: json(settingsState), contentHash: settingsHash,
+        executionInputHash: childSettings.executionInputHash,
+        executionInputSchemaVersion: childSettings.executionInputSchemaVersion,
+        revision: { increment: 1 }, savedAt: new Date(),
+      } });
+    await transaction.effectPromptRun.update({ where: { id: result.runId }, data: {
+      workflowRunId: parentRunId, productId: parentProductId,
+      inputSnapshot: json(remap(result.run.inputSnapshot)),
+    } });
+    await transaction.effectPromptResult.update({ where: { id: result.id }, data: {
+      workflowRunId: parentRunId, productId: parentProductId,
+      generatedResult: json(remap(result.generatedResult)),
+      draftResult: json(remap(currentDraft)),
+      manualOverrides: json(remap(result.manualOverrides)),
+      savedAt: new Date(),
+    } });
+    const input: WorkingArtifactUpsertInput = {
+      ...artifactInput,
+      payload: remap(artifactInput.payload), metadata: remap(artifactInput.metadata),
+      expectedRevision: parentArtifact.revision,
+      ...(artifactInput.dependencies ? { dependencies: artifactInput.dependencies.map((dependency) => ({
+        ...dependency, sourceNodeId: remap(dependency.sourceNodeId) ?? null,
+        sourceArtifactId: dependency.sourceArtifactId === childInsight.id
+          ? parentInsight.id : dependency.sourceArtifactId ?? null,
+        sourceKey: remap(dependency.sourceKey),
+        sourceHash: dependency.sourceHash === childInsight.contentHash
+          ? parentInsight.contentHash : dependency.sourceHash ?? null,
+      })) } : {}),
+    };
+    const [committed] = await this.workingRepository.commitValidatedArtifactsInTransaction(
+      transaction, projectId, parentRunId, 'PROMPT_GENERATION',
+      [{ artifactKey: `prompt-batch:${parentProductId}`, input, invalidateDependents: false }],
+    );
+    if (!committed) throw new Error('PROMPT_EDIT_APPLY_FAILED');
+    if (!committed.unchanged) {
+      const renderArtifacts = await transaction.workingArtifact.findMany({ where: {
+        projectId, workflowRunId: parentRunId, nodeId: 'SEGMENT_RENDER',
+        artifactKey: { startsWith: 'render-clip:' },
+      }, select: { id: true, payload: true, metadata: true } });
+      const affected = renderArtifacts.filter(({ payload, metadata }) => {
+        const source = jsonRecord(payload);
+        const details = jsonRecord(metadata);
+        const promptId = typeof source?.promptId === 'string' ? source.promptId
+          : typeof details?.promptId === 'string' ? details.promptId : '';
+        return changedIds.has(promptId);
+      }).map(({ id }) => id);
+      if (affected.length) await this.workingRepository.markArtifactIdsAndDependentsStaleInTransaction(
+        transaction, projectId, parentRunId, affected,
+      );
+      await transaction.effectSegmentRenderBatch.updateMany({ where: {
+        projectId, workflowRunId: parentRunId, productId: parentProductId,
+        activeKey: 'ACTIVE', archivedAt: null,
+      }, data: { sourcePromptArtifactId: committed.record.id,
+        sourcePromptRevision: committed.record.revision,
+        sourcePromptHash: committed.record.contentHash } });
+    }
+    const exited = await exitEffectEditInTransaction(transaction, projectId,
+      editRun.id, 'PROMPT_GENERATION', false);
+    if (!exited || exited.runId !== parentRunId) throw new Error('PROMPT_EDIT_EXIT_FAILED');
+    return { kind: 'COMMITTED' as const, workflowRunId: parentRunId,
+      productId: parentProductId,
+      artifact: { artifactId: committed.record.id,
+        artifactKey: committed.record.artifactKey, revision: committed.record.revision,
+        unchanged: committed.unchanged },
+    };
   }
 
   publicWarnings(value: unknown): string[] {

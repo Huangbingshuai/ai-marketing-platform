@@ -8,12 +8,23 @@ import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from './effect-import-options';
 
 describe('effect import single-product prototype grid', () => {
   it('keeps the edit button and changes active Runs without blanking the whole page', () => {
-    expect(pageSource).toContain('>进入编辑</button>');
+    expect(pageSource).toContain('<Pencil :size="14" />进入编辑');
     expect(pageSource).toContain('const refreshActiveRunInPlace =');
     expect(pageSource).toContain('const previousStep = activeStep.value');
     expect(pageSource).toContain('activeStep.value = previousStep');
     expect(pageSource).toContain('正在切换编辑状态');
     expect(pageSource).toContain('@branch-activated="refreshActiveRunInPlace(currentProjectId)"');
+  });
+
+  it('copies the active branch only after flushing pending drafts', () => {
+    expect(pageSource).toContain('const forkCurrentBranch = async (): Promise<void> => {');
+    expect(pageSource).toContain(
+      'await createEffectWorkflowBranch(projectId, runId, crypto.randomUUID())',
+    );
+    expect(pageSource).toContain("showNotice('请先保存或取消当前编辑，再新建分支', 'warning')");
+    expect(pageSource).toContain("showNotice('节点草稿保存失败，已阻止新建分支', 'error')");
+    expect(pageSource).toContain('@fork="forkCurrentBranch"');
+    expect(pageSource).toContain(':fork-disabled="Boolean(activeWorkflowRun?.isTemporaryBranch)"');
   });
 
   it('saves the current node draft before loading the branch tree so new templates appear immediately', () => {
@@ -148,7 +159,7 @@ describe('effect import identity boundary', () => {
     expect(manifestDialogSource).not.toContain('<th>品类</th>');
   });
 
-  it('keeps next-step access locked and places whole-node validation beside next step', () => {
+  it('keeps next-step access locked and places whole-node validation beside the edit button', () => {
     expect(pageSource).not.toContain('unnamedProductCount');
     expect(pageSource).toContain('validateEffectImportDraft(');
     expect(pageSource).toContain('<WorkflowNodeDraftBar');
@@ -159,7 +170,9 @@ describe('effect import identity boundary', () => {
     expect(pageSource).not.toContain('`revision ${draft?.revision ?? 0}`');
     expect(pageSource).not.toContain('relockDownstreamNode');
     expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');
-    expect(pageSource).toContain('@validate="validateDraft"');
+    expect(pageSource).toContain(':show-validate="false"');
+    expect(pageSource).toContain('@click="validateDraft"');
+    expect(pageSource).toContain("validatingDraft ? '正在校验…' : '保存版本'");
     expect(pageSource).toContain('@next="advanceDraft"');
     expect(productEditorSource).not.toContain('完成校验');
     expect(pageSource).not.toContain('个产品未填写名称');

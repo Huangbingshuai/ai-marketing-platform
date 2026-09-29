@@ -12,6 +12,7 @@ import { Prisma, type WorkflowNodeState } from '../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { workflowStateHash } from './workflow-state-hash';
 import { beginEffectEditInTransaction, exitEffectEditInTransaction } from './effect-edit-session';
+import { createEffectManualBranchInTransaction } from './effect-manual-branch';
 
 export type WorkingArtifactUpsertInput = {
   kind: WorkingArtifactKind;
@@ -266,16 +267,18 @@ export class WorkflowWorkingRepository {
   beginEffectNodeEditInTransaction(
     transaction: Prisma.TransactionClient, projectId: string, parentRunId: string,
     nodeId: EffectWorkflowBranchNodeId,
+    purpose: 'MANUAL' | 'BATCH' = 'MANUAL',
   ) {
     if (!['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId))
       return Promise.resolve(null);
     return beginEffectEditInTransaction(transaction, projectId, parentRunId,
-      nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER');
+      nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER', purpose);
   }
 
-  beginEffectNodeEdit(projectId: string, parentRunId: string, nodeId: EffectWorkflowBranchNodeId) {
+  beginEffectNodeEdit(projectId: string, parentRunId: string, nodeId: EffectWorkflowBranchNodeId,
+    purpose: 'MANUAL' | 'BATCH' = 'MANUAL') {
     return this.prisma.$transaction((transaction) =>
-      this.beginEffectNodeEditInTransaction(transaction, projectId, parentRunId, nodeId),
+      this.beginEffectNodeEditInTransaction(transaction, projectId, parentRunId, nodeId, purpose),
       { timeout: 120_000 },
     );
   }
@@ -303,6 +306,13 @@ export class WorkflowWorkingRepository {
     return this.prisma.$transaction((transaction) =>
       exitEffectEditInTransaction(transaction, projectId, draftRunId,
         nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER', false),
+      { timeout: 120_000 },
+    );
+  }
+
+  createEffectManualBranch(projectId: string, parentRunId: string, idempotencyKey: string) {
+    return this.prisma.$transaction((transaction) =>
+      createEffectManualBranchInTransaction(transaction, projectId, parentRunId, idempotencyKey),
       { timeout: 120_000 },
     );
   }

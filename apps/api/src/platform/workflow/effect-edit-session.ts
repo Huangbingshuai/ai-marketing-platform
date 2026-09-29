@@ -45,6 +45,7 @@ export type EffectEditBeginRecord = {
 /** Clone the mutable domain workspace before any edit or paid task is allowed to run. */
 export async function beginEffectEditInTransaction(
   tx: Tx, projectId: string, parentRunId: string, nodeId: EffectWorkflowEditableNodeId,
+  purpose: 'MANUAL' | 'BATCH' = 'MANUAL',
 ): Promise<EffectEditBeginRecord | null> {
   await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "projects" WHERE "id" = ${projectId}::uuid FOR UPDATE`);
   const parent = await tx.workflowRun.findFirst({
@@ -56,13 +57,14 @@ export async function beginEffectEditInTransaction(
     where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
   });
   if (parent.parentWorkflowRunId && !parent.branchPublishedAt) {
-    if (parent.editSessionNodeId !== nodeId) return null;
+    if (parent.editSessionNodeId !== nodeId || parent.editSessionPurpose !== purpose) return null;
     const map = (parent.editIdMap ?? {}) as { productIdMap?: IdMap; taskIdMap?: IdMap };
     return { runId: parent.id, parentWorkflowRunId: parent.parentWorkflowRunId,
       productIdMap: map.productIdMap ?? {}, taskIdMap: map.taskIdMap ?? {}, created: false };
   }
   if (active?.parentWorkflowRunId === parent.id &&
-      !active.branchPublishedAt && active.editSessionNodeId === nodeId) {
+      !active.branchPublishedAt && active.editSessionNodeId === nodeId &&
+      active.editSessionPurpose === purpose) {
     const map = (active.editIdMap ?? {}) as { productIdMap?: IdMap; taskIdMap?: IdMap };
     return { runId: active.id, parentWorkflowRunId: parent.id,
       productIdMap: map.productIdMap ?? {}, taskIdMap: map.taskIdMap ?? {}, created: false };
@@ -102,6 +104,7 @@ export async function beginEffectEditInTransaction(
   const child = await tx.workflowRun.create({ data: {
     projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', status: 'ACTIVE', activeKey: null,
     parentWorkflowRunId: parent.id, forkNodeId: nodeId, editSessionNodeId: nodeId,
+    editSessionPurpose: purpose,
     currentNodeId: nodeId,
   } });
   const ids: IdMap = { [parent.id]: child.id };
@@ -503,7 +506,7 @@ export async function exitEffectEditInTransaction(
     const now = new Date();
     await tx.workflowRun.update({ where: { id: draft.id }, data: {
       branchPublishedAt: now, editSessionNodeId: null,
-      editBaselineHash: null, editIdMap: Prisma.DbNull,
+      editSessionPurpose: null, editBaselineHash: null, editIdMap: Prisma.DbNull,
     } });
     return { runId: draft.id, activeWorkflowRunId: active?.id ?? draft.id,
       createdBranch: true };
@@ -516,7 +519,8 @@ export async function exitEffectEditInTransaction(
   }
   // Keep the hidden Run for audit and late task callbacks; never delete shared media.
   await tx.workflowRun.update({ where: { id: draft.id }, data: {
-    editSessionNodeId: null, editBaselineHash: null, editIdMap: Prisma.DbNull,
+    editSessionNodeId: null, editSessionPurpose: null,
+    editBaselineHash: null, editIdMap: Prisma.DbNull,
   } });
   return { runId: parent.id,
     activeWorkflowRunId: active?.id === draft.id ? parent.id : active?.id ?? parent.id,

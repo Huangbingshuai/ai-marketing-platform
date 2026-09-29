@@ -1,6 +1,7 @@
 import type {
   ActivateEffectWorkflowBranchData,
   ActivateWorkflowNodeData,
+  CreateEffectWorkflowBranchData,
   ApiResponse,
   EffectWorkflowBranchTreeData,
   EffectWorkflowBranchNodeId,
@@ -136,6 +137,16 @@ export const activateEffectWorkflowBranch = (
   requestJson(
     `${projectPath(projectId)}/workflow-runs/effect/branches/${encodeURIComponent(workflowRunId)}/activate`,
     { method: 'POST', operation: '切换效果类版本分支', signal },
+  );
+
+export const createEffectWorkflowBranch = (
+  projectId: string,
+  workflowRunId: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<CreateEffectWorkflowBranchData>> =>
+  requestJson(
+    `${projectPath(projectId)}/workflow-runs/effect/branches/${encodeURIComponent(workflowRunId)}/fork`,
+    { method: 'POST', body: { idempotencyKey }, operation: '复制效果类工作流分支' },
   );
 
 const effectEditPath = (

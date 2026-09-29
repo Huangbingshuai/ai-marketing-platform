@@ -22,6 +22,7 @@ import {
   FileText,
   Link2,
   LoaderCircle,
+  Pencil,
   Plus,
   RefreshCw,
   Sparkles,
@@ -57,6 +58,8 @@ import {
   EFFECT_EXTRACTION_STATUS_META,
   isExtractionReadyForNext,
   isExtractionRunning,
+  requestPendingExtractionRun,
+  takePendingExtractionRun,
   toExtractionProductState,
   type EffectExtractionProductState,
   type EffectExtractionResult,
@@ -910,6 +913,7 @@ const loadWorkspace = async (showLoading = true): Promise<void> => {
       currentProductId.value = props.products[0]?.id ?? '';
     }
     resumeWorkspaceRuns();
+    resumePendingExtraction();
     if (snapshot.prefetched) {
       workspaceRevalidationTimer = setTimeout(() => {
         workspaceRevalidationTimer = undefined;
@@ -925,11 +929,14 @@ const loadWorkspace = async (showLoading = true): Promise<void> => {
   }
 };
 
-const runCurrentExtraction = async (): Promise<void> => {
+const runCurrentExtraction = async (
+  options: { skipConfirm?: boolean } = {},
+): Promise<void> => {
   const product = currentProduct.value;
   const state = currentState.value;
-  if (!product || !state || isExtractionRunning(state) || !editing.value) return;
+  if (!product || !state || isExtractionRunning(state) || editBusy.value) return;
   if (
+    !options.skipConfirm &&
     state.status !== 'NOT_GENERATED' &&
     !(await requestActionConfirmation({
       eyebrow: '重新提炼',
@@ -942,6 +949,7 @@ const runCurrentExtraction = async (): Promise<void> => {
   )
     return;
   if (!(await flushPendingEdits())) return;
+  if (!(await ensureExtractionEdit(product.id))) return;
   clearTimeout(saveTimer);
   saveTimer = undefined;
   saveController?.abort();
@@ -1298,6 +1306,47 @@ const validateCurrentResult = async (): Promise<void> => {
   }
 };
 
+/** AI 提炼只能在隔离编辑态里跑：已确认版本后先建隔离分支，重挂载后由待运行意图接着开跑。 */
+const ensureExtractionEdit = async (productId: string): Promise<boolean> => {
+  if (editing.value) return true;
+  editBusy.value = true;
+  validationMessage.value = '';
+  try {
+    const result = await beginEffectNodeEdit(
+      props.projectId,
+      props.workflowRunId,
+      'INFORMATION_EXTRACTION',
+    );
+    if (result.data.run.id === props.workflowRunId) return true;
+    // 隔离 Run 里的商品是克隆出来的新 ID，重挂载后必须按新 ID 找回同一个商品。
+    requestPendingExtractionRun(
+      props.projectId,
+      result.data.productIdMap[productId] ?? productId,
+    );
+    emit('workflowRunChange');
+    return false;
+  } catch (error) {
+    validationMessage.value =
+      error instanceof ApiClientError && error.status === 409
+        ? '请先保存或取消当前编辑，再重新提炼'
+        : error instanceof Error
+          ? error.message
+          : '进入编辑失败';
+    return false;
+  } finally {
+    editBusy.value = false;
+  }
+};
+
+/** 隔离编辑分支已就位，接着跑那次被重挂载打断的提炼。 */
+const resumePendingExtraction = (): void => {
+  if (!editing.value) return;
+  const productId = takePendingExtractionRun(props.projectId);
+  if (!productId || !props.products.some((product) => product.id === productId)) return;
+  currentProductId.value = productId;
+  void runCurrentExtraction({ skipConfirm: true });
+};
+
 const beginExtractionEdit = async (): Promise<void> => {
   if (editBusy.value || editing.value || currentRunning.value) return;
   editBusy.value = true;
@@ -1427,7 +1476,9 @@ onBeforeUnmount(() => {
             type="button"
             :disabled="editBusy || currentRunning"
             @click="beginExtractionEdit"
-          >进入编辑</button>
+          >
+            <Pencil :size="14" />进入编辑
+          </button>
           <button
             v-else-if="temporaryBranch && activeEditNodeId === 'INFORMATION_EXTRACTION'"
             class="secondary-button"
@@ -1435,6 +1486,21 @@ onBeforeUnmount(() => {
             :disabled="editBusy || validating || currentRunning"
             @click="cancelExtractionEdit"
           >取消编辑</button>
+          <button
+            v-if="editing"
+            class="secondary-button"
+            type="button"
+            :aria-busy="validating"
+            :disabled="
+              editBusy || currentState.status !== 'COMPLETED' || !currentState.result ||
+              currentState.saveState === 'SAVING' || validating
+            "
+            @click="validateCurrentResult"
+          >
+            <LoaderCircle v-if="validating" class="spin" :size="14" />{{
+              validating ? '正在校验…' : '保存版本'
+            }}
+          </button>
           <button
             ref="graphTrigger"
             class="secondary-button workflow-graph-trigger"
@@ -1447,10 +1513,10 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            :disabled="currentRunning || !editing"
-            @click="runCurrentExtraction"
+            :disabled="currentRunning || editBusy || validating"
+            @click="runCurrentExtraction()"
           >
-            <LoaderCircle v-if="currentRunning" class="spin" :size="14" />
+            <LoaderCircle v-if="currentRunning || editBusy" class="spin" :size="14" />
             <RefreshCw v-else :size="14" />{{ currentActionLabel }}
           </button>
         </div>
@@ -1462,7 +1528,7 @@ onBeforeUnmount(() => {
           <strong>本次 AI 提炼失败</strong>
           <p>{{ currentState.errorMessage }}</p>
         </div>
-        <button type="button" :disabled="!editing" @click="runCurrentExtraction">
+        <button type="button" :disabled="editBusy || currentRunning" @click="runCurrentExtraction()">
           <RefreshCw :size="13" />重新提炼
         </button>
       </div>
@@ -1479,7 +1545,7 @@ onBeforeUnmount(() => {
           <strong>上游产品资料已发生变化</strong>
           <p>当前结果仍可查看；进入编辑并重新提炼后才能进入下一节点。</p>
         </div>
-        <button type="button" :disabled="!editing" @click="runCurrentExtraction">
+        <button type="button" :disabled="editBusy || currentRunning" @click="runCurrentExtraction()">
           <RefreshCw :size="13" />更新提炼结果
         </button>
       </div>
@@ -1740,8 +1806,7 @@ onBeforeUnmount(() => {
       <WorkflowNodeFooter
         back-label="上一步"
         :complete="readyForNext"
-        :show-validate="editing"
-        validate-label="保存版本"
+        :show-validate="false"
         :status-title="
           readyForNext
             ? '全部产品已保存版本'
@@ -1750,16 +1815,9 @@ onBeforeUnmount(() => {
               : '审阅信息卡后保存版本即可继续'
         "
         :status-detail="`步骤 2 / 6 · ${currentProduct.name} · ${currentStatusMeta.label}`"
-        :validating="validating"
-        :validate-disabled="
-          editBusy || currentState.status !== 'COMPLETED' ||
-          !currentState.result ||
-          currentState.saveState === 'SAVING'
-        "
         :next-disabled="!readyForNext"
         next-label="下一步：Prompt 生成"
         @back="emit('back')"
-        @validate="validateCurrentResult"
         @next="emit('next')"
       />
 

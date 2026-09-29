@@ -403,3 +403,31 @@ describe('WorkflowWorkingService effect branch tree', () => {
     expect(tree.branches[1]?.nodes[0]?.status).toBe('CONFIRMED');
   });
 });
+
+describe('WorkflowWorkingService effect manual branch copy', () => {
+  const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+
+  it('namespaces the caller key so a repeated request cannot create a second branch', async () => {
+    const repository = { createEffectManualBranch: vi.fn().mockResolvedValue(null) };
+    const service = new WorkflowWorkingService(repository as never, projects as never, {} as never);
+
+    await expect(service.createEffectManualBranch('project-a', 'run-a', ' key-1 ')).rejects.toThrow(
+      '当前分支无法复制，请先保存或取消编辑',
+    );
+    expect(repository.createEffectManualBranch).toHaveBeenCalledWith(
+      'project-a',
+      'run-a',
+      'manual:run-a:key-1',
+    );
+  });
+
+  it('rejects an over-long idempotency key before touching the database', async () => {
+    const repository = { createEffectManualBranch: vi.fn() };
+    const service = new WorkflowWorkingService(repository as never, projects as never, {} as never);
+
+    await expect(
+      service.createEffectManualBranch('project-a', 'run-a', 'x'.repeat(200)),
+    ).rejects.toThrow('幂等键过长');
+    expect(repository.createEffectManualBranch).not.toHaveBeenCalled();
+  });
+});

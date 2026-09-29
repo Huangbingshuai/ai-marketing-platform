@@ -151,6 +151,7 @@ export type EffectWorkflowBranchTemplate = {
 export type EffectWorkflowBranch = {
   workflowRunId: string;
   parentWorkflowRunId: string | null;
+  creationKind?: 'INITIAL' | 'NODE_CHANGE' | 'MANUAL_COPY';
   forkNodeId: EffectWorkflowBranchNodeId | null;
   forkTemplateId: string | null;
   forkMixStage?: 'TEMPLATE' | 'FILL' | 'PACKAGING' | null;
@@ -167,6 +168,12 @@ export type EffectWorkflowBranchTreeData = {
   branches: EffectWorkflowBranch[];
 };
 export type ActivateEffectWorkflowBranchData = { run: WorkflowRun };
+export type CreateEffectWorkflowBranchRequest = { idempotencyKey: string };
+export type CreateEffectWorkflowBranchData = {
+  run: WorkflowRun;
+  parentWorkflowRunId: string;
+  activeWorkflowRunId: string;
+};
 
 export type WorkflowNodeState = {
   id: string;

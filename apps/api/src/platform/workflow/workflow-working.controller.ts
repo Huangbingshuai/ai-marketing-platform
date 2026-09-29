@@ -4,6 +4,7 @@ import { pipeline } from 'node:stream/promises';
 import type {
   ActivateWorkflowNodeData,
   ActivateEffectWorkflowBranchData,
+  CreateEffectWorkflowBranchData,
   EffectWorkflowBranchTreeData,
   EffectWorkflowEditExitData,
   EffectWorkflowEditPublishData,
@@ -38,6 +39,7 @@ import { ListWorkingArtifactsQueryDto } from './dto/list-working-artifacts-query
 import { GetWorkflowRunOverviewQueryDto } from './dto/get-workflow-run-overview-query.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { PutWorkflowNodeStateDto } from './dto/put-workflow-node-state.dto';
+import { CreateEffectWorkflowBranchDto } from './dto/create-effect-workflow-branch.dto';
 import { WorkflowWorkingService } from './workflow-working.service';
 
 @Controller('projects/:projectId')
@@ -76,6 +78,15 @@ export class WorkflowWorkingController {
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
   ): Promise<EffectWorkflowBranchTreeData> {
     return this.service.getEffectBranchTree(projectId);
+  }
+
+  @Post('workflow-runs/effect/branches/:workflowRunId/fork')
+  createEffectManualBranch(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+    @Body() body: CreateEffectWorkflowBranchDto,
+  ): Promise<CreateEffectWorkflowBranchData> {
+    return this.service.createEffectManualBranch(projectId, workflowRunId, body.idempotencyKey);
   }
 
   @Post('workflow-runs/effect/branches/:workflowRunId/activate')

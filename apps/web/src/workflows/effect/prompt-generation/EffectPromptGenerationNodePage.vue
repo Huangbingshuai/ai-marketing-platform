@@ -1594,7 +1594,7 @@ const validatePromptBatch = async (): Promise<void> => {
       );
       return;
     }
-    const completedMessage = 'Prompt 版本已保存';
+    const completedMessage = 'Prompt 修改已保存';
     showNotice(
       validation.warnings?.length
         ? `${completedMessage}；另有 ${validation.warnings.length} 项质量建议，可继续优化`
@@ -1607,7 +1607,7 @@ const validatePromptBatch = async (): Promise<void> => {
     }
     await reloadWorkspace(false);
   } catch (error) {
-    await handleMutationError(error, 'Prompt 版本保存失败');
+    await handleMutationError(error, 'Prompt 修改保存失败');
   } finally {
     validating.value = false;
   }
@@ -2142,6 +2142,21 @@ onBeforeUnmount(() => {
             <X :size="14" />取消编辑
           </button>
           <button
+            v-if="canEditPrompt"
+            class="secondary-button"
+            type="button"
+            :aria-busy="validating"
+            :disabled="
+              partialPreview || currentRunning || validating || editPending ||
+              !currentState.resultId || !resultData || resultData.revision === null
+            "
+            @click="validatePromptBatch"
+          >
+            <LoaderCircle v-if="validating" class="spin" :size="14" />{{
+              validating ? '正在校验…' : '保存修改'
+            }}
+          </button>
+          <button
             ref="graphTrigger"
             class="secondary-button workflow-graph-trigger"
             type="button"
@@ -2607,25 +2622,14 @@ onBeforeUnmount(() => {
       <WorkflowNodeFooter
         back-label="上一步"
         :complete="allProductsCommitted"
-        :show-validate="canEditPrompt"
-        validate-label="保存版本"
+        :show-validate="false"
         :status-title="
           allProductsCommitted ? '全部产品 Prompt 已保存' : currentRunning ? '生成成功后自动保存版本' : '请逐个保存未确认的 Prompt 草稿'
         "
         :status-detail="`步骤 3 / 6 · ${currentProduct.name} · ${currentState.commitStatus === 'COMMITTED' ? '当前工作副本' : '尚未提交工作副本'}`"
-        :validate-disabled="
-          partialPreview ||
-          currentRunning ||
-          validating ||
-          editPending ||
-          !currentState.resultId ||
-          !resultData ||
-          resultData.revision === null
-        "
         :next-disabled="!allProductsCommitted || currentRunning"
         next-label="下一步：片段渲染"
         @back="emit('back')"
-        @validate="validatePromptBatch"
         @next="emit('next')"
       />
     </template>

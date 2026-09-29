@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cloneExtractionProductState,
   cloneExtractionResult,
   isExtractionReadyForNext,
   isExtractionRunning,
+  requestPendingExtractionRun,
+  takePendingExtractionRun,
   toExtractionProductState,
   type EffectExtractionProductState,
   type EffectExtractionResult,
@@ -121,5 +123,45 @@ describe('effect info extraction state', () => {
     const cloned = cloneExtractionProductState(original);
     cloned.imageRecognitionSummary!.candidateSuggestionCount = 9;
     expect(original.imageRecognitionSummary.candidateSuggestionCount).toBe(12);
+  });
+});
+
+describe('effect info extraction pending run intent', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('consumes the pending run exactly once', () => {
+    requestPendingExtractionRun('project-once', 'product-once');
+
+    expect(takePendingExtractionRun('project-once')).toBe('product-once');
+    expect(takePendingExtractionRun('project-once')).toBeNull();
+  });
+
+  it('keeps the intent scoped to its own project', () => {
+    requestPendingExtractionRun('project-a', 'product-a');
+    requestPendingExtractionRun('project-b', 'product-b');
+
+    expect(takePendingExtractionRun('project-a')).toBe('product-a');
+    expect(takePendingExtractionRun('project-b')).toBe('product-b');
+    expect(takePendingExtractionRun('project-c')).toBeNull();
+  });
+
+  it('discards an intent that outlived the remount window', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-29T00:00:00.000Z'));
+    requestPendingExtractionRun('project-stale', 'product-stale');
+
+    vi.setSystemTime(new Date('2026-09-29T00:00:31.000Z'));
+
+    expect(takePendingExtractionRun('project-stale')).toBeNull();
+  });
+
+  it('ignores an empty project or product id', () => {
+    requestPendingExtractionRun('', 'product-a');
+    requestPendingExtractionRun('project-empty', '');
+
+    expect(takePendingExtractionRun('')).toBeNull();
+    expect(takePendingExtractionRun('project-empty')).toBeNull();
   });
 });

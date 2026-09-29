@@ -42,6 +42,7 @@ import {
   activateWorkflowNode,
   beginEffectNodeEdit,
   cancelEffectNodeEdit,
+  createEffectWorkflowBranch,
   getActiveWorkflowRunOverview,
   getEffectWorkflowBranchTree,
   publishEffectNodeEdit,
@@ -1596,6 +1597,32 @@ const selectBranch = async (workflowRunId: string): Promise<void> => {
   }
 };
 
+const forkCurrentBranch = async (): Promise<void> => {
+  const projectId = currentProjectId.value;
+  const runId = branchTree.value?.activeWorkflowRunId;
+  if (!projectId || !runId || branchSwitching.value) return;
+  if (activeWorkflowRun.value?.isTemporaryBranch) {
+    showNotice('请先保存或取消当前编辑，再新建分支', 'warning');
+    return;
+  }
+  branchSwitching.value = true;
+  try {
+    if (!(await flushPendingEdits()) || hasPendingDraftEdits()) {
+      showNotice('节点草稿保存失败，已阻止新建分支', 'error');
+      return;
+    }
+    await createEffectWorkflowBranch(projectId, runId, crypto.randomUUID());
+    branchTreeOpen.value = false;
+    branchController?.abort();
+    await loadProject(projectId);
+    showNotice('已从当前已确认内容新建分支');
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '新建分支失败', 'error');
+  } finally {
+    branchSwitching.value = false;
+  }
+};
+
 const previewFinalOutputItem = async (selection: {
   templateId: string;
   variantId: string;
@@ -1737,7 +1764,9 @@ onBeforeUnmount(() => {
         <span class="effect-edit-mode-banner__icon"><Pencil :size="18" /></span>
         <span class="effect-edit-mode-banner__copy">
           <strong>编辑草稿中 <small>{{ effectWorkflowNodeLabels[activeStep] }}</small></strong>
-          <span>修改会先保存在当前编辑副本；保存版本后才会发布，取消编辑会放弃本次修改。</span>
+          <span>{{ activeStep === 2 || activeStep === 3
+            ? '修改先保存在隔离草稿；保存修改会更新当前分支，取消编辑会放弃本次修改。'
+            : '修改会先保存在当前编辑副本；保存版本后才会发布，取消编辑会放弃本次修改。' }}</span>
         </span>
         <span class="effect-edit-mode-banner__badge">未发布</span>
       </div>
@@ -1748,9 +1777,11 @@ onBeforeUnmount(() => {
         :loading="branchTreeLoading"
         :error="branchTreeError"
         :switching="branchSwitching"
+        :fork-disabled="Boolean(activeWorkflowRun?.isTemporaryBranch)"
         @close="closeBranchTree"
         @retry="loadBranchTree"
         @select="selectBranch"
+        @fork="forkCurrentBranch"
       />
 
       <Transition name="node-switch">
@@ -1851,13 +1882,29 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="sourceEditBusy || transitioning"
               @click="beginSourceEdit"
-            >进入编辑</button>
+            >
+              <Pencil :size="14" />进入编辑
+            </button>
             <button
               v-else-if="activeWorkflowRun?.isTemporaryBranch && activeWorkflowRun.editNodeId === 'SOURCE_IMPORT'"
               type="button"
               :disabled="sourceEditBusy || validatingDraft || transitioning"
               @click="cancelSourceEdit"
             >取消编辑</button>
+            <button
+              v-if="sourceEditing"
+              type="button"
+              :aria-busy="validatingDraft"
+              :disabled="
+                transitioning || sourceEditBusy || saveState === 'saving' || !draft?.productCount ||
+                validatingDraft
+              "
+              @click="validateDraft"
+            >
+              <LoaderCircle v-if="validatingDraft" class="spin" :size="14" />{{
+                validatingDraft ? '正在校验…' : '保存版本'
+              }}
+            </button>
           </section>
 
           <section v-if="removedProducts.length" class="recently-removed" aria-live="polite">
@@ -2035,8 +2082,7 @@ onBeforeUnmount(() => {
 
           <WorkflowNodeFooter
             :complete="validatedCurrentRevision"
-            :show-validate="sourceEditing"
-            validate-label="保存版本"
+            :show-validate="false"
             :status-title="
               validatedCurrentRevision ? '资料版本已保存' : '保存资料版本后可进入下一节点'
             "
@@ -2052,11 +2098,8 @@ onBeforeUnmount(() => {
                 .filter(Boolean)
                 .join(' · ')
             "
-            :validating="validatingDraft"
-            :validate-disabled="transitioning || sourceEditBusy || saveState === 'saving' || !draft?.productCount"
             :next-disabled="transitioning || !validatedCurrentRevision || saveState === 'saving'"
             next-label="下一步：AI 信息提炼"
-            @validate="validateDraft"
             @next="advanceDraft"
           />
         </section>

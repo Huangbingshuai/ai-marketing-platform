@@ -7,7 +7,7 @@ import { EffectSegmentRenderRepository } from './effect-segment-render.repositor
 import { EffectSegmentRenderService } from './effect-segment-render.service';
 
 it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
-  'keeps copied render snapshots valid and an unchanged edit off the version tree',
+  'saves a render edit into the active branch and keeps both edits off the version tree',
   async () => {
     const db = new PrismaService(new ConfigService({
       DATABASE_URL: process.env.DATABASE_URL ??
@@ -131,10 +131,20 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         const changedTask = await tx.effectSegmentRenderTask.findFirstOrThrow({ where: {
           projectId: parentBatch.projectId, batchId: changedBatch.id,
         } });
+        // A re-render replaces the clip's output bytes, so change that content identity here.
+        const changedHash = (changedTask.outputContentHash ?? '0'.repeat(64))
+          .replace(/^./, (char) => (char === '0' ? '1' : '0'));
         await tx.effectSegmentRenderTask.update({
           where: { id: changedTask.id },
-          data: { activeOutputVersion: (changedTask.activeOutputVersion ?? changedTask.renderVersion) + 1 },
+          data: {
+            activeOutputVersion: (changedTask.activeOutputVersion ?? changedTask.renderVersion) + 1,
+            outputContentHash: changedHash,
+          },
         });
+        const parentClipsBefore = await tx.workingArtifact.findMany({ where: {
+          projectId: parentBatch.projectId, workflowRunId: parentBatch.workflowRunId,
+          artifactKey: { startsWith: 'render-clip:' },
+        }, select: { id: true, revision: true } });
         const changedValidated = await service.validate(
           parentBatch.projectId, changedBatch.id, changedBatch.revision,
         );
@@ -147,9 +157,21 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
             activeKey: 'ACTIVE',
           } }),
         ]);
-        expect(publishedChild.branchPublishedAt).not.toBeNull();
+        // "保存修改" applies the change to the active branch in place: the edit child is
+        // discarded without publishing, and the changed clip revision lands on the parent.
+        expect(publishedChild.branchPublishedAt).toBeNull();
         expect(publishedChild.editSessionNodeId).toBeNull();
-        expect(activeChanged.id).toBe(changedRunId);
+        expect(activeChanged.id).toBe(parentBatch.workflowRunId);
+        const parentClipsAfter = await tx.workingArtifact.findMany({ where: {
+          projectId: parentBatch.projectId, workflowRunId: parentBatch.workflowRunId,
+          artifactKey: { startsWith: 'render-clip:' },
+        }, select: { id: true, revision: true } });
+        const advanced = parentClipsAfter.filter((clip) => {
+          const before = parentClipsBefore.find((entry) => entry.id === clip.id);
+          return before !== undefined && clip.revision > before.revision;
+        });
+        expect(advanced.length).toBeGreaterThan(0);
+        expect(parentClipsAfter).toHaveLength(parentClipsBefore.length);
           throw rollback;
         }, { timeout: 120_000 });
         throw new Error('EXPECTED_TEST_ROLLBACK');
@@ -160,4 +182,5 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
       await db.$disconnect();
     }
   },
+  130_000,
 );

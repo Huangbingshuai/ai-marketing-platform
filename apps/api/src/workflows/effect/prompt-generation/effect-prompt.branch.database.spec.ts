@@ -7,6 +7,98 @@ import { EffectPromptRepository } from './effect-prompt.repository';
 import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
 
 it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
+  'saves one manually edited Prompt into the parent branch without publishing the edit child',
+  async () => {
+    const db = new PrismaService(new ConfigService({
+      DATABASE_URL: process.env.DATABASE_URL ??
+        'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
+    }));
+    const rollback = new Error('PROMPT_MANUAL_SAVE_ROLLBACK');
+    try {
+      await expect(db.$transaction(async (tx) => {
+        const source = await tx.workingArtifact.findFirstOrThrow({ where: {
+          nodeId: 'PROMPT_GENERATION', availability: 'AVAILABLE',
+          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT',
+            OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
+            workingArtifacts: { some: { nodeId: 'SEGMENT_RENDER',
+              artifactKey: { startsWith: 'render-clip:' } } } },
+        } });
+        await tx.workflowRun.updateMany({ where: { projectId: source.projectId,
+          workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+        data: { activeKey: null } });
+        await tx.workflowRun.update({ where: { id: source.workflowRunId },
+          data: { activeKey: 'ACTIVE' } });
+        const clipsBefore = await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: source.workflowRunId,
+          artifactKey: { startsWith: 'render-clip:' },
+        }, select: { id: true, revision: true, freshness: true } });
+        expect(clipsBefore.length).toBeGreaterThan(0);
+        const working = new WorkflowWorkingRepository(db);
+        const begun = await working.beginEffectNodeEditInTransaction(
+          tx, source.projectId, source.workflowRunId, 'PROMPT_GENERATION');
+        expect(begun?.runId).not.toBe(source.workflowRunId);
+        const childId = begun!.runId;
+        const childArtifact = await tx.workingArtifact.findFirstOrThrow({ where: {
+          projectId: source.projectId, workflowRunId: childId,
+          nodeId: 'PROMPT_GENERATION',
+        }, include: { dependencies: true, files: { include: { fileObject: true } } } });
+        const childResult = await tx.effectPromptResult.findFirstOrThrow({ where: {
+          projectId: source.projectId, workflowRunId: childId,
+          productId: childArtifact.artifactKey.slice('prompt-batch:'.length),
+        }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+        const draft = structuredClone(childResult.draftResult) as Record<string, unknown>;
+        const items = draft.items as Array<Record<string, unknown>>;
+        expect(items.length).toBeGreaterThan(0);
+        items[0] = { ...items[0], creativeCore: `${items[0]?.creativeCore ?? ''} 仅说明修改` };
+        await tx.effectPromptResult.update({ where: { id: childResult.id }, data: {
+          draftResult: draft as Prisma.InputJsonValue,
+        } });
+        const input: WorkingArtifactUpsertInput = {
+          kind: childArtifact.kind, name: childArtifact.name,
+          directory: childArtifact.directory, type: childArtifact.type,
+          tags: childArtifact.tags, payload: draft, metadata: childArtifact.metadata,
+          sourceRunId: childResult.runId, sourceArtifactId: childResult.id,
+          files: childArtifact.files.map((file) => ({
+            fileObjectId: file.fileObjectId, role: file.role,
+            sortOrder: file.sortOrder, originalFileName: file.fileObject.originalFileName,
+            mimeType: file.fileObject.mimeType, sha256: file.fileObject.sha256,
+          })),
+          dependencies: childArtifact.dependencies.map((dependency) => ({
+            sourceType: dependency.sourceType, sourceNodeId: dependency.sourceNodeId,
+            sourceArtifactId: dependency.sourceArtifactId, sourceKey: dependency.sourceKey,
+            sourceRevision: dependency.sourceRevision, sourceHash: dependency.sourceHash,
+          })),
+        };
+        const scopedDb = { $transaction: async <T>(callback:
+          (transaction: Prisma.TransactionClient) => Promise<T>) => callback(tx),
+        } as unknown as PrismaService;
+        const prompt = new EffectPromptRepository(scopedDb, working);
+        const saved = await (prompt as unknown as {
+          commitValidatedResultInTransaction: (
+            transaction: Prisma.TransactionClient, projectId: string, resultId: string,
+            revision: number, artifactInput: WorkingArtifactUpsertInput,
+          ) => Promise<{ kind: string; workflowRunId: string }>;
+        }).commitValidatedResultInTransaction(tx, source.projectId,
+          childResult.id, childResult.revision, input);
+        expect(saved.kind).toBe('COMMITTED');
+        expect(saved.workflowRunId).toBe(source.workflowRunId);
+        expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: childId } })).branchPublishedAt)
+          .toBeNull();
+        expect((await tx.workingArtifact.findUniqueOrThrow({ where: { id: source.id } })).revision)
+          .toBe(source.revision + 1);
+        expect(await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: source.workflowRunId,
+          artifactKey: { startsWith: 'render-clip:' },
+        }, select: { id: true, revision: true, freshness: true } })).toEqual(clipsBefore);
+        throw rollback;
+      }, { timeout: 120_000 })).rejects.toBe(rollback);
+    } finally {
+      await db.$disconnect();
+    }
+  },
+);
+
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
   'starts a paid Prompt batch in a hidden child and publishes that same child after confirmation',
   async () => {
     const db = new PrismaService(new ConfigService({

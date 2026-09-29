@@ -51,6 +51,20 @@ const branch = (
 });
 
 describe('effect workflow branch tree layout', () => {
+  it('offers a manual branch copy that is blocked while an edit is open', () => {
+    expect(treeSource).toContain('从当前分支新建分支');
+    expect(treeSource).toContain('@click="emit(\'fork\')"');
+    expect(treeSource).toContain(':disabled="switching || forkDisabled || !tree?.activeWorkflowRunId"');
+    expect(treeSource).toContain("forkDisabled ? '请先保存或取消当前编辑'");
+  });
+
+  it('labels the project root in the left stage rail at the root node height', () => {
+    expect(treeSource).toContain('class="branch-axis branch-axis--root"');
+    expect(treeSource).toContain('top: `${BRANCH_TREE_ROOT_TOP}px`');
+    expect(treeSource).toContain('<span class="branch-axis__number">00</span>');
+    expect(treeSource).toContain('<span>项目</span>');
+  });
+
   it('shows the three mix layers inside one workflow-node group without adding a seventh workflow node', () => {
     expect(BRANCH_TREE_STAGES.slice(4, 7).map((stage) => stage.name)).toEqual([
       '混剪模板',
@@ -135,6 +149,19 @@ describe('effect workflow branch tree layout', () => {
     expect(
       layout.edges.find((edge) => edge.key === 'project-root->main:SOURCE_IMPORT:-')?.onActivePath,
     ).toBe(false);
+  });
+
+  it('shows a manual copy as two complete parallel paths with the new one active', () => {
+    const copied = { ...branch('copy', 'main', null, true),
+      creationKind: 'MANUAL_COPY' as const };
+    const layout = buildEffectBranchLayout([branch('main', null, null), copied]);
+    for (const stage of BRANCH_TREE_STAGES) {
+      const nodes = layout.nodes.filter((node) => node.stageKey === stage.key);
+      expect(nodes).toHaveLength(2);
+      expect(nodes[0]!.x).not.toBe(nodes[1]!.x);
+      expect(nodes.find((node) => node.workflowRunId === 'copy')?.onActivePath).toBe(true);
+    }
+    expect(layout.edges.filter((edge) => edge.key.startsWith('project-root->'))).toHaveLength(2);
   });
 
   it('shows every template as a child of rendering without a template filter', () => {

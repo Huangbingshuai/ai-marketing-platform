@@ -53,7 +53,40 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain('empty-result-card');
     expect(pageSource).not.toContain('processing-card');
     expect(pageSource).not.toContain('尚未生成提炼结果');
-    expect(pageSource.match(/@click="runCurrentExtraction"/g)).toHaveLength(3);
+    expect(pageSource.match(/@click="runCurrentExtraction\(\)"/g)).toHaveLength(3);
+  });
+
+  it('keeps re-extraction clickable after a version is confirmed and enters the isolated edit itself', () => {
+    expect(pageSource).not.toContain(':disabled="currentRunning || !editing"');
+    expect(pageSource).not.toContain(':disabled="!editing"');
+    expect(
+      pageSource.match(/:disabled="editBusy \|\| currentRunning" @click="runCurrentExtraction\(\)"/g),
+    ).toHaveLength(2);
+    expect(pageSource).toContain(
+      'const ensureExtractionEdit = async (productId: string): Promise<boolean> => {',
+    );
+    expect(pageSource).toContain("const result = await beginEffectNodeEdit(");
+    expect(pageSource).toContain("'INFORMATION_EXTRACTION',");
+    expect(pageSource).toContain('result.data.run.id === props.workflowRunId');
+    expect(pageSource).toContain('result.data.productIdMap[productId] ?? productId');
+    expect(pageSource).toContain('requestPendingExtractionRun(');
+    expect(pageSource).toContain('const resumePendingExtraction = (): void => {');
+    expect(pageSource).toContain('takePendingExtractionRun(props.projectId)');
+    expect(pageSource).toContain('void runCurrentExtraction({ skipConfirm: true })');
+    expect(pageSource).toContain("'请先保存或取消当前编辑，再重新提炼'");
+  });
+
+  it('flushes pending field edits before opening the isolated edit branch', () => {
+    const extractionSource = normalizedPageSource.match(
+      /const runCurrentExtraction = async[\s\S]*?\n\};/,
+    )?.[0];
+
+    expect(extractionSource).toBeDefined();
+    expect(extractionSource).toContain('await flushPendingEdits()');
+    expect(extractionSource).toContain('await ensureExtractionEdit(product.id)');
+    expect(extractionSource!.indexOf('await flushPendingEdits()')).toBeLessThan(
+      extractionSource!.indexOf('await ensureExtractionEdit(product.id)'),
+    );
   });
 
   it('uses the only active product without rendering a product selector', () => {
@@ -91,12 +124,15 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('任务仍在后台运行');
   });
 
-  it('uses the same global validation footer as the source import node', () => {
+  it('uses the same global draft bar and footer, with validation beside the edit button', () => {
     expect(pageSource).toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
     expect(pageSource).toContain('back-label="上一步"');
     expect(pageSource).toContain('next-label="下一步：Prompt 生成"');
-    expect(pageSource).toContain('@validate="validateCurrentResult"');
+    expect(pageSource).toContain('<Pencil :size="14" />进入编辑');
+    expect(pageSource).toContain(':show-validate="false"');
+    expect(pageSource).toContain('@click="validateCurrentResult"');
+    expect(pageSource).toContain("validating ? '正在校验…' : '保存版本'");
     expect(pageSource).not.toContain('class="extraction-footer"');
     expect(pageSource).not.toContain('class="draft-save-bar"');
   });

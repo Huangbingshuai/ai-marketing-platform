@@ -102,3 +102,22 @@ export const isExtractionRunning = (state: EffectExtractionProductState | null):
 
 export const isExtractionReadyForNext = (state: EffectExtractionProductState | null): boolean =>
   state?.status === 'COMPLETED';
+
+// 「重新 AI 提炼」在已确认版本后要先建隔离编辑分支，那会把活动 Run 换掉，节点页按 workflowRunId
+// 重挂载。这一次点击的意图因此必须放在模块级，等新实例挂载后自己接着跑；读取即删除，避免重复触发。
+const EFFECT_PENDING_EXTRACTION_TTL_MS = 30_000;
+const pendingExtractionRuns = new Map<string, { productId: string; requestedAt: number }>();
+
+export const requestPendingExtractionRun = (projectId: string, productId: string): void => {
+  if (!projectId || !productId) return;
+  pendingExtractionRuns.set(projectId, { productId, requestedAt: Date.now() });
+};
+
+export const takePendingExtractionRun = (projectId: string): string | null => {
+  const entry = pendingExtractionRuns.get(projectId);
+  if (!entry) return null;
+  pendingExtractionRuns.delete(projectId);
+  return Date.now() - entry.requestedAt <= EFFECT_PENDING_EXTRACTION_TTL_MS
+    ? entry.productId
+    : null;
+};

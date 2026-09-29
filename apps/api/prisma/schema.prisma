@@ -389,8 +389,10 @@ model WorkflowRun {
   forkTemplateId             String?                     @db.VarChar(160)
   branchLabel                String?                     @db.VarChar(160)
   branchPublishedAt          DateTime?
+  branchCreationKey          String?                     @db.VarChar(160)
   editBaselineHash           String?                     @db.Char(64)
   editSessionNodeId          String?                     @db.VarChar(160)
+  editSessionPurpose         String?                     @db.VarChar(32)
   editIdMap                  Json?
   workflow                   AssetWorkflow
   workflowSpace              AssetWorkflowSpace
@@ -423,6 +425,7 @@ model WorkflowRun {
   effectFinalOutputRuns     EffectFinalOutputRun[]
 
   @@unique([projectId, workflow, workflowSpace, activeKey])
+  @@unique([projectId, workflow, workflowSpace, branchCreationKey])
   @@unique([projectId, id])
   @@index([projectId, workflow, workflowSpace, status])
   @@index([projectId, workflow, workflowSpace, parentWorkflowRunId])

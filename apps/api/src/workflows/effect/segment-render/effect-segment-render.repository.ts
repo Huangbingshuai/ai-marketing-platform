@@ -19,6 +19,7 @@ import {
   WorkflowWorkingRepository,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { exitEffectEditInTransaction } from '../../../platform/workflow/effect-edit-session';
 import type {
   EffectSegmentRenderImportedFile,
   EffectSegmentRenderStoredFile,
@@ -1662,31 +1663,211 @@ export class EffectSegmentRenderRepository {
     });
     const run = await transaction.workflowRun.findFirst({
       where: { projectId, id: batch.workflowRunId },
-      select: { parentWorkflowRunId: true, branchPublishedAt: true, editSessionNodeId: true },
+      select: { parentWorkflowRunId: true, branchPublishedAt: true,
+        editSessionNodeId: true, editSessionPurpose: true, editIdMap: true },
     });
     if (!run) throw new Error(BRANCH_PUBLICATION_CONFLICT);
     let publication: { activeWorkflowRunId: string; createdBranch: boolean } | null = null;
+    let responseArtifacts = committed.map((item) => ({
+      artifactId: item.record.id,
+      artifactKey: item.artifactKey,
+      revision: item.record.revision,
+      unchanged: item.unchanged,
+    }));
     if (run.parentWorkflowRunId && !run.branchPublishedAt) {
       if (run.editSessionNodeId !== 'SEGMENT_RENDER')
         throw new Error(BRANCH_PUBLICATION_CONFLICT);
-      const result = await this.workingRepository.publishEffectNodeEditInTransaction(
-        transaction, projectId, batch.workflowRunId, 'SEGMENT_RENDER',
-      );
+      const result = run.editSessionPurpose === 'MANUAL'
+        ? await this.applyManualRenderEditInTransaction(transaction, projectId, batch,
+          run.parentWorkflowRunId, run.editIdMap, artifacts)
+        : await this.workingRepository.publishEffectNodeEditInTransaction(
+          transaction, projectId, batch.workflowRunId, 'SEGMENT_RENDER',
+        );
       if (!result) throw new Error(BRANCH_PUBLICATION_CONFLICT);
       publication = {
         activeWorkflowRunId: result.activeWorkflowRunId,
         createdBranch: result.createdBranch,
       };
+      if ('artifacts' in result && Array.isArray(result.artifacts))
+        responseArtifacts = result.artifacts as typeof responseArtifacts;
     }
     return {
       kind: 'COMMITTED' as const,
       publication,
-      artifacts: committed.map((item) => ({
-        artifactId: item.record.id,
-        artifactKey: item.artifactKey,
-        revision: item.record.revision,
-        unchanged: item.unchanged,
-      })),
+      artifacts: responseArtifacts,
     };
+  }
+
+  private async applyManualRenderEditInTransaction(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    childBatch: Prisma.EffectSegmentRenderBatchGetPayload<{ include: { tasks: true } }>,
+    parentRunId: string,
+    editIdMap: Prisma.JsonValue | null,
+    artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
+  ): Promise<{ runId: string; activeWorkflowRunId: string; createdBranch: boolean;
+    artifacts: Array<{ artifactId: string; artifactKey: string; revision: number;
+      unchanged: boolean }> } | null> {
+    if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+    const map = (editIdMap ?? {}) as { productIdMap?: Record<string, string>;
+      taskIdMap?: Record<string, string> };
+    const parentProductId = Object.entries(map.productIdMap ?? {})
+      .find(([, id]) => id === childBatch.productId)?.[0];
+    if (!parentProductId) throw new Error('RENDER_EDIT_PRODUCT_MAPPING_MISSING');
+    // Mirror the edit session's source-batch pick (newest committed, non-archived batch of the
+    // product). `activeKey` only marks an in-flight batch, so a completed parent never carries it.
+    const parentBatch = await transaction.effectSegmentRenderBatch.findFirst({ where: {
+      projectId, workflowRunId: parentRunId, productId: parentProductId,
+      archivedAt: null, committedAt: { not: null },
+    }, include: { tasks: true }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+    if (!parentBatch) throw new Error('RENDER_EDIT_PARENT_BATCH_MISSING');
+    const parentPrompt = await transaction.workingArtifact.findUnique({ where: {
+      projectId_workflowRunId_nodeId_artifactKey: { projectId,
+        workflowRunId: parentRunId, nodeId: 'PROMPT_GENERATION',
+        artifactKey: `prompt-batch:${parentProductId}` },
+    } });
+    const childPrompt = await transaction.workingArtifact.findUnique({ where: {
+      projectId_workflowRunId_nodeId_artifactKey: { projectId,
+        workflowRunId: childBatch.workflowRunId, nodeId: 'PROMPT_GENERATION',
+        artifactKey: `prompt-batch:${childBatch.productId}` },
+    } });
+    const parentSource = await transaction.workingArtifact.findUnique({ where: {
+      projectId_workflowRunId_nodeId_artifactKey: { projectId,
+        workflowRunId: parentRunId, nodeId: 'SOURCE_IMPORT',
+        artifactKey: `source-package:${parentProductId}` },
+    } });
+    const childSource = await transaction.workingArtifact.findUnique({ where: {
+      projectId_workflowRunId_nodeId_artifactKey: { projectId,
+        workflowRunId: childBatch.workflowRunId, nodeId: 'SOURCE_IMPORT',
+        artifactKey: `source-package:${childBatch.productId}` },
+    } });
+    if (!parentPrompt || !childPrompt || !parentSource || !childSource ||
+        parentPrompt.revision !== childPrompt.revision ||
+        parentSource.revision !== childSource.revision)
+      throw new Error('RENDER_EDIT_PARENT_CHANGED');
+    const ids: Record<string, string> = {
+      [childBatch.workflowRunId]: parentRunId,
+      [childBatch.productId]: parentProductId,
+      [childBatch.id]: parentBatch.id,
+      [childPrompt.id]: parentPrompt.id,
+      [childPrompt.contentHash]: parentPrompt.contentHash,
+      [childSource.id]: parentSource.id,
+      [childSource.contentHash]: parentSource.contentHash,
+    };
+    for (const [parentTaskId, childTaskId] of Object.entries(map.taskIdMap ?? {}))
+      ids[childTaskId] = parentTaskId;
+    const remap = <T>(value: T): T => {
+      if (value === undefined || value === null) return value;
+      let serialized = JSON.stringify(value);
+      for (const [before, after] of Object.entries(ids))
+        serialized = serialized.replaceAll(before, after);
+      return JSON.parse(serialized) as T;
+    };
+    const originalTaskById = new Map(parentBatch.tasks.map((task) => [task.id, task]));
+    const originalTaskByPrompt = new Map(parentBatch.tasks.map((task) => [task.promptId, task]));
+    for (const task of childBatch.tasks) {
+      const parentTask = originalTaskById.get(ids[task.id] ?? '') ??
+        originalTaskByPrompt.get(task.promptId);
+      if (parentTask) ids[task.id] = parentTask.id;
+    }
+    const newFileIds = childBatch.tasks.flatMap((task) => [
+      task.outputFileObjectId, task.repairCandidateFileObjectId,
+      posterFileObjectId(task.outputPoster), posterFileObjectId(task.repairCandidatePoster),
+    ]).filter((id): id is string => Boolean(id));
+    if (newFileIds.length) await transaction.fileObject.updateMany({ where: {
+      projectId, workflowRunId: childBatch.workflowRunId, id: { in: [...new Set(newFileIds)] },
+    }, data: { workflowRunId: parentRunId } });
+    for (const task of childBatch.tasks) {
+      const parentTask = originalTaskById.get(ids[task.id] ?? '') ??
+        originalTaskByPrompt.get(task.promptId);
+      const fields = {
+        promptId: task.promptId, promptCode: task.promptCode, renderCode: task.renderCode,
+        sourceFingerprint: task.sourceFingerprint,
+        requestSnapshot: json(remap(task.requestSnapshot)),
+        generationRequestSnapshot: json(remap(task.generationRequestSnapshot)),
+        operationKind: task.operationKind, status: task.status, progress: task.progress,
+        renderVersion: task.renderVersion, activeOutputVersion: task.activeOutputVersion,
+        retryCount: task.retryCount, maxAutoRetries: task.maxAutoRetries,
+        attemptCount: task.attemptCount, attemptToken: null, leaseExpiresAt: null,
+        heartbeatAt: null, providerTaskId: task.providerTaskId,
+        outputFileObjectId: task.outputFileObjectId,
+        outputStorageKey: task.outputStorageKey, outputFileName: task.outputFileName,
+        outputMimeType: task.outputMimeType, outputSizeBytes: task.outputSizeBytes,
+        outputContentHash: task.outputContentHash,
+        outputPoster: task.outputPoster === null ? Prisma.DbNull : json(remap(task.outputPoster)),
+        repairStatus: task.repairStatus, repairSourceVersion: task.repairSourceVersion,
+        repairStartMs: task.repairStartMs, repairEndMs: task.repairEndMs,
+        repairRegion: task.repairRegion === null ? Prisma.DbNull : json(remap(task.repairRegion)),
+        repairInstruction: task.repairInstruction, repairRequestHash: task.repairRequestHash,
+        repairCandidateFileObjectId: task.repairCandidateFileObjectId,
+        repairCandidateStorageKey: task.repairCandidateStorageKey,
+        repairCandidateFileName: task.repairCandidateFileName,
+        repairCandidateMimeType: task.repairCandidateMimeType,
+        repairCandidateSizeBytes: task.repairCandidateSizeBytes,
+        repairCandidateContentHash: task.repairCandidateContentHash,
+        repairCandidatePoster: task.repairCandidatePoster === null ? Prisma.DbNull
+          : json(remap(task.repairCandidatePoster)),
+        repairCandidateVersion: task.repairCandidateVersion,
+        repairCandidateCreatedAt: task.repairCandidateCreatedAt,
+        errorCode: task.errorCode, errorMessage: task.errorMessage,
+        queuedAt: task.queuedAt, startedAt: task.startedAt, completedAt: task.completedAt,
+      };
+      if (parentTask) await transaction.effectSegmentRenderTask.update({
+        where: { id: parentTask.id }, data: fields,
+      });
+      else {
+        const created = await transaction.effectSegmentRenderTask.create({ data: {
+          projectId, workflowRunId: parentRunId, productId: parentProductId,
+          batchId: parentBatch.id, ...fields,
+        } });
+        ids[task.id] = created.id;
+      }
+    }
+    await transaction.effectSegmentRenderBatch.update({ where: { id: parentBatch.id }, data: {
+      sourcePromptArtifactId: parentPrompt.id,
+      sourcePromptRevision: parentPrompt.revision,
+      sourcePromptHash: parentPrompt.contentHash,
+      sourceFingerprint: childBatch.sourceFingerprint,
+      status: childBatch.status, committedAt: new Date(),
+    } });
+    const remappedInputs = artifacts.map(({ artifactKey, input }) => ({
+      artifactKey: remap(artifactKey), invalidateDependents: false,
+      input: {
+        ...input, payload: remap(input.payload), metadata: remap(input.metadata),
+        sourceRunId: remap(input.sourceRunId) ?? null,
+        sourceArtifactId: remap(input.sourceArtifactId) ?? null,
+        ...(input.dependencies ? { dependencies: input.dependencies.map((dependency) => ({
+          ...dependency, sourceNodeId: remap(dependency.sourceNodeId) ?? null,
+          sourceArtifactId: remap(dependency.sourceArtifactId) ?? null,
+          sourceKey: remap(dependency.sourceKey), sourceHash: remap(dependency.sourceHash) ?? null,
+        })) } : {}),
+      },
+    }));
+    const committed = await this.workingRepository.commitValidatedArtifactsInTransaction(
+      transaction, projectId, parentRunId, 'SEGMENT_RENDER', remappedInputs,
+    );
+    if (committed.some((item) => !item.unchanged))
+      await transaction.effectSegmentRenderBatch.update({ where: { id: parentBatch.id },
+        data: { revision: { increment: 1 } } });
+    const affectedIds = committed.filter((item) =>
+      !item.unchanged && item.artifactKey.startsWith('render-clip:'))
+      .map((item) => item.record.id);
+    if (affectedIds.length) {
+      const dependents = await transaction.workingArtifactDependency.findMany({ where: {
+        projectId, workflowRunId: parentRunId,
+        sourceType: 'WORKING_ARTIFACT', sourceArtifactId: { in: affectedIds },
+      }, select: { dependentArtifactId: true } });
+      if (dependents.length) await this.workingRepository.markArtifactIdsAndDependentsStaleInTransaction(
+        transaction, projectId, parentRunId,
+        dependents.map((item) => item.dependentArtifactId),
+      );
+    }
+    const exited = await exitEffectEditInTransaction(transaction, projectId,
+      childBatch.workflowRunId, 'SEGMENT_RENDER', false);
+    if (!exited || exited.runId !== parentRunId) throw new Error('RENDER_EDIT_EXIT_FAILED');
+    return { ...exited, artifacts: committed.map((item) => ({
+      artifactId: item.record.id, artifactKey: item.artifactKey,
+      revision: item.record.revision, unchanged: item.unchanged,
+    })) };
   }
 }

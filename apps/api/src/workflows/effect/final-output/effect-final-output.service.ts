@@ -259,7 +259,6 @@ export class EffectFinalOutputService {
         const files = await tx.fileObject.findMany({
           where: {
             projectId,
-            workflowRunId: body.workflowRunId,
             id: { in: requiredIds },
             status: 'AVAILABLE',
           },
@@ -486,7 +485,7 @@ export class EffectFinalOutputService {
       const assetIds = [...new Set(ordered.map((item) => item.assetId!))];
       const [files, assets] = await Promise.all([
         tx.fileObject.findMany({ where: {
-          projectId, workflowRunId: run.workflowRunId, id: { in: fileIds }, status: 'AVAILABLE',
+          projectId, id: { in: fileIds }, status: 'AVAILABLE',
         } }),
         tx.asset.findMany({ where: {
           projectId, id: { in: assetIds }, type: 'FINAL_VIDEO', status: 'AVAILABLE',
@@ -806,7 +805,7 @@ export class EffectFinalOutputService {
     )
       throw new NotFoundException('文件不属于此输出条目');
     const file = await this.db.fileObject.findFirstOrThrow({
-      where: { projectId, workflowRunId: item.run.workflowRunId, id: fileId, status: 'AVAILABLE' },
+      where: { projectId, id: fileId, status: 'AVAILABLE' },
     });
     return {
       ...(await this.storage.open(file.storageKey)),

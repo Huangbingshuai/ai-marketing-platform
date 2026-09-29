@@ -608,6 +608,7 @@ export class EffectSegmentRenderService {
       projectId,
       input.workflowRunId,
       'SEGMENT_RENDER',
+      'BATCH',
     );
     const workflowRunId = edit.run.id;
     productId = edit.productIdMap[productId] ?? productId;

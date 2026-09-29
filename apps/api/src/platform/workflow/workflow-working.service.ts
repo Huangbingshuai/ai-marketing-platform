@@ -1,5 +1,6 @@
 import type {
   ActivateEffectWorkflowBranchData,
+  CreateEffectWorkflowBranchData,
   ActivateWorkflowNodeData,
   AssetPreviewKind,
   EffectWorkflowBranch,
@@ -246,10 +247,11 @@ export class WorkflowWorkingService {
 
   async beginEffectNodeEdit(
     projectId: string, workflowRunId: string, nodeId: string,
+    purpose: 'MANUAL' | 'BATCH' = 'MANUAL',
   ): Promise<EffectWorkflowEditSessionData> {
     await this.projectService.get(projectId);
     const result = await this.repository.beginEffectNodeEdit(
-      projectId, workflowRunId, this.effectEditNode(nodeId));
+      projectId, workflowRunId, this.effectEditNode(nodeId), purpose);
     if (!result) throw new ApiHttpException('当前分支无法进入编辑态', HttpStatus.CONFLICT, 'CONFLICT');
     const run = await this.repository.findRun(projectId, result.runId);
     if (!run) throw new ApiHttpException('编辑分支不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
@@ -505,6 +507,9 @@ export class WorkflowWorkingService {
             run.parentWorkflowRunId && inTree.has(run.parentWorkflowRunId)
               ? run.parentWorkflowRunId
               : null,
+          creationKind: !run.parentWorkflowRunId ? 'INITIAL' as const
+            : run.forkNodeId === 'MANUAL_COPY' ? 'MANUAL_COPY' as const
+              : 'NODE_CHANGE' as const,
           forkNodeId,
           forkTemplateId: run.forkTemplateId,
           forkMixStage:
@@ -568,6 +573,23 @@ export class WorkflowWorkingService {
         'CONFLICT',
       );
     return { run: toRun(run) };
+  }
+
+  async createEffectManualBranch(projectId: string, parentRunId: string,
+    idempotencyKey: string): Promise<CreateEffectWorkflowBranchData> {
+    await this.projectService.get(projectId);
+    const key = `manual:${parentRunId}:${idempotencyKey.trim()}`;
+    if (key.length > 160) throw new ApiHttpException('幂等键过长', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+    const childId = await this.repository.createEffectManualBranch(projectId, parentRunId, key);
+    if (!childId) throw new ApiHttpException('当前分支无法复制，请先保存或取消编辑',
+      HttpStatus.CONFLICT, 'CONFLICT');
+    const [run, active] = await Promise.all([
+      this.repository.findRun(projectId, childId),
+      this.repository.findActiveRun(projectId, 'EFFECT', 'EFFECT'),
+    ]);
+    if (!run || !active) throw new Error('EFFECT_MANUAL_BRANCH_MISSING');
+    return { run: toRun(run), parentWorkflowRunId: parentRunId,
+      activeWorkflowRunId: active.id };
   }
 
   async getNodeState(projectId: string, workflowRunId: string, nodeId: string) {

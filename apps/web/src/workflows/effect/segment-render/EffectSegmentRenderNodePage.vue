@@ -25,6 +25,7 @@ import {
   FolderInput,
   LoaderCircle,
   Pause,
+  Pencil,
   Play,
   RefreshCw,
   Search,
@@ -1319,7 +1320,7 @@ const decideRepair = async (
       title: decision === 'ACCEPT' ? '用修复版替换当前素材？' : '放弃这个返修候选？',
       description:
         decision === 'ACCEPT'
-          ? '采用后，修复版会成为当前编辑草稿；保存版本后才会进入新分支。'
+          ? '采用后，修复版会成为当前编辑草稿；保存修改后会更新当前分支。'
           : '放弃后保留当前原视频，返修候选将不再可用。',
       confirmLabel: decision === 'ACCEPT' ? '确认采用' : '确认放弃',
       tone: 'warning',
@@ -1646,9 +1647,9 @@ const saveVersion = async (): Promise<void> => {
     // The parent reloads the active Run, which may be the original Run if the
     // content hash did not change.
     emit('workflow-run-change', props.workflowRunId);
-    showNotice('视频素材版本已保存');
+    showNotice('视频素材修改已保存');
   } catch (error) {
-    showNotice(safeMessage(error, '保存视频素材版本失败'), 'error');
+    showNotice(safeMessage(error, '保存视频素材修改失败'), 'error');
   } finally {
     editTransitioning.value = false;
   }
@@ -1747,7 +1748,8 @@ onBeforeUnmount(() => {
             :disabled="editTransitioning || operation !== null || batchActive"
             @click="enterEdit"
           >
-            <LoaderCircle v-if="editTransitioning" class="spin" :size="14" />进入编辑
+            <LoaderCircle v-if="editTransitioning" class="spin" :size="14" />
+            <Pencil v-else :size="14" />进入编辑
           </button>
           <template v-else-if="editing">
             <button
@@ -1761,7 +1763,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="editTransitioning || !currentProductReady"
               @click="saveVersion"
-            >保存版本</button>
+            >保存修改</button>
           </template>
           <button
             v-else-if="hasBatch && !batchActive"
@@ -1769,7 +1771,7 @@ onBeforeUnmount(() => {
             type="button"
             :disabled="editTransitioning || !currentProductReady"
             @click="saveVersion"
-          >保存版本</button>
+          >保存修改</button>
           <button
             class="secondary-button"
             type="button"
@@ -2211,7 +2213,7 @@ onBeforeUnmount(() => {
         :complete="validated"
         :status-title="
           validated
-            ? '视频素材版本已保存'
+              ? '视频素材修改已保存'
             : !hasBatch
               ? workspace?.promptReady
                 ? '等待开始批量渲染'
@@ -2219,7 +2221,7 @@ onBeforeUnmount(() => {
               : batchActive
                 ? `正在渲染，已完成 ${summary.completed}/${summary.total}`
                 : currentProductReady
-                  ? '全部片段已完成，可保存版本'
+                  ? '全部片段已完成，可保存修改'
                   : '等待处理异常或缺失片段'
         "
         :status-detail="`步骤 4 / 6 · ${currentProduct.name} · ${validated ? '真实工作副本已提交' : hasBatch ? '渲染结果待自动提交或编辑保存' : workspace?.promptReady ? `已就绪 ${promptCount} 条 Prompt` : '等待上游确认'}`"

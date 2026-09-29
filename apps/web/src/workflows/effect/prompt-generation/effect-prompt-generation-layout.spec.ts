@@ -324,7 +324,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('本次任务未完成，已保留');
     expect(pageSource).toContain('当前仅支持查看和复制');
     expect(pageSource).toMatch(
-      /:validate-disabled="\s*partialPreview \|\|\s*currentRunning \|\|\s*validating/,
+      /:disabled="\s*partialPreview \|\|\s*currentRunning \|\|\s*validating/,
     );
     expect(pageSource).not.toContain('currentQualityReady');
   });

@@ -5,6 +5,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
   BRANCH_TREE_AXIS_WIDTH,
+  BRANCH_TREE_ROOT_TOP,
   BRANCH_TREE_STAGES,
   BRANCH_TREE_ROW_GAP,
   BRANCH_TREE_TOP,
@@ -17,8 +18,9 @@ const props = defineProps<{
   loading: boolean;
   error: string;
   switching: boolean;
+  forkDisabled: boolean;
 }>();
-const emit = defineEmits<{ close: []; retry: []; select: [workflowRunId: string] }>();
+const emit = defineEmits<{ close: []; retry: []; select: [workflowRunId: string]; fork: [] }>();
 const dialog = ref<HTMLElement | null>(null);
 const scrollContainer = ref<HTMLElement | null>(null);
 const graphElement = ref<HTMLElement | null>(null);
@@ -173,6 +175,10 @@ onBeforeUnmount(() => {
               <span><i class="legend-current" />当前工作流路径</span>
               <span><i class="legend-other" />其他版本</span>
             </div>
+            <button type="button" class="branch-copy-button"
+              :disabled="switching || forkDisabled || !tree?.activeWorkflowRunId"
+              :title="forkDisabled ? '请先保存或取消当前编辑' : '复制当前分支的已确认内容'"
+              @click="emit('fork')">从当前分支新建分支</button>
             <span v-if="switching" class="branch-switching" role="status">正在切换分支…</span>
           </div>
           <div
@@ -200,6 +206,16 @@ onBeforeUnmount(() => {
                 aria-hidden="true"
               />
               <div class="branch-axis-rail">
+                <div
+                  class="branch-axis branch-axis--root"
+                  :style="{
+                    top: `${BRANCH_TREE_ROOT_TOP}px`,
+                    height: `${BRANCH_TREE_ROW_GAP}px`,
+                  }"
+                >
+                  <span class="branch-axis__number">00</span>
+                  <span>项目</span>
+                </div>
                 <template v-for="(stage, index) in BRANCH_TREE_STAGES" :key="`axis:${stage.key}`">
                   <div
                     v-if="stage.nodeId !== 'TEMPLATE_MIX'"
@@ -427,6 +443,17 @@ onBeforeUnmount(() => {
   color: #697991;
   font-size: 12px;
 }
+.branch-copy-button {
+  margin-left: auto;
+  padding: 9px 14px;
+  color: #1d4ed8;
+  background: #eff5ff;
+  border: 1px solid #bcd0ff;
+  border-radius: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.branch-copy-button:disabled { color: #9aa8bd; background: #f4f6fa; cursor: not-allowed; }
 .branch-toolbar__legend span {
   display: inline-flex;
   align-items: center;
