@@ -2152,7 +2152,8 @@ onBeforeUnmount(() => {
             "
             @click="validatePromptBatch"
           >
-            <LoaderCircle v-if="validating" class="spin" :size="14" />{{
+            <LoaderCircle v-if="validating" class="spin" :size="14" />
+            <CheckCircle2 v-else :size="14" />{{
               validating ? '正在校验…' : '保存修改'
             }}
           </button>

@@ -18,6 +18,7 @@ import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
   Check,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -1757,13 +1758,17 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="editTransitioning || operation !== null || batchActive"
               @click="cancelEdit"
-            >取消编辑</button>
+            >
+              <X :size="14" />取消编辑
+            </button>
             <button
               class="secondary-button"
               type="button"
               :disabled="editTransitioning || !currentProductReady"
               @click="saveVersion"
-            >保存修改</button>
+            >
+              <CheckCircle2 :size="14" />保存修改
+            </button>
           </template>
           <button
             v-else-if="hasBatch && !batchActive"
@@ -1771,7 +1776,9 @@ onBeforeUnmount(() => {
             type="button"
             :disabled="editTransitioning || !currentProductReady"
             @click="saveVersion"
-          >保存修改</button>
+          >
+            <CheckCircle2 :size="14" />保存修改
+          </button>
           <button
             class="secondary-button"
             type="button"

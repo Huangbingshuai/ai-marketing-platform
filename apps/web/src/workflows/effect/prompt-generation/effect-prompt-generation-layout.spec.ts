@@ -326,6 +326,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toMatch(
       /:disabled="\s*partialPreview \|\|\s*currentRunning \|\|\s*validating/,
     );
+    expect(pageSource).toContain('<CheckCircle2 v-else :size="14" />');
     expect(pageSource).not.toContain('currentQualityReady');
   });
 

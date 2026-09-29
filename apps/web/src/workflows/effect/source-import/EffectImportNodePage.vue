@@ -19,6 +19,7 @@ import {
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
+  CheckCircle2,
   CloudUpload,
   FileSpreadsheet,
   FileText,
@@ -31,6 +32,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from '@lucide/vue';
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
@@ -1871,12 +1873,6 @@ onBeforeUnmount(() => {
               <h1>资料包导入</h1>
               <p>整理产品图片、文本资料与电商链接</p>
             </div>
-            <div class="save-indicator" :class="saveState">
-              <CloudUpload :size="14" />{{ saveStateLabel }}
-            </div>
-            <button type="button" @click="downloadProductPackageTemplate">
-              <FileText :size="14" />下载资料包模板
-            </button>
             <button
               v-if="!sourceEditing"
               type="button"
@@ -1890,7 +1886,9 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="sourceEditBusy || validatingDraft || transitioning"
               @click="cancelSourceEdit"
-            >取消编辑</button>
+            >
+              <X :size="14" />取消编辑
+            </button>
             <button
               v-if="sourceEditing"
               type="button"
@@ -1901,9 +1899,16 @@ onBeforeUnmount(() => {
               "
               @click="validateDraft"
             >
-              <LoaderCircle v-if="validatingDraft" class="spin" :size="14" />{{
+              <LoaderCircle v-if="validatingDraft" class="spin" :size="14" />
+              <CheckCircle2 v-else :size="14" />{{
                 validatingDraft ? '正在校验…' : '保存版本'
               }}
+            </button>
+            <div class="save-indicator" :class="saveState">
+              <CloudUpload :size="14" />{{ saveStateLabel }}
+            </div>
+            <button type="button" @click="downloadProductPackageTemplate">
+              <FileText :size="14" />下载资料包模板
             </button>
           </section>
 
@@ -2795,12 +2800,6 @@ onBeforeUnmount(() => {
   }
   .node-heading {
     flex-wrap: wrap;
-  }
-  .save-indicator {
-    margin-left: 0;
-  }
-  .node-heading > button {
-    margin-left: auto;
   }
   .batch-product-list {
     grid-template-columns: 1fr;

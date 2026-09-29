@@ -172,6 +172,8 @@ describe('effect import identity boundary', () => {
     expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');
     expect(pageSource).toContain(':show-validate="false"');
     expect(pageSource).toContain('@click="validateDraft"');
+    expect(pageSource).toContain('<X :size="14" />取消编辑');
+    expect(pageSource).toContain('<CheckCircle2 v-else :size="14" />');
     expect(pageSource).toContain("validatingDraft ? '正在校验…' : '保存版本'");
     expect(pageSource).toContain('@next="advanceDraft"');
     expect(productEditorSource).not.toContain('完成校验');

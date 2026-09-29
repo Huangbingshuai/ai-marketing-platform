@@ -132,6 +132,8 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('<Pencil :size="14" />进入编辑');
     expect(pageSource).toContain(':show-validate="false"');
     expect(pageSource).toContain('@click="validateCurrentResult"');
+    expect(pageSource).toContain('<X :size="14" />取消编辑');
+    expect(pageSource).toContain('<CheckCircle2 v-else :size="14" />');
     expect(pageSource).toContain("validating ? '正在校验…' : '保存版本'");
     expect(pageSource).not.toContain('class="extraction-footer"');
     expect(pageSource).not.toContain('class="draft-save-bar"');

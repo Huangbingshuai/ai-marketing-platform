@@ -100,16 +100,6 @@ const nodeState = (index: number): NodeState => {
         />
       </template>
     </div>
-
-    <div v-if="activeStep > 0" class="effect-flow__notice" role="note">
-      <svg class="effect-flow__notice-icon" viewBox="0 0 1024 1024" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M512 64a448 448 0 1 1 0 896.064A448 448 0 0 1 512 64m67.2 275.072c33.28 0 60.288-23.104 60.288-57.344s-27.072-57.344-60.288-57.344c-33.28 0-60.16 23.104-60.16 57.344s26.88 57.344 60.16 57.344M590.912 699.2c0-6.848 2.368-24.64 1.024-34.752l-52.608 60.544c-10.88 11.456-24.512 19.392-30.912 17.28a12.99 12.99 0 0 1-8.256-14.72l87.68-276.992c7.168-35.136-12.544-67.2-54.336-71.296-44.096 0-108.992 44.736-148.48 101.504 0 6.784-1.28 23.68.064 33.792l52.544-60.608c10.88-11.328 23.552-19.328 29.952-17.152a12.8 12.8 0 0 1 7.808 16.128L388.48 728.576c-10.048 32.256 8.96 63.872 55.04 71.04 67.84 0 107.904-43.648 147.456-100.416z"
-        />
-      </svg>
-      <span>导入与提炼在编辑后保存版本；Prompt 与片段渲染的人工编辑保存修改，完整批量生成成功后自动提交。混剪和成片仍按各自确认流程处理。</span>
-    </div>
   </section>
 </template>
 
@@ -272,25 +262,6 @@ const nodeState = (index: number): NodeState => {
 }
 .effect-flow__connector.completed {
   color: #2aa27d;
-}
-.effect-flow__notice {
-  display: flex;
-  min-height: 40px;
-  margin-top: 18px;
-  padding: 8px 16px;
-  align-items: center;
-  gap: 8px;
-  color: #909399;
-  background: #f4f4f5;
-  border-radius: 12px;
-  box-sizing: border-box;
-  font-size: 14px;
-  line-height: 24px;
-}
-.effect-flow__notice-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
 }
 @media (max-width: 1024px) {
   .effect-flow__node {

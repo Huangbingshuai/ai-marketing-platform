@@ -19,6 +19,7 @@ import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@
 import {
   AlertCircle,
   ArrowLeft,
+  CheckCircle2,
   FileText,
   Link2,
   LoaderCircle,
@@ -1485,7 +1486,9 @@ onBeforeUnmount(() => {
             type="button"
             :disabled="editBusy || validating || currentRunning"
             @click="cancelExtractionEdit"
-          >取消编辑</button>
+          >
+            <X :size="14" />取消编辑
+          </button>
           <button
             v-if="editing"
             class="secondary-button"
@@ -1497,7 +1500,8 @@ onBeforeUnmount(() => {
             "
             @click="validateCurrentResult"
           >
-            <LoaderCircle v-if="validating" class="spin" :size="14" />{{
+            <LoaderCircle v-if="validating" class="spin" :size="14" />
+            <CheckCircle2 v-else :size="14" />{{
               validating ? '正在校验…' : '保存版本'
             }}
           </button>

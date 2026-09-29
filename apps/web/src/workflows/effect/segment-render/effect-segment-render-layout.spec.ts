@@ -9,8 +9,8 @@ import serviceSource from './services/effect-segment-render.mock-service.ts?raw'
 describe('effect segment render material gallery layout', () => {
   it('replaces completed-validation with branch-safe editing controls', () => {
     expect(pageSource).toContain('<Pencil v-else :size="14" />进入编辑');
-    expect(pageSource).toContain('取消编辑');
-    expect(pageSource).toContain('保存修改');
+    expect(pageSource).toContain('<X :size="14" />取消编辑');
+    expect(pageSource).toContain('<CheckCircle2 :size="14" />保存修改');
     expect(pageSource).toContain('beginEffectWorkflowNodeEdit');
     expect(pageSource).toContain('cancelEffectWorkflowNodeEdit');
     expect(pageSource).toContain("emit('workflow-run-change', props.workflowRunId)");
