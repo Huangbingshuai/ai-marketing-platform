@@ -129,6 +129,21 @@ export class EffectSourceImportRepository {
     });
   }
 
+  async isActiveInitialRun(projectId: string, workflowRunId: string): Promise<boolean> {
+    const run = await this.prisma.workflowRun.findFirst({
+      where: {
+        projectId,
+        id: workflowRunId,
+        workflow: 'EFFECT',
+        workflowSpace: 'EFFECT',
+        activeKey: 'ACTIVE',
+        parentWorkflowRunId: null,
+      },
+      select: { id: true },
+    });
+    return Boolean(run);
+  }
+
   sourceWorkingArtifacts(projectId: string, workflowRunId: string) {
     return this.prisma.workingArtifact.findMany({
       where: { projectId, workflowRunId, nodeId: 'SOURCE_IMPORT' },

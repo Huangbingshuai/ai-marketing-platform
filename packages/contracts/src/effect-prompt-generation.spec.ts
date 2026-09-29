@@ -68,6 +68,7 @@ describe('effect prompt generation contract', () => {
       disabledElements: [],
     });
     expect(EFFECT_PROMPT_LIMITS.maxCount).toBe(100);
+    expect(EFFECT_PROMPT_LIMITS.minNewBatchCount).toBe(20);
     expect(EFFECT_PROMPT_LIMITS.maxCandidateCount).toBe(240);
     expect(EFFECT_PROMPT_LIMITS.maxDurationSeconds).toBe(15);
     expect(

@@ -43,6 +43,7 @@ import {
   workingArtifactContentHash,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import {
   compileEffectSeedanceRepairRequest,
   compileEffectSeedanceRequest,
@@ -355,6 +356,8 @@ export class EffectSegmentRenderService {
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
     @Inject(WorkflowWorkingRepository)
     private readonly workingRepository: WorkflowWorkingRepository,
+    @Inject(WorkflowWorkingService)
+    private readonly workflowWorkingService: WorkflowWorkingService,
   ) {}
 
   private modelFor(capabilityKey: EffectPromptRenderCapabilityKey): string {
@@ -527,6 +530,7 @@ export class EffectSegmentRenderService {
     const promptReady = Boolean(
       promptBatch && prompt?.freshness === 'CURRENT' && prompt.availability === 'AVAILABLE',
     );
+    if (batch) await this.resumeCommittedBatchPublication(projectId, batch);
     return {
       projectId,
       workflowRunId,
@@ -581,6 +585,7 @@ export class EffectSegmentRenderService {
     await this.projects.get(projectId);
     const record = await this.repository.batch(projectId, batchId);
     if (!record) throw notFound('视频渲染批次不存在');
+    await this.resumeCommittedBatchPublication(projectId, record);
     return { batch: await this.present(record) };
   }
 
@@ -597,14 +602,23 @@ export class EffectSegmentRenderService {
     await this.projects.get(projectId);
     const idempotencyKey = input.idempotencyKey.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    // Batch generation is an explicit paid action. Before it can mutate a
+    // published render result, route it to an unpublished child work context.
+    const edit = await this.workflowWorkingService.beginEffectNodeEdit(
+      projectId,
+      input.workflowRunId,
+      'SEGMENT_RENDER',
+    );
+    const workflowRunId = edit.run.id;
+    productId = edit.productIdMap[productId] ?? productId;
     const [workflow, product, promptArtifact, sourcePackage, settingsNode] = await Promise.all([
-      this.repository.workflowRun(projectId, input.workflowRunId),
-      this.repository.product(projectId, input.workflowRunId, productId),
-      this.repository.promptArtifact(projectId, input.workflowRunId, productId),
-      this.repository.sourcePackageArtifact(projectId, input.workflowRunId, productId),
+      this.repository.workflowRun(projectId, workflowRunId),
+      this.repository.product(projectId, workflowRunId, productId),
+      this.repository.promptArtifact(projectId, workflowRunId, productId),
+      this.repository.sourcePackageArtifact(projectId, workflowRunId, productId),
       this.workingRepository.findNodeState(
         projectId,
-        input.workflowRunId,
+        workflowRunId,
         effectSegmentRenderSettingsNodeId(productId),
       ),
     ]);
@@ -697,7 +711,7 @@ export class EffectSegmentRenderService {
     });
     const requestHash = workflowStateHash({
       projectId,
-      workflowRunId: input.workflowRunId,
+      workflowRunId,
       productId,
       promptArtifactId: promptArtifact.id,
       promptArtifactRevision: promptArtifact.revision,
@@ -710,7 +724,7 @@ export class EffectSegmentRenderService {
       snapshots,
     });
     const batchId = randomUUID();
-    const result = await this.repository.createBatch(projectId, input.workflowRunId, productId, {
+    const result = await this.repository.createBatch(projectId, workflowRunId, productId, {
       batchId,
       promptArtifact: {
         id: promptArtifact.id,
@@ -767,6 +781,17 @@ export class EffectSegmentRenderService {
       throw conflict('Prompt 批次包含重复的稳定 ID');
   }
 
+  private async assertEditableBatch(
+    projectId: string,
+    record: EffectSegmentRenderBatchRecord,
+  ): Promise<void> {
+    await this.workflowWorkingService.assertEffectNodeWritable(
+      projectId,
+      record.workflowRunId,
+      'SEGMENT_RENDER',
+    );
+  }
+
   async regenerate(
     projectId: string,
     batchId: string,
@@ -785,6 +810,7 @@ export class EffectSegmentRenderService {
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
     const record = await this.repository.batch(projectId, batchId);
     if (!record) throw notFound('视频渲染批次不存在');
+    await this.assertEditableBatch(projectId, record);
     const [promptArtifact, sourcePackage, settingsNode] = await Promise.all([
       this.repository.promptArtifact(projectId, record.workflowRunId, record.productId),
       this.repository.sourcePackageArtifact(projectId, record.workflowRunId, record.productId),
@@ -928,6 +954,7 @@ export class EffectSegmentRenderService {
       throw badRequest('每个视频必须唯一匹配一个 Prompt 槽位');
     const batch = await this.repository.batch(projectId, batchId);
     if (!batch) throw notFound('视频渲染批次不存在');
+    await this.assertEditableBatch(projectId, batch);
     const productName = batch.product.name.trim() || '未命名产品';
     const storedImports: Array<{
       taskId: string;
@@ -1050,6 +1077,9 @@ export class EffectSegmentRenderService {
       uniqueTaskIds.length > EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation
     )
       throw badRequest('请选择需要删除的视频素材');
+    const batch = await this.repository.batch(projectId, batchId);
+    if (!batch) throw notFound('视频渲染批次不存在');
+    await this.assertEditableBatch(projectId, batch);
     const result = await this.repository.deleteMaterials(
       projectId,
       batchId,
@@ -1189,6 +1219,7 @@ export class EffectSegmentRenderService {
     if (input.region && !normalizedRegion) throw badRequest('视频返修框选区域无效');
     const record = await this.repository.batch(projectId, batchId);
     if (!record) throw notFound('视频渲染批次不存在');
+    await this.assertEditableBatch(projectId, record);
     const task = record.tasks.find(({ id }) => id === taskId);
     if (!task) throw notFound('视频渲染任务不存在');
     if (
@@ -1305,6 +1336,9 @@ export class EffectSegmentRenderService {
     await this.projects.get(projectId);
     const idempotencyKey = idempotencyKeyValue.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    const batch = await this.repository.batch(projectId, batchId);
+    if (!batch) throw notFound('视频渲染批次不存在');
+    await this.assertEditableBatch(projectId, batch);
     const result = await this.repository.decideRepair(
       projectId,
       batchId,
@@ -1624,6 +1658,7 @@ export class EffectSegmentRenderService {
           ? task.repairCandidateFileObjectId
           : task.outputFileObjectId;
       if (!replayedFileObjectId) throw conflict('视频渲染输出文件不存在');
+      await this.autoCommitCompletedBatch(projectId, task.batchId);
       return { completed: true, fileObjectId: replayedFileObjectId };
     }
     if (
@@ -1751,6 +1786,8 @@ export class EffectSegmentRenderService {
           ? result.task.repairCandidateFileObjectId
           : result.task.outputFileObjectId;
       if (!fileObjectId) throw conflict('视频渲染输出文件不存在');
+      if (result.task.operationKind !== 'REPAIR')
+        await this.autoCommitCompletedBatch(projectId, result.task.batchId);
       return { completed: true, fileObjectId };
     } finally {
       if (!committed) {
@@ -1758,6 +1795,52 @@ export class EffectSegmentRenderService {
         if (storedPoster) await this.storage.delete(storedPoster.storageKey).catch(() => undefined);
       }
     }
+  }
+
+  private async autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void> {
+    const batch = await this.repository.batch(projectId, batchId);
+    if (!batch) return;
+    if (batch.committedAt) {
+      await this.resumeCommittedBatchPublication(projectId, batch);
+      return;
+    }
+    // Single-clip retries, imports and repair candidates remain editable drafts.
+    // Only a newly created complete batch is adopted automatically.
+    if (
+      batch.status !== 'COMPLETED' ||
+      !batch.tasks.length ||
+      batch.tasks.some(
+        (task) =>
+          task.status !== 'COMPLETED' ||
+          task.operationKind !== 'GENERATE' ||
+          task.repairStatus !== null ||
+          !task.outputFileObjectId,
+      )
+    )
+      return;
+    const validation = await this.validate(projectId, batchId, batch.revision);
+    if (!validation.valid) return;
+    // validate commits the artifacts and publishes the hidden edit branch in
+    // one repository transaction. The read path below remains for older
+    // batches committed before that atomic boundary was introduced.
+  }
+
+  private async resumeCommittedBatchPublication(
+    projectId: string,
+    batch: EffectSegmentRenderBatchRecord,
+  ): Promise<void> {
+    // Committing the batch artifact and publishing its hidden branch currently
+    // use separate transactions. Any subsequent batch read must close that gap,
+    // even if the Worker never retries its completion callback. Inherited
+    // committed batches predate the edit child and must not publish it.
+    if (!batch.committedAt || batch.committedAt < batch.createdAt) return;
+    const run = await this.repository.workflowRun(projectId, batch.workflowRunId);
+    if (run?.parentWorkflowRunId && !run.branchPublishedAt && run.editSessionNodeId === 'SEGMENT_RENDER')
+      await this.workflowWorkingService.publishEffectNodeEdit(
+        projectId,
+        batch.workflowRunId,
+        'SEGMENT_RENDER',
+      );
   }
 
   async fail(
@@ -2004,6 +2087,7 @@ export class EffectSegmentRenderService {
     if (result.kind === 'PROMPT_CONFLICT') throw conflict('Prompt 批次已更新，请重新创建渲染批次');
     if (result.kind === 'SOURCE_CONFLICT') throw conflict('产品资料包已更新，请重新创建渲染批次');
     if (result.kind === 'NOT_READY') throw conflict('视频渲染批次尚未完成');
+    if (result.kind === 'BRANCH_CONFLICT') throw conflict('渲染版本状态已变化，请刷新后重试');
     if (result.kind === 'CONFLICT') throw conflict('校验提交遇到并发写入，请稍后重试');
     if (result.kind === 'NOT_FOUND') throw notFound('视频渲染批次不存在');
     return {

@@ -79,6 +79,14 @@ describe('WorkflowWorkingService effect branch tree', () => {
           ],
           workingArtifacts: [
             {
+              nodeId: 'SEGMENT_RENDER',
+              artifactKey: 'render-batch:product-a',
+              revision: 1,
+              createdAt,
+              freshness: 'CURRENT',
+              name: '已确认素材池',
+            },
+            {
               nodeId: 'TEMPLATE_MIX',
               artifactKey: 'mix-template:template-old',
               revision: 3,
@@ -151,7 +159,10 @@ describe('WorkflowWorkingService effect branch tree', () => {
         },
       ],
       effectTemplateMixAiRuns: [{ templateId: 'template-new', outputVariantId: 'variant-ai' }],
-      workingArtifacts: [],
+      workingArtifacts: [{
+        nodeId: 'SEGMENT_RENDER', artifactKey: 'render-batch:product-a', revision: 1,
+        createdAt, freshness: 'CURRENT', name: '已确认素材池',
+      }],
     });
     const repository = {
       listEffectRunBranches: vi.fn().mockResolvedValue([makeRun(['variant-ai'])]),
@@ -173,6 +184,33 @@ describe('WorkflowWorkingService effect branch tree', () => {
     repository.listEffectRunBranches.mockResolvedValue([makeRun([])]);
     const cleared = await service.getEffectBranchTree('project-a');
     expect(cleared.branches[0]?.templates[0]?.draftFillReady).toBe(false);
+  });
+
+  it('keeps an early mix draft out of the version tree until render output is confirmed', async () => {
+    const createdAt = new Date('2026-09-29T01:22:00.000Z');
+    const repository = {
+      listEffectRunBranches: vi.fn().mockResolvedValue([{
+        id: 'root', activeKey: 'ACTIVE', parentWorkflowRunId: null, forkNodeId: null,
+        forkTemplateId: null, branchLabel: null, currentNodeId: 'SEGMENT_RENDER',
+        createdAt, updatedAt: createdAt,
+        nodeStates: [{ state: { schemaVersion: 1, templates: [{
+          id: 'template-new', createdAt: createdAt.toISOString(),
+          workspace: { template: { name: '测试1' }, variants: [] },
+        }] } }],
+        workingArtifacts: [{
+          nodeId: 'PROMPT_GENERATION', artifactKey: 'prompt-batch:product-a',
+          revision: 2, createdAt, freshness: 'CURRENT', name: '版本02',
+        }],
+      }]),
+    };
+    const service = new WorkflowWorkingService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+
+    const tree = await service.getEffectBranchTree('project-a');
+    expect(tree.branches[0]?.templates).toEqual([]);
   });
 
   it('uses the actual revision of each mix layer and never invents one for mixed product revisions', async () => {

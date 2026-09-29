@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { JobProgressStore } from '../../../platform/job/job.ports';
 import type { ProjectService } from '../../../platform/project/project.service';
+import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { EffectExtractionRepository } from './effect-extraction.repository';
 import { WorkerArtifactDto } from './dto/effect-extraction.dto';
 import {
@@ -56,6 +57,31 @@ const runRecord = {
 };
 
 describe('EffectExtractionService', () => {
+  it('rejects starting a new extraction on a published confirmed run', async () => {
+    const denied = new Error('已确认版本不可直接修改，请先进入编辑状态');
+    const repository = {
+      workflowRunIdForDraft: vi.fn().mockResolvedValue('published-run'),
+      startRun: vi.fn(),
+    } as unknown as EffectExtractionRepository;
+    const working = {
+      assertEffectNodeWritable: vi.fn().mockRejectedValue(denied),
+    } as unknown as WorkflowWorkingService;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storage,
+      working,
+    );
+
+    await expect(
+      service.start('project-a', 'product-a', {
+        draftId: 'draft-a', expectedRevision: 1, idempotencyKey: 'request-a',
+      }),
+    ).rejects.toBe(denied);
+    expect(repository.startRun).not.toHaveBeenCalled();
+  });
+
   it('summarizes successful image recognition with no retained incremental facts', () => {
     expect(
       extractionImageRecognitionSummary([

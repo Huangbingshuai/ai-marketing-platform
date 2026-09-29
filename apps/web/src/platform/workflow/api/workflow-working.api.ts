@@ -4,6 +4,10 @@ import type {
   ApiResponse,
   EffectWorkflowBranchTreeData,
   EffectWorkflowBranchNodeId,
+  EffectWorkflowEditableNodeId,
+  EffectWorkflowEditSessionData,
+  EffectWorkflowEditExitData,
+  EffectWorkflowEditPublishData,
   PutWorkflowNodeStateData,
   PutWorkflowNodeStateRequest,
   WorkingArtifactListData,
@@ -133,6 +137,47 @@ export const activateEffectWorkflowBranch = (
     `${projectPath(projectId)}/workflow-runs/effect/branches/${encodeURIComponent(workflowRunId)}/activate`,
     { method: 'POST', operation: '切换效果类版本分支', signal },
   );
+
+const effectEditPath = (
+  projectId: string,
+  workflowRunId: string,
+  nodeId: EffectWorkflowEditableNodeId,
+): string =>
+  `${projectPath(projectId)}/workflow-runs/effect/branches/${encodeURIComponent(workflowRunId)}/nodes/${encodeURIComponent(nodeId)}/edit`;
+
+export const beginEffectWorkflowNodeEdit = (
+  projectId: string,
+  workflowRunId: string,
+  nodeId: EffectWorkflowEditableNodeId,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectWorkflowEditSessionData>> =>
+  requestJson(effectEditPath(projectId, workflowRunId, nodeId), {
+    method: 'POST', operation: '进入效果类节点编辑', signal,
+  });
+
+export const cancelEffectWorkflowNodeEdit = (
+  projectId: string,
+  workflowRunId: string,
+  nodeId: EffectWorkflowEditableNodeId,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectWorkflowEditExitData>> =>
+  requestJson(`${effectEditPath(projectId, workflowRunId, nodeId)}/cancel`, {
+    method: 'POST', operation: '取消效果类节点编辑', signal,
+  });
+
+export const publishEffectWorkflowNodeEdit = (
+  projectId: string,
+  workflowRunId: string,
+  nodeId: EffectWorkflowEditableNodeId,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectWorkflowEditPublishData>> =>
+  requestJson(`${effectEditPath(projectId, workflowRunId, nodeId)}/publish`, {
+    method: 'POST', operation: '保存效果类节点版本', signal,
+  });
+
+export const beginEffectNodeEdit = beginEffectWorkflowNodeEdit;
+export const cancelEffectNodeEdit = cancelEffectWorkflowNodeEdit;
+export const publishEffectNodeEdit = publishEffectWorkflowNodeEdit;
 
 export const activateWorkflowNode = (
   projectId: string,

@@ -96,6 +96,23 @@ const currentInputSnapshot = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptService settings contract', () => {
+  it('refuses to change confirmed Prompt settings before entering an isolated edit branch', async () => {
+    const repository = { workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }) };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const workingRepository = { saveNodeState: vi.fn() };
+    const workingService = {
+      assertEffectNodeWritable: vi.fn().mockRejectedValue(new Error('EDIT_REQUIRED')),
+    };
+    const service = new EffectPromptService(
+      repository as never, projects as never, workingRepository as never,
+      undefined, workingService as never,
+    );
+
+    await expect(service.saveSettings(
+      'project-a', 'product-a', 'workflow-a', 1, DEFAULT_EFFECT_PROMPT_SETTINGS,
+    )).rejects.toThrow('EDIT_REQUIRED');
+    expect(workingRepository.saveNodeState).not.toHaveBeenCalled();
+  });
   it('does not mark a completed result stale when a legacy settings state normalizes to the run settings', async () => {
     const insightSnapshot = {
       id: 'insight-a',
@@ -546,9 +563,10 @@ describe('EffectPromptService settings contract', () => {
           settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
         },
       }),
-      complete: vi.fn().mockResolvedValue({ kind: 'COMPLETED', result: { id: 'result-a' } }),
+      complete: vi.fn().mockResolvedValue({ kind: 'COMPLETED', result: { id: 'result-a', revision: 1 } }),
     };
     const service = new EffectPromptService(repository as never, {} as never, {} as never);
+    const validate = vi.spyOn(service, 'validateResult').mockResolvedValue({ valid: false } as never);
 
     await expect(
       service.complete('project-a', 'run-a', 'attempt-a', {
@@ -556,12 +574,36 @@ describe('EffectPromptService settings contract', () => {
         executionMode: 'ARK',
       }),
     ).resolves.toEqual({ promptResultId: 'result-a' });
+    expect(validate).toHaveBeenCalledWith('project-a', 'result-a', 1);
     expect(repository.complete).toHaveBeenCalledWith(
       'project-a',
       'run-a',
       'attempt-a',
       expect.objectContaining({ qualityStatus: 'NEEDS_REVIEW' }),
     );
+  });
+
+  it('does not auto-commit a single-item regeneration preview', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        inputSnapshot: {
+          selectionPolicy: 'MMR_CONTENT',
+          operation: 'ITEM_REGENERATE',
+          settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
+        },
+      }),
+      complete: vi.fn().mockResolvedValue({ kind: 'PREVIEW_COMPLETED', result: null }),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+    const validate = vi.spyOn(service, 'validateResult');
+
+    await expect(
+      service.complete('project-a', 'run-a', 'attempt-a', {
+        result: recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS),
+        executionMode: 'ARK',
+      }),
+    ).resolves.toEqual({ promptResultId: null });
+    expect(validate).not.toHaveBeenCalled();
   });
 
   it('uses the extracted product name for the committed Prompt working artifact', async () => {
@@ -651,6 +693,26 @@ describe('EffectPromptService settings contract', () => {
         defaultDurationSeconds: 5,
       }),
     ).rejects.toThrow('Prompt 批次设置不符合允许范围');
+    expect(workingRepository.saveNodeState).not.toHaveBeenCalled();
+  });
+
+  it('requires at least twenty Prompts for newly saved batch settings', async () => {
+    const repository = { workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }) };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const workingRepository = { saveNodeState: vi.fn() };
+    const service = new EffectPromptService(
+      repository as never,
+      projects as never,
+      workingRepository as never,
+    );
+    for (const targetCount of [10, 19]) {
+      await expect(
+        service.saveSettings('project-a', 'product-a', 'workflow-a', null, {
+          targetCount,
+          defaultDurationSeconds: 5,
+        }),
+      ).rejects.toThrow('新批次至少生成 20 条 Prompt');
+    }
     expect(workingRepository.saveNodeState).not.toHaveBeenCalled();
   });
 
@@ -1123,18 +1185,12 @@ describe('EffectPromptService settings contract', () => {
       {} as never,
     );
 
-    const result = await service.updateItem(
-      'project-a',
-      'result-a',
-      draftResult.items[0]!.id,
-      1,
-      {
-        content: `${draftResult.items[0]!.content} 已编辑。`,
-        creativeCore: draftResult.items[0]!.creativeCore,
-        targetDurationSeconds: draftResult.items[0]!.targetDurationSeconds,
-        dimensions: draftResult.items[0]!.dimensions,
-      },
-    );
+    const result = await service.updateItem('project-a', 'result-a', draftResult.items[0]!.id, 1, {
+      content: `${draftResult.items[0]!.content} 已编辑。`,
+      creativeCore: draftResult.items[0]!.creativeCore,
+      targetDurationSeconds: draftResult.items[0]!.targetDurationSeconds,
+      dimensions: draftResult.items[0]!.dimensions,
+    });
 
     expect(result.revision).toBe(2);
     expect(repository.mutateResult).toHaveBeenCalledOnce();

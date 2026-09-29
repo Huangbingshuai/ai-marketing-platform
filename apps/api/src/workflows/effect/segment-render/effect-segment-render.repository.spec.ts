@@ -19,7 +19,50 @@ const runningTask = {
 };
 
 describe('EffectSegmentRenderRepository', () => {
-  it('orphans selected files and keeps their Prompt slots available for regeneration', async () => {
+  it('does not expose archived render batches or their tasks in the current branch', async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    const taskFindFirst = vi.fn().mockResolvedValue(null);
+    const repository = new EffectSegmentRenderRepository({
+      effectSegmentRenderBatch: { findFirst },
+      effectSegmentRenderTask: { findFirst: taskFindFirst },
+    } as never);
+
+    await repository.latestBatch('project', 'child', 'product');
+    await repository.batch('project', 'batch');
+    await repository.task('project', 'task');
+
+    expect(findFirst).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: { projectId: 'project', workflowRunId: 'child', productId: 'product', archivedAt: null },
+    }));
+    expect(findFirst).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: { projectId: 'project', id: 'batch', archivedAt: null },
+    }));
+    expect(taskFindFirst).toHaveBeenCalledWith({
+      where: { projectId: 'project', id: 'task', batch: { archivedAt: null } },
+    });
+  });
+
+  it('reads ancestor media but never sibling or cross-project media', async () => {
+    const fileObject = {
+      findFirst: vi.fn().mockResolvedValue({ id: 'file', workflowRunId: 'root' }),
+    };
+    const workflowRun = {
+      findFirst: vi.fn().mockImplementation(async ({ where }: { where: { id: string } }) =>
+        where.id === 'child' ? { parentWorkflowRunId: 'root' }
+          : { parentWorkflowRunId: null },
+      ),
+    };
+    const repository = new EffectSegmentRenderRepository({ fileObject, workflowRun } as never);
+    expect(await repository.fileObject('project-a', 'child', 'file')).toMatchObject({ id: 'file' });
+    expect(await repository.fileObject('project-a', 'sibling', 'file')).toBeNull();
+    expect(fileObject.findFirst).toHaveBeenCalledWith({
+      where: { projectId: 'project-a', id: 'file', status: 'AVAILABLE' },
+    });
+    fileObject.findFirst.mockResolvedValueOnce(null);
+    expect(await repository.fileObject('project-b', 'child', 'file')).toBeNull();
+  });
+
+  it('retains branch media and keeps deleted Prompt slots available for regeneration', async () => {
     const batch = {
       id: runningTask.batchId,
       projectId: runningTask.projectId,
@@ -78,12 +121,7 @@ describe('EffectSegmentRenderRepository', () => {
     );
 
     expect(result).toEqual({ kind: 'UPDATED' });
-    expect(transaction.fileObject.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { projectId: runningTask.projectId, id: { in: [completedTask.outputFileObjectId] } },
-        data: expect.objectContaining({ status: 'ORPHANED' }),
-      }),
-    );
+    expect(transaction.fileObject.updateMany).not.toHaveBeenCalled();
     expect(transaction.effectSegmentRenderTask.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ projectId: runningTask.projectId, batchId: batch.id }),
@@ -198,6 +236,27 @@ describe('EffectSegmentRenderRepository', () => {
         [],
       ),
     ).rejects.toThrow('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a branch-publication conflict without treating an artifact commit as successful', async () => {
+    const prisma = {
+      $transaction: vi.fn().mockRejectedValue(
+        new Error('EFFECT_RENDER_BRANCH_PUBLICATION_CONFLICT'),
+      ),
+    };
+    const repository = new EffectSegmentRenderRepository(prisma as never);
+
+    const result = await repository.commitValidatedBatch(
+      runningTask.projectId,
+      runningTask.batchId,
+      4,
+      { artifactId: 'a', revision: 3, contentHash: 'a'.repeat(64) },
+      { artifactId: 'b', revision: 2, contentHash: 'b'.repeat(64) },
+      [],
+    );
+
+    expect(result).toEqual({ kind: 'BRANCH_CONFLICT' });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 });

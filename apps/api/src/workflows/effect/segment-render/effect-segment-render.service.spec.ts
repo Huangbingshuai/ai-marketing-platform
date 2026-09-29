@@ -174,12 +174,23 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     startRepair: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
     importMaterials: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
     deleteMaterials: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
+    commitValidatedBatch: vi.fn().mockResolvedValue({ kind: 'COMMITTED', artifacts: [] }),
     ...repositoryOverrides,
   };
   const storage = {
     open: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
+  };
+  const workflowWorkingService = {
+    beginEffectNodeEdit: vi.fn().mockImplementation(async (_projectId: string, runId: string) => ({
+      run: { id: runId },
+      productIdMap: {},
+      taskIdMap: {},
+      created: false,
+    })),
+    publishEffectNodeEdit: vi.fn().mockResolvedValue({ createdBranch: false }),
+    assertEffectNodeWritable: vi.fn().mockResolvedValue(undefined),
   };
   const service = new EffectSegmentRenderService(
     repository as never,
@@ -200,11 +211,161 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
       saveNodeState: vi.fn(),
       listArtifacts: vi.fn().mockResolvedValue([]),
     } as never,
+    workflowWorkingService as never,
   );
-  return { service, repository, storage };
+  return { service, repository, storage, workflowWorkingService };
 };
 
 describe('EffectSegmentRenderService', () => {
+  it('creates a paid rerender in an unpublished child rather than mutating its parent run', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    workflowWorkingService.beginEffectNodeEdit.mockResolvedValue({
+      run: { id: 'run-child' },
+      productIdMap: { 'product-a': 'product-child' },
+      taskIdMap: {},
+      created: true,
+    });
+
+    const result = await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'rerender-child',
+    });
+
+    expect(repository.createBatch).toHaveBeenCalledWith(
+      'project-a',
+      'run-child',
+      'product-child',
+      expect.anything(),
+    );
+    expect(result.batch.workflowRunId).toBe('run-child');
+  });
+
+  it('auto-commits a complete fresh batch through the atomic repository boundary', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith({
+      commitValidatedBatch: vi.fn().mockResolvedValue({ kind: 'COMMITTED', artifacts: [] }),
+    });
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'auto-commit-batch',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    Object.assign(created.batch, { status: 'COMPLETED' });
+    Object.assign(created.batch.tasks[0], {
+      status: 'COMPLETED',
+      operationKind: 'GENERATE',
+      repairStatus: null,
+      outputFileObjectId: '33333333-3333-4333-8333-333333333333',
+      outputStorageKey: 'staging/clip.mp4',
+      outputFileName: 'P001.mp4',
+      outputMimeType: 'video/mp4',
+      outputSizeBytes: 1024,
+      outputContentHash: 'e'.repeat(64),
+    });
+    repository.batch.mockResolvedValue(created.batch);
+
+    await (service as unknown as { autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void> })
+      .autoCommitCompletedBatch('project-a', created.batch.id);
+
+    expect(repository.commitValidatedBatch).toHaveBeenCalledOnce();
+    expect(workflowWorkingService.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
+  it('rejects direct material edits on a published render run', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'published-edit-guard',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    repository.batch.mockResolvedValue(created.batch);
+    workflowWorkingService.assertEffectNodeWritable.mockRejectedValueOnce(
+      new ConflictException('已确认版本不可直接修改'),
+    );
+
+    await expect(
+      service.deleteMaterials('project-a', created.batch.id, [created.batch.tasks[0].id], 1, 'delete-denied'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(repository.deleteMaterials).not.toHaveBeenCalled();
+  });
+
+  it('resumes a committed auto batch publication after a duplicate Worker callback', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'resume-auto-publication',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    created.batch.workflowRunId = 'run-child';
+    created.batch.committedAt = new Date('2026-09-03T00:01:00.000Z');
+    repository.batch.mockResolvedValue(created.batch);
+    repository.workflowRun.mockResolvedValue({
+      id: 'run-child', parentWorkflowRunId: 'run-a', branchPublishedAt: null,
+      editSessionNodeId: 'SEGMENT_RENDER',
+    });
+
+    await (service as unknown as { autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void> })
+      .autoCommitCompletedBatch('project-a', created.batch.id);
+
+    expect(repository.commitValidatedBatch).not.toHaveBeenCalled();
+    expect(workflowWorkingService.publishEffectNodeEdit).toHaveBeenCalledWith(
+      'project-a', 'run-child', 'SEGMENT_RENDER',
+    );
+  });
+
+  it('recovers publication on batch polling without a repeated Worker callback', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'recover-on-batch-read',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    created.batch.workflowRunId = 'run-child';
+    created.batch.committedAt = new Date('2026-09-03T00:01:00.000Z');
+    repository.batch.mockResolvedValue(created.batch);
+    repository.latestBatch.mockResolvedValue(created.batch);
+    repository.workflowRun.mockResolvedValue({
+      id: 'run-child', parentWorkflowRunId: 'run-a', branchPublishedAt: null,
+      editSessionNodeId: 'SEGMENT_RENDER',
+    });
+    workflowWorkingService.publishEffectNodeEdit.mockRejectedValueOnce(new Error('transient'));
+
+    await expect(service.batch('project-a', created.batch.id)).rejects.toThrow('transient');
+    await service.workspace('project-a', 'run-child', 'product-a');
+
+    expect(workflowWorkingService.publishEffectNodeEdit).toHaveBeenCalledTimes(2);
+    expect(repository.commitValidatedBatch).not.toHaveBeenCalled();
+  });
+
+  it('does not publish an inherited committed batch while its child is still being edited', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'inherited-batch-read',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    created.batch.workflowRunId = 'run-child';
+    created.batch.committedAt = new Date('2026-09-02T00:01:00.000Z');
+    repository.batch.mockResolvedValue(created.batch);
+    repository.latestBatch.mockResolvedValue(created.batch);
+
+    await service.batch('project-a', created.batch.id);
+    await service.workspace('project-a', 'run-child', 'product-a');
+
+    expect(workflowWorkingService.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
   it('rejects ambiguous external-import mappings before storing files', async () => {
     const { service, storage } = serviceWith();
 

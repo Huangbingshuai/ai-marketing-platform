@@ -5,6 +5,10 @@ import type {
   EffectWorkflowBranch,
   EffectWorkflowBranchNodeId,
   EffectWorkflowBranchTreeData,
+  EffectWorkflowEditExitData,
+  EffectWorkflowEditPublishData,
+  EffectWorkflowEditSessionData,
+  EffectWorkflowEditableNodeId,
   PutWorkflowNodeStateData,
   PutWorkflowNodeStateRequest,
   WorkingArtifact,
@@ -13,7 +17,7 @@ import type {
   WorkflowNodeState,
   WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
-import { EFFECT_WORKFLOW_BRANCH_NODES } from '@ai-marketing/contracts';
+import { EFFECT_WORKFLOW_BRANCH_NODES, EFFECT_WORKFLOW_EDITABLE_NODES } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ApiHttpException } from '../../common/api-http-exception';
 import type { StoragePort, StorageRange, StoredStream } from '../file/storage.port';
@@ -108,6 +112,8 @@ const toRun = (record: {
   forkNodeId: string | null;
   forkTemplateId: string | null;
   branchLabel: string | null;
+  branchPublishedAt: Date | null;
+  editSessionNodeId: string | null;
   workflow: WorkingArtifactListQuery['workflow'];
   workflowSpace: WorkingArtifactListQuery['space'];
   status: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
@@ -122,6 +128,8 @@ const toRun = (record: {
   forkNodeId: record.forkNodeId,
   forkTemplateId: record.forkTemplateId,
   branchLabel: record.branchLabel,
+  isTemporaryBranch: Boolean(record.parentWorkflowRunId && !record.branchPublishedAt && record.editSessionNodeId),
+  editNodeId: EFFECT_WORKFLOW_EDITABLE_NODES.find((node) => node === record.editSessionNodeId) ?? null,
   workflow: record.workflow!,
   workflowSpace: record.workflowSpace!,
   status: record.status,
@@ -229,6 +237,66 @@ export class WorkflowWorkingService {
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
   ) {}
 
+  private effectEditNode(nodeId: string): EffectWorkflowEditableNodeId {
+    const accepted = EFFECT_WORKFLOW_EDITABLE_NODES.find((node) => node === nodeId);
+    if (!accepted)
+      throw new ApiHttpException('该节点不支持编辑分支', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+    return accepted;
+  }
+
+  async beginEffectNodeEdit(
+    projectId: string, workflowRunId: string, nodeId: string,
+  ): Promise<EffectWorkflowEditSessionData> {
+    await this.projectService.get(projectId);
+    const result = await this.repository.beginEffectNodeEdit(
+      projectId, workflowRunId, this.effectEditNode(nodeId));
+    if (!result) throw new ApiHttpException('当前分支无法进入编辑态', HttpStatus.CONFLICT, 'CONFLICT');
+    const run = await this.repository.findRun(projectId, result.runId);
+    if (!run) throw new ApiHttpException('编辑分支不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    return { run: toRun(run), parentWorkflowRunId: result.parentWorkflowRunId,
+      productIdMap: result.productIdMap, taskIdMap: result.taskIdMap,
+      created: result.created };
+  }
+
+  async cancelEffectNodeEdit(
+    projectId: string, workflowRunId: string, nodeId: string,
+  ): Promise<EffectWorkflowEditExitData> {
+    await this.projectService.get(projectId);
+    const result = await this.repository.cancelEffectNodeEdit(
+      projectId, workflowRunId, this.effectEditNode(nodeId));
+    if (!result) throw new ApiHttpException('编辑分支不存在或状态已变化', HttpStatus.CONFLICT, 'CONFLICT');
+    const run = await this.repository.findRun(projectId, result.runId);
+    if (!run) throw new ApiHttpException('工作流运行不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    return { run: toRun(run), activeWorkflowRunId: result.activeWorkflowRunId };
+  }
+
+  async publishEffectNodeEdit(
+    projectId: string, workflowRunId: string, nodeId: string,
+  ): Promise<EffectWorkflowEditPublishData> {
+    await this.projectService.get(projectId);
+    const result = await this.repository.publishEffectNodeEdit(
+      projectId, workflowRunId, this.effectEditNode(nodeId));
+    if (!result) throw new ApiHttpException('编辑分支不存在或状态已变化', HttpStatus.CONFLICT, 'CONFLICT');
+    const run = await this.repository.findRun(projectId, result.runId);
+    if (!run) throw new ApiHttpException('工作流运行不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    return { run: toRun(run), activeWorkflowRunId: result.activeWorkflowRunId,
+      createdBranch: result.createdBranch };
+  }
+
+  async assertEffectNodeWritable(projectId: string, workflowRunId: string, nodeId: string): Promise<void> {
+    await this.projectService.get(projectId);
+    const node = this.effectEditNode(nodeId);
+    const run = await this.repository.findRun(projectId, workflowRunId);
+    if (!run || run.workflow !== 'EFFECT' || run.workflowSpace !== 'EFFECT')
+      throw new ApiHttpException('工作流运行不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    if (run.parentWorkflowRunId && !run.branchPublishedAt) {
+      if (run.editSessionNodeId === node) return;
+      throw new ApiHttpException('编辑分支不属于当前节点', HttpStatus.CONFLICT, 'CONFLICT');
+    }
+    if (await this.repository.hasEffectConfirmedStageArtifact(projectId, workflowRunId, node))
+      throw new ApiHttpException('已确认版本不可直接修改，请先进入编辑状态', HttpStatus.CONFLICT, 'CONFLICT');
+  }
+
   async getActiveRunOverview(
     projectId: string,
     workflow: NonNullable<WorkingArtifactListQuery['workflow']>,
@@ -246,7 +314,18 @@ export class WorkflowWorkingService {
   async getEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
     await this.projectService.get(projectId);
     const runs = await this.repository.listEffectRunBranches(projectId);
-    const active = runs.find((run) => run.activeKey === 'ACTIVE') ?? null;
+    let active = runs.find((run) => run.activeKey === 'ACTIVE') ?? null;
+    if (!active) {
+      // A hidden edit child owns the active pointer, but must not appear in the tree.
+      let cursor = await this.repository.findActiveRun(projectId, 'EFFECT', 'EFFECT');
+      const seen = new Set<string>();
+      while (cursor?.parentWorkflowRunId && !seen.has(cursor.id)) {
+        seen.add(cursor.id);
+        active = runs.find((run) => run.id === cursor!.parentWorkflowRunId) ?? null;
+        if (active) break;
+        cursor = await this.repository.findRun(projectId, cursor.parentWorkflowRunId);
+      }
+    }
     if (!active) return { projectId, activeWorkflowRunId: null, branches: [] };
     const byId = new Map(runs.map((run) => [run.id, run]));
     let root = active;
@@ -357,9 +436,15 @@ export class WorkflowWorkingService {
           }
           templatesById.set(match[2], template);
         }
-        // A newly created template lives in the mix draft until validation. Show it in the
-        // canvas without inventing a confirmed artifact or a new workflow branch.
-        for (const state of run.nodeStates ?? []) {
+        // A mix draft must not make the version path jump over an unfinished render node.
+        // Keep the draft in the workspace, but project it into the tree only once this Run
+        // has an actual confirmed render output to connect it to.
+        const renderHasConfirmedOutput = visibleArtifacts.some(
+          (artifact) =>
+            artifact.nodeId === 'SEGMENT_RENDER' &&
+            artifact.artifactKey.startsWith('render-batch:'),
+        );
+        for (const state of renderHasConfirmedOutput ? (run.nodeStates ?? []) : []) {
           for (const draftTemplate of mixDraftTemplates(state.state)) {
             const template: EffectWorkflowBranch['templates'][number] = templatesById.get(
               draftTemplate.id,

@@ -7,7 +7,9 @@ export const EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD = 0.82;
 export const EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT = 15;
 
 export const EFFECT_PROMPT_LIMITS = {
+  // Retained for reading historical ten-item batches and in-flight snapshots.
   minCount: 10,
+  minNewBatchCount: 20,
   maxCount: 100,
   maxCandidateCount: 240,
   defaultCount: 50,
@@ -886,6 +888,8 @@ export type UndoEffectPromptRegenerationRequest = {
 export type ValidateEffectPromptResultRequest = { expectedRevision: number };
 export type ValidateEffectPromptResultData = {
   valid: boolean;
+  /** Actual active branch after a changed confirmation; omitted by older API versions. */
+  workflowRunId?: string;
   issues: Array<{ code: string; message: string }>;
   /** Non-blocking quality observations. They never prevent committing a complete batch. */
   warnings?: Array<{ code: string; message: string }>;

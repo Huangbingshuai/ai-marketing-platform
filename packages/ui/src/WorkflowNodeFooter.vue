@@ -10,6 +10,7 @@ withDefaults(
     validateDisabled?: boolean;
     validating?: boolean;
     validateLabel?: string;
+    showValidate?: boolean;
     showNext?: boolean;
   }>(),
   {
@@ -19,6 +20,7 @@ withDefaults(
     validateDisabled: false,
     validating: false,
     validateLabel: '完成校验',
+    showValidate: true,
     showNext: true,
   },
 );
@@ -65,7 +67,12 @@ defineEmits<{
     </div>
 
     <div class="workflow-node-footer__actions">
-      <button type="button" :disabled="validateDisabled || validating" @click="$emit('validate')">
+      <button
+        v-if="showValidate"
+        type="button"
+        :disabled="validateDisabled || validating"
+        @click="$emit('validate')"
+      >
         <span v-if="validating" class="workflow-node-footer__spinner" aria-hidden="true" />
         <svg v-else viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="9" />

@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   activateEffectWorkflowBranch,
   activateWorkflowNode,
+  beginEffectNodeEdit,
+  cancelEffectNodeEdit,
   getActiveWorkflowRunOverview,
   getEffectWorkflowBranchTree,
   listWorkingArtifacts,
+  publishEffectNodeEdit,
   putWorkflowNodeState,
 } from './workflow-working.api';
 
@@ -17,6 +20,20 @@ const ok = (): Response =>
   });
 
 describe('workflow working API', () => {
+  it('starts, cancels and publishes node edits within one project and Run', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => ok());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await beginEffectNodeEdit('project/one', 'run/one', 'PROMPT_GENERATION');
+    await cancelEffectNodeEdit('project/one', 'run/one', 'PROMPT_GENERATION');
+    await publishEffectNodeEdit('project/one', 'run/one', 'PROMPT_GENERATION');
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain('/projects/project%2Fone/workflow-runs/effect/branches/run%2Fone/nodes/PROMPT_GENERATION/edit');
+    expect(urls[1]).toBe(`${urls[0]}/cancel`);
+    expect(urls[2]).toBe(`${urls[0]}/publish`);
+    expect(fetchMock.mock.calls.every(([, init]) => (init as RequestInit).method === 'POST')).toBe(true);
+  });
   it('loads and activates effect branches through project-scoped routes', async () => {
     const fetchMock = vi.fn().mockImplementation(
       async () =>

@@ -5,6 +5,9 @@ import type {
   ActivateWorkflowNodeData,
   ActivateEffectWorkflowBranchData,
   EffectWorkflowBranchTreeData,
+  EffectWorkflowEditExitData,
+  EffectWorkflowEditPublishData,
+  EffectWorkflowEditSessionData,
   PutWorkflowNodeStateData,
   WorkingArtifactListData,
   WorkflowNodeState,
@@ -40,6 +43,33 @@ import { WorkflowWorkingService } from './workflow-working.service';
 @Controller('projects/:projectId')
 export class WorkflowWorkingController {
   constructor(@Inject(WorkflowWorkingService) private readonly service: WorkflowWorkingService) {}
+
+  @Post('workflow-runs/effect/branches/:workflowRunId/nodes/:nodeId/edit')
+  beginEffectNodeEdit(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+    @Param('nodeId') nodeId: string,
+  ): Promise<EffectWorkflowEditSessionData> {
+    return this.service.beginEffectNodeEdit(projectId, workflowRunId, nodeId);
+  }
+
+  @Post('workflow-runs/effect/branches/:workflowRunId/nodes/:nodeId/edit/cancel')
+  cancelEffectNodeEdit(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+    @Param('nodeId') nodeId: string,
+  ): Promise<EffectWorkflowEditExitData> {
+    return this.service.cancelEffectNodeEdit(projectId, workflowRunId, nodeId);
+  }
+
+  @Post('workflow-runs/effect/branches/:workflowRunId/nodes/:nodeId/edit/publish')
+  publishEffectNodeEdit(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+    @Param('nodeId') nodeId: string,
+  ): Promise<EffectWorkflowEditPublishData> {
+    return this.service.publishEffectNodeEdit(projectId, workflowRunId, nodeId);
+  }
 
   @Get('workflow-runs/effect/branches')
   getEffectBranchTree(

@@ -51,6 +51,7 @@ import type { StoredStream, StoragePort } from '../../../platform/file/storage.p
 import { STORAGE_PORT } from '../../../platform/file/storage.port';
 import { safeOriginalFileName } from '../../../platform/file/file-name';
 import { ProjectService } from '../../../platform/project/project.service';
+import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import {
   workingArtifactContentHash,
   type WorkingArtifactUpsertInput,
@@ -225,7 +226,53 @@ export class EffectSourceImportService {
     @Inject(EffectSourceImportRepository) private readonly repository: EffectSourceImportRepository,
     @Inject(ProjectService) private readonly projectService: ProjectService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
+    @Inject(WorkflowWorkingService) private readonly workingService: WorkflowWorkingService,
   ) {}
+
+  private async assertSourceWritable(
+    projectId: string,
+    workflowRunId?: string,
+    productIds?: readonly string[],
+    appendOnly = false,
+    finalizeUnchangedBatch = false,
+    includeRemoved = false,
+  ): Promise<void> {
+    const workspace = await this.repository.workspace(projectId);
+    if (!workspace || (workflowRunId && workspace.workflowRunId !== workflowRunId))
+      throw conflict();
+    // A legacy BATCH draft can be confirmed one product at a time. Until every
+    // product is confirmed, its unconfirmed products may still be edited in the
+    // initial Run; an already-confirmed product always needs an edit branch.
+    if ((productIds !== undefined || appendOnly || finalizeUnchangedBatch) &&
+        await this.repository.isActiveInitialRun(projectId, workspace.workflowRunId)) {
+      const batch = await this.repository.draft(projectId, 'BATCH');
+      if (batch && batch.validatedRevision !== batch.revision) {
+        const confirmed = new Set((await this.repository.sourceWorkingArtifacts(
+          projectId, workspace.workflowRunId,
+        )).filter((artifact) => artifact.artifactKey.startsWith('source-package:'))
+          .map((artifact) => artifact.artifactKey));
+        const activeIds = new Set(batch.products.map((product) => product.id));
+        if (includeRemoved) {
+          const removed = await this.repository.removedProducts(projectId, batch.id);
+          removed.forEach((product) => activeIds.add(product.id));
+        }
+        const hasUnconfirmed = batch.products.some(
+          (product) => !confirmed.has(`source-package:${product.id}`),
+        ) || (includeRemoved && (productIds?.some(
+          (id) => activeIds.has(id) && !confirmed.has(`source-package:${id}`),
+        ) ?? false));
+        if (finalizeUnchangedBatch && !hasUnconfirmed) return;
+        if (hasUnconfirmed && (appendOnly ||
+            (productIds?.every((id) => activeIds.has(id) &&
+              !confirmed.has(`source-package:${id}`)) ?? false))) return;
+      }
+    }
+    await this.workingService.assertEffectNodeWritable(
+      projectId,
+      workspace.workflowRunId,
+      'SOURCE_IMPORT',
+    );
+  }
 
   private async assertProject(projectId: string): Promise<void> {
     if (!(await this.projectService.exists(projectId)))
@@ -619,6 +666,7 @@ export class EffectSourceImportService {
   ): Promise<UpdateEffectImportDraftData> {
     this.assertMode(modeValue);
     await this.initialized(projectId);
+    await this.assertSourceWritable(projectId);
     if (!isValidConfig(config)) throw badRequest('全局视频配置无效');
     const resolution = normalizeEffectImportResolution(config.resolution);
     if (!resolution) throw badRequest('全局视频配置无效');
@@ -686,6 +734,7 @@ export class EffectSourceImportService {
   ): Promise<EffectImportProductMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, undefined, modeValue === 'BATCH');
     if (
       (modeValue === 'SINGLE' && draft.productCount >= 1) ||
       (modeValue === 'BATCH' && draft.productCount >= EFFECT_IMPORT_LIMITS.maxBatchProducts)
@@ -730,6 +779,7 @@ export class EffectSourceImportService {
   ): Promise<EffectImportProductMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
     const current = await this.repository.product(projectId, draft.id, productId);
     if (!current) throw notFound();
     const override =
@@ -764,6 +814,7 @@ export class EffectSourceImportService {
   ): Promise<BatchDeleteEffectImportProductsData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? productIds : undefined);
     const result = await this.repository.deleteProducts(
       projectId,
       draft.id,
@@ -828,6 +879,10 @@ export class EffectSourceImportService {
   ): Promise<BatchRestoreEffectImportProductsData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(
+      projectId, undefined, modeValue === 'BATCH' ? productIds : undefined,
+      false, false, modeValue === 'BATCH',
+    );
     try {
       const restored = await this.repository.restoreProducts(
         projectId,
@@ -963,6 +1018,7 @@ export class EffectSourceImportService {
   ): Promise<EffectImportMaterialMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!product) throw notFound();
     const productName = normalizeProductName(product.name) || '待提炼产品';
@@ -1095,6 +1151,7 @@ export class EffectSourceImportService {
   ): Promise<EffectImportUploadSession> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
     if (draft.revision !== input.expectedRevision) throw conflict();
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!product) throw notFound();
@@ -1150,6 +1207,7 @@ export class EffectSourceImportService {
     const item = session?.items.find((candidate) => candidate.clientFileId === clientFileId);
     if (!session || !item || item.status === 'REMOVED' || session.status !== 'UPLOADING')
       throw notFound();
+    await this.assertSourceWritable(projectId, session.workflowRunId, [session.productId]);
     const product = await this.repository.product(projectId, session.draftId, session.productId);
     if (!product) throw notFound();
     const project = await this.projectService.get(projectId);
@@ -1229,6 +1287,7 @@ export class EffectSourceImportService {
     const session = await this.repository.uploadSession(projectId, sessionId);
     const item = session?.items.find((candidate) => candidate.clientFileId === clientFileId);
     if (!session || !item) throw notFound();
+    await this.assertSourceWritable(projectId, session.workflowRunId, [session.productId]);
     const removed = await this.repository.removeUploadSessionItem(
       projectId,
       sessionId,
@@ -1255,6 +1314,7 @@ export class EffectSourceImportService {
     if (!normalizedCompletionKey) throw badRequest('完成会话幂等键不能为空');
     const session = await this.repository.uploadSession(projectId, sessionId);
     if (!session) throw notFound();
+    await this.assertSourceWritable(projectId, session.workflowRunId, [session.productId]);
     const product = await this.repository.product(projectId, session.draftId, session.productId);
     if (!product) throw notFound();
     const result = await this.repository.completeUploadSession(
@@ -1283,6 +1343,7 @@ export class EffectSourceImportService {
   ): Promise<EffectImportMaterialMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
     const current = await this.repository.material(projectId, productId, materialId);
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!current || !product) throw notFound();
@@ -1390,6 +1451,7 @@ export class EffectSourceImportService {
   ): Promise<EffectImportDeleteData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
     const result = await this.repository.deleteMaterial(
       projectId,
       draft.id,
@@ -1452,6 +1514,7 @@ export class EffectSourceImportService {
   ): Promise<BatchRetryEffectImportProductsData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? productIds : undefined);
     const materials = await this.repository.retryMaterials(
       projectId,
       draft.id,
@@ -1527,6 +1590,7 @@ export class EffectSourceImportService {
     files: UploadedEffectFile[],
   ): Promise<PreviewEffectManifestData> {
     const draft = await this.getDraft(projectId, 'BATCH');
+    await this.assertSourceWritable(projectId, undefined, undefined, true);
     const project = await this.projectService.get(projectId);
     if (draft.revision !== expectedRevision) throw conflict();
     if (!manifest || manifest.size < 1) throw badRequest('请选择清单文件', 'FILE_REQUIRED');
@@ -1726,6 +1790,7 @@ export class EffectSourceImportService {
     commitIdempotencyKey: string,
   ): Promise<CommitEffectManifestData> {
     const draft = await this.getDraft(projectId, 'BATCH');
+    await this.assertSourceWritable(projectId, undefined, undefined, true);
     const manifest = await this.repository.manifest(projectId, draft.id, importId);
     if (!manifest) throw notFound();
     if (manifest.status === 'COMMITTED') {
@@ -1950,6 +2015,7 @@ export class EffectSourceImportService {
   ): Promise<ValidateEffectImportProductData> {
     this.assertMode(modeValue);
     await this.initialized(projectId);
+    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
     const draftRecord = await this.repository.draft(projectId, modeValue);
     const workspace = await this.repository.workspace(projectId);
     if (!draftRecord || !workspace) throw notFound();
@@ -2014,6 +2080,22 @@ export class EffectSourceImportService {
     const draftRecord = await this.repository.draft(projectId, modeValue);
     const workspace = await this.repository.workspace(projectId);
     if (!draftRecord || !workspace) throw notFound();
+    const current = await this.draftWithCommitState(draftRecord);
+    const unconfirmedIds = current.products
+      .filter((product) => product.sourcePackageRevision === null)
+      .map((product) => product.id);
+    const confirmedUnchanged = current.products.every(
+      (product) => product.sourcePackageRevision === null || product.commitStatus === 'COMMITTED',
+    );
+    await this.assertSourceWritable(
+      projectId,
+      workspace.workflowRunId,
+      modeValue === 'BATCH' && confirmedUnchanged && unconfirmedIds.length > 0
+        ? unconfirmedIds
+        : undefined,
+      false,
+      modeValue === 'BATCH' && confirmedUnchanged && unconfirmedIds.length === 0,
+    );
     if (draftRecord.revision !== expectedRevision) throw conflict();
     const draft = this.draftValue(draftRecord);
     const issues = this.collectValidation(draft);

@@ -354,6 +354,27 @@ describe('EffectPromptRepository', () => {
     });
   });
 
+  it('blocks a new batch from a historical ten-item settings state without blocking old reads', async () => {
+    const transaction = {
+      effectPromptRun: { findUnique: vi.fn().mockResolvedValue(null) },
+      effectImportProduct: { findFirst: vi.fn().mockResolvedValue({ id: productId }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          revision: 1,
+          state: { targetCount: 10, defaultDurationSeconds: 5 },
+        }),
+      },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+    await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
+      kind: 'TARGET_COUNT_BELOW_MIN',
+    });
+  });
+
   it('snapshots all supported product images from the exact insight source package', async () => {
     const sourceArtifactId = '00000000-0000-4000-8000-000000000006';
     const imageFileId = '00000000-0000-4000-8000-000000000007';
@@ -726,17 +747,18 @@ describe('EffectPromptRepository', () => {
     });
     const fileFindFirst = vi
       .fn()
-      .mockResolvedValue({ id: fileObjectId, storageKey: 'private/key' });
+      .mockResolvedValue({ id: fileObjectId, workflowRunId, storageKey: 'private/key' });
     const repository = new EffectPromptRepository({
       effectPromptRun: { findFirst: runFindFirst },
       fileObject: { findFirst: fileFindFirst },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ parentWorkflowRunId: null }) },
     } as unknown as PrismaService);
 
     await expect(
       repository.productImageSource(projectId, runId, fileObjectId, 'attempt-a'),
     ).resolves.toEqual({
       reference,
-      fileObject: { id: fileObjectId, storageKey: 'private/key' },
+      fileObject: { id: fileObjectId, workflowRunId, storageKey: 'private/key' },
     });
     expect(runFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -751,7 +773,6 @@ describe('EffectPromptRepository', () => {
     expect(fileFindFirst).toHaveBeenCalledWith({
       where: {
         projectId,
-        workflowRunId,
         id: fileObjectId,
         status: 'AVAILABLE',
         sha256: reference.sha256,

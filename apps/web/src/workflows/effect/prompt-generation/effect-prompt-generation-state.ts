@@ -19,7 +19,12 @@ export const normalizePromptSettings = (
   settings: EffectPromptBatchSettings,
 ): EffectPromptBatchSettings => {
   const hydrated = hydratePromptSettings(settings);
-  return hydratePromptSettings({ ...hydrated, ...normalizeEffectPromptSettings(hydrated) });
+  const normalized = normalizeEffectPromptSettings(hydrated);
+  return hydratePromptSettings({
+    ...hydrated,
+    ...normalized,
+    targetCount: Math.max(EFFECT_PROMPT_LIMITS.minNewBatchCount, normalized.targetCount),
+  });
 };
 
 export const clonePromptSettings = (

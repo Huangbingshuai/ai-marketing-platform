@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { ProjectService } from '../../../platform/project/project.service';
+import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { EffectSourceImportRepository } from './effect-source-import.repository';
 import {
   EFFECT_MANIFEST_UPLOAD_TOTAL_BYTES,
@@ -52,6 +53,7 @@ const readZipEntry = (archive: Buffer, expectedName: string): Buffer => {
 const serviceWith = (
   repository: Partial<EffectSourceImportRepository> = {},
   storage: Partial<StoragePort> = {},
+  working: Partial<WorkflowWorkingService> = {},
 ) =>
   new EffectSourceImportService(
     {
@@ -62,6 +64,8 @@ const serviceWith = (
       deleteStorageCleanup: vi.fn().mockResolvedValue(undefined),
       failStorageCleanup: vi.fn().mockResolvedValue(undefined),
       sourceWorkingArtifacts: vi.fn().mockResolvedValue([]),
+      workspace: vi.fn().mockResolvedValue({ workflowRunId: 'run-1' }),
+      isActiveInitialRun: vi.fn().mockResolvedValue(false),
       ...repository,
     } as EffectSourceImportRepository,
     {
@@ -69,7 +73,170 @@ const serviceWith = (
       get: vi.fn().mockResolvedValue({ id: 'project-1', name: '测试项目' }),
     } as unknown as ProjectService,
     storage as StoragePort,
+    {
+      assertEffectNodeWritable: vi.fn().mockResolvedValue(undefined),
+      ...working,
+    } as unknown as WorkflowWorkingService,
   );
+
+describe('confirmed source edit boundary', () => {
+  it('rejects a direct mutation of a published source run before touching product rows', async () => {
+    const denied = new Error('已确认版本不可直接修改，请先进入编辑状态');
+    const deleteProducts = vi.fn();
+    const service = serviceWith(
+      { deleteProducts },
+      {},
+      { assertEffectNodeWritable: vi.fn().mockRejectedValue(denied) },
+    );
+    vi.spyOn(service, 'getDraft').mockResolvedValue({ id: 'draft-1', revision: 3 } as EffectImportDraft);
+    await expect(service.deleteProduct('project-1', 'SINGLE', 'product-1', 3)).rejects.toBe(denied);
+    expect(deleteProducts).not.toHaveBeenCalled();
+  });
+
+  it('permits an unconfirmed product in an unfinished initial BATCH without editing confirmed siblings', async () => {
+    const deleteProducts = vi.fn().mockResolvedValue({
+      deletedIds: ['pending-product'],
+      removedProducts: [{
+        id: 'pending-product', name: '待确认商品',
+        removedAt: new Date('2026-09-29T00:00:00.000Z'),
+        purgeAfter: new Date('2026-09-30T00:00:00.000Z'),
+      }],
+      revision: 4,
+    });
+    const guard = vi.fn().mockRejectedValue(new Error('confirmed run is read-only'));
+    const service = serviceWith({
+      isActiveInitialRun: vi.fn().mockResolvedValue(true),
+      draft: vi.fn().mockResolvedValue({
+        revision: 3, validatedRevision: null,
+        products: [{ id: 'confirmed-product' }, { id: 'pending-product' }],
+      }),
+      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
+        { artifactKey: 'source-package:confirmed-product' },
+      ]),
+      deleteProducts,
+    }, {}, { assertEffectNodeWritable: guard });
+    vi.spyOn(service, 'getDraft').mockResolvedValue({ id: 'draft-1', revision: 3 } as EffectImportDraft);
+
+    await expect(service.deleteProduct('project-1', 'BATCH', 'pending-product', 3))
+      .resolves.toMatchObject({ deleted: true, revision: 4 });
+    expect(deleteProducts).toHaveBeenCalledWith('project-1', 'draft-1', ['pending-product'], 3);
+    expect(guard).not.toHaveBeenCalled();
+  });
+
+  it('still rejects mutation of a confirmed sibling in that unfinished BATCH', async () => {
+    const deleteProducts = vi.fn();
+    const service = serviceWith({
+      isActiveInitialRun: vi.fn().mockResolvedValue(true),
+      draft: vi.fn().mockResolvedValue({
+        revision: 3, validatedRevision: null,
+        products: [{ id: 'confirmed-product' }, { id: 'pending-product' }],
+      }),
+      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
+        { artifactKey: 'source-package:confirmed-product' },
+      ]),
+      deleteProducts,
+    }, {}, {
+      assertEffectNodeWritable: vi.fn().mockRejectedValue(new Error('confirmed run is read-only')),
+    });
+    vi.spyOn(service, 'getDraft').mockResolvedValue({ id: 'draft-1', revision: 3 } as EffectImportDraft);
+
+    await expect(service.deleteProduct('project-1', 'BATCH', 'confirmed-product', 3))
+      .rejects.toThrow('confirmed run is read-only');
+    expect(deleteProducts).not.toHaveBeenCalled();
+  });
+
+  it('can validate the next unconfirmed BATCH product after its sibling was confirmed', async () => {
+    const products = [{ id: 'confirmed-product' }, { id: 'pending-product' }];
+    const draftRecord = {
+      id: 'draft-1', mode: 'BATCH', revision: 3, validatedRevision: null, products,
+    };
+    const commitProductValidation = vi.fn().mockResolvedValue({
+      draft: draftRecord,
+      artifacts: [{ artifactKey: 'source-package:pending-product', revision: 1, unchanged: false }],
+      allProductsValidated: true,
+    });
+    const service = serviceWith({
+      isActiveInitialRun: vi.fn().mockResolvedValue(true),
+      draft: vi.fn().mockResolvedValue(draftRecord),
+      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
+        { artifactKey: 'source-package:confirmed-product' },
+      ]),
+      commitProductValidation,
+    }, {}, {
+      assertEffectNodeWritable: vi.fn().mockRejectedValue(new Error('confirmed run is read-only')),
+    });
+    const internal = service as unknown as {
+      initialized: (projectId: string) => Promise<unknown>;
+      draftValue: (record: unknown) => unknown;
+      collectValidation: (draft: unknown) => unknown[];
+      artifactCandidates: (product: { id: string }) => unknown[];
+      draftWithCommitState: (record: unknown) => Promise<unknown>;
+    };
+    vi.spyOn(internal, 'initialized').mockResolvedValue({});
+    vi.spyOn(internal, 'draftValue').mockReturnValue({ id: 'draft-1' });
+    vi.spyOn(internal, 'collectValidation').mockReturnValue([]);
+    vi.spyOn(internal, 'artifactCandidates').mockImplementation(
+      (product) => [{ artifactKey: `source-package:${product.id}`, input: {} }],
+    );
+    vi.spyOn(internal, 'draftWithCommitState').mockResolvedValue({ id: 'draft-1' });
+
+    const result = await service.validateProduct('project-1', 'BATCH', 'pending-product', 3);
+    expect(result.valid).toBe(true);
+    expect(commitProductValidation).toHaveBeenCalledWith(
+      'project-1', 'draft-1', 'BATCH', 'run-1', 3,
+      [{ artifactKey: 'source-package:pending-product', input: {} }],
+      [
+        { artifactKey: 'source-package:confirmed-product', input: {} },
+        { artifactKey: 'source-package:pending-product', input: {} },
+      ],
+      [],
+    );
+  });
+
+  it('finalizes an unfinished BATCH after its last unconfirmed product was removed', async () => {
+    const draftRecord = {
+      id: 'draft-1', mode: 'BATCH', revision: 4, validatedRevision: null,
+      products: [{ id: 'confirmed-product' }],
+    };
+    const guard = vi.fn().mockRejectedValue(new Error('confirmed run is read-only'));
+    const commitProductValidation = vi.fn().mockResolvedValue({
+      draft: draftRecord,
+      artifacts: [{ artifactKey: 'source-package:confirmed-product', revision: 1, unchanged: true }],
+      allProductsValidated: true,
+    });
+    const service = serviceWith({
+      isActiveInitialRun: vi.fn().mockResolvedValue(true),
+      draft: vi.fn().mockResolvedValue(draftRecord),
+      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
+        { artifactKey: 'source-package:confirmed-product' },
+      ]),
+      commitProductValidation,
+    }, {}, { assertEffectNodeWritable: guard });
+    const internal = service as unknown as {
+      initialized: (projectId: string) => Promise<unknown>;
+      draftValue: (record: unknown) => unknown;
+      collectValidation: (draft: unknown) => unknown[];
+      artifactCandidates: (product: { id: string }) => unknown[];
+      draftWithCommitState: (record: unknown) => Promise<unknown>;
+    };
+    vi.spyOn(internal, 'initialized').mockResolvedValue({});
+    vi.spyOn(internal, 'draftValue').mockReturnValue({ id: 'draft-1' });
+    vi.spyOn(internal, 'collectValidation').mockReturnValue([]);
+    vi.spyOn(internal, 'artifactCandidates').mockImplementation(
+      (product) => [{ artifactKey: `source-package:${product.id}`, input: {} }],
+    );
+    vi.spyOn(internal, 'draftWithCommitState').mockResolvedValue({
+      id: 'draft-1', products: [{
+        id: 'confirmed-product', sourcePackageRevision: 1, commitStatus: 'COMMITTED',
+      }],
+    });
+
+    await expect(service.validate('project-1', 'BATCH', 4))
+      .resolves.toMatchObject({ validation: { valid: true }, allProductsValidated: true });
+    expect(guard).not.toHaveBeenCalled();
+    expect(commitProductValidation).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('normalizeMultipartFileName', () => {
   it('recovers UTF-8 Chinese file names decoded as latin1 by multipart parsing', () => {

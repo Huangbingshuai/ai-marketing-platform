@@ -11,6 +11,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Prisma, type WorkflowNodeState } from '../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { workflowStateHash } from './workflow-state-hash';
+import { beginEffectEditInTransaction, exitEffectEditInTransaction } from './effect-edit-session';
 
 export type WorkingArtifactUpsertInput = {
   kind: WorkingArtifactKind;
@@ -229,6 +230,82 @@ const artifactRevisionSnapshot = (record: WorkingArtifactRecord): Prisma.InputJs
 @Injectable()
 export class WorkflowWorkingRepository {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  async hasEffectConfirmedStageArtifact(
+    projectId: string, workflowRunId: string, nodeId: EffectWorkflowBranchNodeId,
+  ): Promise<boolean> {
+    const prefixes: Record<string, string> = {
+      SOURCE_IMPORT: 'source-package:', INFORMATION_EXTRACTION: 'marketing-insight:',
+      PROMPT_GENERATION: 'prompt-batch:', SEGMENT_RENDER: 'render-batch:',
+    };
+    const prefix = prefixes[nodeId];
+    if (!prefix) return false;
+    let runId: string | null = workflowRunId;
+    const visited = new Set<string>();
+    while (runId && !visited.has(runId)) {
+      visited.add(runId);
+      const artifact = await this.prisma.workingArtifact.findFirst({ where: {
+        projectId, workflowRunId: runId, nodeId,
+        artifactKey: { startsWith: prefix }, availability: 'AVAILABLE',
+      }, select: { id: true } });
+      if (artifact) return true;
+      const run: { parentWorkflowRunId: string | null; forkNodeId: string | null } | null =
+        await this.prisma.workflowRun.findFirst({ where: {
+          projectId, id: runId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+        }, select: { parentWorkflowRunId: true, forkNodeId: true } });
+      if (!run?.parentWorkflowRunId) break;
+      const stageIndex = EFFECT_WORKFLOW_BRANCH_NODES.indexOf(nodeId);
+      const forkIndex = EFFECT_WORKFLOW_BRANCH_NODES.indexOf(
+        run.forkNodeId as EffectWorkflowBranchNodeId);
+      if (forkIndex < 0 || stageIndex >= forkIndex) break;
+      runId = run.parentWorkflowRunId;
+    }
+    return false;
+  }
+
+  beginEffectNodeEditInTransaction(
+    transaction: Prisma.TransactionClient, projectId: string, parentRunId: string,
+    nodeId: EffectWorkflowBranchNodeId,
+  ) {
+    if (!['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId))
+      return Promise.resolve(null);
+    return beginEffectEditInTransaction(transaction, projectId, parentRunId,
+      nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER');
+  }
+
+  beginEffectNodeEdit(projectId: string, parentRunId: string, nodeId: EffectWorkflowBranchNodeId) {
+    return this.prisma.$transaction((transaction) =>
+      this.beginEffectNodeEditInTransaction(transaction, projectId, parentRunId, nodeId),
+      { timeout: 120_000 },
+    );
+  }
+
+  publishEffectNodeEditInTransaction(
+    transaction: Prisma.TransactionClient, projectId: string, draftRunId: string,
+    nodeId: EffectWorkflowBranchNodeId,
+  ) {
+    if (!['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId))
+      return Promise.resolve(null);
+    return exitEffectEditInTransaction(transaction, projectId, draftRunId,
+      nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER', true);
+  }
+
+  publishEffectNodeEdit(projectId: string, draftRunId: string, nodeId: EffectWorkflowBranchNodeId) {
+    return this.prisma.$transaction((transaction) =>
+      this.publishEffectNodeEditInTransaction(transaction, projectId, draftRunId, nodeId),
+      { timeout: 120_000 },
+    );
+  }
+
+  cancelEffectNodeEdit(projectId: string, draftRunId: string, nodeId: EffectWorkflowBranchNodeId) {
+    if (!['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId))
+      return Promise.resolve(null);
+    return this.prisma.$transaction((transaction) =>
+      exitEffectEditInTransaction(transaction, projectId, draftRunId,
+        nodeId as 'SOURCE_IMPORT' | 'INFORMATION_EXTRACTION' | 'PROMPT_GENERATION' | 'SEGMENT_RENDER', false),
+      { timeout: 120_000 },
+    );
+  }
 
   findRun(projectId: string, workflowRunId: string) {
     return this.prisma.workflowRun.findFirst({ where: { id: workflowRunId, projectId } });

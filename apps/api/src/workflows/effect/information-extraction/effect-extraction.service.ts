@@ -244,6 +244,19 @@ export class EffectExtractionService {
     private readonly workingService?: WorkflowWorkingService,
   ) {}
 
+  private async assertExtractionWritable(projectId: string, draftId: string): Promise<void> {
+    // Legacy unit harnesses instantiate the service without the optional workflow provider.
+    // The production module always imports WorkflowModule and enforces this guard.
+    if (!this.workingService) return;
+    const workflowRunId = await this.repository.workflowRunIdForDraft(projectId, draftId);
+    if (!workflowRunId) throw notFound('资料草稿不存在');
+    await this.workingService.assertEffectNodeWritable(
+      projectId,
+      workflowRunId,
+      'INFORMATION_EXTRACTION',
+    );
+  }
+
   private async workingResultInput(record: {
     id: string;
     projectId: string;
@@ -457,6 +470,7 @@ export class EffectExtractionService {
     },
   ): Promise<StartEffectExtractionRunData> {
     await this.projects.get(projectId);
+    await this.assertExtractionWritable(projectId, input.draftId);
     const idempotencyKey = input.idempotencyKey.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
     const result = await this.repository.startRun(
@@ -522,6 +536,7 @@ export class EffectExtractionService {
     if (!isEffectExtractionResult(result)) throw badRequest('提炼结果不符合标准结构');
     const existing = await this.repository.result(projectId, resultId);
     if (!existing) throw notFound('提炼结果不存在');
+    await this.assertExtractionWritable(projectId, existing.draftId);
     const sourceRun = await this.repository.run(projectId, existing.runId);
     const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
     if (!snapshot) throw conflict('提炼输入快照不存在，请重新提炼');
@@ -557,6 +572,7 @@ export class EffectExtractionService {
     await this.projects.get(projectId);
     const existing = await this.repository.result(projectId, resultId);
     if (!existing) throw notFound('提炼结果不存在');
+    await this.assertExtractionWritable(projectId, existing.draftId);
     if (existing.revision !== expectedRevision)
       throw conflict('提炼结果已被其他操作更新，请刷新后重试');
     const sourceRun = await this.repository.run(projectId, existing.runId);

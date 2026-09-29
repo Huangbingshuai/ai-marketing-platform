@@ -51,9 +51,10 @@ const isUniqueConflict = (error: unknown): boolean =>
 // Prisma's 5s default budget aborts the transaction then, and that abort used to surface as a bare 500
 // "服务器内部错误", which told the user nothing about retrying. Give the commit a budget that fits its
 // size, retry a transient clash once, and let the caller report whatever is left as a conflict.
-const COMMIT_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
+const COMMIT_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 120_000 };
 const COMMIT_TRANSACTION_ATTEMPTS = 2;
 const COMMIT_TRANSACTION_RETRY_DELAY_MS = 200;
+const BRANCH_PUBLICATION_CONFLICT = 'EFFECT_RENDER_BRANCH_PUBLICATION_CONFLICT';
 const isTransientTransactionError = (error: unknown): boolean => {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const { code } = error as { code?: unknown };
@@ -209,7 +210,7 @@ export class EffectSegmentRenderRepository {
 
   latestBatch(projectId: string, workflowRunId: string, productId: string) {
     return this.prisma.effectSegmentRenderBatch.findFirst({
-      where: { projectId, workflowRunId, productId },
+      where: { projectId, workflowRunId, productId, archivedAt: null },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: effectSegmentRenderBatchInclude,
     });
@@ -217,23 +218,39 @@ export class EffectSegmentRenderRepository {
 
   batch(projectId: string, batchId: string) {
     return this.prisma.effectSegmentRenderBatch.findFirst({
-      where: { projectId, id: batchId },
+      where: { projectId, id: batchId, archivedAt: null },
       include: effectSegmentRenderBatchInclude,
     });
   }
 
   task(projectId: string, taskId: string) {
-    return this.prisma.effectSegmentRenderTask.findFirst({ where: { projectId, id: taskId } });
+    return this.prisma.effectSegmentRenderTask.findFirst({
+      where: { projectId, id: taskId, batch: { archivedAt: null } },
+    });
   }
 
   taskById(taskId: string) {
     return this.prisma.effectSegmentRenderTask.findUnique({ where: { id: taskId } });
   }
 
-  fileObject(projectId: string, workflowRunId: string, fileObjectId: string) {
-    return this.prisma.fileObject.findFirst({
-      where: { projectId, workflowRunId, id: fileObjectId, status: 'AVAILABLE' },
+  async fileObject(projectId: string, workflowRunId: string, fileObjectId: string) {
+    const file = await this.prisma.fileObject.findFirst({
+      where: { projectId, id: fileObjectId, status: 'AVAILABLE' },
     });
+    if (!file) return null;
+    let runId: string | null = workflowRunId;
+    const visited = new Set<string>();
+    while (runId && !visited.has(runId)) {
+      visited.add(runId);
+      if (file.workflowRunId === runId) return file;
+      const run: { parentWorkflowRunId: string | null } | null =
+        await this.prisma.workflowRun.findFirst({
+        where: { projectId, id: runId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+        select: { parentWorkflowRunId: true },
+        });
+      runId = run?.parentWorkflowRunId ?? null;
+    }
+    return null;
   }
 
   async createBatch(
@@ -257,6 +274,7 @@ export class EffectSegmentRenderRepository {
           },
           include: effectSegmentRenderBatchInclude,
         });
+        if (existing?.archivedAt) return { kind: 'KEY_CONFLICT' as const };
         if (existing)
           return existing.requestHash === input.requestHash
             ? { kind: 'REPLAYED' as const, batch: existing }
@@ -325,7 +343,7 @@ export class EffectSegmentRenderRepository {
         )
           return { kind: 'SOURCE_CONFLICT' as const };
         const active = await transaction.effectSegmentRenderBatch.findFirst({
-          where: { projectId, workflowRunId, productId, activeKey: 'ACTIVE' },
+          where: { projectId, workflowRunId, productId, activeKey: 'ACTIVE', archivedAt: null },
         });
         if (active) return { kind: 'ACTIVE_CONFLICT' as const };
         await transaction.effectSegmentRenderBatch.create({
@@ -640,17 +658,9 @@ export class EffectSegmentRenderRepository {
           batch.workflowRunId,
           { ...imported.file, nodeId: 'SEGMENT_RENDER' },
         );
-        const oldFileIds = [
-          task.outputFileObjectId,
-          posterFileObjectId(task.outputPoster),
-          task.repairCandidateFileObjectId,
-          posterFileObjectId(task.repairCandidatePoster),
-        ].filter((id): id is string => Boolean(id && id !== fileObject.id));
-        if (oldFileIds.length)
-          await transaction.fileObject.updateMany({
-            where: { projectId, id: { in: oldFileIds } },
-            data: { status: 'ORPHANED', orphanedAt: new Date() },
-          });
+        // A published parent branch may still reference the replaced file object.
+        // Keep old media available for version history; branch garbage collection
+        // owns eventual reclamation after all references have disappeared.
         const version = task.renderVersion + 1;
         await transaction.effectSegmentRenderTask.update({
           where: { projectId_id: { projectId, id: task.id } },
@@ -761,16 +771,8 @@ export class EffectSegmentRenderRepository {
       await transaction.effectSegmentRenderOperationReceipt.create({
         data: { projectId, batchId, idempotencyKey, requestHash },
       });
-      const fileIds = tasks.flatMap((task) =>
-        [task.outputFileObjectId, posterFileObjectId(task.outputPoster)].filter(
-          (id): id is string => Boolean(id),
-        ),
-      );
-      if (fileIds.length)
-        await transaction.fileObject.updateMany({
-          where: { projectId, id: { in: fileIds } },
-          data: { status: 'ORPHANED', orphanedAt: new Date() },
-        });
+      // Deleting a clip from this draft must not revoke media referenced by a
+      // published parent or sibling branch.
       await transaction.effectSegmentRenderTask.updateMany({
         where: { projectId, batchId, id: { in: uniqueTaskIds } },
         data: {
@@ -1048,10 +1050,6 @@ export class EffectSegmentRenderRepository {
       await transaction.effectSegmentRenderOperationReceipt.create({
         data: { projectId, batchId, idempotencyKey, requestHash },
       });
-      const filesToOrphan = [
-        decision === 'ACCEPT' ? task.outputFileObjectId : task.repairCandidateFileObjectId,
-        posterFileObjectId(decision === 'ACCEPT' ? task.outputPoster : task.repairCandidatePoster),
-      ].filter((fileObjectId): fileObjectId is string => Boolean(fileObjectId));
       const repairSnapshot = task.requestSnapshot as unknown as {
         inputVideo?: { providerTaskId?: unknown };
       };
@@ -1060,11 +1058,7 @@ export class EffectSegmentRenderRepository {
         repairSnapshot.inputVideo.providerTaskId.trim()
           ? repairSnapshot.inputVideo.providerTaskId.trim()
           : null;
-      if (filesToOrphan.length)
-        await transaction.fileObject.updateMany({
-          where: { projectId, id: { in: filesToOrphan } },
-          data: { status: 'ORPHANED', orphanedAt: new Date() },
-        });
+      // The previous active clip remains playable from older branches.
       await transaction.effectSegmentRenderTask.update({
         where: { projectId_id: { projectId, id: taskId } },
         data: {
@@ -1302,17 +1296,8 @@ export class EffectSegmentRenderRepository {
         await this.settleBatchInTransaction(transaction, projectId, task.batchId, now);
         return { kind: 'REPAIR_COMPLETED' as const, task: completed };
       }
-      const oldOutputFileIds = [
-        task.outputFileObjectId && task.outputFileObjectId !== fileObject.id
-          ? task.outputFileObjectId
-          : null,
-        posterFileObjectId(task.outputPoster),
-      ].filter((fileObjectId): fileObjectId is string => Boolean(fileObjectId));
-      if (oldOutputFileIds.length)
-        await transaction.fileObject.updateMany({
-          where: { projectId, id: { in: oldOutputFileIds } },
-          data: { status: 'ORPHANED', orphanedAt: now },
-        });
+      // A regenerated output can replace the draft's active version without
+      // invalidating the old file object used by an earlier branch.
       const completed = await transaction.effectSegmentRenderTask.update({
         where: { projectId_id: { projectId, id: taskId } },
         data: {
@@ -1588,6 +1573,8 @@ export class EffectSegmentRenderRepository {
           COMMIT_TRANSACTION_OPTIONS,
         );
       } catch (error) {
+        if (error instanceof Error && error.message === BRANCH_PUBLICATION_CONFLICT)
+          return { kind: 'BRANCH_CONFLICT' as const };
         if (!isTransientTransactionError(error)) throw error;
         if (attempt >= COMMIT_TRANSACTION_ATTEMPTS) return { kind: 'CONFLICT' as const };
         await new Promise((resolve) => {
@@ -1606,6 +1593,11 @@ export class EffectSegmentRenderRepository {
     sourcePackage: { artifactId: string; revision: number; contentHash: string },
     artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
   ) {
+    // Branch creation/activation takes the project lock. Acquire it before the
+    // batch lock so this transaction shares the edit-session lock order.
+    await transaction.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "projects" WHERE "id" = ${projectId}::uuid FOR UPDATE
+    `;
     await transaction.$queryRaw<Array<{ id: string }>>`
       SELECT "id" FROM "effect_segment_render_batches"
       WHERE "projectId" = ${projectId}::uuid
@@ -1668,8 +1660,27 @@ export class EffectSegmentRenderRepository {
       where: { projectId_id: { projectId, id: batchId } },
       data: { committedAt: new Date() },
     });
+    const run = await transaction.workflowRun.findFirst({
+      where: { projectId, id: batch.workflowRunId },
+      select: { parentWorkflowRunId: true, branchPublishedAt: true, editSessionNodeId: true },
+    });
+    if (!run) throw new Error(BRANCH_PUBLICATION_CONFLICT);
+    let publication: { activeWorkflowRunId: string; createdBranch: boolean } | null = null;
+    if (run.parentWorkflowRunId && !run.branchPublishedAt) {
+      if (run.editSessionNodeId !== 'SEGMENT_RENDER')
+        throw new Error(BRANCH_PUBLICATION_CONFLICT);
+      const result = await this.workingRepository.publishEffectNodeEditInTransaction(
+        transaction, projectId, batch.workflowRunId, 'SEGMENT_RENDER',
+      );
+      if (!result) throw new Error(BRANCH_PUBLICATION_CONFLICT);
+      publication = {
+        activeWorkflowRunId: result.activeWorkflowRunId,
+        createdBranch: result.createdBranch,
+      };
+    }
     return {
       kind: 'COMMITTED' as const,
+      publication,
       artifacts: committed.map((item) => ({
         artifactId: item.record.id,
         artifactKey: item.artifactKey,

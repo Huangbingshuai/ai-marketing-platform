@@ -43,8 +43,11 @@ import {
 import { ApiClientError, isAbortError, isNetworkError } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
+  beginEffectNodeEdit,
+  cancelEffectNodeEdit,
   getActiveWorkflowRunOverview,
   getWorkflowNodeState,
+  publishEffectNodeEdit,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
 import {
@@ -75,11 +78,14 @@ const props = defineProps<{
   draftId: string;
   mode: EffectImportMode;
   products: EffectImportProduct[];
+  temporaryBranch: boolean;
+  activeEditNodeId: string | null;
 }>();
 
 const emit = defineEmits<{
   back: [];
   next: [];
+  workflowRunChange: [];
 }>();
 
 const productStates = ref<Record<string, EffectExtractionProductState>>({});
@@ -94,6 +100,7 @@ const pollingErrors = ref<Record<string, string>>({});
 const graphDialogOpen = ref(false);
 const graphLoading = ref(false);
 const validating = ref(false);
+const editBusy = ref(false);
 const validationMessage = ref('');
 const graphError = ref('');
 const graphNodesByProduct = ref<Record<string, EffectExtractionNodeExecution[]>>({});
@@ -158,6 +165,11 @@ const readyForNext = computed(
     ),
 );
 const currentRunning = computed(() => isExtractionRunning(currentState.value));
+const editing = computed(() =>
+  props.temporaryBranch
+    ? props.activeEditNodeId === 'INFORMATION_EXTRACTION'
+    : currentState.value?.workingArtifactRevision === null,
+);
 const imageRecognitionWithoutNewFacts = computed(() => {
   const summary = currentState.value?.imageRecognitionSummary;
   return summary && summary.retainedSuggestionCount === 0 ? summary : null;
@@ -444,7 +456,9 @@ const emptyExtractionResult: EffectExtractionResult = {
   sellingPoints: [''],
 };
 const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
-const baseFieldsReadonly = computed(() => !currentState.value?.result || currentRunning.value);
+const baseFieldsReadonly = computed(
+  () => !editing.value || !currentState.value?.result || currentRunning.value,
+);
 const semanticNoticeDismissDisabled = computed(
   () => baseFieldsReadonly.value || currentState.value?.saveState === 'SAVING',
 );
@@ -538,7 +552,7 @@ const commitStatusLabel = computed(() =>
     ? {
         UNVALIDATED: '尚未提交工作副本',
         COMMITTED: `工作副本 revision ${currentState.value.workingArtifactRevision ?? 1}`,
-        DRAFT_CHANGED: '存在未校验修改',
+        DRAFT_CHANGED: '存在未保存的版本修改',
         STALE: '工作副本待更新',
       }[currentState.value.commitStatus]
     : '',
@@ -913,7 +927,7 @@ const loadWorkspace = async (showLoading = true): Promise<void> => {
 const runCurrentExtraction = async (): Promise<void> => {
   const product = currentProduct.value;
   const state = currentState.value;
-  if (!product || !state || isExtractionRunning(state)) return;
+  if (!product || !state || isExtractionRunning(state) || !editing.value) return;
   if (
     state.status !== 'NOT_GENERATED' &&
     !(await requestActionConfirmation({
@@ -1257,14 +1271,58 @@ const validateCurrentResult = async (): Promise<void> => {
       commitStatus: 'COMMITTED',
       workingArtifactRevision: artifact?.revision ?? refreshed.workingArtifactRevision,
     });
-    validationMessage.value = artifact?.unchanged
-      ? '内容未变化，工作副本保持不变'
-      : '工作副本已更新';
-    if (!response.data.allProductsValidated) validationMessage.value += '，请继续完成其他产品校验';
+    if (!response.data.valid) {
+      validationMessage.value = response.data.issues.map((issue) => issue.message).join('；');
+      return;
+    }
+    if (!response.data.allProductsValidated) {
+      validationMessage.value = '当前产品已保存，请继续保存其他产品版本';
+      return;
+    }
+    const published = await publishEffectNodeEdit(
+      props.projectId,
+      props.workflowRunId,
+      'INFORMATION_EXTRACTION',
+    );
+    validationMessage.value = published.data.createdBranch
+      ? '信息卡已保存为新版本'
+      : artifact?.unchanged
+        ? '内容未变化，保持当前版本'
+        : '信息卡版本已保存';
+    emit('workflowRunChange');
   } catch (error) {
-    validationMessage.value = error instanceof Error ? error.message : '完成校验失败';
+    validationMessage.value = error instanceof Error ? error.message : '保存版本失败';
   } finally {
     validating.value = false;
+  }
+};
+
+const beginExtractionEdit = async (): Promise<void> => {
+  if (editBusy.value || editing.value || currentRunning.value) return;
+  editBusy.value = true;
+  validationMessage.value = '';
+  try {
+    await beginEffectNodeEdit(props.projectId, props.workflowRunId, 'INFORMATION_EXTRACTION');
+    emit('workflowRunChange');
+  } catch (error) {
+    validationMessage.value = error instanceof Error ? error.message : '进入编辑失败';
+  } finally {
+    editBusy.value = false;
+  }
+};
+
+const cancelExtractionEdit = async (): Promise<void> => {
+  if (!props.temporaryBranch || props.activeEditNodeId !== 'INFORMATION_EXTRACTION' || editBusy.value)
+    return;
+  editBusy.value = true;
+  validationMessage.value = '';
+  try {
+    await cancelEffectNodeEdit(props.projectId, props.workflowRunId, 'INFORMATION_EXTRACTION');
+    emit('workflowRunChange');
+  } catch (error) {
+    validationMessage.value = error instanceof Error ? error.message : '取消编辑失败';
+  } finally {
+    editBusy.value = false;
   }
 };
 
@@ -1360,6 +1418,20 @@ onBeforeUnmount(() => {
         </div>
         <div class="extraction-heading__actions">
           <button
+            v-if="!editing"
+            class="secondary-button"
+            type="button"
+            :disabled="editBusy || currentRunning"
+            @click="beginExtractionEdit"
+          >进入编辑</button>
+          <button
+            v-else-if="temporaryBranch && activeEditNodeId === 'INFORMATION_EXTRACTION'"
+            class="secondary-button"
+            type="button"
+            :disabled="editBusy || validating || currentRunning"
+            @click="cancelExtractionEdit"
+          >取消编辑</button>
+          <button
             ref="graphTrigger"
             class="secondary-button workflow-graph-trigger"
             type="button"
@@ -1371,7 +1443,7 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            :disabled="currentRunning"
+            :disabled="currentRunning || !editing"
             @click="runCurrentExtraction"
           >
             <LoaderCircle v-if="currentRunning" class="spin" :size="14" />
@@ -1386,7 +1458,7 @@ onBeforeUnmount(() => {
           <strong>本次 AI 提炼失败</strong>
           <p>{{ currentState.errorMessage }}</p>
         </div>
-        <button type="button" @click="runCurrentExtraction">
+        <button type="button" :disabled="!editing" @click="runCurrentExtraction">
           <RefreshCw :size="13" />重新提炼
         </button>
       </div>
@@ -1401,9 +1473,9 @@ onBeforeUnmount(() => {
         <AlertCircle :size="17" />
         <div>
           <strong>上游产品资料已发生变化</strong>
-          <p>当前结果仍可查看和编辑，重新提炼后才能进入下一节点。</p>
+          <p>当前结果仍可查看；进入编辑并重新提炼后才能进入下一节点。</p>
         </div>
-        <button type="button" @click="runCurrentExtraction">
+        <button type="button" :disabled="!editing" @click="runCurrentExtraction">
           <RefreshCw :size="13" />更新提炼结果
         </button>
       </div>
@@ -1664,17 +1736,19 @@ onBeforeUnmount(() => {
       <WorkflowNodeFooter
         back-label="上一步"
         :complete="readyForNext"
+        :show-validate="editing"
+        validate-label="保存版本"
         :status-title="
           readyForNext
-            ? '全部产品已完成校验'
+            ? '全部产品已保存版本'
             : currentState.commitStatus === 'COMMITTED'
-              ? '当前产品已提交，请继续校验其他产品'
-              : '当前产品完成校验后可继续'
+              ? '当前产品已提交，请继续保存其他产品'
+              : '审阅信息卡后保存版本即可继续'
         "
         :status-detail="`步骤 2 / 6 · ${currentProduct.name} · ${currentStatusMeta.label}`"
         :validating="validating"
         :validate-disabled="
-          currentState.status !== 'COMPLETED' ||
+          editBusy || currentState.status !== 'COMPLETED' ||
           !currentState.result ||
           currentState.saveState === 'SAVING'
         "

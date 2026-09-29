@@ -7,6 +7,17 @@ import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
 
 describe('effect segment render material gallery layout', () => {
+  it('replaces completed-validation with branch-safe editing controls', () => {
+    expect(pageSource).toContain('进入编辑');
+    expect(pageSource).toContain('取消编辑');
+    expect(pageSource).toContain('保存版本');
+    expect(pageSource).toContain('beginEffectWorkflowNodeEdit');
+    expect(pageSource).toContain('cancelEffectWorkflowNodeEdit');
+    expect(pageSource).toContain("emit('workflow-run-change', props.workflowRunId)");
+    expect(pageSource).toContain(':show-validate="false"');
+    expect(pageSource).not.toContain('完成校验前仍可继续调整');
+  });
+
   it('uses the only active product without rendering a product selector', () => {
     expect(pageSource).not.toContain('class="product-switcher"');
     expect(pageSource).not.toContain('<span>当前商品</span>');
@@ -173,7 +184,7 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('<RefreshCw v-else-if="hasBatch && canStartBatch" :size="14" />');
     expect(pageSource).toContain('重新渲染全部片段');
     expect(pageSource).toContain('再次产生供应商费用');
-    expect(pageSource).toContain('原批次数据不会删除');
+    expect(pageSource).toContain('原版本保持可回溯');
     expect(pageSource).not.toContain('批量删除');
     expect(pageSource).toContain('deleteEffectSegmentRenderMaterials');
     expect(pageSource).toContain('importEffectSegmentRenderMaterials');

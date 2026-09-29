@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   clampPromptPage,
+  clonePromptSettings,
   EFFECT_PROMPT_PAGE_SIZE_OPTIONS,
   EFFECT_PROMPT_LIMITS,
   isPromptProductCommitted,
@@ -13,6 +14,12 @@ import {
 } from './effect-prompt-generation-state';
 
 describe('effect prompt generation state', () => {
+  it('keeps a confirmed historical batch below the current generation minimum readable', () => {
+    expect(clonePromptSettings({ targetCount: 10, defaultDurationSeconds: 5 }).targetCount).toBe(
+      10,
+    );
+  });
+
   it('normalizes the simplified total-count and shared-duration settings', () => {
     expect(
       normalizePromptSettings({
@@ -20,7 +27,7 @@ describe('effect prompt generation state', () => {
         defaultDurationSeconds: 500,
       }),
     ).toEqual({
-      targetCount: 10,
+      targetCount: 20,
       defaultDurationSeconds: 15,
       styleMode: 'AI_AUTO',
       styleTone: null,
@@ -30,6 +37,9 @@ describe('effect prompt generation state', () => {
     expect(normalizePromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS)).toEqual(
       DEFAULT_EFFECT_PROMPT_SETTINGS,
     );
+    expect(
+      normalizePromptSettings({ targetCount: 19, defaultDurationSeconds: 5 }).targetCount,
+    ).toBe(20);
     expect(normalizePromptSettings({ targetCount: 101, defaultDurationSeconds: 5 })).toEqual({
       targetCount: 100,
       defaultDurationSeconds: 5,

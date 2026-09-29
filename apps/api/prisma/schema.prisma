@@ -389,6 +389,9 @@ model WorkflowRun {
   forkTemplateId             String?                     @db.VarChar(160)
   branchLabel                String?                     @db.VarChar(160)
   branchPublishedAt          DateTime?
+  editBaselineHash           String?                     @db.Char(64)
+  editSessionNodeId          String?                     @db.VarChar(160)
+  editIdMap                  Json?
   workflow                   AssetWorkflow
   workflowSpace              AssetWorkflowSpace
   status                     WorkflowRunStatus           @default(ACTIVE)
@@ -1153,6 +1156,7 @@ model EffectSegmentRenderBatch {
   activeKey              String?                               @default("ACTIVE") @db.VarChar(32)
   revision               Int                                   @default(1)
   committedAt            DateTime?
+  archivedAt             DateTime?
   createdAt              DateTime                              @default(now())
   updatedAt              DateTime                              @updatedAt
   project                Project                               @relation(fields: [projectId], references: [id], onDelete: Cascade)

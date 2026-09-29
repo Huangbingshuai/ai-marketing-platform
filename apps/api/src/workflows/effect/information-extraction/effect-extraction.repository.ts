@@ -68,6 +68,14 @@ export class EffectExtractionRepository {
     private readonly workingRepository?: WorkflowWorkingRepository,
   ) {}
 
+  async workflowRunIdForDraft(projectId: string, draftId: string): Promise<string | null> {
+    const draft = await this.prisma.effectImportDraft.findFirst({
+      where: { projectId, id: draftId },
+      select: { workspace: { select: { workflowRunId: true } } },
+    });
+    return draft?.workspace.workflowRunId ?? null;
+  }
+
   workspace(projectId: string, draftId: string) {
     return this.prisma.effectImportDraft.findFirst({
       where: { projectId, id: draftId },

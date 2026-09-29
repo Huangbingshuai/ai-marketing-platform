@@ -53,6 +53,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import {
   EffectPromptRepository,
   type EffectPromptPreviewRunRecord,
@@ -480,7 +481,21 @@ export class EffectPromptService {
     @Inject(WorkflowWorkingRepository)
     private readonly workingRepository: WorkflowWorkingRepository,
     @Optional() @Inject(STORAGE_PORT) private readonly storage?: StoragePort,
+    @Optional() @Inject(WorkflowWorkingService)
+    private readonly workingService?: WorkflowWorkingService,
   ) {}
+
+  private async assertPromptWritable(projectId: string, workflowRunId: string): Promise<void> {
+    await this.workingService?.assertEffectNodeWritable(
+      projectId, workflowRunId, 'PROMPT_GENERATION',
+    );
+  }
+
+  private async assertPromptResultWritable(projectId: string, resultId: string): Promise<void> {
+    const result = await this.repository.result(projectId, resultId);
+    if (!result) throw notFound('Prompt 结果不存在');
+    await this.assertPromptWritable(projectId, result.workflowRunId);
+  }
 
   private async requireWorkflow(projectId: string, workflowRunId: string): Promise<void> {
     await this.projects.get(projectId);
@@ -644,7 +659,10 @@ export class EffectPromptService {
     settings: unknown,
   ) {
     await this.requireWorkflow(projectId, workflowRunId);
+    await this.assertPromptWritable(projectId, workflowRunId);
     if (!isEffectPromptSettings(settings)) throw badRequest('Prompt 批次设置不符合允许范围');
+    if (settings.targetCount < EFFECT_PROMPT_LIMITS.minNewBatchCount)
+      throw badRequest(`新批次至少生成 ${EFFECT_PROMPT_LIMITS.minNewBatchCount} 条 Prompt`);
     const product = (await this.repository.products(projectId, workflowRunId)).find(
       ({ id }) => id === productId,
     );
@@ -713,6 +731,8 @@ export class EffectPromptService {
     },
   ): Promise<StartEffectPromptRunData> {
     await this.requireWorkflow(projectId, input.workflowRunId);
+    if (input.operation === 'ITEM_EVALUATE')
+      await this.assertPromptWritable(projectId, input.workflowRunId);
     const idempotencyKey = input.idempotencyKey.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
     if (
@@ -793,6 +813,8 @@ export class EffectPromptService {
     });
     if (result.kind === 'NOT_FOUND') throw notFound('工作流或产品不存在');
     if (result.kind === 'SETTINGS_CONFLICT') throw conflict('Prompt 设置已更新，请刷新后重试');
+    if (result.kind === 'TARGET_COUNT_BELOW_MIN')
+      throw badRequest(`新批次至少生成 ${EFFECT_PROMPT_LIMITS.minNewBatchCount} 条 Prompt`);
     if (result.kind === 'INSIGHT_NOT_READY') throw conflict('产品信息卡尚未完成校验');
     if (result.kind === 'RESULT_CONFLICT') throw conflict('Prompt 结果已更新，请刷新后重试');
     if (result.kind === 'ITEM_NOT_FOUND') throw notFound('Prompt 不存在');
@@ -1065,6 +1087,7 @@ export class EffectPromptService {
     idempotencyKey: string,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
+    await this.assertPromptResultWritable(projectId, resultId);
     if (!idempotencyKey.trim()) throw badRequest('幂等键不能为空');
     return this.presentRegenerationMutation(
       await this.repository.applyRegenerationCandidate(
@@ -1086,6 +1109,7 @@ export class EffectPromptService {
     idempotencyKey: string,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
+    await this.assertPromptResultWritable(projectId, resultId);
     if (!idempotencyKey.trim()) throw badRequest('幂等键不能为空');
     return this.presentRegenerationMutation(
       await this.repository.undoRegenerationCandidate(
@@ -1114,6 +1138,7 @@ export class EffectPromptService {
       throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
+    await this.assertPromptWritable(projectId, current.workflowRunId);
     const rawDraft =
       current.draftResult &&
       typeof current.draftResult === 'object' &&
@@ -1187,6 +1212,7 @@ export class EffectPromptService {
       throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
+    await this.assertPromptWritable(projectId, current.workflowRunId);
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
     this.validateItemDuration(parsed, input.targetDurationSeconds);
@@ -1240,6 +1266,7 @@ export class EffectPromptService {
     expectedRevision: number,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
+    await this.assertPromptResultWritable(projectId, resultId);
     return this.presentMutation(
       await this.repository.mutateResult(projectId, resultId, expectedRevision, {
         kind: 'DELETE',
@@ -1257,6 +1284,7 @@ export class EffectPromptService {
     await this.projects.get(projectId);
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
+    await this.assertPromptWritable(projectId, current.workflowRunId);
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
     const compiledContent = content.trim();
@@ -1426,14 +1454,15 @@ export class EffectPromptService {
     if (committed.kind === 'DEPENDENCY_CONFLICT')
       throw conflict('上游信息卡或 Prompt 设置已经变化，请重新生成');
     if (committed.kind !== 'COMMITTED') throw conflict('当前结果不是最新已完成 Prompt 结果');
-    const workspace = await this.workspace(projectId, record.workflowRunId);
+    const workspace = await this.workspace(projectId, committed.workflowRunId);
     const hasActiveRuns =
-      (await this.repository.activeRunCount(projectId, record.workflowRunId)) > 0;
+      (await this.repository.activeRunCount(projectId, committed.workflowRunId)) > 0;
     return {
       valid: true,
+      workflowRunId: committed.workflowRunId,
       issues: [],
       warnings,
-      productId: record.productId,
+      productId: committed.productId,
       artifacts: [committed.artifact],
       allProductsValidated:
         !hasActiveRuns &&
@@ -1644,7 +1673,7 @@ export class EffectPromptService {
     // enforces exact count, structural safety and freshness before commit.
     if (parsed.items.some((item) => item.classificationStatus !== 'VERIFIED'))
       throw badRequest('Prompt 批次仍有内容尚未补齐创意信息');
-    await this.stageOperation(projectId, runId);
+    const operation = await this.stageOperation(projectId, runId);
     const result = await this.repository.complete(projectId, runId, attemptToken, parsed);
     if (result.kind === 'NOT_FOUND') throw notFound('Prompt 任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');
@@ -1652,6 +1681,12 @@ export class EffectPromptService {
       throw badRequest('Prompt 语义评估与当前正文不一致，请重新执行评估');
     if (result.kind === 'INVALID_REGENERATION_PREVIEW')
       throw badRequest('单条 Prompt 备选结果必须正好包含 3 个已评估方案');
+    // A complete batch is already an explicit user-requested generation result.
+    // Reuse the exact validation/commit boundary instead of requiring a second
+    // click. Incomplete batches remain editable drafts and do not fork.
+    if (operation === 'BATCH_GENERATE' && result.result) {
+      await this.validateResult(projectId, result.result.id, result.result.revision);
+    }
     return { promptResultId: result.result?.id ?? null };
   }
 

@@ -11,6 +11,7 @@ import {
   type EffectImportRemovedProduct,
   type EffectImportUploadMaterialType,
   type EffectImportWorkspace,
+  type WorkflowRun,
   type EffectManifestFormat,
   type EffectVideoConfig,
   type PreviewEffectManifestData,
@@ -37,8 +38,11 @@ import { requestActionConfirmation } from '../../../shared/composables/action-co
 import {
   activateEffectWorkflowBranch,
   activateWorkflowNode,
+  beginEffectNodeEdit,
+  cancelEffectNodeEdit,
   getActiveWorkflowRunOverview,
   getEffectWorkflowBranchTree,
+  publishEffectNodeEdit,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
 import { workflowNodeBaseId } from '../../../platform/workflow/workflow-node-id';
@@ -117,6 +121,9 @@ const branchTree = ref<EffectWorkflowBranchTreeData | null>(null);
 const branchTreeLoading = ref(false);
 const branchTreeError = ref('');
 const branchSwitching = ref(false);
+const activeWorkflowRun = ref<WorkflowRun | null>(null);
+const sourceEditing = ref(true);
+const sourceEditBusy = ref(false);
 let branchController: AbortController | null = null;
 const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
@@ -605,6 +612,8 @@ const loadProject = async (projectId: string): Promise<void> => {
   listController?.abort();
   generationGate.invalidate();
   workspace.value = null;
+  activeWorkflowRun.value = null;
+  sourceEditing.value = true;
   draft.value = null;
   listedProducts.value = [];
   removedProducts.value = [];
@@ -649,6 +658,11 @@ const loadProject = async (projectId: string): Promise<void> => {
       'EFFECT',
       pageController.signal,
     );
+    activeWorkflowRun.value = overview.data.run;
+    const loadedSourceDraft = draft.value as EffectImportDraft | null;
+    sourceEditing.value = overview.data.run?.isTemporaryBranch
+      ? overview.data.run.editNodeId === 'SOURCE_IMPORT'
+      : !(loadedSourceDraft?.products.some((product) => product.sourcePackageRevision !== null) ?? false);
     const sourceNodeState = overview.data.nodeStates.find(
       (item) => item.nodeId === 'SOURCE_IMPORT',
     );
@@ -1334,14 +1348,56 @@ const validateDraft = async (): Promise<void> => {
     (result) => setDraft(result.data.draft),
   );
   validatingDraft.value = false;
-  if (response?.data.validation.valid)
-    showNotice(
-      response.data.artifacts.every((artifact) => artifact.unchanged)
-        ? '内容未变化，工作副本保持不变'
-        : '工作副本已更新，全部产品校验完成',
-    );
-  else if (response)
+  if (response?.data.validation.valid) {
+    try {
+      const published = await publishEffectNodeEdit(
+        loadedProjectId.value,
+        workspace.value!.workflowRunId,
+        'SOURCE_IMPORT',
+      );
+      showNotice(
+        published.data.createdBranch
+          ? '资料版本已保存，已创建新分支'
+          : response.data.artifacts.every((artifact) => artifact.unchanged)
+            ? '资料内容未变化，保持当前版本'
+            : '资料版本已保存',
+      );
+      await loadProject(loadedProjectId.value);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '资料版本发布失败，请重试', 'error');
+    }
+  } else if (response) {
     showNotice(`发现 ${response.data.validation.issues.length} 项问题，请修复后重试`, 'warning');
+  }
+};
+
+const beginSourceEdit = async (): Promise<void> => {
+  const workflowRunId = workspace.value?.workflowRunId;
+  if (!loadedProjectId.value || !workflowRunId || sourceEditBusy.value || sourceEditing.value) return;
+  sourceEditBusy.value = true;
+  try {
+    const result = await beginEffectNodeEdit(loadedProjectId.value, workflowRunId, 'SOURCE_IMPORT');
+    if (result.data.run.id !== workflowRunId) await loadProject(loadedProjectId.value);
+    else sourceEditing.value = true;
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '进入资料编辑失败', 'error');
+  } finally {
+    sourceEditBusy.value = false;
+  }
+};
+
+const cancelSourceEdit = async (): Promise<void> => {
+  const run = activeWorkflowRun.value;
+  if (!run?.isTemporaryBranch || run.editNodeId !== 'SOURCE_IMPORT' || sourceEditBusy.value) return;
+  sourceEditBusy.value = true;
+  try {
+    await cancelEffectNodeEdit(loadedProjectId.value, run.id, 'SOURCE_IMPORT');
+    await loadProject(loadedProjectId.value);
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '取消资料编辑失败', 'error');
+  } finally {
+    sourceEditBusy.value = false;
+  }
 };
 
 const advanceDraft = async (): Promise<void> => {
@@ -1607,34 +1663,44 @@ onBeforeUnmount(() => {
       <KeepAlive :max="4">
         <EffectInfoExtractionNodePage
           v-if="activeStep === 1"
+          :key="`extraction:${currentProjectId}:${workspace?.workflowRunId ?? ''}`"
           ref="infoExtractionNode"
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
           :draft-id="draft?.id ?? ''"
           :mode="currentMode"
           :products="draft?.products ?? []"
+          :temporary-branch="Boolean(activeWorkflowRun?.isTemporaryBranch)"
+          :active-edit-node-id="activeWorkflowRun?.editNodeId ?? null"
           @back="selectWorkflowStep(0)"
           @next="enterPromptBoundary"
+          @workflow-run-change="loadProject(currentProjectId)"
         />
 
         <EffectPromptGenerationNodePage
           v-else-if="activeStep === 2"
+          :key="`prompt:${currentProjectId}:${workspace?.workflowRunId ?? ''}`"
           ref="promptGenerationNode"
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
           :products="products"
           @back="selectWorkflowStep(1)"
           @next="selectWorkflowStep(3)"
+          @branch-activated="loadProject(currentProjectId)"
+          @workflow-run-change="loadProject(currentProjectId)"
         />
 
         <EffectSegmentRenderNodePage
           v-else-if="activeStep === 3"
+          :key="`render:${currentProjectId}:${workspace?.workflowRunId ?? ''}`"
           ref="segmentRenderNode"
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
           :products="products"
+          :editing="Boolean(activeWorkflowRun?.isTemporaryBranch && activeWorkflowRun.editNodeId === 'SEGMENT_RENDER')"
           @back="selectWorkflowStep(2)"
           @next="selectWorkflowStep(4)"
+          @workflow-run-change="loadProject(currentProjectId)"
         />
 
         <EffectTemplateMixNodePage
@@ -1672,6 +1738,18 @@ onBeforeUnmount(() => {
             <button type="button" @click="downloadProductPackageTemplate">
               <FileText :size="14" />下载资料包模板
             </button>
+            <button
+              v-if="!sourceEditing"
+              type="button"
+              :disabled="sourceEditBusy || transitioning"
+              @click="beginSourceEdit"
+            >进入编辑</button>
+            <button
+              v-else-if="activeWorkflowRun?.isTemporaryBranch && activeWorkflowRun.editNodeId === 'SOURCE_IMPORT'"
+              type="button"
+              :disabled="sourceEditBusy || validatingDraft || transitioning"
+              @click="cancelSourceEdit"
+            >取消编辑</button>
           </section>
 
           <section v-if="removedProducts.length" class="recently-removed" aria-live="polite">
@@ -1684,7 +1762,7 @@ onBeforeUnmount(() => {
               <button
                 v-if="currentMode === 'SINGLE' && !singleProduct"
                 type="button"
-                :disabled="transitioning"
+                :disabled="transitioning || !sourceEditing"
                 @click="createProduct"
               >
                 <Plus :size="13" />放弃恢复，新建产品
@@ -1698,7 +1776,7 @@ onBeforeUnmount(() => {
                 </span>
                 <button
                   type="button"
-                  :disabled="transitioning || (currentMode === 'SINGLE' && Boolean(singleProduct))"
+                  :disabled="transitioning || !sourceEditing || (currentMode === 'SINGLE' && Boolean(singleProduct))"
                   :title="
                     currentMode === 'SINGLE' && singleProduct
                       ? '单产品模式已有活动产品，无法同时恢复'
@@ -1734,7 +1812,7 @@ onBeforeUnmount(() => {
                   :product="singleProduct"
                   :busy-material-ids="busyMaterialIds"
                   :link-busy="busyCommerceProductIds.has(singleProduct.id)"
-                  :disabled="transitioning"
+                  :disabled="transitioning || !sourceEditing"
                   @change="updateProductField"
                   @blur="flushProduct"
                   @upload="uploadMaterials"
@@ -1761,10 +1839,10 @@ onBeforeUnmount(() => {
                         type="search"
                         placeholder="搜索产品名称、电商链接或资料文件"
                     /></label>
-                    <button type="button" @click="manifestOpen = true">
+                    <button type="button" :disabled="!sourceEditing" @click="manifestOpen = true">
                       <FileSpreadsheet :size="14" />清单导入
                     </button>
-                    <button class="primary" type="button" @click="createProduct">
+                    <button class="primary" type="button" :disabled="!sourceEditing" @click="createProduct">
                       <Plus :size="14" />新增商品
                     </button>
                   </div>
@@ -1773,7 +1851,7 @@ onBeforeUnmount(() => {
                   <span>当前 {{ products.length }} 个产品 · 已选 {{ selectedCount }} 个</span>
                   <button
                     type="button"
-                    :disabled="!selectedCount"
+                    :disabled="!sourceEditing || !selectedCount"
                     @click="retryProducts([...selectedProductIds])"
                   >
                     <RefreshCw :size="13" />失败重试
@@ -1781,7 +1859,7 @@ onBeforeUnmount(() => {
                   <button
                     class="danger"
                     type="button"
-                    :disabled="!selectedCount"
+                    :disabled="!sourceEditing || !selectedCount"
                     @click="batchDelete"
                   >
                     <Trash2 :size="13" />批量删除
@@ -1804,7 +1882,7 @@ onBeforeUnmount(() => {
                     batch
                     :position="products.indexOf(product) + 1"
                     :product="product"
-                    :disabled="transitioning"
+                    :disabled="transitioning || !sourceEditing"
                     :selected="selectedProductIds.has(product.id)"
                     :busy-material-ids="busyMaterialIds"
                     :link-busy="busyCommerceProductIds.has(product.id)"
@@ -1849,8 +1927,10 @@ onBeforeUnmount(() => {
 
           <WorkflowNodeFooter
             :complete="validatedCurrentRevision"
+            :show-validate="sourceEditing"
+            validate-label="保存版本"
             :status-title="
-              validatedCurrentRevision ? '当前草稿校验通过' : '进入下一节点前需要完成校验'
+              validatedCurrentRevision ? '资料版本已保存' : '保存资料版本后可进入下一节点'
             "
             :status-detail="
               [
@@ -1865,7 +1945,7 @@ onBeforeUnmount(() => {
                 .join(' · ')
             "
             :validating="validatingDraft"
-            :validate-disabled="transitioning || saveState === 'saving' || !draft?.productCount"
+            :validate-disabled="transitioning || sourceEditBusy || saveState === 'saving' || !draft?.productCount"
             :next-disabled="transitioning || !validatedCurrentRevision || saveState === 'saving'"
             next-label="下一步：AI 信息提炼"
             @validate="validateDraft"

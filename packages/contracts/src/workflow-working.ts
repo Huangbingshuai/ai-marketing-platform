@@ -76,6 +76,9 @@ export type WorkflowRun = {
   forkNodeId: string | null;
   forkTemplateId: string | null;
   branchLabel: string | null;
+  /** Hidden editing child, not yet published in the version tree. */
+  isTemporaryBranch?: boolean;
+  editNodeId?: EffectWorkflowEditableNodeId | null;
   workflow: AssetWorkflow;
   workflowSpace: AssetWorkflowSpace;
   status: WorkflowRunStatus;
@@ -94,6 +97,27 @@ export const EFFECT_WORKFLOW_BRANCH_NODES = [
   'FINAL_OUTPUT',
 ] as const;
 export type EffectWorkflowBranchNodeId = (typeof EFFECT_WORKFLOW_BRANCH_NODES)[number];
+export const EFFECT_WORKFLOW_EDITABLE_NODES = [
+  'SOURCE_IMPORT',
+  'INFORMATION_EXTRACTION',
+  'PROMPT_GENERATION',
+  'SEGMENT_RENDER',
+] as const;
+export type EffectWorkflowEditableNodeId = (typeof EFFECT_WORKFLOW_EDITABLE_NODES)[number];
+export type EffectWorkflowEditSessionData = {
+  run: WorkflowRun;
+  parentWorkflowRunId: string | null;
+  productIdMap: Record<string, string>;
+  taskIdMap: Record<string, string>;
+  created: boolean;
+};
+export type EffectWorkflowEditExitData = {
+  run: WorkflowRun;
+  activeWorkflowRunId: string;
+};
+export type EffectWorkflowEditPublishData = EffectWorkflowEditExitData & {
+  createdBranch: boolean;
+};
 export type EffectWorkflowBranchNodeStatus = 'CONFIRMED' | 'PENDING' | 'STALE';
 export type EffectWorkflowBranchNode = {
   nodeId: EffectWorkflowBranchNodeId;
