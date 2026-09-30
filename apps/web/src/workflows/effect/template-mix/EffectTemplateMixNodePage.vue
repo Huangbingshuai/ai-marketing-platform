@@ -5450,7 +5450,13 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     auditionPlayer.value?.pause();
     pauseTimelinePlayers();
     playing.value = false;
-    seekPreview(previewCurrentTime.value + (event.key === 'ArrowRight' ? 1 : -1) / TIMELINE_FPS);
+    const lastFrame = Math.max(0, Math.ceil(previewDuration.value * TIMELINE_FPS) - 1);
+    const currentFrame = Math.min(
+      lastFrame,
+      Math.round(previewCurrentTime.value * TIMELINE_FPS),
+    );
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    seekPreview(Math.max(0, Math.min(lastFrame, currentFrame + direction)) / TIMELINE_FPS);
   }
 };
 watch(

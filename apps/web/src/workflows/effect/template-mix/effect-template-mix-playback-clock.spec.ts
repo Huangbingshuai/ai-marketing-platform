@@ -49,4 +49,13 @@ describe('template mix compositor playback clock', () => {
     expect(genericInputGuard).toBeGreaterThan(scrubberSpaceHandler);
     expect(pageSource).toContain('if (!event.repeat) togglePreviewPlayback()');
   });
+
+  it('steps left and right by one whole frame and clamps at the preview ends', () => {
+    expect(pageSource).toContain(
+      'const lastFrame = Math.max(0, Math.ceil(previewDuration.value * TIMELINE_FPS) - 1)',
+    );
+    expect(pageSource).toContain('Math.round(previewCurrentTime.value * TIMELINE_FPS)');
+    expect(pageSource).toContain('currentFrame + direction');
+    expect(pageSource).toContain('/ TIMELINE_FPS);');
+  });
 });
