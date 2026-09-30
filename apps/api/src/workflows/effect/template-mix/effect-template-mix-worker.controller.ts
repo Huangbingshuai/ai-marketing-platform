@@ -28,12 +28,15 @@ import {
 } from './dto/effect-template-mix.dto';
 import { EffectTemplateMixService } from './effect-template-mix.service';
 import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard';
+import { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
 
 @Controller('internal/workers/effect-template-mix')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectTemplateMixWorkerController {
   constructor(
     @Inject(EffectTemplateMixService) private readonly service: EffectTemplateMixService,
+    @Inject(EffectTemplateMixCompletionService)
+    private readonly completion: EffectTemplateMixCompletionService,
   ) {}
 
   @Post('runs/:runId/claim')
@@ -109,7 +112,7 @@ export class EffectTemplateMixWorkerController {
     @Headers('x-attempt-token') attemptToken: string,
     @Body() body: EffectTemplateMixWorkerCompleteDto,
   ) {
-    return this.service.completeAiRun(body.projectId, runId, attemptToken, body.trims);
+    return this.completion.complete(body.projectId, runId, attemptToken, body.trims);
   }
 
   @Post('runs/:runId/fail')

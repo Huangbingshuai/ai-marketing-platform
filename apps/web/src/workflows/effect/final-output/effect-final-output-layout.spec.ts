@@ -71,13 +71,12 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain('.local-update-button {');
   });
 
-  it('says a film plays silent because it was submitted without a package', () => {
+  it('distinguishes a smart-filled pending film from an export made without a package', () => {
     // A picture-only film looks like a broken render unless the card explains itself.
     expect(pageSource).toContain('v-if="item.unpackaged"');
     expect(pageSource).toContain('class="status-pill unpackaged"');
-    expect(pageSource).toContain(
-      'title="这条成片的包装未成功，以无包装成片提交：只有画面，没有口播、字幕与配乐"',
-    );
+    expect(pageSource).toContain("run.status === 'PENDING_RENDER' ? '待包装' : '无包装'");
+    expect(pageSource).toContain('成片工程已同步，尚未完成智能成片包装');
     expect(pageSource).toContain("item.unpackaged ? '无口播 / 字幕 / 配乐' : '内嵌字幕'");
     expect(pageSource).toContain('.status-pill.unpackaged {');
   });
@@ -88,6 +87,11 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain('待更新</span>');
     expect(pageSource).toContain('.status-pill.stale {');
     expect(pageSource).toContain('v-if="item.fileObjectId"');
+  });
+
+  it('keeps a just-filled template visible before the workspace refresh arrives', () => {
+    expect(pageSource).toContain('for (const outputRun of latestByTemplate.values())');
+    expect(pageSource).toContain('cards.push({ templateId: outputRun.templateId');
   });
 
   it('reconciles missed pending-draft updates on entry without starting a render', () => {

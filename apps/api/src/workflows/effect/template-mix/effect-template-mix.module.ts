@@ -5,6 +5,7 @@ import { FileModule } from '../../../platform/file/file.module';
 import { JobModule } from '../../../platform/job/job.module';
 import { EffectTemplateMixController } from './effect-template-mix.controller';
 import { EffectTemplateMixService } from './effect-template-mix.service';
+import { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 import { EffectTemplateMixWorkerController } from './effect-template-mix-worker.controller';
 import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard';
@@ -43,6 +44,7 @@ import {
   ],
   providers: [
     EffectTemplateMixService,
+    EffectTemplateMixCompletionService,
     EffectTemplateMixAiRepository,
     EffectTemplateMixWorkerGuard,
     EffectTemplateMixLeaseRecovery,

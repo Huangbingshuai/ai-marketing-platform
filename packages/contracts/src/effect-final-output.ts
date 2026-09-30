@@ -47,8 +47,8 @@ export type FinalOutputSnapshot = {
   timeline: PackagingSnapshot;
   packaging: PackagingCheckpoint;
   /**
-   * The film's packaging failed, so it was confirmed as a picture-only film: no narration, captions
-   * or bed. Recorded so the output list can say why it plays silent instead of looking broken.
+   * No package has been applied yet (or packaging failed), so this picture-only film has no
+   * narration, captions or bed. A later successful package upgrades the pending item in place.
    */
   unpackaged?: boolean;
   dependencies: FinalOutputDependency[];
@@ -69,7 +69,7 @@ export type FinalOutputItem = {
   assetId: string | null;
   errorMessage: string | null;
   progress: number;
-  /** Confirmed without a package, so this film is expected to play with picture only. */
+  /** No package is attached, so this film currently has picture only. */
   unpackaged?: boolean;
   /** The exported film differs from the current mix project in this output branch. */
   stale: boolean;

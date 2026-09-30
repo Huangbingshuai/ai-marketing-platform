@@ -211,6 +211,134 @@ export class EffectFinalOutputService {
     return { inputs, variants, workspace };
   }
 
+  /** A confirmed smart fill is already an editable picture timeline, even before packaging. */
+  async upsertFromSmartFill(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+  ): Promise<void> {
+    const before = await this.db.workflowNodeState.findUnique({
+      where: { projectId_workflowRunId_nodeId: {
+        projectId, workflowRunId, nodeId: 'TEMPLATE_MIX',
+      } },
+      select: { revision: true },
+    });
+    if (!before) throw new NotFoundException('混剪草稿不存在');
+    const { variants, workspace } = await this.outputPlan(
+      projectId, workflowRunId, templateId, before.revision,
+    );
+    await this.db.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + workflowRunId + ':' + templateId}))`;
+      await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
+      const state = await tx.workflowNodeState.findUnique({
+        where: { projectId_workflowRunId_nodeId: {
+          projectId, workflowRunId, nodeId: 'TEMPLATE_MIX',
+        } }, select: { revision: true },
+      });
+      if (state?.revision !== before.revision)
+        throw new ConflictException('草稿已变化，请刷新后重试');
+      await tx.$queryRaw`SELECT id FROM working_artifacts WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${workflowRunId}::uuid ORDER BY id FOR UPDATE`;
+      const artifacts = (await tx.workingArtifact.findMany({
+        where: { projectId, workflowRunId }, include: workingArtifactInclude,
+      })) as unknown as WorkingArtifact[];
+      if (hasOutputVersion(artifacts)) return;
+      // A late or retried fill callback must never turn an already packaged queue back into a
+      // picture-only queue. The packaging callback owns all updates once packaging has started.
+      const packagingRuns = await tx.effectPackagingRun.count({
+        where: { projectId, workflowRunId, templateId },
+      });
+      if (packagingRuns) return;
+      const pending = await tx.effectFinalOutputRun.findFirst({
+        where: { projectId, workflowRunId, templateId, status: 'PENDING_RENDER' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], include,
+      });
+      const rows = variants.map((variant) => {
+        const visual = artifacts.find((artifact) =>
+          artifact.nodeId === 'TEMPLATE_MIX' &&
+          artifact.artifactKey === `timeline-project:${templateId}:${variant.id}` &&
+          artifact.freshness === 'CURRENT' && artifact.availability === 'AVAILABLE');
+        if (!visual) throw new ConflictException(`${variant.name} 的时间轴尚未确认`);
+        const clips = this.liveClips(variant, workspace.materials, artifacts);
+        const duration = effectTemplateMixContentDuration(variant);
+        if (!clips.length || duration > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS)
+          throw new BadRequestException(`${variant.name} 的画面时长无效`);
+        const dependency = {
+          artifactId: visual.id, artifactKey: visual.artifactKey, nodeId: visual.nodeId,
+          revision: visual.revision, contentHash: visual.contentHash ?? '',
+        };
+        const timeline: PackagingSnapshot = {
+          narrationLayoutVersion: 'SLOT_V1',
+          sourceTimelineHash: visualHash(variant),
+          duration,
+          variant, clips,
+          ...(variant.detachedAudios?.length ? { detachedAudios: variant.detachedAudios } : {}),
+          facts: [], dependencies: [dependency],
+        };
+        const snapshot: FinalOutputSnapshot = {
+          timeline,
+          packaging: { voices: {}, captions: [] },
+          unpackaged: true,
+          dependencies: [dependency],
+          aspectRatio: workspace.materials.find(
+            (material) => material.fileObjectId === clips[0]!.fileObjectId,
+          )?.ratio ?? '9:16',
+          originalVolume: variant.originalVolume ?? 1,
+          resolution: '720p', frameRate: 30,
+        };
+        return { variantId: variant.id, name: variant.name,
+          status: 'PENDING_RENDER' as const, snapshot };
+      });
+      const requiredIds = [...new Set(rows.flatMap((row) => [
+        ...row.snapshot.timeline.clips.map((clip) => clip.fileObjectId),
+        ...(row.snapshot.timeline.detachedAudios ?? []).map((audio) => audio.fileObjectId),
+      ]))];
+      const files = await tx.fileObject.findMany({
+        where: { projectId, id: { in: requiredIds }, status: 'AVAILABLE' },
+        select: { id: true },
+      });
+      if (files.length !== requiredIds.length)
+        throw new ConflictException('视频或音频源文件已失效');
+      const inputHash = workflowStateHash(rows.map((row) => ({
+        variantId: row.variantId, picture: pictureHash(row.snapshot.timeline.clips),
+        dependency: row.snapshot.dependencies[0],
+      })));
+      if (pending) {
+        const wanted = new Map(rows.map((row) => [row.variantId, row]));
+        for (const item of pending.items) {
+          const row = wanted.get(item.variantId);
+          if (!row) {
+            await tx.effectFinalOutputItem.delete({ where: { id: item.id } });
+            continue;
+          }
+          wanted.delete(item.variantId);
+          await tx.effectFinalOutputItem.update({ where: { id: item.id }, data: {
+            name: row.name, snapshot: json(row.snapshot), status: 'PENDING_RENDER',
+            progress: 0, errorMessage: null,
+          } });
+        }
+        for (const row of wanted.values())
+          await tx.effectFinalOutputItem.create({ data: {
+            projectId, runId: pending.id, ...row, snapshot: json(row.snapshot),
+          } });
+      } else {
+        const duplicate = await tx.effectFinalOutputRun.findUnique({
+          where: { projectId_workflowRunId_templateId_inputHash: {
+            projectId, workflowRunId, templateId, inputHash,
+          } }, select: { id: true },
+        });
+        if (duplicate) return;
+        await tx.effectFinalOutputRun.create({ data: {
+          projectId, workflowRunId, templateId,
+          idempotencyKey: `fill:${workflowRunId}:${templateId}:${inputHash}`,
+          requestHash: inputHash, inputHash, status: 'PENDING_RENDER',
+          items: { create: rows.map((row) => ({
+            ...row, snapshot: json(row.snapshot),
+          })) },
+        } });
+      }
+    }, { timeout: 120_000 });
+  }
+
   /**
    * The packaging callback: a finished package puts its films straight into the output node's queue,
    * and the mix artifacts committed here are what turn an unpublished mix child into a branch. The
@@ -630,12 +758,42 @@ export class EffectFinalOutputService {
       if (!active || state?.revision !== request.expectedDraftRevision)
         return { ...result, superseded: true };
     }
-    const runs = await this.db.effectFinalOutputRun.findMany({
+    let runs = await this.db.effectFinalOutputRun.findMany({
       where: { projectId, workflowRunId,
         ...(request.templateId ? { templateId: request.templateId } : {}) },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include,
     });
+    // The worker may have confirmed its mix timeline while the post-commit output sync hit a
+    // transient error. Entering the output page repairs only confirmed timelines with no batch;
+    // an existing exported run is never replaced here.
+    if (request.expectedDraftRevision !== undefined) {
+      const mixArtifacts = await this.working.listArtifacts(projectId, {
+        workflowRunId, nodeId: 'TEMPLATE_MIX',
+      });
+      const confirmedTemplateIds = [...new Set(mixArtifacts
+        .filter((artifact) => artifact.artifactKey.startsWith('timeline-project:') &&
+          artifact.freshness === 'CURRENT' && artifact.availability === 'AVAILABLE')
+        .map((artifact) => artifact.artifactKey.split(':')[1]!)
+        .filter((templateId) => !request.templateId || templateId === request.templateId))];
+      for (const templateId of confirmedTemplateIds) {
+        if (runs.some((run) => run.templateId === templateId)) continue;
+        try {
+          await this.upsertFromSmartFill(projectId, workflowRunId, templateId);
+        } catch (error) {
+          this.logger.warn(JSON.stringify({
+            event: 'effect_smart_fill_output_reconcile_failed', projectId, workflowRunId,
+            templateId, error: error instanceof Error ? error.message : String(error),
+          }));
+        }
+      }
+      if (confirmedTemplateIds.some((templateId) => !runs.some((run) => run.templateId === templateId)))
+        runs = await this.db.effectFinalOutputRun.findMany({
+          where: { projectId, workflowRunId,
+            ...(request.templateId ? { templateId: request.templateId } : {}) },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], include,
+        });
+    }
     if (!runs.length) return result;
     const workspace = await this.mix.workspace(projectId, workflowRunId);
     if (request.expectedDraftRevision !== undefined &&

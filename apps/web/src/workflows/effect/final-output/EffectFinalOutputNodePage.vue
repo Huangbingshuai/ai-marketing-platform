@@ -103,7 +103,7 @@ const templates = computed(() => {
         ? '成片包装已启动。返回模板混剪，等待该模板全部包装成功，成片会自动进入这里。'
         : !variants.length || hasIncompleteVariant
           ? '返回模板混剪，补齐工程的素材槽位，然后进行智能成片包装。'
-          : '返回模板混剪，为该模板做智能成片包装；包装成功后成片会自动进入这里。';
+      : '返回模板混剪，智能填充成功后成片工程会自动进入这里；随后可继续智能成片包装。';
     return {
       templateId: entry.id,
       templateName: entry.workspace.template.name,
@@ -113,6 +113,13 @@ const templates = computed(() => {
       pendingDetail,
     };
   });
+  // Another tab can finish a new template's smart fill while this page is open. The output poll
+  // receives its run before the mix-workspace refresh, so do not hide it behind the older template list.
+  for (const outputRun of latestByTemplate.values()) {
+    if (!cards.some((card) => card.templateId === outputRun.templateId))
+      cards.push({ templateId: outputRun.templateId, templateName: outputRun.templateName,
+        run: outputRun, pendingLabel: '', pendingTitle: '', pendingDetail: '' });
+  }
   return cards;
 });
 const templateRuns = computed(() => {
@@ -658,7 +665,7 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
           <div>
             <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' ? '待渲染成片' : '成片列表' }}</h3>
             <p v-if="run.counts.stale">{{ run.counts.stale }} 条成片的混剪工程已变化；原成片仍可查看，局部更新后会覆盖当前分支中的对应文件。</p>
-            <p v-else>{{ run.status === 'PENDING_RENDER' ? '当前模板已完成校验，点击导出后渲染此模板的全部成片' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
+            <p v-else>{{ run.status === 'PENDING_RENDER' ? '智能填充后的成片工程已同步；未包装条目可先导出仅画面成片，包装成功后会自动补齐音画' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
           </div>
           <div class="workspace-heading__actions">
             <button
@@ -747,8 +754,8 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
                 <span
                   v-if="item.unpackaged"
                   class="status-pill unpackaged"
-                  title="这条成片的包装未成功，以无包装成片提交：只有画面，没有口播、字幕与配乐"
-                >无包装</span>
+                  :title="run.status === 'PENDING_RENDER' ? '成片工程已同步，尚未完成智能成片包装；目前只有画面' : '此成片导出时没有包装，只有画面，没有口播、字幕与配乐'"
+                >{{ run.status === 'PENDING_RENDER' ? '待包装' : '无包装' }}</span>
               </div>
               <p class="output-meta">{{ run.status === 'PENDING_RENDER' ? `预计 ${item.duration.toFixed(1)} 秒 · 待导出` : `${item.duration.toFixed(1)} 秒 · H.264 / AAC · ${item.unpackaged ? '无口播 / 字幕 / 配乐' : '内嵌字幕'}` }}</p>
               <div v-if="run.status !== 'PENDING_RENDER' && item.status !== 'COMPLETED'" class="item-progress">

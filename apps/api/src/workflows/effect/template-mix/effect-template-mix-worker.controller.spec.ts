@@ -1,7 +1,9 @@
 import 'reflect-metadata';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { EffectTemplateMixWorkerController } from './effect-template-mix-worker.controller';
+import type { EffectTemplateMixService } from './effect-template-mix.service';
+import type { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
 import {
   EffectTemplateMixWorkerClassificationDto,
   EffectTemplateMixWorkerCompleteDto,
@@ -27,5 +29,19 @@ describe('EffectTemplateMixWorkerController validation metadata', () => {
       method,
     ) as unknown[];
     expect(paramTypes[index]).toBe(dto);
+  });
+});
+
+describe('smart-fill completion routing', () => {
+  it('passes the worker result to the completion coordinator', async () => {
+    const completion = { complete: vi.fn().mockResolvedValue({ status: 'COMPLETED' }) };
+    const controller = new EffectTemplateMixWorkerController(
+      {} as EffectTemplateMixService,
+      completion as unknown as EffectTemplateMixCompletionService,
+    );
+    await controller.complete('project', 'token', {
+      projectId: 'project', trims: [],
+    } as EffectTemplateMixWorkerCompleteDto);
+    expect(completion.complete).toHaveBeenCalledWith('project', 'project', 'token', []);
   });
 });

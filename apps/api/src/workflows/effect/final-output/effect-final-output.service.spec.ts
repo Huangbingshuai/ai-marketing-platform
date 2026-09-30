@@ -333,6 +333,105 @@ describe('final output preview covers', () => {
   });
 });
 
+describe('smart-fill pending output', () => {
+  const confirmedVisual = (variantId: string) => ({
+    id: `timeline-project:t:${variantId}`,
+    artifactKey: `timeline-project:t:${variantId}`,
+    nodeId: 'TEMPLATE_MIX',
+    revision: 2,
+    contentHash: `visual-${variantId}`,
+    freshness: 'CURRENT',
+    availability: 'AVAILABLE',
+    dependencies: [],
+  });
+
+  it('queues confirmed picture-only timelines without a paid render or package artifact', async () => {
+    const { service, db, sources, outputRun, working } = harness(2);
+    db.workingArtifact.findMany.mockResolvedValue([
+      ...sources, confirmedVisual('v0'), confirmedVisual('v1'),
+    ]);
+
+    await service.upsertFromSmartFill('p', 'w', 't');
+
+    expect(outputRun.status).toBe('PENDING_RENDER');
+    expect(outputRun.items).toHaveLength(2);
+    for (const item of outputRun.items as { snapshot: FinalOutputSnapshot }[]) {
+      expect(item.snapshot).toMatchObject({
+        unpackaged: true,
+        packaging: { voices: {}, captions: [] },
+      });
+      expect(item.snapshot.dependencies).toHaveLength(1);
+      expect(item.snapshot.dependencies[0]?.artifactKey).toMatch(/^timeline-project:t:/);
+      expect(item.snapshot.timeline.clips).toHaveLength(1);
+    }
+    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the same pending film and lets packaging upgrade it in place', async () => {
+    const { service, db, sources, pending } = harness();
+    db.workingArtifact.findMany.mockResolvedValue([...sources, confirmedVisual('v0')]);
+    await service.upsertFromSmartFill('p', 'w', 't');
+    const first = db.effectFinalOutputRun.create.mock.calls[0]![0].data.items.create[0] as {
+      variantId: string; name: string; snapshot: FinalOutputSnapshot;
+    };
+    pending.current = {
+      id: 'queued-out', projectId: 'p', templateId: 't', workflowRunId: 'w',
+      status: 'PENDING_RENDER', createdAt: new Date(),
+      items: [{ id: 'kept', ...first }],
+    };
+
+    await service.upsertFromSmartFill('p', 'w', 't');
+    expect(db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'kept' } }),
+    );
+    await service.upsertFromPackaging('p', 'w', 't');
+    const upgraded = db.effectFinalOutputItem.update.mock.lastCall![0].data.snapshot as FinalOutputSnapshot;
+    expect(upgraded.unpackaged).toBe(false);
+    expect(upgraded.dependencies).toHaveLength(2);
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite a delivered branch or accept a stale draft or missing source', async () => {
+    const { service, db, sources } = harness();
+    db.workingArtifact.findMany.mockResolvedValue([
+      ...sources, confirmedVisual('v0'),
+      { id: 'delivery', nodeId: 'FINAL_OUTPUT', artifactKey: 'final-delivery:t' },
+    ]);
+    await service.upsertFromSmartFill('p', 'w', 't');
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+
+    db.workingArtifact.findMany.mockResolvedValue([...sources, confirmedVisual('v0')]);
+    db.workflowNodeState.findUnique.mockResolvedValueOnce({ revision: 1 })
+      .mockResolvedValueOnce({ revision: 2 });
+    await expect(service.upsertFromSmartFill('p', 'w', 't')).rejects.toThrow('草稿已变化');
+    db.fileObject.findMany.mockResolvedValue([]);
+    await expect(service.upsertFromSmartFill('p', 'w', 't')).rejects.toThrow('源文件已失效');
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+  });
+
+  it('does not downgrade a queue once packaging has started', async () => {
+    const { service, db, sources } = harness();
+    db.workingArtifact.findMany.mockResolvedValue([...sources, confirmedVisual('v0')]);
+    db.effectPackagingRun.count.mockResolvedValue(1);
+    await service.upsertFromSmartFill('p', 'w', 't');
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+  });
+
+  it('repairs a confirmed fill whose post-commit sync was missed when output opens', async () => {
+    const { service, db, working, sources } = harness();
+    working.listArtifacts.mockResolvedValue([...sources, confirmedVisual('v0')]);
+    db.effectFinalOutputRun.findMany.mockResolvedValue([]);
+    const repair = vi.spyOn(service, 'upsertFromSmartFill').mockResolvedValue(undefined);
+
+    await service.syncFromDraft('p', 'w', { expectedDraftRevision: 1 });
+
+    expect(repair).toHaveBeenCalledWith('p', 'w', 't');
+  });
+});
+
 describe('atomic full packaging completion', () => {
   it.each([1, 10, 100])(
     'commits all %i visuals and packages as an isolated pending template output',
