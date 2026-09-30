@@ -125,8 +125,10 @@ const selectedTemplate = computed(
 );
 const pageLoading = computed(() => loading.value || mixLoading.value);
 const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.status));
+const staleItems = computed(() => run.value?.items.filter((item) => item.stale) ?? []);
 const validateStatusTitle = computed(() => {
   if (!run.value) return '等待成片输出';
+  if (run.value.counts.stale) return `${run.value.counts.stale} 条成片待局部更新`;
   if (run.value.status === 'COMPLETED') return '本批成片已全部导出';
   if (run.value.validated) return '本批成片已全部导出';
   return run.value.status === 'PENDING_RENDER' ? '等待导出成片' : '等待成片导出完成';
@@ -424,6 +426,34 @@ async function rerenderItem(item: FinalOutputRun['items'][number]) {
     itemRerenderingId.value = '';
   }
 }
+async function localUpdate(itemIds: string[]) {
+  if (!run.value || run.value.status !== 'COMPLETED' || busy.value || !itemIds.length) return;
+  const selected = run.value.items.filter((item) => itemIds.includes(item.id) && item.stale);
+  if (selected.length !== new Set(itemIds).size) {
+    error.value = '成片状态已变化，请刷新后重试';
+    return;
+  }
+  const confirmed = await requestActionConfirmation({
+    eyebrow: '局部更新成片',
+    title: `更新并重新渲染 ${selected.length} 条成片？`,
+    description: '将读取当前混剪工程，按原有规格重新渲染选中的成片，并在当前成片分支覆盖旧文件。此操作会产生渲染费用，其他成片不变。',
+    confirmLabel: '确认局部更新',
+    tone: 'warning',
+  });
+  if (!confirmed) return;
+  busy.value = true;
+  try {
+    await requestJson(`${base.value}/${run.value.id}/local-update`, {
+      method: 'POST', operation: '局部更新成片', body: { itemIds },
+    });
+    error.value = '';
+    await refresh();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '局部更新成片失败';
+  } finally {
+    busy.value = false;
+  }
+}
 function stop() {
   mounted = false;
   ++generation;
@@ -627,9 +657,17 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
         <header class="workspace-heading">
           <div>
             <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' ? '待渲染成片' : '成片列表' }}</h3>
-            <p>{{ run.status === 'PENDING_RENDER' ? '当前模板已完成校验，点击导出后渲染此模板的全部成片' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
+            <p v-if="run.counts.stale">{{ run.counts.stale }} 条成片的混剪工程已变化；原成片仍可查看，局部更新后会覆盖当前分支中的对应文件。</p>
+            <p v-else>{{ run.status === 'PENDING_RENDER' ? '当前模板已完成校验，点击导出后渲染此模板的全部成片' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
           </div>
           <div class="workspace-heading__actions">
+            <button
+              v-if="run.status === 'COMPLETED' && staleItems.length"
+              class="secondary-button local-update-button"
+              type="button"
+              :disabled="busy"
+              @click="localUpdate(staleItems.map((item) => item.id))"
+            ><RefreshCw :size="14" />局部更新（{{ staleItems.length }}）</button>
             <button
               v-if="downloadableItems.length"
               class="secondary-button selection-toggle"
@@ -701,6 +739,7 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
                 <span class="status-pill" :class="statusTone(item.status)">
                   {{ labels[item.status] }}
                 </span>
+                <span v-if="item.stale" class="status-pill stale" title="混剪工程已修改，当前成片仍保留旧文件">待更新</span>
                 <!--
                   A film confirmed without a package plays silent by design. Without this the viewer
                   would read the missing narration as a broken render.
@@ -727,7 +766,15 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
                 @click.stop
               ><Download :size="14" />下载成片</a>
               <button
-                v-if="run.status !== 'PENDING_RENDER'"
+                v-if="item.stale && run.status === 'COMPLETED'"
+                class="item-rerender-button item-local-update-button"
+                type="button"
+                :disabled="busy || active"
+                title="从当前混剪工程更新并重新渲染这条成片"
+                @click.stop="localUpdate([item.id])"
+              ><RefreshCw :size="14" />局部更新</button>
+              <button
+                v-else-if="run.status !== 'PENDING_RENDER'"
                 class="item-rerender-button"
                 type="button"
                 :disabled="busy || active || Boolean(itemRerenderingId)"

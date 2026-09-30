@@ -147,18 +147,17 @@ export const validateEffectTemplateMix = (
     body: { workflowRunId, expectedRevision, templateId },
   });
 
-/**
- * Leaving the workbench re-syncs the output node: films that were never exported follow the draft,
- * and exported ones come back reported as needing a local update.
- */
+/** A saved mix draft refreshes only the unexported output queue of its own branch. */
 export const syncEffectFinalOutput = (
   projectId: string,
   workflowRunId: string,
+  expectedDraftRevision?: number,
+  templateId?: string,
 ): Promise<ApiResponse<SyncFinalOutputData>> =>
   requestJson('/projects/' + encodeURIComponent(projectId) + '/workflows/effect/final-output/sync', {
     method: 'POST',
     operation: '同步成片待渲染区',
-    body: { workflowRunId },
+    body: { workflowRunId, expectedDraftRevision, templateId },
   });
 
 /**

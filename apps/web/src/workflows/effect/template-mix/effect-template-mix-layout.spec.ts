@@ -131,13 +131,13 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('const completionKey');
     expect(pageSource).not.toContain('const canValidate');
   });
-  it('syncs the output node when the workbench is left, and reports what moved', () => {
+  it('silently syncs each saved revision and repairs a missed sync on exit', () => {
     expect(pageSource).toContain('syncEffectFinalOutput');
+    expect(pageSource).toContain('result.data.draftRevision ?? undefined');
+    expect(pageSource).toContain("new BroadcastChannel('effect-final-output-sync')");
     expect(pageSource).toContain('const syncOutputOnExit = async (): Promise<void> => {');
     expect(pageSource).toContain('if (!(await flushPendingEdits())) return;');
-    expect(pageSource).toContain('成片输出有 ${staleCount} 条需要局部更新');
-    expect(pageSource).toContain('已同步成片待渲染区 ${refreshedCount} 条');
-    expect(pageSource).toContain("emit('notice'");
+    expect(pageSource).not.toContain('成片输出有 ${staleCount} 条需要局部更新');
     expect(pageSource).toContain('const returnToFinalOutput = async (): Promise<void> => {');
     expect(pageSource).toContain('await syncOutputOnExit();');
     expect(pageSource).toContain('void syncOutputOnExit();');

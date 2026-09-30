@@ -24,7 +24,7 @@ describe('effect final output re-render layout', () => {
 
   it('confirms a whole-batch re-export and keeps the settings editable between batches', () => {
     expect(pageSource).toContain('确认重新导出');
-    expect(pageSource).toContain('将用当前选择的分辨率与帧率覆盖本批全部成片');
+    expect(pageSource).toContain('创建此模板的新版本分支，原有成片保留在旧分支');
     expect(pageSource).toContain("operation: rerender ? '重新导出成片' : '开始导出成片'");
     expect(pageSource).not.toContain("if (run.value?.status !== 'PENDING_RENDER') return;");
   });
@@ -61,12 +61,13 @@ describe('effect final output re-render layout', () => {
   });
 
   it('offers 局部更新 only for an already-exported batch that has moved upstream', () => {
-    expect(pageSource).toContain('const canLocalUpdate = computed');
-    expect(pageSource).toContain('run.value.counts.stale > 0');
+    expect(pageSource).toContain('const staleItems = computed');
+    expect(pageSource).toContain("run.status === 'COMPLETED' && staleItems.length");
     expect(pageSource).toContain('`${base.value}/${run.value.id}/local-update`');
     expect(pageSource).toContain('确认局部更新');
+    expect(pageSource).toContain('body: { itemIds }');
     expect(pageSource).toContain('class="secondary-button local-update-button"');
-    expect(pageSource).toContain('局部更新（{{ run.counts.stale }}）');
+    expect(pageSource).toContain('局部更新（{{ staleItems.length }}）');
     expect(pageSource).toContain('.local-update-button {');
   });
 
@@ -84,7 +85,7 @@ describe('effect final output re-render layout', () => {
   it('keeps stale films visible and labels each one without disabling export controls', () => {
     expect(pageSource).toContain('run: outputRun,');
     expect(pageSource).toContain('v-if="item.stale" class="status-pill stale"');
-    expect(pageSource).toContain('素材已过期');
+    expect(pageSource).toContain('待更新</span>');
     expect(pageSource).toContain('.status-pill.stale {');
   });
 

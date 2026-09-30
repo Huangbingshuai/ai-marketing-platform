@@ -38,6 +38,8 @@ export type StartFinalOutputRequest = {
 };
 export type FinalOutputDependency = {
   artifactId: string;
+  artifactKey?: string;
+  nodeId?: string;
   revision: number;
   contentHash: string;
 };
@@ -69,6 +71,8 @@ export type FinalOutputItem = {
   progress: number;
   /** Confirmed without a package, so this film is expected to play with picture only. */
   unpackaged?: boolean;
+  /** The exported film differs from the current mix project in this output branch. */
+  stale: boolean;
 };
 export type FinalOutputRun = {
   id: string;
@@ -88,6 +92,8 @@ export type FinalOutputRun = {
     running: number;
     completed: number;
     failed: number;
+    /** Exported films that require an explicit local update. */
+    stale: number;
   };
 };
 export type FinalOutputQueueMessage = {

@@ -157,6 +157,8 @@ const templateCreationReady = ref(false);
 const checkingTemplateCreation = ref(false);
 const activeTemplateId = ref('');
 const draftRevision = ref<number | null>(null);
+const outputSyncChannel = typeof BroadcastChannel === 'undefined' ? null
+  : new BroadcastChannel('effect-final-output-sync');
 const packagingPanel = ref<InstanceType<typeof EffectTemplateMixPackaging> | null>(null);
 const selectedPackaging = ref<PackagingItem | null>(null);
 const packagingPreviewEnabled = ref(false);
@@ -1609,6 +1611,17 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
     );
     draftRevision.value = result.data.draftRevision;
     saveState.value = 'saved';
+    // The saved revision is the fence: a late request for an older drag cannot rewrite the queue.
+    const projectId = props.projectId;
+    const workflowRunId = props.workflowRunId;
+    const templateId = activeTemplateId.value;
+    void syncEffectFinalOutput(projectId, workflowRunId, result.data.draftRevision ?? undefined,
+      templateId || undefined).then(() => {
+        try { outputSyncChannel?.postMessage({ projectId, workflowRunId }); } catch { /* tab closed */ }
+      }).catch(() => {
+        // The output page reconciles any missed sync on activation; a background failure does not
+        // undo the editor's successfully saved draft or interrupt the current gesture.
+      });
     return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('已进入智能填充并锁定')) {
@@ -1867,6 +1880,12 @@ const flushAudioEdit = async (): Promise<void> => {
       ...(diff.captions ? { captions: diff.captions } : {}),
       ...(Object.keys(diff.boxes).length ? { boxes: diff.boxes } : {}),
     });
+    const projectId = props.projectId;
+    const workflowRunId = props.workflowRunId;
+    void syncEffectFinalOutput(projectId, workflowRunId,
+      draftRevision.value ?? undefined, activeTemplateId.value || undefined).then(() => {
+        try { outputSyncChannel?.postMessage({ projectId, workflowRunId }); } catch { /* tab closed */ }
+      }).catch(() => { /* output page reconciles on activation */ });
     const current = selectedPackaging.value;
     if (current?.id !== targetId) {
       // The editor moved on; only the item that was just saved loses its baseline.
@@ -5130,29 +5149,14 @@ const toggleFullscreen = async (): Promise<void> => {
 const onFullscreenChange = (): void => {
   playerFullscreen.value = document.fullscreenElement === playerPanel.value;
 };
-/**
- * The workbench is not an edit session: the draft is saved as it is typed, and only on the way out
- * does the output node learn that the timeline moved. Films that were never exported follow the
- * draft silently; already exported ones come back as needing a local update, which is a decision
- * the user makes on the output node rather than something to do here.
- */
+/** Repair a missed background sync when leaving the workbench. */
 const syncOutputOnExit = async (): Promise<void> => {
   if (!(await flushPendingEdits())) return;
   try {
-    const response = await syncEffectFinalOutput(props.projectId, props.workflowRunId);
-    const { refreshed, needsUpdate } = response.data;
-    const refreshedCount = refreshed.reduce((sum, entry) => sum + entry.itemCount, 0);
-    const staleCount = needsUpdate.reduce((sum, entry) => sum + entry.staleCount, 0);
-    if (staleCount) {
-      emit('notice', `成片输出有 ${staleCount} 条需要局部更新`, 'warning');
-      emit('workflowRunChange');
-    } else if (refreshedCount) {
-      emit('notice', `已同步成片待渲染区 ${refreshedCount} 条`, 'success');
-    }
+    await syncEffectFinalOutput(props.projectId, props.workflowRunId,
+      draftRevision.value ?? undefined, activeTemplateId.value || undefined);
   } catch (error) {
-    // A sync failure must not trap the user in the workbench; the output node re-reads the draft
-    // itself, so the worst case is that the films show the previous timeline until the next export.
-    emit('notice', error instanceof Error ? error.message : '同步成片待渲染区失败', 'error');
+    // A sync failure must not trap the user; the output node re-reads the saved draft itself.
   }
 };
 const flushPendingEdits = async (): Promise<boolean> => {
@@ -5377,6 +5381,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   if (saveState.value === 'dirty') void persist(true);
+  outputSyncChannel?.close();
 });
 defineExpose({ flushPendingEdits });
 </script>

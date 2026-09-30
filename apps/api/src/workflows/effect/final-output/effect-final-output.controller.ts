@@ -17,6 +17,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
   IsArray,
+  ArrayNotEmpty,
+  ArrayUnique,
   IsIn,
   IsInt,
   IsOptional,
@@ -45,7 +47,7 @@ export class SyncFinalOutputDto {
   @IsOptional() @IsInt() @Min(0) expectedDraftRevision?: number;
 }
 export class LocalUpdateFinalOutputDto {
-  @IsArray() @IsUUID('4', { each: true }) itemIds!: string[];
+  @IsArray() @ArrayNotEmpty() @ArrayUnique() @IsUUID('4', { each: true }) itemIds!: string[];
 }
 export class StartFinalOutputDto {
   @IsIn(FINAL_OUTPUT_RESOLUTIONS) resolution!: (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
