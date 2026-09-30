@@ -126,6 +126,7 @@ import EffectMusicLibrary from './EffectMusicLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
+import { TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
 
 const props = defineProps<{
   products: EffectImportProduct[];
@@ -320,6 +321,7 @@ const timelinePlayers = new Map<string, HTMLVideoElement>();
 const detachedAudioPlayers = new Map<string, HTMLAudioElement>();
 let primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 let positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
+const timelineVideoSeeks = new TimelineVideoSeekQueue();
 const workbenchMain = ref<HTMLElement | null>(null);
 const materialGrid = ref<HTMLElement | null>(null);
 const materialGridWidth = ref(0);
@@ -2955,6 +2957,7 @@ const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string =
 const resetTimelinePlayerState = (): void => {
   primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
+  timelineVideoSeeks.reset();
   activePlaybackSlotId = '';
   activeTransitionSignature = '';
   for (const video of timelinePlayers.values()) video.pause();
@@ -3084,15 +3087,12 @@ const syncTimelineVideo = (
     const needsSeek =
       seekMode === 'once'
         ? !positionedTimelinePlayers.has(video)
-        : !positionedTimelinePlayers.has(video) ||
+        : !resume ||
+          !positionedTimelinePlayers.has(video) ||
           Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS;
     if (needsSeek) {
-      try {
-        video.currentTime = sourceTime;
-        positionedTimelinePlayers.add(video);
-      } catch {
-        // Metadata can be replaced while a source is loading; the ready callback retries.
-      }
+      timelineVideoSeeks.request(video, sourceTime, 1 / TIMELINE_FPS);
+      positionedTimelinePlayers.add(video);
     }
   }
   if (resume && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.paused) {
@@ -3119,14 +3119,8 @@ const primeUpcomingTimelinePlayer = (range: { id: string; end: number }): void =
   }
   if (!positionedTimelinePlayers.has(video) && video.readyState >= HTMLMediaElement.HAVE_METADATA) {
     const targetTime = selectedVariant.value?.offsets[upcoming.id] ?? 0;
-    try {
-      if (Math.abs(video.currentTime - targetTime) > 1 / TIMELINE_FPS) {
-        video.currentTime = targetTime;
-      }
-      positionedTimelinePlayers.add(video);
-    } catch {
-      // Metadata may be replaced while a source is loading; the ready callback retries.
-    }
+    timelineVideoSeeks.request(video, targetTime, 1 / TIMELINE_FPS);
+    positionedTimelinePlayers.add(video);
   }
 };
 const pauseTimelinePlayers = (exceptSlotId: string | string[] = ''): void => {
@@ -4890,12 +4884,8 @@ const syncPlayingVideoFrame = (): void => {
     // media clock owns frame delivery; correcting currentTime from our RAF on
     // every drift would turn normal decode jitter into visible stutter.
     if (needsSlotSeek) {
-      try {
-        video.currentTime = Math.max(0, sourceTime);
-        positionedTimelinePlayers.add(video);
-      } catch {
-        // Metadata can be replaced while a source is loading; the ready callback retries.
-      }
+      timelineVideoSeeks.request(video, Math.max(0, sourceTime), 1 / TIMELINE_FPS);
+      positionedTimelinePlayers.add(video);
     }
   }
   if (switchedSlot) primeUpcomingTimelinePlayer(range);
@@ -5000,12 +4990,8 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
     if (!video) return false;
     pauseTimelinePlayers(slot.id);
     const sourceTime = timelineSourceTime(slot.id);
-    if (sourceTime !== null && Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS) {
-      try {
-        video.currentTime = Math.max(0, sourceTime);
-      } catch {
-        // Metadata may be replaced while a source is loading; the ready callback retries.
-      }
+    if (sourceTime !== null) {
+      timelineVideoSeeks.request(video, Math.max(0, sourceTime), 1 / TIMELINE_FPS);
     }
     primeUpcomingTimelinePlayer(range);
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking) {
@@ -5081,14 +5067,23 @@ const togglePlay = async (): Promise<void> => {
   startPlaybackClock();
   await syncPlayerToPlayhead(true);
 };
-const onTimelinePlayerReady = (slotId: string): void => {
+const onTimelinePlayerReady = (slotId: string, seeked = false): void => {
+  const video = timelinePlayers.get(slotId);
   const transition = activeTransitionPreview.value;
   const isVisibleSlot =
     previewSlot.value?.id === slotId ||
     transition?.incomingSlot.id === slotId ||
     transition?.outgoingSlot.id === slotId;
+  const target = isVisibleSlot && !playing.value ? timelineSourceTime(slotId) : null;
+  if (video) {
+    const ready = seeked
+      ? timelineVideoSeeks.complete(video, 1 / TIMELINE_FPS, target ?? undefined)
+      : target !== null
+        ? timelineVideoSeeks.request(video, target, 1 / TIMELINE_FPS)
+        : timelineVideoSeeks.flush(video, 1 / TIMELINE_FPS);
+    if (!ready) return;
+  }
   if (auditionMaterial.value || !isVisibleSlot) return;
-  const video = timelinePlayers.get(slotId);
   if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
   detectMaterialAudio(materialForSlot(slotId), video);
   playerUnavailableSlotId.value = '';
@@ -6033,7 +6028,7 @@ defineExpose({ flushPendingEdits });
                     preload="metadata"
                     draggable="false"
                     @canplay="onTimelinePlayerReady(slot.id)"
-                    @seeked="onTimelinePlayerReady(slot.id)"
+                    @seeked="onTimelinePlayerReady(slot.id, true)"
                     @loadedmetadata="onTimelinePlayerReady(slot.id)"
                     @timeupdate="onTimelinePlayerTimeUpdate(slot.id)"
                     @error="onTimelinePlayerError(slot.id)"
