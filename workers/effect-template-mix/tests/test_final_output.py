@@ -628,6 +628,35 @@ async def test_caption_narration_mixes_like_a_narration_line(tmp_path: Path, mon
     assert 'amix=inputs=4:normalize=0' in next(f for f in filters if f.endswith('[audio]'))
 
 
+async def test_split_packaged_music_continuation_keeps_voice_ducking(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    """A packaged music bed's right-hand split remains ducked under the same voice spans."""
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': .5, 'duration': .5, 'volume': 1}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 2, 'volume': .12})
+    snapshot['packaging']['music'] = None
+    snapshot['timeline']['detachedAudios'] = [{
+        'id': 'split-music', 'audioKind': 'MUSIC', 'sourceType': 'FILE', 'loopSource': True,
+        'fileObjectId': 'music', 'start': 2, 'duration': 2, 'offset': 4.1,
+        'volume': .12, 'fadeIn': 0, 'fadeOut': 0,
+    }]
+    commands: list[list[str]] = []
+    async def record_encode(args: list[str], _cwd: Path) -> None:
+        commands.append(args)
+        filters.extend(args[args.index('-filter_complex') + 1].split(';'))
+    monkeypatch.setattr(final_output, 'encode', record_encode)
+    await render(snapshot, {
+        'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav', 'music': tmp_path / 'music.wav',
+    }, tmp_path, AsyncMock())
+    input_args = commands[0]
+    music_input = input_args.index(str(tmp_path / 'music.wav'))
+    assert input_args[music_input - 3:music_input] == ['-stream_loop', '-1', '-i']
+    continuation = next(f for f in filters if f.endswith('[detached0]'))
+    assert 'atrim=start=4.1:duration=2.0' in continuation
+    assert "volume='0.12*if(gt(between(t,0.5,1.0),0),0.35,1)':eval=frame" in continuation
+
+
 @pytest.mark.parametrize(('packaging', 'expected'), [
     ({'voices': {'line': {'fileObjectId': 'voice'}},
       'captionVoices': {'caption-1': {'fileObjectId': 'caption-voice'}},

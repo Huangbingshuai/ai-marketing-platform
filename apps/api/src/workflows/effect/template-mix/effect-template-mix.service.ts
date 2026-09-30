@@ -96,17 +96,37 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
                   const audio = object(rawAudio);
                   const hasVideoSource = typeof audio?.sourceSlotId === 'string';
                   const hasMusicSource = typeof audio?.sourceAssetId === 'string';
+                  const isFileSource = audio?.sourceType === 'FILE';
+                  const validSource = isFileSource
+                    ? !hasVideoSource && !hasMusicSource
+                    : hasVideoSource !== hasMusicSource && audio?.sourceType === undefined;
+                  const duration = Number(audio?.duration);
+                  const fadeIn = Number(audio?.fadeIn ?? 0);
+                  const fadeOut = Number(audio?.fadeOut ?? 0);
                   return Boolean(
                     audio &&
                     typeof audio.id === 'string' &&
-                    hasVideoSource !== hasMusicSource &&
+                    validSource &&
+                    (audio.audioKind === undefined ||
+                      ['VOICE', 'MUSIC', 'DETACHED'].includes(String(audio.audioKind))) &&
+                    (audio.loopSource === undefined ||
+                      (typeof audio.loopSource === 'boolean' &&
+                        (audio.loopSource !== true || audio.audioKind === 'MUSIC'))) &&
                     typeof audio.fileObjectId === 'string' &&
                     typeof audio.name === 'string' &&
                     Number.isFinite(audio.start) &&
-                    Number.isFinite(audio.duration) &&
+                    Number.isFinite(duration) &&
+                    duration > 0 &&
                     Number.isFinite(audio.offset) &&
                     Number.isFinite(audio.volume) &&
-                    (audio.sourceDuration === undefined || Number.isFinite(audio.sourceDuration)),
+                    (audio.sourceDuration === undefined ||
+                      (Number.isFinite(audio.sourceDuration) &&
+                        Number(audio.offset) + duration <= Number(audio.sourceDuration) + 0.05)) &&
+                    Number.isFinite(fadeIn) &&
+                    fadeIn >= 0 &&
+                    Number.isFinite(fadeOut) &&
+                    fadeOut >= 0 &&
+                    fadeIn + fadeOut <= duration + 0.05,
                   );
                 })))
           );

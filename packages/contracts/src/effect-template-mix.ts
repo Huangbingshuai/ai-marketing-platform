@@ -103,6 +103,12 @@ export type EffectTemplateMixAudio = {
 /** Audio placed on the timeline, either detached from video or imported from the project music library. */
 export type EffectTemplateMixDetachedAudio = {
   id: string;
+  /** `FILE` references an already-authorized project file, such as a split packaged voice clip. */
+  sourceType?: 'FILE' | undefined;
+  /** Preserved while splitting packaged voice/music so the renderer keeps its mix behavior. */
+  audioKind?: 'VOICE' | 'MUSIC' | 'DETACHED' | undefined;
+  /** A packaged bed may be looped to fill the timeline, so a split can seek past one source pass. */
+  loopSource?: boolean | undefined;
   sourceSlotId?: string | undefined;
   sourceAssetId?: string | undefined;
   fileObjectId: string;
@@ -113,6 +119,8 @@ export type EffectTemplateMixDetachedAudio = {
   start: number;
   offset: number;
   volume: number;
+  fadeIn?: number | undefined;
+  fadeOut?: number | undefined;
 };
 export type EffectTemplateMixBindingMetadata = {
   source: 'AI' | 'MANUAL';

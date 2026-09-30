@@ -350,12 +350,18 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         current = f'join{index}'
     original_volume = max(0, min(1, float(snapshot['originalVolume'])))
     filters += [''.join(f'[a{index}]' for index in range(len(intervals))) + f'concat=n={len(intervals)}:v=0:a=1,volume={original_volume}[original]']
-    detached = list(timeline.get('detachedAudios', []))
+    timeline_audios = list(timeline.get('detachedAudios', []))
+    detached = [audio for audio in timeline_audios if audio.get('audioKind') != 'VOICE']
     # Editor edits may trim the source head (`offset`) and move clips along the timeline;
     # pipeline writes stay canonical, so absent keys mean the frozen timeline geometry.
     # A caption narration the editor generated is a narration line in every way the mixer cares
     # about: it ducks the music, it takes one amix input, and it is moved by `offset`/`start`.
-    voices = [*cp['voices'].values(), *(cp.get('captionVoices') or {}).values()]
+    voices = [*cp['voices'].values(), *(cp.get('captionVoices') or {}).values(),
+        *(audio for audio in timeline_audios if audio.get('audioKind') == 'VOICE')]
+    voice_windows = '+'.join(
+        f"between(t,{float(voice['start'])},{float(voice['start']) + float(voice['duration'])})"
+        for voice in voices
+    ) or '0'
     for index, voice in enumerate(voices):
         actual = float(media[voice['fileObjectId']]['format']['duration'])
         offset = float(voice.get('offset', 0.0))
@@ -392,13 +398,26 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
                 or not math.isfinite(start) or start < 0
                 or not math.isfinite(length) or length <= 0
                 or not math.isfinite(volume) or volume < 0 or volume > 10
-                or offset + length > actual + .05
+                or (not audio.get('loopSource') and offset + length > actual + .05)
                 or start + length > duration + .001):
             raise PackagingError('分离音频源轨道或时间范围无效')
+        if audio.get('loopSource'):
+            inputs += ['-stream_loop', '-1']
         inputs += ['-i', str(files[file_id])]
         source_index = source_count + len(voices) + index
+        fade_in = float(audio.get('fadeIn', 0.0) or 0.0)
+        fade_out = float(audio.get('fadeOut', 0.0) or 0.0)
+        if (not math.isfinite(fade_in) or not math.isfinite(fade_out)
+                or fade_in < 0 or fade_out < 0 or fade_in + fade_out > length + .05):
+            raise PackagingError('音频片段淡入淡出时长无效')
+        fades = (f',afade=t=in:st={start}:d={fade_in}' if fade_in > 0 else '') + (
+            f',afade=t=out:st={start + length - fade_out}:d={fade_out}' if fade_out > 0 else '')
+        # A packaged music bed that was split at the playhead resumes as an independent clip; keep
+        # the bed's voice ducking for that continuation rather than changing its mix after the cut.
+        music_gain = (f"'{volume}*if(gt({voice_windows},0),0.35,1)':eval=frame"
+            if audio.get('audioKind') == 'MUSIC' else str(volume))
         filters += [f'[{source_index}:a]aresample=48000,atrim=start={offset}:duration={length},'
-            f'asetpts=PTS-STARTPTS,volume={volume},adelay={round(start * 1000)}:all=1[detached{index}]']
+            f'asetpts=PTS-STARTPTS,volume={music_gain},adelay={round(start * 1000)}:all=1{fades}[detached{index}]']
     # The editor may delete the packaged bed outright, so its absence is a normal state rather than
     # a broken checkpoint: the mix simply has one input fewer and the film keeps its length.
     music = cp.get('music')
@@ -413,7 +432,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
             raise PackagingError('纯音乐时间范围与包装不一致')
         inputs += ['-stream_loop', '-1', '-i', str(files[music['fileObjectId']])]
         # Time-window ducking is deterministic, including silent PCM and gaps.
-        windows = '+'.join(f'between(t,{float(v["start"])},{float(v["start"]) + float(v["duration"])})' for v in voices) or '0'
+        windows = voice_windows
         music_index = source_count + len(voices) + len(detached)
         # Ducking and fades run after `adelay`, so their time coordinates are timeline seconds.
         # The 0.5s easing is the pipeline default: a checkpoint the editor never touched has no fade

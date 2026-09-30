@@ -24,6 +24,22 @@ const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+/** Optional editor fades must fit within their audio clip. */
+const fades = (audio: {
+  duration: number;
+  fadeIn?: number | undefined;
+  fadeOut?: number | undefined;
+}) => {
+  const fadeIn = audio.fadeIn ?? 0;
+  const fadeOut = audio.fadeOut ?? 0;
+  return (
+    Number.isFinite(fadeIn) &&
+    Number.isFinite(fadeOut) &&
+    fadeIn >= 0 &&
+    fadeOut >= 0 &&
+    fadeIn + fadeOut <= audio.duration + 0.05
+  );
+};
 export const visualHash = (variant: EffectTemplateMixVariant) =>
   workflowStateHash(packagingVisualSource(variant));
 
@@ -186,6 +202,30 @@ export function packagingSnapshot(
     new Set(videoDetachedAudios.map(({ sourceSlotId }) => sourceSlotId)).size !==
       videoDetachedAudios.length ||
     detachedAudios.some((audio) => {
+      if (audio.sourceType === 'FILE')
+        return (
+          Boolean(audio.sourceSlotId || audio.sourceAssetId) ||
+          !audio.fileObjectId ||
+          !Number.isFinite(audio.start) ||
+          audio.start < 0 ||
+          !Number.isFinite(audio.duration) ||
+          audio.duration <= 0 ||
+          audio.start + audio.duration > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS + 0.001 ||
+          !Number.isFinite(audio.offset) ||
+          audio.offset < 0 ||
+          (audio.sourceDuration !== undefined &&
+            (!Number.isFinite(audio.sourceDuration) ||
+              audio.offset + audio.duration > audio.sourceDuration + 0.05)) ||
+          !Number.isFinite(audio.volume) ||
+          audio.volume < 0 ||
+          audio.volume > PACKAGING_AUDIO_GAIN_CEILING ||
+          (audio.audioKind !== undefined &&
+            !['VOICE', 'MUSIC', 'DETACHED'].includes(audio.audioKind)) ||
+          (audio.loopSource !== undefined &&
+            (typeof audio.loopSource !== 'boolean' ||
+              (audio.loopSource && audio.audioKind !== 'MUSIC'))) ||
+          !fades(audio)
+        );
       if (audio.sourceAssetId) {
         const source = musicSources.get(audio.sourceAssetId);
         return (

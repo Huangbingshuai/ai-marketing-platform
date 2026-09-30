@@ -126,6 +126,7 @@ import EffectMusicLibrary from './EffectMusicLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
+import { splitRangeAtPlayhead } from './effect-template-mix-split';
 import { TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
 
 const props = defineProps<{
@@ -3702,6 +3703,182 @@ const resizeTimelineSlot = (
     Math.max(0, Math.round((material.duration - 4) * 1000) / 1000),
   );
   if (material.duration < 4) return;
+/** Split the one selected timeline item at the playhead; its two pieces remain independently editable. */
+const splitTimelineMaterial = (
+  target: { kind: 'VIDEO' | 'AUDIO' | 'CAPTION'; id: string },
+  rawAt: number,
+): void => {
+  const variant = selectedVariant.value;
+  if (!variant || projectEditLocked.value) return;
+  const at = Math.round(rawAt * TIMELINE_FPS) / TIMELINE_FPS;
+
+  if (target.kind === 'VIDEO') {
+    const slot = variant.slots.find(({ id }) => id === target.id);
+    const range = currentTiming.value.slots.find(({ id }) => id === target.id);
+    const material = materialForSlot(target.id, variant);
+    const cut = slot && range
+      ? splitRangeAtPlayhead(range.start, slot.duration, at, TIMELINE_FPS)
+      : null;
+    if (!slot || !material || !cut) return;
+    const sourceOffset = Math.max(0, variant.offsets[target.id] ?? 0);
+    const rightDuration = slot.duration - cut.leftDuration;
+    if (sourceOffset + slot.duration > material.duration + 1 / TIMELINE_FPS) {
+      showNotice('素材源时长不足，无法在当前位置裁剪', 'warning');
+      return;
+    }
+    const rangesBeforeSplit = currentTiming.value.slots;
+    const slotIndex = variant.slots.findIndex(({ id }) => id === slot.id);
+    rememberTimelineEdit();
+    // Later implicit clips are sequenced from this slot's duration. Pin their current positions
+    // before shortening it so the split cannot silently pull the rest of the film earlier.
+    variant.timelineStarts ??= {};
+    for (const later of variant.slots.slice(slotIndex + 1)) {
+      if (variant.timelineStarts[later.id] !== undefined) continue;
+      const range = rangesBeforeSplit.find(({ id }) => id === later.id);
+      if (range) variant.timelineStarts[later.id] = range.start;
+    }
+    slot.duration = cut.leftDuration;
+    const right: EffectTemplateMixSlot = {
+      ...slot,
+      id: crypto.randomUUID(),
+      label: `${slot.label}（后半段）`,
+      duration: rightDuration,
+      transition: '硬切',
+      transitionDuration: 0,
+      // A split continuation is picture-only; keep the original template slot and its narration intact.
+      overlay: true,
+    };
+    variant.slots.push(right);
+    variant.bindings[right.id] = material.id;
+    variant.bindingRevisions[right.id] = variant.bindingRevisions[target.id] ?? material.artifactRevision;
+    variant.offsets[right.id] = sourceOffset + cut.leftDuration;
+    variant.bindingMetadata ??= {};
+    variant.bindingMetadata[right.id] = {
+      ...(variant.bindingMetadata[target.id] ?? { source: 'MANUAL' }),
+      classificationReason: '在播放针位置裁剪素材',
+    };
+    variant.manualSlotIds.push(right.id);
+    variant.timelineStarts ??= {};
+    variant.timelineStarts[right.id] = at;
+    variant.videoLanes ??= {};
+    variant.videoLanes[right.id] = variant.videoLanes[target.id] ?? 0;
+    normalizeVariantVideoLanes(variant);
+    if (activeUi.value) activeUi.value.selectedSlotId = right.id;
+    clearDetachedTransitions(variant);
+    resetTimelinePlayerState();
+    bump();
+    showNotice('素材已在播放针位置裁剪', 'success');
+    return;
+  }
+
+  if (target.kind === 'CAPTION') {
+    const caption = captionItems.value.find(({ id }) => id === target.id);
+    const cut = caption
+      ? splitRangeAtPlayhead(caption.start, caption.end - caption.start, at, TIMELINE_FPS)
+      : null;
+    if (!caption || !cut) return;
+    rememberTimelineEdit();
+    const right: EffectTemplateMixCaption = {
+      ...caption,
+      id: crypto.randomUUID(),
+      manual: true,
+      start: at,
+      end: caption.end,
+    };
+    delete right.voiceLineId;
+    delete right.segmentIndex;
+    delete right.segmentCount;
+    if (selectedPackaging.value) {
+      editPackagingAudio((checkpoint) => {
+        const source = checkpoint.captions?.find(({ id }) => id === caption.id);
+        if (!source) return;
+        source.end = at;
+        checkpoint.captions ??= [];
+        checkpoint.captions.push(right);
+      });
+    } else {
+      caption.end = at;
+      variant.captions.push(right);
+      bump();
+    }
+    selectedCaptionIds.value = [right.id];
+    selectedAudioClipIds.value = [];
+    showNotice('字幕已在播放针位置裁剪', 'success');
+    return;
+  }
+
+  const audioId = target.id.startsWith('detached:') ? target.id.slice('detached:'.length) : target.id;
+  const detached = variant.detachedAudios?.find(({ id }) => id === audioId);
+  const packageTarget = packagingAudioTarget(audioId);
+  const packagedAudio = packageTarget && packageTarget.kind !== 'CAPTION'
+    ? selectedPackaging.value && packagingAudio(selectedPackaging.value.checkpoint, packageTarget)
+    : undefined;
+  const audio = detached ?? packagedAudio;
+  const cut = audio
+    ? splitRangeAtPlayhead(audio.start, audio.duration, at, TIMELINE_FPS)
+    : null;
+  if (!audio || !cut || (!detached && !selectedPackaging.value)) return;
+  if ((variant.detachedAudios?.length ?? 0) >= 100) {
+    showNotice('音频素材数量已达到上限，无法继续裁剪', 'warning');
+    return;
+  }
+  rememberTimelineEdit();
+  const rightDuration = audio.duration - cut.leftDuration;
+  const fadeIn = detached
+    ? detached.fadeIn ?? 0
+    : packagingAudioFade(audio, packageTarget?.kind === 'MUSIC' ? 'MUSIC' : 'VOICE', 'fadeIn');
+  const fadeOut = detached
+    ? detached.fadeOut ?? 0
+    : packagingAudioFade(audio, packageTarget?.kind === 'MUSIC' ? 'MUSIC' : 'VOICE', 'fadeOut');
+  const audioKind = detached
+    ? detached.audioKind ?? (detached.sourceAssetId ? 'MUSIC' : 'DETACHED')
+    : packageTarget?.kind === 'MUSIC'
+      ? 'MUSIC'
+      : 'VOICE';
+  const right: EffectTemplateMixDetachedAudio = {
+    id: crypto.randomUUID(),
+    ...(detached?.sourceAssetId ? { sourceAssetId: detached.sourceAssetId } : { sourceType: 'FILE' as const }),
+    audioKind,
+    ...(packageTarget?.kind === 'MUSIC' ? { loopSource: true } : {}),
+    fileObjectId: audio.fileObjectId,
+    name: `${detached?.name ?? (audioKind === 'MUSIC' ? '纯音乐' : '口播音频')}（后半段）`,
+    ...(
+      detached?.sourceDuration !== undefined
+        ? { sourceDuration: detached.sourceDuration }
+        : packageTarget?.kind === 'MUSIC'
+          ? {}
+          : { sourceDuration: (audio.offset ?? 0) + audio.duration }
+    ),
+    duration: rightDuration,
+    start: at,
+    offset: (audio.offset ?? 0) + cut.leftDuration,
+    volume: audio.volume,
+    fadeIn: Math.min(rightDuration, Math.max(0, fadeIn - cut.leftDuration)),
+    fadeOut: Math.min(rightDuration, fadeOut),
+  };
+  if (detached) {
+    detached.duration = cut.leftDuration;
+    detached.fadeIn = Math.min(cut.leftDuration, fadeIn);
+    detached.fadeOut = 0;
+    variant.detachedAudios = [...(variant.detachedAudios ?? []), right];
+    normalizeVariantAudioLanes(variant);
+  } else if (packageTarget && selectedPackaging.value) {
+    editPackagingAudio((checkpoint) => {
+      const source = packagingAudio(checkpoint, packageTarget);
+      if (!source) return;
+      source.duration = cut.leftDuration;
+      source.fadeIn = Math.min(cut.leftDuration, fadeIn);
+      source.fadeOut = 0;
+      variant.detachedAudios = [...(variant.detachedAudios ?? []), right];
+      normalizeVariantAudioLanes(variant);
+    });
+  }
+  selectedCaptionIds.value = [];
+  selectedAudioClipIds.value = [`detached:${right.id}`];
+  bump();
+  resetTimelinePlayerState();
+  showNotice('音频已在播放针位置裁剪', 'success');
+};
   const minimumDuration = 4;
   const maximumDuration = Math.min(15, Math.max(minimumDuration, material.duration - nextOffset));
   const nextDuration = Math.min(
@@ -6610,6 +6787,7 @@ defineExpose({ flushPendingEdits });
           @insert-material-track="insertMaterialTrack"
           @replace-audio-with-music="replaceAudioWithMusic"
           @split-caption-track="splitCaptionTrack"
+          @split-material="splitTimelineMaterial"
           @move-caption-to-row="moveCaptionToRow"
           @apply-transition="changeTransitionForSlot"
           @open-transition="openTransitionPanel"

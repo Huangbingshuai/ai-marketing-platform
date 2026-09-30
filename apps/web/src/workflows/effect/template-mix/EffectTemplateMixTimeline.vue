@@ -61,6 +61,7 @@ import {
 } from './effect-template-mix-state';
 import EffectTemplateMixFilmstrip from './EffectTemplateMixFilmstrip.vue';
 import EffectTemplateMixWaveform from './EffectTemplateMixWaveform.vue';
+import { splitRangeAtPlayhead } from './effect-template-mix-split';
 
 const props = withDefaults(
   defineProps<{
@@ -158,6 +159,7 @@ const emit = defineEmits<{
   /** The whole voice/music selection, so the editor can retune a group from one standard clip. */
   selectAudioClips: [clipIds: string[]];
   selectSlot: [slotId: string];
+  splitMaterial: [target: { kind: 'VIDEO' | 'AUDIO' | 'CAPTION'; id: string }, at: number];
   separateAudio: [slotId: string];
   pasteVideoMaterials: [
     items: Array<{
@@ -2915,6 +2917,49 @@ const onTimelineKeydown = (event: KeyboardEvent): void => {
       target instanceof Element &&
       Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
     const key = event.key.toLowerCase();
+    if (!editingText && key === 'b') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (props.readOnly) return;
+      const selectedAudioId = selectedAudioIds.value.length === 1 ? selectedAudioIds.value[0] : null;
+      const hasMultipleSelected =
+        selectedAudioIds.value.length > 1 || selectedClipIds.value.length > 1;
+      if (hasMultipleSelected) {
+        emit('requestNotice', '请一次选择一个素材进行裁剪');
+        return;
+      }
+      if (selectedAudioId) {
+        if (selectedAudioId.startsWith('caption:')) {
+          const id = selectedAudioId.slice('caption:'.length);
+          const caption = timelineCaptions.value.find((item) => item.id === id);
+          const lane = caption ? (captionLaneById.value.get(caption.id) ?? 0) : 0;
+          if (caption && !trackLocked[captionTrackKey(lane)] &&
+            splitRangeAtPlayhead(caption.start, caption.end - caption.start, props.playhead, props.fps)) {
+            emit('splitMaterial', { kind: 'CAPTION', id: caption.id }, props.playhead);
+          } else emit('requestNotice', '播放针需位于已选字幕内部才能裁剪');
+          return;
+        }
+        const audio = timelineAudios.value.find((item) => item.id === selectedAudioId);
+        const track = audioRowKey(audio ? audioRowOf(audio.id) : 0);
+        if (audio?.editable && !trackLocked[track] &&
+          splitRangeAtPlayhead(audio.start, audio.duration, props.playhead, props.fps)) {
+          emit('splitMaterial', { kind: 'AUDIO', id: audio.id }, props.playhead);
+        } else emit('requestNotice', '当前音频不可裁剪，或播放针不在素材内部');
+        return;
+      }
+      const selectedSlotId = selectedClipIds.value[0];
+      const range = selectedSlotId ? rangeForSlot(selectedSlotId) : null;
+      if (
+        selectedSlotId &&
+        materialForSlot(selectedSlotId) &&
+        !trackLocked.VIDEO &&
+        range &&
+        splitRangeAtPlayhead(range.start, range.end - range.start, props.playhead, props.fps)
+      ) {
+        emit('splitMaterial', { kind: 'VIDEO', id: selectedSlotId }, props.playhead);
+      } else emit('requestNotice', '请先选中素材，并将播放针移到素材内部再裁剪');
+      return;
+    }
     if (!editingText && key === 'c') {
       event.preventDefault();
       event.stopPropagation();
