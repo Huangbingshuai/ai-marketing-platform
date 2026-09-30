@@ -41,9 +41,11 @@ import { EffectFinalOutputService } from './effect-final-output.service';
 
 export class SyncFinalOutputDto {
   @IsUUID('4') workflowRunId!: string;
+  @IsOptional() @IsUUID('4') templateId?: string;
+  @IsOptional() @IsInt() @Min(0) expectedDraftRevision?: number;
 }
 export class LocalUpdateFinalOutputDto {
-  @IsOptional() @IsArray() @IsUUID('4', { each: true }) itemIds?: string[];
+  @IsArray() @IsUUID('4', { each: true }) itemIds!: string[];
 }
 export class StartFinalOutputDto {
   @IsIn(FINAL_OUTPUT_RESOLUTIONS) resolution!: (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
@@ -79,7 +81,7 @@ export class EffectFinalOutputController {
   }
   @Post('final-output/sync')
   sync(@Param('projectId', uuid) projectId: string, @Body() body: SyncFinalOutputDto) {
-    return this.service.syncFromDraft(projectId, body.workflowRunId);
+    return this.service.syncFromDraft(projectId, body.workflowRunId, body);
   }
   @Post('final-output/:runId/local-update')
   localUpdate(

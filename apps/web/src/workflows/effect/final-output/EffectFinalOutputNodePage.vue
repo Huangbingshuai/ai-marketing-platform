@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onBeforeUnmount, ref, watch } from 'vue';
-import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, Wand2, X } from '@lucide/vue';
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, X } from '@lucide/vue';
 import type {
   ApiResponse,
   EffectTemplateMixMaterial,
   EffectTemplateMixWorkspaceData,
   FinalOutputResolution,
   FinalOutputRun,
+  SyncFinalOutputData,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeFooter } from '@ai-marketing/ui';
 import { apiUrl, requestJson } from '../../../api/http-client';
@@ -106,8 +107,6 @@ const templates = computed(() => {
     return {
       templateId: entry.id,
       templateName: entry.workspace.template.name,
-      // A previously confirmed film remains accessible after its source moves on; each film carries
-      // its own stale marker so users can distinguish old output without losing it.
       run: outputRun,
       pendingLabel,
       pendingTitle,
@@ -126,16 +125,9 @@ const selectedTemplate = computed(
 );
 const pageLoading = computed(() => loading.value || mixLoading.value);
 const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.status));
-// A batch that has never been exported is refreshed silently as the draft moves, so a local update
-// only ever applies to films the user already has — and only when something they were cut from moved.
-const canLocalUpdate = computed(() =>
-  Boolean(run.value && !['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(run.value.status) &&
-    run.value.counts.stale > 0),
-);
 const validateStatusTitle = computed(() => {
   if (!run.value) return '等待成片输出';
-  if (run.value.status === 'COMPLETED')
-    return run.value.counts.stale ? '成片来源已更新，可局部更新' : '本批成片已全部导出';
+  if (run.value.status === 'COMPLETED') return '本批成片已全部导出';
   if (run.value.validated) return '本批成片已全部导出';
   return run.value.status === 'PENDING_RENDER' ? '等待导出成片' : '等待成片导出完成';
 });
@@ -213,6 +205,8 @@ let mixController: AbortController | undefined;
 let generation = 0,
   mixGeneration = 0,
   mounted = true;
+const outputSyncChannel = typeof BroadcastChannel === 'undefined' ? null
+  : new BroadcastChannel('effect-final-output-sync');
 async function refresh() {
   const current = ++generation;
   controller?.abort();
@@ -250,11 +244,11 @@ async function refresh() {
     }
   }
 }
-async function refreshMixWorkspace() {
+async function refreshMixWorkspace(): Promise<EffectTemplateMixWorkspaceData | null> {
   const current = ++mixGeneration;
   mixController?.abort();
   mixController = new AbortController();
-  mixLoading.value = true;
+  if (!mixWorkspace.value) mixLoading.value = true;
   try {
     const result = await requestJson<ApiResponse<EffectTemplateMixWorkspaceData>>(
       `/projects/${props.projectId}/workflows/effect/template-mix?workflowRunId=${encodeURIComponent(props.workflowRunId)}`,
@@ -265,17 +259,47 @@ async function refreshMixWorkspace() {
       mixError.value = '';
       if (!templates.value.some(({ templateId }) => templateId === selectedTemplateId.value))
         selectedTemplateId.value = templates.value[0]?.templateId ?? '';
+      return result.data;
     }
   } catch (reason) {
     if (current === mixGeneration && !(reason instanceof DOMException && reason.name === 'AbortError')) {
-      mixWorkspace.value = null;
+      // A transient background refresh failure must not blank a usable preview.
       mixError.value = reason instanceof Error ? reason.message : '读取混剪模板失败';
     }
   } finally {
     if (current === mixGeneration) mixLoading.value = false;
   }
+  return null;
+}
+/** Repair a missed background sync when the output page is entered after a network interruption. */
+async function reconcilePending(): Promise<void> {
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const workspace = await refreshMixWorkspace();
+  if (!workspace || !mounted || projectId !== props.projectId ||
+    workflowRunId !== props.workflowRunId) return;
+  try {
+    const response = await requestJson<ApiResponse<SyncFinalOutputData>>(
+      `/projects/${projectId}/workflows/effect/final-output/sync`, {
+        method: 'POST', operation: '对齐待渲染成片',
+        body: { workflowRunId, expectedDraftRevision: workspace.draftRevision },
+      },
+    );
+    if (!response.data.superseded && mounted && projectId === props.projectId &&
+      workflowRunId === props.workflowRunId) await refresh();
+  } catch (reason) {
+    if (mounted && projectId === props.projectId && workflowRunId === props.workflowRunId)
+      mixError.value = reason instanceof Error ? reason.message : '待渲染成片暂未同步';
+  }
 }
 const refreshAll = () => {
+  void reconcilePending();
+  void refresh();
+};
+if (outputSyncChannel) outputSyncChannel.onmessage = (event: MessageEvent) => {
+  const scope = event.data as { projectId?: string; workflowRunId?: string } | null;
+  if (!mounted || scope?.projectId !== props.projectId ||
+    scope.workflowRunId !== props.workflowRunId) return;
   void refreshMixWorkspace();
   void refresh();
 };
@@ -327,13 +351,13 @@ function downloadSelected() {
   }
   window.setTimeout(() => { batchDownloading.value = false; }, 700);
 }
-async function command(action: 'retry' | 'cancel') {
+async function retryFailedOutputs() {
   if (!run.value || busy.value) return;
   busy.value = true;
   try {
-    await requestJson(`${base.value}/${run.value.id}/${action}`, {
+    await requestJson(`${base.value}/${run.value.id}/retry`, {
       method: 'POST',
-      operation: action === 'retry' ? '恢复失败输出' : '取消输出',
+      operation: '恢复失败输出',
     });
     await refresh();
   } catch (reason) {
@@ -350,7 +374,7 @@ async function startRender() {
       eyebrow: '重新导出成片',
       title: `重新导出 ${run.value.counts.total} 条成片？`,
       description:
-        '将用当前选择的分辨率与帧率覆盖本批全部成片，渲染期间原有成片仍可下载。',
+        '将按当前分辨率与帧率创建此模板的新版本分支，原有成片保留在旧分支。',
       confirmLabel: '确认重新导出',
       tone: 'warning',
     });
@@ -366,8 +390,6 @@ async function startRender() {
         body: { resolution: resolution.value, frameRate: frameRate.value },
       },
     );
-    // Re-exporting is a full update: the service forks an unpublished child and queues the batch
-    // there, so the page has to move to that Run before it reads the batch back.
     if (response.data.workflowRunId !== props.workflowRunId) {
       emit('workflowRunChange');
       return;
@@ -411,35 +433,6 @@ function stop() {
   closePreviewDialog(false);
   clearTimeout(timer);
 }
-/**
- * Re-renders only the films whose upstream moved, in place: the user is correcting the version they
- * already delivered, not making a new one, so nothing here forks a branch.
- */
-async function localUpdate() {
-  if (!run.value || !canLocalUpdate.value || busy.value) return;
-  const staleCount = run.value.counts.stale;
-  const confirmed = await requestActionConfirmation({
-    eyebrow: '局部更新成片',
-    title: `重新导出 ${staleCount} 条受影响的成片？`,
-    description: '只重导上游已改动的成片，原地覆盖，不会新增分支；未受影响的成片保持不变。',
-    confirmLabel: '确认局部更新',
-    tone: 'warning',
-  });
-  if (!confirmed) return;
-  busy.value = true;
-  try {
-    const response = await requestJson<ApiResponse<FinalOutputRun>>(
-      `${base.value}/${run.value.id}/local-update`,
-      { method: 'POST', operation: '局部更新成片', body: {} },
-    );
-    if (response.data.workflowRunId !== props.workflowRunId) emit('workflowRunChange');
-    else await refresh();
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '局部更新成片失败';
-  } finally {
-    busy.value = false;
-  }
-}
 watch(
   () => [props.projectId, props.workflowRunId],
   () => {
@@ -455,7 +448,7 @@ watch(
     mixError.value = '';
     loading.value = true;
     page.value = 1;
-    void refreshMixWorkspace();
+    void reconcilePending();
     void refresh();
   },
   { immediate: true },
@@ -490,11 +483,12 @@ watch([resolution, frameRate], ([nextResolution, nextFrameRate]) => {
 });
 onActivated(() => {
   mounted = true;
-  if (!mixWorkspace.value && mixController?.signal.aborted) void refreshMixWorkspace();
+  // KeepAlive retains the old preview; entering from the mix workbench must reload its saved draft.
+  void reconcilePending();
   void refresh();
 });
 onDeactivated(stop);
-onBeforeUnmount(stop);
+onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
 </script>
 
 <template>
@@ -576,7 +570,7 @@ onBeforeUnmount(stop);
             <h3>成片输出设置</h3>
             <p v-if="run.status === 'PENDING_RENDER'">设置仅作用于左侧选中的模板；导出后将渲染 {{ run.counts.total }} 条成片</p>
             <p v-else-if="active">正在渲染所选模板的成片，渲染期间不可修改</p>
-            <p v-else>可随时调整分辨率与帧率，重新导出会按新规格覆盖本批全部成片</p>
+            <p v-else>可调整分辨率与帧率；重新导出成功后会创建此模板的新版本分支</p>
           </div>
         </div>
         <label>
@@ -597,15 +591,6 @@ onBeforeUnmount(stop);
           <RefreshCw v-else-if="run.status !== 'PENDING_RENDER'" :size="15" />
           <Play v-else :size="15" />{{ busy ? '正在创建任务…' : active ? `渲染中 ${run.counts.completed}/${run.counts.total}` : run.status !== 'PENDING_RENDER' ? `重新导出成片（${run.counts.total}）` : `导出成片（${run.counts.total}）` }}
         </button>
-        <button
-          v-if="run.status !== 'PENDING_RENDER' && run.counts.stale"
-          class="secondary-button local-update-button"
-          type="button"
-          :disabled="busy || active || !canLocalUpdate"
-          @click="localUpdate"
-        >
-          <Wand2 :size="15" />局部更新（{{ run.counts.stale }}）
-        </button>
       </section>
       <section v-if="run.status !== 'PENDING_RENDER' && run.status !== 'COMPLETED'" class="batch-panel" aria-label="批次输出进度">
         <div class="batch-panel__heading">
@@ -616,20 +601,11 @@ onBeforeUnmount(stop);
             </strong>
           </div>
           <button
-            v-if="active"
-            class="secondary-button danger-button"
-            type="button"
-            :disabled="busy"
-            @click="command('cancel')"
-          >
-            取消剩余输出
-          </button>
-          <button
-            v-else-if="run.counts.failed"
+            v-if="!active && run.counts.failed"
             class="primary-button"
             type="button"
             :disabled="busy"
-            @click="command('retry')"
+            @click="retryFailedOutputs"
           >
             <RefreshCw :size="14" />恢复失败项
           </button>
@@ -725,7 +701,6 @@ onBeforeUnmount(stop);
                 <span class="status-pill" :class="statusTone(item.status)">
                   {{ labels[item.status] }}
                 </span>
-                <span v-if="item.stale" class="status-pill stale" title="此成片使用的上游素材已更新；当前成片仍可预览、下载和重新渲染">素材已过期</span>
                 <!--
                   A film confirmed without a package plays silent by design. Without this the viewer
                   would read the missing narration as a broken render.
@@ -1097,10 +1072,6 @@ a {
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
-}
-.danger-button {
-  color: #b6404e;
-  border-color: #efc2c0;
 }
 button:disabled,
 select:disabled {
@@ -1609,8 +1580,9 @@ progress {
 .status-pill.success { color: #168365; background: #eaf8f2; }
 .status-pill.running { color: #2563eb; background: #edf4ff; }
 .status-pill.danger { color: #bc4b50; background: #fff0ef; }
+.status-pill.stale { color: #9a5805; background: #fff2d8; }
 .status-pill.unpackaged { color: #92650c; background: #fdf6e3; }
-.status-pill.stale { color: #8a5a00; background: #fff4d6; }
+.local-update-button { flex: 0 0 auto; color: #9a5805; border-color: #f2d7a8; }
 .output-meta {
   margin: 6px 0 0;
   color: #8490a4;
@@ -1667,28 +1639,11 @@ progress {
   font-size: 11px;
   font-weight: 700;
 }
-.local-update-button {
-  display: inline-flex;
-  min-height: 36px;
-  padding: 0 14px;
-  align-items: center;
-  gap: 6px;
-  color: #92400e;
-  background: #fffbeb;
-  border: 1px solid #fcd34d;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-}
-.local-update-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
 .item-rerender-button:hover:not(:disabled) {
   color: #2563eb;
   border-color: #a9c1ef;
 }
+.item-local-update-button { color: #9a5805; border-color: #f2d7a8; background: #fffbf3; }
 .list-empty {
   display: flex;
   min-height: 180px;

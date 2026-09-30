@@ -32,6 +32,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from './workflow-working.repository';
 import { workflowStateHash } from './workflow-state-hash';
+import { isInheritedFillKey } from './effect-branch-clone';
 import type { EffectEditBeginOptions } from './effect-edit-session';
 
 export { workflowStateHash } from './workflow-state-hash';
@@ -318,20 +319,56 @@ export class WorkflowWorkingService {
   async getEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
     await this.projectService.get(projectId);
     const runs = await this.repository.listEffectRunBranches(projectId);
-    let active = runs.find((run) => run.activeKey === 'ACTIVE') ?? null;
+    const byId = new Map(runs.map((run) => [run.id, run]));
+    // A packaging fork is only a version once its batch is whole. A batch that ended with films it
+    // could not package keeps its child out of the tree: those films are recovered in the packaging
+    // panel, which retries the very same run, and the branch shows up as a version once it is whole.
+    // Runs published before this rule existed are covered by the same test. A fork that owns no
+    // package at all is a fill, not a packaging, and one whose earlier batch did complete already
+    // carries a version of its own — neither may be hidden here.
+    const packagingUnfinished = (run: (typeof runs)[number]): boolean => {
+      if (run.forkNodeId !== 'TEMPLATE_MIX') return false;
+      if (
+        !run.workingArtifacts.some((artifact) =>
+          artifact.artifactKey.startsWith('timeline-package:'),
+        )
+      )
+        return false;
+      const batches = run.effectPackagingRuns ?? [];
+      return batches.length > 0 && batches.every((batch) => batch.status !== 'COMPLETED');
+    };
+    // A Run stays out of the tree until it publishes. The root never needs publishing, and a child
+    // publishes when a regeneration finishes successfully.
+    const drawn = (run: (typeof runs)[number]): boolean =>
+      !run.parentWorkflowRunId ||
+      (Boolean(run.branchPublishedAt) && !packagingUnfinished(run));
+    // The nearest ancestor the tree actually draws. A hidden child owns the active pointer while a
+    // failed regeneration is waiting to be recovered, and a later branch forked from it has to hang
+    // off this ancestor instead of being drawn as a trunk of its own.
+    const nearestDrawn = (
+      run: (typeof runs)[number] | undefined,
+    ): (typeof runs)[number] | null => {
+      const seen = new Set<string>();
+      for (let cursor = run; cursor && !seen.has(cursor.id);) {
+        if (drawn(cursor)) return cursor;
+        seen.add(cursor.id);
+        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined;
+      }
+      return null;
+    };
+    let active = nearestDrawn(runs.find((run) => run.activeKey === 'ACTIVE'));
     if (!active) {
       // A hidden edit child owns the active pointer, but must not appear in the tree.
       let cursor = await this.repository.findActiveRun(projectId, 'EFFECT', 'EFFECT');
       const seen = new Set<string>();
       while (cursor?.parentWorkflowRunId && !seen.has(cursor.id)) {
         seen.add(cursor.id);
-        active = runs.find((run) => run.id === cursor!.parentWorkflowRunId) ?? null;
+        active = nearestDrawn(byId.get(cursor.parentWorkflowRunId));
         if (active) break;
         cursor = await this.repository.findRun(projectId, cursor.parentWorkflowRunId);
       }
     }
     if (!active) return { projectId, activeWorkflowRunId: null, branches: [] };
-    const byId = new Map(runs.map((run) => [run.id, run]));
     let root = active;
     const seen = new Set<string>();
     while (root.parentWorkflowRunId && !seen.has(root.id)) {
@@ -393,12 +430,143 @@ export class WorkflowWorkingService {
       });
       return [...local, ...inherited];
     };
+    // Only the template configuration says whether a fork changed the template. The payload also
+    // carries the workspace edit version, which moves on every draft save, so comparing the payload
+    // whole read a plain re-fill as a template change and drew the parent's MIX_TEMPLATE a second
+    // time under the new branch. A payload without a template falls back to the whole payload, which
+    // is what legacy rows and a brand new template key still need.
+    const committedTemplate = (payload: unknown): string => {
+      const value = payload as { template?: unknown } | null | undefined;
+      return JSON.stringify(value?.template ?? value ?? null);
+    };
+    // Which mix layer a TEMPLATE_MIX fork actually branched from. The packaging and fill workers
+    // re-commit the template and timelines they inherited (their frozen snapshots are validated
+    // run-scoped, so an inherited artifact is not enough), which leaves a copy in the child Run.
+    // Reading those copies as "this branch changed the template" made the tree draw the parent's
+    // MIX_TEMPLATE/MIX_FILL a second time, so the template only counts as changed when the
+    // configuration it carries really differs from the parent's. A packaging fork is recognised
+    // first: it can only run after every variant was re-filled against the current template, so its
+    // parent already shows that template and the copy carries no news.
+    const mixForkStage = (
+      run: (typeof runs)[number],
+      forkNodeId: EffectWorkflowBranchNodeId | null,
+    ): 'TEMPLATE' | 'FILL' | 'PACKAGING' | null => {
+      if (forkNodeId !== 'TEMPLATE_MIX') return null;
+      const local = run.workingArtifacts;
+      if (local.some((artifact) => artifact.artifactKey.startsWith('timeline-package:')))
+        return 'PACKAGING';
+      const inheritedTemplates = new Map(
+        (run.parentWorkflowRunId ? effectiveArtifacts(run.parentWorkflowRunId) : [])
+          .filter((artifact) => artifact.artifactKey.startsWith('mix-template:'))
+          .map((artifact) => [artifact.artifactKey, committedTemplate(artifact.payload)]),
+      );
+      if (
+        local.some(
+          (artifact) =>
+            artifact.artifactKey.startsWith('mix-template:') &&
+            inheritedTemplates.get(artifact.artifactKey) !== committedTemplate(artifact.payload),
+        )
+      )
+        return 'TEMPLATE';
+      if (local.some((artifact) => artifact.artifactKey.startsWith('timeline-project:')))
+        return 'FILL';
+      return 'TEMPLATE';
+    };
+    const branchNodeIdOf = (run: (typeof runs)[number]): EffectWorkflowBranchNodeId | null =>
+      EFFECT_WORKFLOW_BRANCH_NODES.find((node) => node === run.forkNodeId) ?? null;
+    // A mix fork never clones the timelines it regenerates, so their stored revision restarts at 1 in
+    // every branch and a second fill of the same template read 版本01 again. Number the fill by the
+    // fills that produced it along the branch chain, the way the cloned upstream layers already
+    // number themselves through their carried-over revision. What a run really did decides it, never
+    // the timelines it holds: a packaging fork re-commits the timelines it inherited (their frozen
+    // snapshots are validated run-scoped), so counting those copies read a packaging branch as a
+    // second fill and pushed the next real fill to 版本03.
+    const fillChainVersion = (
+      run: (typeof runs)[number],
+      templateId: string,
+    ): number | null => {
+      const prefix = `timeline-project:${templateId}`;
+      let version = 0;
+      const visited = new Set<string>();
+      for (
+        let cursor: (typeof runs)[number] | undefined = run;
+        cursor && !visited.has(cursor.id);
+        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined
+      ) {
+        visited.add(cursor.id);
+        // A branch carries the fills that produced the pool it shows, so the row has to be one this
+        // Run minted itself: an inherited one is a copy a fork made, and counting it would number a
+        // packaging or export branch as a fill of its own.
+        const filled = (cursor.effectTemplateMixAiRuns ?? []).some(
+          (aiRun) =>
+            aiRun.templateId === templateId && !isInheritedFillKey(aiRun.idempotencyKey),
+        );
+        if (!filled) continue;
+        const revisions = cursor.workingArtifacts
+          .filter((artifact) => artifact.artifactKey.startsWith(prefix))
+          .map((artifact) => artifact.revision);
+        version += revisions.length ? Math.max(...revisions) : 0;
+      }
+      return version || null;
+    };
+    // The packages restart at revision 1 in every branch for the same reason the timelines do, so
+    // the same chain count is what keeps a second packaging from reading 版本01 again. Only a batch
+    // that packaged every film is a version, which is exactly what publishes its branch: a partial
+    // one leaves no gap in the visible numbers once its films are recovered and it finishes whole.
+    const packagingChainVersion = (
+      run: (typeof runs)[number],
+      templateId: string,
+    ): number | null => {
+      const prefix = `timeline-package:${templateId}`;
+      let version = 0;
+      const visited = new Set<string>();
+      for (
+        let cursor: (typeof runs)[number] | undefined = run;
+        cursor && !visited.has(cursor.id);
+        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined
+      ) {
+        visited.add(cursor.id);
+        const packaged = (cursor.effectPackagingRuns ?? []).some(
+          (packaging) =>
+            packaging.templateId === templateId && packaging.status === 'COMPLETED',
+        );
+        if (!packaged) continue;
+        const revisions = cursor.workingArtifacts
+          .filter((artifact) => artifact.artifactKey.startsWith(prefix))
+          .map((artifact) => artifact.revision);
+        version += revisions.length ? Math.max(...revisions) : 0;
+      }
+      return version || null;
+    };
+    // An export fork starts with a fresh final-delivery artifact at revision 1. Count the
+    // published exports for this template along its ancestry instead of displaying that local
+    // revision each time. A local update rewrites the same delivery in place, while a manual copy
+    // merely carries its parent's delivery; neither creates another export version.
+    const deliveryChainVersion = (
+      run: (typeof runs)[number],
+      templateId: string,
+    ): number | null => {
+      let version = 0;
+      const key = `final-delivery:${templateId}`;
+      const visited = new Set<string>();
+      for (
+        let cursor: (typeof runs)[number] | undefined = run;
+        cursor && !visited.has(cursor.id);
+        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined
+      ) {
+        visited.add(cursor.id);
+        const delivery = cursor.workingArtifacts.find((artifact) => artifact.artifactKey === key);
+        if (!delivery) continue;
+        if (!cursor.parentWorkflowRunId) version += delivery.revision;
+        else if (cursor.forkNodeId === 'FINAL_OUTPUT' && cursor.branchPublishedAt) version += 1;
+      }
+      return version || null;
+    };
     const branches: EffectWorkflowBranch[] = runs
-      .filter((run) => inTree.has(run.id))
+      .filter((run) => inTree.has(run.id) && drawn(run))
       .map((run) => {
         const visibleArtifacts = effectiveArtifacts(run.id);
-        const forkNodeId =
-          EFFECT_WORKFLOW_BRANCH_NODES.find((node) => node === run.forkNodeId) ?? null;
+        const forkNodeId = branchNodeIdOf(run);
         const templatesById = new Map<string, EffectWorkflowBranch['templates'][number]>();
         for (const artifact of visibleArtifacts) {
           const match =
@@ -497,8 +665,12 @@ export class WorkflowWorkingService {
           );
           template.fillRevisions = revisionsOf(fills);
           template.packagingRevisions = revisionsOf(packages);
-          template.fillRevision = sharedRevision(fills);
-          template.packagingRevision = sharedRevision(packages);
+          template.fillRevision = fillChainVersion(run, template.templateId);
+          template.packagingRevision = packagingChainVersion(run, template.templateId);
+          template.deliveryRevision = deliveries.length
+            ? deliveryChainVersion(run, template.templateId) : null;
+          template.deliveryRevisions = template.deliveryRevision === null
+            ? [] : [template.deliveryRevision];
           template.fillCreatedAt = artifactCreatedAt(fills);
           template.packagingCreatedAt = artifactCreatedAt(packages);
           template.deliveryCreatedAt = artifactCreatedAt(deliveries);
@@ -506,30 +678,14 @@ export class WorkflowWorkingService {
         return {
           workflowRunId: run.id,
           parentWorkflowRunId:
-            run.parentWorkflowRunId && inTree.has(run.parentWorkflowRunId)
-              ? run.parentWorkflowRunId
-              : null,
+            nearestDrawn(run.parentWorkflowRunId ? byId.get(run.parentWorkflowRunId) : undefined)
+              ?.id ?? null,
           creationKind: !run.parentWorkflowRunId ? 'INITIAL' as const
             : run.forkNodeId === 'MANUAL_COPY' ? 'MANUAL_COPY' as const
               : 'NODE_CHANGE' as const,
           forkNodeId,
           forkTemplateId: run.forkTemplateId,
-          forkMixStage:
-            forkNodeId !== 'TEMPLATE_MIX'
-              ? null
-              : run.workingArtifacts.some((artifact) =>
-                    artifact.artifactKey.startsWith('mix-template:'),
-                  )
-                ? 'TEMPLATE'
-                : run.workingArtifacts.some((artifact) =>
-                      artifact.artifactKey.startsWith('timeline-project:'),
-                    )
-                  ? 'FILL'
-                  : run.workingArtifacts.some((artifact) =>
-                        artifact.artifactKey.startsWith('timeline-package:'),
-                      )
-                    ? 'PACKAGING'
-                    : 'TEMPLATE',
+          forkMixStage: mixForkStage(run, forkNodeId),
           label: run.branchLabel ?? (run.id === root.id ? '主干' : '未命名分支'),
           currentNodeId: run.currentNodeId,
           createdAt: run.createdAt.toISOString(),

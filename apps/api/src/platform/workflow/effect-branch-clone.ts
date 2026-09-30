@@ -6,6 +6,14 @@ type Tx = Prisma.TransactionClient;
 const json = (value: unknown): Prisma.InputJsonValue =>
   (value === undefined || value === null ? {} : value) as Prisma.InputJsonValue;
 
+/** A nullable Json column takes `DbNull`, never a plain `null`. */
+const nullableJson = (
+  value: unknown, ids: Record<string, string>,
+): Prisma.InputJsonValue | typeof Prisma.DbNull =>
+  value === null || value === undefined
+    ? Prisma.DbNull
+    : (remapIds(value, ids) as Prisma.InputJsonValue);
+
 /**
  * Every key a branch remaps is either a row id (UUID) or a content hash (64 hex chars), so one
  * pass over the payload is enough. Rewriting the payload once per key instead makes a fork
@@ -97,6 +105,58 @@ export async function clonePackagingRunsInTransaction(
   if (itemRows.length) await tx.effectPackagingItem.createMany({ data: itemRows });
   if (fileRows.length) await tx.effectPackagingFile.createMany({ data: fileRows });
   return runs;
+}
+
+/**
+ * A fork carries the fill runs that produced the pool it shows, so an inherited row must be
+ * recognisable: the run that copied it never ran the fill itself, and the version tree counts what
+ * a branch really did. Real keys are client uuids, so the namespace can never collide with one.
+ */
+export const inheritedFillKey = (childRunId: string, sourceId: string): string =>
+  `inherit:${childRunId}:mix:${sourceId}`;
+
+export const isInheritedFillKey = (idempotencyKey: string): boolean =>
+  idempotencyKey.startsWith('inherit:');
+
+/**
+ * Copy the completed mix fill runs of a parent Run into a branch.
+ *
+ * The workspace reads its AI 归槽 pool — the classification chips and per-material match scores —
+ * from the fill runs of the Run it is looking at, so a branch that kept the clips but not the runs
+ * fell back to the material library as it looked before the fill. The frozen snapshot and the
+ * classification name material artifacts by id, so they are re-written with the map the artifacts
+ * themselves were cloned under; a run whose materials the branch could not carry is dropped by the
+ * workspace's own validation instead of showing a pool that no longer matches the library.
+ *
+ * Only the newest rows the workspace can see are copied, so a Run with a long fill history does not
+ * grow a second copy of all of it on every fork.
+ */
+export async function cloneMixAiRunsInTransaction(
+  tx: Tx, projectId: string, sourceRunId: string, childRunId: string,
+  ids: Record<string, string>,
+): Promise<void> {
+  const runs = await tx.effectTemplateMixAiRun.findMany({
+    where: { projectId, workflowRunId: sourceRunId, status: 'COMPLETED' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: 20,
+  });
+  if (!runs.length) return;
+  const rows: Prisma.EffectTemplateMixAiRunCreateManyInput[] = runs.map((source) => ({
+    projectId, workflowRunId: childRunId, templateId: source.templateId,
+    targetVariantId: source.targetVariantId, outputVariantId: source.outputVariantId,
+    idempotencyKey: inheritedFillKey(childRunId, source.id),
+    requestHash: source.requestHash, inputHash: source.inputHash,
+    inputSnapshot: json(remapIds(source.inputSnapshot, ids)),
+    classificationResult: nullableJson(source.classificationResult, ids),
+    selectionResult: nullableJson(source.selectionResult, ids),
+    samplingResult: nullableJson(source.samplingResult, ids),
+    trimResult: nullableJson(source.trimResult, ids),
+    expectedDraftRevision: source.expectedDraftRevision,
+    templateEditVersion: source.templateEditVersion,
+    status: 'COMPLETED', stage: source.stage, progress: 100,
+    completedAt: source.completedAt, createdAt: source.createdAt,
+  }));
+  await tx.effectTemplateMixAiRun.createMany({ data: rows });
 }
 
 /** Second pass: re-point cloned packaging snapshots at cloned artifacts and files. */

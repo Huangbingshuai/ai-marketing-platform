@@ -365,12 +365,16 @@ export class WorkflowWorkingRepository {
     });
   }
 
+  /**
+   * Every Run of the project, published or not. The tree only draws published ones, but an
+   * unpublished child still has to be loaded: it is where a regeneration that failed is sitting
+   * (a partial packaging keeps its films and stays active for the packaging panel to recover), so
+   * the version numbers have to keep counting through it and a branch forked from it later has to
+   * land under an ancestor the user can actually see.
+   */
   listEffectRunBranches(projectId: string) {
     return this.prisma.workflowRun.findMany({
-      where: {
-        projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
-        OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
-      },
+      where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
       include: {
         nodeStates: {
           where: { nodeId: 'TEMPLATE_MIX' },
@@ -378,7 +382,10 @@ export class WorkflowWorkingRepository {
         },
         effectTemplateMixAiRuns: {
           where: { status: 'COMPLETED', outputVariantId: { not: null } },
-          select: { templateId: true, outputVariantId: true },
+          select: { templateId: true, outputVariantId: true, idempotencyKey: true },
+        },
+        effectPackagingRuns: {
+          select: { templateId: true, status: true },
         },
         workingArtifacts: {
           where: { availability: 'AVAILABLE' },
@@ -389,6 +396,7 @@ export class WorkflowWorkingRepository {
             revision: true,
             name: true,
             createdAt: true,
+            payload: true,
           },
         },
       },

@@ -1,12 +1,14 @@
-import type { EffectWorkflowEditableNodeId } from '@ai-marketing/contracts';
+import type { EffectWorkflowEditableNodeId, FinalOutputSnapshot } from '@ai-marketing/contracts';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { workflowStateHash } from './workflow-state-hash';
 import {
+  cloneMixAiRunsInTransaction,
   clonePackagingRunsInTransaction,
   remapIds as remap,
 } from './effect-branch-clone';
 import { workingArtifactContentHash, workingArtifactInclude, type WorkingArtifactUpsertInput } from './workflow-working.repository';
+import { visualHash } from '../../workflows/effect/template-mix/effect-packaging.domain';
 
 type Tx = Prisma.TransactionClient;
 type IdMap = Record<string, string>;
@@ -54,8 +56,14 @@ export type EffectEditBeginOptions = {
    * version yet: every successful fill, packaging or export is a version of its own, so the run that
    * triggered it must not be rewritten in place. The upstream four nodes keep the initial-version
    * rule because their first result is the version, not a new one.
+   *
+   * Such a branch is never an edit session: the user has nothing to save, publish or cancel, and the
+   * task publishes the branch itself the moment it succeeds. It therefore carries no session fields,
+   * which is also what keeps the editor from showing an unpublished draft it cannot act on.
    */
   always?: boolean;
+  /** Template-local mix/output branches only show the template that produced this version. */
+  templateId?: string;
 };
 
 /** Clone the mutable domain workspace before any edit or paid task is allowed to run. */
@@ -73,15 +81,23 @@ export async function beginEffectEditInTransaction(
   const active = await tx.workflowRun.findFirst({
     where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
   });
+  // An auto branch opened no session, so it is recognised by the fork it was created for instead.
+  // A caller that keeps asking for a branch of its own reuses the one it already has; every other
+  // caller is turned away exactly as before.
+  const isOwnAutoBranch = (run: { forkNodeId: string | null; forkTemplateId: string | null;
+    editSessionNodeId: string | null }) =>
+    Boolean(options.always) && run.editSessionNodeId === null && run.forkNodeId === nodeId &&
+    (!options.templateId || run.forkTemplateId === options.templateId);
+  const isOwnSession = (run: { editSessionNodeId: string | null; editSessionPurpose: string | null }) =>
+    run.editSessionNodeId === nodeId && run.editSessionPurpose === purpose;
   if (parent.parentWorkflowRunId && !parent.branchPublishedAt) {
-    if (parent.editSessionNodeId !== nodeId || parent.editSessionPurpose !== purpose) return null;
+    if (!isOwnSession(parent) && !isOwnAutoBranch(parent)) return null;
     const map = (parent.editIdMap ?? {}) as { productIdMap?: IdMap; taskIdMap?: IdMap };
     return { runId: parent.id, parentWorkflowRunId: parent.parentWorkflowRunId,
       productIdMap: map.productIdMap ?? {}, taskIdMap: map.taskIdMap ?? {}, created: false };
   }
-  if (active?.parentWorkflowRunId === parent.id &&
-      !active.branchPublishedAt && active.editSessionNodeId === nodeId &&
-      active.editSessionPurpose === purpose) {
+  if (active?.parentWorkflowRunId === parent.id && !active.branchPublishedAt &&
+      (isOwnSession(active) || isOwnAutoBranch(active))) {
     const map = (active.editIdMap ?? {}) as { productIdMap?: IdMap; taskIdMap?: IdMap };
     return { runId: active.id, parentWorkflowRunId: parent.id,
       productIdMap: map.productIdMap ?? {}, taskIdMap: map.taskIdMap ?? {}, created: false };
@@ -121,8 +137,11 @@ export async function beginEffectEditInTransaction(
   if (!workspace) return null;
   const child = await tx.workflowRun.create({ data: {
     projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', status: 'ACTIVE', activeKey: null,
-    parentWorkflowRunId: parent.id, forkNodeId: nodeId, editSessionNodeId: nodeId,
-    editSessionPurpose: purpose,
+    parentWorkflowRunId: parent.id, forkNodeId: nodeId,
+    forkTemplateId: options.templateId ?? null,
+    // An auto branch is not an edit session: nothing is left unpublished for the user to act on.
+    editSessionNodeId: options.always ? null : nodeId,
+    editSessionPurpose: options.always ? null : purpose,
     currentNodeId: nodeId,
   } });
   const ids: IdMap = { [parent.id]: child.id };
@@ -361,21 +380,6 @@ export async function beginEffectEditInTransaction(
       }
     }
   }
-  const states = (await Promise.all(stageOrder.slice(0, stageIndex + 1).map((stage) =>
-    tx.workflowNodeState.findMany({ where: { projectId,
-      workflowRunId: stageSources.get(stage) ?? parent.id,
-      OR: [{ nodeId: stage }, { nodeId: { startsWith: `${stage}:` } }],
-    } }),
-  ))).flat();
-  if (states.length) await tx.workflowNodeState.createMany({ data: states.map((state) => {
-    const value = remap(state.state, ids);
-    return { projectId, workflowRunId: child.id,
-      nodeId: remap(state.nodeId, ids), schemaVersion: state.schemaVersion,
-      revision: state.revision, contentHash: workflowStateHash(value),
-      executionInputHash: state.executionInputHash,
-      executionInputSchemaVersion: state.executionInputSchemaVersion,
-      state: json(value), savedAt: state.savedAt };
-  }) });
   // The mix and output nodes are whole downstream pipelines of their own. Copying their confirmed
   // artifacts would make the new branch look finished before it regenerated anything, so only the
   // upstream stages carry artifacts across; the trigger stage keeps its configuration in node state.
@@ -398,6 +402,26 @@ export async function beginEffectEditInTransaction(
   // a dependency can still name an artifact the loop has not reached yet. Dependencies go in
   // after every artifact exists, so their foreign keys resolve whatever the order was.
   for (const artifact of ordered) artifactIds[artifact.id] = randomUUID();
+  // The mix draft binds every slot to a material artifact by id, so the node states are cloned with
+  // the new artifact ids as well. A branch that kept binding to its ancestor's clips would freeze
+  // that ancestor's ids into its packaging snapshot, and the worker resolving the snapshot inside
+  // the branch would find none of them.
+  const clonedIds: IdMap = { ...ids, ...artifactIds };
+  const states = (await Promise.all(stageOrder.slice(0, stageIndex + 1).map((stage) =>
+    tx.workflowNodeState.findMany({ where: { projectId,
+      workflowRunId: stageSources.get(stage) ?? parent.id,
+      OR: [{ nodeId: stage }, { nodeId: { startsWith: `${stage}:` } }],
+    } }),
+  ))).flat();
+  if (states.length) await tx.workflowNodeState.createMany({ data: states.map((state) => {
+    const value = remap(state.state, clonedIds);
+    return { projectId, workflowRunId: child.id,
+      nodeId: remap(state.nodeId, ids), schemaVersion: state.schemaVersion,
+      revision: state.revision, contentHash: workflowStateHash(value),
+      executionInputHash: state.executionInputHash,
+      executionInputSchemaVersion: state.executionInputSchemaVersion,
+      state: json(value), savedAt: state.savedAt };
+  }) });
   const artifactRows: Prisma.WorkingArtifactCreateManyInput[] = [];
   const artifactFileRows: Prisma.WorkingArtifactFileCreateManyInput[] = [];
   const artifactDependencyRows: Prisma.WorkingArtifactDependencyCreateManyInput[] = [];
@@ -457,6 +481,17 @@ export async function beginEffectEditInTransaction(
   if (artifactDependencyRows.length) {
     await tx.workingArtifactDependency.createMany({ data: artifactDependencyRows });
   }
+  if (stageIndex >= 3) {
+    // The mix workspace reads its AI 归槽 pool — the classification chips and per-material match
+    // scores — from the fill runs of the Run it is looking at, so a branch that carried the clips
+    // but not the fills fell back to the material library as it looked before the fill. The fills
+    // are copied from the Run the clips came from, which is the only one whose frozen snapshot the
+    // remapped material ids still resolve in; every later fork copies them again, so the branch
+    // chain keeps its own and the pool survives packaging, exporting and re-rendering alike.
+    await cloneMixAiRunsInTransaction(tx, projectId,
+      stageSources.get('SEGMENT_RENDER') ?? parent.id, child.id,
+      { ...ids, ...artifactIds, ...hashReplacements });
+  }
   if (stageIndex >= 5) {
     // The output stage is downstream of the mix stage: the branch keeps the packaging it exports
     // from, but every film starts unrendered so the export has to run again in this branch.
@@ -485,9 +520,14 @@ export async function beginEffectEditInTransaction(
         status: 'PENDING_RENDER' });
       for (const item of source.items) {
         const itemId = randomUUID();
+        const snapshot = remap(item.snapshot,
+          { ...ids, ...artifactIds, ...hashReplacements }) as unknown as FinalOutputSnapshot;
+        // The visual source hash is derived from the variant, whose material ids and content
+        // hashes were remapped to this branch. The parent's hash cannot validate the child.
+        snapshot.timeline.sourceTimelineHash = visualHash(snapshot.timeline.variant);
         outputItemRows.push({ id: itemId, projectId, runId: id, variantId: item.variantId,
           name: item.name,
-          snapshot: json(remap(item.snapshot, { ...ids, ...artifactIds })),
+          snapshot: json(snapshot),
           status: 'QUEUED', progress: 0, fileObjectId: null, assetId: null });
         ids[item.id] = itemId;
       }
@@ -538,9 +578,9 @@ export async function beginEffectEditInTransaction(
       },
     });
   }
-  const baseline = await stageDigest(tx, projectId, child.id, nodeId);
-  await tx.workflowRun.update({ where: { id: child.id }, data: {
-    editBaselineHash: baseline,
+  // An auto branch has no session, so it has nothing to compare a baseline against.
+  if (!options.always) await tx.workflowRun.update({ where: { id: child.id }, data: {
+    editBaselineHash: await stageDigest(tx, projectId, child.id, nodeId),
     editIdMap: json({ productIdMap, taskIdMap }),
   } });
   await tx.workflowRun.update({ where: { id: parent.id }, data: { activeKey: null } });
@@ -566,7 +606,10 @@ export async function exitEffectEditInTransaction(
   if (!draft.parentWorkflowRunId || draft.branchPublishedAt) return {
     runId: draft.id, activeWorkflowRunId: active?.id ?? draft.id, createdBranch: false,
   };
-  if (draft.editSessionNodeId !== nodeId) return null;
+  // The child belongs to this node either because it opened a session for it, or because it is the
+  // auto branch a regenerating task opened without one. An auto branch has no baseline, so its
+  // digest always differs from `null` and it publishes as soon as it holds an artifact of its own.
+  if (draft.editSessionNodeId !== nodeId && draft.forkNodeId !== nodeId) return null;
   const parent = await tx.workflowRun.findFirst({ where: {
     projectId, id: draft.parentWorkflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
   } });
