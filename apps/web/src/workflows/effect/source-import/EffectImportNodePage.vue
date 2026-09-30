@@ -1846,7 +1846,7 @@ onBeforeUnmount(() => {
 
         <EffectTemplateMixNodePage
           v-else-if="activeStep === 4"
-          :key="`${currentProjectId}:${workspace?.workflowRunId ?? ''}`"
+          :key="`mix:${currentProjectId}`"
           ref="templateMixNode"
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"

@@ -120,6 +120,7 @@ import {
   timelineAudioClipRefs,
   type AudioRowTrack,
 } from './effect-template-mix-audio-lanes';
+import { rememberWorkbench, takeWorkbench } from './effect-template-mix-workbench-handoff';
 import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
 import EffectMusicLibrary from './EffectMusicLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
@@ -147,6 +148,7 @@ type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type TemplateUi = { selectedSlotId: string; selectedVariantId: string };
 
 const pageState = ref<'ERROR' | 'LOADING' | 'READY'>('LOADING');
+const runSwitching = ref(false);
 const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
 // Keep the confirmed clip pool available while the initial template draft is bootstrapped.
@@ -1504,14 +1506,23 @@ const load = async (): Promise<void> => {
   stopPolling();
   controller?.abort();
   controller = new AbortController();
-  pageState.value = 'LOADING';
+  const requestController = controller;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const wasReady = pageState.value === 'READY';
+  if (!wasReady) pageState.value = 'LOADING';
   try {
-    if (!props.projectId || !props.workflowRunId) throw new Error('当前工作流运行尚未准备好');
+    if (!projectId || !workflowRunId) throw new Error('当前工作流运行尚未准备好');
     const response = await loadEffectTemplateMixWorkspace(
-      props.projectId,
-      props.workflowRunId,
-      controller.signal,
+      projectId,
+      workflowRunId,
+      requestController.signal,
     );
+    if (
+      requestController !== controller ||
+      projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId
+    ) return;
     installWorkspaceData(response.data);
     pageState.value = 'READY';
     const running = response.data.aiRuns?.filter(
@@ -1524,6 +1535,7 @@ const load = async (): Promise<void> => {
         (!targetVariantId || entry.workspace.variants.some(({ id }) => id === targetVariantId)),
       );
     });
+    const handoff = !wasReady || runSwitching.value ? takeWorkbench(workflowRunId) : null;
     if (resumedRun) {
       activeTemplateId.value = resumedRun.templateId;
       const ui = uiByTemplate[resumedRun.templateId];
@@ -1535,15 +1547,36 @@ const load = async (): Promise<void> => {
               ?.id ?? '')
           : '';
       }
-      resetWorkbenchDefaults();
+      if (view.value !== 'EDITOR') resetWorkbenchDefaults();
       view.value = 'EDITOR';
+    } else if (handoff) {
+      // A fork has no running fill to resume (packaging never creates one), so the note the page left
+      // behind is the only thing that says the user was in the workbench and not on the template list.
+      const entry = catalog.value.find(({ id }) => id === handoff.templateId);
+      if (entry) {
+        activeTemplateId.value = handoff.templateId;
+        const ui = uiByTemplate[handoff.templateId];
+        if (ui) {
+          ui.selectedVariantId =
+            entry.workspace.variants.find(({ id }) => id === handoff.variantId)?.id ??
+            (entry.workspace.variants[0]?.id ?? '');
+          ui.selectedSlotId =
+            entry.workspace.variants.find(({ id }) => id === ui.selectedVariantId)?.slots[0]?.id ??
+            '';
+        }
+        if (view.value !== 'EDITOR') resetWorkbenchDefaults();
+        view.value = 'EDITOR';
+      }
     }
     applyPreviewTarget();
     for (const run of running ?? []) void pollAiRun(run.id);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
+    if (requestController !== controller || workflowRunId !== props.workflowRunId) return;
     errorMessage.value = error instanceof Error ? error.message : '混剪工作区加载失败';
     pageState.value = 'ERROR';
+  } finally {
+    if (requestController === controller) runSwitching.value = false;
   }
 };
 /**
@@ -4533,8 +4566,13 @@ const handlePackagingStarted = async (): Promise<void> => {
   if (activeEntry.value) activeEntry.value.packagingLocked = true;
 };
 /** 成片包装属于全量更新：后端先建隔离分支，编辑态必须跟着切到那个分支。 */
-const handlePackagingRunChange = (): void => {
+const handlePackagingRunChange = (workflowRunId: string): void => {
   showNotice('已按本次成片包装新建分支，正在切换…', 'success');
+  rememberWorkbench({
+    workflowRunId,
+    templateId: activeTemplateId.value,
+    variantId: selectedVariant.value?.id ?? '',
+  });
   emit('workflowRunChange');
 };
 const preparePackaging = async (): Promise<number | null> => {
@@ -4575,9 +4613,14 @@ const startAiFill = async (
     );
     // A regeneration is a full update: the service forks an unpublished child before it starts the
     // task. The editor has to move to that child before it reads or writes the draft again, so the
-    // remounted page picks the running task up from the new Run instead of editing the published one.
+    // retained workbench picks the running task up from the new Run instead of editing the published one.
     if (result.data.workflowRunId !== props.workflowRunId) {
       showNotice('已按本次重新生成新建分支，正在切换…', 'success');
+      rememberWorkbench({
+        workflowRunId: result.data.workflowRunId,
+        templateId,
+        variantId: variantId ?? selectedVariant.value?.id ?? '',
+      });
       emit('workflowRunChange');
       return;
     }
@@ -5269,6 +5312,15 @@ watch(materialColumnCount, () => (materialPage.value = 1));
 watch(materialPageCount, (count) => {
   if (materialPage.value > count) materialPage.value = count;
 });
+watch(
+  () => [props.projectId, props.workflowRunId],
+  () => {
+    // The parent keeps this component alive across a fork. Continue showing the workbench until
+    // the child Run's draft arrives, while blocking edits against the previous Run.
+    runSwitching.value = pageState.value === 'READY';
+    void load();
+  },
+);
 onMounted(() => {
   updateWorkbenchMode();
   window.addEventListener('resize', updateWorkbenchMode);
@@ -5330,7 +5382,10 @@ defineExpose({ flushPendingEdits });
 </script>
 
 <template>
-  <section class="mix-node" :aria-busy="pageState === 'LOADING'">
+  <section class="mix-node" :aria-busy="pageState === 'LOADING' || runSwitching">
+    <div v-if="runSwitching" class="mix-run-switch" role="status" aria-live="polite">
+      <LoaderCircle class="spin" :size="17" /> 正在载入新分支，当前工作台保持可见
+    </div>
     <Transition name="notice"
       ><div v-if="notice" class="notice" :class="notice.kind" role="status">
         <CheckCircle2 v-if="notice.kind === 'success'" :size="17" />
@@ -6863,12 +6918,29 @@ defineExpose({ flushPendingEdits });
 <style scoped>
 .mix-node {
   --blue: #2563eb;
+  position: relative;
   margin-top: 14px;
   padding: 10px;
   color: #17233a;
   background: linear-gradient(180deg, #f7faff 0%, #f2f6fb 100%);
   border: 1px solid #dbe4f2;
   border-radius: 18px;
+}
+.mix-run-switch {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  padding-top: 28px;
+  color: #193565;
+  background: #f4f7ff80;
+  border-radius: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: wait;
 }
 .panel {
   min-width: 0;

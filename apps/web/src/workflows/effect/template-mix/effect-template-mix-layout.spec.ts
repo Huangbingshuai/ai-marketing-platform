@@ -1678,7 +1678,28 @@ describe('effect template mix workbench layout', () => {
     expect(rawPageSource).toContain("emit('workflowRunChange');");
     expect(packagingSource).toContain('if (response.data.workflowRunId !== context.workflowRunId) {');
     expect(packagingSource).toContain("emit('runChange', response.data.workflowRunId);");
-    expect(rawPageSource).toContain('const handlePackagingRunChange = (): void => {');
+    expect(rawPageSource).toContain(
+      'const handlePackagingRunChange = (workflowRunId: string): void => {',
+    );
     expect(rawPageSource).toContain('@run-change="handlePackagingRunChange"');
+  });
+  it('keeps the workbench mounted and restores its selection when the fork changes Run', () => {
+    expect(workflowSource).toContain(':key="`mix:${currentProjectId}`"');
+    expect(workflowSource).not.toContain(':key="`${currentProjectId}:${workspace?.workflowRunId ?? \'\'}`"');
+    expect(pageSource).toContain(
+      "import { rememberWorkbench, takeWorkbench } from './effect-template-mix-workbench-handoff';",
+    );
+    expect(pageSource).toContain(
+      'const handoff = !wasReady || runSwitching.value ? takeWorkbench(workflowRunId) : null;',
+    );
+    expect(pageSource).toContain("runSwitching.value = pageState.value === 'READY';");
+    expect(pageSource).toContain("if (!wasReady) pageState.value = 'LOADING';");
+    expect(pageSource).toContain('requestController !== controller ||');
+    expect(pageSource).toContain('当前工作台保持可见');
+    expect(pageSource).toContain('} else if (handoff) {');
+    expect(pageSource).toContain('  rememberWorkbench({\n    workflowRunId,\n');
+    expect(pageSource).toContain(
+      '      rememberWorkbench({\n        workflowRunId: result.data.workflowRunId,\n',
+    );
   });
 });
