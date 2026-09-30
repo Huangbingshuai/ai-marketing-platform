@@ -196,7 +196,6 @@ function completedItem() {
     checkpoint,
     status: 'COMPLETED',
     stage: 'READY',
-    stale: false,
     errorMessage: null,
     startedAt: null,
     completedAt: null,
@@ -220,13 +219,13 @@ describe('packaging service output boundary', () => {
     expect(working.listArtifacts).not.toHaveBeenCalled();
 
     mix.currentVariant.mockResolvedValue(null);
-    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('已过期');
+    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('输入工程发生变化');
     mix.currentVariant.mockResolvedValue(v);
     (item.snapshot as PackagingSnapshot).dependencies = [{
       artifactId: 'missing', artifactKey: 'timeline-project:t:v', revision: 1,
       contentHash: 'missing', nodeId: 'TEMPLATE_MIX',
     }];
-    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('已过期');
+    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('输入工程发生变化');
     repo.sourceArtifacts.mockResolvedValue([{
       id: 'missing', revision: 1, freshness: 'CURRENT', availability: 'AVAILABLE',
     }]);
@@ -234,7 +233,7 @@ describe('packaging service output boundary', () => {
     repo.sourceArtifacts.mockResolvedValue([{
       id: 'missing', revision: 2, freshness: 'CURRENT', availability: 'AVAILABLE',
     }]);
-    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('已过期');
+    await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('输入工程发生变化');
   });
   it('checks all distinct audio files in one project- and source-scoped query', async () => {
     const { service, repo } = harness();
@@ -673,39 +672,38 @@ describe('packaging service output boundary', () => {
       }
     },
   );
-  it('recovers missing entries without retrying an unrelated completed stale entry', async () => {
+  it('recovers missing packaging entries without evaluating source freshness', async () => {
     const { service, repo } = harness();
     const get = vi.spyOn(service, 'get').mockResolvedValue({
       items: [
-        { status: 'COMPLETED', stale: true },
-        { status: 'FAILED', stale: false, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } },
+        { status: 'COMPLETED' },
+        { status: 'FAILED', checkpoint: { narrationLayoutVersion: 'SLOT_V1' } },
       ],
     } as PackagingRun);
     await service.retry('p', 'r');
     expect(repo.retry).toHaveBeenCalledWith('p', 'r');
     get.mockResolvedValue({
-      items: [{ status: 'FAILED', stale: true, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } }],
+      items: [{ status: 'FAILED', checkpoint: { narrationLayoutVersion: 'SLOT_V1' } }],
     } as PackagingRun);
-    await expect(service.retry('p', 'r')).rejects.toThrow('源时间轴');
-    expect(repo.retry).toHaveBeenCalledTimes(1);
+    await service.retry('p', 'r');
+    expect(repo.retry).toHaveBeenCalledTimes(2);
   });
   it('consumes exactly two confirmed copies', async () => {
     const { service, visual, packaging } = harness();
     expect(await service.outputInputs('p', 'w', 't', 'v')).toEqual({ visual, packaging });
   });
-  it('refuses changed visual revisions and stale packaging', async () => {
+  it('allows rendering with an editable package after the visual draft changes', async () => {
     const { service, visual, packaging } = harness();
     visual.revision++;
-    await expect(service.outputInputs('p', 'w', 't', 'v')).rejects.toThrow('过期');
+    await expect(service.outputInputs('p', 'w', 't', 'v')).resolves.toEqual({ visual, packaging });
     visual.revision--;
     packaging.freshness = 'STALE';
-    await expect(service.outputInputs('p', 'w', 't', 'v')).rejects.toThrow('过期');
+    await expect(service.outputInputs('p', 'w', 't', 'v')).resolves.toEqual({ visual, packaging });
   });
-  it('refuses unsaved visual edits before downstream encoding', async () => {
+  it('allows exporting a completed editable package after visual edits', async () => {
     const { service, mix } = harness();
-    // The frozen hash is taken over the narrated clips, so a draft that has gained one is an edit the
-    // user has not saved into a package yet. (The `v` fixture has no clips, so nothing less than a
-    // whole slot can tell the two apart.)
+    // The package remains user-owned after edits; the final-output boundary only needs both copies
+    // and usable files, not a matching visual hash.
     mix.workspace.mockResolvedValue({
       draft: {
         templates: [
@@ -726,7 +724,10 @@ describe('packaging service output boundary', () => {
         ],
       },
     });
-    await expect(service.outputInputs('p', 'w', 't', 'v')).rejects.toThrow();
+    await expect(service.outputInputs('p', 'w', 't', 'v')).resolves.toEqual({
+      visual: expect.objectContaining({ id: 'visual' }),
+      packaging: expect.objectContaining({ id: 'package' }),
+    });
   });
   it('isolates task lookups by project and does not return another project run', async () => {
     const { service, repo } = harness();
@@ -1436,9 +1437,12 @@ describe('a finished package feeds the output node', () => {
   it.each(['COMPLETED', 'PARTIAL'])('queues the films once the run ends %s', async (status) => {
     const { service, repo, finalOutput } = harness();
     repo.finish.mockResolvedValue(finished(status));
-    // A partial run still produced films the user asked for, so it reaches the queue as well.
+    // A partial run still produced films the user asked for, so it reaches the queue as well — but
+    // only the whole batch is a version, so only it publishes the branch.
     await expect(service.finish('p', 'run', 'token')).resolves.toEqual({ accepted: true });
-    expect(finalOutput.upsertFromPackaging).toHaveBeenCalledWith('p', 'w', 't');
+    expect(finalOutput.upsertFromPackaging).toHaveBeenCalledWith('p', 'w', 't', {
+      publish: status === 'COMPLETED',
+    });
   });
 
   it('does not queue anything for a run where no film succeeded', async () => {

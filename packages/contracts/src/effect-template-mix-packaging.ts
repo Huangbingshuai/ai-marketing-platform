@@ -280,7 +280,6 @@ export type PackagingItem = {
   status: PackagingStatus;
   stage: PackagingStage;
   checkpoint: PackagingCheckpoint;
-  stale: boolean;
   errorMessage: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -296,7 +295,7 @@ export type PackagingRun = {
   startedAt: string | null;
   completedAt: string | null;
   items: PackagingItem[];
-  counts: { total: number; completed: number; failed: number; stale: number; shards: number };
+  counts: { total: number; completed: number; failed: number; shards: number };
   execution?: PackagingExecution;
 };
 export type PackagingExecution = {

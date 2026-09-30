@@ -1,6 +1,7 @@
 import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   EffectTemplateMixVariant,
@@ -23,9 +24,9 @@ function harness(count = 1) {
         id: `v${i}`,
         name: `成片${i}`,
         slots: [{ id: 's', role: 'PRODUCT', label: '产品', duration: 10, transition: '硬切' }],
-        bindings: {},
-        bindingRevisions: {},
-        offsets: {},
+        bindings: { s: 'clip' },
+        bindingRevisions: { s: 1 },
+        offsets: { s: 0 },
       }) as unknown as EffectTemplateMixVariant,
   );
   const sources = [
@@ -35,7 +36,13 @@ function harness(count = 1) {
       contentHash: 'hash',
       freshness: 'CURRENT',
       availability: 'AVAILABLE',
+      artifactKey: 'render-clip:source',
+      payload: { promptId: 'pr' },
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'pr', sourceRevision: 1 }],
     },
+    { id: 'pr', revision: 1, contentHash: 'prompt-hash', freshness: 'CURRENT',
+      availability: 'AVAILABLE', artifactKey: 'prompt-batch:pr',
+      payload: { items: [{ id: 'pr', content: '已确认原始 Prompt' }] }, dependencies: [] },
   ];
   const rows = variants.map((v) => ({
     id: `item-${v.id}`,
@@ -101,9 +108,10 @@ function harness(count = 1) {
     $queryRaw: vi.fn(),
     $executeRaw: vi.fn(),
     workflowNodeState: { findUnique: vi.fn().mockResolvedValue(state) },
-    workingArtifact: { findMany: vi.fn().mockResolvedValue(sources) },
+    workingArtifact: { findMany: vi.fn().mockResolvedValue(sources), findFirst: vi.fn().mockResolvedValue(null) },
     fileObject: {
-      findMany: vi.fn().mockResolvedValue(files),
+      findMany: vi.fn().mockImplementation(({ where }: { where?: { id?: { in?: string[] } } }) =>
+        Promise.resolve(where?.id?.in ? files.filter((file) => where.id!.in!.includes(file.id)) : files)),
       count: vi.fn().mockResolvedValue(3),
       create: vi.fn().mockResolvedValue({ id: 'new-file' }),
       delete: vi.fn().mockResolvedValue({ id: 'new-file' }),
@@ -147,13 +155,15 @@ function harness(count = 1) {
       }),
     },
     jobOutbox: { upsert: vi.fn() },
-    workflowRun: { updateMany: vi.fn(), findFirst: vi.fn().mockResolvedValue(null) },
+    workflowRun: { updateMany: vi.fn(), findFirst: vi.fn().mockResolvedValue({ id: 'w' }) },
     project: { findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'p', name: '项目' }) },
   };
   const inputs = variants.map((v) => ({ artifactKey: `timeline-project:t:${v.id}`, input: {} }));
   const mix = {
     prepareValidation: vi.fn().mockResolvedValue({ variants, inputs }),
-    workspace: vi.fn().mockResolvedValue({ materials: [{ fileObjectId: 'video', ratio: '3:4' }] }),
+    workspace: vi.fn().mockResolvedValue({ materials: [{ id: 'clip', artifactId: 'source',
+      fileObjectId: 'video', duration: 12, available: true, artifactRevision: 1,
+      contentHash: 'hash', ratio: '3:4' }] }),
   };
   const working = {
     listArtifacts: vi.fn().mockResolvedValue(sources),
@@ -378,12 +388,12 @@ describe('atomic full packaging completion', () => {
       expect(items[0]!.snapshot.unpackaged).toBe(false);
     },
   );
-  it('requires refreshing a stale package before creating a new output run', async () => {
+  it('keeps a completed package usable after its source timeline changes', async () => {
     const { service, rows, working } = harness();
     rows[0]!.status = 'FAILED';
     rows[0]!.sourceTimelineHash = 'hash-of-an-older-timeline';
-    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('的包装已过期');
-    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+    await expect(service.upsertFromPackaging('p', 'w', 't')).resolves.toBeUndefined();
+    expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalled();
   });
   it('tells the output list why a film plays without sound', async () => {
     const { service, rows, outputRun } = harness(2);
@@ -397,7 +407,7 @@ describe('atomic full packaging completion', () => {
       ['成片1', true],
     ]);
   });
-  it('marks an output item stale without hiding the frozen result', async () => {
+  it('does not mark an exported item stale after the source timeline changes', async () => {
     const { service, outputRun, mix } = harness();
     const variant = {
       id: 'v0', name: '成片0', slots: [], bindings: {}, bindingRevisions: {}, offsets: {},
@@ -433,9 +443,10 @@ describe('atomic full packaging completion', () => {
     } as never);
     const result = await service.get('p', 'out');
     expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({ id: 'film-item', status: 'COMPLETED', stale: true });
+    expect(result.items[0]).toMatchObject({ id: 'film-item', status: 'COMPLETED' });
+    expect(result.items[0]).not.toHaveProperty('stale');
   });
-  it('still refuses changed draft, stale sources and missing files before any commit', async () => {
+  it('still refuses changed draft and missing files but accepts changed source revisions', async () => {
     const { service, db, sources, working } = harness();
     // The draft revision is read twice: once to plan outside the lock, once under the row lock. A save
     // that lands between the two is exactly what the second read is there to catch.
@@ -445,11 +456,11 @@ describe('atomic full packaging completion', () => {
     await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('草稿');
     db.workflowNodeState.findUnique.mockResolvedValue({ revision: 1 });
     sources[0]!.revision = 2;
-    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('上游');
+    await expect(service.upsertFromPackaging('p', 'w', 't')).resolves.toBeUndefined();
     sources[0]!.revision = 1;
     db.fileObject.findMany.mockResolvedValue([]);
     await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('文件');
-    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalled();
   });
   it('rejects unsupported fact IDs without adding AI review', async () => {
     const { service, rows, working } = harness();
@@ -637,6 +648,9 @@ describe('atomic full packaging completion', () => {
   it('freezes resolution and frame rate and enqueues only after explicit export', async () => {
     const { service, db, outputRun } = harness();
     await service.upsertFromPackaging('p', 'w', 't');
+    // This fixture has no live draft bindings; the export test covers settings, not draft drift.
+    vi.spyOn(service as unknown as { draftDiffersFromSnapshot: (...args: unknown[]) => boolean },
+      'draftDiffersFromSnapshot').mockReturnValue(false);
     await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
     expect(db.effectFinalOutputRun.update).toHaveBeenCalledWith({
       where: { id: 'out' },
@@ -649,6 +663,18 @@ describe('atomic full packaging completion', () => {
     expect(outputRun.status).toBe('QUEUED');
     // An in-flight batch is the one thing a re-export must not touch.
     await expect(service.start('p', 'out', { resolution: '480p', frameRate: 24 })).rejects.toThrow('不能修改');
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it('allows the user to export a package snapshot after editing the draft', async () => {
+    const { service, db, working } = harness();
+    await service.upsertFromPackaging('p', 'w', 't');
+    vi.spyOn(service as unknown as { draftDiffersFromSnapshot: (...args: unknown[]) => boolean },
+      'draftDiffersFromSnapshot').mockReturnValue(true);
+    await expect(service.start('p', 'out', { resolution: '720p', frameRate: 30 })).resolves.toBeDefined();
+    expect(working.beginEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'FINAL_OUTPUT', 'BATCH', {
+      always: true,
+      templateId: 't',
+    });
     expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
   });
   it.each(['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'])(
@@ -713,6 +739,7 @@ describe('atomic full packaging completion', () => {
     // `always` is what makes an export branch even when it is the project's first one.
     expect(working.beginEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'FINAL_OUTPUT', 'BATCH', {
       always: true,
+      templateId: 't',
     });
     expect(db.effectFinalOutputRun.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'child-out' },
@@ -725,9 +752,37 @@ describe('atomic full packaging completion', () => {
       parentWorkflowRunId: 'w',
       branchPublishedAt: null,
       editSessionNodeId: 'TEMPLATE_MIX',
+      forkNodeId: 'TEMPLATE_MIX',
     });
     await service.upsertFromPackaging('p', 'w', 't');
     expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'TEMPLATE_MIX');
+  });
+  it('publishes a mix branch that was opened without an edit session', async () => {
+    const { service, db, working } = harness();
+    // Regenerating opens the branch itself: there is no session to recognise it by, so the fork it
+    // was created for is what says the branch belongs to this node.
+    db.workflowRun.findFirst.mockResolvedValue({
+      parentWorkflowRunId: 'w',
+      branchPublishedAt: null,
+      editSessionNodeId: null,
+      forkNodeId: 'TEMPLATE_MIX',
+    });
+    await service.upsertFromPackaging('p', 'w', 't');
+    expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'TEMPLATE_MIX');
+  });
+  it('leaves a partially packaged batch unpublished while still queueing its films', async () => {
+    const { service, db, working } = harness();
+    db.workflowRun.findFirst.mockResolvedValue({
+      parentWorkflowRunId: 'w',
+      branchPublishedAt: null,
+      editSessionNodeId: null,
+      forkNodeId: 'TEMPLATE_MIX',
+    });
+    // The films the run did package are still worth exporting, so the queue is fed; the branch only
+    // appears once the failed ones are recovered in the packaging panel and the batch finishes whole.
+    await service.upsertFromPackaging('p', 'w', 't', { publish: false });
+    expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalled();
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
   });
   it('leaves a published or unrelated Run alone when the mix validation finishes', async () => {
     const { service, db, working } = harness();
@@ -735,6 +790,7 @@ describe('atomic full packaging completion', () => {
       parentWorkflowRunId: 'w',
       branchPublishedAt: null,
       editSessionNodeId: 'FINAL_OUTPUT',
+      forkNodeId: 'FINAL_OUTPUT',
     });
     await service.upsertFromPackaging('p', 'w', 't');
     expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
@@ -1017,6 +1073,10 @@ describe('re-render overwrites the previous artifact in place', () => {
 /** An exported batch whose delivery manifest can actually be written. */
 async function delivered(count = 2) {
   const context = await exportedRun(count);
+  // Delivery fixtures intentionally omit the live material bindings; they test file and manifest
+  // integrity, while draft-picture drift is covered by the queue synchronization tests.
+  vi.spyOn(context.service as unknown as { draftDiffersFromSnapshot: (...args: unknown[]) => boolean },
+    'draftDiffersFromSnapshot').mockReturnValue(false);
   const { db, mix, working } = context;
   const items = context.items;
   const variants = items.map(
@@ -1100,12 +1160,12 @@ describe('finishing a batch', () => {
   });
 });
 
-describe('leaving the workbench re-syncs the output queue', () => {
+describe('saved mix drafts re-sync the output queue', () => {
   it('refreshes an un-exported queue entry from the draft instead of reporting it', async () => {
-    const { service, db, run } = await localUpdateHarness();
+    const { service, db, run } = await localUpdateHarness(false);
     run.status = 'PENDING_RENDER';
     const result = await service.syncFromDraft('p', 'w');
-    expect(result).toEqual({ refreshed: [{ templateId: 't', itemCount: 1 }], needsUpdate: [] });
+    expect(result).toEqual({ refreshed: [{ templateId: 't', itemCount: 1 }] });
     expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'item-0' },
@@ -1115,30 +1175,63 @@ describe('leaving the workbench re-syncs the output queue', () => {
     expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
   });
 
-  it('reports an exported film that moved instead of re-rendering it behind the user', async () => {
-    const { service, db } = await localUpdateHarness();
+  it('does not report source edits as expiry or silently change an exported snapshot', async () => {
+    const { service, db, variant } = await localUpdateHarness();
+    variant.offsets.s = 1;
     const result = await service.syncFromDraft('p', 'w');
-    expect(result).toEqual({ refreshed: [], needsUpdate: [{ templateId: 't', staleCount: 1 }] });
-    // An exported film may already be delivered, so the user decides when to re-render it.
+    expect(result).toEqual({ refreshed: [] });
+    const listed = await service.list('p', 'w');
+    expect(listed[0]?.items[0]).not.toHaveProperty('stale');
+    expect(listed[0]?.counts).not.toHaveProperty('stale');
+    // An exported film remains its own independent version; re-rendering is an explicit user action.
     expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
   });
 
   it('drops a queued film whose variant left the draft', async () => {
-    const { service, db, workspace, run } = await localUpdateHarness();
+    const { service, db, workspace, run } = await localUpdateHarness(false);
     run.status = 'PENDING_RENDER';
     workspace.draft!.templates[0]!.workspace.variants = [];
     const result = await service.syncFromDraft('p', 'w');
-    expect(result).toEqual({ refreshed: [], needsUpdate: [] });
+    expect(result).toEqual({ refreshed: [] });
     expect(db.effectFinalOutputItem.deleteMany).toHaveBeenCalledWith({
-      where: { projectId: 'p', id: 'item-0' },
+      where: { projectId: 'p', id: 'item-0', status: 'PENDING_RENDER' },
     });
+  });
+
+  it('rejects a late sync for an older draft revision without touching the queue', async () => {
+    const { service, db, run } = await localUpdateHarness(false);
+    run.status = 'PENDING_RENDER';
+    db.workflowRun.findFirst.mockResolvedValue({ id: 'w' });
+    db.workflowNodeState.findUnique.mockResolvedValue({ revision: 3 });
+    const result = await service.syncFromDraft('p', 'w',
+      { templateId: 't', expectedDraftRevision: 2 });
+    expect(result).toEqual({ refreshed: [], superseded: true });
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps old audio attached when a saved visual edit changes the source', async () => {
+    const { service, db, mix, run, workspace } = await localUpdateHarness(false);
+    run.status = 'PENDING_RENDER';
+    db.workflowRun.findFirst.mockResolvedValue({ id: 'w' });
+    db.workflowNodeState.findUnique.mockResolvedValue({ revision: 2 });
+    db.effectFinalOutputItem.findFirst.mockResolvedValue({ id: 'item-0' });
+    // The active draft revision must match both the initial read and the row-locked write.
+    mix.workspace.mockResolvedValue({ ...workspace, draftRevision: 2 });
+    const result = await service.syncFromDraft('p', 'w',
+      { templateId: 't', expectedDraftRevision: 2 });
+    expect(result).toEqual({ refreshed: [{ templateId: 't', itemCount: 1 }] });
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'item-0' },
+      data: expect.objectContaining({ status: 'PENDING_RENDER' }),
+    }));
   });
 });
 
 describe('local update', () => {
   it('re-renders only the moved films in place, without opening a branch', async () => {
-    const { service, db, working, run, items } = await localUpdateHarness();
-    await service.localUpdate('p', 'out', {});
+    const { service, db, working, run, items, variant } = await localUpdateHarness();
+    variant.offsets.s = 1;
+    await service.localUpdate('p', 'out', { itemIds: ['item-0'] });
     expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'item-0' },
@@ -1155,10 +1248,10 @@ describe('local update', () => {
   it('refuses a batch that is still rendering or was never exported', async () => {
     const queued = await localUpdateHarness();
     queued.run.status = 'RUNNING';
-    await expect(queued.service.localUpdate('p', 'out', {})).rejects.toThrow('正在渲染');
+    await expect(queued.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('正在渲染');
     const pending = await localUpdateHarness();
     pending.run.status = 'PENDING_RENDER';
-    await expect(pending.service.localUpdate('p', 'out', {})).rejects.toThrow('尚未导出');
+    await expect(pending.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('尚未导出');
   });
   it('reports an unknown item id instead of re-queuing the whole batch', async () => {
     const { service, db } = await localUpdateHarness();
@@ -1170,11 +1263,11 @@ describe('local update', () => {
   it('tells the user to re-package when the draft no longer holds the film', async () => {
     const gone = await localUpdateHarness();
     gone.workspace.draft!.templates[0]!.workspace.variants = [];
-    await expect(gone.service.localUpdate('p', 'out', {})).rejects.toThrow('已不在当前成片工程中');
-    // A slot that can no longer be cut at all is the same answer: the picture has to be re-packaged.
+    await expect(gone.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('已不在当前成片工程中');
+    // A missing source file is a real rendering error, not a semantic package-expiry decision.
     const broken = await localUpdateHarness();
     broken.workspace.materials = [];
-    await expect(broken.service.localUpdate('p', 'out', {})).rejects.toThrow('改动过大');
+    await expect(broken.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('当前画面素材不可用');
   });
 });
 
@@ -1182,7 +1275,7 @@ describe('local update', () => {
  * A delivered batch whose draft has moved on. The snapshot is built by the real packaging callback so
  * a local update faces exactly the shape production hands it.
  */
-async function localUpdateHarness() {
+async function localUpdateHarness(withOutputVersion = true) {
   const context = harness(1);
   // Bind the harness's own variant in place: the package froze it, and the draft the callback reads
   // has to be the very same object for the confirmation to still match.
@@ -1244,6 +1337,21 @@ async function localUpdateHarness() {
       payload: { items: [{ id: 'pr', content: '原始 Prompt' }] },
       dependencies: [],
     },
+    ...((items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot.dependencies ?? []).map((dependency) => ({
+      id: dependency.artifactId,
+      artifactKey: dependency.artifactId,
+      nodeId: 'TEMPLATE_MIX',
+      revision: dependency.revision,
+      contentHash: dependency.contentHash,
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
+      dependencies: [],
+    })),
+    ...(withOutputVersion ? [{
+      id: 'delivery', artifactKey: 'final-delivery:t', nodeId: 'FINAL_OUTPUT',
+      revision: 1, contentHash: 'delivery-hash', freshness: 'CURRENT',
+      availability: 'AVAILABLE', dependencies: [],
+    }] : []),
   ];
   context.db.workingArtifact.findMany.mockResolvedValue(artifacts);
   // The workbench exit reads through the repository, the local update through the transaction client.

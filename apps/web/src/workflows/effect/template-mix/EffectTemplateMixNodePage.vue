@@ -110,7 +110,7 @@ import {
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
-import { packagingActionText, packagingLockMessage } from './effect-packaging-progress';
+import { packagingActionText } from './effect-packaging-progress';
 import {
   DEFAULT_AUDIO_LANE,
   audioRowOf as audioRowOfClip,
@@ -163,15 +163,14 @@ const packagingPreviewEnabled = ref(false);
 const packagingReady = ref(false);
 const packagingRunStatus = ref<PackagingRun['status'] | null>(null);
 /**
- * Films the packaging gave up on. They no longer block 完成校验 — they are submitted as picture-only
- * ones — but a film that quietly loses its narration is a surprise, so every one of them is named.
+ * Films the packaging gave up on. They are still submitted as picture-only ones, and the batch they
+ * belong to keeps its child Run out of the version tree until they are recovered, but a film that
+ * quietly loses its narration is a surprise, so every one of them is named.
  */
 const packagingFailures = ref<{ variantId: string; name: string; message: string }[]>([]);
-const stalePackagingVariantIds = ref<Set<string>>(new Set());
 const packagingFailureByVariant = computed(
   () => new Map(packagingFailures.value.map((failure) => [failure.variantId, failure])),
 );
-const packagingLockNotice = computed(() => packagingLockMessage(packagingRunStatus.value));
 const packagingActionLabel = computed(() =>
   packagingActionText(packagingReady.value, packagingRunStatus.value),
 );
@@ -180,31 +179,7 @@ const packagingActionBlockReason = computed(() => {
   if (!entry) return null;
   if (entry.needsAiFill)
     return '当前模板或成片仍需重新智能填充；请先更新素材并完成混剪校验。';
-
-  // Packaging submits every complete variant in this template as one batch. Check all of those
-  // variants, not only the selected card, so an expired source cannot leave an apparently usable
-  // batch action that the API will reject.
-  const materialById = new Map(
-    (workspace.value?.materials ?? []).map((material) => [material.id, material]),
-  );
-  const completeVariants = entry.workspace.variants.filter(
-    (variant) =>
-      variant.slots.length > 0 && variant.slots.every((slot) => variant.bindings[slot.id]),
-  );
-  const hasStaleSource = completeVariants.some((variant) =>
-    variant.slots.some((slot) => {
-      const materialId = variant.bindings[slot.id];
-      const material = materialId ? materialById.get(materialId) : undefined;
-      return (
-        !material?.available ||
-        !Number.isInteger(variant.bindingRevisions[slot.id]) ||
-        material.artifactRevision !== variant.bindingRevisions[slot.id]
-      );
-    }),
-  );
-  return hasStaleSource
-    ? '本模板有成片引用了过期素材；请先在视频渲染节点更新素材，再智能填充并完成校验。'
-    : null;
+  return null;
 });
 const committedVersions = reactive<Record<string, number>>({});
 const uiByTemplate = reactive<Record<string, TemplateUi>>({});
@@ -402,6 +377,13 @@ let controller: AbortController | undefined;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSave: Promise<boolean> | undefined;
+let queuedOutputSync: { projectId: string; workflowRunId: string;
+  revision: number; templateIds: Set<string> } | null = null;
+let outputSyncTask: Promise<void> | null = null;
+let outputSyncErrorShown = false;
+const outputSyncChannel = typeof BroadcastChannel === 'undefined' ? null
+  : new BroadcastChannel('effect-final-output-sync');
+const queuedOutputRevision = (): number | null => queuedOutputSync?.revision ?? null;
 let playbackAnimationFrame: number | undefined;
 let playerScrubberAnimations: Animation[] = [];
 let dissolvePlaybackAnimation: Animation | null = null;
@@ -428,16 +410,27 @@ const activeEntry = computed(
   () => catalog.value.find(({ id }) => id === activeTemplateId.value) ?? null,
 );
 const packagingLocked = computed(() => Boolean(activeEntry.value?.packagingLocked));
+/**
+ * Only a packaging run that is still working locks anything. Once it is over, the package is a
+ * finished result in its own Run, and a new fill lands on a branch of its own instead of touching
+ * it — so a completed package never takes the template configuration away. An unknown status is
+ * not a running one: the packaging panel only reports it in the workbench view, and the template
+ * configuration is read from the config view.
+ */
+const packagingInFlight = computed(
+  () =>
+    packagingLocked.value &&
+    ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value ?? ''),
+);
 const projectEditLocked = computed(() =>
   Boolean(
     activeEntry.value?.aiFillLocked ||
     activeAiRun.value ||
-    fillStartPending.value ||
-    (packagingLocked.value &&
-      (!packagingRunStatus.value || ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value))),
+    fillStartPending.value,
   ),
 );
-const templateEditLocked = computed(() => projectEditLocked.value || packagingLocked.value);
+/** Only smart fill mutates slot assignments; packaging works from its frozen snapshot. */
+const templateEditLocked = projectEditLocked;
 /**
  * The voice only feeds future packaging and voice redos, never existing audio, so it stays editable
  * once the run has finished. It is still locked while a run is in flight, because that run already
@@ -522,7 +515,7 @@ const restoreTimelineSnapshot = (snapshot: TimelineEditSnapshot): void => {
   // whole story — writing back only the variant would leave the text unchanged and read as "undo did
   // nothing". `editPackagingAudio`'s baseline rule is reused so the revert is diffed against what the
   // server actually holds: an edit still inside the debounce window has nothing to send, a saved one
-  // does. The completed packaging remains writable even when its source is marked stale.
+  // does. Completed packaging and its sound tracks remain writable during visual editing.
   const packaging = snapshot.packaging;
   const item = selectedPackaging.value;
   if (
@@ -1579,6 +1572,53 @@ const load = async (): Promise<void> => {
     if (requestController === controller) runSwitching.value = false;
   }
 };
+/** Coalesce rapid edits, but retain every edited template across successive draft revisions. */
+const queueOutputSync = (revision: number, templateId: string): void => {
+  const sameScope = queuedOutputSync?.projectId === props.projectId &&
+    queuedOutputSync?.workflowRunId === props.workflowRunId;
+  if (!sameScope) queuedOutputSync = { projectId: props.projectId,
+    workflowRunId: props.workflowRunId, revision, templateIds: new Set() };
+  queuedOutputSync!.revision = Math.max(queuedOutputSync!.revision, revision);
+  if (templateId) queuedOutputSync!.templateIds.add(templateId);
+  if (!outputSyncTask) outputSyncTask = drainOutputSync();
+};
+const drainOutputSync = async (): Promise<void> => {
+  try {
+    while (queuedOutputSync) {
+      const queued = queuedOutputSync;
+      queuedOutputSync = null;
+      if (queued.projectId !== props.projectId || queued.workflowRunId !== props.workflowRunId)
+        continue;
+      const templateIds = queued.templateIds.size ? [...queued.templateIds] : [''];
+      for (const templateId of templateIds) {
+        if (queued.projectId !== props.projectId || queued.workflowRunId !== props.workflowRunId)
+          break;
+        try {
+          const response = await syncEffectFinalOutput(queued.projectId,
+            queued.workflowRunId, { expectedDraftRevision: queued.revision,
+              ...(templateId ? { templateId } : {}) });
+          const newerRevision = queuedOutputRevision();
+          if (response.data.superseded && newerRevision !== null &&
+            newerRevision > queued.revision)
+            queueOutputSync(newerRevision, templateId);
+          else if (!response.data.superseded) {
+            outputSyncErrorShown = false;
+            outputSyncChannel?.postMessage({ projectId: queued.projectId,
+              workflowRunId: queued.workflowRunId });
+          }
+        } catch {
+          if (!outputSyncErrorShown) {
+            showNotice('成片待渲染区暂未同步；返回成片输出前会重试', 'warning');
+            outputSyncErrorShown = true;
+          }
+        }
+      }
+    }
+  } finally {
+    outputSyncTask = null;
+    if (queuedOutputSync) outputSyncTask = drainOutputSync();
+  }
+};
 /**
  * Serialised so two saves never share a revision. The revision a request carries stops being valid
  * the moment the next one lands, so a second request sent while the first is still on the wire comes
@@ -1600,6 +1640,7 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
   if (pageState.value !== 'READY') return false;
   saveState.value = 'saving';
   try {
+    const savedTemplateId = activeTemplateId.value;
     const result = await saveEffectTemplateMixDraft(
       props.projectId,
       props.workflowRunId,
@@ -1609,6 +1650,8 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
     );
     draftRevision.value = result.data.draftRevision;
     saveState.value = 'saved';
+    if (typeof result.data.draftRevision === 'number')
+      queueOutputSync(result.data.draftRevision, savedTemplateId);
     return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('已进入智能填充并锁定')) {
@@ -3202,9 +3245,8 @@ const returnToFinalOutput = async (): Promise<void> => {
   pauseTimelinePlayers();
   stopPlaybackClock();
   packagingPanel.value?.stopPlaybackAudio();
-  // Leaving the workbench is what tells the output node the timeline moved, so it has to finish
-  // before the page is swapped out from under the notice it may want to show.
-  await syncOutputOnExit();
+  // Saves already synchronize in the background; flush the last edit before navigation.
+  if (!(await syncOutputOnExit())) return;
   emit('next');
 };
 const leaveEditor = (): void => {
@@ -4438,7 +4480,7 @@ const deleteSelectedTimelineItem = (): void => {
   const selectedCaptions = [...selectedCaptionIds.value];
   if (selectedCaptions.length) {
     if (selectedPackaging.value) {
-      // Only an unfinished packaging is read-only; staleness is an informational source marker.
+      // Only an unfinished packaging is read-only; completed tracks stay user-editable.
       if (!captionEditable.value) {
         showNotice('当前包装尚未完成，字幕不可编辑', 'warning');
         return;
@@ -4558,9 +4600,6 @@ const openPackaging = (target: 'ACTION' | 'WORKFLOW'): void => {
   }
   void packagingPanel.value?.open(target);
 };
-const onStalePackagingVariants = (variantIds: string[]): void => {
-  stalePackagingVariantIds.value = new Set(variantIds);
-};
 const handlePackagingStarted = async (): Promise<void> => {
   await load();
   if (activeEntry.value) activeEntry.value.packagingLocked = true;
@@ -4586,8 +4625,10 @@ const startAiFill = async (
   target: EffectTemplateMixVariant | null,
   refreshAffectedSlots = false,
 ): Promise<void> => {
-  if (packagingLocked.value && !refreshAffectedSlots) {
-    showNotice('智能成片包装已启动或完成，此模板不能重新智能填充', 'error');
+  // Packaging that is still running holds the Run the fill would read, so the fill has to wait. A
+  // finished package does not: the fill forks its own branch and leaves that result alone.
+  if (packagingInFlight.value && !refreshAffectedSlots) {
+    showNotice('智能成片包装正在进行，请等待完成后再重新智能填充', 'error');
     return;
   }
   if (!workspace.value || mutating.value || activeAiRun.value) return;
@@ -5130,30 +5171,13 @@ const toggleFullscreen = async (): Promise<void> => {
 const onFullscreenChange = (): void => {
   playerFullscreen.value = document.fullscreenElement === playerPanel.value;
 };
-/**
- * The workbench is not an edit session: the draft is saved as it is typed, and only on the way out
- * does the output node learn that the timeline moved. Films that were never exported follow the
- * draft silently; already exported ones come back as needing a local update, which is a decision
- * the user makes on the output node rather than something to do here.
- */
-const syncOutputOnExit = async (): Promise<void> => {
-  if (!(await flushPendingEdits())) return;
-  try {
-    const response = await syncEffectFinalOutput(props.projectId, props.workflowRunId);
-    const { refreshed, needsUpdate } = response.data;
-    const refreshedCount = refreshed.reduce((sum, entry) => sum + entry.itemCount, 0);
-    const staleCount = needsUpdate.reduce((sum, entry) => sum + entry.staleCount, 0);
-    if (staleCount) {
-      emit('notice', `成片输出有 ${staleCount} 条需要局部更新`, 'warning');
-      emit('workflowRunChange');
-    } else if (refreshedCount) {
-      emit('notice', `已同步成片待渲染区 ${refreshedCount} 条`, 'success');
-    }
-  } catch (error) {
-    // A sync failure must not trap the user in the workbench; the output node re-reads the draft
-    // itself, so the worst case is that the films show the previous timeline until the next export.
-    emit('notice', error instanceof Error ? error.message : '同步成片待渲染区失败', 'error');
-  }
+/** Drain the last debounced edit before leaving; synchronization itself is silent. */
+const syncOutputOnExit = async (): Promise<boolean> => {
+  if (!(await flushPendingEdits())) return false;
+  if (typeof draftRevision.value === 'number')
+    queueOutputSync(draftRevision.value, activeTemplateId.value);
+  while (outputSyncTask) await outputSyncTask;
+  return true;
 };
 const flushPendingEdits = async (): Promise<boolean> => {
   clearTimeout(saveTimer);
@@ -5348,6 +5372,7 @@ onDeactivated(() => {
   packagingPanel.value?.stopPlaybackAudio();
 });
 onBeforeUnmount(() => {
+  outputSyncChannel?.close();
   stopPlaybackClock();
   if (pendingSeekSyncFrame !== undefined) cancelAnimationFrame(pendingSeekSyncFrame);
   pendingSeekSyncFrame = undefined;
@@ -5407,7 +5432,7 @@ defineExpose({ flushPendingEdits });
       <button class="button" @click="load">重新加载</button>
     </section>
     <template v-else>
-      <header v-if="view === 'CONFIG'" class="config-head">
+      <header v-if="view === 'CONFIG' || !workspace" class="config-head">
         <div class="config-head__title">
           <span>05</span>
           <div>
@@ -5417,7 +5442,7 @@ defineExpose({ flushPendingEdits });
         </div>
       </header>
       <section
-        v-if="view === 'CONFIG'"
+        v-if="view === 'CONFIG' || !workspace"
         class="config-layout"
         :class="{ 'is-empty': !workspace }"
       >
@@ -5550,12 +5575,7 @@ defineExpose({ flushPendingEdits });
               <WandSparkles :size="15" />进入精修工作台
             </button>
           </footer>
-          <p v-if="packagingLocked" class="template-lock-banner" role="status">
-            <Lock
-              :size="15"
-            />模板槽位配置和常规智能填充已锁定；音色仍可切换，影响后续包装与口播；上游素材更新时可仅重算受影响素材的截取区间；仍可新建空成片并精修未包装工程。
-          </p>
-          <p v-else-if="templateEditLocked" class="template-lock-banner" role="status">
+          <p v-if="templateEditLocked" class="template-lock-banner" role="status">
             <Lock :size="15" />智能填充正在运行，模板暂时锁定；任务结束后可修改。
           </p>
           <p
@@ -5575,7 +5595,7 @@ defineExpose({ flushPendingEdits });
       </section>
 
       <section
-        v-else-if="view === 'EDITOR' && workspace"
+        v-else
         class="panel workbench"
         @dragstart.capture="onNativeImageDragStart"
         @pointerdown.capture="onWorkbenchPointerDown"
@@ -5620,7 +5640,7 @@ defineExpose({ flushPendingEdits });
               :disabled="
                 mutating ||
                 Boolean(activeAiRun) ||
-                packagingLocked ||
+                packagingInFlight ||
                 Boolean(aiFillBlockReason)
               "
               :title="aiFillBlockReason ?? '按模板规则为每个槽位挑选一条不重复的当前素材'"
@@ -5653,10 +5673,7 @@ defineExpose({ flushPendingEdits });
             <button class="button" @click="leaveEditor">返回模板配置</button>
           </div>
         </header>
-        <div v-if="packagingLocked" class="template-lock-banner" role="status">
-          <Lock :size="15" />{{ packagingLockNotice }}
-        </div>
-        <div v-else-if="templateEditLocked" class="template-lock-banner" role="status">
+        <div v-if="templateEditLocked" class="template-lock-banner" role="status">
           <Lock :size="15" />智能填充正在运行，模板和成片工程暂时锁定。
         </div>
         <div
@@ -5679,7 +5696,7 @@ defineExpose({ flushPendingEdits });
               .map((failure) => failure.name)
               .slice(0, 3)
               .join('、')
-          }}{{ packagingFailures.length > 3 ? ' 等' : '' }}。仍可完成校验，这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐。
+          }}{{ packagingFailures.length > 3 ? ' 等' : '' }}。这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐；本次包装暂不计入版本，恢复失败项后重新包装成功才会新增分支。
           <button class="button compact" type="button" @click="openPackaging('WORKFLOW')">
             打开包装面板恢复
           </button>
@@ -6293,7 +6310,6 @@ defineExpose({ flushPendingEdits });
                   variant.id === selectedVariant?.id,
                   packagingReady,
                   packagingFailureByVariant.get(variant.id)?.message,
-                  stalePackagingVariantIds.has(variant.id),
                 ]"
                 :class="{
                   active: variant.id === selectedVariant?.id,
@@ -6325,16 +6341,8 @@ defineExpose({ flushPendingEdits });
                 </span>
                 <div class="project-card-info">
                   <b>{{ variantDisplayName(variant, index) }}</b>
-                  <small
-                    v-if="stalePackagingVariantIds.has(variant.id)"
-                    class="project-expired-badge"
-                    title="上游素材或时间轴已更新；现有成片仍可播放和编辑"
-                  >
-                    已过期
-                  </small>
                   <small class="project-duration">{{ variantDuration(variant).toFixed(0) }}s</small>
                   <span
-                    v-if="!stalePackagingVariantIds.has(variant.id)"
                     class="project-status"
                     :class="{
                       pending: variant.status === 'PENDING',
@@ -6481,7 +6489,6 @@ defineExpose({ flushPendingEdits });
             @run-change="handlePackagingRunChange"
             @status="packagingRunStatus = $event"
             @failures="packagingFailures = $event"
-            @stale-variants="onStalePackagingVariants"
           />
         </div>
         <div v-if="editingCaption" class="caption-text-editor">
@@ -6567,10 +6574,7 @@ defineExpose({ flushPendingEdits });
             @update:model-value="onAudioParamsChange"
           />
         </div>
-        <!-- A stale item is passed through rather than nulled: its captions and voice/BGM blocks
-             are the arrangement the user is looking at, and hiding them the moment a lane moves
-             reads as "my materials vanished". The timeline marks them stale and keeps them
-             read-only instead. -->
+        <!-- Completed package audio and subtitles remain attached and editable as picture lanes move. -->
         <EffectTemplateMixTimeline
           ref="timelineRef"
           :template-id="activeTemplateId"
@@ -6648,7 +6652,7 @@ defineExpose({ flushPendingEdits });
         "
       />
       <WorkflowNodeFooter
-        v-if="view === 'EDITOR' && workspace"
+        v-if="view !== 'CONFIG' && workspace"
         back-label="上一步"
         :complete="validated && packagingReady"
         :status-title="validateStatusTitle"
@@ -8713,17 +8717,6 @@ button:disabled {
   color: #64748b;
   font-size: 10px;
   line-height: 1;
-  white-space: nowrap;
-}
-.project-expired-badge {
-  flex: 0 0 auto;
-  padding: 1px 4px;
-  border: 1px solid #f5d48a;
-  border-radius: 4px;
-  background: #fff7e6;
-  color: #9a6700;
-  font-size: 9px;
-  line-height: 1.2;
   white-space: nowrap;
 }
 .project-status {

@@ -24,7 +24,7 @@ describe('effect final output re-render layout', () => {
 
   it('confirms a whole-batch re-export and keeps the settings editable between batches', () => {
     expect(pageSource).toContain('确认重新导出');
-    expect(pageSource).toContain('将用当前选择的分辨率与帧率覆盖本批全部成片');
+    expect(pageSource).toContain('创建此模板的新版本分支，原有成片保留在旧分支');
     expect(pageSource).toContain("operation: rerender ? '重新导出成片' : '开始导出成片'");
     expect(pageSource).not.toContain("if (run.value?.status !== 'PENDING_RENDER') return;");
   });
@@ -50,8 +50,8 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain(
       "import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';",
     );
-    // Export / re-export, single-item re-render and 局部更新 each ask before touching the batch.
-    expect(pageSource.match(/requestActionConfirmation\(/gu)).toHaveLength(3);
+    // Export / re-export and single-item re-render each ask before touching output files.
+    expect(pageSource.match(/requestActionConfirmation\(/gu)).toHaveLength(2);
   });
 
   it('drops 完成校验: a finished batch publishes its branch on its own', () => {
@@ -60,14 +60,12 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain(':show-validate="false"');
   });
 
-  it('offers 局部更新 only for an already-exported batch that has moved upstream', () => {
-    expect(pageSource).toContain('const canLocalUpdate = computed');
-    expect(pageSource).toContain('run.value.counts.stale > 0');
-    expect(pageSource).toContain('`${base.value}/${run.value.id}/local-update`');
-    expect(pageSource).toContain('确认局部更新');
-    expect(pageSource).toContain('class="secondary-button local-update-button"');
-    expect(pageSource).toContain('局部更新（{{ run.counts.stale }}）');
-    expect(pageSource).toContain('.local-update-button {');
+  it('does not inspect or label exported films after mix edits', () => {
+    expect(pageSource).not.toContain('素材已过期');
+    expect(pageSource).not.toContain('counts.stale');
+    expect(pageSource).not.toContain('item.stale');
+    expect(pageSource).not.toContain('localUpdate(');
+    expect(pageSource).not.toContain('局部更新');
   });
 
   it('says a film plays silent because it was submitted without a package', () => {
@@ -81,11 +79,19 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain('.status-pill.unpackaged {');
   });
 
-  it('keeps stale films visible and labels each one without disabling export controls', () => {
+  it('keeps delivered films available without an expiry marker', () => {
     expect(pageSource).toContain('run: outputRun,');
-    expect(pageSource).toContain('v-if="item.stale" class="status-pill stale"');
-    expect(pageSource).toContain('素材已过期');
-    expect(pageSource).toContain('.status-pill.stale {');
+    expect(pageSource).not.toContain('item.stale');
+    expect(pageSource).not.toContain('status-pill stale');
+    expect(pageSource).toContain('v-if="item.fileObjectId"');
+  });
+
+  it('reconciles missed pending-draft updates on entry without starting a render', () => {
+    expect(pageSource).toContain('async function reconcilePending()');
+    expect(pageSource).toContain('expectedDraftRevision: workspace.draftRevision');
+    expect(pageSource).toContain('void reconcilePending();');
+    expect(pageSource).toContain("new BroadcastChannel('effect-final-output-sync')");
+    expect(pageSource).toContain('outputSyncChannel?.close()');
   });
 
   it('follows the fork a re-export opened instead of reading the published batch', () => {

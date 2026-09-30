@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
-import { currentPackagingRun, packagingActionText, packagingItemStageState, packagingLockMessage, packagingProgress, packagingStageSamples, packagingStageState } from './effect-packaging-progress';
+import { currentPackagingRun, packagingActionText, packagingItemStageState, packagingProgress, packagingStageSamples, packagingStageState } from './effect-packaging-progress';
 import { PACKAGING_STAGES } from '@ai-marketing/contracts';
 import component from './EffectTemplateMixPackaging.vue?raw';
 import page from './EffectTemplateMixNodePage.vue?raw';
@@ -63,9 +63,9 @@ describe('packaging workflow progress', () => {
     for (const stage of PACKAGING_STAGES)
       expect(packagingStageState(items, stage)).toMatchObject({ failed: 0, completed: 3, tone: 'success' });
   });
-  it('distinguishes completed execution from invalidated source', () => {
-    const value = { ...item('READY', 'COMPLETED'), stale: true };
-    expect(packagingStageState([value], 'VOICE')).toMatchObject({ completed: 1, stale: 1, label: '来源待更新' });
+  it('keeps a completed package complete regardless of later picture edits', () => {
+    const value = item('READY', 'COMPLETED');
+    expect(packagingStageState([value], 'VOICE')).toMatchObject({ completed: 1, label: '已完成' });
   });
   it('uses the same latest or active batch instead of pinning a historical failure', () => {
     const old = { id: 'old', status: 'PARTIAL' } as PackagingRun;
@@ -75,23 +75,13 @@ describe('packaging workflow progress', () => {
     expect(currentPackagingRun([latest, running, old])).toBe(running);
     expect(currentPackagingRun([])).toBeUndefined();
   });
-  it('keeps the template locked while reporting the persisted packaging terminal state', () => {
-    expect(packagingLockMessage('RUNNING')).toContain('正在进行');
-    expect(packagingLockMessage('COMPLETED')).toContain('已完成');
-    expect(packagingLockMessage('PARTIAL')).toContain('部分完成');
-    expect(packagingLockMessage('FAILED')).toContain('已失败');
-    expect(packagingLockMessage('CANCELLED')).toContain('已取消');
-    expect(packagingLockMessage('QUEUED')).toContain('已排队');
-    expect(packagingLockMessage(null)).toContain('正在读取');
-    for (const status of ['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'] as const)
-      expect(packagingLockMessage(status)).toContain('锁定');
-    // The voice is released once the run is over, so the terminal states must say so instead of
-    // implying the whole template configuration is frozen.
-    for (const status of ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'] as const)
-      expect(packagingLockMessage(status)).toContain('音色仍可切换');
+  it('reports the packaging run status without claiming the slot configuration is locked', () => {
+    // The status still has to reach the page: it is what keeps a run that is actually in flight
+    // locked. What it must not do is describe a finished package as a permanent restriction.
     expect(component).toContain("(value) => emit('status', value?.status ?? null)");
     expect(page).toContain('@status="packagingRunStatus = $event"');
-    expect(page).toContain('{{ packagingLockNotice }}');
+    expect(page).not.toContain('packagingLockNotice');
+    expect(page).not.toContain('模板槽位配置已锁定');
   });
   it('labels the completed packaging action as a rerun without changing lock state', () => {
     expect(packagingActionText(false, 'COMPLETED')).toBe('重新成片包装');
@@ -128,6 +118,10 @@ describe('packaging workflow progress', () => {
     expect(page).toContain('data-testid="packaging-failure-banner"');
     expect(page).toContain('这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐');
     expect(page).toContain('条失败将按无包装成片提交（仅画面）');
+    // 完成校验 was removed from this node: the batch has to say the partial run is not a version yet
+    // instead of pointing at a button that no longer exists.
+    expect(page).not.toContain('仍可完成校验');
+    expect(page).toContain('本次包装暂不计入版本，恢复失败项后重新包装成功才会新增分支');
     expect(page).toContain('包装失败 · 将仅出画面');
   });
   it('shows up to four real, human-readable examples from packaging checkpoints', () => {
@@ -137,7 +131,6 @@ describe('packaging workflow progress', () => {
     };
     const actual = {
       name: '成片 01',
-      stale: false,
       status: 'COMPLETED',
       sourceVisualTimeline: { ...source, offsets: { 'slot-1': 1.25 }, timelineStarts: { 'slot-1': 2 } },
       sourceClips: [{
@@ -186,15 +179,14 @@ describe('packaging workflow progress', () => {
     );
     expect(JSON.stringify(packagingStageSamples([actual], 'VOICE').outputSamples)).not.toContain('private-id');
   });
-  it('caps examples and hides samples whose source timeline is stale', () => {
+  it('caps examples without filtering them by source timeline changes', () => {
     const slots = Array.from({ length: 7 }, (_, index) => ({ id: `slot-${index}`, label: `镜头 ${index}`, duration: 2 }));
     const current = {
-      name: '成片样例', stale: false, status: 'RUNNING',
+      name: '成片样例', status: 'RUNNING',
       sourceVisualTimeline: { slots, bindings: Object.fromEntries(slots.map((slot) => [slot.id, slot.id])) },
       checkpoint: { vision: slots.map((slot) => ({ slotId: slot.id, start: 0, end: 2, description: '画面内容' })) },
     } as unknown as PackagingItem;
-    const stale = { ...current, stale: true };
-    const samples = packagingStageSamples([current, stale], 'VISION');
+    const samples = packagingStageSamples([current, current], 'VISION');
     expect(samples.inputSamples).toHaveLength(4);
     expect(samples.outputSamples).toHaveLength(4);
     expect(samples.inputSamples.every((sample) => sample.startsWith('成片样例'))).toBe(true);

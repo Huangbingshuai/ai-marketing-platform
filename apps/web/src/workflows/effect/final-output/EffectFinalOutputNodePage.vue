@@ -1580,9 +1580,7 @@ progress {
 .status-pill.success { color: #168365; background: #eaf8f2; }
 .status-pill.running { color: #2563eb; background: #edf4ff; }
 .status-pill.danger { color: #bc4b50; background: #fff0ef; }
-.status-pill.stale { color: #9a5805; background: #fff2d8; }
 .status-pill.unpackaged { color: #92650c; background: #fdf6e3; }
-.local-update-button { flex: 0 0 auto; color: #9a5805; border-color: #f2d7a8; }
 .output-meta {
   margin: 6px 0 0;
   color: #8490a4;

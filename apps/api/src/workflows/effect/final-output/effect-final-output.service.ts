@@ -1049,15 +1049,7 @@ export class EffectFinalOutputService {
     run: Prisma.EffectFinalOutputRunGetPayload<{ include: typeof include }>,
     templateName?: string,
     artifacts: ArtifactRow[] = [],
-    workspace?: EffectTemplateMixWorkspaceData,
   ): FinalOutputRun {
-    const staleItemIds = new Set(
-      hasOutputVersion(artifacts) && run.status === 'COMPLETED'
-        ? run.items.filter((item) => Boolean(item.fileObjectId && item.assetId) &&
-          this.draftDiffersFromSnapshot(run.templateId, item, artifacts as WorkingArtifact[], workspace))
-          .map((item) => item.id)
-        : [],
-    );
     const delivery = artifacts.find((artifact) =>
       artifact.nodeId === 'FINAL_OUTPUT' &&
       artifact.artifactKey === `final-delivery:${run.templateId}` &&
@@ -1115,7 +1107,6 @@ export class EffectFinalOutputService {
             fileObjectId: i.fileObjectId,
             assetId: i.assetId,
             unpackaged: Boolean((i.snapshot as unknown as FinalOutputSnapshot).unpackaged),
-            stale: staleItemIds.has(i.id),
           };
         }),
       counts: {
@@ -1124,7 +1115,6 @@ export class EffectFinalOutputService {
         running: run.items.filter((i) => i.status === 'RUNNING').length,
         completed: run.items.filter((i) => i.status === 'COMPLETED').length,
         failed: run.items.filter((i) => ['FAILED', 'CANCELLED'].includes(i.status)).length,
-        stale: staleItemIds.size,
       },
     };
   }
@@ -1136,7 +1126,7 @@ export class EffectFinalOutputService {
     const artifacts = await this.working.listArtifacts(projectId, { workflowRunId: run.workflowRunId });
     const templateName = workspace.draft?.templates.find((entry) => entry.id === run.templateId)
       ?.workspace.template.name;
-    return this.toDto(run, templateName, artifacts, workspace);
+    return this.toDto(run, templateName, artifacts);
   }
   async list(projectId: string, workflowRunId: string) {
     const runs = await this.db.effectFinalOutputRun.findMany({
@@ -1151,7 +1141,7 @@ export class EffectFinalOutputService {
     const templateNames = new Map(
       workspace.draft?.templates.map((entry) => [entry.id, entry.workspace.template.name]) ?? [],
     );
-    return runs.map((run) => this.toDto(run, templateNames.get(run.templateId), artifacts, workspace));
+    return runs.map((run) => this.toDto(run, templateNames.get(run.templateId), artifacts));
   }
   async claim(projectId: string, id: string) {
     return this.db.$transaction(async (tx) => {

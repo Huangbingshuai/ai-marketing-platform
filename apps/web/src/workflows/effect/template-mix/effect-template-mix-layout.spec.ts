@@ -40,11 +40,10 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('sourceMaterials.value = data.materials;');
     expect(pageSource).toContain('entry.workspace.materials = sourceMaterials.value;');
   });
-  it('disables batch repackaging when the template needs a refill or any packaged source is stale', () => {
+  it('only blocks packaging when the template needs an AI refill, not because a source changed', () => {
     expect(pageSource).toContain('const packagingActionBlockReason = computed(() => {');
     expect(pageSource).toContain('if (entry.needsAiFill)');
-    expect(pageSource).toContain('const completeVariants = entry.workspace.variants.filter(');
-    expect(pageSource).toContain('material.artifactRevision !== variant.bindingRevisions[slot.id]');
+    expect(pageSource).not.toContain('material.artifactRevision !== variant.bindingRevisions[slot.id]');
     expect(pageSource).toContain('Boolean(packagingActionBlockReason)');
     expect(pageSource).toContain('packagingActionBlockReason ??');
     expect(pageSource).toContain("if (target === 'ACTION' && packagingActionBlockReason.value)");
@@ -131,15 +130,16 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('const completionKey');
     expect(pageSource).not.toContain('const canValidate');
   });
-  it('syncs the output node when the workbench is left, and reports what moved', () => {
+  it('syncs each saved draft silently and flushes the last edit on exit', () => {
     expect(pageSource).toContain('syncEffectFinalOutput');
-    expect(pageSource).toContain('const syncOutputOnExit = async (): Promise<void> => {');
-    expect(pageSource).toContain('if (!(await flushPendingEdits())) return;');
-    expect(pageSource).toContain('成片输出有 ${staleCount} 条需要局部更新');
-    expect(pageSource).toContain('已同步成片待渲染区 ${refreshedCount} 条');
-    expect(pageSource).toContain("emit('notice'");
+    expect(pageSource).toContain('queueOutputSync(result.data.draftRevision, savedTemplateId)');
+    expect(pageSource).toContain('expectedDraftRevision: queued.revision');
+    expect(pageSource).toContain('const newerRevision = queuedOutputRevision();');
+    expect(pageSource).toContain('const syncOutputOnExit = async (): Promise<boolean> => {');
+    expect(pageSource).toContain('if (!(await flushPendingEdits())) return false;');
+    expect(pageSource).not.toContain('已同步成片待渲染区 ${refreshedCount} 条');
     expect(pageSource).toContain('const returnToFinalOutput = async (): Promise<void> => {');
-    expect(pageSource).toContain('await syncOutputOnExit();');
+    expect(pageSource).toContain('if (!(await syncOutputOnExit())) return;');
     expect(pageSource).toContain('void syncOutputOnExit();');
   });
   it('never lets two draft saves share a revision', () => {
@@ -1379,20 +1379,42 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('!mutedAudioClip(`capvoice:${captionId}`) && active(audio),');
     expect(pageSource).toContain('return voice || music || captionVoice || detached;');
   });
-  it('keeps the voice switchable after packaging while the slot configuration stays locked', () => {
+  it('releases the template configuration as soon as packaging has finished', () => {
     // The voice only feeds future packaging and voice redos, so it is released as soon as the run
-    // finishes rather than staying pinned by the one-way packaging lock.
+    // finishes rather than staying pinned by the one-way packaging lock. A finished package is a
+    // result of its own Run and a re-fill forks a branch, so the slot configuration the user has to
+    // change before that re-fill must be released with it — nothing keeps a lock of its own.
     expect(pageSource).toContain('const voiceSelectLocked = computed(() => projectEditLocked.value);');
     expect(pageSource).toContain(':disabled="voiceSelectLocked"');
     expect(pageSource).toContain('if (voiceSelectLocked.value) return;');
-    // Everything else keeps the stricter lock, which is what still holds after a completed run.
-    expect(pageSource).toContain(
-      'const templateEditLocked = computed(() => projectEditLocked.value || packagingLocked.value);',
-    );
+    expect(pageSource).toContain('const templateEditLocked = projectEditLocked;');
     expect(pageSource).toContain(':disabled="templateEditLocked"');
-    // The banner must not claim the whole template configuration is frozen any more.
-    expect(pageSource).toContain('音色仍可切换');
-    expect(pageSource).not.toContain('模板配置和常规智能填充已锁定');
+    expect(pageSource).not.toContain('templateEditLocked = computed(() => projectEditLocked.value ||');
+    // The restriction banners are gone; only the transient in-flight one is left.
+    expect(pageSource).not.toContain('模板槽位配置已锁定');
+    expect(pageSource).not.toContain('packagingLockNotice');
+    expect(pageSource).toContain('智能填充正在运行，模板暂时锁定；任务结束后可修改。');
+  });
+  it('keeps editing available during packaging while preventing conflicting smart fills', () => {
+    // Packaging consumes its frozen snapshot and writes separate artifacts. It must not freeze the
+    // current project; only another smart fill conflicts with its workspace-binding writes.
+    expect(pageSource).toContain('const packagingInFlight = computed(');
+    expect(pageSource).toContain(
+      "['QUEUED', 'RUNNING'].includes(packagingRunStatus.value ?? '')",
+    );
+    const projectLock = pageSource.match(
+      /const projectEditLocked = computed\([\s\S]*?\n\);/u,
+    )?.[0];
+    expect(projectLock).toContain('activeEntry.value?.aiFillLocked');
+    expect(projectLock).toContain('activeAiRun.value');
+    expect(projectLock).toContain('fillStartPending.value');
+    expect(projectLock).not.toContain('packagingInFlight.value');
+    expect(pageSource).toMatch(
+      /:disabled="\s+mutating \|\|\s+Boolean\(activeAiRun\) \|\|\s+packagingInFlight \|\|/u,
+    );
+    expect(pageSource).toContain('智能成片包装正在进行，请等待完成后再重新智能填充');
+    expect(pageSource).not.toContain('此模板不能重新智能填充');
+    expect(pageSource).not.toContain('常规智能填充已锁定');
   });
   it('edits volume, fade-in and fade-out for a voice/BGM selection from one standard', () => {
     // The timeline reports the whole voice/music set, captions excluded: they own the font stepper.
@@ -1494,25 +1516,19 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('--parameter-accent: #2563eb;');
     expect(pageSource).toContain('--parameter-field-background: #ffffff;');
   });
-  it('shows stale packaging on its project card without overlaying expiration badges on timeline clips', () => {
-    // Nulling the prop on staleness is what used to empty the caption and audio lanes the moment a
-    // lane moved: those packaged clips are the arrangement the user is looking at, so they stay put.
+  it('keeps completed packaging attached and editable after picture edits without expiry labels', () => {
     expect(pageSource).toContain(':packaging="selectedPackaging"');
-    expect(pageSource).not.toContain(
-      ':packaging="selectedPackaging?.stale ? null : selectedPackaging"',
-    );
-    // Stale geometry remains editable because the checkpoint is a user-owned frozen snapshot.
     expect(pageSource).toContain(
       "selectedPackaging.value?.status === 'COMPLETED' && !projectEditLocked.value",
     );
     expect(pageSource).not.toContain('时间轴已改变，当前包装已过期，请重新生成包装后再编辑');
-    // Staleness is shown once on the project card. The editable timeline itself stays visually clean.
+    expect(pageSource).not.toContain('project-expired-badge');
+    expect(pageSource).not.toContain('@stale-variants=');
+    expect(packagingSource).not.toContain('staleVariants');
+    expect(packagingSource).not.toContain('packagingSourceMatches');
     expect(timelineSource).toContain(
       "() => !props.readOnly && props.packaging?.status === 'COMPLETED',",
     );
-    expect(pageSource).toContain('class="project-expired-badge"');
-    expect(pageSource).toContain('@stale-variants="onStalePackagingVariants"');
-    expect(packagingSource).toContain("emit('staleVariants', variantIds)");
     expect(timelineSource).not.toContain('clip-stale-badge');
     expect(timelineSource).not.toContain('is-stale');
     expect(timelineSource).not.toContain('.caption-clip.is-stale,\n.audio-clip.is-stale {');

@@ -12,7 +12,6 @@ import {
 import { createPackagingPoller, packagingPollErrorMessage } from './effect-packaging-poller';
 import type { PackagingStage } from './effect-packaging-progress';
 import { packagingPlaybackError } from './effect-packaging-audio';
-import { packagingSourceMatches } from './effect-packaging-source';
 import {
   PACKAGING_STAGES,
   PACKAGING_STAGE_LABELS,
@@ -56,8 +55,6 @@ const emit = defineEmits<{
   status: [status: PackagingRun['status'] | null];
   /** Films whose packaging failed; they will still be submitted, playing picture only. */
   failures: [failures: { variantId: string; name: string; message: string }[]];
-  /** Films whose saved packaging no longer matches their source; reported for the project list. */
-  staleVariants: [variantIds: string[]];
 }>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const visible = ref(false),
@@ -133,11 +130,8 @@ const statusLabel: Record<string, string> = {
   CANCELLED: '已取消',
 };
 function currentItem(item: PackagingItem): PackagingItem {
-  const variant = props.variants.find((v) => v.id === item.variantId);
-  return {
-    ...item,
-    stale: item.stale || !variant || !packagingSourceMatches(item.sourceVisualTimeline, variant),
-  };
+  // Once generated, a package is the user's editable draft. Source/timeline changes do not expire it.
+  return item;
 }
 const selected = computed(() => {
   const item = runs.value
@@ -147,14 +141,6 @@ const selected = computed(() => {
   if (!item || !variant) return null;
   return currentItem(item);
 });
-const staleVariantIds = computed(() =>
-  props.variants.flatMap((variant) => {
-    const item = runs.value.flatMap((packagingRun) => packagingRun.items)
-      .find((packagingItem) => packagingItem.variantId === variant.id);
-    return item && currentItem(item).stale ? [variant.id] : [];
-  }),
-);
-watch(staleVariantIds, (variantIds) => emit('staleVariants', variantIds), { immediate: true });
 const selectedVariant = computed(() =>
   props.variants.find((variant) => variant.id === props.selectedVariantId),
 );
@@ -178,9 +164,6 @@ type Conclusion = 'PACKAGED' | 'FAILED' | 'PENDING';
 function conclusion(variant: EffectTemplateMixVariant): { state: Conclusion; item?: PackagingItem } {
   const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === variant.id);
   if (!item) return { state: 'PENDING' };
-  // A stale source cannot be newly submitted, but already-produced output remains available on its
-  // own output card with a non-blocking stale marker.
-  if (currentItem(item).stale || packagingSlotBoundaryError(variant)) return { state: 'PENDING' };
   if (item.status === 'COMPLETED')
     return item.checkpoint.narrationLayoutVersion === 'SLOT_V1'
       ? { state: 'PACKAGED', item }
@@ -314,7 +297,7 @@ async function create() {
       if (context.generation !== generation) return;
       pendingCreate = null;
       // A fork happened before the task was queued: the new Run owns this packaging run, and the
-      // editor must reload there or it would keep reading the published Run's packaging.
+      // editor must switch its data there or it would keep reading the published Run's packaging.
       if (response.data.workflowRunId !== context.workflowRunId) {
         emit('runChange', response.data.workflowRunId);
         return;
@@ -348,8 +331,7 @@ const captionVoiceElement = ref<HTMLAudioElement | null>(null);
 const playbackBlocked = reactive({ MUSIC: false, VOICE: false, CAPTION_VOICE: false });
 const previewAvailable = computed(() => {
   const item = selected.value;
-  // Stale only describes the saved visual snapshot. It must not silence already-generated audio
-  // while the user is editing the timeline.
+  // A completed package remains audible while the user edits its visual timeline.
   return Boolean(
     (item && item.status === 'COMPLETED') ||
     selectedVariant.value?.voice ||
@@ -886,7 +868,7 @@ onBeforeUnmount(() => {
       </button>
       <button
         v-else-if="run && ['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status)"
-        :disabled="busy || active || run.items.some((i) => i.status !== 'COMPLETED' && i.stale)"
+        :disabled="busy || active"
         type="button"
         @click="command('retry')"
       >
