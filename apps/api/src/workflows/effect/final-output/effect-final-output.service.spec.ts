@@ -1,6 +1,7 @@
 import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   EffectTemplateMixVariant,
@@ -387,7 +388,7 @@ describe('atomic full packaging completion', () => {
       expect(items[0]!.snapshot.unpackaged).toBe(false);
     },
   );
-  it('keeps a confirmed package usable after the source timeline changes', async () => {
+  it('keeps a completed package usable after its source timeline changes', async () => {
     const { service, rows, working } = harness();
     rows[0]!.status = 'FAILED';
     rows[0]!.sourceTimelineHash = 'hash-of-an-older-timeline';
@@ -445,9 +446,10 @@ describe('atomic full packaging completion', () => {
     outputRun.status = 'COMPLETED';
     const result = await service.get('p', 'out');
     expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({ id: 'film-item', status: 'COMPLETED', stale: true });
+    expect(result.items[0]).toMatchObject({ id: 'film-item', status: 'COMPLETED' });
+    expect(result.items[0]?.stale).toBe(true);
   });
-  it('still refuses changed draft and missing files before any commit', async () => {
+  it('still refuses changed draft and missing files but accepts changed source revisions', async () => {
     const { service, db, sources, working } = harness();
     // The draft revision is read twice: once to plan outside the lock, once under the row lock. A save
     // that lands between the two is exactly what the second read is there to catch.
@@ -456,9 +458,12 @@ describe('atomic full packaging completion', () => {
       .mockResolvedValueOnce({ revision: 2 });
     await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('草稿');
     db.workflowNodeState.findUnique.mockResolvedValue({ revision: 1 });
+    sources[0]!.revision = 2;
+    await expect(service.upsertFromPackaging('p', 'w', 't')).resolves.toBeUndefined();
+    sources[0]!.revision = 1;
     db.fileObject.findMany.mockResolvedValue([]);
     await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('文件');
-    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalled();
   });
   it('rejects unsupported fact IDs without adding AI review', async () => {
     const { service, rows, working } = harness();
@@ -646,6 +651,9 @@ describe('atomic full packaging completion', () => {
   it('freezes resolution and frame rate and enqueues only after explicit export', async () => {
     const { service, db, outputRun } = harness();
     await service.upsertFromPackaging('p', 'w', 't');
+    // This fixture has no live draft bindings; the export test covers settings, not draft drift.
+    vi.spyOn(service as unknown as { draftDiffersFromSnapshot: (...args: unknown[]) => boolean },
+      'draftDiffersFromSnapshot').mockReturnValue(false);
     await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
     expect(db.effectFinalOutputRun.update).toHaveBeenCalledWith({
       where: { id: 'out' },
@@ -658,6 +666,18 @@ describe('atomic full packaging completion', () => {
     expect(outputRun.status).toBe('QUEUED');
     // An in-flight batch is the one thing a re-export must not touch.
     await expect(service.start('p', 'out', { resolution: '480p', frameRate: 24 })).rejects.toThrow('不能修改');
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it('allows the user to export a package snapshot after editing the draft', async () => {
+    const { service, db, working } = harness();
+    await service.upsertFromPackaging('p', 'w', 't');
+    vi.spyOn(service as unknown as { draftDiffersFromSnapshot: (...args: unknown[]) => boolean },
+      'draftDiffersFromSnapshot').mockReturnValue(true);
+    await expect(service.start('p', 'out', { resolution: '720p', frameRate: 30 })).resolves.toBeDefined();
+    expect(working.beginEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'FINAL_OUTPUT', 'BATCH', {
+      always: true,
+      templateId: 't',
+    });
     expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
   });
   it.each(['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'])(
@@ -735,9 +755,37 @@ describe('atomic full packaging completion', () => {
       parentWorkflowRunId: 'w',
       branchPublishedAt: null,
       editSessionNodeId: 'TEMPLATE_MIX',
+      forkNodeId: 'TEMPLATE_MIX',
     });
     await service.upsertFromPackaging('p', 'w', 't');
     expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'TEMPLATE_MIX');
+  });
+  it('publishes a mix branch that was opened without an edit session', async () => {
+    const { service, db, working } = harness();
+    // Regenerating opens the branch itself: there is no session to recognise it by, so the fork it
+    // was created for is what says the branch belongs to this node.
+    db.workflowRun.findFirst.mockResolvedValue({
+      parentWorkflowRunId: 'w',
+      branchPublishedAt: null,
+      editSessionNodeId: null,
+      forkNodeId: 'TEMPLATE_MIX',
+    });
+    await service.upsertFromPackaging('p', 'w', 't');
+    expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'TEMPLATE_MIX');
+  });
+  it('leaves a partially packaged batch unpublished while still queueing its films', async () => {
+    const { service, db, working } = harness();
+    db.workflowRun.findFirst.mockResolvedValue({
+      parentWorkflowRunId: 'w',
+      branchPublishedAt: null,
+      editSessionNodeId: null,
+      forkNodeId: 'TEMPLATE_MIX',
+    });
+    // The films the run did package are still worth exporting, so the queue is fed; the branch only
+    // appears once the failed ones are recovered in the packaging panel and the batch finishes whole.
+    await service.upsertFromPackaging('p', 'w', 't', { publish: false });
+    expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalled();
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
   });
   it('leaves a published or unrelated Run alone when the mix validation finishes', async () => {
     const { service, db, working } = harness();
@@ -745,6 +793,7 @@ describe('atomic full packaging completion', () => {
       parentWorkflowRunId: 'w',
       branchPublishedAt: null,
       editSessionNodeId: 'FINAL_OUTPUT',
+      forkNodeId: 'FINAL_OUTPUT',
     });
     await service.upsertFromPackaging('p', 'w', 't');
     expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
@@ -1027,6 +1076,10 @@ describe('re-render overwrites the previous artifact in place', () => {
 /** An exported batch whose delivery manifest can actually be written. */
 async function delivered(count = 2) {
   const context = await exportedRun(count);
+  // Delivery fixtures intentionally omit the live material bindings; they test file and manifest
+  // integrity, while draft-picture drift is covered by the queue synchronization tests.
+  vi.spyOn(context.service as unknown as { draftDiffersFromSnapshot: (...args: unknown[]) => boolean },
+    'draftDiffersFromSnapshot').mockReturnValue(false);
   const { db, mix, working } = context;
   const items = context.items;
   const variants = items.map(
@@ -1170,6 +1223,35 @@ describe('saved mix drafts re-sync only the unexported output queue', () => {
       where: { projectId: 'p', id: 'item-0', status: 'PENDING_RENDER' },
     });
   });
+
+  it('rejects a late sync for an older draft revision without touching the queue', async () => {
+    const { service, db, run } = await localUpdateHarness(false);
+    run.status = 'PENDING_RENDER';
+    db.workflowRun.findFirst.mockResolvedValue({ id: 'w' });
+    db.workflowNodeState.findUnique.mockResolvedValue({ revision: 3 });
+    const result = await service.syncFromDraft('p', 'w',
+      { templateId: 't', expectedDraftRevision: 2 });
+    expect(result).toEqual({ refreshed: [], superseded: true });
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps old audio attached when a saved visual edit changes the source', async () => {
+    const { service, db, mix, run, workspace, variant } = await localUpdateHarness(false);
+    run.status = 'PENDING_RENDER';
+    variant.offsets.s = 1;
+    db.workflowRun.findFirst.mockResolvedValue({ id: 'w' });
+    db.workflowNodeState.findUnique.mockResolvedValue({ revision: 2 });
+    db.effectFinalOutputItem.findFirst.mockResolvedValue({ id: 'item-0' });
+    // The active draft revision must match both the initial read and the row-locked write.
+    mix.workspace.mockResolvedValue({ ...workspace, draftRevision: 2 });
+    const result = await service.syncFromDraft('p', 'w',
+      { templateId: 't', expectedDraftRevision: 2 });
+    expect(result).toEqual({ refreshed: [{ templateId: 't', itemCount: 1 }] });
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'item-0' },
+      data: expect.objectContaining({ status: 'PENDING_RENDER' }),
+    }));
+  });
 });
 
 describe('local update', () => {
@@ -1248,7 +1330,7 @@ describe('local update', () => {
     const gone = await localUpdateHarness();
     gone.workspace.draft!.templates[0]!.workspace.variants = [];
     await expect(gone.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('已不在当前成片工程中');
-    // A slot that can no longer be cut at all is the same answer: the picture has to be re-packaged.
+    // A missing source file is a real rendering error, not a semantic package-expiry decision.
     const broken = await localUpdateHarness();
     broken.workspace.materials = [];
     await expect(broken.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('当前画面素材不可用');
@@ -1325,13 +1407,20 @@ async function localUpdateHarness(withOutputVersion = true) {
       dependencies: [],
     },
     ...((items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot.dependencies ?? []).map((dependency) => ({
-      id: dependency.artifactId, artifactKey: dependency.artifactId, nodeId: 'TEMPLATE_MIX',
-      revision: dependency.revision, contentHash: dependency.contentHash,
-      freshness: 'CURRENT', availability: 'AVAILABLE', dependencies: [],
+      id: dependency.artifactId,
+      artifactKey: dependency.artifactId,
+      nodeId: 'TEMPLATE_MIX',
+      revision: dependency.revision,
+      contentHash: dependency.contentHash,
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
+      dependencies: [],
     })),
-    ...(withOutputVersion ? [{ id: 'delivery', artifactKey: 'final-delivery:t',
-      nodeId: 'FINAL_OUTPUT', revision: 1, contentHash: 'delivery-hash',
-      freshness: 'CURRENT', availability: 'AVAILABLE', dependencies: [] }] : []),
+    ...(withOutputVersion ? [{
+      id: 'delivery', artifactKey: 'final-delivery:t', nodeId: 'FINAL_OUTPUT',
+      revision: 1, contentHash: 'delivery-hash', freshness: 'CURRENT',
+      availability: 'AVAILABLE', dependencies: [],
+    }] : []),
   ];
   context.db.workingArtifact.findMany.mockResolvedValue(artifacts);
   // The workbench exit reads through the repository, the local update through the transaction client.

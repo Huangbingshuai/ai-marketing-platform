@@ -50,7 +50,7 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain(
       "import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';",
     );
-    // Export / re-export, single-item re-render and 局部更新 each ask before touching the batch.
+    // Export, single-item re-render and local update each ask before touching output files.
     expect(pageSource.match(/requestActionConfirmation\(/gu)).toHaveLength(3);
   });
 
@@ -82,11 +82,20 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain('.status-pill.unpackaged {');
   });
 
-  it('keeps stale films visible and labels each one without disabling export controls', () => {
+  it('keeps delivered films available without an expiry marker', () => {
     expect(pageSource).toContain('run: outputRun,');
     expect(pageSource).toContain('v-if="item.stale" class="status-pill stale"');
     expect(pageSource).toContain('待更新</span>');
     expect(pageSource).toContain('.status-pill.stale {');
+    expect(pageSource).toContain('v-if="item.fileObjectId"');
+  });
+
+  it('reconciles missed pending-draft updates on entry without starting a render', () => {
+    expect(pageSource).toContain('async function reconcilePending()');
+    expect(pageSource).toContain('expectedDraftRevision: workspace.draftRevision');
+    expect(pageSource).toContain('void reconcilePending();');
+    expect(pageSource).toContain("new BroadcastChannel('effect-final-output-sync')");
+    expect(pageSource).toContain('outputSyncChannel?.close()');
   });
 
   it('follows the fork a re-export opened instead of reading the published batch', () => {

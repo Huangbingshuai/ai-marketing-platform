@@ -20,7 +20,6 @@ export function packagingStageSamples(items: PackagingItem[], stage: PackagingSt
   };
 
   for (const item of items) {
-    if (item.stale) continue;
     const checkpoint = item.checkpoint;
     const slotLabel = (slotId?: string) =>
       item.sourceVisualTimeline.slots.find((slot) => slot.id === slotId)?.label ?? '镜头';
@@ -178,26 +177,6 @@ export function currentPackagingRun(runs: PackagingRun[]) {
   return runs.find((run) => ['QUEUED', 'RUNNING'].includes(run.status)) ?? runs[0];
 }
 
-/** Keep the persistent template lock, while describing the actual packaging-run state. */
-export function packagingLockMessage(status: PackagingRun['status'] | null) {
-  switch (status) {
-    case 'QUEUED':
-      return '智能成片包装已排队，模板配置和成片工程暂时锁定；新建空成片不会加入本次任务。';
-    case 'RUNNING':
-      return '智能成片包装正在进行，模板配置和成片工程暂时锁定；新建空成片不会加入本次任务。';
-    case 'COMPLETED':
-      return '智能成片包装已完成，模板槽位配置和智能填充已锁定，音色仍可切换；仍可新建并手工精修成片。';
-    case 'PARTIAL':
-      return '智能成片包装部分完成，模板槽位配置和智能填充已锁定，音色仍可切换；可恢复失败项或继续精修成片。';
-    case 'FAILED':
-      return '智能成片包装已失败，模板槽位配置和智能填充已锁定，音色仍可切换；可查看失败原因并继续精修成片。';
-    case 'CANCELLED':
-      return '智能成片包装已取消，模板槽位配置和智能填充已锁定，音色仍可切换；可查看任务状态并继续精修成片。';
-    default:
-      return '模板槽位配置和智能填充已锁定，音色仍可切换，正在读取包装状态…';
-  }
-}
-
 /**
  * A run that is no longer queued or running has already produced (or attempted) a package, so the
  * action is a rerun — including a partial or failed one, where running it again is the only way
@@ -233,19 +212,18 @@ export function packagingStageState(items: PackagingItem[], stage: PackagingStag
   const counts = { completed: 0, failed: 0, running: 0, cancelled: 0, blocked: 0, waiting: 0 };
   for (const item of items) counts[packagingItemStageState(item, stage)]++;
   const { completed, failed, running, cancelled, blocked, waiting } = counts;
-  const stale = items.filter((item) => item.stale).length;
-  const tone = running ? 'running' : failed || stale ? 'danger'
+  const tone = running ? 'running' : failed ? 'danger'
     : items.length && completed === items.length ? 'success' : 'waiting';
   const label = running ? (failed ? `执行中 · ${failed} 条失败` : '执行中')
-    : failed ? `${failed} 条失败` : stale ? '来源待更新'
+    : failed ? `${failed} 条失败`
       : tone === 'success' ? '已完成' : cancelled ? '已取消'
         : blocked && !waiting ? '前序受阻' : completed ? '部分完成' : '等待中';
   const summary = [
     running && `执行中 ${running}`, failed && `失败 ${failed}`,
     waiting && `等待 ${waiting}`, blocked && `前序受阻 ${blocked}`,
-    cancelled && `取消 ${cancelled}`, stale && `来源待更新 ${stale}`,
+    cancelled && `取消 ${cancelled}`,
   ].filter(Boolean).join(' · ');
-  return { ...counts, stale, tone, label, summary };
+  return { ...counts, tone, label, summary };
 }
 
 /** Mechanical phase completion only; never estimate model time or advance on a timer. */

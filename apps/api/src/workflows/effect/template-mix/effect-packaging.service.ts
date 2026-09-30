@@ -145,8 +145,11 @@ export class EffectPackagingService {
 
   /**
    * The worker's finish callback. A finished package puts its films straight into the output node's
-   * queue and publishes the mix branch, so they are ready for export without a validation step. The
-   * sync is best-effort: a draft that moved on while the worker ran must not fail the worker.
+   * queue, so they are ready for export without a validation step. Only a batch that packaged every
+   * film publishes the mix branch: the films a partial run failed on have to be recovered in the
+   * packaging panel first, and retrying reuses this very run, so the branch appears once it is whole
+   * instead of showing a version the user never got. The sync is best-effort: a draft that moved on
+   * while the worker ran must not fail the worker.
    */
   async finish(projectId: string, runId: string, token: string) {
     const result = await this.repo.finish(projectId, runId, token);
@@ -156,6 +159,7 @@ export class EffectPackagingService {
           projectId,
           result.workflowRunId,
           result.templateId,
+          { publish: result.status === 'COMPLETED' },
         );
       } catch (error) {
         this.logger.warn(
@@ -400,21 +404,14 @@ export class EffectPackagingService {
     const run = await this.repo.get(projectId, id);
     if (!run) throw new NotFoundException('包装任务不存在');
     const workspace = await this.mix.workspace(projectId, run.workflowRunId);
-    const artifacts = (
-      await this.working.listArtifacts(projectId, { workflowRunId: run.workflowRunId })
-    ).items;
-    return this.present(run, workspace, artifacts);
+    return this.present(run, workspace);
   }
   private presentItems(
     run: PackagingRunRow,
     workspace: EffectTemplateMixWorkspaceData,
-    artifacts: WorkingArtifact[],
   ): PackagingItem[] {
-    const variants =
-      workspace.draft.templates.find((t) => t.id === run.templateId)?.workspace.variants ?? [];
     return run.items.map((i) => {
       const snapshot = i.snapshot as unknown as PackagingSnapshot;
-      const variant = variants.find((v) => v.id === i.variantId);
       const checkpoint = { ...(i.checkpoint as PackagingCheckpoint) };
       delete checkpoint.musicTaskId;
       delete checkpoint.musicSubmissionPending;
@@ -454,19 +451,6 @@ export class EffectPackagingService {
         stage: i.stage as PackagingStage,
         status: i.status as PackagingRun['status'],
         checkpoint,
-        stale:
-          !variant ||
-          !matchesVisualHash(variant, i.sourceTimelineHash, snapshot.variant) ||
-          snapshot.dependencies.some(
-            (d) =>
-              !artifacts.some(
-                (a) =>
-                  a.id === d.artifactId &&
-                  a.revision === d.revision &&
-                  a.freshness === 'CURRENT' &&
-                  a.availability === 'AVAILABLE',
-              ),
-          ),
         errorMessage: i.errorMessage,
         startedAt: i.startedAt?.toISOString() ?? null,
         completedAt: i.completedAt?.toISOString() ?? null,
@@ -477,9 +461,8 @@ export class EffectPackagingService {
   private present(
     run: PackagingRunRow,
     workspace: EffectTemplateMixWorkspaceData,
-    artifacts: WorkingArtifact[],
   ): PackagingRun {
-    const items = this.presentItems(run, workspace, artifacts);
+    const items = this.presentItems(run, workspace);
     return {
       id: run.id,
       templateId: run.templateId,
@@ -505,7 +488,6 @@ export class EffectPackagingService {
         total: items.length,
         completed: items.filter((i) => i.status === 'COMPLETED').length,
         failed: items.filter((i) => i.status === 'FAILED').length,
-        stale: items.filter((i) => i.stale).length,
         shards: new Set(items.map((i) => i.shardIndex)).size,
       },
     };
@@ -517,14 +499,11 @@ export class EffectPackagingService {
     if (!raw || !item) throw new NotFoundException('包装成片不存在');
     if (item.status !== 'COMPLETED') throw new ConflictException('包装尚未完成，无法编辑音频');
     const workspace = await this.mix.workspace(projectId, raw.workflowRunId);
-    const artifacts = (
-      await this.working.listArtifacts(projectId, { workflowRunId: raw.workflowRunId })
-    ).items;
     const snapshot = item.snapshot as unknown as PackagingSnapshot;
     const entry = workspace.draft.templates.find((t) => t.id === raw.templateId);
     const variant = entry?.workspace.variants.find((v) => v.id === item.variantId);
     if (!entry || !variant) throw new ConflictException('对应的混剪工程不存在，无法编辑音频');
-    return { raw, item, snapshot, workspace, artifacts, entry, variant };
+    return { raw, item, snapshot, workspace, entry, variant };
   }
   /** Editor audio edits: only geometry/volume are trusted, never the client's file identity. */
   async updateAudio(
@@ -533,7 +512,7 @@ export class EffectPackagingService {
     itemId: string,
     body: UpdatePackagingAudioRequest,
   ): Promise<PackagingItem> {
-    const { raw, item, snapshot, workspace, artifacts } = await this.editableItem(
+    const { raw, item, snapshot, workspace } = await this.editableItem(
       projectId,
       runId,
       itemId,
@@ -685,7 +664,7 @@ export class EffectPackagingService {
     if (captionBoxes) next.captionBoxes = captionBoxes;
     validatePackagingCheckpoint(snapshot, next, true, true);
     const saved = await this.repo.updateCheckpoint(projectId, itemId, next, body.expectedUpdatedAt);
-    return this.presentItems({ ...raw, items: [saved] }, workspace, artifacts)[0]!;
+    return this.presentItems({ ...raw, items: [saved] }, workspace)[0]!;
   }
   /**
    * Ask the worker to speak one caption's text again with the template's current voice.
@@ -825,12 +804,11 @@ export class EffectPackagingService {
     }
   }
   async list(projectId: string, workflowRunId: string, templateId: string) {
-    const [workspace, artifacts, runs] = await Promise.all([
+    const [workspace, runs] = await Promise.all([
       this.mix.workspace(projectId, workflowRunId),
-      this.working.listArtifacts(projectId, { workflowRunId }),
       this.repo.list(projectId, workflowRunId, templateId),
     ]);
-    return runs.map((run) => this.present(run, workspace, artifacts.items));
+    return runs.map((run) => this.present(run, workspace));
   }
   async retry(projectId: string, id: string) {
     const run = await this.get(projectId, id);
@@ -840,8 +818,6 @@ export class EffectPackagingService {
       )
     )
       throw new ConflictException('旧版任务不能恢复，请按槽位重新包装');
-    if (run.items.some((i) => i.status !== 'COMPLETED' && i.stale))
-      throw new ConflictException('源时间轴已改变，请创建新的包装任务');
     return this.repo.retry(projectId, id);
   }
   async workerItem(projectId: string, runId: string, token: string, itemId: string) {
@@ -856,13 +832,12 @@ export class EffectPackagingService {
         [...new Set(snapshot.dependencies.map((dependency) => dependency.artifactId))]),
     ]);
     if (!variant ||
-      !matchesVisualHash(variant, item.sourceTimelineHash, snapshot.variant) ||
       snapshot.dependencies.some((dependency) => !artifacts.some((artifact) =>
         artifact.id === dependency.artifactId &&
         artifact.revision === dependency.revision &&
         artifact.freshness === 'CURRENT' &&
         artifact.availability === 'AVAILABLE')))
-      throw new ConflictException('源时间轴已改变，本条包装已过期');
+      throw new ConflictException('包装执行期间输入工程发生变化，请重新发起包装');
     return { run, item, snapshot };
   }
   async checkpoint(
@@ -1069,26 +1044,9 @@ export class EffectPackagingService {
     const packaging = artifacts.find(
       (a) => a.artifactKey === `timeline-package:${templateId}:${variantId}`,
     );
-    const payload = packaging?.payload as
-      | { sourceTimelineHash?: string; visualArtifactId?: string; visualRevision?: number }
-      | undefined;
-    if (
-      !variant ||
-      !visual ||
-      !packaging ||
-      visual.freshness !== 'CURRENT' ||
-      packaging.freshness !== 'CURRENT' ||
-      visual.availability !== 'AVAILABLE' ||
-      packaging.availability !== 'AVAILABLE' ||
-      !matchesVisualHash(
-        variant,
-        payload?.sourceTimelineHash,
-        (visual.payload as { variant?: EffectTemplateMixVariant } | undefined)?.variant,
-      ) ||
-      payload?.visualArtifactId !== visual.id ||
-      payload?.visualRevision !== visual.revision
-    )
-      throw new ConflictException('画面或包装未确认、已过期；成片输出不可消费');
+    if (!variant || !visual || !packaging ||
+      visual.availability !== 'AVAILABLE' || packaging.availability !== 'AVAILABLE')
+      throw new ConflictException('画面工程或包装工程不可用；成片输出不可消费');
     if ((packaging.payload as PackagingCheckpoint).narrationLayoutVersion !== 'SLOT_V1')
       throw new ConflictException('旧版整片口播仅可播放，请按槽位重新包装后进入成片输出');
     return { visual, packaging };

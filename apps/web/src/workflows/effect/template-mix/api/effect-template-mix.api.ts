@@ -6,6 +6,7 @@ import type {
   EffectTemplateMixWorkspaceData,
   PackagingItem,
   SyncFinalOutputData,
+  SyncFinalOutputRequest,
   UpdatePackagingAudioRequest,
   ValidateEffectTemplateMixData,
 } from '@ai-marketing/contracts';
@@ -151,13 +152,12 @@ export const validateEffectTemplateMix = (
 export const syncEffectFinalOutput = (
   projectId: string,
   workflowRunId: string,
-  expectedDraftRevision?: number,
-  templateId?: string,
+  options: Pick<SyncFinalOutputRequest, 'templateId' | 'expectedDraftRevision'> = {},
 ): Promise<ApiResponse<SyncFinalOutputData>> =>
   requestJson('/projects/' + encodeURIComponent(projectId) + '/workflows/effect/final-output/sync', {
     method: 'POST',
     operation: '同步成片待渲染区',
-    body: { workflowRunId, expectedDraftRevision, templateId },
+    body: { workflowRunId, ...options },
   });
 
 /**
