@@ -89,6 +89,7 @@ import {
   updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
 import { apiUrl } from '../../../api/http-client';
+import { resolveEffectTemplateMixMaterialRoles } from '@ai-marketing/contracts';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
@@ -221,7 +222,7 @@ const clearTransitionPreviews = (): void => {
     delete transitionPreviewDurations[slotId];
   });
 };
-const materialRoleFilter = ref<'ALL' | EffectTemplateMixRole>('ALL');
+const materialRoleFilter = ref<'UNASSIGNED' | EffectTemplateMixRole>('UNASSIGNED');
 const materialPage = ref(1);
 const draggingMaterialId = ref('');
 const materialPointerDrag = ref<{
@@ -335,7 +336,7 @@ const resetWorkbenchDefaults = (): void => {
   resourceTab.value = 'MATERIAL';
   keyword.value = '';
   transitionKeyword.value = '';
-  materialRoleFilter.value = 'ALL';
+  materialRoleFilter.value = preferredMaterialRole.value;
   materialPage.value = 1;
   activeTransitionSlotId.value = '';
   clearTransitionPreviews();
@@ -644,14 +645,19 @@ const selectedMaterial = computed(() =>
 );
 const slotMoveSourceLabel = computed(() => {
   const materialId = slotMoveMaterial.value?.id;
-  const variant = selectedVariant.value;
-  return variant?.slots.find((slot) => variant.bindings[slot.id] === materialId)?.label || '未分配';
+  const role = materialId ? bestClassificationByMaterial.value.get(materialId)?.role : undefined;
+  return role ? EFFECT_TEMPLATE_MIX_ROLE_LABELS[role] : '待归槽';
 });
 const slotMoveOptions = computed(() => {
-  const variant = selectedVariant.value;
-  return variant
-    ? variant.slots.map((slot) => ({ slot, materialId: variant.bindings[slot.id] ?? '' }))
-    : [];
+  return (workspace.value?.template.slots ?? []).map((slot) => ({
+    slot,
+    selected: slotMoveMaterial.value
+      ? bestClassificationByMaterial.value.get(slotMoveMaterial.value.id)?.role === slot.role
+      : false,
+    tooShort: Boolean(
+      slotMoveMaterial.value && slotMoveMaterial.value.duration + 0.001 < slot.duration,
+    ),
+  }));
 });
 const materialUsageLabel = (materialId: string): string => {
   const variant = selectedVariant.value;
@@ -991,37 +997,35 @@ const activeClassificationPool = computed(
     classificationPools.value.find(({ templateId }) => templateId === activeTemplateId.value) ??
     null,
 );
-const classificationByRoleAndMaterial = computed(
-  () =>
-    new Map(
-      (activeClassificationPool.value?.items ?? []).map((item) => [
-        `${item.role}:${item.materialId}`,
-        item,
-      ]),
-    ),
+const bestClassificationByMaterial = computed(() =>
+  resolveEffectTemplateMixMaterialRoles(
+    activeClassificationPool.value?.items ?? [],
+    activeEntry.value?.materialRoleOverrides,
+  ),
 );
-const bestClassificationByMaterial = computed(() => {
-  const result = new Map<string, EffectTemplateMixClassificationPool['items'][number]>();
-  for (const item of activeClassificationPool.value?.items ?? []) {
-    const current = result.get(item.materialId);
-    if (!current || item.matchScore > current.matchScore) result.set(item.materialId, item);
-  }
-  return result;
-});
 const classificationForMaterial = (materialId: string) =>
-  materialRoleFilter.value === 'ALL'
-    ? bestClassificationByMaterial.value.get(materialId)
-    : classificationByRoleAndMaterial.value.get(`${materialRoleFilter.value}:${materialId}`);
+  bestClassificationByMaterial.value.get(materialId);
+const unassignedMaterialCount = computed(
+  () =>
+    availableMaterials.value.filter(({ id }) => !bestClassificationByMaterial.value.has(id)).length,
+);
 const materialRoleOptions = computed(() =>
   (workspace.value?.template.slots ?? []).map(({ role }) => ({
     role,
     label: EFFECT_TEMPLATE_MIX_ROLE_LABELS[role],
-    count: activeClassificationPool.value?.items.filter((item) => item.role === role).length ?? 0,
+    count: availableMaterials.value.filter(
+      ({ id }) => bestClassificationByMaterial.value.get(id)?.role === role,
+    ).length,
   })),
 );
-const selectMaterialRole = (role: 'ALL' | EffectTemplateMixRole): void => {
+const preferredMaterialRole = computed<'UNASSIGNED' | EffectTemplateMixRole>(() =>
+  unassignedMaterialCount.value
+    ? 'UNASSIGNED'
+    : (materialRoleOptions.value.find((option) => option.count > 0)?.role ?? 'UNASSIGNED'),
+);
+const selectMaterialRole = (role: 'UNASSIGNED' | EffectTemplateMixRole): void => {
   materialRoleFilter.value = role;
-  if (role === 'ALL' || !activeUi.value) return;
+  if (role === 'UNASSIGNED' || !activeUi.value) return;
   const slot = selectedVariant.value?.slots.find((item) => item.role === role);
   if (slot) activeUi.value.selectedSlotId = slot.id;
 };
@@ -1033,17 +1037,48 @@ const compareMaterialsByName = (
   left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' }) ||
   left.code.localeCompare(right.code, 'zh-CN', { numeric: true, sensitivity: 'base' }) ||
   left.id.localeCompare(right.id);
+/** Keep bound artifact aliases for timeline lookup, but offer each physical video only once. */
+const availableMaterials = computed(() => {
+  const selectedPoolIds = new Set([
+    ...Object.keys(activeEntry.value?.materialRoleOverrides ?? {}),
+    ...(activeClassificationPool.value?.items ?? []).map(({ materialId }) => materialId),
+  ]);
+  const byFile = new Map<string, EffectTemplateMixMaterial>();
+  for (const material of workspace.value?.materials ?? []) {
+    if (!material.available) continue;
+    const fileId = material.fileObjectId || material.id;
+    const previous = byFile.get(fileId);
+    const rank = (id: string) =>
+      Object.prototype.hasOwnProperty.call(activeEntry.value?.materialRoleOverrides ?? {}, id)
+        ? 2
+        : selectedPoolIds.has(id)
+          ? 1
+          : 0;
+    if (!previous || rank(material.id) > rank(previous.id)) byFile.set(fileId, material);
+  }
+  return [...byFile.values()];
+});
+const expiredMaterialCount = computed(() => {
+  const availableFiles = new Set(
+    availableMaterials.value.map(({ fileObjectId, id }) => fileObjectId || id),
+  );
+  return new Set(
+    (workspace.value?.materials ?? [])
+      .filter(
+        ({ available, fileObjectId, id }) => !available && !availableFiles.has(fileObjectId || id),
+      )
+      .map(({ fileObjectId, id }) => fileObjectId || id),
+  ).size;
+});
 const filteredMaterials = computed(() => {
-  const slot = selectedSlot.value;
   if (!workspace.value) return [];
   const search = keyword.value.trim().toLocaleLowerCase('zh-CN');
-  return workspace.value.materials
+  return availableMaterials.value
     .filter(
       (item) =>
-        item.available &&
-        (materialRoleFilter.value === 'ALL' ||
-          classificationByRoleAndMaterial.value.has(`${materialRoleFilter.value}:${item.id}`)) &&
-        (!slot || item.duration + 0.001 >= slot.duration) &&
+        (materialRoleFilter.value === 'UNASSIGNED'
+          ? !bestClassificationByMaterial.value.has(item.id)
+          : bestClassificationByMaterial.value.get(item.id)?.role === materialRoleFilter.value) &&
         (!search || (item.name + item.code).toLocaleLowerCase('zh-CN').includes(search)),
     )
     .sort(compareMaterialsByName);
@@ -1061,17 +1096,6 @@ const displayedMaterials = computed(() => {
   const start = (safePage - 1) * materialPageSize.value;
   return filteredMaterials.value.slice(start, start + materialPageSize.value);
 });
-/**
- * Old clips remain in workspace data so existing timelines can still play them. The selectable
- * library and smart fill only expose confirmed current clips; otherwise the user would see old
- * material cards next to new renders and mistake them for eligible refill sources.
- */
-const availableMaterials = computed(
-  () => workspace.value?.materials.filter(({ available }) => available) ?? [],
-);
-const expiredMaterialCount = computed(
-  () => (workspace.value?.materials.length ?? 0) - availableMaterials.value.length,
-);
 /**
  * Smart fill gives every slot it has to fill a *distinct* current clip of at least the slot's length,
  * so "fewer current clips than slots" and "a slot longer than every current clip" are both certain
@@ -1316,10 +1340,7 @@ const openMaterialSlotPicker = async (
   material: EffectTemplateMixMaterial,
   event?: Event,
 ): Promise<void> => {
-  if (!selectedVariant.value) {
-    showNotice('请先创建成片工程，再更换素材槽位', 'warning');
-    return;
-  }
+  if (runSwitching.value || fillStartPending.value) return;
   if (event?.currentTarget instanceof HTMLElement) dialogTrigger.value = event.currentTarget;
   slotMoveMaterial.value = material;
   await nextTick();
@@ -1330,11 +1351,24 @@ const closeMaterialSlotPicker = async (): Promise<void> => {
   await nextTick();
   dialogTrigger.value?.focus();
 };
-const chooseMaterialSlot = async (slotId: string): Promise<void> => {
+const chooseMaterialSlot = async (role: EffectTemplateMixRole | null): Promise<void> => {
   const material = slotMoveMaterial.value;
-  if (!material) return;
-  moveMaterialToSlot(material, slotId);
+  const entry = activeEntry.value;
+  if (!material || !entry || runSwitching.value || fillStartPending.value) return;
+  const slot = role ? entry.workspace.template.slots.find((item) => item.role === role) : undefined;
+  if (role && (!slot || material.duration + 0.001 < slot.duration)) {
+    showNotice('素材短于目标槽位时长，请先调整模板时长', 'warning');
+    return;
+  }
+  entry.materialRoleOverrides = { ...entry.materialRoleOverrides, [material.id]: role };
+  saveState.value = 'dirty';
   await closeMaterialSlotPicker();
+  if (await persist())
+    showNotice(
+      role
+        ? `${material.code} 已归入${EFFECT_TEMPLATE_MIX_ROLE_LABELS[role]}`
+        : `${material.code} 已移回待归槽`,
+    );
 };
 const openWorkflowDialog = async (event?: Event): Promise<void> => {
   if (event?.currentTarget instanceof HTMLButtonElement)
@@ -3262,72 +3296,6 @@ const selectSlot = (id: string): void => {
   activeTransitionSlotId.value = '';
   clearTransitionPreviews();
   activeUi.value.selectedSlotId = id;
-};
-const moveMaterialToSlot = (material: EffectTemplateMixMaterial, targetSlotId: string): void => {
-  const variant = selectedVariant.value;
-  const targetSlot = variant?.slots.find(({ id }) => id === targetSlotId);
-  if (!variant || !targetSlot) return;
-  const sourceSlot = variant.slots.find(({ id }) => variant.bindings[id] === material.id) ?? null;
-  if (sourceSlot?.id === targetSlot.id) {
-    showNotice(`${material.code} 已经在${targetSlot.label}`, 'warning');
-    return;
-  }
-  const targetMaterialId = variant.bindings[targetSlot.id];
-  const targetMaterial = targetMaterialId
-    ? (workspace.value?.materials.find(({ id }) => id === targetMaterialId) ?? null)
-    : null;
-  if (!sourceSlot && targetMaterial) {
-    showNotice(`${targetSlot.label} 已有素材，请先选择一个空槽位`, 'warning');
-    return;
-  }
-  if (material.duration < targetSlot.duration) {
-    showNotice('素材短于目标槽位时长，请先缩短目标槽位', 'warning');
-    return;
-  }
-  if (sourceSlot && targetMaterial && targetMaterial.duration < sourceSlot.duration) {
-    showNotice('原目标素材不满足交换后的槽位时长，无法更换', 'warning');
-    return;
-  }
-  rememberTimelineEdit();
-  if (sourceSlot && targetMaterial) {
-    variant.bindings[sourceSlot.id] = targetMaterial.id;
-    variant.bindingRevisions[sourceSlot.id] = targetMaterial.artifactRevision;
-    variant.offsets[sourceSlot.id] = 0;
-    variant.bindingMetadata ??= {};
-    variant.bindingMetadata[sourceSlot.id] = {
-      source: 'MANUAL',
-      classificationReason: '人工交换素材槽位',
-    };
-    if (!variant.manualSlotIds.includes(sourceSlot.id)) variant.manualSlotIds.push(sourceSlot.id);
-  } else if (sourceSlot) {
-    delete variant.bindings[sourceSlot.id];
-    delete variant.bindingRevisions[sourceSlot.id];
-    delete variant.offsets[sourceSlot.id];
-    if (variant.bindingMetadata) delete variant.bindingMetadata[sourceSlot.id];
-    variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== sourceSlot.id);
-  }
-  clearDetachedAudioForSlots(variant, [targetSlot.id, ...(sourceSlot ? [sourceSlot.id] : [])]);
-  variant.bindings[targetSlot.id] = material.id;
-  variant.bindingRevisions[targetSlot.id] = material.artifactRevision;
-  variant.offsets[targetSlot.id] = 0;
-  variant.bindingMetadata ??= {};
-  variant.bindingMetadata[targetSlot.id] = {
-    source: 'MANUAL',
-    classificationReason: sourceSlot && targetMaterial ? '人工交换素材槽位' : '人工移动素材槽位',
-  };
-  if (!variant.manualSlotIds.includes(targetSlot.id)) variant.manualSlotIds.push(targetSlot.id);
-  variant.conflictSlotIds = variant.conflictSlotIds.filter(
-    (id) => id !== targetSlot.id && (!sourceSlot || id !== sourceSlot.id),
-  );
-  clearDetachedTransitions(variant);
-  if (activeUi.value) activeUi.value.selectedSlotId = targetSlot.id;
-  resetTimelinePlayerState();
-  bump();
-  showNotice(
-    sourceSlot && targetMaterial
-      ? `已将${material.name}与${targetSlot.label}素材交换槽位`
-      : `已将${material.name}移动到${targetSlot.label}`,
-  );
 };
 type TimelineVideoPaste = {
   materialId: string;
@@ -5475,7 +5443,9 @@ watch(
   () => [selectedSlot.value?.id, keyword.value, materialRoleFilter.value],
   () => (materialPage.value = 1),
 );
-watch(activeTemplateId, () => (materialRoleFilter.value = 'ALL'));
+watch([activeTemplateId, activeClassificationPool], () => {
+  materialRoleFilter.value = preferredMaterialRole.value;
+});
 watch(materialGrid, (element) => {
   materialGridResizeObserver?.disconnect();
   materialGridResizeObserver = null;
@@ -5930,16 +5900,12 @@ defineExpose({ flushPendingEdits });
               <label class="search"
                 ><Search :size="13" /><input v-model="keyword" placeholder="搜索素材或标签"
               /></label>
-              <div
-                v-if="activeClassificationPool"
-                class="material-role-filters"
-                aria-label="AI 归槽素材筛选"
-              >
+              <div class="material-role-filters" aria-label="素材归槽筛选">
                 <button
-                  :class="{ active: materialRoleFilter === 'ALL' }"
-                  @click="selectMaterialRole('ALL')"
+                  :class="{ active: materialRoleFilter === 'UNASSIGNED' }"
+                  @click="selectMaterialRole('UNASSIGNED')"
                 >
-                  全部 <small>{{ bestClassificationByMaterial.size }}</small>
+                  待归槽 <small>{{ unassignedMaterialCount }}</small>
                 </button>
                 <button
                   v-for="option in materialRoleOptions"
@@ -5986,8 +5952,16 @@ defineExpose({ flushPendingEdits });
                       <span
                         v-if="classificationForMaterial(material.id)"
                         class="material-ai-role"
-                        :class="{ low: classificationForMaterial(material.id)!.matchScore < 0.6 }"
-                        :title="`AI 归槽分 ${(classificationForMaterial(material.id)!.matchScore * 100).toFixed(0)}`"
+                        :class="{
+                          low:
+                            classificationForMaterial(material.id)!.source !== 'MANUAL' &&
+                            classificationForMaterial(material.id)!.matchScore < 0.6,
+                        }"
+                        :title="
+                          classificationForMaterial(material.id)!.source === 'MANUAL'
+                            ? '手动归槽，智能填充将保留此分类'
+                            : `AI 归槽分 ${(classificationForMaterial(material.id)!.matchScore * 100).toFixed(0)}`
+                        "
                       >
                         {{
                           EFFECT_TEMPLATE_MIX_ROLE_LABELS[
@@ -5995,6 +5969,7 @@ defineExpose({ flushPendingEdits });
                           ]
                         }}
                       </span>
+                      <span v-else class="material-ai-role low">待归槽</span>
                     </div>
                     <div class="material-card-actions">
                       <button
@@ -6009,8 +5984,8 @@ defineExpose({ flushPendingEdits });
                       <button
                         type="button"
                         class="material-action material-action-primary"
-                        :disabled="!selectedVariant"
-                        title="选择另一个素材槽位，可与目标槽位素材交换"
+                        :disabled="runSwitching || fillStartPending"
+                        title="设置素材用途，智能填充将保留此归槽"
                         @pointerdown.stop
                         @click.stop="openMaterialSlotPicker(material, $event)"
                       >
@@ -6027,6 +6002,20 @@ defineExpose({ flushPendingEdits });
                   下一页
                 </button>
               </footer>
+              <div v-else-if="availableMaterials.length" class="resource-empty">
+                <AlertCircle :size="24" /><b>此分类没有匹配素材</b>
+                <span>可切换其他分类，通过“更换槽位”调整素材归属。</span>
+                <button
+                  type="button"
+                  class="button"
+                  @click="
+                    keyword = '';
+                    selectMaterialRole(preferredMaterialRole);
+                  "
+                >
+                  查看有素材的分类
+                </button>
+              </div>
               <div v-else class="resource-empty">
                 <AlertCircle :size="24" /><b>没有可用素材</b
                 ><span>请回到视频渲染节点确认可用片段。</span>
@@ -6924,7 +6913,7 @@ defineExpose({ flushPendingEdits });
         </section>
       </div>
       <div
-        v-if="slotMoveMaterial && selectedVariant"
+        v-if="slotMoveMaterial"
         class="mask material-slot-mask"
         @mousedown.self="closeMaterialSlotPicker"
       >
@@ -6939,9 +6928,10 @@ defineExpose({ flushPendingEdits });
             <div>
               <h3 id="mix-material-slot-title">更换素材槽位</h3>
               <p>
-                {{ slotMoveMaterial.name }} 当前位于
+                {{ slotMoveMaterial.name }} 当前归入
                 {{ slotMoveSourceLabel }}
               </p>
+              <p>智能填充会保留归槽，已有成片工程保持原样。</p>
             </div>
             <button
               ref="slotMoveCloseButton"
@@ -6957,13 +6947,27 @@ defineExpose({ flushPendingEdits });
               v-for="option in slotMoveOptions"
               :key="option.slot.id"
               type="button"
-              :disabled="option.materialId === slotMoveMaterial.id"
-              @click="chooseMaterialSlot(option.slot.id)"
+              :disabled="option.selected || option.tooShort || runSwitching || fillStartPending"
+              @click="chooseMaterialSlot(option.slot.role)"
             >
               <span>
                 <strong>{{ option.slot.label }}</strong>
-                <small>{{ option.materialId ? '已有素材，将交换槽位' : '空槽位' }}</small>
+                <small>{{
+                  option.selected
+                    ? '当前分类'
+                    : option.tooShort
+                      ? `素材不足 ${option.slot.duration} 秒`
+                      : '智能填充时仅用于此槽位'
+                }}</small>
               </span>
+              <ArrowLeft :size="14" />
+            </button>
+            <button
+              type="button"
+              :disabled="slotMoveSourceLabel === '待归槽' || runSwitching || fillStartPending"
+              @click="chooseMaterialSlot(null)"
+            >
+              <span><strong>待归槽</strong><small>下次智能填充时由 AI 自动分类</small></span>
               <ArrowLeft :size="14" />
             </button>
           </main>
@@ -7632,25 +7636,28 @@ button:disabled {
   outline: 0;
 }
 .material-role-filters {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   flex: none;
-  gap: 5px;
+  min-width: 0;
+  gap: 6px;
   margin: 0 12px 8px;
 }
 .material-role-filters button {
   display: flex;
+  flex: 0 0 96px;
   align-items: center;
   justify-content: center;
-  min-width: 0;
+  width: 96px;
+  height: 30px;
+  box-sizing: border-box;
   gap: 4px;
-  min-height: 25px;
-  padding: 0 4px;
+  padding: 0 8px;
   border: 1px solid #dce5f0;
   border-radius: 5px;
   color: #52647e;
   background: #fff;
-  font-size: 9px;
+  font-size: 11px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -7663,7 +7670,7 @@ button:disabled {
 }
 .material-role-filters small {
   color: inherit;
-  font-size: 8px;
+  font-size: 10px;
 }
 .material-grid {
   display: grid;

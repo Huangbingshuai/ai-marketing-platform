@@ -191,6 +191,22 @@ class Consumer:
             else:
                 await report("CLASSIFYING", 10)
                 rows_by_id = {item.materialId: item for item in restored_rows}
+                manual_rows = [
+                    Classification.model_validate({
+                        "materialId": material_id,
+                        "source": "MANUAL",
+                        "scores": {role: int(role == assigned_role) for role in
+                                   ("HOOK", "PAIN_POINT", "PRODUCT", "SELLING_POINT", "TRANSFORMATION", "END")},
+                        "reasons": {assigned_role: "用户手动归槽"},
+                    })
+                    for material_id, assigned_role in snapshot.manualMaterialRoles.items()
+                    if material_id in {item.id for item in snapshot.materials}
+                ]
+                rows_by_id.update({item.materialId: item for item in manual_rows})
+                restored_ids = {item.materialId for item in restored_rows}
+                new_manual_rows = [item for item in manual_rows if item.materialId not in restored_ids]
+                if new_manual_rows:
+                    await self.api.checkpoint_classifications(runtime, new_manual_rows)
                 pending_materials = [
                     item for item in snapshot.materials if item.id not in rows_by_id
                 ]

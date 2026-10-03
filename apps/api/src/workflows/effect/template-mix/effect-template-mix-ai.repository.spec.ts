@@ -47,6 +47,48 @@ const harness = (current: EffectTemplateMixDraft, revision: number) => {
   };
 };
 
+describe('role choices during smart-fill', () => {
+  it.each([false, true])(
+    'preserves newer role edits and consumes only unchanged pending resets (newer=%s)',
+    async (newer) => {
+      const current = draft(4, 1);
+      current.templates[0]!.materialRoleOverrides = { reset: null, manual: 'END' };
+      current.templates[0]!.materialRoleEditVersion = newer ? 3 : 2;
+      const updated = draft(5, 1);
+      updated.templates[0]!.materialRoleOverrides = { manual: 'PRODUCT', reset: null };
+      const { repository, transaction } = harness(current, 12);
+      transaction.effectTemplateMixAiRun.findFirst.mockResolvedValue({
+        workflowRunId: 'workflow-run',
+        inputSnapshot: {
+          materialRoleEditVersion: 2,
+          materials: [{ id: 'reset' }, { id: 'manual' }],
+        },
+      });
+      await expect(
+        repository.completeWithDraft(
+          'project',
+          'run',
+          'attempt',
+          'variant',
+          [],
+          updated,
+          workflowStateHash(updated),
+          10,
+          'target',
+          workflowStateHash(current.templates[0]!.workspace),
+        ),
+      ).resolves.toBe('COMPLETED');
+      const saved = transaction.workflowNodeState.update.mock.calls[0]![0].data
+        .state as EffectTemplateMixDraft;
+      expect(saved.templates[0]!.materialRoleOverrides).toEqual(
+        newer ? { reset: null, manual: 'END' } : { manual: 'END' },
+      );
+      expect(saved.templates[0]!.materialRoleEditVersion).toBe(newer ? 3 : 2);
+      expect(saved.templates[0]!.workspace.editVersion).toBe(5);
+    },
+  );
+});
+
 describe('EffectTemplateMixAiRepository.hasSuccessfulRenderBatch', () => {
   it('rejects an unfinished batch without inspecting a Prompt', async () => {
     const findBatch = vi.fn().mockResolvedValue({ status: 'RUNNING' });
@@ -242,6 +284,92 @@ describe('EffectTemplateMixAiRepository.saveSamplingCheckpoint', () => {
         },
       }),
     );
+  });
+});
+
+describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
+  const chain = (
+    parents: Record<string, string | null>,
+    fills: Record<string, Array<{ id: string; templateId: string }>>,
+  ) => {
+    const findRun = vi.fn(async ({ where }: { where: { id: string } }) =>
+      where.id in parents ? { parentWorkflowRunId: parents[where.id]! } : null,
+    );
+    const findFills = vi.fn(
+      async ({ where }: { where: { workflowRunId: string } }) => fills[where.workflowRunId] ?? [],
+    );
+    return {
+      prisma: {
+        workflowRun: { findFirst: findRun },
+        effectTemplateMixAiRun: { findMany: findFills },
+      },
+      findFills,
+    };
+  };
+
+  it('carries the nearest ancestor’s fill and walks past an ancestor that never filled', async () => {
+    const { prisma, findFills } = chain(
+      { child: 'packager', packager: 'filler', filler: null },
+      { filler: [{ id: 'fill-1', templateId: 'template' }] },
+    );
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+
+    await expect(repository.inheritedMixAiRuns('project', 'child')).resolves.toEqual([
+      { id: 'fill-1', templateId: 'template' },
+    ]);
+    expect(findFills.mock.calls.map(([call]) => call.where.workflowRunId)).toEqual([
+      'packager',
+      'filler',
+    ]);
+    expect(findFills).toHaveBeenCalledWith({
+      where: {
+        projectId: 'project',
+        workflowRunId: 'packager',
+        status: 'COMPLETED',
+        outputVariantId: { not: null },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 20,
+    });
+  });
+
+  it('keeps the nearest fill for a template a further ancestor also filled', async () => {
+    const { prisma } = chain(
+      { child: 'packager', packager: 'filler', filler: null },
+      {
+        packager: [{ id: 'fill-near', templateId: 'template' }],
+        filler: [{ id: 'fill-far', templateId: 'template' }],
+      },
+    );
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+
+    await expect(repository.inheritedMixAiRuns('project', 'child')).resolves.toEqual([
+      { id: 'fill-near', templateId: 'template' },
+    ]);
+  });
+
+  it('collects fills for different templates across the chain', async () => {
+    const { prisma } = chain(
+      { child: 'packager', packager: 'filler', filler: null },
+      {
+        packager: [{ id: 'fill-a', templateId: 'template-a' }],
+        filler: [{ id: 'fill-b', templateId: 'template-b' }],
+      },
+    );
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+
+    await expect(repository.inheritedMixAiRuns('project', 'child')).resolves.toEqual([
+      { id: 'fill-a', templateId: 'template-a' },
+      { id: 'fill-b', templateId: 'template-b' },
+    ]);
+  });
+
+  it('returns nothing for a root Run', async () => {
+    const { prisma, findFills } = chain({ root: null }, {});
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+
+    await expect(repository.inheritedMixAiRuns('project', 'root')).resolves.toEqual([]);
+    expect(findFills).not.toHaveBeenCalled();
   });
 });
 

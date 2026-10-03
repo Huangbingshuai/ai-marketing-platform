@@ -87,6 +87,44 @@ const balancedClassification = (
 ): EffectTemplateMixAiClassification => ({ materialId, scores, reasons: {} });
 
 describe('effect template mix domain', () => {
+  it('reserves fixed roles first and covers the remaining roles without borrowing fixed clips', () => {
+    const slots = ROLES.map((role) => ({ id: role, role, duration: 4 }));
+    const classifications = ROLES.map((role, index) => ({
+      materialId: `m${index}`,
+      scores: { ...zeroScores(), [role]: 0.9 },
+      reasons: {},
+    }));
+    classifications[0]!.scores.END = 1;
+    const materials = classifications.map((item) => ({
+      id: item.materialId,
+      available: true,
+      duration: 5,
+    }));
+    const pools = buildAssignedPools(slots, materials, classifications, new Set(), { m0: 'HOOK' });
+    expect(pools.get('HOOK')?.map((item) => item.materialId)).toEqual(['m0']);
+    expect(pools.get('END')?.some((item) => item.materialId === 'm0')).toBe(false);
+    expect([...pools.values()].every((pool) => pool.length === 1)).toBe(true);
+    const groups = enumerateAssignedVariants(slots, materials, classifications, [], 1, 2, {
+      m0: 'HOOK',
+    });
+    expect(groups[0]!.find((item) => item.materialId === 'm0')?.role).toBe('HOOK');
+    const insufficient = buildAssignedPools(
+      slots,
+      materials.slice(0, 5),
+      classifications.slice(0, 5),
+      new Set(),
+      { m0: 'HOOK' },
+    );
+    expect(insufficient.get('END')).toEqual([]);
+    const short = buildAssignedPools(
+      slots,
+      [{ id: 'm0', available: true, duration: 3 }],
+      [classifications[0]!],
+      new Set(),
+      { m0: 'HOOK' },
+    );
+    expect([...short.values()].flat()).toEqual([]);
+  });
   it('creates a genuinely empty project even when matching materials exist', () => {
     const value = workspace();
     const result = createEmptyVariant(value);

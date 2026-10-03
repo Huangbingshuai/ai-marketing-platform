@@ -38,6 +38,21 @@ const variant = (value: EffectTemplateMixWorkspace, id: string): EffectTemplateM
 });
 
 describe('effect template mix presentation state', () => {
+  it('saves pre-fill material choices and resets per template without changing project content', () => {
+    const first = createEffectTemplateMixEntry('模板一');
+    const second = createEffectTemplateMixEntry('模板二');
+    first.materialRoleOverrides = { clip: 'PRODUCT', reset: null };
+    first.materialRoleEditVersion = 3;
+    const editVersion = first.workspace.editVersion;
+    const serialized = serializeEffectTemplateMixDraft([first, second], first.id);
+    const restored = JSON.parse(JSON.stringify(serialized));
+    expect(restored.templates[0].materialRoleOverrides).toEqual({ clip: 'PRODUCT', reset: null });
+    expect(restored.templates[0].materialRoleEditVersion).toBe(3);
+    expect(restored.templates[1].materialRoleOverrides).toBeUndefined();
+    expect(restored.templates[0].workspace.editVersion).toBe(editVersion);
+    expect(restored.templates[0].workspace.variants).toEqual([]);
+    expect(restored.templates[0].workspace.materials).toBeUndefined();
+  });
   it('keeps the server-recorded template creation time when saving its draft again', () => {
     const entry = createEffectTemplateMixEntry('跑量模板');
     entry.createdAt = '2026-09-28T01:00:00.000Z';

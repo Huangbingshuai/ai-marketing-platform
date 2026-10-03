@@ -159,6 +159,51 @@ export class EffectTemplateMixAiRepository {
     return this.prisma.effectTemplateMixAiRun.findFirst({ where: { projectId, id: runId } });
   }
 
+  /**
+   * The fills this Run looks at but never ran: the nearest ancestor's, one per template.
+   *
+   * A fork copies the clips it branches from, and a fill that runs in the child is the child's own
+   * row. Packaging and exporting do neither — they branch without filling — and neither did any
+   * branch made before the clips and their fills started travelling together. Those Runs hold the
+   * rendered files but no fill row, and since the AI 归槽 pool is read back from fill rows rather
+   * than from the draft, their material library came back as it looked before the fill.
+   *
+   * The files are what the two Runs share, so the caller re-points the ancestor's frozen snapshot at
+   * this Run's own clips. Walking further up when the nearest ancestor never filled keeps the
+   * library populated for a chain of packaging branches, and a snapshot that no longer describes
+   * these clips is dropped by the caller instead of showing a pool that is not this Run's.
+   */
+  async inheritedMixAiRuns(projectId: string, workflowRunId: string) {
+    const collected = new Map<string, Awaited<ReturnType<typeof this.listRecent>>[number]>();
+    const visited = new Set([workflowRunId]);
+    let cursor = await this.prisma.workflowRun.findFirst({
+      where: { id: workflowRunId, projectId },
+      select: { parentWorkflowRunId: true },
+    });
+    while (cursor?.parentWorkflowRunId && !visited.has(cursor.parentWorkflowRunId)) {
+      const parentId = cursor.parentWorkflowRunId;
+      visited.add(parentId);
+      const fills = await this.prisma.effectTemplateMixAiRun.findMany({
+        where: {
+          projectId,
+          workflowRunId: parentId,
+          status: 'COMPLETED',
+          outputVariantId: { not: null },
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: 20,
+      });
+      // Nearest ancestor wins, so the branch keeps showing the newest classification it inherited.
+      for (const fill of fills)
+        if (!collected.has(fill.templateId)) collected.set(fill.templateId, fill);
+      cursor = await this.prisma.workflowRun.findFirst({
+        where: { id: parentId, projectId },
+        select: { parentWorkflowRunId: true },
+      });
+    }
+    return [...collected.values()];
+  }
+
   sourceArtifacts(projectId: string, workflowRunId: string) {
     return this.prisma.workingArtifact.findMany({
       where: {
@@ -698,9 +743,29 @@ export class EffectTemplateMixAiRepository {
           return 'DRAFT_CONFLICT' as const;
         nextDraft = {
           ...current,
-          templates: current.templates.map((entry) =>
-            entry.id === templateId ? { ...updatedEntry, aiFillLocked: false } : entry,
-          ),
+          templates: current.templates.map((entry) => {
+            if (entry.id !== templateId) return entry;
+            const { materialRoleOverrides: _frozenRoles, ...updated } = updatedEntry;
+            const frozen = run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot | undefined;
+            const roles = { ...entry.materialRoleOverrides };
+            if (
+              frozen?.materialRoleEditVersion !== undefined &&
+              (entry.materialRoleEditVersion ?? 0) === frozen.materialRoleEditVersion
+            ) {
+              const classifiedIds = new Set(frozen.materials.map((material) => material.id));
+              for (const [id, role] of Object.entries(roles)) {
+                if (role === null && classifiedIds.has(id)) delete roles[id];
+              }
+            }
+            return {
+              ...updated,
+              ...(entry.materialRoleOverrides ? { materialRoleOverrides: roles } : {}),
+              ...(entry.materialRoleEditVersion !== undefined
+                ? { materialRoleEditVersion: entry.materialRoleEditVersion }
+                : {}),
+              aiFillLocked: false,
+            };
+          }),
         };
         nextContentHash = workflowStateHash(nextDraft);
       } else if (nodeState.revision !== expectedDraftRevision) {

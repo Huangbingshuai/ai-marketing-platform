@@ -35,6 +35,8 @@ export const serializeEffectTemplateMixDraft = (
   templates: entries.map(
     ({
       id,
+      materialRoleOverrides,
+      materialRoleEditVersion,
       createdAt,
       aiFillLocked,
       filledTemplateHash,
@@ -43,6 +45,8 @@ export const serializeEffectTemplateMixDraft = (
       workspace,
     }) => ({
       id,
+      ...(materialRoleOverrides ? { materialRoleOverrides } : {}),
+      ...(materialRoleEditVersion !== undefined ? { materialRoleEditVersion } : {}),
       ...(createdAt ? { createdAt } : {}),
       ...(aiFillLocked ? { aiFillLocked: true } : {}),
       ...(filledTemplateHash ? { filledTemplateHash } : {}),

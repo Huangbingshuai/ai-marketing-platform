@@ -230,6 +230,22 @@ export type EffectTemplateMixMaterialClassification = {
   materialId: string;
   role: EffectTemplateMixRole;
   matchScore: number;
+  /** A manual role is authoritative; its score is not an AI assessment. */
+  source?: 'AI' | 'MANUAL';
+};
+/** null explicitly removes an existing AI classification and returns the clip to 待归槽. */
+export type EffectTemplateMixMaterialRoleOverrides = Record<string, EffectTemplateMixRole | null>;
+
+export const resolveEffectTemplateMixMaterialRoles = (
+  classifications: readonly EffectTemplateMixMaterialClassification[],
+  overrides: EffectTemplateMixMaterialRoleOverrides = {},
+): Map<string, EffectTemplateMixMaterialClassification> => {
+  const result = new Map(classifications.map((item) => [item.materialId, item]));
+  for (const [materialId, role] of Object.entries(overrides)) {
+    if (role === null) result.delete(materialId);
+    else result.set(materialId, { materialId, role, matchScore: 1, source: 'MANUAL' });
+  }
+  return result;
 };
 export type EffectTemplateMixClassificationPool = {
   templateId: string;
@@ -253,6 +269,9 @@ export type EffectTemplateMixWorkspace = {
 };
 export type EffectTemplateMixTemplateEntry = {
   id: string;
+  materialRoleOverrides?: EffectTemplateMixMaterialRoleOverrides;
+  /** Server-owned draft edit sequence for consuming resets without losing newer choices. */
+  materialRoleEditVersion?: number;
   /** First persisted creation time; absent for legacy drafts. */
   createdAt?: string;
   /** Transient while smart-fill is queued/running. */
@@ -269,6 +288,8 @@ export type EffectTemplateMixDraft = {
   schemaVersion: 1;
   templates: {
     id: string;
+    materialRoleOverrides?: EffectTemplateMixMaterialRoleOverrides;
+    materialRoleEditVersion?: number;
     createdAt?: string;
     aiFillLocked?: boolean;
     filledTemplateHash?: string;
@@ -320,6 +341,8 @@ export type CreateEffectTemplateMixAiRunRequest = EffectTemplateMixRevisionReque
 };
 export type EffectTemplateMixAiClassification = {
   materialId: string;
+  /** MANUAL rows represent user choices, not model-generated semantic scores. */
+  source?: 'AI' | 'MANUAL';
   scores: Record<EffectTemplateMixRole, number>;
   reasons: Partial<Record<EffectTemplateMixRole, string>>;
 };
@@ -341,4 +364,59 @@ export type EffectTemplateMixAiTrim = {
   materialId: string;
   trimStartSeconds: number;
   trimReason: string;
+};
+
+/** Internal API/Worker input, frozen when the smart-fill task starts. */
+export type EffectTemplateMixAiSnapshot = {
+  schemaVersion: 1;
+  template: {
+    id: string;
+    name: string;
+    editVersion: number;
+    slots: Array<{
+      id: string;
+      role: EffectTemplateMixRole;
+      label: string;
+      duration: number;
+      transition?: string;
+      transitionDuration?: number | undefined;
+    }>;
+  };
+  draftRevision: number;
+  workspaceHash?: string;
+  targetVariantId: string | null;
+  materialRoleAssignments?: Record<string, EffectTemplateMixRole>;
+  manualMaterialRoles?: Record<string, EffectTemplateMixRole>;
+  materialRoleEditVersion?: number;
+  trimOnly?: boolean;
+  refreshBindings?: Array<{ slotId: string; materialId: string; artifactRevision: number }>;
+  maxOutputVariants: number;
+  lockedBindings: Array<{
+    slotId: string;
+    materialId: string;
+    artifactRevision: number;
+    offset: number;
+  }>;
+  existingVariantBindings: Array<Array<{ slotId: string; materialId: string }>>;
+  reuseCounts: Record<string, number>;
+  promptArtifacts: Array<{
+    id: string;
+    artifactKey: string;
+    revision: number;
+    contentHash: string;
+  }>;
+  materials: Array<{
+    id: string;
+    code: string;
+    name: string;
+    duration: number;
+    promptId: string;
+    prompt: string;
+    promptSummary?: string;
+    artifactId: string;
+    artifactKey: string;
+    artifactRevision: number;
+    contentHash: string;
+    fileObjectId: string;
+  }>;
 };

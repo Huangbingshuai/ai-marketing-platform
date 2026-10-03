@@ -136,6 +136,154 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('autosaves material roles without confirming artifacts or changing timeline content', async () => {
+    const { service, working } = harness();
+    const value = draft();
+    value.templates[0]!.materialRoleOverrides = { [sourceId]: 'HOOK' };
+    const result = await service.saveDraft('project', 'run', 7, value);
+    expect(result.draft.templates[0]!.materialRoleOverrides).toEqual({ [sourceId]: 'HOOK' });
+    expect(result.draft.templates[0]!.materialRoleEditVersion).toBe(1);
+    expect(result.draft.templates[0]!.workspace).toEqual(draft().templates[0]!.workspace);
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
+  it('freezes manual roles for smart-fill and enforces them in role pools', async () => {
+    const { working } = harness();
+    const state = draft();
+    const roles = [
+      'HOOK',
+      'PAIN_POINT',
+      'PRODUCT',
+      'SELLING_POINT',
+      'TRANSFORMATION',
+      'END',
+    ] as const;
+    const entry = state.templates[0]!;
+    entry.workspace.variants = [];
+    entry.workspace.template.slots = roles.map((role) => ({
+      ...entry.workspace.template.slots[0]!,
+      id: role,
+      role,
+    }));
+    entry.materialRoleOverrides = { 'clip-0': 'PRODUCT', 'clip-1': null };
+    entry.materialRoleEditVersion = 2;
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    const prompt = {
+      ...source,
+      id: 'prompt-batch',
+      nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:p',
+      contentHash: 'prompt-hash',
+      payload: { items: roles.map((_, index) => ({ id: `p${index}`, content: '原始产品画面' })) },
+    };
+    const clips = roles.map((_, index) => ({
+      ...source,
+      id: `clip-${index}`,
+      artifactKey: `render-clip:${index}`,
+      contentHash: `hash-${index}`,
+      storageKey: `video-${index}`,
+      payload: {
+        ...(source.payload as object),
+        promptId: `p${index}`,
+        fileObjectId: `file-${index}`,
+      },
+    }));
+    const create = vi
+      .fn()
+      .mockResolvedValue({
+        kind: 'CREATED',
+        run: {
+          id: 'ai',
+          templateId,
+          workflowRunId: 'run',
+          targetVariantId: null,
+          outputVariantId: null,
+          status: 'QUEUED',
+          stage: 'CLASSIFYING',
+          progress: 0,
+          errorCode: null,
+          errorMessage: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+    const repository = {
+      sourceArtifacts: vi.fn().mockResolvedValue([prompt, ...clips]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      create,
+      find: vi.fn(),
+      saveSelection: vi.fn().mockResolvedValue({ count: 1 }),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
+    await service.createAiRun('project', 'run', templateId, 7, 'key');
+    const input = create.mock.calls[0]![0];
+    expect(input.snapshot.materialRoleAssignments).toEqual({ 'clip-0': 'PRODUCT' });
+    expect(input.snapshot.manualMaterialRoles).toEqual({ 'clip-0': 'PRODUCT' });
+    expect(input.initialClassifications).toHaveLength(1);
+    expect(input.initialClassifications[0]).toMatchObject({
+      materialId: 'clip-0',
+      source: 'MANUAL',
+    });
+    entry.materialRoleOverrides['clip-0'] = 'END';
+    expect(input.snapshot.materialRoleAssignments['clip-0']).toBe('PRODUCT');
+    repository.find.mockResolvedValue({
+      status: 'RUNNING',
+      attemptToken: 'attempt',
+      inputSnapshot: input.snapshot,
+    });
+    const rows = roles.map((role, index) => ({
+      materialId: `clip-${index}`,
+      scores: Object.fromEntries(roles.map((candidate) => [candidate, candidate === role ? 1 : 0])),
+      reasons: {},
+    }));
+    rows[0] = input.initialClassifications[0];
+    rows[2]!.scores.HOOK = 0.8;
+    const result = await service.classifyAiRun('project', 'ai', 'attempt', rows as never);
+    expect(result.selections.find((item) => item.materialId === 'clip-0')?.role).toBe('PRODUCT');
+    await expect(
+      service.classifyAiRun(
+        'project',
+        'ai',
+        'attempt',
+        rows.map((row) => ({ ...row, source: 'AI' })) as never,
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it.each(['foreign-id', 'stale-id'])(
+    'rejects assigning a %s material from outside the current pool',
+    async (id) => {
+      const { service, working } = harness();
+      working.listArtifacts.mockResolvedValue({
+        items: [source, { ...source, id: 'stale-id', freshness: 'STALE' }],
+        total: 2,
+      });
+      const value = draft();
+      value.templates[0]!.materialRoleOverrides = { [id]: 'HOOK' };
+      await expect(service.saveDraft('project', 'run', 7, value)).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(working.putNodeState).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects unknown roles and too-short manually assigned materials', async () => {
+    const { service } = harness();
+    const value = draft();
+    value.templates[0]!.materialRoleOverrides = { [sourceId]: 'UNKNOWN' as 'HOOK' };
+    await expect(service.saveDraft('project', 'run', 7, value)).rejects.toMatchObject({
+      status: 400,
+    });
+    value.templates[0]!.materialRoleOverrides = { [sourceId]: 'HOOK' };
+    value.templates[0]!.workspace.template.slots[0]!.duration = 5;
+    await expect(service.saveDraft('project', 'run', 7, value)).rejects.toMatchObject({
+      status: 400,
+    });
+  });
   it('reads only the saved variant for packaging hot-path source checks', async () => {
     const { service, working } = harness();
     expect((await service.currentVariant('project', 'run', templateId, variantId))?.id).toBe(
@@ -1125,7 +1273,7 @@ describe('EffectTemplateMixService', () => {
       existingVariantBindings: [],
       reuseCounts: {},
       promptArtifacts: [],
-      materials: [{ id: sourceId, duration: 4, artifactId: sourceId, artifactRevision: 2 }],
+      materials: [{ id: sourceId, duration: 4, artifactId: sourceId, artifactRevision: 2, fileObjectId: 'file-1' }],
     };
     const scores = {
       HOOK: 0.9,
@@ -1465,5 +1613,119 @@ describe('EffectTemplateMixService', () => {
     await expect(
       service.checkpointAiTrims('project', 'run', 'attempt-token', trims),
     ).resolves.toEqual({ trims, progress: 72 });
+  });
+  const promptBatch = {
+    id: 'prompt-artifact',
+    nodeId: 'PROMPT_GENERATION',
+    artifactKey: 'prompt-batch:product',
+    revision: 3,
+    contentHash: 'prompt-hash',
+    availability: 'AVAILABLE',
+    freshness: 'CURRENT',
+  } as unknown as WorkingArtifact;
+  const scores = Object.fromEntries(
+    ['HOOK', 'PAIN_POINT', 'PRODUCT', 'SELLING_POINT', 'TRANSFORMATION', 'END'].map((role) => [
+      role,
+      0.9,
+    ]),
+  );
+  const inheritedFill = (overrides: Record<string, unknown> = {}) => ({
+    id: 'ancestor-fill',
+    templateId,
+    status: 'COMPLETED',
+    createdAt: new Date('2026-09-29T04:00:00.000Z'),
+    inputSnapshot: {
+      template: { name: '跑量模板', slots: [{ id: slotId, role: 'HOOK', label: '片头钩子' }] },
+      materials: [
+        {
+          id: 'ancestor-clip',
+          artifactId: 'ancestor-clip',
+          artifactKey: 'render-clip:task-1',
+          artifactRevision: 99,
+          contentHash: 'ancestor-hash',
+          fileObjectId: 'file-1',
+          promptId: 'ancestor-prompt',
+        },
+      ],
+      promptArtifacts: [
+        {
+          id: 'ancestor-prompt-artifact',
+          artifactKey: 'prompt-batch:ancestor',
+          revision: 9,
+          contentHash: 'ancestor-prompt-hash',
+        },
+      ],
+    },
+    classificationResult: [{ materialId: 'ancestor-clip', scores, reasons: {} }],
+    ...overrides,
+  });
+  const workspaceWithInherited = async (inherited: unknown[]) => {
+    // The committed row carries the hash the pool guard compares, not the one in the clip payload.
+    const clip = { ...source, contentHash: 'sha' } as unknown as WorkingArtifact;
+    const working = {
+      getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
+      listArtifacts: vi.fn().mockResolvedValue({ items: [promptBatch, clip], total: 2 }),
+    };
+    const aiRepository = {
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([promptBatch, clip]),
+      inheritedMixAiRuns: vi.fn().mockResolvedValue(inherited),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+    return service.workspace('project', 'run');
+  };
+
+  it('reads the pool out of a fill the branch inherited from an ancestor', async () => {
+    // The snapshot names the ancestor's artifacts, revisions and hashes; the branch only kept the
+    // rendered files. Matching the two up by file is what keeps the material library from falling
+    // back to how it looked before the fill.
+    const result = await workspaceWithInherited([inheritedFill()]);
+
+    expect(result.classificationPools).toEqual([
+      {
+        templateId,
+        runId: 'ancestor-fill',
+        templateEditVersion: draft().templates[0]!.workspace.template.editVersion,
+        items: [{ materialId: sourceId, role: 'HOOK', matchScore: 0.9 }],
+      },
+    ]);
+    // The fill is not this Run's own, so the fill history still shows what this Run ran.
+    expect(result.aiRuns).toEqual([]);
+  });
+
+  it('drops an inherited fill whose clips are not the ones this Run holds', async () => {
+    const fill = inheritedFill({
+      inputSnapshot: {
+        ...(inheritedFill().inputSnapshot as Record<string, unknown>),
+        materials: [
+          {
+            id: 'ancestor-clip',
+            artifactRevision: 99,
+            contentHash: 'ancestor-hash',
+            fileObjectId: 'file-elsewhere',
+          },
+        ],
+      },
+    });
+
+    const result = await workspaceWithInherited([fill]);
+
+    expect(result.classificationPools).toEqual([]);
+  });
+
+  it('drops an inherited fill that froze a different template layout', async () => {
+    const fill = inheritedFill({
+      inputSnapshot: {
+        ...(inheritedFill().inputSnapshot as Record<string, unknown>),
+        template: { name: '跑量模板', slots: [{ id: slotId, role: 'PRODUCT', label: '产品展示' }] },
+      },
+    });
+
+    const result = await workspaceWithInherited([fill]);
+
+    expect(result.classificationPools).toEqual([]);
   });
 });

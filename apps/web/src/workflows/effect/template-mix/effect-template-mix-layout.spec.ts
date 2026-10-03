@@ -13,6 +13,30 @@ const pageSource = rawPageSource.replace(/\r\n/gu, '\n');
 const timelineSource = rawTimelineSource.replace(/\r\n/gu, '\n');
 
 describe('effect template mix workbench layout', () => {
+  it('shows prefill role filters and saves material categories independently of timeline bindings', () => {
+    expect(pageSource).toContain('<div class="material-role-filters" aria-label="素材归槽筛选">');
+    expect(pageSource).toContain('@click="selectMaterialRole(\'UNASSIGNED\')"');
+    expect(pageSource).toContain('待归槽 <small>{{ unassignedMaterialCount }}</small>');
+    expect(pageSource).toContain('@click="chooseMaterialSlot(null)"');
+    expect(pageSource).toContain('此分类没有匹配素材');
+    const saveCategory = pageSource
+      .split('const chooseMaterialSlot =')[1]
+      ?.split('const openWorkflowDialog')[0];
+    expect(saveCategory).toContain('entry.materialRoleOverrides =');
+    expect(saveCategory).toContain('await persist()');
+    expect(saveCategory).not.toContain('selectedVariant');
+    expect(saveCategory).not.toContain('bindings');
+    expect(saveCategory).not.toContain('editVersion');
+    const filtersStyle = pageSource
+      .split('.material-role-filters {')[1]
+      ?.split('.material-grid {')[0];
+    expect(pageSource).not.toContain("selectMaterialRole('ALL')");
+    expect(filtersStyle).toContain('flex-wrap: wrap;');
+    expect(filtersStyle).not.toContain('overflow-x: auto;');
+    expect(filtersStyle).toContain('flex: 0 0 96px;');
+    expect(filtersStyle).toContain('height: 30px;');
+    expect(filtersStyle).not.toContain('grid-template-columns');
+  });
   it('uses the shared delete confirmation and gives immediate feedback while checking render readiness', () => {
     expect(pageSource).toContain("import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';");
     expect(pageSource).toContain('title: `删除模板「${entry.workspace.template.name}」？`');
@@ -177,7 +201,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('尚未生成成片工程');
     expect(pageSource).not.toContain('算法批量组合');
     expect(pageSource).not.toContain('composeEffectTemplateMixVariants');
-    expect(pageSource).toContain('aria-label="AI 归槽素材筛选"');
+    expect(pageSource).toContain('aria-label="素材归槽筛选"');
     expect(pageSource).toContain('materialRoleOptions');
     expect(pageSource).toContain('selectMaterialRole(option.role)');
     expect(pageSource).not.toContain('class="timeline-health"');
@@ -241,7 +265,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('displayedMaterials');
     expect(pageSource).toContain('查看 Prompt');
     expect(pageSource).toContain('openMaterialSlotPicker');
-    expect(pageSource).toContain('moveMaterialToSlot');
+    expect(pageSource).toContain('materialRoleOverrides');
     expect(pageSource).toContain('EffectSegmentRenderSourcePrompt');
     expect(pageSource).toContain('compareMaterialsByName');
     expect(pageSource).toContain('align-self: stretch');
@@ -386,7 +410,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('captureDisplayedFrame');
     expect(pageSource).toContain('player-transition-frame');
     expect(pageSource).not.toContain('resource-tabs-count');
-    expect(pageSource).toContain('grid-template-columns: repeat(7, minmax(0, 1fr));');
+    expect(pageSource).toContain('flex: 0 0 96px;');
     expect(pageSource).not.toContain('初次生成数量');
     expect(pageSource).toContain('templateTransitionForRow');
     expect(pageSource).toContain('index < workspace.template.slots.length - 1');

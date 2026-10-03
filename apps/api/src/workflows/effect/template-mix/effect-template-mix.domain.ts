@@ -207,11 +207,17 @@ export const buildAssignedPools = (
   materials: Array<Pick<EffectTemplateMixMaterial, 'id' | 'duration' | 'available'>>,
   classifications: EffectTemplateMixAiClassification[],
   lockedMaterialIds: ReadonlySet<string> = new Set(),
+  fixedRoles: Readonly<Record<string, EffectTemplateMixRole>> = {},
 ): Map<EffectTemplateMixRole, AssignedPoolItem[]> => {
   const byMaterial = new Map(materials.map((material) => [material.id, material]));
   const eligible = classifications.filter((item) => {
     const material = byMaterial.get(item.materialId);
-    return Boolean(material?.available) && !lockedMaterialIds.has(item.materialId);
+    const fixed = fixedRoles[item.materialId];
+    return (
+      Boolean(material?.available) &&
+      !lockedMaterialIds.has(item.materialId) &&
+      (!fixed || slots.some((slot) => slot.role === fixed))
+    );
   });
   const feasibleRoles = new Map(
     eligible.map((item) => [
@@ -227,6 +233,7 @@ export const buildAssignedPools = (
     slots.map((slot) => slot.role),
     eligible,
     feasibleRoles,
+    fixedRoles,
   );
   const slotByRole = new Map(slots.map((slot) => [slot.role, slot]));
   const pools = new Map<EffectTemplateMixRole, AssignedPoolItem[]>(
@@ -265,8 +272,15 @@ export const selectAssignedVariant = (
   classifications: EffectTemplateMixAiClassification[],
   lockedMaterialIds: ReadonlySet<string> = new Set(),
   reuseCounts: ReadonlyMap<string, number> = new Map(),
+  fixedRoles: Readonly<Record<string, EffectTemplateMixRole>> = {},
 ): EffectTemplateMixAiSelection[] => {
-  const pools = buildAssignedPools(slots, materials, classifications, lockedMaterialIds);
+  const pools = buildAssignedPools(
+    slots,
+    materials,
+    classifications,
+    lockedMaterialIds,
+    fixedRoles,
+  );
   const selections: EffectTemplateMixAiSelection[] = [];
   for (const slot of slots) {
     const pool = pools.get(slot.role) ?? [];
@@ -302,8 +316,9 @@ export const enumerateAssignedVariants = (
   existingGroups: ReadonlyArray<ReadonlyArray<{ slotId: string; materialId: string }>> = [],
   maxVariants = 0,
   maxOverlap = MAX_SLOT_REUSE_OVERLAP,
+  fixedRoles: Readonly<Record<string, EffectTemplateMixRole>> = {},
 ): EffectTemplateMixAiSelection[][] => {
-  const pools = buildAssignedPools(slots, materials, classifications);
+  const pools = buildAssignedPools(slots, materials, classifications, new Set(), fixedRoles);
   if (slots.some((slot) => !pools.get(slot.role)?.length)) return [];
   const bindingKey = (slotId: string, materialId: string): string => `${slotId}:${materialId}`;
   const allSets = existingGroups.map(
@@ -380,27 +395,36 @@ export const balancedSlotAssignment = (
   roles: readonly EffectTemplateMixRole[],
   classifications: EffectTemplateMixAiClassification[],
   feasibleRoles?: ReadonlyMap<string, ReadonlySet<EffectTemplateMixRole>>,
+  fixedRoles: Readonly<Record<string, EffectTemplateMixRole>> = {},
 ): Map<string, EffectTemplateMixRole> => {
   const targetPerSlot = classifications.length / Math.max(1, roles.length);
   const counts = new Map<EffectTemplateMixRole, number>(roles.map((role) => [role, 0]));
   const assignment = new Map<string, EffectTemplateMixRole>();
+  for (const item of classifications) {
+    const role = fixedRoles[item.materialId];
+    if (!role || !roles.includes(role)) continue;
+    assignment.set(item.materialId, role);
+    counts.set(role, (counts.get(role) ?? 0) + 1);
+  }
+  const uncoveredRoles = roles.filter((role) => !counts.get(role));
   // Six slots allow an exact subset DP. This guarantees full coverage when
   // feasible and maximizes the model's total role score across the anchors.
   const states: Array<{ score: number; materialIds: string[] } | undefined> = Array.from(
-    { length: 1 << roles.length },
+    { length: 1 << uncoveredRoles.length },
     () => undefined,
   );
   states[0] = { score: 0, materialIds: [] };
   for (const item of [...classifications].sort((a, b) =>
     a.materialId.localeCompare(b.materialId),
   )) {
+    if (assignment.has(item.materialId)) continue;
     for (let mask = states.length - 1; mask >= 0; mask -= 1) {
       const current = states[mask];
       if (!current) continue;
-      for (let roleIndex = 0; roleIndex < roles.length; roleIndex += 1) {
+      for (let roleIndex = 0; roleIndex < uncoveredRoles.length; roleIndex += 1) {
         const bit = 1 << roleIndex;
         if ((mask & bit) !== 0) continue;
-        const role = roles[roleIndex]!;
+        const role = uncoveredRoles[roleIndex]!;
         const score = item.scores[role];
         if (
           !Number.isFinite(score) ||
@@ -419,9 +443,9 @@ export const balancedSlotAssignment = (
   }
   const anchors = states[states.length - 1]?.materialIds;
   if (anchors) {
-    for (let index = 0; index < roles.length; index += 1) {
-      assignment.set(anchors[index]!, roles[index]!);
-      counts.set(roles[index]!, 1);
+    for (let index = 0; index < uncoveredRoles.length; index += 1) {
+      assignment.set(anchors[index]!, uncoveredRoles[index]!);
+      counts.set(uncoveredRoles[index]!, 1);
     }
   }
   const ordered = [...classifications].sort((left, right) => {

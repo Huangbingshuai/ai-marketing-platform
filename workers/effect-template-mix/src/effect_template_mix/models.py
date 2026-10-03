@@ -39,6 +39,8 @@ class Snapshot(BaseModel):
     template: dict[str, Any]
     draftRevision: int
     targetVariantId: str | None
+    materialRoleAssignments: dict[str, Role] = Field(default_factory=dict)
+    manualMaterialRoles: dict[str, Role] = Field(default_factory=dict)
     trimOnly: bool = False
     lockedBindings: list[dict[str, Any]]
     reuseCounts: dict[str, int] = Field(default_factory=dict)
@@ -68,6 +70,7 @@ class Scores(BaseModel):
 
 class Classification(BaseModel):
     materialId: str
+    source: Literal["AI", "MANUAL"] = "AI"
     scores: Scores
     reasons: dict[Role, str]
 

@@ -18,7 +18,7 @@ import type {
 } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { packagingTimelineDuration, packagingVisualVariant } from '@ai-marketing/contracts';
+import { packagingTimelineDuration, packagingVisualVariant, resolveEffectTemplateMixMaterialRoles } from '@ai-marketing/contracts';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
@@ -62,6 +62,15 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
       return (
         typeof entry?.id === 'string' &&
         entry.id.length > 0 &&
+        (entry.materialRoleOverrides === undefined ||
+          (object(entry.materialRoleOverrides) !== null &&
+            Object.entries(entry.materialRoleOverrides as Record<string, unknown>).length <= 1000 &&
+            Object.entries(entry.materialRoleOverrides as Record<string, unknown>).every(
+              ([id, role]) =>
+                id.length > 0 &&
+                id.length <= 200 &&
+                (role === null || AI_MIX_ROLES.includes(role as EffectTemplateMixRole)),
+            ))) &&
         (entry.createdAt === undefined ||
           (typeof entry.createdAt === 'string' &&
             !Number.isNaN(Date.parse(entry.createdAt)) &&
@@ -221,6 +230,15 @@ const classificationsValid = (
     classifications.every(
       (item) =>
         expectedIds.has(item.materialId) &&
+        (item.source === undefined || item.source === 'AI' || item.source === 'MANUAL') &&
+        (snapshot.manualMaterialRoles?.[item.materialId]
+          ? item.source === 'MANUAL' &&
+            AI_MIX_ROLES.every(
+              (role) =>
+                item.scores?.[role] ===
+                (role === snapshot.manualMaterialRoles![item.materialId] ? 1 : 0),
+            )
+          : item.source !== 'MANUAL') &&
         AI_MIX_ROLES.every((role) => {
           const score = item.scores?.[role];
           const reason = item.reasons?.[role];
@@ -391,6 +409,32 @@ const boundMaterialIds = (variants: Iterable<EffectTemplateMixVariant>): Readonl
   for (const variant of variants)
     for (const materialId of Object.values(variant.bindings)) if (materialId) ids.add(materialId);
   return ids;
+};
+
+const renderFileKey = (artifact: { id: string; payload: unknown }): string => {
+  const fileObjectId = object(artifact.payload)?.fileObjectId;
+  return typeof fileObjectId === 'string' && fileObjectId ? fileObjectId : artifact.id;
+};
+
+/** A cloned render artifact is another reference to the same video, not another source clip. */
+const distinctRenderFiles = <T extends { id: string; artifactKey: string; payload: unknown }>(
+  artifacts: readonly T[],
+  preferredIds: ReadonlySet<string> = new Set(),
+): { artifacts: T[]; canonicalIdById: Map<string, string> } => {
+  const byFile = new Map<string, T>();
+  for (const artifact of [...artifacts].sort(
+    (left, right) =>
+      left.artifactKey.localeCompare(right.artifactKey) || left.id.localeCompare(right.id),
+  )) {
+    const fileKey = renderFileKey(artifact);
+    const previous = byFile.get(fileKey);
+    if (!previous || (preferredIds.has(artifact.id) && !preferredIds.has(previous.id)))
+      byFile.set(fileKey, artifact);
+  }
+  const canonicalIdById = new Map(
+    artifacts.map((artifact) => [artifact.id, byFile.get(renderFileKey(artifact))!.id]),
+  );
+  return { artifacts: [...byFile.values()], canonicalIdById };
 };
 
 /**
@@ -730,6 +774,104 @@ type EffectTemplateMixClassificationSource = {
   contentHash: string;
 };
 
+/**
+ * Re-points a fill the branch inherited at the clips this Run holds, so the pool it describes can be
+ * read here.
+ *
+ * A fork copies the rendered files, never the fill row, and the frozen snapshot names the ancestor's
+ * artifact ids, revisions and content hashes — every one of which the pool guard resolves against
+ * the Run being viewed. That is why a branch that kept the clips but not the fill came back to the
+ * material library as it looked before the fill. The files are the one thing the two Runs share, so
+ * the snapshot is matched up by `fileObjectId`; the prompt batch is this Run's own, because product
+ * ids are minted per fork and nothing else joins them. Anything that does not resolve drops the
+ * whole fill: a partially re-pointed snapshot would score a pool that is not this Run's.
+ */
+const remapInheritedFill = (
+  run: EffectTemplateMixAiRunRecord,
+  artifacts: readonly Pick<
+    WorkingArtifact,
+    'id' | 'revision' | 'contentHash' | 'artifactKey' | 'nodeId' | 'freshness' | 'availability'
+  >[],
+  activeMaterials: readonly Pick<EffectTemplateMixMaterial, 'id' | 'fileObjectId' | 'artifactId'>[],
+): EffectTemplateMixAiRunRecord | null => {
+  const snapshot = run.inputSnapshot as EffectTemplateMixAiSnapshot | null;
+  const classifications = Array.isArray(run.classificationResult)
+    ? (run.classificationResult as EffectTemplateMixAiClassification[])
+    : null;
+  if (!snapshot || !Array.isArray(snapshot.materials) || !classifications?.length) return null;
+  const rowById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  const materialByFile = new Map(
+    activeMaterials.map((material) => [material.fileObjectId, material]),
+  );
+  const materialIds = new Map<string, string>();
+  const materials: EffectTemplateMixAiSnapshot['materials'] = [];
+  for (const frozen of snapshot.materials) {
+    const material = materialByFile.get(frozen.fileObjectId);
+    const row = material ? rowById.get(material.artifactId) : undefined;
+    if (!material || !row) return null;
+    materialIds.set(frozen.id, material.id);
+    materials.push({
+      ...frozen,
+      id: material.id,
+      artifactId: material.id,
+      artifactKey: row.artifactKey,
+      artifactRevision: row.revision,
+      contentHash: row.contentHash ?? '',
+    });
+  }
+  const prompts = Array.isArray(snapshot.promptArtifacts) ? snapshot.promptArtifacts : [];
+  const prompt = prompts.length
+    ? artifacts.find(
+        (artifact) =>
+          artifact.nodeId === 'PROMPT_GENERATION' &&
+          artifact.artifactKey.startsWith('prompt-batch:') &&
+          artifact.freshness === 'CURRENT' &&
+          artifact.availability === 'AVAILABLE',
+      )
+    : undefined;
+  if (prompts.length && !prompt) return null;
+  return {
+    ...run,
+    inputSnapshot: {
+      ...snapshot,
+      materials,
+      ...(snapshot.materialRoleAssignments
+        ? {
+            materialRoleAssignments: Object.fromEntries(
+              Object.entries(snapshot.materialRoleAssignments).flatMap(([id, role]) =>
+                materialIds.has(id) ? [[materialIds.get(id)!, role]] : [],
+              ),
+            ),
+          }
+        : {}),
+      ...(snapshot.manualMaterialRoles
+        ? {
+            manualMaterialRoles: Object.fromEntries(
+              Object.entries(snapshot.manualMaterialRoles).flatMap(([id, role]) =>
+                materialIds.has(id) ? [[materialIds.get(id)!, role]] : [],
+              ),
+            ),
+          }
+        : {}),
+      ...(prompt
+        ? {
+            promptArtifacts: prompts.map((frozen) => ({
+              ...frozen,
+              id: prompt.id,
+              artifactKey: prompt.artifactKey,
+              revision: prompt.revision,
+              contentHash: prompt.contentHash ?? '',
+            })),
+          }
+        : {}),
+    },
+    classificationResult: classifications.map((item) => ({
+      ...item,
+      materialId: materialIds.get(item.materialId) ?? item.materialId,
+    })),
+  };
+};
+
 @Injectable()
 export class EffectTemplateMixService {
   constructor(
@@ -755,6 +897,7 @@ export class EffectTemplateMixService {
       classificationSources,
       lockedTemplateIds,
       packagingLockedIds,
+      inheritedAiRuns,
     ] = await Promise.all([
       this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.working.listArtifacts(projectId, { workflowRunId }),
@@ -762,6 +905,7 @@ export class EffectTemplateMixService {
       this.aiRuns?.sourceArtifacts(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+      this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     const templateCreationReady = await this.templateCreationReady(
       projectId,
@@ -777,6 +921,7 @@ export class EffectTemplateMixService {
       lockedTemplateIds,
       packagingLockedIds,
       templateCreationReady,
+      inheritedAiRuns,
     );
   }
 
@@ -832,15 +977,50 @@ export class EffectTemplateMixService {
     value: unknown,
   ): Promise<EffectTemplateMixWorkspaceData> {
     const draft = draftOf(value);
-    const [previousState, lockedTemplateIds, packagingLockedIds, activePackagingIds, recentAiRuns] =
+    const [previousState, lockedTemplateIds, packagingLockedIds, activePackagingIds, recentAiRuns, sourceArtifacts] =
       await Promise.all([
         this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
         this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
         this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
         this.aiRuns?.activePackagingTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
         this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
+        this.working.listArtifacts(projectId, { workflowRunId }),
       ]);
     const previous = previousState ? draftOf(previousState.state) : emptyDraft();
+    const roleMaterials = new Map(
+      materialsFromArtifacts(sourceArtifacts.items).map((material) => [
+        material.id,
+        material,
+      ]),
+    );
+    for (const entry of draft.templates) {
+      const oldEntry = previous.templates.find((item) => item.id === entry.id);
+      const old = oldEntry?.materialRoleOverrides ?? {};
+      entry.materialRoleEditVersion =
+        (oldEntry?.materialRoleEditVersion ?? 0) +
+        (workflowStateHash(old) === workflowStateHash(entry.materialRoleOverrides ?? {}) ? 0 : 1);
+      for (const [id, role] of Object.entries(entry.materialRoleOverrides ?? {})) {
+        if (Object.prototype.hasOwnProperty.call(old, id) && old[id] === role) continue;
+        const material = roleMaterials.get(id);
+        if (!material?.available)
+          throw new ApiHttpException(
+            '归槽素材不属于当前分支或已不可用，请刷新素材列表',
+            HttpStatus.BAD_REQUEST,
+            'VALIDATION_ERROR',
+          );
+        const slot =
+          role === null
+            ? undefined
+            : entry.workspace.template.slots.find((item) => item.role === role);
+        if (role !== null && (!slot || material.duration + 0.001 < slot.duration))
+          throw new ApiHttpException(
+            `「${material.code}」时长不足以归入「${slot?.label ?? '目标槽位'}」，请调整槽位时长`,
+            HttpStatus.BAD_REQUEST,
+            'VALIDATION_ERROR',
+          );
+      }
+    }
+
     for (const existing of previous.templates) {
       if (draft.templates.some((entry) => entry.id === existing.id)) continue;
       if (
@@ -967,10 +1147,11 @@ export class EffectTemplateMixService {
       schemaVersion: 1,
       state: draft,
     });
-    const [artifacts, aiRuns, classificationSources] = await Promise.all([
+    const [artifacts, aiRuns, classificationSources, inheritedAiRuns] = await Promise.all([
       this.working.listArtifacts(projectId, { workflowRunId }),
       this.aiRuns?.listRecent(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.sourceArtifacts(projectId, workflowRunId) ?? Promise.resolve([]),
+      this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     const templateCreationReady = await this.templateCreationReady(
       projectId,
@@ -986,6 +1167,7 @@ export class EffectTemplateMixService {
       lockedTemplateIds,
       packagingLockedIds,
       templateCreationReady,
+      inheritedAiRuns,
     );
   }
 
@@ -1009,11 +1191,12 @@ export class EffectTemplateMixService {
       { always: true },
     );
     const workflowRunId = edit.run.id;
-    const [nodeState, artifacts, previousRuns, packagingLockedIds] = await Promise.all([
+    const [nodeState, artifacts, previousRuns, packagingLockedIds, inheritedRuns] = await Promise.all([
       this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.aiRuns!.sourceArtifacts(projectId, workflowRunId),
       this.aiRuns!.listRecent(projectId, workflowRunId),
       this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+      this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     if (nodeState.revision !== expectedRevision)
       throw new ApiHttpException(
@@ -1092,9 +1275,16 @@ export class EffectTemplateMixService {
         }
       }
     }
-    const renderArtifacts = artifacts.filter(
+    const renderCandidates = artifacts.filter(
       (artifact) =>
         artifact.nodeId === 'SEGMENT_RENDER' && artifact.artifactKey.startsWith('render-clip:'),
+    );
+    const { artifacts: renderArtifacts, canonicalIdById } = distinctRenderFiles(
+      renderCandidates,
+      new Set([
+        ...(target ? boundMaterialIds([target]) : []),
+        ...Object.keys(entry!.materialRoleOverrides ?? {}),
+      ]),
     );
     const materials: EffectTemplateMixAiSnapshot['materials'] = [];
     const promptDependencies = new Map<
@@ -1132,7 +1322,7 @@ export class EffectTemplateMixService {
         artifactKey: artifact.artifactKey,
         artifactRevision: artifact.revision,
         contentHash: artifact.contentHash,
-        fileObjectId: typeof data.fileObjectId === 'string' ? data.fileObjectId : '',
+        fileObjectId: renderFileKey(artifact),
       });
     }
     if (materials.length !== renderArtifacts.length)
@@ -1142,12 +1332,87 @@ export class EffectTemplateMixService {
         'VALIDATION_ERROR',
       );
     const materialById = new Map(materials.map((item) => [item.id, item]));
+    const classificationRuns = [
+      ...previousRuns,
+      ...inheritedRuns.flatMap((run) => {
+        const remapped = remapInheritedFill(run, artifacts, materials);
+        return remapped ? [remapped] : [];
+      }),
+    ];
+    const priorClassifications = new Map<string, EffectTemplateMixAiClassification>();
+    let priorItems: EffectTemplateMixClassificationPool['items'] = [];
+    const currentSources = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+    for (const previous of classificationRuns) {
+      if (
+        previous.status !== 'COMPLETED' ||
+        previous.templateId !== templateId ||
+        !Array.isArray(previous.classificationResult)
+      )
+        continue;
+      const frozen = previous.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
+      const rows = previous.classificationResult as unknown as EffectTemplateMixAiClassification[];
+      if (
+        !frozen ||
+        !Array.isArray(frozen.materials) ||
+        !Array.isArray(frozen.template?.slots) ||
+        classificationSlotSignature(frozen.template.slots) !== classificationSlotSignature(slots) ||
+        !classificationsValid(frozen, rows, true) ||
+        workflowStateHash(frozen.materials.map((item) => item.fileObjectId).sort()) !==
+          workflowStateHash(materials.map((item) => item.fileObjectId).sort()) ||
+        frozen.materials.some(
+          (item) =>
+            currentSources.get(item.id)?.revision !== item.artifactRevision ||
+            currentSources.get(item.id)?.contentHash !== item.contentHash,
+        ) ||
+        frozen.promptArtifacts.some(
+          (item) =>
+            currentSources.get(item.id)?.revision !== item.revision ||
+            currentSources.get(item.id)?.contentHash !== item.contentHash,
+        )
+      )
+        continue;
+      const pools = buildAssignedPools(
+        slots,
+        materials.map((item) => ({ ...item, available: true })),
+        rows,
+        new Set(),
+        frozen.materialRoleAssignments,
+      );
+      priorItems = [...pools.entries()].flatMap(([role, pool]) =>
+        pool.map((item) => ({ materialId: item.materialId, role, matchScore: item.matchScore })),
+      );
+      for (const row of rows) priorClassifications.set(row.materialId, row);
+      break;
+    }
+    const effectiveRoles = resolveEffectTemplateMixMaterialRoles(
+      priorItems,
+      entry!.materialRoleOverrides,
+    );
+    const materialRoleAssignments: Record<string, EffectTemplateMixRole> = {};
+    const manualMaterialRoles: Record<string, EffectTemplateMixRole> = {};
+    for (const [id, item] of effectiveRoles) {
+      const canonicalId = canonicalIdById.get(id);
+      const material = canonicalId ? materialById.get(canonicalId) : undefined;
+      const slot = slots.find((candidate) => candidate.role === item.role);
+      if (!material || !slot || material.duration + 0.001 < slot.duration) {
+        if (item.source !== 'MANUAL') continue;
+        throw new ApiHttpException(
+          `手动归槽素材「${material?.code ?? '已失效素材'}」不满足「${slot?.label ?? '目标槽位'}」的来源或时长要求，请重新归槽`,
+          HttpStatus.BAD_REQUEST,
+          'VALIDATION_ERROR',
+        );
+      }
+      materialRoleAssignments[material.id] = item.role;
+      if (item.source === 'MANUAL') manualMaterialRoles[material.id] = item.role;
+    }
     const refreshBindings = refreshAffectedSlots
       ? slots.flatMap((slot) => {
           const previousSlot = target?.slots.find(({ id }) => id === slot.id);
           const sourceSlotId = previousSlot?.id;
           const materialId = sourceSlotId ? target?.bindings[sourceSlotId] : undefined;
-          const material = materialId ? materialById.get(materialId) : undefined;
+          const material = materialId
+            ? materialById.get(canonicalIdById.get(materialId) ?? '')
+            : undefined;
           const previousRevision = sourceSlotId
             ? target?.bindingRevisions[sourceSlotId]
             : undefined;
@@ -1187,7 +1452,9 @@ export class EffectTemplateMixService {
       const oldSlot = target?.slots.find(({ id }) => id === slotId);
       const slot = slots.find(({ id, role }) => id === slotId || role === oldSlot?.role);
       const materialId = target?.bindings[slotId];
-      const material = materialId ? materialById.get(materialId) : undefined;
+      const material = materialId
+        ? materialById.get(canonicalIdById.get(materialId) ?? '')
+        : undefined;
       const offset = target?.offsets[slotId] ?? 0;
       return slot && material && offset >= 0 && offset + slot.duration <= material.duration + 0.001
         ? [
@@ -1214,7 +1481,10 @@ export class EffectTemplateMixService {
       .filter((variant) => variant.id !== targetVariantId)
       .map((variant) =>
         slots
-          .map((slot) => ({ slotId: slot.id, materialId: variant.bindings[slot.id] ?? '' }))
+          .map((slot) => ({
+            slotId: slot.id,
+            materialId: canonicalIdById.get(variant.bindings[slot.id] ?? '') ?? '',
+          }))
           .filter(({ materialId }) => Boolean(materialId) && materialById.has(materialId)),
       );
     const durationFeasible = maximumWeightedAiSelection(
@@ -1259,6 +1529,9 @@ export class EffectTemplateMixService {
       },
       draftRevision: expectedRevision,
       workspaceHash: workflowStateHash(entry!.workspace),
+      materialRoleAssignments,
+      manualMaterialRoles,
+      materialRoleEditVersion: entry!.materialRoleEditVersion ?? 0,
       targetVariantId: targetVariantId ?? null,
       ...(refreshAffectedSlots ? { trimOnly: true, refreshBindings } : {}),
       maxOutputVariants: target ? 1 : 100 - entry!.workspace.variants.length,
@@ -1282,7 +1555,7 @@ export class EffectTemplateMixService {
         [...value.promptArtifacts].sort((left, right) => left.id.localeCompare(right.id)),
       );
     const cachedClassifications = new Map<string, EffectTemplateMixAiClassification>();
-    for (const previous of previousRuns) {
+    for (const previous of classificationRuns) {
       if (
         previous.status !== 'COMPLETED' ||
         previous.templateId !== templateId ||
@@ -1317,8 +1590,28 @@ export class EffectTemplateMixService {
       }
     }
     const reusableClassifications = snapshot.materials.flatMap((material) => {
-      const cached = cachedClassifications.get(material.id);
-      return cached ? [cached] : [];
+      const manualRole = manualMaterialRoles[material.id];
+      if (manualRole)
+        return [
+          {
+            materialId: material.id,
+            source: 'MANUAL' as const,
+            scores: Object.fromEntries(
+              AI_MIX_ROLES.map((role) => [role, role === manualRole ? 1 : 0]),
+            ) as Record<EffectTemplateMixRole, number>,
+            reasons: { [manualRole]: '用户手动归槽' },
+          },
+        ];
+      if (
+        Object.entries(entry!.materialRoleOverrides ?? {}).some(
+          ([id, role]) => role === null && canonicalIdById.get(id) === material.id,
+        )
+      )
+        return [];
+      const cached =
+        cachedClassifications.get(material.id) ??
+        (materialRoleAssignments[material.id] ? priorClassifications.get(material.id) : undefined);
+      return cached && cached.source !== 'MANUAL' ? [cached] : [];
     });
     const boundTargetSelections = refreshAffectedSlots
       ? refreshBindings.flatMap((binding) => {
@@ -1378,17 +1671,21 @@ export class EffectTemplateMixService {
     const preserveExistingAssignments = Boolean(
       target && unlockedSlots.length > 0 && boundTargetSelections.length === unlockedSlots.length,
     );
-    const initialSelections = preserveExistingAssignments ? boundTargetSelections : [];
-    if (
-      !refreshAffectedSlots &&
+    // Keeping the current slot assignment needs the classification that produced it. A fill always
+    // lands on a branch of its own, and cloning re-identifies the materials, so that history is
+    // normally gone by the time the fill runs. It then classifies and assigns from scratch instead of
+    // refusing: a fresh fill cannot overwrite the result the user already has — it is a new branch.
+    // The trim-only refresh is exempt, because it keeps the assignment on purpose and only recomputes
+    // the trims of the slots whose source material was replaced.
+    const reuseExistingAssignments =
       preserveExistingAssignments &&
-      reusableClassifications.length !== snapshot.materials.length
-    )
-      throw new ApiHttpException(
-        '找不到完整的历史归槽结果，为避免素材重新归类，请先恢复原始智能填充结果',
-        HttpStatus.CONFLICT,
-        'CONFLICT',
-      );
+      boundTargetSelections.every(
+        (selection) =>
+          !snapshot.manualMaterialRoles?.[selection.materialId] ||
+          snapshot.manualMaterialRoles[selection.materialId] === selection.role,
+      ) &&
+      (refreshAffectedSlots || reusableClassifications.length === snapshot.materials.length);
+    const initialSelections = reuseExistingAssignments ? boundTargetSelections : [];
     const executionHash = (value: EffectTemplateMixAiSnapshot): string => {
       const { draftRevision: _draftRevision, workspaceHash: _workspaceHash, ...inputs } = value;
       return workflowStateHash(inputs);
@@ -1554,6 +1851,7 @@ export class EffectTemplateMixService {
         classifications,
         lockedMaterialIds,
         reuseCounts,
+        snapshot.materialRoleAssignments,
       );
       if (selections.length !== slots.length)
         throw new ApiHttpException(
@@ -1562,7 +1860,13 @@ export class EffectTemplateMixService {
           'VALIDATION_ERROR',
         );
     } else {
-      const pools = buildAssignedPools(slots, materials, classifications);
+      const pools = buildAssignedPools(
+        slots,
+        materials,
+        classifications,
+        new Set(),
+        snapshot.materialRoleAssignments,
+      );
       const bottleneck = slots.find((slot) => !pools.get(slot.role)?.length);
       if (bottleneck)
         throw new ApiHttpException(
@@ -1576,6 +1880,8 @@ export class EffectTemplateMixService {
         classifications,
         snapshot.existingVariantBindings ?? [],
         snapshot.maxOutputVariants ?? 0,
+        undefined,
+        snapshot.materialRoleAssignments,
       );
       const trimPlan = new Map<string, EffectTemplateMixAiSelection>();
       for (const variant of variants) {
@@ -1801,15 +2107,36 @@ export class EffectTemplateMixService {
           current.contentHash === source.contentHash
         );
       });
-    const currentClipIds = currentSources
-      .filter(
-        (source) =>
-          source.nodeId === 'SEGMENT_RENDER' && source.artifactKey.startsWith('render-clip:'),
-      )
-      .map(({ id }) => id)
-      .sort();
-    const snapshotClipIds = snapshot.materials.map(({ artifactId }) => artifactId).sort();
-    if (!sourcesCurrent || workflowStateHash(currentClipIds) !== workflowStateHash(snapshotClipIds))
+    const currentClipFiles = [
+      ...new Set(
+        currentSources
+          .filter(
+            (source) =>
+              source.nodeId === 'SEGMENT_RENDER' && source.artifactKey.startsWith('render-clip:'),
+          )
+          .map(renderFileKey),
+      ),
+    ].sort();
+    const snapshotClipFiles = snapshot.materials.map(({ fileObjectId }) => fileObjectId).sort();
+    const legacyDuplicateSnapshot = new Set(snapshotClipFiles).size !== snapshotClipFiles.length;
+    const currentClipIds = legacyDuplicateSnapshot
+      ? currentSources
+          .filter(
+            (source) =>
+              source.nodeId === 'SEGMENT_RENDER' && source.artifactKey.startsWith('render-clip:'),
+          )
+          .map(({ id }) => id)
+          .sort()
+      : [];
+    const snapshotClipIds = legacyDuplicateSnapshot
+      ? snapshot.materials.map(({ artifactId }) => artifactId).sort()
+      : [];
+    if (
+      !sourcesCurrent ||
+      (legacyDuplicateSnapshot
+        ? workflowStateHash(currentClipIds) !== workflowStateHash(snapshotClipIds)
+        : workflowStateHash(currentClipFiles) !== workflowStateHash(snapshotClipFiles))
+    )
       throw new ApiHttpException(
         'Prompt 或视频片段已变化，旧任务不会覆盖当前编辑',
         HttpStatus.CONFLICT,
@@ -1873,6 +2200,8 @@ export class EffectTemplateMixService {
           classifications,
           snapshot.existingVariantBindings ?? [],
           snapshot.maxOutputVariants ?? 0,
+          undefined,
+          snapshot.materialRoleAssignments,
         );
     if (
       !variantSelections.length ||
@@ -2382,6 +2711,7 @@ export class EffectTemplateMixService {
       classificationSources,
       lockedTemplateIds,
       packagingLockedIds,
+      inheritedAiRuns,
     ] = await Promise.all([
       this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.working.listArtifacts(projectId, { workflowRunId }),
@@ -2389,6 +2719,7 @@ export class EffectTemplateMixService {
       this.aiRuns?.sourceArtifacts(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.lockedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
       this.aiRuns?.packagedTemplateIds?.(projectId, workflowRunId) ?? Promise.resolve([]),
+      this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId) ?? Promise.resolve([]),
     ]);
     if (nodeState.revision !== expectedRevision) {
       throw new ApiHttpException(
@@ -2445,6 +2776,7 @@ export class EffectTemplateMixService {
       lockedTemplateIds,
       packagingLockedIds,
       templateCreationReady,
+      inheritedAiRuns,
     );
   }
 
@@ -2457,6 +2789,7 @@ export class EffectTemplateMixService {
     lockedTemplateIds: string[] = [],
     packagingLockedIds: string[] = [],
     templateCreationReady = false,
+    inheritedAiRuns: EffectTemplateMixAiRunRecord[] = [],
   ): EffectTemplateMixWorkspaceData {
     const materials = materialsFromArtifacts(
       artifacts,
@@ -2505,7 +2838,16 @@ export class EffectTemplateMixService {
     const activeMaterials = materials.filter(({ available }) => available);
     const classificationPools: EffectTemplateMixClassificationPool[] = [];
     const pooledTemplates = new Set<string>();
-    for (const run of aiRunRecords) {
+    // This Run's own fills come first: a branch that re-filled shows what it ran, and only falls
+    // back to what it inherited for the templates it left alone.
+    const poolRuns = [
+      ...aiRunRecords,
+      ...inheritedAiRuns.flatMap((run) => {
+        const remapped = remapInheritedFill(run, artifacts, activeMaterials);
+        return remapped ? [remapped] : [];
+      }),
+    ];
+    for (const run of poolRuns) {
       if (
         run.status !== 'COMPLETED' ||
         pooledTemplates.has(run.templateId) ||
@@ -2515,13 +2857,27 @@ export class EffectTemplateMixService {
       const entry = workspaceDraft.templates.find(({ id }) => id === run.templateId);
       const snapshot = run.inputSnapshot as EffectTemplateMixAiSnapshot;
       const classifications = run.classificationResult as EffectTemplateMixAiClassification[];
+      const snapshotFiles = snapshot.materials.map(({ fileObjectId }) => fileObjectId);
+      const frozenById = new Map(snapshot.materials.map((material) => [material.id, material]));
+      const poolByFile = new Map<string, EffectTemplateMixAiSnapshot['materials'][number]>();
+      for (const material of activeMaterials) {
+        const frozen = frozenById.get(material.id);
+        if (frozen && !poolByFile.has(frozen.fileObjectId))
+          poolByFile.set(frozen.fileObjectId, frozen);
+      }
+      const poolSnapshotMaterials = [...poolByFile.values()];
+      const poolIds = new Set(poolSnapshotMaterials.map(({ id }) => id));
+      const selectedMaterials = activeMaterials.filter(({ id }) => poolIds.has(id));
       if (
         !entry ||
         classificationSlotSignature(entry.workspace.template.slots) !==
           classificationSlotSignature(snapshot.template.slots) ||
         !classificationsValid(snapshot, classifications, true) ||
-        snapshot.materials.length !== activeMaterials.length ||
-        snapshot.materials.some((frozen) => {
+        new Set(snapshotFiles).size !== selectedMaterials.length ||
+        workflowStateHash(
+          [...new Set(activeMaterials.map(({ fileObjectId }) => fileObjectId))].sort(),
+        ) !== workflowStateHash([...new Set(snapshotFiles)].sort()) ||
+        poolSnapshotMaterials.some((frozen) => {
           const active = activeMaterials.some(({ id }) => id === frozen.id);
           const current = sourceById.get(frozen.id);
           return (
@@ -2541,8 +2897,10 @@ export class EffectTemplateMixService {
         continue;
       const pools = buildAssignedPools(
         entry.workspace.template.slots,
-        activeMaterials,
-        classifications,
+        selectedMaterials,
+        classifications.filter(({ materialId }) => poolIds.has(materialId)),
+        new Set(),
+        snapshot.materialRoleAssignments,
       );
       classificationPools.push({
         templateId: run.templateId,
@@ -2554,6 +2912,10 @@ export class EffectTemplateMixService {
               materialId: item.materialId,
               role,
               matchScore: item.matchScore,
+              ...(classifications.find((row) => row.materialId === item.materialId)?.source ===
+              'MANUAL'
+                ? { source: 'MANUAL' as const }
+                : {}),
             }))
             .sort(
               (left, right) =>
@@ -2665,7 +3027,7 @@ export class EffectTemplateMixService {
         source.freshness !== 'CURRENT' ||
         !Number.isInteger(variant.bindingRevisions[slot.id]) ||
         variant.bindingRevisions[slot.id] !== source.revision ||
-        used.has(source.id) ||
+        used.has(renderFileKey(source)) ||
         !Number.isFinite(offset) ||
         offset < 0 ||
         offset + slot.duration > clipDuration(source) + 0.001
@@ -2676,7 +3038,7 @@ export class EffectTemplateMixService {
           'CONFLICT',
         );
       }
-      used.add(source.id);
+      used.add(renderFileKey(source));
       allSourceIds.add(source.id);
     }
     const totalDuration = variant.slots.reduce((sum, slot) => sum + slot.duration, 0);

@@ -6,6 +6,9 @@ from effect_template_mix.api import InternalApi
 from effect_template_mix.consumer import Consumer, temporary_video_directory
 from effect_template_mix.models import (
     Claim,
+    ClassificationResult,
+    ClassificationCheckpoint,
+    Selection,
     Material,
     Runtime,
     SampledMaterial,
@@ -48,6 +51,50 @@ def test_classification_chunks_preserve_every_material_once() -> None:
 
     assert all(1 <= len(batch) <= 4 for batch in batches)
     assert [item.id for batch in batches for item in batch] == [item.id for item in source]
+
+
+@pytest.mark.asyncio
+async def test_manual_role_skips_ai_classification_and_keeps_unassigned_materials_in_ai_batch() -> None:
+    api = AsyncMock(spec=InternalApi)
+    roles = ("HOOK", "PAIN_POINT", "PRODUCT", "SELLING_POINT", "TRANSFORMATION", "END")
+    api.claim.return_value = Claim(
+        terminal=False, attemptToken="lease",
+        snapshot={
+            "schemaVersion": 1,
+            "template": {"id": "template", "slots": [
+                {"id": "hook", "role": "HOOK", "label": "片头钩子", "duration": 4},
+                {"id": "product", "role": "PRODUCT", "label": "产品展示", "duration": 4},
+            ]},
+            "draftRevision": 1, "targetVariantId": None, "lockedBindings": [],
+            "manualMaterialRoles": {"m1": "HOOK"}, "materialRoleAssignments": {"m1": "HOOK"},
+            "promptArtifacts": [], "materials": [material(1).model_dump(), material(2).model_dump()],
+        },
+        checkpoint={"trims": [
+            {"slotId": "hook", "materialId": "m1", "trimStartSeconds": 0, "trimReason": "完整动作"},
+            {"slotId": "product", "materialId": "m2", "trimStartSeconds": 0, "trimReason": "完整动作"},
+        ]},
+    )
+    api.classify.return_value = [Selection.model_validate({
+        "slotId": slot_id, "role": role, "materialId": material_id,
+        "matchScore": 1, "matchLevel": "NORMAL", "classificationReason": "归槽", "duration": 4,
+    }) for slot_id, role, material_id in (("hook", "HOOK", "m1"), ("product", "PRODUCT", "m2"))]
+    provider = AsyncMock(spec=ArkProvider)
+    provider.classify.return_value = ClassificationResult.model_validate({"classifications": [{
+        "materialId": "m2", "scores": {role: int(role == "PRODUCT") for role in roles}, "reasons": {},
+    }]})
+    api.checkpoint_classifications.return_value = ClassificationCheckpoint(classifications=[], progress=30)
+    consumer = Consumer("amqp://test", "effect.template-mix.requested", api, provider, 1000, 10, 16000, 8192, 1)
+    message = AsyncMock()
+    message.body = b'{"schemaVersion":1,"projectId":"project","runId":"run","requestId":"request"}'
+    await consumer.handle(message)
+    provider.classify.assert_awaited_once()
+    assert [item.id for item in provider.classify.await_args.args[1]] == ["m2"]
+    rows = api.classify.await_args.args[1]
+    assert rows[0].source == "MANUAL"
+    assert rows[0].scores.HOOK == 1
+    assert rows[0].reasons == {"HOOK": "用户手动归槽"}
+    provider.trim.assert_not_awaited()
+    api.complete.assert_awaited_once()
 
 
 def test_cleanup_error_does_not_mask_retryable_provider_failure(monkeypatch: pytest.MonkeyPatch) -> None:
