@@ -146,7 +146,14 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('@click="nudgeRepairBoundary(-0.1)"');
     expect(pageSource).toContain('@click="nudgeRepairBoundary(0.1)"');
     expect(pageSource).toContain('当前画面');
-    expect(pageSource).toContain('这个范围内需要修改什么');
+    expect(pageSource).toContain('画面返修要求');
+    expect(pageSource).not.toContain('这个范围内需要修改什么');
+    expect(pageSource).toMatch(
+      /\.repair-range-editor\s*\{[^}]*box-sizing:\s*border-box;[^}]*width:\s*100%;[^}]*margin:\s*15px 0 0;/su,
+    );
+    expect(pageSource).toMatch(
+      /\.repair-instruction-field textarea\s*\{[^}]*box-sizing:\s*border-box;[^}]*min-height:\s*88px;/su,
+    );
     expect(pageSource).not.toContain('开始时间（秒）');
     expect(pageSource).not.toContain('结束时间（秒）');
     expect(pageSource).toContain('startMs: Math.round(repairStartSeconds.value * 1000)');
@@ -262,14 +269,23 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain("loadPreviewVideo(task, 'ACTIVE', 'repair')");
   });
 
-  it('matches the immediate preview frame to the configured render ratio', () => {
+  it('sizes the immediate preview frame from the video itself, not the mutable render settings', () => {
+    // 画幅设置只作用于新建任务，历史素材可能是在别的画幅下渲染的；画框若跟着设置走，编辑态与非编辑态
+    // 会因为「编辑分支没有克隆设置」而给出不同的预览画框。
     expect(pageSource).toContain("configuredRatio === 'adaptive' ? '16:9' : configuredRatio");
     expect(pageSource).toContain(':style="previewFrameStyle"');
     expect(pageSource).toContain(':style="repairFrameStyle"');
     expect(pageSource).toContain('aspectRatio: `${width} / ${height}`');
     expect(pageSource).toContain('width: `min(100%, calc(${maxHeightVh}vh * ${widthToHeight}))`');
-    expect(pageSource).toContain('effectSegmentRenderFrameStyle(62)');
-    expect(pageSource).toContain('effectSegmentRenderFrameStyle(44)');
+    expect(pageSource).toContain('const width = videoSize?.width || widthPart || 16;');
+    expect(pageSource).toContain('const height = videoSize?.height || heightPart || 9;');
+    expect(pageSource).toContain('effectSegmentRenderFrameStyle(62, previewVideoSize.value)');
+    expect(pageSource).toContain('effectSegmentRenderFrameStyle(44, repairVideoSize.value)');
+    expect(pageSource.match(/@loadedmetadata="handle(?:Preview|Repair)VideoMetadata"/gu)).toHaveLength(2);
+    expect(pageSource).toContain('element.videoWidth > 0 && element.videoHeight > 0');
+    expect(pageSource).toMatch(
+      /const clearPreview = \(\): void => \{[\s\S]*?previewVideoSize\.value = null;[\s\S]*?repairVideoSize\.value = null;/,
+    );
     expect(pageSource).not.toMatch(/\.large-preview\s*\{[^}]*height:\s*250px/su);
   });
 

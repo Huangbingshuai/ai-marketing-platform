@@ -2,6 +2,7 @@
 import { type EffectWorkflowBranchTreeData } from '@ai-marketing/contracts';
 import { X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { effectBranchDestination, type EffectBranchNavigation } from '../../shared/effect-branch-navigation';
 
 import {
   BRANCH_TREE_AXIS_WIDTH,
@@ -10,6 +11,7 @@ import {
   BRANCH_TREE_ROW_GAP,
   BRANCH_TREE_TOP,
   buildEffectBranchLayout,
+  type BranchTreeNode,
 } from './effect-workflow-branch-layout';
 
 const props = defineProps<{
@@ -19,14 +21,22 @@ const props = defineProps<{
   error: string;
   switching: boolean;
   forkDisabled: boolean;
+  activeTemplateId: string | null;
 }>();
-const emit = defineEmits<{ close: []; retry: []; select: [workflowRunId: string]; fork: [] }>();
+const emit = defineEmits<{
+  close: [];
+  retry: [];
+  select: [destination: Omit<EffectBranchNavigation, 'projectId'>];
+  fork: [];
+}>();
 const dialog = ref<HTMLElement | null>(null);
 const scrollContainer = ref<HTMLElement | null>(null);
 const graphElement = ref<HTMLElement | null>(null);
 let returnFocus: HTMLElement | null = null;
 let previousBodyOverflow = '';
-const layout = computed(() => buildEffectBranchLayout(props.tree?.branches ?? []));
+const layout = computed(() =>
+  buildEffectBranchLayout(props.tree?.branches ?? [], props.activeTemplateId),
+);
 const mixStartIndex = BRANCH_TREE_STAGES.findIndex((stage) => stage.nodeId === 'TEMPLATE_MIX');
 const mixStages = BRANCH_TREE_STAGES.filter((stage) => stage.nodeId === 'TEMPLATE_MIX');
 const stageName = (stageKey: (typeof BRANCH_TREE_STAGES)[number]['key']) =>
@@ -66,9 +76,9 @@ const statusText = (status: string, count: number) =>
 const nodeStatusText = (stageKey: string, status: string, count: number) =>
   stageKey === 'MIX_TEMPLATE' && status === 'PENDING' ? '模板已创建' : statusText(status, count);
 
-const selectNode = (workflowRunId: string) => {
-  if (!props.switching && workflowRunId !== props.tree?.activeWorkflowRunId)
-    emit('select', workflowRunId);
+const selectNode = (node: BranchTreeNode) => {
+  if (!props.switching && !props.loading && !props.error)
+    emit('select', effectBranchDestination(node));
 };
 const centerTree = async () => {
   await nextTick();
@@ -161,8 +171,8 @@ onBeforeUnmount(() => {
             <X :size="20" />
           </button>
         </header>
-        <div v-if="loading" class="branch-message" role="status">正在加载版本分支…</div>
-        <div v-else-if="error" class="branch-message branch-message--error" role="alert">
+        <div v-if="loading && !tree" class="branch-message" role="status">正在加载版本分支…</div>
+        <div v-else-if="error && !tree" class="branch-message branch-message--error" role="alert">
           <span>{{ error }}</span
           ><button type="button" @click="emit('retry')">重试</button>
         </div>
@@ -176,16 +186,21 @@ onBeforeUnmount(() => {
               <span><i class="legend-other" />其他版本</span>
             </div>
             <button type="button" class="branch-copy-button"
-              :disabled="switching || forkDisabled || !tree?.activeWorkflowRunId"
+              :disabled="switching || loading || Boolean(error) || forkDisabled || !tree?.activeWorkflowRunId"
               :title="forkDisabled ? '请先保存或取消当前编辑' : '复制当前分支的已确认内容'"
               @click="emit('fork')">从当前分支新建分支</button>
             <span v-if="switching" class="branch-switching" role="status">正在切换分支…</span>
+            <span v-else-if="loading" class="branch-switching" role="status">正在同步最新分支…</span>
+            <span v-else-if="error" class="branch-switching branch-switching--error" role="alert">
+              更新失败，当前显示上次结果
+              <button type="button" @click="emit('retry')">重试</button>
+            </span>
           </div>
           <div
             ref="scrollContainer"
             class="branch-scroll"
             aria-label="效果类工作流版本树"
-            :aria-busy="switching"
+            :aria-busy="switching || loading"
           >
             <div
               class="branch-canvas"
@@ -268,41 +283,11 @@ onBeforeUnmount(() => {
                   :height="layout.height"
                   aria-hidden="true"
                 >
-                  <defs>
-                    <marker
-                      id="branch-arrow-default"
-                      markerUnits="userSpaceOnUse"
-                      markerWidth="8"
-                      markerHeight="8"
-                      refX="8"
-                      refY="4"
-                      orient="auto"
-                    >
-                      <path class="branch-arrow-default" d="M 0 0 L 8 4 L 0 8 Z" />
-                    </marker>
-                    <marker
-                      id="branch-arrow-active"
-                      markerUnits="userSpaceOnUse"
-                      markerWidth="8"
-                      markerHeight="8"
-                      refX="8"
-                      refY="4"
-                      orient="auto"
-                    >
-                      <path class="branch-arrow-active" d="M 0 0 L 8 4 L 0 8 Z" />
-                    </marker>
-                  </defs>
-                  <path
-                    v-for="edge in layout.edges"
-                    :key="edge.key"
-                    :d="edge.path"
-                    :marker-end="
-                      edge.onActivePath ? 'url(#branch-arrow-active)' : 'url(#branch-arrow-default)'
-                    "
-                    :class="{
-                      'branch-line--active': edge.onActivePath,
-                    }"
-                  />
+                  <g v-for="edge in layout.edges" :key="edge.key">
+                    <path :d="edge.path" :class="{ 'branch-line--active': edge.onActivePath }" />
+                    <path :d="edge.arrowPath" class="branch-arrow"
+                      :class="{ 'branch-arrow--active': edge.onActivePath }" />
+                  </g>
                 </svg>
                 <div
                   class="branch-project-root"
@@ -321,11 +306,11 @@ onBeforeUnmount(() => {
                     'branch-node--active': node.onActivePath,
                     'branch-node--current': node.isCurrentStage,
                   }"
-                  :disabled="switching"
+                  :disabled="switching || loading || Boolean(error)"
                   :style="{ left: `${node.x}px`, top: `${node.y}px` }"
                   :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node.stageKey, node.status, node.artifactCount)}${node.onActivePath ? '，当前工作流路径' : ''}`"
                   :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node.stageKey, node.status, node.artifactCount)}`"
-                  @click="selectNode(node.workflowRunId)"
+                  @click="selectNode(node)"
                 >
                   <strong>{{
                     node.stageKey === 'MIX_TEMPLATE'
@@ -544,13 +529,12 @@ onBeforeUnmount(() => {
   stroke: #df3547;
   stroke-width: 3.5;
 }
-.branch-lines .branch-arrow-default {
+.branch-lines path.branch-arrow {
   fill: #b2c1d5;
   stroke: none;
 }
-.branch-lines .branch-arrow-active {
+.branch-lines path.branch-arrow--active {
   fill: #df3547;
-  stroke: none;
 }
 .branch-axis-rail {
   position: sticky;
@@ -687,6 +671,20 @@ onBeforeUnmount(() => {
   color: #2563eb;
   font-size: 12px;
   font-weight: 700;
+}
+.branch-switching--error {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #c33342;
+}
+.branch-switching--error button {
+  padding: 3px 8px;
+  color: #2563eb;
+  background: #fff;
+  border: 1px solid #c8d7f2;
+  border-radius: 6px;
+  cursor: pointer;
 }
 .branch-close:focus-visible,
 .branch-node:focus-visible {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { Check, ChevronRight, GitBranch } from '@lucide/vue';
+import { AlertCircle, Check, ChevronRight, GitBranch } from '@lucide/vue';
 import { computed } from 'vue';
 
 const props = defineProps<{
   activeStep: number;
+  staleCounts?: readonly number[];
 }>();
 const emit = defineEmits<{ select: [step: number]; branches: [] }>();
 
@@ -50,6 +51,9 @@ type NodeState = 'completed' | 'current' | 'ready';
 
 const currentNode = computed(() => nodes[props.activeStep] ?? nodes[0]);
 const currentStepLabel = computed(() => String(props.activeStep + 1).padStart(2, '0'));
+const staleCount = (index: number) => props.staleCounts?.[index] ?? 0;
+const statusText = (index: number) => staleCount(index) > 0
+  ? `待更新 · ${staleCount(index)}` : nodes[index]?.status;
 
 const nodeState = (index: number): NodeState => {
   if (index === props.activeStep) return 'current';
@@ -79,15 +83,19 @@ const nodeState = (index: number): NodeState => {
 
     <div class="effect-flow__track">
       <template v-for="(node, index) in nodes" :key="node.title">
-        <article class="effect-flow__node" :class="nodeState(index)">
-          <button type="button" class="effect-flow__main" @click="emit('select', index)">
+        <article class="effect-flow__node" :class="[nodeState(index), { 'needs-update': staleCount(index) > 0 }]">
+          <button
+            type="button" class="effect-flow__main"
+            :title="staleCount(index) > 0 ? `${node.title}有 ${staleCount(index)} 项内容需要更新，旧结果仍可查看` : node.title"
+            @click="emit('select', index)">
             <span class="effect-flow__number">
-              <Check v-if="nodeState(index) === 'completed'" :size="12" :stroke-width="3" />
+              <AlertCircle v-if="staleCount(index) > 0" :size="17" :stroke-width="2.5" aria-hidden="true" />
+              <Check v-else-if="nodeState(index) === 'completed'" :size="12" :stroke-width="3" />
               <template v-else>{{ index + 1 }}</template>
             </span>
             <span class="effect-flow__copy">
               <b>{{ node.label }}</b>
-              <small>{{ node.status }}</small>
+              <small>{{ statusText(index) }}</small>
             </span>
           </button>
         </article>
@@ -253,6 +261,19 @@ const nodeState = (index: number): NodeState => {
   color: #2aa27d;
   background: #effaf6;
 }
+.effect-flow__node.needs-update {
+  background: #fffaf1;
+  border-color: #f3ae54;
+  box-shadow: inset 0 3px 0 #f59e0b;
+}
+.effect-flow__node.needs-update.current {
+  box-shadow: inset 0 3px 0 #f59e0b, 0 0 0 3px rgba(245, 158, 11, 0.12);
+}
+.effect-flow__node.needs-update .effect-flow__number {
+  color: #b45309;
+  background: #fff0d4;
+}
+.effect-flow__node.needs-update small { color: #b45309; font-weight: 800; }
 .effect-flow__connector {
   width: 18px;
   min-width: 18px;

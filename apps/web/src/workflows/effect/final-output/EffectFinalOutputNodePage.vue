@@ -5,20 +5,31 @@ import type {
   ApiResponse,
   EffectTemplateMixMaterial,
   EffectTemplateMixWorkspaceData,
+  EffectWorkflowBranchTreeData,
   FinalOutputResolution,
   FinalOutputRun,
   SyncFinalOutputData,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeFooter } from '@ai-marketing/ui';
+import { effectTemplateBranchTips } from '@ai-marketing/contracts';
+import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import { apiUrl, requestJson } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import EffectTemplateMixThumbnail from '../template-mix/EffectTemplateMixThumbnail.vue';
+import { effectBranchNavigationMatches, type EffectBranchNavigation } from '../shared/effect-branch-navigation';
+import type { EffectOutputFreshness } from '../shared/effect-canvas-freshness';
+import { outputFileDescription, outputPackagingLabel, outputTemplateStatus } from './effect-final-output-status';
+import { activateEffectWorkflowBranch } from '../../../platform/workflow/api/workflow-working.api';
 
-const props = defineProps<{ projectId: string; workflowRunId: string }>();
+const props = defineProps<{
+  projectId: string;
+  workflowRunId: string;
+  branchNavigation?: EffectBranchNavigation | null;
+}>();
 const emit = defineEmits<{
-  back: [];
-  preview: [selection: { templateId: string; variantId: string }];
-  workflowRunChange: [];
+  back: [templateId?: string];
+  preview: [selection: { workflowRunId: string; templateId: string; variantId: string }];
+  workflowRunChange: [selection?: { workflowRunId: string; templateId: string }];
+  freshness: [state: EffectOutputFreshness];
 }>();
 const OUTPUT_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const;
 type OutputPreviewClip = {
@@ -36,9 +47,11 @@ type OutputTemplateCard = {
   pendingDetail: string;
 };
 const runs = ref<FinalOutputRun[]>([]),
+  outputWorkflowRunId = ref(props.workflowRunId),
   selectedTemplateId = ref(''),
   selectedRunId = ref(''),
   mixWorkspace = ref<EffectTemplateMixWorkspaceData | null>(null),
+  templatePaths = ref(new Map<string, { name: string; variantCount: number }>()),
   resolution = ref<FinalOutputResolution>('720p'),
   frameRate = ref<24 | 25 | 30 | 50 | 60>(30),
   page = ref(1),
@@ -50,6 +63,7 @@ const runs = ref<FinalOutputRun[]>([]),
 const loading = ref(true),
   mixLoading = ref(true),
   busy = ref(false),
+  exportStarting = ref(false),
   itemRerenderingId = ref(''),
   previewItem = ref<FinalOutputRun['items'][number] | null>(null),
   previewLoading = ref(false),
@@ -57,23 +71,16 @@ const loading = ref(true),
   error = ref(''),
   mixError = ref('');
 const previewCloseButton = ref<HTMLButtonElement | null>(null);
+const outputWorkspaceElement = ref<HTMLElement | null>(null);
 let previewDialogTrigger: HTMLElement | null = null;
 const templates = computed(() => {
   const latestByTemplate = new Map<string, FinalOutputRun>();
   for (const outputRun of runs.value) {
+    if (outputRun.backgroundExportSourceRunId) continue;
     if (!latestByTemplate.has(outputRun.templateId))
       latestByTemplate.set(outputRun.templateId, outputRun);
   }
-  if (!mixWorkspace.value) {
-    return [...latestByTemplate.values()].map((run) => ({
-      templateId: run.templateId,
-      templateName: run.templateName,
-      run,
-      pendingLabel: '',
-      pendingTitle: '',
-      pendingDetail: '',
-    }));
-  }
+  if (!mixWorkspace.value) return [];
   const workspaceTemplates = mixWorkspace.value?.draft.templates ?? [];
   const cards: OutputTemplateCard[] = workspaceTemplates.map((entry) => {
     const outputRun = latestByTemplate.get(entry.id);
@@ -87,39 +94,38 @@ const templates = computed(() => {
       ? '待重新智能填充'
       : entry.packagingLocked
         ? '待完成校验'
-        : !variants.length || hasIncompleteVariant
-          ? '待完成混剪'
+        : !variants.length
+          ? '尚未创建成片工程'
+          : hasIncompleteVariant
+            ? '待完成混剪'
           : '待成片包装';
     const pendingTitle = entry.needsAiFill
       ? '模板需要重新智能填充'
       : entry.packagingLocked
         ? '该模板尚未进入成片输出'
-        : !variants.length || hasIncompleteVariant
-          ? '该模板还有未完成的混剪工程'
+        : !variants.length
+          ? '该模板尚未创建成片工程'
+          : hasIncompleteVariant
+            ? '该模板还有未完成的混剪工程'
           : '该模板还没有待渲染成片';
     const pendingDetail = entry.needsAiFill
       ? '返回模板混剪，先按当前模板配置重新智能填充，再做智能成片包装。'
       : entry.packagingLocked
         ? '成片包装已启动。返回模板混剪，等待该模板全部包装成功，成片会自动进入这里。'
-        : !variants.length || hasIncompleteVariant
-          ? '返回模板混剪，补齐工程的素材槽位，然后进行智能成片包装。'
+        : !variants.length
+          ? '返回模板混剪，通过智能填充或新建成片创建工程；包装成功后会自动补齐音画。'
+          : hasIncompleteVariant
+            ? '返回模板混剪，补齐工程的素材槽位，然后进行智能成片包装。'
       : '返回模板混剪，智能填充成功后成片工程会自动进入这里；随后可继续智能成片包装。';
     return {
       templateId: entry.id,
-      templateName: entry.workspace.template.name,
+      templateName: templatePaths.value.get(entry.id)?.name ?? entry.workspace.template.name,
       run: outputRun,
       pendingLabel,
       pendingTitle,
       pendingDetail,
     };
   });
-  // Another tab can finish a new template's smart fill while this page is open. The output poll
-  // receives its run before the mix-workspace refresh, so do not hide it behind the older template list.
-  for (const outputRun of latestByTemplate.values()) {
-    if (!cards.some((card) => card.templateId === outputRun.templateId))
-      cards.push({ templateId: outputRun.templateId, templateName: outputRun.templateName,
-        run: outputRun, pendingLabel: '', pendingTitle: '', pendingDetail: '' });
-  }
   return cards;
 });
 const templateRuns = computed(() => {
@@ -132,6 +138,17 @@ const selectedTemplate = computed(
 );
 const pageLoading = computed(() => loading.value || mixLoading.value);
 const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.status));
+const backgroundExport = computed(() => runs.value.find((entry) =>
+  entry.backgroundExportSourceRunId === run.value?.workflowRunId &&
+  entry.templateId === selectedTemplateId.value));
+const exportActive = computed(() => Boolean(backgroundExport.value &&
+  ['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(backgroundExport.value.status)));
+const exportPublishing = computed(() => Boolean(backgroundExport.value?.status === 'COMPLETED' &&
+  !backgroundExport.value.backgroundExportPublished));
+const exportProgressVisible = computed(() => exportStarting.value || Boolean(backgroundExport.value &&
+  backgroundExport.value.status !== 'COMPLETED'));
+const localProgressVisible = computed(() => Boolean(run.value &&
+  ['QUEUED', 'RUNNING', 'FAILED', 'PARTIAL', 'CANCELLED'].includes(run.value.status)));
 const staleItems = computed(() => run.value?.items.filter((item) => item.stale) ?? []);
 const validateStatusTitle = computed(() => {
   if (!run.value) return '等待成片输出';
@@ -156,7 +173,7 @@ const displayName = (item: FinalOutputRun['items'][number]) => {
   return index < 0 ? '成片' : `成片 ${String(index + 1).padStart(2, '0')}`;
 };
 const openTimelinePreview = (variantId: string) => {
-  if (run.value) emit('preview', { templateId: run.value.templateId, variantId });
+  if (run.value) emit('preview', { workflowRunId: run.value.workflowRunId, templateId: run.value.templateId, variantId });
 };
 const activateOutputCard = (item: FinalOutputRun['items'][number], event: Event) => {
   if (!item.fileObjectId) {
@@ -181,13 +198,30 @@ const handlePreviewVideoError = () => {
   previewLoading.value = false;
   previewError.value = '成片加载失败，请稍后重试';
 };
-const progress = computed(() =>
-  run.value?.items.length
-    ? Math.floor(
-        run.value.items.reduce((sum, item) => sum + item.progress, 0) / run.value.items.length,
-      )
-    : 0,
-);
+const averageProgress = (value?: FinalOutputRun) => value?.items.length
+  ? Math.floor(value.items.reduce((sum, item) => sum + item.progress, 0) / value.items.length)
+  : 0;
+const exportProgress = computed(() => averageProgress(backgroundExport.value));
+const localProgress = computed(() => averageProgress(run.value));
+const exportProgressSummary = computed(() => {
+  if (exportStarting.value)
+    return `${run.value?.status === 'PENDING_RENDER' ? '导出成片' : '重新导出成片'} · 正在创建任务`;
+  const current = backgroundExport.value;
+  if (!current) return '正在导出成片';
+  return `${run.value?.status === 'PENDING_RENDER' ? '导出成片' : '重新导出成片'} · ${labels[current.status]} · ${current.counts.completed} / ${current.counts.total} 条完成`;
+});
+const localProgressSummary = computed(() => {
+  const current = run.value;
+  if (!current) return '成片任务处理中';
+  const action = backgroundExport.value ? '局部更新成片' : '成片输出';
+  return `${action} · ${labels[current.status]} · ${current.counts.completed} / ${current.counts.total} 条完成`;
+});
+const exportProgressWarning = computed(() => backgroundExport.value?.counts.failed
+  ? `${backgroundExport.value.counts.failed} 条成片失败或取消`
+  : '');
+const localProgressWarning = computed(() => run.value?.counts.failed
+  ? `${run.value.counts.failed} 条成片失败或取消`
+  : '');
 const labels: Record<string, string> = {
   PENDING_RENDER: '待渲染',
   QUEUED: '排队中',
@@ -214,6 +248,9 @@ let mixController: AbortController | undefined;
 let generation = 0,
   mixGeneration = 0,
   mounted = true;
+let initialActivationHandled = false;
+const pendingExportNavigation = new Set<string>();
+let openingExportRunId = '';
 const outputSyncChannel = typeof BroadcastChannel === 'undefined' ? null
   : new BroadcastChannel('effect-final-output-sync');
 async function refresh() {
@@ -223,11 +260,12 @@ async function refresh() {
   clearTimeout(timer);
   try {
     const result = await requestJson<ApiResponse<FinalOutputRun[]>>(
-      `${base.value}?workflowRunId=${props.workflowRunId}`,
+      `${base.value}?workflowRunId=${encodeURIComponent(outputWorkflowRunId.value)}`,
       { operation: '读取成片输出', signal: controller.signal },
     );
     if (current !== generation) return;
     runs.value = result.data;
+    if (mounted) emit('freshness', { projectId: props.projectId, workflowRunId: props.workflowRunId, runs: result.data });
     const savedSettings = new Map(settingsByTemplate.value);
     for (const template of templates.value) {
       if (template.run && !savedSettings.has(template.templateId)) {
@@ -243,6 +281,18 @@ async function refresh() {
       selectedTemplateId.value = templates.value[0]?.templateId ?? '';
     if (!templateRuns.value.some((r) => r.id === selectedRunId.value))
       selectedRunId.value = templateRuns.value[0]?.id ?? '';
+    // Follow only an export started here or observed in progress. Reopening historical
+    // deliveries and completing an in-place local update must not navigate the workflow.
+    for (const entry of result.data) {
+      if (entry.backgroundExportSourceRunId &&
+        ['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(entry.status))
+        pendingExportNavigation.add(entry.id);
+    }
+    const completedExport = result.data.find((entry) =>
+      pendingExportNavigation.has(entry.id) && entry.templateId === selectedTemplateId.value &&
+      entry.status === 'COMPLETED' &&
+      (!entry.backgroundExportSourceRunId || entry.backgroundExportPublished));
+    if (completedExport) await viewExportBranch(completedExport);
   } catch (reason) {
     if (current === generation && !(reason instanceof DOMException && reason.name === 'AbortError'))
       error.value = reason instanceof Error ? reason.message : '读取输出失败';
@@ -259,12 +309,23 @@ async function refreshMixWorkspace(): Promise<EffectTemplateMixWorkspaceData | n
   mixController = new AbortController();
   if (!mixWorkspace.value) mixLoading.value = true;
   try {
-    const result = await requestJson<ApiResponse<EffectTemplateMixWorkspaceData>>(
+    const scopeId = props.workflowRunId;
+    const [result, tree] = await Promise.all([requestJson<ApiResponse<EffectTemplateMixWorkspaceData>>(
       `/projects/${props.projectId}/workflows/effect/template-mix?workflowRunId=${encodeURIComponent(props.workflowRunId)}`,
       { operation: '读取混剪成片预览', signal: mixController.signal },
-    );
+    ), requestJson<ApiResponse<EffectWorkflowBranchTreeData>>(
+      `/projects/${props.projectId}/workflow-runs/effect/branches`,
+      { operation: '读取模板当前路径', signal: mixController.signal },
+    )]);
     if (current === mixGeneration) {
       mixWorkspace.value = result.data;
+      templatePaths.value = new Map([...effectTemplateBranchTips(tree.data.branches,
+        tree.data.branches.some((branch) => branch.workflowRunId === scopeId) ? scopeId :
+          tree.data.activeWorkflowRunId)].flatMap(([templateId, branch]) => {
+        const template = branch.templates.find((entry) => entry.templateId === templateId);
+        return template ? [[templateId, { name: template.name,
+          variantCount: template.timelineVariantCount }] as const] : [];
+      }));
       mixError.value = '';
       if (!templates.value.some(({ templateId }) => templateId === selectedTemplateId.value))
         selectedTemplateId.value = templates.value[0]?.templateId ?? '';
@@ -305,13 +366,20 @@ const refreshAll = () => {
   void reconcilePending();
   void refresh();
 };
-if (outputSyncChannel) outputSyncChannel.onmessage = (event: MessageEvent) => {
-  const scope = event.data as { projectId?: string; workflowRunId?: string } | null;
+const outputChanged = (value: unknown) => {
+  const scope = value as { projectId?: string; workflowRunId?: string } | null;
   if (!mounted || scope?.projectId !== props.projectId ||
     scope.workflowRunId !== props.workflowRunId) return;
-  void refreshMixWorkspace();
-  void refresh();
+  // Update film warnings first. Workbench/history and tree reads are secondary and used to
+  // compete with the same output query after every timeline save, especially across tabs.
+  void refresh().then(() => {
+    if (mounted && scope.projectId === props.projectId && scope.workflowRunId === props.workflowRunId)
+      void refreshMixWorkspace();
+  });
 };
+if (outputSyncChannel) outputSyncChannel.onmessage = (event: MessageEvent) => outputChanged(event.data);
+const savedOutputSource = (event: Event) => outputChanged((event as CustomEvent).detail);
+window.addEventListener('effect-final-output-sync', savedOutputSource);
 const previewClips = (item: FinalOutputRun['items'][number]): OutputPreviewClip[] => {
   const entry = mixWorkspace.value?.draft.templates.find(({ id }) => id === run.value?.templateId);
   const variant = entry?.workspace.variants.find(({ id }) => id === item.variantId);
@@ -376,39 +444,83 @@ async function retryFailedOutputs() {
   }
 }
 async function startRender() {
-  if (!run.value || busy.value || active.value) return;
-  const rerender = run.value.status !== 'PENDING_RENDER';
-  if (rerender) {
-    const confirmed = await requestActionConfirmation({
-      eyebrow: '重新导出成片',
-      title: `重新导出 ${run.value.counts.total} 条成片？`,
-      description:
-        '将按当前分辨率与帧率创建此模板的新版本分支，原有成片保留在旧分支。',
-      confirmLabel: '确认重新导出',
-      tone: 'warning',
-    });
-    if (!confirmed) return;
-  }
-  busy.value = true;
+  if (!run.value || exportStarting.value || exportActive.value || exportPublishing.value || busy.value) return;
+  const selected = run.value;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const settings = { resolution: resolution.value, frameRate: frameRate.value };
+  const isCurrent = () => mounted && props.projectId === projectId &&
+    props.workflowRunId === workflowRunId && run.value?.id === selected.id &&
+    selectedTemplateId.value === selected.templateId;
+  const rerender = selected.status !== 'PENDING_RENDER';
+  exportStarting.value = true;
   try {
+    if (rerender) {
+      const confirmed = await requestActionConfirmation({
+        eyebrow: '重新导出成片',
+        title: `重新导出 ${selected.counts.total} 条成片？`,
+        description:
+          '将按最新已保存的混剪工程和当前分辨率与帧率重新渲染全部成片（包括待更新成片）。原有成片保持可用，也可以继续局部更新。',
+        confirmLabel: '确认重新导出',
+        tone: 'warning',
+      });
+      if (!confirmed || !isCurrent()) return;
+    }
+    if (!isCurrent()) return;
     const response = await requestJson<ApiResponse<FinalOutputRun>>(
-      `${base.value}/${run.value.id}/render`,
+      `/projects/${projectId}/workflows/effect/final-output/${selected.id}/render`,
       {
         method: 'POST',
         operation: rerender ? '重新导出成片' : '开始导出成片',
-        body: { resolution: resolution.value, frameRate: frameRate.value },
+        body: settings,
       },
     );
-    if (response.data.workflowRunId !== props.workflowRunId) {
-      emit('workflowRunChange');
-      return;
-    }
+    if (!isCurrent()) return;
+    error.value = '';
+    pendingExportNavigation.add(response.data.id);
+    runs.value = [...runs.value.filter((entry) => entry.id !== response.data.id),
+      { ...response.data, backgroundExportSourceRunId: selected.workflowRunId }];
     await refresh();
   } catch (reason) {
+    if (!isCurrent()) return;
     error.value = reason instanceof Error ? reason.message : '启动成片渲染失败';
   } finally {
+    exportStarting.value = false;
+  }
+}
+async function viewExportBranch(exported: FinalOutputRun) {
+  if (exported.status !== 'COMPLETED' ||
+    (exported.backgroundExportSourceRunId && !exported.backgroundExportPublished) ||
+    !mounted || busy.value || openingExportRunId) return;
+  const projectId = props.projectId;
+  const sourceWorkflowRunId = props.workflowRunId;
+  const templateId = selectedTemplateId.value;
+  openingExportRunId = exported.id;
+  busy.value = true;
+  try {
+    await activateEffectWorkflowBranch(projectId, exported.workflowRunId);
+    if (projectId !== props.projectId || sourceWorkflowRunId !== props.workflowRunId ||
+      templateId !== selectedTemplateId.value || !mounted) return;
+    pendingExportNavigation.delete(exported.id);
+    outputWorkflowRunId.value = exported.workflowRunId;
+    emit('workflowRunChange', { workflowRunId: exported.workflowRunId, templateId: exported.templateId });
+    await refresh();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '读取新成片版本失败';
+  } finally {
+    if (openingExportRunId === exported.id) openingExportRunId = '';
     busy.value = false;
   }
+}
+function handleProgressAction() {
+  outputWorkspaceElement.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function handleLocalProgressAction() {
+  if (!backgroundExport.value && run.value?.counts.failed && !active.value) {
+    void retryFailedOutputs();
+    return;
+  }
+  handleProgressAction();
 }
 async function rerenderItem(item: FinalOutputRun['items'][number]) {
   if (!run.value || busy.value || active.value || itemRerenderingId.value) return;
@@ -435,6 +547,9 @@ async function rerenderItem(item: FinalOutputRun['items'][number]) {
 }
 async function localUpdate(itemIds: string[]) {
   if (!run.value || run.value.status !== 'COMPLETED' || busy.value || !itemIds.length) return;
+  const target = run.value;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
   const selected = run.value.items.filter((item) => itemIds.includes(item.id) && item.stale);
   if (selected.length !== new Set(itemIds).size) {
     error.value = '成片状态已变化，请刷新后重试';
@@ -443,14 +558,15 @@ async function localUpdate(itemIds: string[]) {
   const confirmed = await requestActionConfirmation({
     eyebrow: '局部更新成片',
     title: `更新并重新渲染 ${selected.length} 条成片？`,
-    description: '将读取当前混剪工程，按原有规格重新渲染选中的成片，并在当前成片分支覆盖旧文件。此操作会产生渲染费用，其他成片不变。',
+    description: '将读取当前混剪工程。若使用的渲染素材已变更，模型会为变更槽位重新选取画面区间并生成口播和字幕，保留音乐及其他槽位。成功后在当前分支覆盖旧成片，不新增分支；此操作会产生生成或渲染费用。',
     confirmLabel: '确认局部更新',
     tone: 'warning',
   });
-  if (!confirmed) return;
+  if (!confirmed || !mounted || props.projectId !== projectId ||
+    props.workflowRunId !== workflowRunId || run.value?.id !== target.id) return;
   busy.value = true;
   try {
-    await requestJson(`${base.value}/${run.value.id}/local-update`, {
+    await requestJson(`/projects/${projectId}/workflows/effect/final-output/${target.id}/local-update`, {
       method: 'POST', operation: '局部更新成片', body: { itemIds },
     });
     error.value = '';
@@ -471,9 +587,20 @@ function stop() {
   clearTimeout(timer);
 }
 watch(
-  () => [props.projectId, props.workflowRunId],
-  () => {
+  () => [props.projectId, props.workflowRunId] as const,
+  ([projectId], previousScope) => {
+    // The parent adopts this page's completed export child Run. Keep the already-visible output
+    // state in place while the parent refreshes its workflow context; this is not a user branch
+    // navigation and must not blank the page or flash its loading state.
+    if (previousScope?.[0] === projectId && runs.value.length && mixWorkspace.value &&
+      outputWorkflowRunId.value === props.workflowRunId) {
+      void refreshMixWorkspace();
+      void refresh();
+      return;
+    }
     runs.value = [];
+    outputWorkflowRunId.value = props.workflowRunId;
+    pendingExportNavigation.clear();
     selectedTemplateId.value = '';
     selectedRunId.value = '';
     closePreviewDialog(false);
@@ -481,6 +608,7 @@ watch(
     selectedItemIds.value = new Set();
     selectionMode.value = false;
     mixWorkspace.value = null;
+    templatePaths.value = new Map();
     mixLoading.value = true;
     mixError.value = '';
     loading.value = true;
@@ -490,6 +618,20 @@ watch(
   },
   { immediate: true },
 );
+let lastBranchNavigation: EffectBranchNavigation | null = null;
+watch([() => props.branchNavigation, loading, mixLoading, templates], () => {
+  const target = props.branchNavigation;
+  if (!effectBranchNavigationMatches(target, props.projectId, props.workflowRunId) ||
+    target.nodeId !== 'FINAL_OUTPUT' || target === lastBranchNavigation ||
+    loading.value || mixLoading.value || error.value || mixError.value) return;
+  lastBranchNavigation = target;
+  if (target.templateId && templates.value.some(({ templateId }) => templateId === target.templateId))
+    selectedTemplateId.value = target.templateId;
+  else if (target.templateId) {
+    selectedTemplateId.value = '';
+    error.value = '所选模板不在此成片分支中，请重新选择模板';
+  }
+}, { flush: 'post' });
 watch(selectedTemplateId, () => {
   page.value = 1;
   selectedRunId.value = templateRuns.value[0]?.id ?? '';
@@ -520,12 +662,21 @@ watch([resolution, frameRate], ([nextResolution, nextFrameRate]) => {
 });
 onActivated(() => {
   mounted = true;
+  // The immediate scope watcher already starts the first reads during setup. Avoid a second
+  // workspace/tree reconciliation cancelling those reads and delaying the stale item controls.
+  if (!initialActivationHandled) {
+    initialActivationHandled = true;
+    return;
+  }
   // KeepAlive retains the old preview; entering from the mix workbench must reload its saved draft.
   void reconcilePending();
   void refresh();
 });
 onDeactivated(stop);
-onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
+onBeforeUnmount(() => {
+  stop(); outputSyncChannel?.close();
+  window.removeEventListener('effect-final-output-sync', savedOutputSource);
+});
 </script>
 
 <template>
@@ -557,7 +708,7 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
       <span class="state-icon"><Film :size="25" /></span>
       <h3>暂无混剪模板</h3>
       <p>完成模板混剪后，模板会按原有顺序显示在这里；每个模板的成片任务彼此独立。</p>
-      <button class="secondary-button" type="button" @click="$emit('back')">
+      <button class="secondary-button" type="button" @click="$emit('back', selectedTemplateId)">
         <ArrowLeft :size="14" />返回模板混剪
       </button>
     </section>
@@ -583,7 +734,7 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
               <Layers :size="18" />
               <span class="template-card__copy">
                 <strong>{{ template.templateName }}</strong>
-                <small v-if="template.run">{{ template.run.counts.total }} 条成片 · {{ labels[template.run.status] }}</small>
+                <small v-if="template.run" :class="{ 'template-update-label': template.run.counts.stale > 0 }">{{ outputTemplateStatus(template.run) }}</small>
                 <small v-else>{{ template.pendingLabel }}</small>
               </span>
             </button>
@@ -606,61 +757,57 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
           <div>
             <h3>成片输出设置</h3>
             <p v-if="run.status === 'PENDING_RENDER'">设置仅作用于左侧选中的模板；导出后将渲染 {{ run.counts.total }} 条成片</p>
-            <p v-else-if="active">正在渲染所选模板的成片，渲染期间不可修改</p>
-            <p v-else>可调整分辨率与帧率；重新导出成功后会创建此模板的新版本分支</p>
+            <p v-else-if="exportActive || exportPublishing">正在重新导出全部成片，原有成片仍可用</p>
+            <p v-else-if="active">局部更新进行中；可以同时重新导出全部成片</p>
+            <p v-else>可调整分辨率与帧率；按当前模板工作流版本的工程重新导出全部成片</p>
           </div>
         </div>
         <label>
           <span>分辨率</span>
-          <select v-model="resolution" :disabled="busy || active" aria-label="成片分辨率">
+          <select v-model="resolution" :disabled="exportStarting || exportActive || exportPublishing" aria-label="成片分辨率">
             <option value="480p">480P</option><option value="720p">720P</option><option value="1080p">1080P</option>
             <option value="2K">2K</option><option value="4K">4K</option>
           </select>
         </label>
         <label>
           <span>帧率</span>
-          <select v-model.number="frameRate" :disabled="busy || active" aria-label="成片帧率">
+          <select v-model.number="frameRate" :disabled="exportStarting || exportActive || exportPublishing" aria-label="成片帧率">
             <option :value="24">24 fps</option><option :value="25">25 fps</option><option :value="30">30 fps</option><option :value="50">50 fps</option><option :value="60">60 fps</option>
           </select>
         </label>
-        <button class="primary-button export-button" type="button" :disabled="busy || active" @click="startRender">
-          <LoaderCircle v-if="busy || active" class="spin" :size="15" />
+        <button
+          class="primary-button export-button"
+          type="button"
+          :disabled="exportStarting || exportActive || exportPublishing || busy"
+          @click="startRender"
+        >
+          <LoaderCircle v-if="exportStarting || exportActive || exportPublishing" class="spin" :size="15" />
           <RefreshCw v-else-if="run.status !== 'PENDING_RENDER'" :size="15" />
-          <Play v-else :size="15" />{{ busy ? '正在创建任务…' : active ? `渲染中 ${run.counts.completed}/${run.counts.total}` : run.status !== 'PENDING_RENDER' ? `重新导出成片（${run.counts.total}）` : `导出成片（${run.counts.total}）` }}
+          <Play v-else :size="15" />{{ exportStarting ? '正在创建任务…' : exportActive ? `重新导出中 ${backgroundExport?.counts.completed}/${backgroundExport?.counts.total}` : exportPublishing ? '正在完成成片…' : run.status !== 'PENDING_RENDER' ? `重新导出成片（${run.counts.total}）` : `导出成片（${run.counts.total}）` }}
         </button>
       </section>
-      <section v-if="run.status !== 'PENDING_RENDER' && run.status !== 'COMPLETED'" class="batch-panel" aria-label="批次输出进度">
-        <div class="batch-panel__heading">
-          <div>
-            <span class="eyebrow">成片渲染进度</span>
-            <strong class="batch-status" :class="statusTone(run.status)">
-              <i></i>{{ labels[run.status] }}
-            </strong>
-          </div>
-          <button
-            v-if="!active && run.counts.failed"
-            class="primary-button"
-            type="button"
-            :disabled="busy"
-            @click="retryFailedOutputs"
-          >
-            <RefreshCw :size="14" />恢复失败项
-          </button>
-        </div>
-        <div class="batch-progress-line">
-          <progress :value="progress" max="100" :aria-label="`本批生成进度 ${progress}%`" />
-          <strong>{{ progress }}%</strong>
-          <span>{{ run.counts.completed }} / {{ run.counts.total }} 条完成</span>
-        </div>
-        <div class="batch-counts">
-          <div><span class="count-dot success"></span><span>已完成</span><strong>{{ run.counts.completed }}</strong></div>
-          <div><span class="count-dot running"></span><span>渲染中</span><strong>{{ run.counts.running }}</strong></div>
-          <div><span class="count-dot pending"></span><span>排队中</span><strong>{{ run.counts.queued }}</strong></div>
-          <div><span class="count-dot danger"></span><span>失败/取消</span><strong>{{ run.counts.failed }}</strong></div>
-        </div>
-      </section>
+      <WorkflowRunProgress
+        v-if="exportProgressVisible"
+        class="output-run-progress"
+        :progress="exportStarting ? 0 : exportProgress"
+        :summary="exportProgressSummary"
+        :attempt-label="`按最新混剪工程重新渲染全部 ${run.counts.total} 条成片`"
+        :warning="exportProgressWarning"
+        action-label="查看成片列表"
+        @show-details="handleProgressAction"
+      />
+      <WorkflowRunProgress
+        v-if="localProgressVisible"
+        class="output-run-progress"
+        :progress="localProgress"
+        :summary="localProgressSummary"
+        :attempt-label="backgroundExport ? '仅更新当前选中的成片；整批导出独立进行' : '成片任务进度'"
+        :warning="localProgressWarning"
+        :action-label="localProgressWarning ? '恢复失败项' : '查看成片列表'"
+        @show-details="handleLocalProgressAction"
+      />
 
-      <section class="output-workspace" aria-labelledby="output-list-title">
+      <section ref="outputWorkspaceElement" class="output-workspace" aria-labelledby="output-list-title">
         <header class="workspace-heading">
           <div>
             <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' ? '待渲染成片' : '成片列表' }}</h3>
@@ -747,17 +894,13 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
                   {{ labels[item.status] }}
                 </span>
                 <span v-if="item.stale" class="status-pill stale" title="混剪工程已修改，当前成片仍保留旧文件">待更新</span>
-                <!--
-                  A film confirmed without a package plays silent by design. Without this the viewer
-                  would read the missing narration as a broken render.
-                -->
                 <span
-                  v-if="item.unpackaged"
-                  class="status-pill unpackaged"
-                  :title="run.status === 'PENDING_RENDER' ? '成片工程已同步，尚未完成智能成片包装；目前只有画面' : '此成片导出时没有包装，只有画面，没有口播、字幕与配乐'"
-                >{{ run.status === 'PENDING_RENDER' ? '待包装' : '无包装' }}</span>
+                  v-if="outputPackagingLabel(item)"
+                  class="status-pill"
+                  :class="outputPackagingLabel(item)?.tone"
+                >{{ outputPackagingLabel(item)?.text }}</span>
               </div>
-              <p class="output-meta">{{ run.status === 'PENDING_RENDER' ? `预计 ${item.duration.toFixed(1)} 秒 · 待导出` : `${item.duration.toFixed(1)} 秒 · H.264 / AAC · ${item.unpackaged ? '无口播 / 字幕 / 配乐' : '内嵌字幕'}` }}</p>
+              <p class="output-meta">{{ outputFileDescription(item, run.status) }}</p>
               <div v-if="run.status !== 'PENDING_RENDER' && item.status !== 'COMPLETED'" class="item-progress">
                 <progress :value="item.progress" max="100" :aria-label="`${displayName(item)} 进度`" />
                 <strong>{{ item.progress }}%</strong>
@@ -823,7 +966,7 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
         next-label=""
         :show-validate="false"
         :show-next="false"
-        @back="$emit('back')"
+        @back="$emit('back', selectedTemplateId)"
       />
           </template>
           <section v-else class="template-readiness" role="status">
@@ -831,7 +974,7 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
             <span class="readiness-eyebrow">{{ selectedTemplate?.pendingLabel ?? '尚未进入成片输出' }}</span>
             <h3>{{ selectedTemplate?.pendingTitle ?? '该模板还没有待渲染成片' }}</h3>
             <p>{{ selectedTemplate?.pendingDetail ?? '返回模板混剪，完成当前模板的成片包装与校验。' }}</p>
-            <button class="secondary-button" type="button" @click="$emit('back')">
+            <button class="secondary-button" type="button" @click="$emit('back', selectedTemplateId)">
               <ArrowLeft :size="14" />返回模板混剪
             </button>
           </section>
@@ -905,8 +1048,6 @@ onBeforeUnmount(() => { stop(); outputSyncChannel?.close(); });
 }
 .output-heading,
 .output-heading__title,
-.batch-panel__heading,
-.batch-progress-line,
 .workspace-heading,
 .output-card__title,
 .item-progress,
@@ -1190,12 +1331,6 @@ progress {
 @keyframes pulse {
   to { opacity: 0.45; transform: scale(0.94); }
 }
-.batch-panel {
-  padding: 17px 18px;
-  background: linear-gradient(135deg, #f8fbff 0%, #fffaf7 100%);
-  border: 1px solid #dce6f5;
-  border-radius: 16px;
-}
 .render-settings {
   display: flex;
   margin-bottom: 14px;
@@ -1238,78 +1373,6 @@ progress {
 }
 .render-settings select { width: 100%; min-height: 38px; padding: 0 10px; }
 .export-button { min-width: 152px; min-height: 40px; }
-.batch-panel__heading {
-  justify-content: space-between;
-  gap: 12px;
-}
-.batch-panel__heading > div {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.eyebrow {
-  color: #7b8aa1;
-  font-size: 11px;
-}
-.batch-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #5f7cae;
-  font-size: 13px;
-}
-.batch-status i,
-.count-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  background: currentColor;
-  border-radius: 50%;
-}
-.batch-status.success,
-.count-dot.success { color: #15956f; }
-.batch-status.running,
-.count-dot.running { color: #3d78d8; }
-.batch-status.pending,
-.count-dot.pending { color: #7c8ba2; }
-.batch-status.danger,
-.count-dot.danger { color: #d14d56; }
-.batch-progress-line {
-  margin-top: 16px;
-  gap: 12px;
-  color: #718096;
-  font-size: 11px;
-}
-.batch-progress-line progress {
-  flex: 1;
-}
-.batch-progress-line strong {
-  color: #2563eb;
-  font-size: 12px;
-}
-.batch-counts {
-  display: grid;
-  margin-top: 15px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-.batch-counts > div {
-  display: flex;
-  min-width: 0;
-  padding: 10px 12px;
-  align-items: center;
-  gap: 8px;
-  color: #718096;
-  background: #ffffffc9;
-  border: 1px solid #e5ebf4;
-  border-radius: 10px;
-  font-size: 11px;
-}
-.batch-counts strong {
-  margin-left: auto;
-  color: #34445c;
-  font-size: 14px;
-}
 .output-workspace {
   margin-top: 15px;
   overflow: hidden;
@@ -1611,9 +1674,12 @@ progress {
 }
 .output-card__title {
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 7px;
 }
 .output-card__title h4 {
+  flex: 0 0 auto;
+  max-width: 100%;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -1635,6 +1701,7 @@ progress {
 .status-pill.running { color: #2563eb; background: #edf4ff; }
 .status-pill.danger { color: #bc4b50; background: #fff0ef; }
 .status-pill.stale { color: #9a5805; background: #fff2d8; }
+.template-update-label { color: #b45309 !important; font-weight: 700; }
 .status-pill.unpackaged { color: #92650c; background: #fdf6e3; }
 .local-update-button { flex: 0 0 auto; color: #9a5805; border-color: #f2d7a8; }
 .output-meta {
@@ -1769,9 +1836,6 @@ progress {
   .output-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .batch-counts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 @media (max-width: 680px) {
   .final-output {
@@ -1810,28 +1874,6 @@ progress {
   .render-settings__copy { flex-basis: 100%; }
   .render-settings label { flex: 1; }
   .export-button { flex: 1 1 100%; }
-  .batch-panel__heading {
-    align-items: flex-start;
-  }
-  .batch-panel__heading > div {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .batch-progress-line {
-    flex-wrap: wrap;
-  }
-  .batch-progress-line progress {
-    flex-basis: 100%;
-    order: 2;
-  }
-  .batch-counts {
-    gap: 7px;
-  }
-  .batch-counts > div {
-    padding: 9px;
-    gap: 6px;
-  }
   .result-count {
     white-space: normal;
   }
@@ -1864,9 +1906,6 @@ progress {
   }
   .output-preview {
     max-height: 360px;
-  }
-  .batch-counts > div {
-    font-size: 10px;
   }
   .notice {
     align-items: flex-start;

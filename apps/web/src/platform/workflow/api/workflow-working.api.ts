@@ -17,9 +17,26 @@ import type {
   WorkflowNodeState,
   WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
-import { requestJson } from '../../../api/http-client';
+import { ApiClientError, isNetworkError, requestJson } from '../../../api/http-client';
 
 const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
+
+const waitForBranchRetry = (delayMs: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 
 const branchRevisionPrefixes: Record<EffectWorkflowBranchNodeId, string> = {
   SOURCE_IMPORT: 'source-package:',
@@ -119,14 +136,26 @@ export const getEffectWorkflowBranchTree = async (
   projectId: string,
   signal?: AbortSignal,
 ): Promise<ApiResponse<EffectWorkflowBranchTreeData>> => {
-  const result = await requestJson<ApiResponse<EffectWorkflowBranchTreeData>>(
-    `${projectPath(projectId)}/workflow-runs/effect/branches`,
-    {
-      operation: '加载效果类版本分支树',
-      signal,
-    },
-  );
-  return { ...result, data: await restoreRootBranchRevisions(projectId, result.data, signal) };
+  // Creating a template saves its draft immediately before this GET. A brief gateway restart or
+  // overloaded read must not strand the open tree on its prefetched snapshot; this request is
+  // read-only, so a bounded retry is safe. Never retry the draft write or branch activation here.
+  const retryDelays = [200, 500];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await requestJson<ApiResponse<EffectWorkflowBranchTreeData>>(
+        `${projectPath(projectId)}/workflow-runs/effect/branches`,
+        { operation: '加载效果类版本分支树', signal },
+      );
+      return { ...result, data: await restoreRootBranchRevisions(projectId, result.data, signal) };
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const retryable =
+        (error instanceof ApiClientError && [502, 503, 504].includes(error.status)) ||
+        isNetworkError(error);
+      if (!retryable || attempt >= retryDelays.length) throw error;
+      await waitForBranchRetry(retryDelays[attempt]!, signal);
+    }
+  }
 };
 
 export const activateEffectWorkflowBranch = (

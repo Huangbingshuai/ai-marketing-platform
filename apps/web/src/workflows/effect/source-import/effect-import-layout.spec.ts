@@ -17,7 +17,16 @@ describe('effect import single-product prototype grid', () => {
     // A full update in the mix or output node forks a child Run, and those pages report it here so
     // the canvas follows instead of leaving the user on the published branch.
     expect(pageSource.match(/@workflow-run-change="refreshActiveRunInPlace\(currentProjectId\)"/gu))
-      .toHaveLength(5);
+      .toHaveLength(3);
+    expect(pageSource).toContain('@workflow-run-change="handleTemplateMixWorkflowRunChange"');
+    expect(pageSource).toContain('@workflow-run-change="handleFinalOutputWorkflowRunChange"');
+  });
+
+  it('keeps the same template and branch when moving between mix and output', () => {
+    expect(pageSource).toContain('branchNavigation.value = effectTemplateStepNavigation(');
+    expect(pageSource).toContain('templateMixNode.value?.getCurrentTemplateId() ?? null');
+    expect(pageSource).toContain('@back="returnToOutputTemplateMix"');
+    expect(pageSource).toContain('workflowRunId === workspace.value?.workflowRunId && activeStep.value === 4');
   });
 
   it('copies the active branch only after flushing pending drafts', () => {
@@ -35,6 +44,13 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).toMatch(
       /const loadBranchTree = async \(\): Promise<void> => \{[\s\S]*?await flushPendingEdits\(\)[\s\S]*?getEffectWorkflowBranchTree\(projectId, controller\.signal\)/,
     );
+  });
+
+  it('prefetches the tree and revalidates cached content without blanking it on each open', () => {
+    expect(pageSource).toContain('prefetchBranchTree(projectId);');
+    expect(pageSource).toContain('branchPrefetchController?.abort();');
+    expect(pageSource).toContain('branchTreeOpen.value = true;\n  void loadBranchTree();');
+    expect(pageSource).not.toContain('const openBranchTree = (): void => {\n  branchTree.value = null;');
   });
 
   it('creates an upload target automatically instead of showing an empty-state gate', () => {

@@ -58,6 +58,41 @@ describe('workflow working API', () => {
     );
     expect((fetchMock.mock.calls[1]?.[1] as RequestInit).method).toBe('POST');
   });
+  it('retries a transient gateway failure before showing the latest branch tree', async () => {
+    const branchTree = { projectId: 'project-a', activeWorkflowRunId: null, branches: [] };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 502 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: branchTree }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await getEffectWorkflowBranchTree('project-a');
+
+    expect(result.data).toEqual(branchTree);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(fetchMock.mock.calls[1]?.[0]);
+  });
+  it('does not retry a non-transient branch-tree error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getEffectWorkflowBranchTree('project-a')).rejects.toMatchObject({ status: 400 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('stops a pending branch-tree retry when the project view is closed', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 502 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = getEffectWorkflowBranchTree('project-a', controller.signal);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
   it('restores real revisions from authoritative artifacts when an older branch endpoint omits them', async () => {
     const branch = {
       workflowRunId: 'run-a',

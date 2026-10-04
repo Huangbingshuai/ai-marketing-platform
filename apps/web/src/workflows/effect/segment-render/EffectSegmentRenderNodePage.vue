@@ -208,13 +208,20 @@ const resolutionOptions = computed(() =>
   })),
 );
 
-const effectSegmentRenderFrameStyle = (maxHeightVh: number) => {
+type EffectSegmentRenderVideoSize = { width: number; height: number };
+
+const effectSegmentRenderFrameStyle = (
+  maxHeightVh: number,
+  videoSize?: EffectSegmentRenderVideoSize | null,
+) => {
   const configuredRatio = renderSettings.value.ratio;
   const [widthPart, heightPart] = (configuredRatio === 'adaptive' ? '16:9' : configuredRatio)
     .split(':')
     .map(Number);
-  const width = widthPart ?? 16;
-  const height = heightPart ?? 9;
+  // 画幅设置只作用于新建任务，历史素材可能是在别的画幅下渲染的，所以拿到视频自身的宽高就用它定画框，
+  // 只在元数据到达前用当前设置的画幅占位，否则编辑态与非编辑态会给出不一样的预览画框。
+  const width = videoSize?.width || widthPart || 16;
+  const height = videoSize?.height || heightPart || 9;
   const widthToHeight = width / height;
   return {
     aspectRatio: `${width} / ${height}`,
@@ -222,8 +229,11 @@ const effectSegmentRenderFrameStyle = (maxHeightVh: number) => {
   };
 };
 
-const previewFrameStyle = computed(() => effectSegmentRenderFrameStyle(62));
-const repairFrameStyle = computed(() => effectSegmentRenderFrameStyle(44));
+const previewVideoSize = ref<EffectSegmentRenderVideoSize | null>(null);
+const repairVideoSize = ref<EffectSegmentRenderVideoSize | null>(null);
+
+const previewFrameStyle = computed(() => effectSegmentRenderFrameStyle(62, previewVideoSize.value));
+const repairFrameStyle = computed(() => effectSegmentRenderFrameStyle(44, repairVideoSize.value));
 
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
 const previewVariant = ref<'ACTIVE' | 'REPAIR'>('ACTIVE');
@@ -708,6 +718,23 @@ const clearPreview = (): void => {
   previewLoading.value = false;
   previewError.value = '';
   previewVideoReady.value = false;
+  previewVideoSize.value = null;
+  repairVideoSize.value = null;
+};
+
+const readVideoSize = (element: HTMLVideoElement): EffectSegmentRenderVideoSize | null =>
+  element.videoWidth > 0 && element.videoHeight > 0
+    ? { width: element.videoWidth, height: element.videoHeight }
+    : null;
+
+const handlePreviewVideoMetadata = (event: Event): void => {
+  if (event.currentTarget instanceof HTMLVideoElement)
+    previewVideoSize.value = readVideoSize(event.currentTarget);
+};
+
+const handleRepairVideoMetadata = (event: Event): void => {
+  if (event.currentTarget instanceof HTMLVideoElement)
+    repairVideoSize.value = readVideoSize(event.currentTarget);
 };
 
 const closeAllDialogs = (restoreFocus = false): void => {
@@ -2277,6 +2304,7 @@ onBeforeUnmount(() => {
               controls
               autoplay
               playsinline
+              @loadedmetadata="handlePreviewVideoMetadata"
               @canplay="previewVideoReady = true"
               @error="handlePreviewVideoError"
             />
@@ -2364,6 +2392,7 @@ onBeforeUnmount(() => {
                 :src="previewUrl"
                 controls
                 playsinline
+                @loadedmetadata="handleRepairVideoMetadata"
                 @canplay="handleRepairVideoReady"
                 @error="handlePreviewVideoError"
                 @timeupdate="stopRepairRangePreviewAtEnd"
@@ -2485,7 +2514,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <label class="repair-instruction-field">
-              <span>这个范围内需要修改什么</span>
+              <span>画面返修要求</span>
               <textarea
                 v-model="repairInstruction"
                 maxlength="1000"
@@ -3559,8 +3588,9 @@ select:disabled {
   font-weight: 500;
 }
 .repair-range-editor {
-  width: min(100%, 620px);
-  margin: 15px auto 0;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 15px 0 0;
   padding: 12px 14px 10px;
   background: #f8faff;
   border: 1px solid #dce6f6;
@@ -3767,7 +3797,8 @@ select:disabled {
   margin-top: 14px;
 }
 .repair-instruction-field textarea {
-  min-height: 116px;
+  box-sizing: border-box;
+  min-height: 88px;
   padding: 11px;
   resize: vertical;
   line-height: 1.65;

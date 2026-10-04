@@ -4,6 +4,7 @@ import type {
   EffectWorkflowBranchNodeStatus,
   EffectWorkflowBranchTemplate,
 } from '@ai-marketing/contracts';
+import { effectTemplateBranchTips } from '@ai-marketing/contracts';
 
 // These are drawing layers. The actual effect workflow still has six fixed nodes.
 export const BRANCH_TREE_STAGES = [
@@ -47,6 +48,7 @@ export type BranchTreeNode = {
 export type BranchTreeEdge = {
   key: string;
   path: string;
+  arrowPath: string;
   onActivePath: boolean;
 };
 export type EffectBranchLayout = {
@@ -60,6 +62,7 @@ export type EffectBranchLayout = {
 const nodeKey = (runId: string, stageKey: BranchStageKey, templateId: string | null) =>
   `${runId}:${stageKey}:${templateId ?? '-'}`;
 const forkStageIndex = (branch: EffectWorkflowBranch): number => {
+  if (branch.forkNodeId === 'FINAL_OUTPUT' && branch.packagingInOutputBranch) return 6;
   if (branch.forkNodeId === 'TEMPLATE_MIX') {
     if (branch.forkMixStage === 'PACKAGING') return 6;
     if (branch.forkMixStage === 'FILL') return 5;
@@ -70,7 +73,31 @@ const forkStageIndex = (branch: EffectWorkflowBranch): number => {
   );
 };
 
-export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): EffectBranchLayout {
+const edgeGeometry = (fromX: number, fromY: number, toX: number, nodeY: number) => {
+  const tipY = nodeY - BRANCH_TREE_NODE_HEIGHT / 2 - 3;
+  const stemEndY = tipY - 7;
+  const deltaX = toX - fromX;
+  const radius = Math.min(9, Math.abs(deltaX) / 2, (stemEndY - fromY) / 4);
+  const bendY = fromY + Math.min(18, (stemEndY - fromY) / 2);
+  const direction = Math.sign(deltaX);
+  const path = direction === 0
+    ? `M ${fromX} ${fromY} L ${toX} ${stemEndY}`
+    : `M ${fromX} ${fromY} L ${fromX} ${bendY - radius}` +
+      ` Q ${fromX} ${bendY} ${fromX + direction * radius} ${bendY}` +
+      ` L ${toX - direction * radius} ${bendY}` +
+      ` Q ${toX} ${bendY} ${toX} ${bendY + radius}` +
+      ` L ${toX} ${stemEndY}`;
+  return {
+    path,
+    arrowPath: `M ${toX - 5} ${stemEndY - 1} L ${toX + 5} ${stemEndY - 1}` +
+      ` L ${toX} ${tipY} Z`,
+  };
+};
+
+export function buildEffectBranchLayout(
+  branches: EffectWorkflowBranch[],
+  activeTemplateId: string | null = null,
+): EffectBranchLayout {
   const byId = new Map(branches.map((branch) => [branch.workflowRunId, branch]));
   const children = new Map<string | null, EffectWorkflowBranch[]>();
   for (const branch of branches) {
@@ -91,7 +118,7 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
   for (const root of children.get(null) ?? []) visit(root);
   for (const branch of branches) visit(branch);
 
-  const ownerAt = (
+  const inheritedOwnerAt = (
     branch: EffectWorkflowBranch,
     stageIndex: number,
     templateId: string | null,
@@ -100,24 +127,74 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
     const seen = new Set<string>();
     while (source.parentWorkflowRunId && !seen.has(source.workflowRunId)) {
       seen.add(source.workflowRunId);
+      const parent = byId.get(source.parentWorkflowRunId);
+      if (!parent) break;
+      // A template created after a fill/packaging fork belongs to that child, even though the
+      // fork itself started below the template layer. There is no parent template to inherit.
+      if (stageIndex >= 4 && templateId &&
+        !parent.templates.some((template) => template.templateId === templateId)) break;
+      // Confirming a template that already existed as a draft in the parent must not draw a
+      // second template node. The child owns the new fill, not a new template identity.
+      if (stageIndex === 4 && templateId && source.forkNodeId === 'TEMPLATE_MIX' &&
+        source.creationKind !== 'MANUAL_COPY' &&
+        parent.templates.some((template) => template.templateId === templateId)) {
+        source = parent;
+        continue;
+      }
       const beforeFork = stageIndex < forkStageIndex(source);
       const otherTemplate =
         stageIndex >= 4 && !!source.forkTemplateId && source.forkTemplateId !== templateId;
       if (!beforeFork && !otherTemplate) break;
-      const parent = byId.get(source.parentWorkflowRunId);
-      if (!parent) break;
       source = parent;
     }
     return source;
   };
+  // A template can also appear in a sibling's saved workspace. It is still the same
+  // template identity under the same rendering path, rather than a new tree branch.
+  // Separate upstream versions and manual copies have distinct rendering owners.
+  const templateScopeKey = (branch: EffectWorkflowBranch, templateId: string) =>
+    nodeKey(inheritedOwnerAt(branch, 3, null).workflowRunId, 'MIX_TEMPLATE', templateId);
+  const templateOwners = new Map<string, EffectWorkflowBranch>();
+  for (const branch of [...ordered].sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt) ||
+    left.workflowRunId.localeCompare(right.workflowRunId))) {
+    for (const template of branch.templates) {
+      const key = templateScopeKey(branch, template.templateId);
+      if (!templateOwners.has(key)) {
+        templateOwners.set(key, inheritedOwnerAt(branch, 4, template.templateId));
+      }
+    }
+  }
+  const ownerAt = (
+    branch: EffectWorkflowBranch,
+    stageIndex: number,
+    templateId: string | null,
+  ): EffectWorkflowBranch => stageIndex === 4 && templateId
+    ? templateOwners.get(templateScopeKey(branch, templateId)) ??
+      inheritedOwnerAt(branch, stageIndex, templateId)
+    : inheritedOwnerAt(branch, stageIndex, templateId);
   const active = branches.find((branch) => branch.isActive);
+  const latestByTemplate = effectTemplateBranchTips(branches, active?.workflowRunId ?? null);
+  const highlightedTips = activeTemplateId === null
+    ? [...latestByTemplate.values()]
+    : active?.templates.some((template) => template.templateId === activeTemplateId)
+      ? [active]
+    : latestByTemplate.has(activeTemplateId)
+      ? [latestByTemplate.get(activeTemplateId)!]
+      : [];
+  const upstreamPathOwners = (stageIndex: number): Set<string> =>
+    new Set((highlightedTips.length ? highlightedTips : active ? [active] : [])
+      .map((branch) => ownerAt(branch, stageIndex, null).workflowRunId));
   const nodes: BranchTreeNode[] = [];
   const templateFor = (branch: EffectWorkflowBranch): EffectWorkflowBranchTemplate[] => {
     if (branch.forkTemplateId && forkStageIndex(branch) >= 4) {
-      const scoped = branch.templates.find(
-        (template) => template.templateId === branch.forkTemplateId,
+      const inheritedIds = new Set(
+        (branch.parentWorkflowRunId ? byId.get(branch.parentWorkflowRunId)?.templates : [])
+          ?.map((template) => template.templateId) ?? [],
       );
-      return scoped ? [scoped] : [];
+      return branch.templates.filter((template) =>
+        template.templateId === branch.forkTemplateId || !inheritedIds.has(template.templateId),
+      );
     }
     return branch.templates;
   };
@@ -131,7 +208,7 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
       const stage = BRANCH_TREE_STAGES[stageIndex]!;
       const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
       if (!state?.artifactCount) continue;
-      const ownerId = active ? ownerAt(active, stageIndex, null).workflowRunId : null;
+      const onActivePath = upstreamPathOwners(stageIndex).has(branch.workflowRunId);
       nodes.push({
         key: nodeKey(branch.workflowRunId, stage.key, null),
         workflowRunId: branch.workflowRunId,
@@ -147,18 +224,26 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
         artifactCount: state?.artifactCount ?? 0,
         revision: state?.revision ?? null,
         revisions: state?.revisions,
-        onActivePath: ownerId === branch.workflowRunId,
-        isCurrentStage: ownerId === branch.workflowRunId && active?.currentNodeId === stage.nodeId,
+        onActivePath,
+        isCurrentStage: onActivePath && active?.currentNodeId === stage.nodeId &&
+          ownerAt(active, stageIndex, null).workflowRunId === branch.workflowRunId,
       });
     }
     for (const template of templateFor(branch)) {
       const templateId = template.templateId;
+      const existsInParent = start >= 4 && branch.creationKind !== 'MANUAL_COPY' &&
+        branch.parentWorkflowRunId &&
+        byId.get(branch.parentWorkflowRunId)?.templates.some(
+          (parentTemplate) => parentTemplate.templateId === templateId,
+        );
       for (
-        let stageIndex = Math.max(4, start);
+        let stageIndex = existsInParent ? Math.max(5, start) : 4;
         stageIndex < BRANCH_TREE_STAGES.length;
         stageIndex++
       ) {
         const stage = BRANCH_TREE_STAGES[stageIndex]!;
+        if (stage.key === 'MIX_TEMPLATE' &&
+          ownerAt(branch, stageIndex, templateId).workflowRunId !== branch.workflowRunId) continue;
         const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
         const confirmedFillCount = template?.timelineVariantCount ?? 0;
         const draftFillReady = Boolean(template?.draftFillReady && confirmedFillCount === 0);
@@ -190,7 +275,12 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
               : stage.key === 'MIX_PACKAGING'
                 ? template?.packagingRevisions
                 : template?.deliveryRevisions;
-        const ownerId = active ? ownerAt(active, stageIndex, templateId).workflowRunId : null;
+        const tip = activeTemplateId === templateId && active?.templates.some(
+          (template) => template.templateId === templateId,
+        ) ? active : latestByTemplate.get(templateId);
+        const onActivePath = Boolean(
+          (activeTemplateId === null || activeTemplateId === templateId) && tip &&
+          ownerAt(tip, stageIndex, templateId).workflowRunId === branch.workflowRunId);
         nodes.push({
           key: nodeKey(branch.workflowRunId, stage.key, templateId),
           workflowRunId: branch.workflowRunId,
@@ -219,9 +309,10 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
           artifactCount: count,
           revision,
           revisions,
-          onActivePath: ownerId === branch.workflowRunId,
-          isCurrentStage:
-            ownerId === branch.workflowRunId && active?.currentNodeId === stage.nodeId,
+          onActivePath,
+          isCurrentStage: onActivePath && activeTemplateId === templateId &&
+            active?.currentNodeId === stage.nodeId &&
+            ownerAt(active, stageIndex, templateId).workflowRunId === branch.workflowRunId,
         });
       }
     }
@@ -245,6 +336,8 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
       break;
     }
   }
+  // Configuration highlights every template's latest path; the editor highlights its template.
+  // Older sibling versions stay visible without inheriting either path's red highlight.
   const roots = nodes.filter((node) => !parentByKey.has(node.key));
   let nextLeaf = 0;
   const positioned = new Set<string>();
@@ -272,11 +365,9 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
   const edges: BranchTreeEdge[] = [];
   for (const node of sourceRoots) {
     const fromY = root.y + BRANCH_TREE_NODE_HEIGHT / 2;
-    const toY = node.y - BRANCH_TREE_NODE_HEIGHT / 2 - 5;
-    const middle = (fromY + toY) / 2;
     edges.push({
       key: `project-root->${node.key}`,
-      path: `M ${root.x} ${fromY} C ${root.x} ${middle}, ${node.x} ${middle}, ${node.x} ${toY}`,
+      ...edgeGeometry(root.x, fromY, node.x, node.y),
       onActivePath: node.onActivePath,
     });
   }
@@ -285,11 +376,9 @@ export function buildEffectBranchLayout(branches: EffectWorkflowBranch[]): Effec
     const parent = parentKey ? nodeByKey.get(parentKey) : null;
     if (!parent) continue;
     const fromY = parent.y + BRANCH_TREE_NODE_HEIGHT / 2;
-    const toY = node.y - BRANCH_TREE_NODE_HEIGHT / 2 - 5;
-    const middle = (fromY + toY) / 2;
     edges.push({
       key: `${parent.key}->${node.key}`,
-      path: `M ${parent.x} ${fromY} C ${parent.x} ${middle}, ${node.x} ${middle}, ${node.x} ${toY}`,
+      ...edgeGeometry(parent.x, fromY, node.x, node.y),
       onActivePath: parent.onActivePath && node.onActivePath,
     });
   }
