@@ -26,6 +26,7 @@ import { EFFECT_SEGMENT_RENDER_LIMITS } from '@ai-marketing/contracts';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
   RegenerateSegmentRenderTasksDto,
+  RefreshSegmentRenderBatchDto,
   DeleteSegmentRenderMaterialsDto,
   DecideSegmentRenderRepairDto,
   ExportSegmentRenderMaterialsDto,
@@ -101,6 +102,16 @@ export class EffectSegmentRenderController {
       body.expectedBatchRevision,
       body.idempotencyKey,
     );
+  }
+
+  @Post('batches/:batchId/refresh')
+  @HttpCode(202)
+  refresh(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('batchId', new ParseUUIDPipe({ version: '4' })) batchId: string,
+    @Body() body: RefreshSegmentRenderBatchDto,
+  ) {
+    return this.service.refresh(projectId, batchId, body);
   }
 
   @Post('batches/:batchId/tasks/import')

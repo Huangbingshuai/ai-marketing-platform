@@ -411,6 +411,32 @@ describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
 });
 
 describe('EffectTemplateMixAiRepository.packagedTemplateIds', () => {
+  it('uses successful same-project ancestry, not current audio presence or sibling history', async () => {
+    const prisma = {
+      workflowRun: { findFirst: vi.fn().mockResolvedValueOnce({ parentWorkflowRunId: 'parent' })
+        .mockResolvedValueOnce({ parentWorkflowRunId: null }) },
+      effectPackagingRun: { findMany: vi.fn().mockResolvedValue([{ templateId: 'ever-successful' }]) },
+      workingArtifact: { findMany: vi.fn().mockResolvedValue([
+        { artifactKey: 'timeline-package:failed:v', payload: { voices: {} } },
+        { artifactKey: 'timeline-package:legacy-success:v', payload: { voices: { line: {} } } },
+      ]) },
+    };
+    const repo = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+    expect(await repo.successfulPackagingTemplateIds('p', 'current')).toEqual(['ever-successful', 'legacy-success']);
+    expect(prisma.effectPackagingRun.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { projectId: 'p', workflowRunId: { in: ['current', 'parent'] }, status: 'COMPLETED' },
+    }));
+    expect(prisma.workflowRun.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { projectId: 'p', id: 'parent', workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+    }));
+  });
+  it('does not lock editing during an append task', async () => {
+    const repo = new EffectTemplateMixAiRepository({ effectTemplateMixAiRun: {
+      findMany: vi.fn().mockResolvedValue([{ templateId: 'append', inputSnapshot: { incremental: {} } },
+        { templateId: 'full', inputSnapshot: {} }]),
+    } } as unknown as PrismaService);
+    expect(await repo.lockedTemplateIds('p', 'run')).toEqual(['full']);
+  });
   it('locks packaging history and current package artifacts for the current Run', async () => {
     const prisma = {
       effectPackagingRun: {

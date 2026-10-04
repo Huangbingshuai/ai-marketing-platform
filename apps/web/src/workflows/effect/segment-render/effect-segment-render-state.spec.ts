@@ -9,6 +9,7 @@ import {
   effectSegmentRenderPromptDetailsMap,
   effectSegmentRenderSummary,
   effectSegmentRenderWorkspaceWithBatch,
+  effectSegmentRenderWorkspaceFromApi,
   filterEffectSegmentRenderTasks,
   type EffectSegmentRenderTask,
 } from './effect-segment-render-state';
@@ -43,6 +44,27 @@ const task = (
 });
 
 describe('effect segment render state', () => {
+  it('keeps new Prompt IDs pending without marking unchanged render tasks as changed', () => {
+    const batch = {
+      id: 'batch-1', productId: 'product-1',
+      sourcePrompt: { artifactId: 'prompt-artifact', revision: 2, contentHash: 'a'.repeat(64) },
+      revision: 2, status: 'COMPLETED', stale: true, refreshScope: 'SELECTIVE',
+      pendingPromptIds: ['prompt-new'], commitStatus: 'UNCHANGED', workingArtifactRevision: 1,
+      tasks: [{ ...task(1, 'COMPLETED'), compatiblePurposes: ['PRODUCT_DISPLAY'], output: null }],
+      createdAt: '2026-10-04T00:00:00.000Z', updatedAt: '2026-10-04T00:00:00.000Z',
+    } as unknown as EffectSegmentRenderBatch;
+    const current = effectSegmentRenderWorkspaceFromApi({
+      projectId: 'project-1', workflowRunId: 'run-1', productId: 'product-1',
+      promptCount: 2, promptReady: true, promptArtifactRevision: 2, settingsRevision: 1, batch,
+    } as Parameters<typeof effectSegmentRenderWorkspaceFromApi>[0]);
+    expect(current.pendingPromptIds).toEqual(['prompt-new']);
+    expect(current.refreshScope).toBe('SELECTIVE');
+    expect(current.tasks[0]?.needsUpdate).toBe(false);
+    expect(effectSegmentRenderWorkspaceWithBatch(current, batch).pendingPromptIds).toEqual(['prompt-new']);
+    const legacyBatch = { ...batch };
+    delete legacyBatch.pendingPromptIds;
+    expect(effectSegmentRenderWorkspaceWithBatch(current, legacyBatch).pendingPromptIds).toEqual([]);
+  });
   it('preserves whether a completed slot came from AI generation or external import', () => {
     const current = {
       projectId: 'project-1',

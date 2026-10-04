@@ -5,6 +5,7 @@ import type {
   EffectTemplateMixAiSelection,
   EffectTemplateMixSampledMaterial,
   EffectTemplateMixAiTrim,
+  EffectTemplateMixIncrementalPlan,
   EffectTemplateMixDraft,
   EffectTemplateMixMaterial,
   EffectTemplateMixSourcesData,
@@ -49,6 +50,7 @@ import type { EffectTemplateMixAiSnapshot } from './effect-template-mix-ai.types
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { visualHash } from './effect-packaging.domain';
 import { templateConfigurationHash } from './template-mix-lifecycle';
+import { incrementalRoleAssignments, incrementalVariantId, pendingAddedMaterials, validateIncrementalPlan } from './effect-template-mix-incremental';
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -267,7 +269,8 @@ const classificationsValid = (
   );
 };
 
-const aiResultKey = (value: { materialId: string }): string => value.materialId;
+const aiResultKey = (value: { materialId: string; slotId?: string; variantIndex?: number }, incremental = false): string =>
+  incremental ? `${value.variantIndex ?? 0}:${value.slotId}:${value.materialId}` : value.materialId;
 
 const classificationSlotSignature = (
   slots: Array<{ role: EffectTemplateMixRole; label: string }>,
@@ -279,14 +282,15 @@ const trimsValid = (
   trims: EffectTemplateMixAiTrim[],
   requireComplete: boolean,
 ): boolean => {
-  const selectionByKey = new Map(selections.map((item) => [aiResultKey(item), item]));
-  const keys = trims.map(aiResultKey);
+  const key = (item: EffectTemplateMixAiTrim | EffectTemplateMixAiSelection) => aiResultKey(item, Boolean(snapshot.incremental));
+  const selectionByKey = new Map(selections.map((item) => [key(item), item]));
+  const keys = trims.map(key);
   return (
     trims.length > 0 &&
     (!requireComplete || trims.length === selections.length) &&
     new Set(keys).size === trims.length &&
     trims.every((trim) => {
-      const selection = selectionByKey.get(aiResultKey(trim));
+      const selection = selectionByKey.get(key(trim));
       const material = snapshot.materials.find(({ id }) => id === selection?.materialId);
       return Boolean(
         selection &&
@@ -631,6 +635,7 @@ const toAiRun = (run: {
 }): EffectTemplateMixAiRun => {
   const snapshot = object(run.inputSnapshot) as {
     trimOnly?: boolean;
+    incremental?: EffectTemplateMixAiSnapshot['incremental'];
     materials?: Array<{
       id?: string;
       code?: string;
@@ -660,6 +665,7 @@ const toAiRun = (run: {
         matchScore?: number;
         matchLevel?: 'NORMAL' | 'LOW_MATCH';
         classificationReason?: string;
+        omittedNewMaterials?: Array<{ materialId: string; reason: string }>;
       }>)
     : [];
   const trims = Array.isArray(run.trimResult)
@@ -863,7 +869,18 @@ const toAiRun = (run: {
     id: run.id,
     templateId: run.templateId,
     workflowRunId: run.workflowRunId,
-    operation: snapshot?.trimOnly ? 'REFRESH_TRIMS' : 'FILL',
+    operation: snapshot?.incremental ? 'APPEND' : snapshot?.trimOnly ? 'REFRESH_TRIMS' : 'FILL',
+    ...(snapshot?.incremental ? {
+      packageNewVariants: snapshot.incremental.packageNewVariants,
+      newMaterialUsage: snapshot.incremental.materialIds.map((materialId) => ({
+        materialId, code: materialById.get(materialId)?.code ?? '素材',
+        filmCount: [...byVariant.values()].filter((items) => items.some((item) => item.materialId === materialId)).length,
+      })),
+      omittedNewMaterials: (selections[0]?.omittedNewMaterials ?? []).map((item) => ({
+        ...item, code: materialById.get(item.materialId)?.code ?? '素材',
+      })),
+      outputVariantIds: run.status === 'COMPLETED' ? [...byVariant.keys()].map((_, index) => incrementalVariantId(run.id, index)) : [],
+    } : {}),
     targetVariantId: run.targetVariantId,
     outputVariantId: run.outputVariantId,
     status: run.status,
@@ -1031,7 +1048,7 @@ export class EffectTemplateMixService {
       workflowRunId,
       artifactData.items,
     );
-    return this.toWorkspaceData(
+    const result = this.toWorkspaceData(
       nodeState ? draftOf(nodeState.state) : emptyDraft(),
       nodeState?.revision ?? null,
       workflowRunId,
@@ -1044,12 +1061,21 @@ export class EffectTemplateMixService {
       templateCreationReady,
       inheritedAiRuns,
     );
+    result.pendingAddedMaterialIds = Object.fromEntries(result.draft.templates.map((entry) => [entry.id,
+      entry.workspace.variants.length ? pendingAddedMaterials(entry.id, result.materials, [...aiRuns, ...inheritedAiRuns]) : []]));
+    return result;
   }
 
   /** Output freshness needs sources and the saved draft, not AI history or workbench locks. */
   async materialSources(projectId: string, workflowRunId: string): Promise<EffectTemplateMixSourcesData> {
     const source = await this.outputSourceWorkspace(projectId, workflowRunId);
+    const history = [
+      ...(await this.aiRuns?.listRecent(projectId, workflowRunId) ?? []),
+      ...(await this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId) ?? []),
+    ];
     return { materials: source.materials, draftRevision: source.draftRevision,
+      pendingAddedMaterialIds: Object.fromEntries(source.draft.templates.map((entry) => [entry.id,
+        entry.workspace.variants.length ? pendingAddedMaterials(entry.id, source.materials, history) : []])),
       pendingProjectCount: source.draft.templates.reduce((count, entry) => count + entry.workspace.variants
         .filter((variant) => effectTemplateMixSourceChanges(variant, source.materials).length > 0).length, 0) };
   }
@@ -1334,6 +1360,7 @@ export class EffectTemplateMixService {
     idempotencyKey: string,
     targetVariantId?: string,
     refreshAffectedSlots = false,
+    appendNewMaterials = false,
   ): Promise<EffectTemplateMixAiRun> {
     const replay = await (this.aiRuns?.findByIdempotencyKey?.(projectId, idempotencyKey) ?? null);
     if (replay) {
@@ -1342,6 +1369,7 @@ export class EffectTemplateMixService {
         templateId,
         targetVariantId: targetVariantId ?? null,
         refreshAffectedSlots,
+        ...(appendNewMaterials ? { appendNewMaterials: true } : {}),
         expectedRevision,
       });
       if (
@@ -1374,7 +1402,7 @@ export class EffectTemplateMixService {
     // Re-filling is a full update. It has to run in an unpublished child so the published mix
     // result is never mutated in place. Every successful fill is a version of its own, so this
     // forks even for the first one — there is no user-visible validation to promote it later.
-    const edit = await this.working.beginEffectNodeEdit(
+    const edit = appendNewMaterials ? { run: { id: sourceWorkflowRunId } } : await this.working.beginEffectNodeEdit(
       projectId,
       sourceWorkflowRunId,
       'TEMPLATE_MIX',
@@ -1401,6 +1429,8 @@ export class EffectTemplateMixService {
     const draft = draftOf(nodeState.state);
     const entry = draft.templates.find(({ id }) => id === templateId);
     if (!entry) this.notFound('当前混剪模板不存在');
+    if (appendNewMaterials && (targetVariantId || refreshAffectedSlots || !entry!.workspace.variants.length))
+      throw new ApiHttpException('新增素材局部更新只追加已有模板的成片工程', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
     const target = targetVariantId
       ? entry!.workspace.variants.find(({ id }) => id === targetVariantId)
       : undefined;
@@ -1540,6 +1570,13 @@ export class EffectTemplateMixService {
         return remapped ? [remapped] : [];
       }),
     ];
+    const addedMaterialIds = appendNewMaterials ? pendingAddedMaterials(templateId,
+      materials.map((material) => ({ ...material, available: true, activeSource: true, sourcePromptId: material.promptId })),
+      [...previousRuns, ...inheritedRuns]) : [];
+    if (appendNewMaterials && !addedMaterialIds.length)
+      throw new ApiHttpException('当前模板没有新增待处理素材，旧素材替换请到成片节点局部更新', HttpStatus.CONFLICT, 'CONFLICT');
+    if (appendNewMaterials && entry!.workspace.variants.length >= 100)
+      throw new ApiHttpException('当前模板已达到 100 条工程上限', HttpStatus.CONFLICT, 'CONFLICT');
     const priorClassifications = new Map<string, EffectTemplateMixAiClassification>();
     let priorItems: EffectTemplateMixClassificationPool['items'] = [];
     const currentSources = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
@@ -1558,7 +1595,7 @@ export class EffectTemplateMixService {
         !Array.isArray(frozen.template?.slots) ||
         classificationSlotSignature(frozen.template.slots) !== classificationSlotSignature(slots) ||
         !classificationsValid(frozen, rows, true) ||
-        workflowStateHash(frozen.materials.map((item) => item.fileObjectId).sort()) !==
+        (!appendNewMaterials && (workflowStateHash(frozen.materials.map((item) => item.fileObjectId).sort()) !==
           workflowStateHash(materials.map((item) => item.fileObjectId).sort()) ||
         frozen.materials.some(
           (item) =>
@@ -1569,20 +1606,27 @@ export class EffectTemplateMixService {
           (item) =>
             currentSources.get(item.id)?.revision !== item.revision ||
             currentSources.get(item.id)?.contentHash !== item.contentHash,
-        )
+        )))
       )
         continue;
+      const reusableIds = new Set(frozen.materials.filter((item) => {
+        const current = materialById.get(item.id);
+        return current && current.artifactRevision === item.artifactRevision && current.contentHash === item.contentHash &&
+          current.promptId === item.promptId && current.prompt === item.prompt;
+      }).map((item) => item.id));
+      const reusableRows = rows.filter((row) => reusableIds.has(row.materialId));
+      if (!reusableRows.length) continue;
       const pools = buildAssignedPools(
         slots,
-        materials.map((item) => ({ ...item, available: true })),
-        rows,
+        materials.filter((item) => reusableIds.has(item.id)).map((item) => ({ ...item, available: true })),
+        reusableRows,
         new Set(),
         frozen.materialRoleAssignments,
       );
       priorItems = [...pools.entries()].flatMap(([role, pool]) =>
         pool.map((item) => ({ materialId: item.materialId, role, matchScore: item.matchScore })),
       );
-      for (const row of rows) priorClassifications.set(row.materialId, row);
+      for (const row of reusableRows) priorClassifications.set(row.materialId, row);
       break;
     }
     const effectiveRoles = resolveEffectTemplateMixMaterialRoles(
@@ -1739,6 +1783,11 @@ export class EffectTemplateMixService {
       materialRoleAssignments,
       manualMaterialRoles,
       materialRoleEditVersion: entry!.materialRoleEditVersion ?? 0,
+      ...(appendNewMaterials ? { incremental: {
+        materialIds: addedMaterialIds,
+        oldVariantIds: entry!.workspace.variants.map(({ id }) => id),
+        packageNewVariants: (await this.aiRuns!.successfulPackagingTemplateIds(projectId, workflowRunId)).includes(templateId),
+      } } : {}),
       targetVariantId: targetVariantId ?? null,
       ...(refreshAffectedSlots ? { trimOnly: true, refreshBindings } : {}),
       maxOutputVariants: target ? 1 : 100 - entry!.workspace.variants.length,
@@ -1775,7 +1824,8 @@ export class EffectTemplateMixService {
         !Array.isArray(previousSnapshot.template?.slots) ||
         !Array.isArray(previousSnapshot.materials) ||
         !Array.isArray(previousSnapshot.promptArtifacts) ||
-        promptSignature(previousSnapshot) !== promptSignature(snapshot) ||
+        (!appendNewMaterials && promptSignature(previousSnapshot) !== promptSignature(snapshot)) ||
+        classificationSlotSignature(previousSnapshot.template.slots) !== classificationSlotSignature(snapshot.template.slots) ||
         !classificationsValid(previousSnapshot, rows, true)
       )
         continue;
@@ -1955,6 +2005,7 @@ export class EffectTemplateMixService {
       templateId,
       targetVariantId: targetVariantId ?? null,
       refreshAffectedSlots,
+      ...(appendNewMaterials ? { appendNewMaterials: true } : {}),
       expectedRevision,
     });
     const initialClassifications = refreshAffectedSlots
@@ -2014,6 +2065,20 @@ export class EffectTemplateMixService {
     return run ? toAiRun(run) : null;
   }
 
+  async ensureAppendConfirmed(projectId: string, runId: string): Promise<void> {
+    const run = await this.aiRun(projectId, runId);
+    if (run.operation !== 'APPEND' || run.status !== 'COMPLETED' || !run.outputVariantIds?.length)
+      throw new ApiHttpException('追加成片任务尚未完成', HttpStatus.CONFLICT, 'CONFLICT');
+    const artifacts = (await this.working.listArtifacts(projectId, { workflowRunId: run.workflowRunId })).items;
+    if (run.outputVariantIds.every((id) => artifacts.some((artifact) =>
+      artifact.artifactKey === `timeline-project:${run.templateId}:${id}` && artifact.availability === 'AVAILABLE'))) return;
+    await this.confirmFilledMix(projectId, run.workflowRunId, run.templateId, run.outputVariantIds);
+  }
+
+  async recordAppendContinuation(projectId: string, runId: string, failed: boolean): Promise<void> {
+    await this.aiRuns!.recordAppendContinuation(projectId, runId, failed);
+  }
+
   async claimAiRun(projectId: string, runId: string) {
     const result = await this.aiRuns!.claim(projectId, runId);
     if (result.kind === 'NOT_FOUND') this.notFound('智能填充任务不存在');
@@ -2053,7 +2118,8 @@ export class EffectTemplateMixService {
     runId: string,
     attemptToken: string,
     classifications: EffectTemplateMixAiClassification[],
-  ): Promise<{ selections: EffectTemplateMixAiSelection[] }> {
+    incrementalPlan?: EffectTemplateMixIncrementalPlan,
+  ): Promise<{ selections: EffectTemplateMixAiSelection[]; roleAssignments?: Record<string, string> }> {
     const run = await this.aiRuns!.find(projectId, runId);
     if (!run || run.status !== 'RUNNING' || run.attemptToken !== attemptToken)
       throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
@@ -2064,6 +2130,15 @@ export class EffectTemplateMixService {
         HttpStatus.BAD_REQUEST,
         'VALIDATION_ERROR',
       );
+    if (snapshot.incremental) {
+      if (!incrementalPlan) return { selections: [], roleAssignments: incrementalRoleAssignments(snapshot, classifications) };
+      let selections: EffectTemplateMixAiSelection[];
+      try { selections = validateIncrementalPlan(snapshot, classifications, incrementalPlan); }
+      catch (error) { throw new ApiHttpException(error instanceof Error ? error.message : '新增方案无效', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR'); }
+      const saved = await this.aiRuns!.saveSelection(projectId, runId, attemptToken, classifications, selections);
+      if (saved.count !== 1) throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
+      return { selections };
+    }
     const lockedSlotIds = new Set(snapshot.lockedBindings.map(({ slotId }) => slotId));
     const lockedMaterialIds = new Set(snapshot.lockedBindings.map(({ materialId }) => materialId));
     const slots = snapshot.template.slots.filter(({ id }) => !lockedSlotIds.has(id));
@@ -2299,9 +2374,10 @@ export class EffectTemplateMixService {
           'CONFLICT',
         );
     }
-    const trimByKey = new Map(trims.map((item) => [aiResultKey(item), item]));
+    const key = (item: EffectTemplateMixAiTrim | EffectTemplateMixAiSelection) => aiResultKey(item, Boolean(snapshot.incremental));
+    const trimByKey = new Map(trims.map((item) => [key(item), item]));
     if (
-      new Set(selections.map(aiResultKey)).size !== selections.length ||
+      new Set(selections.map(key)).size !== selections.length ||
       !trimsValid(snapshot, selections, trims, true)
     )
       throw new ApiHttpException('AI 截取区间无效', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
@@ -2337,25 +2413,26 @@ export class EffectTemplateMixService {
           current.contentHash === source.contentHash
         );
       });
+    const currentBatches = currentSources.filter((source) => source.nodeId === 'SEGMENT_RENDER' &&
+      source.artifactKey.startsWith('render-batch:'));
+    const currentBatchClipKeys = new Set(currentBatches.flatMap((source) => {
+      const clips = object(source.payload)?.clips;
+      return Array.isArray(clips) ? clips.flatMap((clip) => {
+        const taskId = object(clip)?.taskId;
+        return typeof taskId === 'string' ? [`render-clip:${taskId}`] : [];
+      }) : [];
+    }));
+    const activeCurrentClips = currentSources.filter((source) => source.nodeId === 'SEGMENT_RENDER' &&
+      source.artifactKey.startsWith('render-clip:') && (!currentBatches.length || currentBatchClipKeys.has(source.artifactKey)));
     const currentClipFiles = [
       ...new Set(
-        currentSources
-          .filter(
-            (source) =>
-              source.nodeId === 'SEGMENT_RENDER' && source.artifactKey.startsWith('render-clip:'),
-          )
-          .map(renderFileKey),
+        activeCurrentClips.map(renderFileKey),
       ),
     ].sort();
     const snapshotClipFiles = snapshot.materials.map(({ fileObjectId }) => fileObjectId).sort();
     const legacyDuplicateSnapshot = new Set(snapshotClipFiles).size !== snapshotClipFiles.length;
     const currentClipIds = legacyDuplicateSnapshot
-      ? currentSources
-          .filter(
-            (source) =>
-              source.nodeId === 'SEGMENT_RENDER' && source.artifactKey.startsWith('render-clip:'),
-          )
-          .map(({ id }) => id)
+      ? activeCurrentClips.map(({ id }) => id)
           .sort()
       : [];
     const snapshotClipIds = legacyDuplicateSnapshot
@@ -2424,6 +2501,9 @@ export class EffectTemplateMixService {
       : [];
     const variantSelections: EffectTemplateMixAiSelection[][] = snapshot.targetVariantId
       ? [savedSelections.filter(({ slotId }) => !lockedSlotIds.has(slotId))]
+      : snapshot.incremental
+        ? [...new Set(savedSelections.map((selection) => selection.variantIndex ?? 0))].sort((a, b) => a - b)
+          .map((index) => savedSelections.filter((selection) => (selection.variantIndex ?? 0) === index))
       : enumerateAssignedVariants(
           unlockedSlots,
           materials,
@@ -2451,7 +2531,8 @@ export class EffectTemplateMixService {
       const previousVariantHash = variant ? workflowStateHash(variant) : null;
       if (!variant) {
         variant = {
-          id: outputVariantIds.length === 0 ? run.id : randomUUID(),
+          id: snapshot.incremental ? incrementalVariantId(run.id, outputVariantIds.length)
+            : outputVariantIds.length === 0 ? run.id : randomUUID(),
           name: entry!.workspace.template.name + ' · ' + (entry!.workspace.variants.length + 1),
           appliedTemplateVersion: entry!.workspace.template.editVersion,
           slots: JSON.parse(
@@ -2514,7 +2595,7 @@ export class EffectTemplateMixService {
       }
       for (const selection of group) {
         const material = snapshot.materials.find(({ id }) => id === selection.materialId)!;
-        const trim = trimByKey.get(aiResultKey(selection))!;
+        const trim = trimByKey.get(key(selection))!;
         variant.bindings[selection.slotId] = selection.materialId;
         variant.bindingRevisions[selection.slotId] = material.artifactRevision;
         variant.offsets[selection.slotId] = Math.round(trim.trimStartSeconds * 1000) / 1000;
@@ -2556,7 +2637,8 @@ export class EffectTemplateMixService {
       );
     if (completed !== 'COMPLETED')
       throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
-    await this.confirmFilledMix(projectId, run.workflowRunId, snapshot.template.id);
+    await this.confirmFilledMix(projectId, run.workflowRunId, snapshot.template.id,
+      snapshot.incremental ? outputVariantIds : undefined);
     return this.aiRun(projectId, runId);
   }
 
@@ -2572,6 +2654,7 @@ export class EffectTemplateMixService {
     projectId: string,
     workflowRunId: string,
     templateId: string,
+    addedVariantIds?: string[],
   ): Promise<void> {
     const nodeState = await this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX');
     const { inputs } = await this.prepareValidation(
@@ -2581,8 +2664,12 @@ export class EffectTemplateMixService {
       templateId,
       { partial: true },
     );
-    await this.working.commitValidatedArtifacts(projectId, workflowRunId, 'TEMPLATE_MIX', inputs);
-    await this.working.publishEffectNodeEdit(projectId, workflowRunId, 'TEMPLATE_MIX');
+    const targets = addedVariantIds ? inputs.filter((item) => item.artifactKey === `mix-template:${templateId}` ||
+      addedVariantIds.some((id) => item.artifactKey === `timeline-project:${templateId}:${id}`)) : inputs;
+    if (addedVariantIds && targets.filter((item) => item.artifactKey.startsWith('timeline-project:')).length !== addedVariantIds.length)
+      throw new ApiHttpException('新增工程已改变或素材不可用，请检查后继续更新', HttpStatus.CONFLICT, 'CONFLICT');
+    await this.working.commitValidatedArtifacts(projectId, workflowRunId, 'TEMPLATE_MIX', targets);
+    if (!addedVariantIds) await this.working.publishEffectNodeEdit(projectId, workflowRunId, 'TEMPLATE_MIX');
   }
 
   async failAiRun(
@@ -3101,12 +3188,13 @@ export class EffectTemplateMixService {
       const entry = workspaceDraft.templates.find(({ id }) => id === run.templateId);
       const snapshot = run.inputSnapshot as EffectTemplateMixAiSnapshot;
       const classifications = run.classificationResult as EffectTemplateMixAiClassification[];
-      const snapshotFiles = snapshot.materials.map(({ fileObjectId }) => fileObjectId);
       const frozenById = new Map(snapshot.materials.map((material) => [material.id, material]));
       const poolByFile = new Map<string, EffectTemplateMixAiSnapshot['materials'][number]>();
       for (const material of activeMaterials) {
         const frozen = frozenById.get(material.id);
-        if (frozen && !poolByFile.has(frozen.fileObjectId))
+        const current = frozen ? sourceById.get(frozen.id) : undefined;
+        if (frozen && current?.revision === frozen.artifactRevision && current.contentHash === frozen.contentHash &&
+            material.promptText === frozen.prompt && !poolByFile.has(frozen.fileObjectId))
           poolByFile.set(frozen.fileObjectId, frozen);
       }
       const poolSnapshotMaterials = [...poolByFile.values()];
@@ -3116,27 +3204,7 @@ export class EffectTemplateMixService {
         !entry ||
         classificationSlotSignature(entry.workspace.template.slots) !==
           classificationSlotSignature(snapshot.template.slots) ||
-        !classificationsValid(snapshot, classifications, true) ||
-        new Set(snapshotFiles).size !== selectedMaterials.length ||
-        workflowStateHash(
-          [...new Set(activeMaterials.map(({ fileObjectId }) => fileObjectId))].sort(),
-        ) !== workflowStateHash([...new Set(snapshotFiles)].sort()) ||
-        poolSnapshotMaterials.some((frozen) => {
-          const active = activeMaterials.some(({ id }) => id === frozen.id);
-          const current = sourceById.get(frozen.id);
-          return (
-            !active ||
-            !current ||
-            current.revision !== frozen.artifactRevision ||
-            current.contentHash !== frozen.contentHash
-          );
-        }) ||
-        snapshot.promptArtifacts.some((frozen) => {
-          const current = sourceById.get(frozen.id);
-          return (
-            current?.revision !== frozen.revision || current.contentHash !== frozen.contentHash
-          );
-        })
+        !classificationsValid(snapshot, classifications, true) || !selectedMaterials.length
       )
         continue;
       const pools = buildAssignedPools(

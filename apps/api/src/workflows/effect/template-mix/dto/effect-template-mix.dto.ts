@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import type {
   EffectTemplateMixAiClassification,
+  EffectTemplateMixIncrementalPlan,
   EffectTemplateMixSamplingCheckpoint,
   EffectTemplateMixAiTrim,
   EffectTemplateMixSampledMaterial,
@@ -57,6 +58,7 @@ export class CreateEffectTemplateMixAiRunDto extends EffectTemplateMixRevisionDt
   @IsString() @MaxLength(500) idempotencyKey!: string;
   @IsOptional() @IsUUID('4') targetVariantId?: string;
   @IsOptional() @IsBoolean() refreshAffectedSlots?: boolean;
+  @IsOptional() @IsBoolean() appendNewMaterials?: boolean;
 }
 
 export class EffectTemplateMixWorkerProjectDto {
@@ -71,6 +73,7 @@ export class EffectTemplateMixWorkerProgressDto extends EffectTemplateMixWorkerP
 
 export class EffectTemplateMixWorkerClassificationDto extends EffectTemplateMixWorkerProjectDto {
   @IsArray() classifications!: EffectTemplateMixAiClassification[];
+  @IsOptional() @IsObject() incrementalPlan?: EffectTemplateMixIncrementalPlan;
 }
 
 export class EffectTemplateMixWorkerSampledMaterialDto implements EffectTemplateMixSampledMaterial {

@@ -117,18 +117,20 @@ export const createEffectTemplateMixAiRun = (
   templateId: string,
   targetVariantId?: string,
   refreshAffectedSlots = false,
+  appendNewMaterials = false,
 ): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
   requestJson(
     basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/ai-fill-runs',
     {
       method: 'POST',
-      operation: targetVariantId ? '重新智能填充' : 'AI 智能填充',
+      operation: appendNewMaterials ? '新增素材局部更新' : targetVariantId ? '重新智能填充' : 'AI 智能填充',
       body: {
         workflowRunId,
         expectedRevision,
         idempotencyKey: crypto.randomUUID(),
         ...(targetVariantId ? { targetVariantId } : {}),
         ...(refreshAffectedSlots ? { refreshAffectedSlots: true } : {}),
+        ...(appendNewMaterials ? { appendNewMaterials: true } : {}),
       },
     },
   );
@@ -141,6 +143,11 @@ export const getEffectTemplateMixAiRun = (
   requestJson(basePath(projectId) + '/ai-fill-runs/' + encodeURIComponent(runId), {
     operation: '读取智能填充进度',
     signal,
+  });
+
+export const resumeEffectTemplateMixAppend = (projectId: string, runId: string): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
+  requestJson(basePath(projectId) + '/ai-fill-runs/' + encodeURIComponent(runId) + '/resume-append', {
+    method: 'POST', operation: '继续新增成片更新',
   });
 
 export const getBackgroundEffectTemplateMixAiRun = (

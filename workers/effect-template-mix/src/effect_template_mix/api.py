@@ -8,6 +8,7 @@ from .models import (
     Claim,
     Classification,
     ClassificationCheckpoint,
+    IncrementalPlan,
     Runtime,
     SampledMaterial,
     SamplingCheckpoint,
@@ -90,12 +91,24 @@ class InternalApi:
             json={"projectId": runtime.project_id, "stage": stage, "progress": progress},
         )
 
-    async def classify(self, runtime: Runtime, rows: list[Classification]) -> list[Selection]:
+    async def incremental_roles(self, runtime: Runtime, rows: list[Classification]) -> dict[str, str]:
+        value = await self.request(
+            "POST", f"{self.ROOT}/runs/{runtime.run_id}/classifications",
+            headers=self.headers(runtime),
+            json={"projectId": runtime.project_id, "classifications": [row.model_dump() for row in rows]},
+        )
+        return dict(value["roleAssignments"])
+
+    async def classify(self, runtime: Runtime, rows: list[Classification],
+                       plan: IncrementalPlan | None = None) -> list[Selection]:
+        body: dict[str, Any] = {"projectId": runtime.project_id, "classifications": [row.model_dump() for row in rows]}
+        if plan is not None:
+            body["incrementalPlan"] = plan.model_dump()
         value = await self.request(
             "POST",
             f"{self.ROOT}/runs/{runtime.run_id}/classifications",
             headers=self.headers(runtime),
-            json={"projectId": runtime.project_id, "classifications": [row.model_dump() for row in rows]},
+            json=body,
         )
         return [Selection.model_validate(item) for item in value["selections"]]
 

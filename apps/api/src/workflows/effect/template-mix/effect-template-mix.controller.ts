@@ -12,10 +12,13 @@ import {
 } from './dto/effect-template-mix.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { EffectTemplateMixService } from './effect-template-mix.service';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
 
 @Controller('projects/:projectId/workflows/effect/template-mix')
 export class EffectTemplateMixController {
-  constructor(private readonly service: EffectTemplateMixService) {}
+  constructor(private readonly service: EffectTemplateMixService,
+    private readonly completion: EffectTemplateMixCompletionService) {}
 
   @Get()
   workspace(
@@ -83,6 +86,7 @@ export class EffectTemplateMixController {
       body.idempotencyKey,
       body.targetVariantId,
       body.refreshAffectedSlots ?? false,
+      body.appendNewMaterials ?? false,
     );
   }
 
@@ -92,6 +96,12 @@ export class EffectTemplateMixController {
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
   ) {
     return this.service.aiRun(projectId, runId);
+  }
+
+  @Post('ai-fill-runs/:runId/resume-append')
+  resumeAppend(@Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string) {
+    return this.completion.resumeAppend(projectId, runId);
   }
 
   @Get('templates/:templateId/background-ai-run')

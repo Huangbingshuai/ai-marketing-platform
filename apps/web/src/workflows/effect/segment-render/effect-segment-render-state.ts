@@ -79,6 +79,7 @@ export type EffectSegmentRenderWorkspace = {
   batchRevision?: number | null;
   stale?: boolean;
   refreshScope?: 'NONE' | 'SELECTIVE' | 'FULL';
+  pendingPromptIds?: string[];
   commitStatus?: WorkingArtifactCommitStatus | null;
   workingArtifactRevision?: number | null;
   batchStatus: EffectSegmentRenderBatchStatus;
@@ -123,6 +124,7 @@ export const effectSegmentRenderWorkspaceFromApi = (
   batchRevision: data.batch?.revision ?? null,
   stale: data.batch?.stale ?? false,
   refreshScope: data.batch?.refreshScope ?? 'NONE',
+  pendingPromptIds: data.batch?.pendingPromptIds ?? [],
   commitStatus: data.batch?.commitStatus ?? null,
   workingArtifactRevision: data.batch?.workingArtifactRevision ?? null,
   batchStatus: data.batch?.status ?? 'NOT_STARTED',
@@ -143,6 +145,8 @@ export const effectSegmentRenderWorkspaceWithBatch = (
   batchId: batch.id,
   batchRevision: batch.revision,
   stale: batch.stale,
+  refreshScope: batch.refreshScope,
+  pendingPromptIds: batch.pendingPromptIds ?? [],
   commitStatus: batch.commitStatus,
   workingArtifactRevision: batch.workingArtifactRevision,
   batchStatus: batch.status,

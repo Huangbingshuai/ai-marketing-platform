@@ -59,6 +59,12 @@ export class RegenerateSegmentRenderTasksDto {
   @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
 }
 
+export class RefreshSegmentRenderBatchDto {
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
+  @Type(() => Number) @IsInt() @Min(1) expectedPromptArtifactRevision!: number;
+  @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+}
+
 export class SegmentRenderRepairRegionDto {
   @Type(() => Number) @IsNumber({ maxDecimalPlaces: 6 }) @Min(0) @Max(1) x!: number;
   @Type(() => Number) @IsNumber({ maxDecimalPlaces: 6 }) @Min(0) @Max(1) y!: number;

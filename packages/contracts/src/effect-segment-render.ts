@@ -213,6 +213,8 @@ export type EffectSegmentRenderBatch = {
   status: EffectSegmentRenderBatchStatus;
   stale: boolean;
   refreshScope: 'NONE' | 'SELECTIVE' | 'FULL';
+  /** Confirmed Prompt items not yet represented by a task in this batch. */
+  pendingPromptIds?: string[];
   revision: number;
   commitStatus: WorkingArtifactCommitStatus;
   workingArtifactRevision: number | null;
@@ -258,6 +260,12 @@ export type StartEffectSegmentRenderBatchRequest = {
 export type StartEffectSegmentRenderBatchData = {
   batch: EffectSegmentRenderBatch;
   replayed: boolean;
+};
+
+export type RefreshEffectSegmentRenderBatchRequest = {
+  expectedBatchRevision: number;
+  expectedPromptArtifactRevision: number;
+  idempotencyKey: string;
 };
 
 export type RegenerateEffectSegmentRenderTasksRequest = {

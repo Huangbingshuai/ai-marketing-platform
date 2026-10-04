@@ -34,6 +34,37 @@ class Material(BaseModel):
     fileObjectId: str
 
 
+class IncrementalInput(BaseModel):
+    materialIds: list[str]
+    oldVariantIds: list[str]
+    packageNewVariants: bool
+
+
+class IncrementalBinding(BaseModel):
+    slotId: str
+    materialId: str
+
+
+class IncrementalVariant(BaseModel):
+    difference: str = Field(min_length=1, max_length=1000)
+    bindings: list[IncrementalBinding]
+
+
+class OmittedMaterial(BaseModel):
+    materialId: str
+    reason: str
+
+
+class IncrementalPlan(BaseModel):
+    variants: list[IncrementalVariant]
+    omitted: list[OmittedMaterial]
+
+
+class IncrementalReview(BaseModel):
+    acceptedIndexes: list[int]
+    reason: str
+
+
 class Snapshot(BaseModel):
     schemaVersion: Literal[1]
     template: dict[str, Any]
@@ -46,6 +77,9 @@ class Snapshot(BaseModel):
     reuseCounts: dict[str, int] = Field(default_factory=dict)
     promptArtifacts: list[dict[str, Any]]
     materials: list[Material]
+    incremental: IncrementalInput | None = None
+    maxOutputVariants: int = Field(default=100, ge=1, le=100)
+    existingVariantBindings: list[list[IncrementalBinding]] = Field(default_factory=list)
 
     @property
     def slots(self) -> list[Slot]:

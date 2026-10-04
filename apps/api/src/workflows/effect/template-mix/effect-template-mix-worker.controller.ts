@@ -44,7 +44,7 @@ export class EffectTemplateMixWorkerController {
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
     @Body() body: EffectTemplateMixWorkerProjectDto,
   ) {
-    return this.service.claimAiRun(body.projectId, runId);
+    return this.completion.claim(body.projectId, runId);
   }
 
   @Put('runs/:runId/progress')
@@ -68,7 +68,7 @@ export class EffectTemplateMixWorkerController {
     @Headers('x-attempt-token') attemptToken: string,
     @Body() body: EffectTemplateMixWorkerClassificationDto,
   ) {
-    return this.service.classifyAiRun(body.projectId, runId, attemptToken, body.classifications);
+    return this.service.classifyAiRun(body.projectId, runId, attemptToken, body.classifications, body.incrementalPlan);
   }
 
   @Put('runs/:runId/classifications/checkpoint')

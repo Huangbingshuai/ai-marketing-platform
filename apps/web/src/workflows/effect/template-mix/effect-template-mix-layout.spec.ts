@@ -305,7 +305,8 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const availableMaterials = computed(');
     expect(pageSource).toContain('const expiredMaterialCount = computed(');
     expect(pageSource).toContain('const aiFillBlockReason = computed<string | null>(');
-    expect(pageSource).toContain('if (!refreshAffectedSlots && aiFillBlockReason.value) {');
+    expect(pageSource).toContain('if (!refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {');
+    expect(pageSource).toContain("mutating.value = run.operation !== 'APPEND';");
     expect(pageSource).toContain('class="material-expired-banner"');
     expect(pageSource).not.toContain('class="material-expired-badge"');
     expect(pageSource).not.toContain(

@@ -7,6 +7,14 @@ import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
 
 describe('effect segment render material gallery layout', () => {
+  it('offers revision-guarded selective refresh for changed and newly added Prompts', () => {
+    expect(pageSource).toContain('tasksNeedingUpdate.value.length + (workspace.value?.pendingPromptIds?.length ?? 0)');
+    expect(pageSource).toContain('refreshEffectSegmentRenderBatch(');
+    expect(pageSource).toContain('expectedBatchRevision: current.batchRevision');
+    expect(pageSource).toContain('expectedPromptArtifactRevision: current.promptArtifactRevision');
+    expect(pageSource).toContain('@click="startBatch(true)"');
+    expect(apiSource).toContain('/refresh');
+  });
   it('replaces completed-validation with branch-safe editing controls', () => {
     expect(pageSource).toContain('<Pencil v-else :size="14" />进入编辑');
     expect(pageSource).toContain('<X :size="14" />取消编辑');

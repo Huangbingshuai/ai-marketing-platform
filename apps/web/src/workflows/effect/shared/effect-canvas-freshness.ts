@@ -57,7 +57,8 @@ export function useEffectCanvasFreshness(scope: () => {
         // Exact material dependencies also detect new-id replacements while old clips remain
         // playable. This is a server projection, not another client-side source/version state.
         loadEffectTemplateMixSources(current.projectId, current.workflowRunId, signal).then((result) => {
-          if (isCurrent()) mixCount.value = result.data.pendingProjectCount ?? 0;
+          if (isCurrent()) mixCount.value = (result.data.pendingProjectCount ?? 0) +
+            Object.values(result.data.pendingAddedMaterialIds ?? {}).filter((ids) => ids.length > 0).length;
         }),
         outputsOnly ? Promise.resolve() : listWorkingArtifacts(current.projectId, { workflowRunId: current.workflowRunId,
           workflow: 'EFFECT', space: 'EFFECT' }, signal).then((result) => {

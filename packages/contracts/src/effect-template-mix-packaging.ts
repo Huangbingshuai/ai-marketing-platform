@@ -250,6 +250,8 @@ export type PackagingCheckpoint = {
   captionVoices?: Record<string, PackagingAudio>;
 };
 export type PackagingSnapshot = {
+  /** Server-authorized current-branch append; never supplied by the browser. */
+  incrementalFillRunId?: string;
   /** Optional only for pre-library tasks. New jobs freeze the server-selected profile. */
   voiceProfile?: EffectVoiceSelection;
   narrationLayoutVersion?: 'SLOT_V1';

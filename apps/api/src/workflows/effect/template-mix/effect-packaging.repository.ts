@@ -462,6 +462,7 @@ export class EffectPackagingRepository {
         status,
         workflowRunId: run.workflowRunId,
         templateId: run.templateId,
+        items: run.items.map((item) => ({ variantId: item.variantId, snapshot: item.snapshot })),
       };
     });
   }

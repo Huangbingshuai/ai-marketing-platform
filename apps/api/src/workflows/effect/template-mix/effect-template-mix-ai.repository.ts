@@ -35,6 +35,13 @@ export class EffectTemplateMixAiRepository {
       include: { workflowRun: { select: { parentWorkflowRunId: true } } },
     });
   }
+  recordAppendContinuation(projectId: string, runId: string, failed: boolean) {
+    return this.prisma.effectTemplateMixAiRun.updateMany({
+      where: { projectId, id: runId, status: 'COMPLETED' },
+      data: { errorCode: failed ? 'APPEND_CONTINUATION_FAILED' : null,
+        errorMessage: failed ? '新增成片已保存，输出同步或自动包装尚未完成，请点击继续更新' : null },
+    });
+  }
   latestUnpublishedChild(projectId: string, workflowRunId: string, templateId: string) {
     return this.prisma.effectTemplateMixAiRun.findFirst({
       where: {
@@ -195,9 +202,10 @@ export class EffectTemplateMixAiRepository {
     const rows = await this.prisma.effectTemplateMixAiRun.findMany({
       where: { projectId, workflowRunId, status: { in: ['QUEUED', 'RUNNING'] } },
       distinct: ['templateId'],
-      select: { templateId: true },
+      select: { templateId: true, inputSnapshot: true },
     });
-    return rows.map(({ templateId }) => templateId);
+    return rows.filter((row) => !(row.inputSnapshot as { incremental?: unknown } | null)?.incremental)
+      .map(({ templateId }) => templateId);
   }
 
   async packagedTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
@@ -234,6 +242,30 @@ export class EffectTemplateMixAiRepository {
       select: { templateId: true },
     });
     return rows.map(({ templateId }) => templateId);
+  }
+
+  async successfulPackagingTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
+    const lineage = new Set<string>();
+    let cursor: string | null = workflowRunId;
+    while (cursor && !lineage.has(cursor)) {
+      lineage.add(cursor);
+      const branch: { parentWorkflowRunId: string | null } | null = await this.prisma.workflowRun.findFirst({
+        where: { projectId, id: cursor, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+        select: { parentWorkflowRunId: true },
+      });
+      cursor = branch?.parentWorkflowRunId ?? null;
+    }
+    const [runs, packages] = await Promise.all([
+      this.prisma.effectPackagingRun.findMany({ where: { projectId, workflowRunId: { in: [...lineage] }, status: 'COMPLETED' },
+        distinct: ['templateId'], select: { templateId: true } }),
+      this.prisma.workingArtifact.findMany({ where: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX',
+        artifactKey: { startsWith: 'timeline-package:' }, availability: 'AVAILABLE' }, select: { artifactKey: true, payload: true } }),
+    ]);
+    return [...new Set([...runs.map((run) => run.templateId),
+      ...packages.flatMap(({ artifactKey, payload }) => {
+        const voices = (payload as { voices?: Record<string, unknown> } | null)?.voices;
+        return voices && Object.keys(voices).length ? artifactKey.split(':')[1] ?? [] : [];
+      })])];
   }
 
   find(projectId: string, runId: string) {
@@ -412,7 +444,7 @@ export class EffectTemplateMixAiRepository {
       const lockedDraft: EffectTemplateMixDraft = {
         ...currentDraft,
         templates: currentDraft.templates.map((entry) =>
-          entry.id === input.templateId ? { ...entry, aiFillLocked: true } : entry,
+          entry.id === input.templateId ? { ...entry, aiFillLocked: !input.snapshot.incremental } : entry,
         ),
       };
       await transaction.workflowNodeState.update({
@@ -684,9 +716,12 @@ export class EffectTemplateMixAiRepository {
       const existing = Array.isArray(run.trimResult) ? (run.trimResult as unknown[]) : [];
       const byKey = new Map<string, unknown>();
       for (const item of [...existing, ...trims]) {
-        const value = item as { materialId?: unknown };
+        const value = item as { materialId?: unknown; slotId?: string; variantIndex?: number };
         if (typeof value.materialId !== 'string') continue;
-        byKey.set(value.materialId, item);
+        const snapshot = run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
+        const key = snapshot.incremental
+          ? `${value.variantIndex ?? 0}:${value.slotId}:${value.materialId}` : value.materialId;
+        byKey.set(key, item);
       }
       const merged = [...byKey.values()];
       const selections = Array.isArray(run.selectionResult) ? run.selectionResult.length : 0;

@@ -1,10 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createEmptyEffectTemplateMixVariant, saveEffectTemplateMixDraft } from './effect-template-mix.api';
+import { createEffectTemplateMixAiRun, createEmptyEffectTemplateMixVariant, resumeEffectTemplateMixAppend, saveEffectTemplateMixDraft } from './effect-template-mix.api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('effect template mix API', () => {
+  it('distinguishes same-branch append requests from a full fill and resumes the same task', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: {} })));
+    vi.stubGlobal('fetch', fetchMock);
+    await createEffectTemplateMixAiRun('p', 'current-run', 7, 't', undefined, false, true);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1].body))).toMatchObject({ workflowRunId: 'current-run', appendNewMaterials: true });
+    await resumeEffectTemplateMixAppend('p', 'append-id');
+    expect(fetchMock.mock.calls[1]![0]).toBe('/api/projects/p/workflows/effect/template-mix/ai-fill-runs/append-id/resume-append');
+    await createEffectTemplateMixAiRun('p', 'current-run', 7, 't');
+    expect(JSON.parse(String(fetchMock.mock.calls[2]![1].body))).not.toHaveProperty('appendNewMaterials');
+  });
   it.each([false, true])('preserves the draft save envelope and keepalive with compact=%s', async (compact) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       success: true, data: { draftRevision: 8 },

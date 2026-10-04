@@ -1510,6 +1510,7 @@ describe('a finished package feeds the output node', () => {
     status,
     workflowRunId: 'w',
     templateId: 't',
+    items: [],
   });
 
   it.each(['COMPLETED', 'PARTIAL'])('queues the films once the run ends %s', async (status) => {

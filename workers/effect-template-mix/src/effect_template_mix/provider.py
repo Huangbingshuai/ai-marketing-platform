@@ -11,7 +11,7 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from .models import ClassificationResult, Material, Slot, TrimChoice
+from .models import ClassificationResult, IncrementalPlan, IncrementalReview, IncrementalVariant, Material, OmittedMaterial, Slot, Snapshot, TrimChoice
 from .reliability import classification_output_token_budget
 
 T = TypeVar("T", bound=BaseModel)
@@ -241,6 +241,69 @@ class ArkProvider:
             max_output_tokens=classification_output_token_budget(materials),
             max_transient_attempts=4,
         )
+
+    async def plan_incremental(self, snapshot: Snapshot, roles: dict[str, str]) -> IncrementalPlan:
+        if snapshot.incremental is None:
+            raise ProviderError("缺少新增素材输入", retryable=False)
+        accepted: list[IncrementalVariant] = []
+        omitted: dict[str, OmittedMaterial] = {}
+        # Capacity paging bounds each response; AI chooses count and semantic differences.
+        # A separate AI review rejects repetitive viewing events. No combinatorial fallback.
+        for _ in range(math.ceil(snapshot.maxOutputVariants / 8)):
+            remaining = snapshot.maxOutputVariants - len(accepted)
+            if remaining <= 0:
+                break
+            context = {
+                "task": "使用新增素材追加有实际观看差异的成片方案，不改动已有成片。",
+                "slots": [slot.model_dump() for slot in snapshot.slots],
+                "newMaterialIds": snapshot.incremental.materialIds,
+                "materials": [{"materialId": material.id, "prompt": material.prompt,
+                               "duration": material.duration, "assignedRole": roles.get(material.id)}
+                              for material in snapshot.materials],
+                "existingBindings": [[binding.model_dump() for binding in bindings]
+                                     for bindings in snapshot.existingVariantBindings],
+                "acceptedPlans": [variant.model_dump() for variant in accepted],
+                "maximumThisPage": min(8, remaining),
+                "rules": [
+                    "每条成片恰好六个槽位，六个素材互不重复，素材必须满足已归槽角色和时长",
+                    "允许复用旧素材，但每条必须至少包含一个新增素材",
+                    "尽可能让每个可用新增素材参与多条方案，优先覆盖尚未参与的新增素材；数量由有意义的差异决定",
+                    "difference 解释真实观看事件、产品关联点或情绪节奏的区别，不得编造未提供事实",
+                    "禁止机械枚举、仅换顺序或截取起点来凑数量，避免与已有和已接受方案语义重复",
+                    "没有足够的有意义差异时返回空 variants；omitted 逐条解释尚未被 acceptedPlans 或本页方案使用的所有新增素材",
+                ],
+            }
+            candidate = await self.structured(
+                [{"type": "input_text", "text": json.dumps(context, ensure_ascii=False)}],
+                IncrementalPlan, "effect_template_mix_incremental_plan", max_output_tokens=8192,
+                max_transient_attempts=4,
+            )
+            if len(candidate.variants) > min(8, remaining):
+                raise ProviderError("AI 追加方案超过当前容量", retryable=False)
+            omitted.update({item.materialId: item for item in candidate.omitted})
+            if not candidate.variants:
+                break
+            review = await self.structured(
+                [{"type": "input_text", "text": json.dumps({
+                    **context, "task": "独立审核新增成片的真实观看差异与事实可靠性，选择应保留的候选索引（从0开始）。",
+                    "candidates": [variant.model_dump() for variant in candidate.variants],
+                    "reviewRules": ["剔除与已有成片、已接受方案及其他候选实质重复的观看事件",
+                                    "不因措辞不同就判定有差异；不允许无来源产品事实；可以全部拒绝"],
+                }, ensure_ascii=False)}],
+                IncrementalReview, "effect_template_mix_incremental_review", max_output_tokens=2048,
+                max_transient_attempts=4,
+            )
+            indexes = review.acceptedIndexes
+            if len(set(indexes)) != len(indexes) or any(index < 0 or index >= len(candidate.variants) for index in indexes):
+                raise ProviderError("AI 方案审核索引无效", retryable=False)
+            if not indexes:
+                break
+            accepted.extend(candidate.variants[index] for index in indexes)
+        if not accepted:
+            raise ProviderError("新增素材暂时无法组成有观看差异的完整成片，旧工程已保留", retryable=False)
+        used = {binding.materialId for variant in accepted for binding in variant.bindings}
+        return IncrementalPlan(variants=accepted, omitted=[item for material_id, item in omitted.items()
+                                                        if material_id not in used])
 
     async def trim(
         self,

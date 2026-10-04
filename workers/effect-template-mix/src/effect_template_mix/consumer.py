@@ -260,14 +260,21 @@ class Consumer:
                 )
                 rows = [rows_by_id[item.id] for item in snapshot.materials]
                 await report("MATCHING", 35)
-                selections = await self.api.classify(runtime, rows)
+                if snapshot.incremental:
+                    roles = await self.api.incremental_roles(runtime, rows)
+                    async with semaphore:
+                        plan = await self.provider.plan_incremental(snapshot, roles)
+                    selections = await self.api.classify(runtime, rows, plan)
+                else:
+                    selections = await self.api.classify(runtime, rows)
             materials = {item.id: item for item in snapshot.materials}
             slots = {item.id: item for item in snapshot.slots}
             restored_trims = [
                 TrimOutput.model_validate(item) for item in checkpoint.get("trims") or []
             ]
             def trim_key(item: Selection | TrimOutput) -> str:
-                return item.materialId
+                return (f"{item.variantIndex}:{item.slotId}:{item.materialId}"
+                        if snapshot.incremental else item.materialId)
             trims_by_key = {trim_key(item): item for item in restored_trims}
             pending_selections = [
                 (index, selection)

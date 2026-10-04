@@ -230,6 +230,8 @@ export class EffectFinalOutputService {
     projectId: string,
     workflowRunId: string,
     templateId: string,
+    onlyVariantIds?: string[],
+    appendPackagingRequired = false,
   ): Promise<void> {
     const before = await this.db.workflowNodeState.findUnique({
       where: { projectId_workflowRunId_nodeId: {
@@ -238,9 +240,11 @@ export class EffectFinalOutputService {
       select: { revision: true },
     });
     if (!before) throw new NotFoundException('混剪草稿不存在');
-    const { variants, workspace } = await this.outputPlan(
+    const { variants: allVariants, workspace } = await this.outputPlan(
       projectId, workflowRunId, templateId, before.revision,
     );
+    const variants = onlyVariantIds ? allVariants.filter((variant) => onlyVariantIds.includes(variant.id)) : allVariants;
+    if (!variants.length) return;
     await this.db.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + workflowRunId + ':' + templateId}))`;
       await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
@@ -255,18 +259,25 @@ export class EffectFinalOutputService {
       const artifacts = (await tx.workingArtifact.findMany({
         where: { projectId, workflowRunId }, include: workingArtifactInclude,
       })) as unknown as WorkingArtifact[];
-      if (hasOutputVersion(artifacts)) return;
+      if (!onlyVariantIds && hasOutputVersion(artifacts)) return;
       // A late or retried fill callback must never turn an already packaged queue back into a
       // picture-only queue. The packaging callback owns all updates once packaging has started.
       const packagingRuns = await tx.effectPackagingRun.count({
         where: { projectId, workflowRunId, templateId },
       });
-      if (packagingRuns) return;
+      if (!onlyVariantIds && packagingRuns) return;
+      if (onlyVariantIds && await tx.effectFinalOutputRun.count({ where: { projectId, workflowRunId,
+        templateId, status: { in: ['QUEUED', 'RUNNING'] } } }))
+        throw new ConflictException('该模板正在导出，请等待完成后继续同步新增成片');
       const pending = await tx.effectFinalOutputRun.findFirst({
-        where: { projectId, workflowRunId, templateId, status: 'PENDING_RENDER' },
+        where: { projectId, workflowRunId, templateId, status: onlyVariantIds ? { in: ['PENDING_RENDER', 'COMPLETED'] } : 'PENDING_RENDER' },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], include,
       });
-      const rows = variants.map((variant) => {
+      const existingIds = onlyVariantIds ? new Set((await tx.effectFinalOutputItem.findMany({
+        where: { projectId, run: { workflowRunId, templateId }, variantId: { in: onlyVariantIds } },
+        select: { variantId: true },
+      })).map((item) => item.variantId)) : new Set<string>();
+      const rows = variants.filter((variant) => !existingIds.has(variant.id)).map((variant) => {
         const visual = artifacts.find((artifact) =>
           artifact.nodeId === 'TEMPLATE_MIX' &&
           artifact.artifactKey === `timeline-project:${templateId}:${variant.id}` &&
@@ -289,6 +300,7 @@ export class EffectFinalOutputService {
           facts: [], dependencies: [dependency],
         };
         const snapshot: FinalOutputSnapshot = {
+          ...(onlyVariantIds ? { appendOnly: true, appendPackagingRequired } : {}),
           timeline,
           packaging: { voices: {}, captions: [] },
           unpackaged: true,
@@ -302,6 +314,7 @@ export class EffectFinalOutputService {
         return { variantId: variant.id, name: variant.name,
           status: 'PENDING_RENDER' as const, snapshot };
       });
+      if (!rows.length) return;
       const requiredIds = [...new Set(rows.flatMap((row) => [
         ...row.snapshot.timeline.clips.map((clip) => clip.fileObjectId),
         ...(row.snapshot.timeline.detachedAudios ?? []).map((audio) => audio.fileObjectId),
@@ -319,6 +332,7 @@ export class EffectFinalOutputService {
       if (pending) {
         const wanted = new Map(rows.map((row) => [row.variantId, row]));
         for (const item of pending.items) {
+          if (onlyVariantIds) continue;
           const row = wanted.get(item.variantId);
           if (!row) {
             await tx.effectFinalOutputItem.delete({ where: { id: item.id } });
@@ -334,6 +348,9 @@ export class EffectFinalOutputService {
           await tx.effectFinalOutputItem.create({ data: {
             projectId, runId: pending.id, ...row, snapshot: json(row.snapshot),
           } });
+        if (onlyVariantIds && pending.status === 'COMPLETED')
+          await tx.effectFinalOutputRun.update({ where: { id: pending.id },
+            data: { status: 'PENDING_RENDER', completedAt: null } });
       } else {
         const duplicate = await tx.effectFinalOutputRun.findUnique({
           where: { projectId_workflowRunId_templateId_inputHash: {
@@ -366,7 +383,7 @@ export class EffectFinalOutputService {
     projectId: string,
     workflowRunId: string,
     templateId: string,
-    options: { publish?: boolean } = {},
+    options: { publish?: boolean; onlyVariantIds?: string[] } = {},
   ): Promise<void> {
     const before = await this.db.workflowNodeState.findUnique({
       where: {
@@ -375,12 +392,17 @@ export class EffectFinalOutputService {
       select: { revision: true },
     });
     if (!before) throw new NotFoundException('混剪草稿不存在');
-    const { inputs, variants, workspace } = await this.outputPlan(
+    const plan = await this.outputPlan(
       projectId,
       workflowRunId,
       templateId,
       before.revision,
     );
+    const { workspace } = plan;
+    const variants = options.onlyVariantIds ? plan.variants.filter((variant) => options.onlyVariantIds!.includes(variant.id)) : plan.variants;
+    const inputs = options.onlyVariantIds ? plan.inputs.filter((input) => input.artifactKey === `mix-template:${templateId}` ||
+      options.onlyVariantIds!.some((id) => input.artifactKey === `timeline-project:${templateId}:${id}`)) : plan.inputs;
+    if (!variants.length) return;
     await this.db.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + workflowRunId + ':' + templateId}))`;
@@ -458,7 +480,7 @@ export class EffectFinalOutputService {
           })),
         );
         const pending = await tx.effectFinalOutputRun.findFirst({
-          where: { projectId, workflowRunId, templateId, status: 'PENDING_RENDER' },
+          where: { projectId, workflowRunId, templateId, status: options.onlyVariantIds ? { in: ['PENDING_RENDER', 'COMPLETED'] } : 'PENDING_RENDER' },
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           include,
         });
@@ -577,6 +599,7 @@ export class EffectFinalOutputService {
             lane: row.variant.videoLanes?.[clip.slotId] ?? clip.lane,
           }));
           const snapshot: FinalOutputSnapshot = {
+            ...(options.onlyVariantIds ? { appendOnly: true } : {}),
             timeline: {
               ...row.snapshot,
               variant: row.variant,
@@ -615,12 +638,17 @@ export class EffectFinalOutputService {
           projectId, workflowRunId, nodeId: 'FINAL_OUTPUT',
           artifactKey: `final-delivery:${templateId}`,
         }, select: { id: true } });
-        if (delivered) return;
+        if (delivered && !options.onlyVariantIds) return;
         if (pending) {
           // The films have not been exported yet, so the queue simply follows the new package:
           // refreshing in place keeps one batch per template instead of growing one per packaging run.
           const wanted = new Map(outputRows.map((row) => [row.variantId, row]));
           for (const item of pending.items) {
+            if (options.onlyVariantIds && !options.onlyVariantIds.includes(item.variantId)) continue;
+            if (options.onlyVariantIds && item.status === 'COMPLETED') {
+              wanted.delete(item.variantId);
+              continue;
+            }
             const row = wanted.get(item.variantId);
             if (!row) {
               await tx.effectFinalOutputItem.delete({ where: { id: item.id } });
@@ -642,6 +670,8 @@ export class EffectFinalOutputService {
             await tx.effectFinalOutputItem.create({
               data: { projectId, runId: pending.id, ...row },
             });
+          if (options.onlyVariantIds && wanted.size && pending.status === 'COMPLETED')
+            await tx.effectFinalOutputRun.update({ where: { id: pending.id }, data: { status: 'PENDING_RENDER', completedAt: null } });
         } else {
           const duplicate = await tx.effectFinalOutputRun.findUnique({
             where: {
@@ -1073,6 +1103,12 @@ export class EffectFinalOutputService {
       throw new ConflictException('工作流分支正在更新，请等待当前任务完成后再导出');
     if (source.status === 'QUEUED' || source.status === 'RUNNING')
       throw new ConflictException('该模板已开始渲染，不能修改本批输出规格');
+    const unexported = source.items.filter((item) => item.status !== 'COMPLETED');
+    if (source.status === 'PENDING_RENDER' && unexported.length && unexported.every((item) =>
+      (item.snapshot as unknown as FinalOutputSnapshot).appendOnly)) {
+      await this.startAppendedFilms(projectId, source.id, settings);
+      return this.get(projectId, source.id);
+    }
     // Every full export owns a new, template-scoped Run. A re-export must leave the previous
     // delivery and its files in its published branch while the new batch is still rendering.
     const edit = await this.working.beginEffectNodeEdit(
@@ -1132,6 +1168,41 @@ export class EffectFinalOutputService {
       throw reason;
     }
     return this.get(projectId, targetId);
+  }
+
+  private async startAppendedFilms(projectId: string, id: string, settings: StartFinalOutputRequest): Promise<void> {
+    await this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM effect_final_output_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+      const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id }, include });
+      if (!run || run.status !== 'PENDING_RENDER') throw new ConflictException('新增成片已开始导出或批次已变化');
+      const items = run.items.filter((item) => item.status !== 'COMPLETED');
+      if (!items.length || items.some((item) => !(item.snapshot as unknown as FinalOutputSnapshot).appendOnly))
+        throw new ConflictException('当前批次不属于新增成片导出');
+      if (await tx.effectPackagingRun.count({ where: { projectId, workflowRunId: run.workflowRunId,
+        templateId: run.templateId, status: { in: ['QUEUED', 'RUNNING'] } } }))
+        throw new ConflictException('新增成片正在包装，请等待包装结束后导出');
+      await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${run.workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR SHARE`;
+      const workspace = await this.mix.outputSourceWorkspace(projectId, run.workflowRunId);
+      const variants = workspace.draft?.templates.find((entry) => entry.id === run.templateId)?.workspace.variants ?? [];
+      const artifacts = await tx.workingArtifact.findMany({ where: { projectId, workflowRunId: run.workflowRunId },
+        include: workingArtifactInclude }) as unknown as WorkingArtifact[];
+      const packaging = await this.packagingByVariant(projectId, run.workflowRunId, [run.templateId], tx);
+      for (const item of items) {
+        if ((item.snapshot as unknown as FinalOutputSnapshot).appendPackagingRequired && !packaging.has(item.variantId))
+          throw new ConflictException(`${item.name} 的新增包装尚未完成，请先在混剪节点继续更新或重试包装`);
+        const variant = variants.find((variant) => variant.id === item.variantId);
+        if (!variant || !variant.slots.length || variant.slots.some((slot) => !variant.bindings[slot.id]))
+          throw new ConflictException(`${item.name} 的混剪工程尚未完成`);
+        await this.rewriteFilm(tx, run.templateId, item, variant, workspace, artifacts,
+          'QUEUED', packaging.get(item.variantId), settings);
+        const queued = await tx.effectFinalOutputItem.findUniqueOrThrow({ where: { id: item.id } });
+        await this.current(tx, projectId, queued.snapshot as unknown as FinalOutputSnapshot);
+      }
+      await tx.effectFinalOutputRun.update({ where: { id }, data: {
+        status: 'QUEUED', attemptToken: null, leaseExpiresAt: null, completedAt: null,
+      } });
+      await this.enqueue(tx, projectId, id);
+    }, { timeout: 120_000 });
   }
 
   /** Commit the delivery index only after every film succeeds; the caller then publishes its Run. */
@@ -1396,7 +1467,7 @@ export class EffectFinalOutputService {
     packaging: ReadonlyMap<string, PackagingCheckpoint> = new Map(),
   ): FinalOutputRun {
     const staleItemIds = new Set(
-      hasOutputVersion(artifacts) && run.status === 'COMPLETED'
+      hasOutputVersion(artifacts) && ['COMPLETED', 'PENDING_RENDER'].includes(run.status)
         ? run.items.filter((item) => Boolean(item.fileObjectId && item.assetId) &&
           this.draftDiffersFromSnapshot(run.templateId, item, artifacts as WorkingArtifact[],
             workspace, packaging.get(item.variantId)))
@@ -1633,7 +1704,9 @@ export class EffectFinalOutputService {
       ? await this.mix.outputSourceWorkspace(projectId, workflowRunId, false) : null;
     const pendingNames = new Map(pendingWorkspace?.draft?.templates.map((entry) =>
       [entry.id, entry.workspace.template.name]) ?? []);
-    const completed = visible.filter((row) => row.status !== 'PENDING_RENDER');
+    const completed = visible.filter((row) => row.status !== 'PENDING_RENDER' ||
+      (row.items.some((item) => (item.snapshot as unknown as FinalOutputSnapshot).appendOnly) &&
+       row.items.some((item) => item.status === 'COMPLETED')));
     const sourceIds = [...new Set(completed.map((row) => row.workflowRunId))];
     const contexts = new Map(await Promise.all(sourceIds.map(async (sourceId) => {
       const sourceRows = completed.filter((row) => row.workflowRunId === sourceId);
@@ -1648,7 +1721,7 @@ export class EffectFinalOutputService {
       return [sourceId, { workspace, artifacts, packaging, names }] as const;
     })));
     return visible.map((row) => {
-      if (row.status === 'PENDING_RENDER')
+      if (row.status === 'PENDING_RENDER' && !completed.includes(row))
         return this.toDto(row, pendingNames.get(row.templateId));
       const source = contexts.get(row.workflowRunId)!;
       return this.toDto(row, source.names.get(row.templateId), source.artifacts,

@@ -174,6 +174,8 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     startRepair: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
     importMaterials: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
     deleteMaterials: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
+    operationReceipt: vi.fn().mockResolvedValue(null),
+    regenerateTasks: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
     commitValidatedBatch: vi.fn().mockResolvedValue({ kind: 'COMMITTED', artifacts: [] }),
     ...repositoryOverrides,
   };
@@ -679,6 +681,58 @@ describe('EffectSegmentRenderService', () => {
     expect(
       result.batch.tasks.filter(({ needsUpdate }) => needsUpdate).map(({ promptId }) => promptId),
     ).toEqual([item.id]);
+  });
+
+  it('detects additions without invalidating unchanged tasks and appends only the new Prompt', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a', expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0, idempotencyKey: 'initial',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    const record = created.batch;
+    record.tasks.forEach((task: { status: string }) => { task.status = 'COMPLETED'; });
+    repository.batch.mockResolvedValue(record);
+    const next = promptBatch();
+    next.items.push({ ...item, id: '99999999-9999-4999-8999-999999999999', code: 'P002' });
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(next), revision: 4 });
+    const view = (await service.batch('project-a', record.id)).batch;
+    expect(view.stale).toBe(true);
+    expect(view.refreshScope).toBe('SELECTIVE');
+    expect(view.pendingPromptIds).toEqual([next.items[1]!.id]);
+    expect(view.tasks.every((task) => !task.needsUpdate)).toBe(true);
+    await service.refresh('project-a', record.id, {
+      expectedBatchRevision: 1, expectedPromptArtifactRevision: 4, idempotencyKey: 'append',
+    });
+    expect(workflowWorkingService.beginEffectNodeEdit).toHaveBeenLastCalledWith(
+      'project-a', 'run-a', 'SEGMENT_RENDER', 'MANUAL');
+    const call = repository.regenerateTasks.mock.calls[0]!;
+    expect(call[2]).toEqual([]);
+    expect(call[5].addedTasks).toHaveLength(1);
+    expect(call[5].addedTasks[0]).toMatchObject({ promptId: next.items[1]!.id, renderCode: 'R-002' });
+    expect(call[5].addedTasks[0].requestSnapshot.sourcePrompt.revision).toBe(4);
+    expect(repository.createBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not rerender semantic metadata and rejects stale refresh inputs before opening an edit', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a', expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0, idempotencyKey: 'initial-metadata',
+    });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    repository.batch.mockResolvedValue(record);
+    const next = promptBatch();
+    next.items[0]!.creativeCore = '修改创意说明';
+    next.items[0]!.dimensions.camera = '修改镜头说明';
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(next), revision: 4 });
+    expect((await service.batch('project-a', record.id)).batch.refreshScope).toBe('NONE');
+    const callsBefore = workflowWorkingService.beginEffectNodeEdit.mock.calls.length;
+    await expect(service.refresh('project-a', record.id, {
+      expectedBatchRevision: 1, expectedPromptArtifactRevision: 3, idempotencyKey: 'stale',
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(workflowWorkingService.beginEffectNodeEdit).toHaveBeenCalledTimes(callsBefore);
+    expect(repository.regenerateTasks).not.toHaveBeenCalled();
   });
 
   it('lets a batch that already matches the current Prompt be validated while its copies are uncommitted', async () => {

@@ -66,6 +66,7 @@ import {
   getEffectSegmentRenderBatch,
   importEffectSegmentRenderMaterials,
   regenerateEffectSegmentRenderTasks,
+  refreshEffectSegmentRenderBatch,
   saveEffectSegmentRenderSettings,
   startEffectSegmentRenderBatch,
   startEffectSegmentRenderRepair,
@@ -597,12 +598,13 @@ const canStartBatch = computed(
     !batchActive.value,
 );
 const tasksNeedingUpdate = computed(() => tasks.value.filter((task) => task.needsUpdate));
+const incrementalTaskCount = computed(() => tasksNeedingUpdate.value.length + (workspace.value?.pendingPromptIds?.length ?? 0));
 const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
   if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
   if (!workspace.value?.promptReady) return '等待上游 Prompt 生成可用版本';
-  if (canEditMaterials.value && workspace.value?.stale && workspace.value.refreshScope === 'SELECTIVE')
-    return `仅重新生成 ${tasksNeedingUpdate.value.length} 个待更新素材`;
+  if (workspace.value?.stale && workspace.value.refreshScope === 'SELECTIVE')
+    return `局部更新（${incrementalTaskCount.value}）`;
   if (workspace.value?.stale) return '按最新 Prompt 重新渲染';
   if (hasBatch.value) return '重新渲染';
   return `开始批量渲染（${promptCount.value}）`;
@@ -970,22 +972,24 @@ const changePageSize = (): void => {
   page.value = 1;
 };
 
-const startBatch = async (): Promise<void> => {
+const startBatch = async (forceFull = false): Promise<void> => {
   const product = currentProduct.value;
   const current = workspace.value;
   if (!product || operation.value || !current || !canStartBatch.value) return;
-  const selectiveRefresh = canEditMaterials.value && current.stale && current.refreshScope === 'SELECTIVE';
+  const selectiveRefresh = !forceFull && current.stale && current.refreshScope === 'SELECTIVE';
   const selectedTaskIds = selectiveRefresh ? tasksNeedingUpdate.value.map(({ id }) => id) : [];
-  if (selectiveRefresh && !selectedTaskIds.length) return;
+  const newPromptCount = selectiveRefresh ? (current.pendingPromptIds?.length ?? 0) : 0;
+  const updateCount = selectedTaskIds.length + newPromptCount;
+  if (selectiveRefresh && !updateCount) return;
   const rerendering = hasBatch.value;
   if (
     !(await requestActionConfirmation(
       selectiveRefresh
         ? {
             eyebrow: '按最新 Prompt 定向更新',
-            title: `只重新生成 ${selectedTaskIds.length} 个已变更素材？`,
-            description: `其余 ${Math.max(0, current.tasks.length - selectedTaskIds.length)} 个素材保持不变。完成后，引用这些素材的混剪工程会保留剪辑内容并提示重新确认/包装；本次会产生 ${selectedTaskIds.length} 个 Seedance 任务费用。`,
-            confirmLabel: `重新生成 ${selectedTaskIds.length} 个素材`,
+            title: `更新 ${selectedTaskIds.length} 个素材，新增 ${newPromptCount} 个素材？`,
+            description: `其余 ${Math.max(0, current.tasks.length - selectedTaskIds.length)} 个素材保持不变，成功后保存到当前分支。引用变化素材的工程提示待更新，新增素材进入混剪待归槽；本次会产生 ${updateCount} 个视频生成任务费用。`,
+            confirmLabel: `局部更新 ${updateCount} 个素材`,
             tone: 'warning',
           }
         : rerendering
@@ -1013,19 +1017,23 @@ const startBatch = async (): Promise<void> => {
   validated.value = false;
   try {
     if (selectiveRefresh) {
-      const response = await regenerateEffectSegmentRenderTasks(
+      const response = await refreshEffectSegmentRenderBatch(
         props.projectId,
         current.batchId!,
         {
-          taskIds: selectedTaskIds,
           expectedBatchRevision: current.batchRevision!,
+          expectedPromptArtifactRevision: current.promptArtifactRevision!,
           idempotencyKey: crypto.randomUUID(),
         },
         controller.signal,
       );
       if (controller.signal.aborted || currentProductId.value !== product.id) return;
+      if (response.data.batch.workflowRunId !== props.workflowRunId) {
+        emit('workflow-run-change', response.data.batch.workflowRunId);
+        return;
+      }
       applyBatch(response.data.batch);
-      showNotice(`${selectedTaskIds.length} 个变更素材已按最新 Prompt 重新进入渲染队列`);
+      showNotice(`${updateCount} 个变化或新增素材已进入局部更新队列`);
       return;
     }
     const response = await startEffectSegmentRenderBatch(
@@ -1823,10 +1831,15 @@ onBeforeUnmount(() => {
             <Download :size="14" />导出素材
           </button>
           <button
+            v-if="workspace?.stale && workspace.refreshScope === 'SELECTIVE'"
+            class="secondary-button" type="button"
+            :disabled="operation !== null || editTransitioning || !canStartBatch"
+            @click="startBatch(true)"><RefreshCw :size="14" />全部重新渲染</button>
+          <button
             class="primary-button start-render-button"
             type="button"
             :disabled="operation !== null || editTransitioning || !canStartBatch"
-            @click="startBatch"
+            @click="startBatch()"
           >
             <LoaderCircle v-if="operation === 'batch' || batchActive" class="spin" :size="14" />
             <RefreshCw v-else-if="hasBatch && canStartBatch" :size="14" />

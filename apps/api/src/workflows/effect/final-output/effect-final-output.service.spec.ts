@@ -127,10 +127,12 @@ function harness(count = 1) {
     effectPackagingRun: { count: vi.fn().mockResolvedValue(0) },
     effectPackagingItem: { findMany: vi.fn().mockResolvedValue(rows) },
     effectFinalOutputRun: {
+      count: vi.fn().mockResolvedValue(0),
       findUnique: vi.fn().mockResolvedValue(null),
       // Only the queue lookup filters on PENDING_RENDER; every other caller names a run by id.
       findFirst: vi.fn().mockImplementation((args: { where?: { status?: unknown } }) =>
-        Promise.resolve(args?.where?.status === 'PENDING_RENDER' ? pending.current : outputRun),
+        Promise.resolve(args?.where?.status === 'PENDING_RENDER' ? pending.current :
+          typeof args?.where?.status === 'object' ? pending.current ?? outputRun : outputRun),
       ),
       findMany: vi.fn().mockResolvedValue([outputRun]),
       create: vi.fn().mockImplementation(({ data }) => {
@@ -362,6 +364,88 @@ describe('smart-fill pending output', () => {
     freshness: 'CURRENT',
     availability: 'AVAILABLE',
     dependencies: [],
+  });
+
+  it('appends to a delivered batch without modifying old IDs, snapshots, assets or files', async () => {
+    const { service, db, sources, outputRun } = harness(2);
+    const old = { id: 'old-item', variantId: 'v0', name: '旧成片', status: 'COMPLETED',
+      fileObjectId: 'old-video', assetId: 'old-asset', snapshot: { userEdited: true } };
+    const frozen = structuredClone(old);
+    outputRun.status = 'COMPLETED';
+    outputRun.items = [old];
+    db.workingArtifact.findMany.mockResolvedValue([...sources, confirmedVisual('v0'), confirmedVisual('v1')]);
+    await service.upsertFromSmartFill('p', 'w', 't', ['v1'], true);
+    expect(old).toEqual(frozen);
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.delete).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      runId: 'out', variantId: 'v1', snapshot: expect.objectContaining({ appendOnly: true, appendPackagingRequired: true }),
+    }) }));
+    db.effectFinalOutputItem.findMany.mockResolvedValue([{ variantId: 'v1' }] as never);
+    await service.upsertFromSmartFill('p', 'w', 't', ['v1'], true);
+    expect(db.effectFinalOutputItem.create).toHaveBeenCalledOnce();
+  });
+
+  it('upgrades only the added output entry and commits only its timeline/package', async () => {
+    const { service, db, pending, working } = harness(2);
+    pending.current = { id: 'out', projectId: 'p', workflowRunId: 'w', templateId: 't',
+      status: 'PENDING_RENDER', createdAt: new Date(), items: [
+        { id: 'old-item', variantId: 'v0', name: '旧成片', snapshot: { preserve: true } },
+        { id: 'new-item', variantId: 'v1', name: '新成片', snapshot: {} },
+      ] };
+    await service.upsertFromPackaging('p', 'w', 't', { publish: false, onlyVariantIds: ['v1'] });
+    expect(db.effectFinalOutputItem.update.mock.calls.map(([arg]) => arg.where.id)).toEqual(['new-item']);
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+    const committedKeys = working.commitValidatedArtifactsInTransaction.mock.calls.flatMap((call) =>
+      call[4].map((input: { artifactKey: string }) => input.artifactKey));
+    expect(committedKeys).toContain('timeline-project:t:v1');
+    expect(committedKeys).toContain('timeline-package:t:v1');
+    expect(committedKeys).not.toContain('timeline-project:t:v0');
+    expect(committedKeys).not.toContain('timeline-package:t:v0');
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('exports only appended films without changing delivered entries or opening a branch (packaged=%s)', async (packaged) => {
+    const { service, db, outputRun, working } = harness(2);
+    const old = { id: 'old-item', variantId: 'v0', status: 'COMPLETED', fileObjectId: 'old-file', assetId: 'old-asset', snapshot: { manualEdit: true } };
+    const added = { id: 'new-item', variantId: 'v1', status: 'PENDING_RENDER', snapshot: { appendOnly: true, appendPackagingRequired: packaged } };
+    const frozen = structuredClone(old);
+    outputRun.items = [old, added];
+    const internal = service as unknown as {
+      startAppendedFilms: (projectId: string, id: string, settings: { resolution: '720p'; frameRate: 30 }) => Promise<void>;
+      packagingByVariant: () => Promise<Map<string, unknown>>;
+      rewriteFilm: (...args: unknown[]) => Promise<void>;
+      current: (...args: unknown[]) => Promise<void>;
+      enqueue: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(internal, 'packagingByVariant').mockResolvedValue(packaged ? new Map([['v1', {}]]) : new Map());
+    const rewrite = vi.spyOn(internal, 'rewriteFilm').mockResolvedValue(undefined);
+    vi.spyOn(internal, 'current').mockResolvedValue(undefined);
+    const enqueue = vi.spyOn(internal, 'enqueue').mockResolvedValue(undefined);
+    await internal.startAppendedFilms('p', 'out', { resolution: '720p', frameRate: 30 });
+    expect(rewrite).toHaveBeenCalledOnce();
+    expect(rewrite.mock.calls[0]?.[2]).toBe(added);
+    expect(enqueue).toHaveBeenCalledOnce();
+    expect(outputRun.status).toBe('QUEUED');
+    expect(old).toEqual(frozen);
+    expect(db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
+  it('blocks premature encoding when the appended film requires packaging', async () => {
+    const { service, outputRun, working } = harness();
+    outputRun.items = [{ id: 'new', variantId: 'v0', status: 'PENDING_RENDER', snapshot: { appendOnly: true, appendPackagingRequired: true } }];
+    const internal = service as unknown as {
+      startAppendedFilms: (projectId: string, id: string, settings: { resolution: '720p'; frameRate: 30 }) => Promise<void>;
+      packagingByVariant: () => Promise<Map<string, unknown>>;
+      rewriteFilm: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(internal, 'packagingByVariant').mockResolvedValue(new Map());
+    const rewrite = vi.spyOn(internal, 'rewriteFilm').mockResolvedValue(undefined);
+    await expect(internal.startAppendedFilms('p', 'out', { resolution: '720p', frameRate: 30 })).rejects.toThrow('新增包装尚未完成');
+    expect(rewrite).not.toHaveBeenCalled();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
   });
 
   it('queues confirmed picture-only timelines without a paid render or package artifact', async () => {

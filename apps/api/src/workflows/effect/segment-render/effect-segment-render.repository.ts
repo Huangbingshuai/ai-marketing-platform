@@ -404,6 +404,12 @@ export class EffectSegmentRenderRepository {
     }
   }
 
+  async operationReceipt(projectId: string, idempotencyKey: string) {
+    return this.prisma.effectSegmentRenderOperationReceipt.findUnique({
+      where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
+    });
+  }
+
   async regenerateTasks(
     projectId: string,
     batchId: string,
@@ -413,15 +419,18 @@ export class EffectSegmentRenderRepository {
     input: {
       sourcePrompt: { artifactId: string; revision: number; contentHash: string };
       taskSnapshots: Record<string, EffectSegmentRenderRequestSnapshot>;
+      addedTasks?: EffectSegmentRenderTaskCreateInput[];
+      refreshRequestHash?: string;
     },
   ) {
-    const requestHash = workflowStateHash({
+    const requestHash = input.refreshRequestHash ?? workflowStateHash({
       batchId,
       taskIds: [...taskIds].sort(),
       sourcePrompt: input.sourcePrompt,
       taskSnapshots: Object.fromEntries(
         Object.entries(input.taskSnapshots).sort(([left], [right]) => left.localeCompare(right)),
       ),
+      ...(input.addedTasks?.length ? { addedTasks: input.addedTasks } : {}),
     });
     try {
       return await this.prisma.$transaction(async (transaction) => {
@@ -475,7 +484,23 @@ export class EffectSegmentRenderRepository {
           })
         )
           return { kind: 'PROMPT_CONFLICT' as const };
-        const sourceSnapshot = input.taskSnapshots[tasks[0]!.id];
+        const addedTasks = input.addedTasks ?? [];
+        const existingTasks = await transaction.effectSegmentRenderTask.findMany({
+          where: { projectId, batchId },
+        });
+        if (existingTasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
+          return { kind: 'TASK_ACTIVE' as const };
+        if (existingTasks.length + addedTasks.length > EFFECT_SEGMENT_RENDER_LIMITS.maxTasksPerBatch)
+          return { kind: 'PROMPT_CONFLICT' as const };
+        const promptIds = new Set(existingTasks.map(({ promptId }) => promptId));
+        for (const task of addedTasks) {
+          if (promptIds.has(task.promptId) || task.requestSnapshot.promptId !== task.promptId)
+            return { kind: 'PROMPT_CONFLICT' as const };
+          promptIds.add(task.promptId);
+        }
+        const sourceSnapshot = tasks[0]
+          ? input.taskSnapshots[tasks[0].id]
+          : addedTasks[0]?.requestSnapshot;
         const sourcePackage = sourceSnapshot?.sourcePackage;
         if (
           !sourcePackage?.artifactId ||
@@ -513,6 +538,29 @@ export class EffectSegmentRenderRepository {
         await transaction.effectSegmentRenderOperationReceipt.create({
           data: { projectId, batchId, idempotencyKey, requestHash },
         });
+        if (addedTasks.length) {
+          await transaction.effectSegmentRenderTask.createMany({
+            data: addedTasks.map((task) => ({
+              ...task,
+              projectId,
+              workflowRunId: batch.workflowRunId,
+              productId: batch.productId,
+              batchId,
+              requestSnapshot: json(task.requestSnapshot),
+              generationRequestSnapshot: json(task.requestSnapshot),
+              maxAutoRetries: EFFECT_SEGMENT_RENDER_LIMITS.maxAutoRetries,
+            })),
+          });
+          await transaction.jobOutbox.createMany({
+            data: addedTasks.map((task) => ({
+              projectId,
+              jobType: EFFECT_SEGMENT_RENDER_JOB_TYPE,
+              aggregateId: task.id,
+              routingKey: EFFECT_SEGMENT_RENDER_QUEUE,
+              payload: json({ schemaVersion: 1, projectId, runId: task.id, requestId: randomUUID() }),
+            })),
+          });
+        }
         for (const task of tasks) {
           const snapshot = input.taskSnapshots[task.id]!;
           await transaction.effectSegmentRenderTask.update({

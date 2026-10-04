@@ -55,6 +55,31 @@ def test_classification_chunks_preserve_every_material_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_append_recovery_keeps_distinct_trim_points_for_reused_clip() -> None:
+    api = AsyncMock(spec=InternalApi)
+    rows = [{"materialId": "m1", "scores": {role: int(role == "HOOK") for role in
+        ("HOOK", "PAIN_POINT", "PRODUCT", "SELLING_POINT", "TRANSFORMATION", "END")}, "reasons": {}}]
+    selections = [{"variantIndex": i, "slotId": "s", "role": "HOOK", "materialId": "m1",
+        "matchScore": 1, "matchLevel": "NORMAL", "classificationReason": "动作", "duration": 4} for i in range(2)]
+    trims = [{"variantIndex": i, "slotId": "s", "materialId": "m1", "trimStartSeconds": i + 1,
+        "trimReason": "独立选区"} for i in range(2)]
+    api.claim.return_value = Claim.model_validate({"terminal": False, "attemptToken": "lease", "snapshot": {
+        "schemaVersion": 1, "template": {"id": "t", "slots": [{"id": "s", "role": "HOOK", "label": "片头", "duration": 4}]},
+        "draftRevision": 1, "targetVariantId": None, "lockedBindings": [], "promptArtifacts": [],
+        "materials": [material(1).model_dump()], "incremental": {"materialIds": ["m1"], "oldVariantIds": ["old"], "packageNewVariants": False},
+    }, "checkpoint": {"classifications": rows, "selections": selections, "trims": trims}})
+    provider = AsyncMock(spec=ArkProvider)
+    consumer = Consumer("amqp://test", "effect.template-mix.requested", api, provider, 1000, 10, 16000, 8192, 1)
+    message = AsyncMock()
+    message.body = b'{"schemaVersion":1,"projectId":"project","runId":"run","requestId":"request"}'
+    await consumer.handle(message)
+    provider.plan_incremental.assert_not_awaited()
+    provider.trim.assert_not_awaited()
+    assert [item.trimStartSeconds for item in api.complete.await_args.args[1]] == [1, 2]
+    message.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_manual_role_skips_ai_classification_and_keeps_unassigned_materials_in_ai_batch() -> None:
     api = AsyncMock(spec=InternalApi)
     roles = ("HOOK", "PAIN_POINT", "PRODUCT", "SELLING_POINT", "TRANSFORMATION", "END")

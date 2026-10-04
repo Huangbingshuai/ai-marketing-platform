@@ -87,6 +87,7 @@ import {
 import {
   createEffectCaptionVoice,
   createEffectTemplateMixAiRun,
+  resumeEffectTemplateMixAppend,
   createEmptyEffectTemplateMixVariant,
   getBackgroundEffectTemplateMixAiRun,
   getEffectTemplateMixAiRun,
@@ -214,6 +215,8 @@ const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
 // Keep the confirmed clip pool available while the initial template draft is bootstrapped.
 const sourceMaterials = ref<EffectTemplateMixMaterial[]>([]);
+const pendingAddedMaterialIds = ref<Record<string, string[]>>({});
+const pendingAddedCount = computed(() => pendingAddedMaterialIds.value[activeTemplateId.value]?.length ?? 0);
 const renderSlotDurationLimit = ref<number | null>(null);
 const templateCreationReady = ref(false);
 const checkingTemplateCreation = ref(false);
@@ -276,6 +279,11 @@ const failedAiRun = computed(() => {
   const latest = aiRuns.value.find((run) => run.templateId === activeTemplateId.value);
   return latest?.status === 'FAILED' ? latest : null;
 });
+const appendContinuationRun = computed(() => aiRuns.value.find((run) =>
+  run.templateId === activeTemplateId.value && run.operation === 'APPEND' &&
+  run.status === 'COMPLETED' && run.errorCode === 'APPEND_CONTINUATION_FAILED') ?? null);
+const completedAppendRun = computed(() => aiRuns.value.find((run) =>
+  run.templateId === activeTemplateId.value && run.operation === 'APPEND' && run.status === 'COMPLETED') ?? null);
 const aiStageLabels: Record<EffectTemplateMixAiRun['stage'], string> = {
   CLASSIFYING: '大模型按 Prompt 归槽',
   MATCHING: '计算六槽位最优匹配',
@@ -505,7 +513,7 @@ const projectEditLocked = computed(() =>
   Boolean(
     runSwitching.value ||
     activeEntry.value?.aiFillLocked ||
-    activeAiRun.value ||
+    (activeAiRun.value && activeAiRun.value.operation !== 'APPEND') ||
     fillStartPending.value ||
     packagingSourceAutoLocked.value,
   ),
@@ -1519,6 +1527,7 @@ const installWorkspaceData = (
 ): void => {
   resetTimelinePlayerState();
   sourceMaterials.value = data.materials;
+  pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
   renderSlotDurationLimit.value =
     data.slotDurationMaxSeconds !== undefined
       ? data.slotDurationMaxSeconds
@@ -1631,7 +1640,7 @@ const pollAiRun = async (runId: string): Promise<void> => {
       await finishAiRun(run);
       return;
     }
-    mutating.value = true;
+    mutating.value = run.operation !== 'APPEND';
     pollTimers.set(
       runId,
       setTimeout(() => void pollAiRun(runId), 1200),
@@ -5368,6 +5377,7 @@ const preparePackaging = async (): Promise<number | null> => {
 const startAiFill = async (
   target: EffectTemplateMixVariant | null,
   refreshAffectedSlots = false,
+  appendNewMaterials = false,
 ): Promise<void> => {
   if (runSwitching.value) return;
   // Packaging that is still running holds the Run the fill would read, so the fill has to wait. A
@@ -5383,7 +5393,7 @@ const startAiFill = async (
   }
   // Retry and other entry points bypass the disabled button, so the reason is checked here too —
   // sending the request would only come back as the generic "剩余未使用素材不足".
-  if (!refreshAffectedSlots && aiFillBlockReason.value) {
+  if (!refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {
     showNotice(aiFillBlockReason.value, 'warning');
     return;
   }
@@ -5403,6 +5413,7 @@ const startAiFill = async (
       templateId,
       variantId,
       refreshAffectedSlots,
+      appendNewMaterials,
     );
     // The task owns a frozen child. Keep editing the current published branch while it runs.
     if (result.data.workflowRunId !== props.workflowRunId) {
@@ -5434,7 +5445,9 @@ const startAiFill = async (
     activeTemplateId.value = templateId;
     aiRuns.value = [result.data, ...aiRuns.value.filter(({ id }) => id !== result.data.id)];
     showNotice(
-      refreshAffectedSlots
+      appendNewMaterials
+        ? '正在归槽新增素材并选择有观看差异的追加成片方案；完成后自动衔接该模板的包装设置'
+        : refreshAffectedSlots
         ? '正在为已更新素材位重新分析截取起点；槽位归属、其他素材和剪辑位置保持不变'
         : target?.manualSlotIds.length
           ? '智能填充已开始，人工槽位会保留，其余槽位重新计算'
@@ -5452,6 +5465,20 @@ const startAiFill = async (
   }
 };
 const refill = (): void => void startAiFill(selectedVariant.value);
+const appendNewMaterials = (): void => void startAiFill(null, false, true);
+const resumeAppend = async (): Promise<void> => {
+  const run = appendContinuationRun.value;
+  if (!run || mutating.value || !(await flushPendingEdits())) return;
+  mutating.value = true;
+  try {
+    const result = await resumeEffectTemplateMixAppend(props.projectId, run.id);
+    aiRuns.value = [result.data, ...aiRuns.value.filter((item) => item.id !== run.id)];
+    await load();
+    showNotice('新增成片已同步，所需包装任务已启动');
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '继续更新失败，请稍后重试', 'error');
+  } finally { mutating.value = false; }
+};
 const retryFailedAiRun = (): void => {
   const run = failedAiRun.value;
   if (run?.targetVariantId && activeUi.value) {
@@ -5459,7 +5486,7 @@ const retryFailedAiRun = (): void => {
     void startAiFill(selectedVariant.value, run.operation === 'REFRESH_TRIMS');
     return;
   }
-  void startAiFill(null);
+  void startAiFill(null, false, run?.operation === 'APPEND');
 };
 const addCaption = (): void => {
   const packaging = selectedPackaging.value;
@@ -6145,6 +6172,7 @@ const refreshMaterialSources = async (): Promise<void> => {
     const { data } = await loadEffectTemplateMixSources(projectId, workflowRunId, request.signal);
     if (!workbenchActive || request.signal.aborted || projectId !== props.projectId || workflowRunId !== props.workflowRunId) return;
     sourceMaterials.value = data.materials;
+    pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
     for (const entry of catalog.value) entry.workspace.materials = data.materials;
     // Never overwrite dirty user edits when a local output refresh saves a new engineering revision.
     if (data.draftRevision !== draftRevision.value && saveState.value === 'saved' && !pendingSave)
@@ -6313,6 +6341,8 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
             </button>
             <small v-if="templatePendingUpdateCount(entry)" class="source-update-badge"
               >{{ templatePendingUpdateCount(entry) }} 个待更新</small>
+            <small v-if="pendingAddedMaterialIds[entry.id]?.length" class="source-update-badge"
+              >新增素材待更新 · {{ pendingAddedMaterialIds[entry.id]?.length }}</small>
             <button
               type="button"
               class="template-list__delete"
@@ -6449,6 +6479,10 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
               >
             </div>
             <button
+              v-if="pendingAddedCount" class="button" type="button"
+              :disabled="mutating || Boolean(activeAiRun) || packagingInFlight || backgroundAiBusy"
+              @click="appendNewMaterials">局部更新 · {{ pendingAddedCount }} 个新增素材</button>
+            <button
               class="button primary"
               :disabled="!workspace.template.name.trim() || mutating"
               @click="enterEditor"
@@ -6497,7 +6531,12 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
             >
           </div>
           <div class="workbench-actions">
-            <small v-if="selectedVariantRefreshSlotIds.length" class="source-update-badge"
+            <button
+              v-if="pendingAddedCount" class="button" type="button"
+              :disabled="mutating || Boolean(activeAiRun) || packagingInFlight || backgroundAiBusy"
+              @click="appendNewMaterials"><RefreshCw :size="15" />局部更新 · {{ pendingAddedCount }} 个新增素材</button>
+            <small
+              v-if="selectedVariantRefreshSlotIds.length" class="source-update-badge"
               title="当前成片采用的渲染素材已变更；请在成片输出节点执行局部更新"
             >待更新 · {{ selectedVariantRefreshSlotIds.length }} 个素材</small>
             <button
@@ -6565,11 +6604,20 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
               .join('、')
           }}{{
             packagingFailures.length > 3 ? ' 等' : ''
-          }}。这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐；本次包装暂不计入版本，恢复失败项后重新包装成功才会新增分支。
+          }}。失败项保留画面，可在包装面板恢复；新增素材的局部更新仍在当前分支完成，不改动旧成片。
           <button class="button compact" type="button" @click="openPackaging('WORKFLOW')">
             打开包装面板恢复
           </button>
         </div>
+        <div v-if="appendContinuationRun" class="ai-run-card editor-run failed" role="alert">
+          <AlertCircle :size="18" /><div><b>新增成片需要继续更新</b><span>{{ appendContinuationRun.errorMessage }}</span></div>
+          <button class="button compact" :disabled="mutating" @click="resumeAppend">继续更新</button>
+        </div>
+        <details v-if="completedAppendRun" class="append-result" data-testid="append-result">
+          <summary>已追加 {{ completedAppendRun.outputVariantIds?.length ?? 0 }} 条成片，原工程保持不变{{ completedAppendRun.packageNewVariants ? '；新增成片按模板历史自动包装' : '' }}</summary>
+          <p v-for="item in completedAppendRun.newMaterialUsage" :key="item.materialId">{{ item.code }}：参与 {{ item.filmCount }} 条新增成片</p>
+          <p v-for="item in completedAppendRun.omittedNewMaterials" :key="item.materialId">{{ item.code }} 未采用：{{ item.reason }}（仍保留为待处理素材）</p>
+        </details>
         <div v-if="failedAiRun" class="ai-run-card editor-run failed" role="alert">
           <AlertCircle :size="18" />
           <div>
@@ -8120,6 +8168,21 @@ button:disabled {
   border: 1px solid #f2d69b;
   border-radius: 8px;
   font-size: 12px;
+}
+.append-result {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid #d7e4fa;
+  border-radius: 8px;
+  background: #f5f8ff;
+  color: #365a8a;
+  font-size: 12px;
+}
+.append-result summary {
+  cursor: pointer;
+}
+.append-result p {
+  margin: 5px 0 0 12px;
 }
 .config-panel > header,
 .config-panel > footer {

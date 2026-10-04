@@ -97,15 +97,23 @@ export class EffectPackagingService {
    */
   async finish(projectId: string, runId: string, token: string) {
     const result = await this.repo.finish(projectId, runId, token);
+    const fillRunId = result.items.map((item) =>
+      (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId).find(Boolean);
     if (result.status === 'COMPLETED' || result.status === 'PARTIAL')
       try {
         await this.finalOutput.upsertFromPackaging(
           projectId,
           result.workflowRunId,
           result.templateId,
-          { publish: result.status === 'COMPLETED' },
+          { publish: result.status === 'COMPLETED' && !result.items.some((item) =>
+              (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId),
+            ...(result.items.some((item) => (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId)
+              ? { onlyVariantIds: result.items.map((item) => item.variantId) } : {}),
+          },
         );
+        if (fillRunId) await this.mix.recordAppendContinuation(projectId, fillRunId, false);
       } catch (error) {
+        if (fillRunId) await this.mix.recordAppendContinuation(projectId, fillRunId, true);
         this.logger.warn(
           JSON.stringify({
             event: 'effect_packaging_sync_failed',
@@ -118,8 +126,25 @@ export class EffectPackagingService {
     return { accepted: true };
   }
 
-  async create(projectId: string, templateId: string, body: CreatePackagingRequest) {
-    const requestHash = workflowStateHash({ ...body, templateId });
+  async createIncremental(projectId: string, fillRunId: string) {
+    const fill = await this.mix.aiRun(projectId, fillRunId);
+    if (fill.status !== 'COMPLETED' || fill.operation !== 'APPEND' || !fill.packageNewVariants || !fill.outputVariantIds?.length)
+      throw new ConflictException('追加成片尚未完成或不需要自动包装');
+    const key = `append-package:${fillRunId}`;
+    const replay = await this.repo.db.effectPackagingRun.findUnique({
+      where: { projectId_idempotencyKey: { projectId, idempotencyKey: key } },
+    });
+    if (replay) return this.get(projectId, replay.id);
+    const workspace = await this.mix.workspace(projectId, fill.workflowRunId);
+    return this.create(projectId, fill.templateId, {
+      workflowRunId: fill.workflowRunId, expectedRevision: workspace.draftRevision ?? 0,
+      idempotencyKey: key, component: 'ALL',
+    }, { fillRunId, variantIds: fill.outputVariantIds });
+  }
+
+  async create(projectId: string, templateId: string, body: CreatePackagingRequest,
+    append?: { fillRunId: string; variantIds: string[] }) {
+    const requestHash = workflowStateHash({ ...body, templateId, ...(append ? { append } : {}) });
     const replay = await this.repo.db.effectPackagingRun.findUnique({
       where: { projectId_idempotencyKey: { projectId, idempotencyKey: body.idempotencyKey } },
     });
@@ -157,7 +182,7 @@ export class EffectPackagingService {
     const packageInDeliveredRun = Boolean(
       activeSource && delivered && !packaged && !sourceEntry?.packagingLocked,
     );
-    const workflowRunId = packageInDeliveredRun
+    const workflowRunId = append || packageInDeliveredRun
       ? body.workflowRunId
       : (await this.working.beginEffectNodeEdit(
           projectId,
@@ -178,14 +203,14 @@ export class EffectPackagingService {
     const fullRedo = !body.component || body.component === 'ALL';
     const hasChangedSource = fullRedo && entry.workspace.variants.some((variant) =>
       effectTemplateMixSourceChanges(variant, workspace.materials).length > 0);
-    if (entry.needsAiFill && !(fullRedo && hasChangedSource &&
+    if (!append && entry.needsAiFill && !(fullRedo && hasChangedSource &&
         entry.filledTemplateHash === templateConfigurationHash(entry.workspace.template)))
       throw new ConflictException(
         '模板已改动，或仍有成片未按当前模板重新智能填充；请完成需要更新的成片后再包装',
       );
     const variants = entry.workspace.variants.filter(
       (v) =>
-        (!body.variantId || v.id === body.variantId) &&
+        (append ? append.variantIds.includes(v.id) : (!body.variantId || v.id === body.variantId)) &&
         v.slots.length &&
         v.slots.every((s) => v.bindings[s.id]),
     ).map((variant) => structuredClone(variant));
@@ -208,6 +233,8 @@ export class EffectPackagingService {
       }
     }
     if (!variants.length) throw new BadRequestException('没有可包装的完整成片');
+    if (append && variants.length !== append.variantIds.length)
+      throw new ConflictException('新增成片工程已变化，不能包装旧目标');
     if (body.component && !['ALL', 'CAPTIONS'].includes(body.component) && !body.variantId)
       throw new BadRequestException('局部重做必须选择一条成片');
     if (
@@ -280,6 +307,7 @@ export class EffectPackagingService {
     }
     const snapshots = variants.map((v) => {
       const snapshot = packagingSnapshot(v, workspace.materials, artifacts, musicSources);
+      if (append) snapshot.incrementalFillRunId = append.fillRunId;
       const changed = replacements.get(v.id);
       if (changed) {
         snapshot.sourceTrimMaterials = changed;

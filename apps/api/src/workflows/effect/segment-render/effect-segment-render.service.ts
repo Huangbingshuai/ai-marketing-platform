@@ -451,7 +451,8 @@ export class EffectSegmentRenderService {
     );
     const currentPromptIds = new Set(latestPromptBatch?.items.map(({ id }) => id) ?? []);
     const renderedPromptIds = new Set(record.tasks.map(({ promptId }) => promptId));
-    const hasUnrenderedPrompts = [...currentPromptIds].some((id) => !renderedPromptIds.has(id));
+    const pendingPromptIds = [...currentPromptIds].filter((id) => !renderedPromptIds.has(id));
+    const hasUnrenderedPrompts = pendingPromptIds.length > 0;
     const hasRemovedPrompts = [...renderedPromptIds].some((id) => !currentPromptIds.has(id));
     const artifact = await this.repository.renderArtifact(
       record.projectId,
@@ -468,10 +469,10 @@ export class EffectSegmentRenderService {
     // change and are made CURRENT *by* a validation commit, so folding that flag in would make every
     // rerendered batch read as stale forever — validation is gated on `!stale`, so the commit that
     // would clear it could never run. `commitStatus` already reports the uncommitted working copies.
-    const stale = Boolean(upstreamStale || taskIdsNeedingUpdate.size > 0);
+    const stale = Boolean(upstreamStale || taskIdsNeedingUpdate.size > 0 || hasUnrenderedPrompts);
     const refreshScope = !stale
       ? 'NONE'
-      : upstreamStale || !taskIdsNeedingUpdate.size || hasUnrenderedPrompts || hasRemovedPrompts
+      : upstreamStale || hasRemovedPrompts
         ? 'FULL'
         : 'SELECTIVE';
     const commitStatus = !artifact
@@ -495,6 +496,7 @@ export class EffectSegmentRenderService {
       status: record.status,
       stale,
       refreshScope,
+      pendingPromptIds,
       revision: record.revision,
       commitStatus,
       workingArtifactRevision: artifact?.revision ?? null,
@@ -793,17 +795,68 @@ export class EffectSegmentRenderService {
     );
   }
 
+  async refresh(
+    projectId: string,
+    batchId: string,
+    input: { expectedBatchRevision: number; expectedPromptArtifactRevision: number; idempotencyKey: string },
+  ): Promise<{ batch: EffectSegmentRenderBatch; replayed: boolean }> {
+    await this.projects.get(projectId);
+    const idempotencyKey = input.idempotencyKey.trim();
+    if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    const refreshRequestHash = workflowStateHash({
+      operation: 'PROMPT_REFRESH', projectId, batchId,
+      expectedBatchRevision: input.expectedBatchRevision,
+      expectedPromptArtifactRevision: input.expectedPromptArtifactRevision,
+    });
+    const receipt = await this.repository.operationReceipt(projectId, idempotencyKey);
+    if (receipt) {
+      if (receipt.requestHash !== refreshRequestHash) throw conflict('幂等键已用于其他素材更新请求');
+      const replay = await this.repository.batch(projectId, receipt.batchId)
+        ?? await this.repository.batch(projectId, batchId);
+      if (!replay) throw notFound('视频渲染批次不存在');
+      return { batch: await this.present(replay), replayed: true };
+    }
+    const original = await this.repository.batch(projectId, batchId);
+    if (!original) throw notFound('视频渲染批次不存在');
+    if (original.revision !== input.expectedBatchRevision) throw conflict('素材已更新，请刷新后重试');
+    const prompt = await this.repository.promptArtifact(projectId, original.workflowRunId, original.productId);
+    if (prompt?.revision !== input.expectedPromptArtifactRevision) throw conflict('Prompt 已更新，请刷新后重试');
+    const view = await this.present(original);
+    if (view.refreshScope !== 'SELECTIVE') throw conflict('当前没有可局部更新的 Prompt，或来源需要重新确认');
+    if (original.tasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
+      throw conflict('当前素材仍在渲染中');
+    // MANUAL uses the existing isolated edit workspace; its successful publication merges into
+    // the original branch rather than creating a new published version like BATCH does.
+    const edit = await this.workflowWorkingService.beginEffectNodeEdit(
+      projectId, original.workflowRunId, 'SEGMENT_RENDER', 'MANUAL',
+    );
+    const productId = edit.productIdMap[original.productId] ?? original.productId;
+    const target = edit.run.id === original.workflowRunId ? original
+      : await this.repository.latestBatch(projectId, edit.run.id, productId);
+    if (!target) throw notFound('编辑素材批次不存在');
+    const current = await this.present(target);
+    if (current.refreshScope !== 'SELECTIVE') throw conflict('Prompt 或素材在更新准备期间已变化');
+    return this.regenerate(projectId, target.id,
+      current.tasks.filter(({ needsUpdate }) => needsUpdate).map(({ id }) => id),
+      target.revision, idempotencyKey, {
+        addedPromptIds: current.pendingPromptIds ?? [],
+        expectedPromptArtifactRevision: input.expectedPromptArtifactRevision,
+        refreshRequestHash,
+      });
+  }
+
   async regenerate(
     projectId: string,
     batchId: string,
     taskIds: string[],
     expectedBatchRevision: number,
     idempotencyKeyValue: string,
+    incremental?: { addedPromptIds: string[]; expectedPromptArtifactRevision: number; refreshRequestHash: string },
   ): Promise<{ batch: EffectSegmentRenderBatch; replayed: boolean }> {
     await this.projects.get(projectId);
     const taskIdsNormalized = [...new Set(taskIds)];
     if (
-      taskIdsNormalized.length < 1 ||
+      taskIdsNormalized.length + (incremental?.addedPromptIds.length ?? 0) < 1 ||
       taskIdsNormalized.length > EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation
     )
       throw badRequest('请选择需要重新生成的视频任务');
@@ -829,6 +882,9 @@ export class EffectSegmentRenderService {
       throw conflict('当前 Prompt 尚未完成校验');
     const promptBatch = parseEffectPromptBatchResult(promptArtifact.payload);
     if (!promptBatch) throw conflict('Prompt 批次结构无效，请重新生成并校验');
+    if (incremental && promptArtifact.revision !== incremental.expectedPromptArtifactRevision)
+      throw conflict('Prompt 在更新准备期间已变化，请刷新后重试');
+    this.assertRenderablePromptBatch(promptBatch);
     if (
       !sourcePackage ||
       sourcePackage.freshness !== 'CURRENT' ||
@@ -848,47 +904,34 @@ export class EffectSegmentRenderService {
         sortOrder,
       }));
     if (!currentImages.length) throw conflict('产品资料包至少需要一张可用商品图片');
+    const compileSnapshot = (promptId: string, previous?: EffectSegmentRenderRequestSnapshot): EffectSegmentRenderRequestSnapshot => {
+      const item = promptBatch.items.find(({ id }) => id === promptId);
+      if (!item) throw conflict('该 Prompt 已从当前批次移除，请创建新渲染批次');
+      const renderSettings = previous?.renderSettings ?? (settingsNode
+        ? this.settingsFromState(settingsNode.state) : this.legacySettings(promptArtifact.payload));
+      if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
+      const compiled = this.compileSeedanceRequest(() => compileEffectSeedanceRequest(
+        promptBatch, item.id, this.modelFor(renderSettings.capabilityKey), renderSettings));
+      return { ...compiled, promptCode: item.code, promptText: item.content, renderSettings,
+        sourcePrompt: { artifactId: promptArtifact.id, revision: promptArtifact.revision, contentHash: promptArtifact.contentHash },
+        sourcePackage: { artifactId: sourcePackage.id, revision: sourcePackage.revision, contentHash: sourcePackage.contentHash },
+        inputImages: currentImages };
+    };
     const taskSnapshots = Object.fromEntries(
       taskIdsNormalized.map((taskId) => {
         const task = record.tasks.find(({ id }) => id === taskId);
         if (!task) throw notFound('所选视频任务不存在');
-        const item = promptBatch.items.find(({ id }) => id === task.promptId);
-        if (!item) throw conflict('该 Prompt 已从当前批次移除，请创建新渲染批次');
-        const previous = requestSnapshot(task.requestSnapshot);
-        const renderSettings =
-          previous.renderSettings ??
-          (settingsNode
-            ? this.settingsFromState(settingsNode.state)
-            : this.legacySettings(promptArtifact.payload));
-        if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
-        const compiled = this.compileSeedanceRequest(() =>
-          compileEffectSeedanceRequest(
-            promptBatch,
-            item.id,
-            this.modelFor(renderSettings.capabilityKey),
-            renderSettings,
-          ),
-        );
-        const snapshot: EffectSegmentRenderRequestSnapshot = {
-          ...compiled,
-          promptCode: item.code,
-          promptText: item.content,
-          renderSettings,
-          sourcePrompt: {
-            artifactId: promptArtifact.id,
-            revision: promptArtifact.revision,
-            contentHash: promptArtifact.contentHash,
-          },
-          sourcePackage: {
-            artifactId: sourcePackage.id,
-            revision: sourcePackage.revision,
-            contentHash: sourcePackage.contentHash,
-          },
-          inputImages: currentImages,
-        };
-        return [taskId, snapshot];
+        return [taskId, compileSnapshot(task.promptId, requestSnapshot(task.requestSnapshot))];
       }),
     );
+    const lastCode = Math.max(0, ...record.tasks.map(({ renderCode }) => Number(/^R-(\d+)$/.exec(renderCode)?.[1] ?? 0)));
+    const addedTasks = (incremental?.addedPromptIds ?? []).map((promptId, index) => {
+      if (record.tasks.some((task) => task.promptId === promptId)) throw conflict('新增 Prompt 已有渲染任务');
+      const snapshot = compileSnapshot(promptId);
+      return { id: randomUUID(), promptId, promptCode: snapshot.promptCode,
+        renderCode: 'R-' + String(lastCode + index + 1).padStart(3, '0'),
+        sourceFingerprint: workflowStateHash(snapshot), requestSnapshot: snapshot };
+    });
     const result = await this.repository.regenerateTasks(
       projectId,
       batchId,
@@ -902,6 +945,7 @@ export class EffectSegmentRenderService {
           contentHash: promptArtifact.contentHash,
         },
         taskSnapshots,
+        ...(incremental ? { addedTasks, refreshRequestHash: incremental.refreshRequestHash } : {}),
       },
     );
     if (result.kind === 'NOT_FOUND') throw notFound('视频渲染批次不存在');

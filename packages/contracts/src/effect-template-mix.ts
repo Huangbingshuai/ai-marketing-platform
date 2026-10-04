@@ -92,6 +92,8 @@ export type EffectTemplateMixSourcesData = {
   draftRevision: number | null;
   /** Exact draft source dependencies, including new-id replacements not caught by old edges. */
   pendingProjectCount?: number;
+  /** Additions to each template's last successfully consumed pool; not changed old bindings. */
+  pendingAddedMaterialIds?: Record<string, string[]>;
 };
 
 /** Compare exact render provenance, including replacements that have a new artifact id. */
@@ -291,7 +293,11 @@ export type EffectTemplateMixAiRun = {
    * child runs in the background.
    */
   workflowRunId: string;
-  operation?: 'FILL' | 'REFRESH_TRIMS';
+  operation?: 'FILL' | 'REFRESH_TRIMS' | 'APPEND';
+  outputVariantIds?: string[];
+  packageNewVariants?: boolean;
+  omittedNewMaterials?: Array<{ materialId: string; code: string; reason: string }>;
+  newMaterialUsage?: Array<{ materialId: string; code: string; filmCount: number }>;
   targetVariantId: string | null;
   outputVariantId: string | null;
   status: EffectTemplateMixAiRunStatus;
@@ -381,6 +387,7 @@ export type EffectTemplateMixDraft = {
   activeTemplateId: string;
 };
 export type EffectTemplateMixWorkspaceData = {
+  pendingAddedMaterialIds?: Record<string, string[]>;
   draft: EffectTemplateMixDraft;
   draftRevision: number | null;
   /** A successful render batch (or an already confirmed render pool) exists in this Run. */
@@ -423,6 +430,8 @@ export type CreateEffectTemplateMixAiRunRequest = EffectTemplateMixRevisionReque
   targetVariantId?: string;
   /** Recalculate trim points only for bound clips whose confirmed render revision advanced. */
   refreshAffectedSlots?: boolean;
+  /** Same-branch append only; every new film must use newly confirmed material. */
+  appendNewMaterials?: boolean;
   idempotencyKey: string;
 };
 export type EffectTemplateMixAiClassification = {
@@ -433,6 +442,8 @@ export type EffectTemplateMixAiClassification = {
   reasons: Partial<Record<EffectTemplateMixRole, string>>;
 };
 export type EffectTemplateMixAiSelection = {
+  /** Stored on the first selection of an append run, alongside the AI choice provenance. */
+  omittedNewMaterials?: Array<{ materialId: string; reason: string }>;
   /** Zero-based output group; absent means the historical single-output group. */
   variantIndex?: number;
   slotId: string;
@@ -475,6 +486,11 @@ export type EffectTemplateMixAiSnapshot = {
   manualMaterialRoles?: Record<string, EffectTemplateMixRole>;
   materialRoleEditVersion?: number;
   trimOnly?: boolean;
+  incremental?: {
+    materialIds: string[];
+    oldVariantIds: string[];
+    packageNewVariants: boolean;
+  };
   refreshBindings?: Array<{ slotId: string; materialId: string; artifactRevision: number }>;
   maxOutputVariants: number;
   lockedBindings: Array<{
@@ -505,4 +521,13 @@ export type EffectTemplateMixAiSnapshot = {
     contentHash: string;
     fileObjectId: string;
   }>;
+};
+
+export type EffectTemplateMixIncrementalPlan = {
+  variants: Array<{
+    /** AI explains the actual viewing difference; mechanical code must not invent it. */
+    difference: string;
+    bindings: Array<{ slotId: string; materialId: string }>;
+  }>;
+  omitted: Array<{ materialId: string; reason: string }>;
 };

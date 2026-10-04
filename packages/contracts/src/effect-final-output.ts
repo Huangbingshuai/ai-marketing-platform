@@ -46,6 +46,10 @@ export type FinalOutputDependency = {
   contentHash: string;
 };
 export type FinalOutputSnapshot = {
+  /** Explicit export of newly appended films keeps completed films and the current branch. */
+  appendOnly?: boolean;
+  /** Await the append operation's authorized packaging before exporting the new film. */
+  appendPackagingRequired?: boolean;
   /** Durable preparation for an explicit same-branch source refresh; committed with the video. */
   sourceRefresh?: {
     workflowRunId: string;

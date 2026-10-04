@@ -9,6 +9,7 @@ import type {
   ImportEffectSegmentRenderMaterialsData,
   ImportEffectSegmentRenderMaterialsRequest,
   RegenerateEffectSegmentRenderTasksRequest,
+  RefreshEffectSegmentRenderBatchRequest,
   SaveEffectSegmentRenderSettingsData,
   SaveEffectSegmentRenderSettingsRequest,
   StartEffectSegmentRenderRepairData,
@@ -82,6 +83,16 @@ export const regenerateEffectSegmentRenderTasks = (
     body: input,
     operation: '重新生成视频片段',
     signal,
+  });
+
+export const refreshEffectSegmentRenderBatch = (
+  projectId: string,
+  batchId: string,
+  input: RefreshEffectSegmentRenderBatchRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<{ batch: EffectSegmentRenderBatch; replayed: boolean }>> =>
+  requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/refresh`, {
+    method: 'POST', body: input, operation: '局部更新渲染素材', signal,
   });
 
 export const importEffectSegmentRenderMaterials = (
