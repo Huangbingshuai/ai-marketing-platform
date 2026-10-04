@@ -2,6 +2,7 @@ import type {
   PackagingCheckpoint,
   PackagingSnapshot,
 } from './effect-template-mix-packaging';
+import type { EffectTemplateMixMaterial, EffectTemplateMixVariant } from './effect-template-mix';
 export const FINAL_OUTPUT_RESOLUTIONS = ['480p', '720p', '1080p', '2K', '4K'] as const;
 export type FinalOutputResolution = (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
 
@@ -32,6 +33,7 @@ export type SyncFinalOutputData = {
 export type LocalUpdateFinalOutputRequest = {
   itemIds: string[];
 };
+export type FinalOutputSourceTrim = { slotId: string; offset: number };
 export type StartFinalOutputRequest = {
   resolution: FinalOutputResolution;
   frameRate: 24 | 25 | 30 | 50 | 60;
@@ -44,6 +46,22 @@ export type FinalOutputDependency = {
   contentHash: string;
 };
 export type FinalOutputSnapshot = {
+  /** Durable preparation for an explicit same-branch source refresh; committed with the video. */
+  sourceRefresh?: {
+    workflowRunId: string;
+    templateId: string;
+    templateHash?: string;
+    baselineVariant: EffectTemplateMixVariant;
+    baselinePackaging: PackagingCheckpoint;
+    packagingItemId?: string;
+    /** Freeze the confirmed batch membership as well as the individual clip revisions. */
+    sourceBatches?: FinalOutputDependency[];
+    slots: { slotId: string; material: EffectTemplateMixMaterial }[];
+    trimsReady?: boolean;
+    ready?: boolean;
+    stage?: string;
+    uploadedAudios?: Record<string, { fileObjectId: string; sha256: string; duration: number; segmentFrames?: number[] }>;
+  };
   timeline: PackagingSnapshot;
   packaging: PackagingCheckpoint;
   /**
@@ -69,14 +87,20 @@ export type FinalOutputItem = {
   assetId: string | null;
   errorMessage: string | null;
   progress: number;
-  /** No package is attached, so this film currently has picture only. */
+  /** The frozen export/pending snapshot has picture only; not the live engineering state. */
   unpackaged?: boolean;
+  /** A completed slot package exists for this film in its current source branch. */
+  currentPackagingReady?: boolean;
   /** The exported film differs from the current mix project in this output branch. */
   stale: boolean;
 };
 export type FinalOutputRun = {
   id: string;
   workflowRunId: string;
+  /** Independent full export; keep the source branch's films and local-update controls visible. */
+  backgroundExportSourceRunId?: string;
+  /** Complete rendering is not publication: delivery validation must also have succeeded. */
+  backgroundExportPublished?: boolean;
   templateId: string;
   templateName: string;
   /** The current template's rendered films were explicitly confirmed for delivery. */

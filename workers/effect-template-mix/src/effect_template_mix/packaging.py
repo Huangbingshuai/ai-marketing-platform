@@ -22,6 +22,8 @@ from .packaging_media import slot_frames, music_wav, pcm_wav, visible_intervals
 from .packaging_captions import captions_for_voice, voice_text_parts
 from .packaging_provider import MusicRateLimited, MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError
 from .provider import ArkProvider, ProviderError, ProviderOutputError
+from .models import Material, Slot
+from .video import sample_frames
 
 LOGGER = logging.getLogger(__name__)
 
@@ -552,10 +554,57 @@ class PackagingHandler:
                     with suppress(asyncio.CancelledError, Exception):
                         await pending
 
+    async def select_source_trims(self, root: str, endpoint: str, headers: dict[str, str],
+                                  project_id: str, snapshot: dict[str, Any],
+                                  sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        trims: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory(prefix='effect-source-trims-') as temporary:
+            for index, source in enumerate(sources):
+                slot = next(row for row in snapshot['variant']['slots'] if row['id'] == source['slotId'])
+                material = source['material']
+                path = Path(temporary) / f'source-{index}.mp4'
+                digest = hashlib.sha256()
+                async with self.api.client.stream('GET', f"{endpoint}/files/{material['fileObjectId']}",
+                    headers=headers, params={'projectId': project_id}) as response:
+                    if response.is_error:
+                        raise PackagingError('无法读取待更新素材')
+                    size = 0
+                    with path.open('wb') as output:
+                        async for chunk in response.aiter_bytes():
+                            size += len(chunk)
+                            if size > self.max_video_bytes:
+                                raise PackagingError('素材超过预处理容量')
+                            digest.update(chunk)
+                            output.write(chunk)
+                    expected_hash = response.headers.get('x-content-sha256')
+                    if expected_hash and digest.hexdigest() != expected_hash.strip().lower():
+                        raise PackagingError('更新素材文件校验失败')
+                async with self.preprocessing:
+                    frames = await sample_frames(path, material['duration'])
+                async with self.model_requests:
+                    await self.api.request('PUT', f'{root}/heartbeat', headers=headers, json={'projectId': project_id})
+                    choice = await self.ark.trim(Slot.model_validate(slot), Material.model_validate({
+                        **material, 'promptId': material.get('sourcePromptId', ''),
+                        'prompt': material.get('promptText') or next(clip['prompt'] for clip in snapshot['clips']
+                            if clip['slotId'] == slot['id']),
+                    }), frames)
+                trims.append({'slotId': slot['id'], 'offset': choice.trimStartSeconds})
+        return trims
+
     async def process_item(self, root: str, headers: dict[str, str], project_id: str, item: dict[str, Any]) -> None:
         snapshot, cp = item['snapshot'], item['checkpoint']
         endpoint = f"{root}/items/{item['id']}"
-        narration_windows(snapshot)  # Fail before paid calls on invalid/overlapping slots.
+        if snapshot.get('sourceTrimMaterials') and not snapshot.get('sourceTrimsReady'):
+            trims = await self.select_source_trims(root, endpoint, headers, project_id, snapshot, snapshot['sourceTrimMaterials'])
+            result = await self.api.request('PUT', f'{endpoint}/trims', headers=headers,
+                json={'projectId': project_id, 'trims': trims})
+            snapshot = item['snapshot'] = result['snapshot']
+        redo_slots = set(snapshot.get('redoSlotIds') or [])
+        narration_snapshot = ({**snapshot, 'clips': [clip for clip in snapshot['clips']
+            if clip['slotId'] in redo_slots]} if redo_slots else snapshot)
+        # Validate only the new narration during a source refresh. Unaffected editor content
+        # (including deleted narration and moved clips) must not be reinstated or constrained.
+        narration_windows(narration_snapshot)
         if snapshot.get('narrationLayoutVersion') != 'SLOT_V1':
             raise PackagingError('旧版任务请按槽位重新包装，不再恢复整片分段生成')
         cp.setdefault('narrationLayoutVersion', 'SLOT_V1')
@@ -574,8 +623,10 @@ class PackagingHandler:
             async with write_lock:
                 started = time.monotonic()
                 try:
-                    await self.api.request('PUT', f'{endpoint}/checkpoint', headers=headers,
+                    saved = await self.api.request('PUT', f'{endpoint}/checkpoint', headers=headers,
                         json={'projectId': project_id, 'stage': stage, 'checkpoint': patch})
+                    if stage == 'READY' and isinstance(saved, dict) and isinstance(saved.get('snapshot'), dict):
+                        item['outputSnapshot'] = saved['snapshot']
                 finally:
                     row = timings.setdefault('_item', {})
                     row['checkpointSeconds'] = row.get('checkpointSeconds', 0) + time.monotonic() - started
@@ -607,11 +658,16 @@ class PackagingHandler:
 
         with tempfile.TemporaryDirectory(prefix='effect-package-') as directory_name:
             directory = Path(directory_name)
-            if not cp.get('vision'):
+            vision_ids = {row.get('slotId') for row in cp.get('vision', [])}
+            if not cp.get('vision') or redo_slots - vision_ids:
                 await save('VISION', {})
-                await self.slot_vision(snapshot, cp, endpoint, headers, project_id, directory, guard, save)
+                vision_snapshot = ({**snapshot, 'clips': [clip for clip in snapshot['clips']
+                    if clip['slotId'] in redo_slots]} if redo_slots else snapshot)
+                await self.slot_vision(vision_snapshot, cp, endpoint, headers, project_id, directory, guard, save)
             narrated = narrated_clips(snapshot)
             missing_slots = {c['slotId'] for c in narrated} - {s['slotId'] for s in cp.get('script', [])}
+            if redo_slots:
+                missing_slots &= redo_slots
             if missing_slots:
                 await save('SCRIPT', {})
                 partial = {**snapshot, 'clips': [c for c in narrated if c['slotId'] in missing_slots]}
@@ -630,7 +686,7 @@ class PackagingHandler:
                         line['id'] = 'slot-' + hashlib.sha256(line['slotId'].encode()).hexdigest()[:24]
                 await save('VOICE', {'script': lines, 'musicBrief': cp.get('musicBrief') or script_result.musicBrief, 'timings': timings})
             voices = cp.get('voices', {})
-            windows = {row['slotId']: row for row in narration_windows(snapshot)}
+            windows = {row['slotId']: row for row in narration_windows(narration_snapshot)}
 
             async def voice_pcm(text: str) -> bytes:
                 profile = snapshot.get('voiceProfile')
@@ -655,6 +711,8 @@ class PackagingHandler:
                 return data, duration, frames
 
             async def synthesize(index: int, line: dict[str, Any]) -> None:
+                if redo_slots and line['slotId'] not in redo_slots:
+                    return  # Preserve even an intentionally deleted unaffected narration.
                 if line['id'] in voices:
                     # Upload is atomic at the API. Recover diagnostics after a crash
                     # between a successful upload and the next checkpoint, without re-TTS.
@@ -679,7 +737,11 @@ class PackagingHandler:
                     attempts[line['slotId']] = 1
                     await save('VOICE', {'voiceFitAttempts': attempts})
                     async with paid_request(line['slotId'], 'voiceRepairSeconds'):
-                        line = await shorten_voice_line(self.ark, snapshot, cp, index, duration, limit - line['start'], guard)
+                        repair_snapshot = {**snapshot, 'clips': [clip for clip in snapshot['clips']
+                            if clip['slotId'] == line['slotId']]} if redo_slots else snapshot
+                        repair_cp = {**cp, 'script': [line]} if redo_slots else cp
+                        line = await shorten_voice_line(self.ark, repair_snapshot, repair_cp,
+                            0 if redo_slots else index, duration, limit - line['start'], guard)
                     async with write_lock:
                         revised_lines = [*cp['script']]
                         revised_lines[index] = line
@@ -706,7 +768,7 @@ class PackagingHandler:
                 await save('VOICE', {'voices': {line['id']: voices[line['id']]}, 'timings': timings, 'narrationMetrics': metrics})
 
             async def produce_music() -> None:
-                if cp.get('music'):
+                if cp.get('music') or snapshot.get('preserveMusic'):
                     return
                 music_started = time.monotonic()
                 await save('MUSIC', {})
@@ -778,8 +840,9 @@ class PackagingHandler:
                 for slot_id, line in replacements.items():
                     line['id'] = 'slot-' + hashlib.sha256(slot_id.encode()).hexdigest()[:24]
                 revised_lines = [replacements.get(line['slotId'], line) for line in cp['script']]
-                checked = ScriptOutput.model_validate({'lines': revised_lines, 'musicBrief': cp['musicBrief']})
-                if script_structure_issues(checked, snapshot):
+                checked = ScriptOutput.model_validate({'lines': [line for line in revised_lines
+                    if line['slotId'] in redo_slots] if redo_slots else revised_lines, 'musicBrief': cp['musicBrief']})
+                if script_structure_issues(checked, narration_snapshot):
                     raise PackagingError('自动重策划口播未通过来源或结构校验，请手动重做问题槽位')
                 retry_counts.update({slot_id: 1 for slot_id in failed_ids})
                 fit_attempts = {slot_id: count for slot_id, count in cp.get('voiceFitAttempts', {}).items()
@@ -791,7 +854,24 @@ class PackagingHandler:
             cp['voices'] = voices
             caption_layout = ('SEGMENT_V3' if all(voice.get('segmentFrames') for voice in voices.values())
                 else 'SEGMENT_V2')
-            if (cp.get('captionLayoutVersion') != caption_layout or
+            if redo_slots:
+                # A local update cannot migrate untouched historical captions or recreate ones
+                # the editor deleted. Keep their existing layout and generate compatible rows.
+                local_layout = cp.get('captionLayoutVersion')
+                line_ids = {line['id'] for line in cp['script'] if line['slotId'] in redo_slots}
+                refreshed_captions = [caption for caption in cp.get('captions', [])
+                    if caption.get('manual') or caption.get('voiceLineId', caption.get('id')) not in line_ids]
+                for line in cp['script']:
+                    if line['slotId'] in redo_slots:
+                        if local_layout:
+                            refreshed_captions.extend(captions_for_voice(line, voices[line['id']]))
+                        else:
+                            voice = voices[line['id']]
+                            refreshed_captions.append({'id': line['id'], 'text': line['text'],
+                                'start': voice['start'], 'end': voice['start'] + voice['duration']})
+                refreshed_captions.sort(key=lambda caption: caption['start'])
+                await save('CAPTIONS', {'captions': refreshed_captions})
+            elif (cp.get('captionLayoutVersion') != caption_layout or
                     {c.get('voiceLineId') for c in cp.get('captions', [])} != {line['id'] for line in cp['script']}):
                 existing: dict[str, list[dict[str, Any]]] = {}
                 if cp.get('captionLayoutVersion') == caption_layout:
@@ -881,9 +961,11 @@ class PackagingHandler:
                 if description is None:
                     description = await asyncio.shield(self.vision_pending[key])
                 cache[clip['slotId']] = {'key': key, 'description': description}
-            await save('SCRIPT', {'slotVision': cache, 'vision': [
+            selected = {clip['slotId'] for clip in narrated_clips(snapshot)}
+            retained = [row for row in cp.get('vision', []) if row.get('slotId') not in selected]
+            await save('SCRIPT', {'slotVision': {**cp.get('slotVision', {}), **cache}, 'vision': [*retained, *[
                 {'slotId': c['slotId'], 'start': c['start'], 'end': c['start'] + c['duration'],
-                 'description': cache[c['slotId']]['description']} for c in narrated_clips(snapshot)], 'timings': cp['timings']})
+                 'description': cache[c['slotId']]['description']} for c in narrated_clips(snapshot)]], 'timings': cp['timings']})
         except BaseException:
             for clip in owned:
                 pending = self.vision_pending.pop(slot_vision_key(clip), None)

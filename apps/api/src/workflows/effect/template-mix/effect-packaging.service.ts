@@ -8,7 +8,8 @@ import {
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { parseVoiceSegmentFrames, wavDuration } from './effect-packaging-audio';
+export { parseVoiceSegmentFrames, wavDuration } from './effect-packaging-audio';
 import type {
   CreatePackagingCaptionVoiceRequest,
   CreatePackagingRequest,
@@ -19,10 +20,12 @@ import type {
   PackagingSnapshot,
   PackagingStage,
   EffectTemplateMixWorkspaceData,
+  EffectTemplateMixDraft,
+  FinalOutputSourceTrim,
   UpdatePackagingAudioRequest,
   WorkingArtifact,
 } from '@ai-marketing/contracts';
-import { packagingVisualTimeline } from '@ai-marketing/contracts';
+import { packagingVisualTimeline, effectTemplateMixSourceChanges } from '@ai-marketing/contracts';
 import { packagingExecution } from './effect-packaging.metrics';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectTemplateMixService } from './effect-template-mix.service';
@@ -38,6 +41,7 @@ import {
   validatePackagingCheckpoint,
   matchesVisualHash,
   slotVisionKey,
+  visualHash,
 } from './effect-packaging.domain';
 
 type PackagingRunRow = NonNullable<Awaited<ReturnType<EffectPackagingRepository['get']>>>;
@@ -68,66 +72,6 @@ function fadeFields(
   };
 }
 
-export async function wavDuration(path: string, size: number): Promise<number> {
-  const handle = await open(path, 'r');
-  try {
-    const buffer = Buffer.alloc(Math.min(size, 65_536));
-    await handle.read(buffer, 0, buffer.length, 0);
-    if (buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE')
-      throw new BadRequestException('包装音频必须为 PCM WAV');
-    let bytesPerSecond = 0;
-    for (let pos = 12; pos + 8 <= buffer.length;) {
-      const name = buffer.toString('ascii', pos, pos + 4),
-        length = buffer.readUInt32LE(pos + 4);
-      if (name === 'fmt ' && length >= 16 && pos + 24 <= buffer.length) {
-        if (
-          buffer.readUInt16LE(pos + 8) !== 1 ||
-          buffer.readUInt16LE(pos + 10) !== 1 ||
-          buffer.readUInt32LE(pos + 12) !== 24_000 ||
-          buffer.readUInt16LE(pos + 20) !== 2 ||
-          buffer.readUInt16LE(pos + 22) !== 16
-        )
-          throw new BadRequestException('包装音频编码无效');
-        bytesPerSecond = buffer.readUInt32LE(pos + 16);
-      }
-      if (
-        name === 'data' &&
-        bytesPerSecond === 48_000 &&
-        length > 0 &&
-        length % 2 === 0 &&
-        pos + 8 + length <= size
-      )
-        return length / bytesPerSecond;
-      pos += 8 + length + (length % 2);
-    }
-    throw new BadRequestException('包装音频头或真实时长无效');
-  } finally {
-    await handle.close();
-  }
-}
-
-export function parseVoiceSegmentFrames(
-  value: string | undefined,
-  duration: number,
-): number[] | undefined {
-  if (value === undefined) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (
-      !Array.isArray(parsed) ||
-      !parsed.length ||
-      parsed.length > 500 ||
-      parsed.some((frames: unknown) => !Number.isSafeInteger(frames) || Number(frames) <= 0) ||
-      Math.abs(
-        parsed.reduce<number>((sum, frames: number) => sum + frames, 0) / 24_000 - duration,
-      ) > 0.001
-    )
-      throw new Error('invalid segments');
-    return parsed as number[];
-  } catch {
-    throw new BadRequestException('口播片段边界与音频不一致');
-  }
-}
 
 @Injectable()
 export class EffectPackagingService {
@@ -184,24 +128,58 @@ export class EffectPackagingService {
         throw new ConflictException('幂等键对应的包装请求已改变');
       return this.get(projectId, replay.id);
     }
-    // Packaging is a full update of the mix node. Route it into an unpublished child so the
-    // published packaging result stays intact; the request hash above still keys on the Run the
-    // caller named, so a retry of the same request replays instead of forking again. Every
-    // successful packaging is a version of its own, so this forks even for the first one.
-    const edit = await this.working.beginEffectNodeEdit(
-      projectId,
-      body.workflowRunId,
-      'TEMPLATE_MIX',
-      'BATCH',
-      { always: true },
+    const sourceWorkspace = await this.mix.workspace(projectId, body.workflowRunId);
+    const sourceEntry = sourceWorkspace.draft.templates.find((entry) => entry.id === templateId);
+    if (
+      sourceEntry?.packagingSourceLocked
+    )
+      throw new ConflictException('智能成片包装正在进行，暂时不能再次包装');
+    if (await this.repo.activeUnpublishedChild?.(projectId, body.workflowRunId, templateId))
+      throw new ConflictException('此模板已有新分支正在智能成片包装，请等待任务完成');
+    // A picture-only delivery already owns a published output branch. Its first package fills
+    // the missing mix layer of that same branch; the delivered files remain untouched until the
+    // user explicitly asks for a local update. Repackaging an existing package still forks, so
+    // the earlier audio arrangement remains editable in its original branch.
+    const [activeSource, delivered, packaged] = await Promise.all([
+      this.repo.db.workflowRun.findFirst({ where: {
+        projectId, id: body.workflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+        activeKey: 'ACTIVE',
+      }, select: { id: true } }),
+      this.repo.db.workingArtifact.findFirst({ where: {
+        projectId, workflowRunId: body.workflowRunId, nodeId: 'FINAL_OUTPUT',
+        artifactKey: `final-delivery:${templateId}`,
+      }, select: { id: true } }),
+      this.repo.db.workingArtifact.findFirst({ where: {
+        projectId, workflowRunId: body.workflowRunId, nodeId: 'TEMPLATE_MIX',
+        artifactKey: { startsWith: `timeline-package:${templateId}:` },
+      }, select: { id: true } }),
+    ]);
+    const packageInDeliveredRun = Boolean(
+      activeSource && delivered && !packaged && !sourceEntry?.packagingLocked,
     );
-    const workflowRunId = edit.run.id;
+    const workflowRunId = packageInDeliveredRun
+      ? body.workflowRunId
+      : (await this.working.beginEffectNodeEdit(
+          projectId,
+          body.workflowRunId,
+          'TEMPLATE_MIX',
+          'BATCH',
+          {
+            always: true,
+            keepParentActive: true,
+            creationKey: `mix-package:${workflowStateHash(body.idempotencyKey)}`,
+          },
+        )).run.id;
     const workspace = await this.mix.workspace(projectId, workflowRunId);
     if (workspace.draftRevision !== body.expectedRevision)
       throw new ConflictException('草稿已改变，请刷新后重试');
     const entry = workspace.draft.templates.find((t) => t.id === templateId);
     if (!entry) throw new NotFoundException('模板不存在');
-    if (entry.needsAiFill)
+    const fullRedo = !body.component || body.component === 'ALL';
+    const hasChangedSource = fullRedo && entry.workspace.variants.some((variant) =>
+      effectTemplateMixSourceChanges(variant, workspace.materials).length > 0);
+    if (entry.needsAiFill && !(fullRedo && hasChangedSource &&
+        entry.filledTemplateHash === templateConfigurationHash(entry.workspace.template)))
       throw new ConflictException(
         '模板已改动，或仍有成片未按当前模板重新智能填充；请完成需要更新的成片后再包装',
       );
@@ -210,7 +188,25 @@ export class EffectPackagingService {
         (!body.variantId || v.id === body.variantId) &&
         v.slots.length &&
         v.slots.every((s) => v.bindings[s.id]),
-    );
+    ).map((variant) => structuredClone(variant));
+    const replacements = new Map<string, NonNullable<PackagingSnapshot['sourceTrimMaterials']>>();
+    if (fullRedo) for (const variant of variants) {
+      const changes = effectTemplateMixSourceChanges(variant, workspace.materials);
+      const blocked = changes.find((row) => row.blockedReason);
+      if (blocked) throw new ConflictException(`${variant.name}：${blocked.blockedReason}`);
+      if (!changes.length) continue;
+      replacements.set(variant.id, changes.map((row) => ({ slotId: row.slotId, material: row.material! })));
+      for (const { slotId, material } of changes) {
+        variant.bindings[slotId] = material!.id;
+        variant.bindingRevisions[slotId] = material!.artifactRevision;
+        variant.offsets[slotId] = 0;
+        for (const audio of variant.detachedAudios ?? []) if (audio.sourceSlotId === slotId) {
+          audio.fileObjectId = material!.fileObjectId;
+          audio.sourceDuration = material!.duration;
+          audio.offset = 0;
+        }
+      }
+    }
     if (!variants.length) throw new BadRequestException('没有可包装的完整成片');
     if (body.component && !['ALL', 'CAPTIONS'].includes(body.component) && !body.variantId)
       throw new BadRequestException('局部重做必须选择一条成片');
@@ -221,9 +217,7 @@ export class EffectPackagingService {
         !variants[0]?.slots.some((s) => s.id === body.slotId))
     )
       throw new BadRequestException('单槽位重做必须选择当前成片中的口播槽位');
-    const artifacts = (
-      await this.working.listArtifacts(projectId, { workflowRunId })
-    ).items;
+    const artifacts = (await this.working.listArtifacts(projectId, { workflowRunId })).items;
     const musicAssetIds = [
       ...new Set(
         variants.flatMap((variant) =>
@@ -244,7 +238,13 @@ export class EffectPackagingService {
             archivedAt: null,
             tags: { has: '模板混剪音乐库' },
           },
-          select: { id: true, storageKey: true, sizeBytes: true, mimeType: true, originalFileName: true },
+          select: {
+            id: true,
+            storageKey: true,
+            sizeBytes: true,
+            mimeType: true,
+            originalFileName: true,
+          },
         })
       : [];
     const musicFileObjects = musicAssets.length
@@ -278,9 +278,24 @@ export class EffectPackagingService {
         throw new BadRequestException('音乐素材已失效或不属于当前项目，请重新导入');
       musicSources.set(asset.id, { fileObjectId: file.id, sourceDuration: audio.sourceDuration! });
     }
-    const snapshots = variants.map((v) =>
-      packagingSnapshot(v, workspace.materials, artifacts, musicSources),
-    );
+    const snapshots = variants.map((v) => {
+      const snapshot = packagingSnapshot(v, workspace.materials, artifacts, musicSources);
+      const changed = replacements.get(v.id);
+      if (changed) {
+        snapshot.sourceTrimMaterials = changed;
+        // Membership changes can replace a task ID while the retired clip stays CURRENT for
+        // playback. Freeze the authoritative batch revisions as well as the new clip revisions.
+        for (const batch of artifacts.filter((artifact) => artifact.nodeId === 'SEGMENT_RENDER' &&
+          artifact.artifactKey.startsWith('render-batch:') && artifact.freshness === 'CURRENT' &&
+          artifact.availability === 'AVAILABLE')) {
+          if (!batch.contentHash) throw new ConflictException('素材批次版本信息不完整，请刷新后重试');
+          if (!snapshot.dependencies.some((dependency) => dependency.artifactId === batch.id))
+            snapshot.dependencies.push({ artifactId: batch.id, artifactKey: batch.artifactKey,
+              nodeId: batch.nodeId, revision: batch.revision, contentHash: batch.contentHash });
+        }
+      }
+      return snapshot;
+    });
     if (!body.component || body.component === 'ALL' || body.component === 'VOICE') {
       const voiceProfile = this.voiceCatalog.selection(entry.workspace.template.voiceProfileId);
       const revoked = await this.repo.db.effectVoicePreview.findFirst({
@@ -458,10 +473,7 @@ export class EffectPackagingService {
       };
     });
   }
-  private present(
-    run: PackagingRunRow,
-    workspace: EffectTemplateMixWorkspaceData,
-  ): PackagingRun {
+  private present(run: PackagingRunRow, workspace: EffectTemplateMixWorkspaceData): PackagingRun {
     const items = this.presentItems(run, workspace);
     return {
       id: run.id,
@@ -512,11 +524,7 @@ export class EffectPackagingService {
     itemId: string,
     body: UpdatePackagingAudioRequest,
   ): Promise<PackagingItem> {
-    const { raw, item, snapshot, workspace } = await this.editableItem(
-      projectId,
-      runId,
-      itemId,
-    );
+    const { raw, item, snapshot, workspace } = await this.editableItem(projectId, runId, itemId);
     const old = item.checkpoint as PackagingCheckpoint;
     let voices = old.voices;
     // A narration is an optional overlay on its script line, so deleting one drops the key and
@@ -810,6 +818,12 @@ export class EffectPackagingService {
     ]);
     return runs.map((run) => this.present(run, workspace));
   }
+  async latestBackground(projectId: string, workflowRunId: string, templateId: string) {
+    const run = await this.repo.latestChild(projectId, workflowRunId, templateId);
+    if (!run) return null;
+    const workspace = await this.mix.workspace(projectId, run.workflowRunId);
+    return this.present(run, workspace);
+  }
   async retry(projectId: string, id: string) {
     const run = await this.get(projectId, id);
     if (
@@ -820,6 +834,67 @@ export class EffectPackagingService {
       throw new ConflictException('旧版任务不能恢复，请按槽位重新包装');
     return this.repo.retry(projectId, id);
   }
+  async sourceTrims(projectId: string, runId: string, token: string, itemId: string,
+    trims: FinalOutputSourceTrim[]) {
+    const { run } = await this.workerItem(projectId, runId, token, itemId);
+    return this.repo.db.$transaction(async (tx) => {
+      const renewed = await tx.effectPackagingRun.updateMany({ where: { id: runId, projectId,
+        status: 'RUNNING', attemptToken: token, leaseExpiresAt: { gt: new Date() } },
+        data: { leaseExpiresAt: new Date(Date.now() + 120_000) } });
+      if (!renewed.count) throw new ConflictException('包装任务租约已失效');
+      await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${run.workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM effect_packaging_items WHERE id=${itemId}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+      const item = await tx.effectPackagingItem.findFirstOrThrow({ where: { projectId, id: itemId, runId } });
+      const snapshot = item.snapshot as unknown as PackagingSnapshot;
+      if (!snapshot.sourceTrimMaterials?.length) throw new ConflictException('本任务没有待重新选区的素材');
+      for (const dependency of [...snapshot.dependencies].sort((a, b) => a.artifactId.localeCompare(b.artifactId))) {
+        await tx.$queryRaw`SELECT id FROM working_artifacts WHERE id=${dependency.artifactId}::uuid AND "projectId"=${projectId}::uuid FOR SHARE`;
+        const current = await tx.workingArtifact.findFirst({ where: { projectId, id: dependency.artifactId,
+          revision: dependency.revision, contentHash: dependency.contentHash,
+          freshness: 'CURRENT', availability: 'AVAILABLE' } });
+        if (!current) throw new ConflictException('素材或包装输入再次发生变化，请重新包装');
+      }
+      if (snapshot.sourceTrimsReady) return { snapshot };
+      const state = await tx.workflowNodeState.findUniqueOrThrow({ where: { projectId_workflowRunId_nodeId: {
+        projectId, workflowRunId: run.workflowRunId, nodeId: 'TEMPLATE_MIX',
+      } } });
+      const draft = state.state as unknown as EffectTemplateMixDraft;
+      const variant = draft.templates.find((entry) => entry.id === run.templateId)?.workspace.variants
+        .find((variant) => variant.id === item.variantId);
+      if (!variant || workflowStateHash(variant) !== workflowStateHash(snapshot.variant))
+        throw new ConflictException('包装执行期间该成片工程已被修改');
+      if (trims.length !== snapshot.sourceTrimMaterials.length || new Set(trims.map((row) => row.slotId)).size !== trims.length)
+        throw new BadRequestException('截取结果缺失或重复');
+      for (const trim of trims) {
+        const source = snapshot.sourceTrimMaterials.find((row) => row.slotId === trim.slotId);
+        const clip = snapshot.clips.find((row) => row.slotId === trim.slotId);
+        if (!source || !clip || !Number.isFinite(trim.offset) || trim.offset < 0 ||
+            trim.offset + clip.duration > source.material.duration + .001)
+          throw new BadRequestException('模型截取区间超出素材长度');
+        const current = await tx.workingArtifact.findFirst({ where: { projectId, id: source.material.artifactId,
+          revision: source.material.artifactRevision, freshness: 'CURRENT', availability: 'AVAILABLE' } });
+        if (!current || (current.payload as { fileObjectId?: string }).fileObjectId !== source.material.fileObjectId)
+          throw new ConflictException('素材再次发生变化，请重新包装');
+        variant.offsets[trim.slotId] = trim.offset;
+        snapshot.variant.offsets[trim.slotId] = trim.offset;
+        clip.offset = trim.offset;
+        for (const audio of variant.detachedAudios ?? []) if (audio.sourceSlotId === trim.slotId) audio.offset = trim.offset;
+      }
+      snapshot.variant = variant;
+      snapshot.detachedAudios = variant.detachedAudios ?? [];
+      snapshot.sourceTimelineHash = visualHash(variant);
+      snapshot.sourceTrimsReady = true;
+      await tx.workflowNodeState.update({ where: { id: state.id }, data: {
+        state: JSON.parse(JSON.stringify(draft)), contentHash: workflowStateHash(draft),
+        revision: { increment: 1 },
+      } });
+      await tx.effectPackagingItem.update({ where: { id: itemId }, data: {
+        snapshot: JSON.parse(JSON.stringify(snapshot)), sourceTimelineHash: snapshot.sourceTimelineHash,
+      } });
+      return { snapshot };
+    });
+  }
+
   async workerItem(projectId: string, runId: string, token: string, itemId: string) {
     await this.repo.authorized(projectId, runId, token);
     const item = await this.repo.getItem(projectId, runId, itemId);
@@ -828,15 +903,24 @@ export class EffectPackagingService {
     const snapshot = item.snapshot as unknown as PackagingSnapshot;
     const [variant, artifacts] = await Promise.all([
       this.mix.currentVariant(projectId, run.workflowRunId, run.templateId, item.variantId),
-      this.repo.sourceArtifacts(projectId, run.workflowRunId,
-        [...new Set(snapshot.dependencies.map((dependency) => dependency.artifactId))]),
+      this.repo.sourceArtifacts(projectId, run.workflowRunId, [
+        ...new Set(snapshot.dependencies.map((dependency) => dependency.artifactId)),
+      ]),
     ]);
-    if (!variant ||
-      snapshot.dependencies.some((dependency) => !artifacts.some((artifact) =>
-        artifact.id === dependency.artifactId &&
-        artifact.revision === dependency.revision &&
-        artifact.freshness === 'CURRENT' &&
-        artifact.availability === 'AVAILABLE')))
+    if (
+      !variant ||
+      (snapshot.sourceTrimMaterials?.length && workflowStateHash(variant) !== workflowStateHash(snapshot.variant)) ||
+      snapshot.dependencies.some(
+        (dependency) =>
+          !artifacts.some(
+            (artifact) =>
+              artifact.id === dependency.artifactId &&
+              artifact.revision === dependency.revision &&
+              artifact.freshness === 'CURRENT' &&
+              artifact.availability === 'AVAILABLE',
+          ),
+      )
+    )
       throw new ConflictException('包装执行期间输入工程发生变化，请重新发起包装');
     return { run, item, snapshot };
   }
@@ -865,9 +949,13 @@ export class EffectPackagingService {
       stage === 'READY',
       !!snapshot.redoSlotId || !!snapshot.redoCaptionsOnly,
     );
-    const ids = [...new Set([...Object.values(next.voices ?? {}), ...(next.music ? [next.music] : [])].map(
-      (a) => a.fileObjectId,
-    ))];
+    const ids = [
+      ...new Set(
+        [...Object.values(next.voices ?? {}), ...(next.music ? [next.music] : [])].map(
+          (a) => a.fileObjectId,
+        ),
+      ),
+    ];
     // Partial redos may reuse files from an earlier run of this exact variant and visual source.
     if (ids.length) {
       const owned = await this.repo.db.effectPackagingFile.findMany({
@@ -890,7 +978,9 @@ export class EffectPackagingService {
   async content(projectId: string, runId: string, token: string, itemId: string, fileId: string) {
     const { snapshot, item, run } = await this.workerItem(projectId, runId, token, itemId);
     const sourceVideo = snapshot.clips.some((c) => c.fileObjectId === fileId);
-    const timelineAudio = (snapshot.detachedAudios ?? []).some((audio) => audio.fileObjectId === fileId);
+    const timelineAudio = (snapshot.detachedAudios ?? []).some(
+      (audio) => audio.fileObjectId === fileId,
+    );
     const checkpoint = item.checkpoint as PackagingCheckpoint;
     const savedVoice = [
       ...Object.values(checkpoint.voices ?? {}),
@@ -905,10 +995,7 @@ export class EffectPackagingService {
           where: {
             projectId,
             fileObjectId: fileId,
-            OR: [
-              { role: { startsWith: 'voice-' } },
-              { role: { startsWith: 'caption-voice-' } },
-            ],
+            OR: [{ role: { startsWith: 'voice-' } }, { role: { startsWith: 'caption-voice-' } }],
             item: {
               variantId: item.variantId,
               sourceTimelineHash: item.sourceTimelineHash,
@@ -1044,8 +1131,13 @@ export class EffectPackagingService {
     const packaging = artifacts.find(
       (a) => a.artifactKey === `timeline-package:${templateId}:${variantId}`,
     );
-    if (!variant || !visual || !packaging ||
-      visual.availability !== 'AVAILABLE' || packaging.availability !== 'AVAILABLE')
+    if (
+      !variant ||
+      !visual ||
+      !packaging ||
+      visual.availability !== 'AVAILABLE' ||
+      packaging.availability !== 'AVAILABLE'
+    )
       throw new ConflictException('画面工程或包装工程不可用；成片输出不可消费');
     if ((packaging.payload as PackagingCheckpoint).narrationLayoutVersion !== 'SLOT_V1')
       throw new ConflictException('旧版整片口播仅可播放，请按槽位重新包装后进入成片输出');

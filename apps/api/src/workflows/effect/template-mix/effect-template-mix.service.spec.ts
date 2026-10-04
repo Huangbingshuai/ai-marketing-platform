@@ -136,6 +136,77 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('returns only the persisted revision for compact autosave without rebuilding the workbench', async () => {
+    const { working } = harness();
+    const aiRuns = {
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+      inheritedMixAiRuns: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRuns as unknown as EffectTemplateMixAiRepository,
+    );
+    const value = draft();
+    value.templates[0]!.materialRoleOverrides = { [sourceId]: 'HOOK' };
+    await expect(service.saveDraft('project', 'run', 7, value, true))
+      .resolves.toEqual({ draftRevision: 8 });
+    expect(working.putNodeState).toHaveBeenCalledOnce();
+    expect(working.putNodeState.mock.calls[0]![3].state.templates[0]).toMatchObject({
+      materialRoleOverrides: { [sourceId]: 'HOOK' }, materialRoleEditVersion: 1,
+    });
+    expect(aiRuns.listRecent).toHaveBeenCalledOnce(); // Lock/source validation still runs.
+    expect(aiRuns.sourceArtifacts).not.toHaveBeenCalled();
+    expect(aiRuns.inheritedMixAiRuns).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
+  it('does not bypass material ownership validation for compact autosave', async () => {
+    const { service, working } = harness();
+    const value = draft();
+    value.templates[0]!.materialRoleOverrides = { 'foreign-source': 'HOOK' };
+    await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow();
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
+  it('projects output sources through the existing artifact reader without loading workbench history', async () => {
+    const { service, working } = harness();
+    const result = await service.outputSourceWorkspace('project', 'run');
+    expect(result.draft).toEqual(draft());
+    expect(result.materials).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: sourceId, artifactRevision: 2, fileObjectId: 'file-1', available: true }),
+    ]));
+    expect(working.getNodeStateOrNull).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
+    expect(result.artifacts).toEqual([source]);
+    expect(working.listArtifacts).toHaveBeenCalledExactlyOnceWith('project', { workflowRunId: 'run' });
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+  it('reads only the draft when pending output needs a name rather than source differences', async () => {
+    const { service, working } = harness();
+    const result = await service.outputSourceWorkspace('project', 'run', false);
+    expect(result.draft).toEqual(draft());
+    expect(result.materials).toEqual([]);
+    expect(result.artifacts).toEqual([]);
+    expect(working.listArtifacts).not.toHaveBeenCalled();
+  });
+  it('keeps bound clips for playback but excludes retired clips from the live source pool', async () => {
+    const { service, working } = harness();
+    const replacement = { ...source, id: 'replacement', artifactKey: 'render-clip:new-task',
+      payload: { ...(source.payload as Record<string, unknown>), fileObjectId: 'file-new' } };
+    const batch = { ...source, id: 'batch', kind: 'STRUCTURED', artifactKey: 'render-batch:pool',
+      payload: { clips: [{ taskId: 'new-task' }] } } as WorkingArtifact;
+    working.listArtifacts.mockResolvedValue({ items: [source, replacement, batch], total: 3 });
+    const result = await service.outputSourceWorkspace('project', 'run');
+    expect(result.materials.find((material) => material.id === source.id)).toMatchObject({ activeSource: false });
+    expect(result.materials.find((material) => material.id === replacement.id)).toMatchObject({ activeSource: true });
+    expect((await service.materialSources('project', 'run')).pendingProjectCount).toBe(1);
+    expect(result.draftRevision).toBe(7);
+    batch.payload = { clips: [] };
+    const empty = await service.outputSourceWorkspace('project', 'run');
+    expect(empty.materials.filter((material) => material.activeSource)).toEqual([]);
+    expect(empty.materials.find((material) => material.id === source.id)?.available).toBe(true);
+  });
   it('autosaves material roles without confirming artifacts or changing timeline content', async () => {
     const { service, working } = harness();
     const value = draft();
@@ -283,6 +354,86 @@ describe('EffectTemplateMixService', () => {
     await expect(service.saveDraft('project', 'run', 7, value)).rejects.toMatchObject({
       status: 400,
     });
+  });
+  it('uses only the committed render batch for the cap, not longer clips left in the library', async () => {
+    const { service, working } = harness();
+    const current = {
+      ...source,
+      payload: { ...(source.payload as Record<string, unknown>), durationSeconds: 8 },
+    };
+    const leftover = {
+      ...current,
+      id: 'leftover',
+      artifactKey: 'render-clip:older-task',
+      payload: { ...(source.payload as Record<string, unknown>), durationSeconds: 15 },
+    };
+    const batch = {
+      ...source,
+      id: 'batch',
+      kind: 'STRUCTURED',
+      artifactKey: 'render-batch:product',
+      payload: { clips: [{ taskId: 'task-1' }] },
+    };
+    working.listArtifacts.mockResolvedValue({
+      items: [current, leftover, batch] as WorkingArtifact[],
+      total: 3,
+    });
+    const value = draft();
+    value.templates[0]!.workspace.template.slots[0]!.duration = 8;
+    const result = await service.saveDraft('project', 'run', 7, value);
+    expect(result.slotDurationMaxSeconds).toBe(8);
+    value.templates[0]!.workspace.template.slots[0]!.duration = 9;
+    await expect(service.saveDraft('project', 'run', 7, value)).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+  it.each([8, 10, 15])(
+    'accepts the frozen %s-second upper boundary and rejects an out-of-range draft',
+    async (maximum) => {
+      const { service, working } = harness();
+      const current = {
+        ...source,
+        payload: { ...(source.payload as Record<string, unknown>), durationSeconds: maximum },
+      };
+      const stale = {
+        ...source,
+        id: 'old-long-clip',
+        artifactKey: 'render-clip:old',
+        freshness: 'STALE',
+        payload: { ...(source.payload as Record<string, unknown>), durationSeconds: 20 },
+      };
+      working.listArtifacts.mockResolvedValue({
+        items: [current, stale] as WorkingArtifact[],
+        total: 2,
+      });
+      const value = draft();
+      value.templates[0]!.workspace.template.slots[0]!.duration = maximum;
+      await expect(service.saveDraft('project', 'run', 7, value)).resolves.toBeDefined();
+      working.putNodeState.mockClear();
+      value.templates[0]!.workspace.template.slots[0]!.duration = maximum + 0.1;
+      await expect(service.saveDraft('project', 'run', 7, value)).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(working.putNodeState).not.toHaveBeenCalled();
+      value.templates[0]!.workspace.template.slots[0]!.duration = 3.9;
+      await expect(service.saveDraft('project', 'run', 7, value)).rejects.toMatchObject({
+        status: 400,
+      });
+    },
+  );
+
+  it('preserves an untouched historical long slot but refuses generating new projects from it', async () => {
+    const { service, working } = harness();
+    const previous = draft();
+    previous.templates[0]!.workspace.template.slots[0]!.duration = 15;
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
+    const edited = structuredClone(previous);
+    edited.templates[0]!.workspace.template.name = '仅修改名称';
+    await expect(service.saveDraft('project', 'run', 7, edited)).resolves.toBeDefined();
+    working.getNodeState.mockResolvedValue({ revision: 7, state: previous });
+    await expect(service.createEmptyVariant('project', 'run', templateId, 7)).rejects.toMatchObject(
+      { status: 400 },
+    );
   });
   it('reads only the saved variant for packaging hot-path source checks', async () => {
     const { service, working } = harness();
@@ -545,7 +696,9 @@ describe('EffectTemplateMixService', () => {
     );
 
     const saved = await service.saveDraft('project', 'run', 7, {
-      schemaVersion: 1, activeTemplateId: '', templates: [],
+      schemaVersion: 1,
+      activeTemplateId: '',
+      templates: [],
     });
 
     expect(repository.templateHasDownstream).toHaveBeenCalledWith('project', 'run', templateId);
@@ -569,9 +722,13 @@ describe('EffectTemplateMixService', () => {
       repository as unknown as EffectTemplateMixAiRepository,
     );
 
-    await expect(service.saveDraft('project', 'run', 7, {
-      schemaVersion: 1, activeTemplateId: '', templates: [],
-    })).rejects.toMatchObject({ status: 409 });
+    await expect(
+      service.saveDraft('project', 'run', 7, {
+        schemaVersion: 1,
+        activeTemplateId: '',
+        templates: [],
+      }),
+    ).rejects.toMatchObject({ status: 409 });
     expect(repository.templateHasDownstream).toHaveBeenCalledWith('project', 'run', templateId);
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
@@ -613,6 +770,15 @@ describe('EffectTemplateMixService', () => {
 
   it('saves template changes after fill and marks them as needing a new fill', async () => {
     const { service, working } = harness();
+    working.listArtifacts.mockResolvedValue({
+      items: [
+        {
+          ...source,
+          payload: { ...(source.payload as Record<string, unknown>), durationSeconds: 8 },
+        },
+      ],
+      total: 1,
+    });
     const value = draft();
     value.templates[0]!.filledTemplateHash = templateConfigurationHash(
       value.templates[0]!.workspace.template,
@@ -836,6 +1002,23 @@ describe('EffectTemplateMixService', () => {
     expect(result.materials).toEqual([expect.objectContaining({ id: sourceId, available: true })]);
   });
 
+  it('offers one card per rendered file when a branch inherits its ancestor’s clips', async () => {
+    // Forking a branch clones the render stage, and `listArtifacts` surfaces the ancestor's copies of
+    // it too, so the same clip reached the library twice — the same video appeared as two cards. The
+    // branch's own artifact is the one its draft binds, so that is the card that has to survive, even
+    // when the ancestor's copy is listed first.
+    const inherited = {
+      ...source,
+      id: 'ancestor-clip',
+      workflowRunId: 'parent-run',
+    } as WorkingArtifact;
+    const cloned = { ...source, workflowRunId: 'run' } as WorkingArtifact;
+
+    const result = await workspaceWith([inherited, cloned]);
+
+    expect(result.materials.map(({ id }) => id)).toEqual([sourceId]);
+  });
+
   it('creates and fills exactly one project inside the requested template', async () => {
     const { service, working } = harness();
     const state = draft();
@@ -905,16 +1088,29 @@ describe('EffectTemplateMixService', () => {
     expect(nextResult.draft.templates[0]!.workspace.variants).toHaveLength(102);
   });
 
-  it('allows project edits after packaging while keeping template configuration locked', async () => {
+  it('allows template configuration edits after packaging so the template can be filled again', async () => {
     const { working } = harness();
+    working.listArtifacts.mockResolvedValue({
+      items: [
+        {
+          ...source,
+          payload: { ...(source.payload as Record<string, unknown>), durationSeconds: 10 },
+        },
+      ],
+      total: 1,
+    });
     const previous = draft();
     previous.templates[0]!.packagingLocked = true;
     const edited = JSON.parse(JSON.stringify(previous)) as EffectTemplateMixDraft;
     edited.templates[0]!.workspace.variants[0]!.offsets[slotId] = 0.5;
     const afterProjectEdit = JSON.parse(JSON.stringify(edited)) as EffectTemplateMixDraft;
+    const retimed = JSON.parse(JSON.stringify(afterProjectEdit)) as EffectTemplateMixDraft;
+    retimed.templates[0]!.workspace.template.name = '包装后仍可修改的模板名';
+    retimed.templates[0]!.workspace.template.slots[0]!.duration = 9;
     working.getNodeStateOrNull
       .mockResolvedValueOnce({ revision: 7, state: previous })
-      .mockResolvedValueOnce({ revision: 8, state: afterProjectEdit });
+      .mockResolvedValueOnce({ revision: 8, state: afterProjectEdit })
+      .mockResolvedValueOnce({ revision: 9, state: retimed });
     const aiRuns = {
       packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
       activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
@@ -931,28 +1127,77 @@ describe('EffectTemplateMixService', () => {
       packageLockedService.saveDraft('project', 'run', 7, edited),
     ).resolves.toBeDefined();
     expect(edited.templates[0]!.workspace.variants[0]!.offsets[slotId]).toBe(0.5);
-    edited.templates[0]!.workspace.template.name = '不允许修改的模板名';
-    await expect(packageLockedService.saveDraft('project', 'run', 8, edited)).rejects.toMatchObject(
-      {
-        status: 409,
-      },
-    );
+    const result = await packageLockedService.saveDraft('project', 'run', 8, retimed);
+    expect(result.draft.templates[0]!.workspace.template.name).toBe('包装后仍可修改的模板名');
+    expect(result.draft.templates[0]!.workspace.template.slots[0]!.duration).toBe(9);
+    // The flag is still reported: it keeps the packaged template out of deletion.
+    expect(result.draft.templates[0]!.packagingLocked).toBe(true);
   });
 
-  it('allows switching the voice after packaging while every other template field stays locked', async () => {
+  it('still refuses removing a project the finished package points at', async () => {
+    const { working } = harness();
+    const previous = draft();
+    previous.templates[0]!.packagingLocked = true;
+    const removed = JSON.parse(JSON.stringify(previous)) as EffectTemplateMixDraft;
+    removed.templates[0]!.workspace.variants = [];
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
+    const aiRuns = {
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRuns as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(service.saveDraft('project', 'run', 7, removed)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
+  it('allows edits to a packaged template while packaging runs from its frozen snapshot', async () => {
+    const { working } = harness();
+    const state = draft();
+    state.templates[0]!.packagingLocked = true;
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    const packaged = {
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
+      lockedTemplateIds: vi.fn().mockResolvedValue([]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      packaged as unknown as EffectTemplateMixAiRepository,
+    );
+    await expect(
+      service.applyVariant('project', 'run', templateId, variantId, false, 7),
+    ).resolves.toBeDefined();
+
+    const running = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      {
+        ...packaged,
+        activePackagingTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      } as unknown as EffectTemplateMixAiRepository,
+    );
+    await expect(
+      running.applyVariant('project', 'run', templateId, variantId, false, 7),
+    ).resolves.toBeDefined();
+  });
+
+  it('allows switching the voice after packaging', async () => {
     const { working } = harness();
     const previous = draft();
     previous.templates[0]!.packagingLocked = true;
     previous.templates[0]!.workspace.template.voiceProfileId = 'voice-a';
     const voiced = JSON.parse(JSON.stringify(previous)) as EffectTemplateMixDraft;
     voiced.templates[0]!.workspace.template.voiceProfileId = 'voice-b';
-    // Same edit plus a real template change: the slot must still be refused.
-    const retimed = JSON.parse(JSON.stringify(voiced)) as EffectTemplateMixDraft;
-    retimed.templates[0]!.workspace.template.slots[0]!.duration = 9;
-    working.getNodeStateOrNull
-      .mockResolvedValueOnce({ revision: 7, state: previous })
-      .mockResolvedValueOnce({ revision: 8, state: voiced })
-      .mockResolvedValueOnce({ revision: 9, state: retimed });
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
     const aiRuns = {
       packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
       activePackagingTemplateIds: vi.fn().mockResolvedValue([]),
@@ -967,12 +1212,9 @@ describe('EffectTemplateMixService', () => {
 
     await expect(service.saveDraft('project', 'run', 7, voiced)).resolves.toBeDefined();
     expect(voiced.templates[0]!.workspace.template.voiceProfileId).toBe('voice-b');
-    await expect(service.saveDraft('project', 'run', 8, retimed)).rejects.toMatchObject({
-      status: 409,
-    });
   });
 
-  it('still locks a voice change while a packaging run is in flight', async () => {
+  it('allows template configuration changes while packaging runs from its frozen snapshot', async () => {
     const { working } = harness();
     const previous = draft();
     previous.templates[0]!.packagingLocked = true;
@@ -982,7 +1224,7 @@ describe('EffectTemplateMixService', () => {
     working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
     const aiRuns = {
       packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
-      // The run is still going, so the whole workspace comparison must keep guarding it.
+      // The worker owns a frozen input snapshot and must not lock user edits in this Run.
       activePackagingTemplateIds: vi.fn().mockResolvedValue([templateId]),
       lockedTemplateIds: vi.fn().mockResolvedValue([]),
       listRecent: vi.fn().mockResolvedValue([]),
@@ -993,9 +1235,8 @@ describe('EffectTemplateMixService', () => {
       aiRuns as unknown as EffectTemplateMixAiRepository,
     );
 
-    await expect(service.saveDraft('project', 'run', 7, voiced)).rejects.toMatchObject({
-      status: 409,
-    });
+    await expect(service.saveDraft('project', 'run', 7, voiced)).resolves.toBeDefined();
+    expect(voiced.templates[0]!.workspace.template.voiceProfileId).toBe('voice-b');
   });
 
   it('rejects a server mutation based on a stale draft revision', async () => {
@@ -1010,6 +1251,15 @@ describe('EffectTemplateMixService', () => {
 
   it('applies an edited project only inside the requested template', async () => {
     const { service, working } = harness();
+    working.listArtifacts.mockResolvedValue({
+      items: [
+        {
+          ...source,
+          payload: { ...(source.payload as Record<string, unknown>), durationSeconds: 8 },
+        },
+      ],
+      total: 1,
+    });
     const state = draft();
     const isolatedId = 'c61347b7-af3c-4667-a474-25a5c9bb00c1';
     state.templates.push({
@@ -1071,6 +1321,8 @@ describe('EffectTemplateMixService', () => {
       artifactKey: `render-clip:${index}`,
       revision: 3,
       contentHash: String(index).repeat(64),
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
       storageKey: `video/${index}.mp4`,
       name: `素材 ${index} 视频片段`,
       payload: {
@@ -1127,9 +1379,17 @@ describe('EffectTemplateMixService', () => {
 
     // Re-filling is a full update: it must ask for an isolated child before it reads the draft, and
     // `always` is what makes even the project's first fill land on a branch of its own.
-    expect(working.beginEffectNodeEdit).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX', 'BATCH', {
-      always: true,
-    });
+    expect(working.beginEffectNodeEdit).toHaveBeenCalledWith(
+      'project',
+      'run',
+      'TEMPLATE_MIX',
+      'BATCH',
+      {
+        always: true,
+        keepParentActive: false,
+        creationKey: expect.any(String),
+      },
+    );
     expect(create.mock.calls[0]![0].workflowRunId).toBe('run');
 
     const snapshot = create.mock.calls[0]![0].snapshot;
@@ -1248,9 +1508,317 @@ describe('EffectTemplateMixService', () => {
       taskIdMap: {},
       created: true,
     });
-    const forked = await service.createAiRun('project', 'run', templateId, 9, 'fork-key', variantId);
+    const forked = await service.createAiRun(
+      'project',
+      'run',
+      templateId,
+      9,
+      'fork-key',
+      variantId,
+    );
     expect(create.mock.calls[3]![0].workflowRunId).toBe('child-run');
     expect(forked.workflowRunId).toBe('child-run');
+
+    // A transport failure before the first trim must still reuse confirmed classification
+    // and server-selected bindings, rather than paying to classify the whole pool again.
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    working.beginEffectNodeEdit.mockResolvedValue({
+      run: { id: 'run' },
+      parentWorkflowRunId: null,
+      productIdMap: {},
+      taskIdMap: {},
+      created: false,
+    });
+    aiRepository.listRecent.mockResolvedValue([
+      {
+        status: 'FAILED',
+        templateId,
+        inputSnapshot: snapshot,
+        classificationResult: classifications,
+        selectionResult: selections,
+        trimResult: [],
+      },
+    ]);
+    await service.createAiRun('project', 'run', templateId, 7, 'zero-trim-key');
+    expect(create.mock.calls[4]![0].initialClassifications).toHaveLength(6);
+    expect(create.mock.calls[4]![0].initialSelections).toHaveLength(6);
+    expect(create.mock.calls[4]![0].initialTrims).toEqual([]);
+
+    aiRepository.listRecent.mockResolvedValue([
+      {
+        status: 'FAILED',
+        templateId,
+        inputSnapshot: snapshot,
+        classificationResult: classifications,
+        selectionResult: selections,
+        trimResult: null,
+      },
+    ]);
+    await service.createAiRun('project', 'run', templateId, 7, 'null-trim-key');
+    expect(create.mock.calls[5]![0].initialClassifications).toHaveLength(6);
+    expect(create.mock.calls[5]![0].initialSelections).toHaveLength(6);
+    expect(create.mock.calls[5]![0].initialTrims).toEqual([]);
+
+    aiRepository.listRecent.mockResolvedValue([
+      {
+        status: 'FAILED',
+        templateId,
+        inputSnapshot: snapshot,
+        classificationResult: classifications,
+        selectionResult: [{ ...selections[0], materialId: 'foreign-material' }],
+        trimResult: [],
+      },
+    ]);
+    await service.createAiRun('project', 'run', templateId, 7, 'invalid-zero-trim-key');
+    expect(create.mock.calls[6]![0].initialSelections).toBeUndefined();
+  });
+
+  it('starts a refill on a template that has already been packaged', async () => {
+    // A fill lands on a branch of its own, so a finished package is a result to leave alone rather
+    // than a reason to refuse the fill. Only packaging that is still running blocks it, and that is
+    // enforced inside the repository's transaction.
+    const roles = [
+      'HOOK',
+      'PAIN_POINT',
+      'PRODUCT',
+      'SELLING_POINT',
+      'TRANSFORMATION',
+      'END',
+    ] as const;
+    const state = draft();
+    state.templates[0]!.workspace.template.slots = roles.map((role, index) => ({
+      id: `slot-${index}`,
+      label: role,
+      role,
+      purpose:
+        role === 'HOOK'
+          ? 'HOOK'
+          : role === 'END'
+            ? 'END_CONVERSION'
+            : role === 'PRODUCT'
+              ? 'PRODUCT_DISPLAY'
+              : 'EFFECT',
+      duration: 4,
+      transition: '硬切',
+    }));
+    state.templates[0]!.workspace.variants = [];
+    const promptArtifact = {
+      id: 'prompt-artifact',
+      nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:product',
+      revision: 2,
+      contentHash: 'p'.repeat(64),
+      payload: {
+        items: roles.map((_, index) => ({ id: `prompt-${index}`, content: `Prompt ${index}` })),
+      },
+    };
+    const clips = roles.map((_, index) => ({
+      ...source,
+      id: `material-${index}`,
+      artifactKey: `render-clip:${index}`,
+      storageKey: `video/${index}.mp4`,
+      payload: {
+        promptId: `prompt-${index}`,
+        renderCode: `V${index}`,
+        durationSeconds: 4,
+        contentHash: `${index}`.repeat(64),
+        fileObjectId: `file-${index}`,
+        primaryPurpose: 'HOOK',
+        compatiblePurposes: ['HOOK'],
+      },
+    }));
+    const working = {
+      getNodeState: vi.fn().mockResolvedValue({ revision: 7, state }),
+      beginEffectNodeEdit: vi.fn().mockResolvedValue({
+        run: { id: 'packaged-run' },
+        parentWorkflowRunId: 'run',
+        productIdMap: {},
+        taskIdMap: {},
+        created: true,
+      }),
+    };
+    const create = vi.fn().mockResolvedValue({
+      kind: 'CREATED',
+      run: {
+        id: 'fill-run',
+        templateId,
+        workflowRunId: 'packaged-run',
+        targetVariantId: null,
+        outputVariantId: null,
+        status: 'QUEUED',
+        stage: 'CLASSIFYING',
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+    const aiRepository = {
+      sourceArtifacts: vi.fn().mockResolvedValue([promptArtifact, ...clips]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      // The template already owns a CURRENT timeline-package in the Run the fill forked from.
+      packagedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+      create,
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(
+      service.createAiRun('project', 'run', templateId, 7, 'key'),
+    ).resolves.toMatchObject({ workflowRunId: 'packaged-run' });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('fills from scratch when a fresh branch cannot reach the assignment it forked from', async () => {
+    // A re-fill on an already assigned project used to be refused unless the classification behind
+    // that assignment could be reused — but the fill always forks, and cloning re-identifies the
+    // materials, so on a fresh branch the history never matches and every re-fill failed with
+    // 找不到完整的历史归槽结果. It now classifies and assigns from scratch instead.
+    const roles = [
+      'HOOK',
+      'PAIN_POINT',
+      'PRODUCT',
+      'SELLING_POINT',
+      'TRANSFORMATION',
+      'END',
+    ] as const;
+    const state = draft();
+    state.templates[0]!.workspace.template.slots = roles.map((role, index) => ({
+      id: `slot-${index}`,
+      label: role,
+      role,
+      purpose:
+        role === 'HOOK'
+          ? 'HOOK'
+          : role === 'END'
+            ? 'END_CONVERSION'
+            : role === 'PRODUCT'
+              ? 'PRODUCT_DISPLAY'
+              : 'EFFECT',
+      duration: 4,
+      transition: '硬切',
+    }));
+    state.templates[0]!.workspace.variants = [];
+    const promptArtifact = {
+      id: 'prompt-artifact',
+      nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:product',
+      revision: 2,
+      contentHash: 'p'.repeat(64),
+      payload: {
+        items: roles.map((_, index) => ({ id: `prompt-${index}`, content: `Prompt ${index}` })),
+      },
+    };
+    const clips = roles.map((_, index) => ({
+      ...source,
+      id: `material-${index}`,
+      artifactKey: `render-clip:${index}`,
+      storageKey: `video/${index}.mp4`,
+      payload: {
+        promptId: `prompt-${index}`,
+        renderCode: `V${index}`,
+        durationSeconds: 4,
+        contentHash: `${index}`.repeat(64),
+        fileObjectId: `file-${index}`,
+        primaryPurpose: 'HOOK',
+        compatiblePurposes: ['HOOK'],
+      },
+    }));
+    const working = {
+      getNodeState: vi.fn().mockResolvedValue({ revision: 7, state }),
+      beginEffectNodeEdit: vi.fn().mockResolvedValue({
+        run: { id: 'child-run' },
+        parentWorkflowRunId: 'run',
+        productIdMap: {},
+        taskIdMap: {},
+        created: true,
+      }),
+    };
+    const create = vi.fn().mockImplementation((input) =>
+      Promise.resolve({
+        kind: 'CREATED',
+        run: {
+          id: 'fill-run',
+          templateId,
+          workflowRunId: input.workflowRunId,
+          targetVariantId: null,
+          outputVariantId: null,
+          status: 'QUEUED',
+          stage: 'CLASSIFYING',
+          progress: 0,
+          errorCode: null,
+          errorMessage: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      }),
+    );
+    const listRecent = vi.fn().mockResolvedValue([]);
+    const aiRepository = {
+      sourceArtifacts: vi.fn().mockResolvedValue([promptArtifact, ...clips]),
+      listRecent,
+      create,
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    // The first fill on the branch has nothing assigned yet, so it needs no history.
+    await service.createAiRun('project', 'run', templateId, 7, 'first-key');
+    const snapshot = create.mock.calls[0]![0].snapshot;
+
+    // The branch the re-fill runs in knows the fill that produced this project, so the assignment can
+    // still be reused when the history is genuinely reachable.
+    const scores = Object.fromEntries(roles.map((role) => [role, 0.8]));
+    listRecent.mockResolvedValue([
+      {
+        status: 'COMPLETED',
+        templateId,
+        inputSnapshot: snapshot,
+        classificationResult: clips.map((clip) => ({ materialId: clip.id, scores, reasons: {} })),
+      },
+    ]);
+    state.templates[0]!.workspace.variants.push({
+      id: variantId,
+      name: '跑量模板 · 1',
+      appliedTemplateVersion: 2,
+      slots: JSON.parse(JSON.stringify(state.templates[0]!.workspace.template.slots)),
+      bindings: Object.fromEntries(clips.map((clip, index) => [`slot-${index}`, clip.id])),
+      bindingRevisions: Object.fromEntries(clips.map((_clip, index) => [`slot-${index}`, 3])),
+      offsets: Object.fromEntries(clips.map((_clip, index) => [`slot-${index}`, 0])),
+      bindingMetadata: {},
+      manualSlotIds: [],
+      conflictSlotIds: [],
+      status: 'CURRENT',
+      captions: [],
+      subtitleStyle: 'standard',
+      bgm: null,
+      voice: null,
+      originalVolume: 1,
+    } as EffectTemplateMixVariant);
+    working.getNodeState.mockResolvedValue({ revision: 8, state });
+
+    await service.createAiRun('project', 'run', templateId, 8, 'refill-key', variantId);
+
+    const refill = create.mock.calls[1]![0];
+    expect(refill.workflowRunId).toBe('child-run');
+    expect(refill.initialClassifications).toHaveLength(6);
+    expect(refill.initialSelections).toHaveLength(6);
+
+    // A fresh branch has no history at all, because cloning re-identifies the materials, so the
+    // classification that produced the current assignment is unreachable. The fill then starts from
+    // scratch instead of refusing — the branch it lands on is new, so nothing the user already has is
+    // overwritten.
+    listRecent.mockResolvedValue([]);
+    await service.createAiRun('project', 'run', templateId, 8, 'no-history-key', variantId);
+    const fromScratch = create.mock.calls[2]![0];
+    expect(fromScratch.workflowRunId).toBe('child-run');
+    expect(fromScratch.initialSelections).toBeUndefined();
+    expect(fromScratch.initialClassifications).toBeUndefined();
   });
 
   it('confirms the filled timeline as this Run’s mix version so the tree stops showing a draft', async () => {
@@ -1273,7 +1841,15 @@ describe('EffectTemplateMixService', () => {
       existingVariantBindings: [],
       reuseCounts: {},
       promptArtifacts: [],
-      materials: [{ id: sourceId, duration: 4, artifactId: sourceId, artifactRevision: 2, fileObjectId: 'file-1' }],
+      materials: [
+        {
+          id: sourceId,
+          duration: 4,
+          artifactId: sourceId,
+          artifactRevision: 2,
+          fileObjectId: 'file-1',
+        },
+      ],
     };
     const scores = {
       HOOK: 0.9,
@@ -1407,6 +1983,8 @@ describe('EffectTemplateMixService', () => {
       artifactKey: `render-clip:${index}`,
       revision: index === 2 ? 3 : 2,
       contentHash: `${index}`.repeat(64),
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
       storageKey: `video/${index}.mp4`,
       name: `素材 ${index} 视频片段`,
       payload: {
@@ -1614,6 +2192,7 @@ describe('EffectTemplateMixService', () => {
       service.checkpointAiTrims('project', 'run', 'attempt-token', trims),
     ).resolves.toEqual({ trims, progress: 72 });
   });
+
   const promptBatch = {
     id: 'prompt-artifact',
     nodeId: 'PROMPT_GENERATION',

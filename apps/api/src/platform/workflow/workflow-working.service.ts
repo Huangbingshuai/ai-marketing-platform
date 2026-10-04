@@ -369,6 +369,20 @@ export class WorkflowWorkingService {
       }
     }
     if (!active) return { projectId, activeWorkflowRunId: null, branches: [] };
+    // The active mix draft is the authoritative template catalog shown by the configuration
+    // page. Historical artifacts remain available for lineage/version calculations, but a
+    // template removed from that catalog must not be resurrected as a live template node merely
+    // because an older branch still owns its immutable artifacts.
+    const activeCatalogRun = runs.find((run) => run.activeKey === 'ACTIVE') ?? active;
+    const activeMixState = activeCatalogRun.nodeStates?.[0]?.state;
+    const activeMixDraft = activeMixState && typeof activeMixState === 'object' &&
+      !Array.isArray(activeMixState)
+      ? activeMixState as Record<string, unknown>
+      : null;
+    const currentTemplateIds = activeMixDraft?.schemaVersion === 1 &&
+      Array.isArray(activeMixDraft.templates)
+      ? new Set(mixDraftTemplates(activeMixState).map(({ id }) => id))
+      : null;
     let root = active;
     const seen = new Set<string>();
     while (root.parentWorkflowRunId && !seen.has(root.id)) {
@@ -474,99 +488,177 @@ export class WorkflowWorkingService {
     };
     const branchNodeIdOf = (run: (typeof runs)[number]): EffectWorkflowBranchNodeId | null =>
       EFFECT_WORKFLOW_BRANCH_NODES.find((node) => node === run.forkNodeId) ?? null;
-    // A mix fork never clones the timelines it regenerates, so their stored revision restarts at 1 in
-    // every branch and a second fill of the same template read 版本01 again. Number the fill by the
-    // fills that produced it along the branch chain, the way the cloned upstream layers already
-    // number themselves through their carried-over revision. What a run really did decides it, never
-    // the timelines it holds: a packaging fork re-commits the timelines it inherited (their frozen
-    // snapshots are validated run-scoped), so counting those copies read a packaging branch as a
-    // second fill and pushed the next real fill to 版本03.
-    const fillChainVersion = (
+    const mixForkTemplateId = (
       run: (typeof runs)[number],
-      templateId: string,
-    ): number | null => {
-      const prefix = `timeline-project:${templateId}`;
-      let version = 0;
-      const visited = new Set<string>();
-      for (
-        let cursor: (typeof runs)[number] | undefined = run;
-        cursor && !visited.has(cursor.id);
-        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined
-      ) {
-        visited.add(cursor.id);
-        // A branch carries the fills that produced the pool it shows, so the row has to be one this
-        // Run minted itself: an inherited one is a copy a fork made, and counting it would number a
-        // packaging or export branch as a fill of its own.
-        const filled = (cursor.effectTemplateMixAiRuns ?? []).some(
-          (aiRun) =>
-            aiRun.templateId === templateId && !isInheritedFillKey(aiRun.idempotencyKey),
-        );
-        if (!filled) continue;
-        const revisions = cursor.workingArtifacts
+      forkNodeId: EffectWorkflowBranchNodeId | null,
+      stage: 'TEMPLATE' | 'FILL' | 'PACKAGING' | null,
+    ): string | null => {
+      if (run.forkTemplateId || forkNodeId !== 'TEMPLATE_MIX')
+        return run.forkTemplateId ?? null;
+      const prefix = stage === 'PACKAGING' ? 'timeline-package:'
+        : stage === 'FILL' ? 'timeline-project:' : 'mix-template:';
+      const parentTemplates = stage === 'TEMPLATE'
+        ? new Map(
+            (run.parentWorkflowRunId ? effectiveArtifacts(run.parentWorkflowRunId) : [])
+              .filter((artifact) => artifact.artifactKey.startsWith(prefix))
+              .map((artifact) => [artifact.artifactKey, committedTemplate(artifact.payload)]),
+          )
+        : null;
+      const candidates = new Set(
+        run.workingArtifacts
           .filter((artifact) => artifact.artifactKey.startsWith(prefix))
-          .map((artifact) => artifact.revision);
-        version += revisions.length ? Math.max(...revisions) : 0;
-      }
-      return version || null;
+          .filter((artifact) => !parentTemplates ||
+            parentTemplates.get(artifact.artifactKey) !== committedTemplate(artifact.payload))
+          .map((artifact) => artifact.artifactKey.split(':')[1])
+          .filter((id): id is string => Boolean(id)),
+      );
+      return candidates.size === 1 ? [...candidates][0]! : null;
     };
-    // The packages restart at revision 1 in every branch for the same reason the timelines do, so
-    // the same chain count is what keeps a second packaging from reading 版本01 again. Only a batch
-    // that packaged every film is a version, which is exactly what publishes its branch: a partial
-    // one leaves no gap in the visible numbers once its films are recovered and it finishes whole.
-    const packagingChainVersion = (
-      run: (typeof runs)[number],
-      templateId: string,
-    ): number | null => {
-      const prefix = `timeline-package:${templateId}`;
-      let version = 0;
+    // Display versions count siblings under the same upstream head, not all generations of a
+    // template. Inherited worker records are copies, not new fill/package heads.
+    type VersionStage = 'FILL' | 'PACKAGING' | 'DELIVERY';
+    const ownFill = (run: (typeof runs)[number], templateId: string): boolean =>
+      (run.effectTemplateMixAiRuns ?? []).some((aiRun) =>
+        aiRun.templateId === templateId && !isInheritedFillKey(aiRun.idempotencyKey)) &&
+      run.workingArtifacts.some((artifact) =>
+        artifact.artifactKey.startsWith(`timeline-project:${templateId}:`));
+    const ownPackage = (run: (typeof runs)[number], templateId: string): boolean =>
+      (run.effectPackagingRuns ?? []).some((packaging) =>
+        packaging.templateId === templateId && packaging.status === 'COMPLETED' &&
+        !packaging.idempotencyKey.includes(':package:')) &&
+      run.workingArtifacts.some((artifact) =>
+        artifact.artifactKey.startsWith(`timeline-package:${templateId}:`));
+    const scopeCache = new Map<string, string>();
+    const resolveVersionScope = (
+      stage: VersionStage, run: (typeof runs)[number], templateId: string,
+    ): string => {
       const visited = new Set<string>();
+      // An output branch can be packaged in place after its files were delivered. Its original
+      // output still consumed the parent head; adding packaging later must not renumber exports.
+      const headRun = stage === 'DELIVERY' && run.forkNodeId === 'FINAL_OUTPUT' &&
+        run.parentWorkflowRunId && run.workingArtifacts.some((artifact) =>
+          artifact.artifactKey === `final-delivery:${templateId}`)
+        ? byId.get(run.parentWorkflowRunId) ?? run : run;
+      for (
+        let cursor: (typeof runs)[number] | undefined = headRun;
+        cursor && !visited.has(cursor.id);
+        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined
+      ) {
+        visited.add(cursor.id);
+        if (stage === 'DELIVERY' && ownPackage(cursor, templateId)) return cursor.id;
+        if (stage !== 'FILL' && ownFill(cursor, templateId)) {
+          // A new fill head discards the old package, including for picture-only exports.
+          return cursor.id;
+        }
+        const forkNodeId = branchNodeIdOf(cursor);
+        const mixStage = mixForkStage(cursor, forkNodeId);
+        if (!cursor.parentWorkflowRunId ||
+          (forkNodeId && forkNodeId !== 'TEMPLATE_MIX' && forkNodeId !== 'FINAL_OUTPUT') ||
+          (mixStage === 'TEMPLATE' &&
+            mixForkTemplateId(cursor, forkNodeId, mixStage) === templateId))
+          return cursor.id;
+      }
+      return root.id;
+    };
+    const versionScope = (
+      stage: VersionStage, run: (typeof runs)[number], templateId: string,
+    ): string => {
+      const key = `${stage}:${run.id}:${templateId}`;
+      const cached = scopeCache.get(key);
+      if (cached !== undefined) return cached;
+      const scope = resolveVersionScope(stage, run, templateId);
+      scopeCache.set(key, scope);
+      return scope;
+    };
+    const owners: Record<VersionStage, Map<string, number>> = {
+      FILL: new Map(), PACKAGING: new Map(), DELIVERY: new Map(),
+    };
+    const totals: Record<VersionStage, Map<string, number>> = {
+      FILL: new Map(), PACKAGING: new Map(), DELIVERY: new Map(),
+    };
+    const recordVersion = (
+      stage: VersionStage, runId: string, templateId: string, units: number,
+    ): void => {
+      if (units <= 0) return;
+      const run = byId.get(runId);
+      if (!run) return;
+      const scope = `${versionScope(stage, run, templateId)}:${templateId}`;
+      const next = (totals[stage].get(scope) ?? 0) + units;
+      totals[stage].set(scope, next);
+      owners[stage].set(`${runId}:${templateId}`, next);
+    };
+    const publishedRuns = runs
+      .filter((run) => inTree.has(run.id) && drawn(run))
+      .sort((left, right) =>
+        (left.branchPublishedAt ?? left.createdAt).getTime() -
+          (right.branchPublishedAt ?? right.createdAt).getTime() ||
+        left.createdAt.getTime() - right.createdAt.getTime() ||
+        left.id.localeCompare(right.id));
+    for (const run of publishedRuns) {
+      const templateIds = new Set(run.workingArtifacts
+        .map((artifact) => /^(?:timeline-project|timeline-package|final-delivery):([^:]+)/
+          .exec(artifact.artifactKey)?.[1])
+        .filter((id): id is string => Boolean(id)));
+      for (const templateId of templateIds) {
+        const fillRevisions = run.workingArtifacts
+          .filter((artifact) => artifact.artifactKey.startsWith(`timeline-project:${templateId}:`))
+          .map((artifact) => artifact.revision);
+        if (ownFill(run, templateId))
+          recordVersion('FILL', run.id, templateId,
+            fillRevisions.length ? Math.max(...fillRevisions) : 0);
+        const delivery = run.workingArtifacts.find(
+          (artifact) => artifact.artifactKey === `final-delivery:${templateId}`);
+        if (delivery && (!run.parentWorkflowRunId || run.forkNodeId === 'FINAL_OUTPUT'))
+          recordVersion('DELIVERY', run.id, templateId,
+            run.parentWorkflowRunId ? 1 : delivery.revision);
+      }
+    }
+    // A picture-only delivery can receive its first package later in the same Run. Number
+    // packaging by task completion, not by the older delivery branch publication time.
+    const packagingEvents = publishedRuns.flatMap((run) => {
+      const templateIds = new Set((run.effectPackagingRuns ?? [])
+        .filter((packaging) => packaging.status === 'COMPLETED' &&
+          !packaging.idempotencyKey.includes(':package:'))
+        .map((packaging) => packaging.templateId));
+      return [...templateIds].map((templateId) => {
+        const revisions = run.workingArtifacts
+          .filter((artifact) => artifact.artifactKey.startsWith(`timeline-package:${templateId}:`))
+          .map((artifact) => artifact.revision);
+        const completedAt = Math.max(...(run.effectPackagingRuns ?? [])
+          .filter((packaging) => packaging.templateId === templateId &&
+            packaging.status === 'COMPLETED' && !packaging.idempotencyKey.includes(':package:'))
+          .map((packaging) => packaging.completedAt?.getTime() ?? 0));
+        return { runId: run.id, templateId, units: revisions.length ? Math.max(...revisions) : 0,
+          completedAt: completedAt || (run.branchPublishedAt ?? run.createdAt).getTime() };
+      });
+    }).sort((left, right) => left.completedAt - right.completedAt ||
+      left.runId.localeCompare(right.runId));
+    for (const event of packagingEvents)
+      recordVersion('PACKAGING', event.runId, event.templateId, event.units);
+    const versionOf = (
+      stage: VersionStage, run: (typeof runs)[number], templateId: string,
+    ): number | null => {
+      const visited = new Set<string>();
+      const scope = versionScope(stage, run, templateId);
       for (
         let cursor: (typeof runs)[number] | undefined = run;
         cursor && !visited.has(cursor.id);
         cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined
       ) {
         visited.add(cursor.id);
-        const packaged = (cursor.effectPackagingRuns ?? []).some(
-          (packaging) =>
-            packaging.templateId === templateId && packaging.status === 'COMPLETED',
-        );
-        if (!packaged) continue;
-        const revisions = cursor.workingArtifacts
-          .filter((artifact) => artifact.artifactKey.startsWith(prefix))
-          .map((artifact) => artifact.revision);
-        version += revisions.length ? Math.max(...revisions) : 0;
+        const version = owners[stage].get(`${cursor.id}:${templateId}`);
+        if (version !== undefined && versionScope(stage, cursor, templateId) === scope)
+          return version;
       }
-      return version || null;
-    };
-    // An export fork starts with a fresh final-delivery artifact at revision 1. Count the
-    // published exports for this template along its ancestry instead of displaying that local
-    // revision each time. A local update rewrites the same delivery in place, while a manual copy
-    // merely carries its parent's delivery; neither creates another export version.
-    const deliveryChainVersion = (
-      run: (typeof runs)[number],
-      templateId: string,
-    ): number | null => {
-      let version = 0;
-      const key = `final-delivery:${templateId}`;
-      const visited = new Set<string>();
-      for (
-        let cursor: (typeof runs)[number] | undefined = run;
-        cursor && !visited.has(cursor.id);
-        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined
-      ) {
-        visited.add(cursor.id);
-        const delivery = cursor.workingArtifacts.find((artifact) => artifact.artifactKey === key);
-        if (!delivery) continue;
-        if (!cursor.parentWorkflowRunId) version += delivery.revision;
-        else if (cursor.forkNodeId === 'FINAL_OUTPUT' && cursor.branchPublishedAt) version += 1;
-      }
-      return version || null;
+      return null;
     };
     const branches: EffectWorkflowBranch[] = runs
       .filter((run) => inTree.has(run.id) && drawn(run))
       .map((run) => {
         const visibleArtifacts = effectiveArtifacts(run.id);
         const forkNodeId = branchNodeIdOf(run);
+        const forkMixStage = mixForkStage(run, forkNodeId);
+        const forkTemplateId = mixForkTemplateId(run, forkNodeId, forkMixStage);
         const templatesById = new Map<string, EffectWorkflowBranch['templates'][number]>();
         for (const artifact of visibleArtifacts) {
           const match =
@@ -609,12 +701,13 @@ export class WorkflowWorkingService {
           templatesById.set(match[2], template);
         }
         // A mix draft must not make the version path jump over an unfinished render node.
-        // Keep the draft in the workspace, but project it into the tree only once this Run
-        // has an actual confirmed render output to connect it to.
+        // A confirmed clip is render output too: imported/replaced clips can make template
+        // creation available without a render-batch artifact in this branch.
         const renderHasConfirmedOutput = visibleArtifacts.some(
           (artifact) =>
             artifact.nodeId === 'SEGMENT_RENDER' &&
-            artifact.artifactKey.startsWith('render-batch:'),
+            (artifact.artifactKey.startsWith('render-batch:') ||
+              artifact.artifactKey.startsWith('render-clip:')),
         );
         for (const state of renderHasConfirmedOutput ? (run.nodeStates ?? []) : []) {
           for (const draftTemplate of mixDraftTemplates(state.state)) {
@@ -646,6 +739,7 @@ export class WorkflowWorkingService {
             const completedFills = (run.effectTemplateMixAiRuns ?? []).filter(
               (aiRun) =>
                 aiRun.templateId === draftTemplate.id &&
+                !isInheritedFillKey(aiRun.idempotencyKey) &&
                 aiRun.outputVariantId !== null &&
                 variantIds.has(aiRun.outputVariantId),
             );
@@ -665,10 +759,11 @@ export class WorkflowWorkingService {
           );
           template.fillRevisions = revisionsOf(fills);
           template.packagingRevisions = revisionsOf(packages);
-          template.fillRevision = fillChainVersion(run, template.templateId);
-          template.packagingRevision = packagingChainVersion(run, template.templateId);
+          template.fillRevision = versionOf('FILL', run, template.templateId);
+          template.packagingRevision = packages.length
+            ? versionOf('PACKAGING', run, template.templateId) : null;
           template.deliveryRevision = deliveries.length
-            ? deliveryChainVersion(run, template.templateId) : null;
+            ? versionOf('DELIVERY', run, template.templateId) : null;
           template.deliveryRevisions = template.deliveryRevision === null
             ? [] : [template.deliveryRevision];
           template.fillCreatedAt = artifactCreatedAt(fills);
@@ -684,13 +779,22 @@ export class WorkflowWorkingService {
             : run.forkNodeId === 'MANUAL_COPY' ? 'MANUAL_COPY' as const
               : 'NODE_CHANGE' as const,
           forkNodeId,
-          forkTemplateId: run.forkTemplateId,
-          forkMixStage: mixForkStage(run, forkNodeId),
+          forkTemplateId,
+          forkMixStage,
+          packagingInOutputBranch: forkNodeId === 'FINAL_OUTPUT' && Boolean(
+            forkTemplateId && run.workingArtifacts.some((artifact) =>
+              artifact.artifactKey.startsWith(`timeline-package:${forkTemplateId}:`)) &&
+            (run.effectPackagingRuns ?? []).some((packaging) =>
+              packaging.templateId === forkTemplateId && packaging.status === 'COMPLETED' &&
+              !packaging.idempotencyKey.includes(':package:')),
+          ),
           label: run.branchLabel ?? (run.id === root.id ? '主干' : '未命名分支'),
           currentNodeId: run.currentNodeId,
           createdAt: run.createdAt.toISOString(),
           isActive: run.id === active.id,
-          templates: [...templatesById.values()],
+          templates: [...templatesById.values()].filter((template) =>
+            !currentTemplateIds || currentTemplateIds.has(template.templateId),
+          ),
           nodes: EFFECT_WORKFLOW_BRANCH_NODES.map((nodeId) => {
             const local = visibleArtifacts.filter((artifact) => artifact.nodeId === nodeId);
             const revisionArtifacts = local.filter((artifact) =>

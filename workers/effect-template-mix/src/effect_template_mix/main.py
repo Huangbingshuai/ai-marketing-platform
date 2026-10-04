@@ -40,7 +40,7 @@ async def serve() -> None:
         settings.ark_max_output_tokens,
         settings.ai_max_concurrency,
         packaging,
-        FinalOutputHandler(api, settings.max_video_bytes, settings.final_output_max_concurrency),
+        FinalOutputHandler(api, settings.max_video_bytes, settings.final_output_max_concurrency, packaging),
         VoicePreviewHandler(api, packaging_provider, packaging.requests),
         CaptionVoiceHandler(api, packaging_provider, packaging.requests),
     )

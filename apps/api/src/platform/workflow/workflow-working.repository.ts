@@ -368,8 +368,8 @@ export class WorkflowWorkingRepository {
   /**
    * Every Run of the project, published or not. The tree only draws published ones, but an
    * unpublished child still has to be loaded: it is where a regeneration that failed is sitting
-   * (a partial packaging keeps its films and stays active for the packaging panel to recover), so
-   * the version numbers have to keep counting through it and a branch forked from it later has to
+   * (a partial packaging keeps its films and stays active for the packaging panel to recover).
+   * It does not reserve a visible version number, but a later branch forked from it still has to
    * land under an ancestor the user can actually see.
    */
   listEffectRunBranches(projectId: string) {
@@ -385,7 +385,7 @@ export class WorkflowWorkingRepository {
           select: { templateId: true, outputVariantId: true, idempotencyKey: true },
         },
         effectPackagingRuns: {
-          select: { templateId: true, status: true },
+          select: { templateId: true, status: true, idempotencyKey: true, completedAt: true },
         },
         workingArtifacts: {
           where: { availability: 'AVAILABLE' },
@@ -652,46 +652,65 @@ export class WorkflowWorkingRepository {
         ...(filters.space ? { workflowSpace: filters.space } : {}),
       },
     };
-    const local = await this.prisma.workingArtifact.findMany({
+    const localRead = this.prisma.workingArtifact.findMany({
       where,
       include: workingArtifactInclude,
       orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
     });
-    if (!filters.workflowRunId) return local;
-    const run = await this.findRun(projectId, filters.workflowRunId);
+    if (!filters.workflowRunId) return localRead;
+    const [local, branches] = await Promise.all([
+      localRead,
+      this.prisma.workflowRun.findMany({ where: { projectId }, select: {
+        id: true, workflow: true, workflowSpace: true, parentWorkflowRunId: true,
+        forkNodeId: true, forkTemplateId: true,
+      } }),
+    ]);
+    const byId = new Map(branches.map((branch) => [branch.id, branch]));
+    const run = byId.get(filters.workflowRunId);
     if (run?.workflow !== 'EFFECT' || run.workflowSpace !== 'EFFECT' || !run.parentWorkflowRunId)
       return local;
 
-    const result: WorkingArtifactRecord[] = [...local];
-    const seenKeys = new Set(local.map((item) => `${item.nodeId}:${item.artifactKey}`));
     const visited = new Set([run.id]);
     const crossedForks: EffectForkScope[] = [];
+    const ancestors: Array<{ id: string; scopes: EffectForkScope[] }> = [];
     let child = run;
     while (child.parentWorkflowRunId && !visited.has(child.parentWorkflowRunId)) {
       crossedForks.push({
         forkNodeId: child.forkNodeId,
         forkTemplateId: child.forkTemplateId,
       });
-      const parent = await this.findRun(projectId, child.parentWorkflowRunId);
+      const parent = byId.get(child.parentWorkflowRunId);
       if (!parent || parent.workflow !== 'EFFECT' || parent.workflowSpace !== 'EFFECT') break;
       visited.add(parent.id);
-      const inherited = await this.prisma.workingArtifact.findMany({
-        where: {
-          projectId,
-          workflowRunId: parent.id,
-          ...(filters.nodeId ? { nodeId: filters.nodeId } : {}),
-        },
-        include: workingArtifactInclude,
-        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
-      });
-      for (const artifact of inherited) {
-        const key = `${artifact.nodeId}:${artifact.artifactKey}`;
-        if (seenKeys.has(key) || !inheritedEffectArtifactVisible(artifact, crossedForks)) continue;
-        result.push(artifact);
-        seenKeys.add(key);
-      }
+      ancestors.push({ id: parent.id, scopes: [...crossedForks] });
       child = parent;
     }
+    if (!ancestors.length) return local;
+    // Decide visibility and nearest-key shadowing using identities only. Loading every ancestor's
+    // complete payload/files in a sequential loop grows with branch depth and duplicates large
+    // Prompt batches. Hydrate only the winning inherited rows after the same fork rules run.
+    const identities = await this.prisma.workingArtifact.findMany({
+      where: { projectId, workflowRunId: { in: ancestors.map(({ id }) => id) },
+        ...(filters.nodeId ? { nodeId: filters.nodeId } : {}) },
+      select: { id: true, workflowRunId: true, nodeId: true, artifactKey: true },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    });
+    const seenKeys = new Set(local.map((item) => `${item.nodeId}:${item.artifactKey}`));
+    const inheritedIds: string[] = [];
+    for (const ancestor of ancestors) {
+      for (const artifact of identities.filter(({ workflowRunId }) => workflowRunId === ancestor.id)) {
+        const key = `${artifact.nodeId}:${artifact.artifactKey}`;
+        if (seenKeys.has(key) || !inheritedEffectArtifactVisible(artifact, ancestor.scopes)) continue;
+        inheritedIds.push(artifact.id);
+        seenKeys.add(key);
+      }
+    }
+    const inherited = inheritedIds.length ? await this.prisma.workingArtifact.findMany({
+      where: { projectId, id: { in: inheritedIds } }, include: workingArtifactInclude,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    }) : [];
+    const rank = new Map(inheritedIds.map((id, index) => [id, index]));
+    const result = [...local, ...inherited.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!)];
     return result.sort(
       (left, right) =>
         Date.parse(right.updatedAt.toISOString()) - Date.parse(left.updatedAt.toISOString()),

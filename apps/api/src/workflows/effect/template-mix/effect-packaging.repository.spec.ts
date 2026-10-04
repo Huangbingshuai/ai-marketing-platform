@@ -116,6 +116,25 @@ describe('packaging lease and durable task repository', () => {
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
     await expect(repo.create({ ...input, requestHash: 'different' })).rejects.toThrow('幂等');
   });
+  it('saves source rebindings only into the requested new packaging branch', async () => {
+    const { db, repo } = harness();
+    const state = structuredClone(testDraft);
+    const old = { id: 'variant', name: '成片 01', appliedTemplateVersion: 1, slots: [],
+      bindings: { a: 'old' }, bindingRevisions: { a: 1 }, offsets: { a: 5 } };
+    state.templates[0]!.workspace.variants = [old] as never;
+    db.workflowNodeState.findUnique.mockResolvedValue({ id: 'child-state', revision: 1, state });
+    const fresh = { ...old, bindings: { a: 'new' }, bindingRevisions: { a: 2 }, offsets: { a: 0 } };
+    const snapshot = { duration: 4, variant: fresh, sourceTimelineHash: 'fresh', facts: [], clips: [], dependencies: [],
+      sourceTrimMaterials: [{ slotId: 'a', material: { id: 'new', fileObjectId: 'new-file' } }] } as unknown as PackagingSnapshot;
+    await repo.create({ projectId: 'p', workflowRunId: 'child', templateId: 't', idempotencyKey: 'fresh',
+      requestHash: 'fresh-request', snapshots: [snapshot], checkpoints: [{}], expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate) });
+    expect(db.workflowNodeState.update).toHaveBeenCalledOnce();
+    expect(db.workflowNodeState.update.mock.calls[0]![0]).toMatchObject({ where: { id: 'child-state' },
+      data: { revision: { increment: 1 }, state: { templates: [{ workspace: { variants: [fresh], editVersion: 2 } }] } } });
+    expect(db.effectPackagingRun.create.mock.calls[0]![0].data.workflowRunId).toBe('child');
+    expect(old.bindings.a).toBe('old'); expect(old.offsets.a).toBe(5);
+  });
   it('uses the existing queue with an explicit schema-2 discriminator', async () => {
     const { db, repo } = harness();
     await repo.create({
@@ -143,7 +162,7 @@ describe('packaging lease and durable task repository', () => {
       }),
     );
   });
-  it('locks the template in the same transaction that starts packaging', async () => {
+  it('derives the source lock from running tasks rather than permanently rewriting the draft', async () => {
     const { db, repo } = harness();
     await repo.create({
       projectId: 'p',
@@ -156,11 +175,17 @@ describe('packaging lease and durable task repository', () => {
       expectedDraftRevision: 1,
       expectedTemplateHash: templateConfigurationHash(testTemplate),
     });
-    const update = db.workflowNodeState.update.mock.calls[0]![0];
-    expect(update.data.revision).toEqual({ increment: 1 });
-    expect(update.data.state).toMatchObject({
-      templates: [{ id: 't', packagingLocked: true, filledTemplateHash: templateConfigurationHash(testTemplate) }],
+    expect(db.workflowNodeState.update).not.toHaveBeenCalled();
+    db.effectPackagingRun.findMany.mockResolvedValue([{ templateId: 't' }] as never);
+    expect(await repo.sourceLockedTemplateIds('p', 'w')).toEqual(['t']);
+    expect(db.effectPackagingRun.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'p', status: { in: ['QUEUED', 'RUNNING'] },
+        OR: [{ workflowRunId: 'w' },
+          { workflowRun: { parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX' } }],
+      }, distinct: ['templateId'], select: { templateId: true },
     });
+    db.effectPackagingRun.findMany.mockResolvedValue([]);
+    expect(await repo.sourceLockedTemplateIds('p', 'w')).toEqual([]);
   });
   it('rejects packaging atomically while any bound variant uses an older template', async () => {
     const { db, repo } = harness();

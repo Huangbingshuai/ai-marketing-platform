@@ -99,28 +99,43 @@ describe('EffectTemplateMixAiRepository.hasSuccessfulRenderBatch', () => {
     } as unknown as PrismaService);
 
     await expect(repository.hasSuccessfulRenderBatch('project', 'run')).resolves.toBe(false);
-    expect(findBatch).toHaveBeenCalledWith(expect.objectContaining({
-      where: { projectId: 'project', workflowRunId: 'run', archivedAt: null },
-    }));
+    expect(findBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { projectId: 'project', workflowRunId: 'run', archivedAt: null },
+      }),
+    );
     expect(findPrompt).not.toHaveBeenCalled();
   });
 
   it('requires the successful batch to use the current confirmed Prompt', async () => {
     const findPrompt = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'prompt' });
     const repository = new EffectTemplateMixAiRepository({
-      effectSegmentRenderBatch: { findFirst: vi.fn().mockResolvedValue({
-        status: 'COMPLETED', sourcePromptArtifactId: 'prompt',
-        sourcePromptRevision: 2, sourcePromptHash: 'hash',
-      }) },
+      effectSegmentRenderBatch: {
+        findFirst: vi.fn().mockResolvedValue({
+          status: 'COMPLETED',
+          sourcePromptArtifactId: 'prompt',
+          sourcePromptRevision: 2,
+          sourcePromptHash: 'hash',
+        }),
+      },
       workingArtifact: { findFirst: findPrompt },
     } as unknown as PrismaService);
 
     await expect(repository.hasSuccessfulRenderBatch('project', 'run')).resolves.toBe(false);
     await expect(repository.hasSuccessfulRenderBatch('project', 'run')).resolves.toBe(true);
-    expect(findPrompt).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
-      projectId: 'project', workflowRunId: 'run', id: 'prompt', revision: 2,
-      contentHash: 'hash', freshness: 'CURRENT', availability: 'AVAILABLE',
-    }) }));
+    expect(findPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          projectId: 'project',
+          workflowRunId: 'run',
+          id: 'prompt',
+          revision: 2,
+          contentHash: 'hash',
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        }),
+      }),
+    );
   });
 });
 
@@ -139,16 +154,32 @@ describe('EffectTemplateMixAiRepository.templateHasDownstream', () => {
       workflowRun: { findFirst: findBranch },
     } as unknown as PrismaService);
 
-    await expect(repository.templateHasDownstream('project', 'run', 'template')).resolves.toBe(false);
-    expect(findFill).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ projectId: 'project', workflowRunId: 'run', templateId: 'template' }),
-    }));
-    expect(findArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ projectId: 'project', workflowRunId: 'run' }),
-    }));
-    expect(findBranch).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ projectId: 'project', forkTemplateId: 'template', branchPublishedAt: { not: null } }),
-    }));
+    await expect(repository.templateHasDownstream('project', 'run', 'template')).resolves.toBe(
+      false,
+    );
+    expect(findFill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          projectId: 'project',
+          workflowRunId: 'run',
+          templateId: 'template',
+        }),
+      }),
+    );
+    expect(findArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ projectId: 'project', workflowRunId: 'run' }),
+      }),
+    );
+    expect(findBranch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          projectId: 'project',
+          forkTemplateId: 'template',
+          branchPublishedAt: { not: null },
+        }),
+      }),
+    );
   });
 
   it('blocks deletion as soon as smart fill or any downstream record exists', async () => {
@@ -167,7 +198,9 @@ describe('EffectTemplateMixAiRepository.templateHasDownstream', () => {
 
     for (const findRecord of [findFill, findPackaging, findOutput, findArtifact, findBranch]) {
       findRecord.mockResolvedValueOnce({ id: 'existing' });
-      await expect(repository.templateHasDownstream('project', 'run', 'template')).resolves.toBe(true);
+      await expect(repository.templateHasDownstream('project', 'run', 'template')).resolves.toBe(
+        true,
+      );
     }
   });
 });
@@ -258,7 +291,8 @@ describe('EffectTemplateMixAiRepository.saveSamplingCheckpoint', () => {
       },
     };
     const prisma = {
-      $transaction: (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction),
+      $transaction: (callback: (tx: typeof transaction) => Promise<unknown>) =>
+        callback(transaction),
     };
     const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
 
@@ -278,7 +312,10 @@ describe('EffectTemplateMixAiRepository.saveSamplingCheckpoint', () => {
     expect(transaction.effectTemplateMixAiRun.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: {
-          samplingResult: ['legacy-video', { materialId: 'new-video', frameTimestampsSeconds: [0.5, 2.25] }],
+          samplingResult: [
+            'legacy-video',
+            { materialId: 'new-video', frameTimestampsSeconds: [0.5, 2.25] },
+          ],
           heartbeatAt: now,
           leaseExpiresAt: expect.any(Date),
         },
@@ -374,15 +411,15 @@ describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
 });
 
 describe('EffectTemplateMixAiRepository.packagedTemplateIds', () => {
-  it('locks active packaging and current package artifacts, but not expired packaging history', async () => {
+  it('locks packaging history and current package artifacts for the current Run', async () => {
     const prisma = {
       effectPackagingRun: {
         findMany: vi.fn().mockResolvedValue([{ templateId: 'running-template' }]),
       },
       workingArtifact: {
-        findMany: vi.fn().mockResolvedValue([
-          { artifactKey: 'timeline-package:completed-template:variant-1' },
-        ]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ artifactKey: 'timeline-package:completed-template:variant-1' }]),
       },
     };
     const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
@@ -392,7 +429,7 @@ describe('EffectTemplateMixAiRepository.packagedTemplateIds', () => {
       'completed-template',
     ]);
     expect(prisma.effectPackagingRun.findMany).toHaveBeenCalledWith({
-      where: { projectId: 'project', workflowRunId: 'run', status: { in: ['QUEUED', 'RUNNING'] } },
+      where: { projectId: 'project', workflowRunId: 'run' },
       distinct: ['templateId'],
       select: { templateId: true },
     });

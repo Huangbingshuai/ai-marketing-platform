@@ -22,11 +22,22 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
             archivedAt: null,
             committedAt: { not: null },
             workflowRun: {
-              workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+              workflow: 'EFFECT', workflowSpace: 'EFFECT',
+              // Only a root or already-published run can begin an edit session; an unpublished child
+              // of another node refuses, so a fixture that picked one would fail on the refusal.
+              OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
             },
           },
           orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         });
+        // A live database has many projects and their active runs move while the app is used, so the
+        // fixture makes the run it picked the active one instead of depending on that activity.
+        await tx.workflowRun.updateMany({ where: {
+          projectId: parentBatch.projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+          activeKey: 'ACTIVE',
+        }, data: { activeKey: null } });
+        await tx.workflowRun.update({ where: { id: parentBatch.workflowRunId },
+          data: { activeKey: 'ACTIVE' } });
         const working = new WorkflowWorkingRepository(db);
         const begun = await working.beginEffectNodeEditInTransaction(
           tx, parentBatch.projectId, parentBatch.workflowRunId, 'SEGMENT_RENDER',

@@ -1,8 +1,9 @@
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
-from effect_template_mix.api import InternalApi
+from effect_template_mix.api import ApiError, InternalApi
 from effect_template_mix.consumer import Consumer, temporary_video_directory
 from effect_template_mix.models import (
     Claim,
@@ -216,3 +217,78 @@ async def test_trim_only_refresh_skips_classification_and_retrims_only_the_fixed
     api.complete.assert_awaited_once()
     assert len(api.complete.await_args.args[1]) == 1
     assert api.complete.await_args.args[1][0].slotId == "slot-updated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recoverable', [False, True])
+async def test_failed_lease_heartbeat_does_not_leave_completed_message_unacknowledged(
+    monkeypatch: pytest.MonkeyPatch,
+    recoverable: bool,
+) -> None:
+    api = AsyncMock(spec=InternalApi)
+    selection = {
+        "variantIndex": 0, "slotId": "slot-1", "role": "PRODUCT",
+        "materialId": "m1", "matchScore": 0.8, "matchLevel": "NORMAL",
+        "classificationReason": "已选素材", "duration": 4,
+    }
+    trim = {
+        "variantIndex": 0, "slotId": "slot-1", "materialId": "m1",
+        "trimStartSeconds": 1, "trimReason": "动作完整",
+    }
+    api.claim.return_value = Claim(
+        terminal=False,
+        attemptToken="lease",
+        snapshot={
+            "schemaVersion": 1,
+            "template": {"id": "template", "name": "模板", "editVersion": 1,
+                         "slots": [{"id": "slot-1", "role": "PRODUCT", "label": "产品展示", "duration": 4}]},
+            "draftRevision": 4,
+            "targetVariantId": "variant",
+            "trimOnly": True,
+            "lockedBindings": [],
+            "promptArtifacts": [],
+            "materials": [material(1).model_dump()],
+        },
+        checkpoint={"selections": [selection], "trims": [trim]},
+    )
+    original_sleep = asyncio.sleep
+    recovered = asyncio.Event()
+    heartbeat_calls = 0
+
+    async def heartbeat_sleep(_seconds: float) -> None:
+        if recoverable:
+            await original_sleep(0)
+            return
+        raise ApiError("智能填充任务租约已失效", retryable=False, status_code=409)
+
+    async def heartbeat_progress(*_args: object) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        if heartbeat_calls == 1:
+            raise ApiError('internal API unavailable', retryable=True)
+        recovered.set()
+
+    async def finish_after_heartbeat(*_args: object) -> None:
+        if recoverable:
+            await asyncio.wait_for(recovered.wait(), 1)
+        else:
+            await original_sleep(0.01)
+
+    monkeypatch.setattr("effect_template_mix.consumer.asyncio.sleep", heartbeat_sleep)
+    if recoverable:
+        api.progress.side_effect = heartbeat_progress
+    api.complete.side_effect = finish_after_heartbeat
+    consumer = Consumer(
+        "amqp://test", "effect.template-mix.requested", api,
+        AsyncMock(spec=ArkProvider), 1000, 10, 16000, 8192, 1,
+    )
+    message = AsyncMock()
+    message.body = b'{"schemaVersion":1,"projectId":"project","runId":"run","requestId":"request"}'
+
+    await consumer.handle(message)
+
+    api.complete.assert_awaited_once()
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+    if recoverable:
+        assert heartbeat_calls >= 2

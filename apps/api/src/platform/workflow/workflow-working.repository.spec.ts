@@ -53,34 +53,85 @@ describe('WorkflowWorkingRepository', () => {
       forkTemplateId: null,
     };
     const parent = { ...child, id: 'parent', parentWorkflowRunId: null };
-    const findFirst = vi
-      .fn()
-      .mockImplementation(({ where }) =>
-        Promise.resolve(where.id === 'child' ? child : where.id === 'parent' ? parent : null),
-      );
+    const branchRead = vi.fn().mockResolvedValue([child, parent]);
+    const ancestorArtifacts = [
+      item('parent', 'SOURCE_IMPORT', 'source-package:a'),
+      item('parent', 'INFORMATION_EXTRACTION', 'insight:a'),
+      item('parent', 'PROMPT_GENERATION', 'prompt-batch:a'),
+    ];
     const findMany = vi
       .fn()
       .mockImplementation(({ where }) =>
         Promise.resolve(
+          where.id ? ancestorArtifacts.filter(({ id }) => where.id.in.includes(id)) :
           where.workflowRunId === 'child'
             ? [item('child', 'SOURCE_IMPORT', 'source-package:a')]
-            : [
-                item('parent', 'SOURCE_IMPORT', 'source-package:a'),
-                item('parent', 'INFORMATION_EXTRACTION', 'insight:a'),
-                item('parent', 'PROMPT_GENERATION', 'prompt-batch:a'),
-              ],
+            : ancestorArtifacts,
         ),
       );
     const repository = new WorkflowWorkingRepository({
-      workflowRun: { findFirst },
+      workflowRun: { findMany: branchRead },
       workingArtifact: { findMany },
     } as unknown as PrismaService);
 
     const result = await repository.listArtifacts('project-a', { workflowRunId: 'child' });
 
     expect(result.map(({ id }) => id)).toEqual(['child:source-package:a', 'parent:insight:a']);
-    expect(findFirst).toHaveBeenCalledWith({ where: { id: 'parent', projectId: 'project-a' } });
+    expect(branchRead).toHaveBeenCalledOnce();
+    expect(branchRead).toHaveBeenCalledWith(expect.objectContaining({ where: { projectId: 'project-a' } }));
+    expect(findMany).toHaveBeenCalledTimes(3);
+    expect(findMany.mock.calls[1]![0]).toMatchObject({ select: { id: true, artifactKey: true } });
+    expect(findMany.mock.calls[2]![0]).toMatchObject({ where: {
+      projectId: 'project-a', id: { in: ['parent:insight:a'] },
+    } });
   });
+  it('batches deep inheritance and preserves nearest keys and every crossed template fork', async () => {
+    const branches = Array.from({ length: 30 }, (_, index) => ({
+      id: `branch-${index}`, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+      parentWorkflowRunId: index < 29 ? `branch-${index + 1}` : 'branch-0',
+      forkNodeId: 'TEMPLATE_MIX',
+      forkTemplateId: index === 0 ? 'a' : index === 1 ? 'b' : 'unrelated-template',
+    }));
+    const stamp = new Date('2026-10-04');
+    const item = (branch: number, key: string) => ({
+      id: `${branch}:${key}`, workflowRunId: `branch-${branch}`,
+      nodeId: 'TEMPLATE_MIX', artifactKey: key, updatedAt: stamp,
+    });
+    const inherited = [
+      item(1, 'timeline-project:a:v'), item(2, 'timeline-project:b:v'),
+      item(2, 'timeline-project:c:v'), item(29, 'timeline-project:c:v'),
+      item(29, 'timeline-project:d:v'),
+    ];
+    const findMany = vi.fn().mockImplementation(({ where }) => Promise.resolve(
+      where.id ? inherited.filter((row) => where.id.in.includes(row.id)) :
+        typeof where.workflowRunId === 'string' ? [] : inherited,
+    ));
+    const branchRead = vi.fn().mockResolvedValue(branches);
+    const repository = new WorkflowWorkingRepository({
+      workflowRun: { findMany: branchRead }, workingArtifact: { findMany },
+    } as unknown as PrismaService);
+    const result = await repository.listArtifacts('p', { workflowRunId: 'branch-0', nodeId: 'TEMPLATE_MIX' });
+    expect(result.map((row) => row.id)).toEqual(['2:timeline-project:c:v', '29:timeline-project:d:v']);
+    expect(branchRead).toHaveBeenCalledOnce();
+    expect(findMany).toHaveBeenCalledTimes(3); // Does not grow with depth, even with a cycle.
+    expect(findMany.mock.calls[1]![0].where).toMatchObject({ projectId: 'p', nodeId: 'TEMPLATE_MIX' });
+    expect(findMany.mock.calls[2]![0].where.id.in).not.toContain('29:timeline-project:c:v');
+  });
+
+  it.each(['missing', 'CUSTOMIZED'])('never follows a parent outside the effect project lineage: %s', async (parent) => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new WorkflowWorkingRepository({
+      workflowRun: { findMany: vi.fn().mockResolvedValue([
+        { id: 'child', workflow: 'EFFECT', workflowSpace: 'EFFECT',
+          parentWorkflowRunId: 'parent', forkNodeId: 'MANUAL_COPY', forkTemplateId: null },
+        ...(parent === 'missing' ? [] : [{ id: 'parent', workflow: parent, workflowSpace: parent,
+          parentWorkflowRunId: null }]),
+      ]) }, workingArtifact: { findMany },
+    } as unknown as PrismaService);
+    expect(await repository.listArtifacts('p', { workflowRunId: 'child' })).toEqual([]);
+    expect(findMany).toHaveBeenCalledOnce();
+  });
+
   it.each(['save', 'replace', 'hash-normalization'])(
     'does not invalidate confirmed Prompt or clips for settings %s',
     async (operation) => {
@@ -167,10 +218,9 @@ describe('WorkflowWorkingRepository', () => {
 
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT',
-          OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
-        },
+        // Unpublished Runs come along too: the tree hides them, but they carry the ancestry a later
+        // branch is drawn under and the packaging Runs its version counts through.
+        where: { projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT' },
         include: expect.objectContaining({
           nodeStates: {
             where: { nodeId: 'TEMPLATE_MIX' },
@@ -178,7 +228,11 @@ describe('WorkflowWorkingRepository', () => {
           },
           effectTemplateMixAiRuns: {
             where: { status: 'COMPLETED', outputVariantId: { not: null } },
-            select: { templateId: true, outputVariantId: true },
+            // The key says whether the row is a fill this Run ran or a copy a fork carried in.
+            select: { templateId: true, outputVariantId: true, idempotencyKey: true },
+          },
+          effectPackagingRuns: {
+            select: { templateId: true, status: true, idempotencyKey: true, completedAt: true },
           },
         }),
       }),

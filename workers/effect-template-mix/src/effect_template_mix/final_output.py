@@ -1,4 +1,4 @@
-"""Confirmed timeline rendering in the existing worker. No supplier calls."""
+"""Confirmed rendering; explicit source refresh reuses trim and slot packaging before encoding."""
 import asyncio
 import hashlib
 import json
@@ -21,6 +21,7 @@ from .api import InternalApi, ApiError
 from .final_output_cache import SourceCache, retry_request
 from .packaging_media import visible_intervals
 from .packaging_provider import PackagingError
+from .packaging import PackagingHandler
 
 LOGGER = logging.getLogger(__name__)
 SOURCE_PROBE: ContextVar[Callable[[str, Path], Awaitable[dict[str, Any]]] | None] = ContextVar('final_source_probe', default=None)
@@ -481,9 +482,35 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
 
 
 class FinalOutputHandler:
-    def __init__(self, api: InternalApi, max_video_bytes: int, max_concurrency: int = 2) -> None:
+    def __init__(self, api: InternalApi, max_video_bytes: int, max_concurrency: int = 2,
+                 packaging: PackagingHandler | None = None) -> None:
         self.api, self.max_video_bytes = api, max_video_bytes
         self.max_concurrency = max_concurrency
+        self.packaging = packaging
+
+    async def prepare_refresh(self, root: str, endpoint: str, headers: dict[str, str],
+                              project_id: str, item: dict[str, Any]) -> dict[str, Any]:
+        snapshot: dict[str, Any] = item['snapshot']
+        refresh = snapshot.get('sourceRefresh')
+        if not refresh or refresh.get('ready'):
+            return snapshot
+        if self.packaging is None:
+            raise PackagingError('素材局部更新的模型和包装服务尚未配置')
+        if not refresh.get('trimsReady'):
+            trims = await self.packaging.select_source_trims(root, endpoint, headers, project_id,
+                snapshot['timeline'], refresh['slots'])
+            result = await self.api.request('PUT', f'{endpoint}/trims', headers=headers,
+                json={'projectId': project_id, 'trims': trims})
+            snapshot = result['snapshot']
+            refresh = snapshot['sourceRefresh']
+        if not refresh.get('ready'):
+            package_item = {'id': item['id'], 'snapshot': snapshot['timeline'],
+                'checkpoint': snapshot['packaging'], 'stage': refresh.get('stage', 'SNAPSHOT')}
+            await self.packaging.process_item(root, headers, project_id, package_item)
+            snapshot['packaging'] = package_item['checkpoint']
+            if package_item.get('outputSnapshot'):
+                snapshot = package_item['outputSnapshot']
+        return snapshot
 
     async def _download(self, endpoint: str, file_id: str, project_id: str,
                         headers: dict[str, str], path: Path, semaphore: asyncio.Semaphore) -> tuple[int, int]:
@@ -557,7 +584,7 @@ class FinalOutputHandler:
                 item_started = time.monotonic()
                 try:
                     await progress(1)
-                    snapshot = item['snapshot']
+                    snapshot = await self.prepare_refresh(root, endpoint, headers, project_id, item)
                     ids = ({c['fileObjectId'] for c in snapshot['timeline']['clips']}
                         | {a['fileObjectId'] for a in snapshot['timeline'].get('detachedAudios', [])}
                         | {v['fileObjectId'] for v in snapshot['packaging']['voices'].values()}

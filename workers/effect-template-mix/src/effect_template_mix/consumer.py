@@ -3,7 +3,7 @@ import json
 import logging
 import tempfile
 from collections.abc import Awaitable
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, TypeVar
 
@@ -167,11 +167,13 @@ class Consumer:
             async def keep_lease() -> None:
                 while True:
                     await asyncio.sleep(30)
-                    await self.api.progress(
-                        runtime,
-                        heartbeat_stage,
-                        heartbeat_progress,
-                    )
+                    try:
+                        await self.api.progress(runtime, heartbeat_stage, heartbeat_progress)
+                    except ApiError as exc:
+                        if not exc.retryable:
+                            raise
+                        # A temporary API outage must not permanently kill the heartbeat.
+                        LOGGER.warning("template mix heartbeat temporarily unavailable")
 
             heartbeat_task = asyncio.create_task(keep_lease())
             restored_rows = [
@@ -357,6 +359,12 @@ class Consumer:
         finally:
             if heartbeat_task:
                 heartbeat_task.cancel()
-                with suppress(asyncio.CancelledError):
+                try:
                     await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as heartbeat_error:
+                    # The main task has already completed or recorded its failure. A late
+                    # lease heartbeat must not keep the RabbitMQ delivery unacknowledged.
+                    LOGGER.warning("template mix heartbeat stopped error=%s", type(heartbeat_error).__name__)
         await message.ack()

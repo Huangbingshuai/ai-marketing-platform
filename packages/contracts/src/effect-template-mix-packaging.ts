@@ -3,6 +3,7 @@ import type {
   EffectTemplateMixCaption,
   EffectTemplateMixDetachedAudio,
   EffectTemplateMixVariant,
+  EffectTemplateMixMaterial,
 } from './effect-template-mix';
 
 export const PACKAGING_STAGES = [
@@ -79,7 +80,7 @@ export const EFFECT_TEMPLATE_MIX_MUSIC_FADE_DEFAULT = 0.5;
  * the same number the worker will use instead of guessing at a missing field.
  */
 export function packagingAudioFade(
-  audio: { duration: number; fadeIn?: number; fadeOut?: number },
+  audio: { duration: number; fadeIn?: number | undefined; fadeOut?: number | undefined },
   kind: 'MUSIC' | 'VOICE',
   edge: 'fadeIn' | 'fadeOut',
 ): number {
@@ -203,13 +204,28 @@ export type PackagingCheckpoint = {
   /** One automatic fresh-script recovery per frozen slot after measured TTS still overruns. */
   voiceSlotRetries?: Record<string, 1>;
   slotVision?: Record<string, { key: string; description: string }>;
-  timings?: Record<string, { preprocessingSeconds?: number; visionSeconds?: number;
-    scriptSeconds?: number; scriptRepairSlots?: number; voiceSeconds?: number; voiceRepairSeconds?: number;
-    musicWaitSeconds?: number;
-    localQueueSeconds?: number; apiHeartbeatSeconds?: number; checkpointSeconds?: number;
-    voiceUploadSeconds?: number; musicDownloadSeconds?: number; musicPreprocessQueueSeconds?: number;
-    musicTranscodeSeconds?: number; musicUploadSeconds?: number; captionSeconds?: number;
-    cacheHit?: boolean }>;
+  timings?: Record<
+    string,
+    {
+      preprocessingSeconds?: number;
+      visionSeconds?: number;
+      scriptSeconds?: number;
+      scriptRepairSlots?: number;
+      voiceSeconds?: number;
+      voiceRepairSeconds?: number;
+      musicWaitSeconds?: number;
+      localQueueSeconds?: number;
+      apiHeartbeatSeconds?: number;
+      checkpointSeconds?: number;
+      voiceUploadSeconds?: number;
+      musicDownloadSeconds?: number;
+      musicPreprocessQueueSeconds?: number;
+      musicTranscodeSeconds?: number;
+      musicUploadSeconds?: number;
+      captionSeconds?: number;
+      cacheHit?: boolean;
+    }
+  >;
   /**
    * Persist before polling. Unknown submission outcomes must never be auto-resubmitted.
    * `null` means the supplier reported the task as terminally failed, so a retry submits a new song
@@ -238,6 +254,12 @@ export type PackagingSnapshot = {
   voiceProfile?: EffectVoiceSelection;
   narrationLayoutVersion?: 'SLOT_V1';
   redoSlotId?: string;
+  /** Local output refresh regenerates only these slots and keeps the music bed as edited. */
+  redoSlotIds?: string[];
+  preserveMusic?: boolean;
+  /** Full packaging on a new branch selects fresh cuts for confirmed source replacements. */
+  sourceTrimMaterials?: { slotId: string; material: EffectTemplateMixMaterial }[];
+  sourceTrimsReady?: boolean;
   /** Subtitle-only redo reuses saved editor audio geometry without synthesizing again. */
   redoCaptionsOnly?: boolean;
   sourceTimelineHash: string;
@@ -299,8 +321,15 @@ export type PackagingRun = {
   execution?: PackagingExecution;
 };
 export type PackagingExecution = {
-  performance?: { cacheHits: number; cacheLookups: number; cacheHitRate: number | null;
-    stages: Record<string, { samples: number; p50Seconds: number; p95Seconds: number; totalSeconds: number }> };
+  performance?: {
+    cacheHits: number;
+    cacheLookups: number;
+    cacheHitRate: number | null;
+    stages: Record<
+      string,
+      { samples: number; p50Seconds: number; p95Seconds: number; totalSeconds: number }
+    >;
+  };
   progressPercent: number;
   queued: number;
   running: number;
@@ -350,7 +379,11 @@ export const PACKAGING_NARRATION_LAYOUT = 'SLOT_V1' as const;
 /** Pure mechanical preflight shared by server and editor. */
 export function packagingSlotBoundaryError(variant: EffectTemplateMixVariant): string | null {
   const rows = packagingTimelineClips(variant).sort((a, b) => a.start - b.start);
-  if (rows.some(({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 4 || slot.duration > 15))
+  if (
+    rows.some(
+      ({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 4 || slot.duration > 15,
+    )
+  )
     return '槽位时长必须为 4–15 秒';
   if (new Set(rows.map((r) => r.slot.id)).size !== rows.length) return '槽位编号重复';
   // Narration is spoken one line at a time, so the slots that own one still may not overlap. An

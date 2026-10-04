@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import Mapping
@@ -104,6 +105,7 @@ class ArkProvider:
         self.request_timeout = timeout
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
+        self.retry_not_before = 0.0
         self.client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/", timeout=timeout,
             headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
@@ -111,6 +113,22 @@ class ArkProvider:
 
     async def close(self) -> None:
         await self.client.aclose()
+
+    async def wait_for_provider(self) -> None:
+        # All concurrent requests share the supplier's cooldown, including new chunks.
+        while (delay := self.retry_not_before - time.monotonic()) > 0:
+            await asyncio.sleep(delay)
+
+    def defer_requests(self, failures: int, retry_after: str | None = None) -> None:
+        delay = min(30.0, 2.0 ** failures)
+        if retry_after is not None:
+            try:
+                supplied = float(retry_after)
+                if math.isfinite(supplied):
+                    delay = max(delay, min(60.0, supplied))
+            except ValueError:
+                pass
+        self.retry_not_before = max(self.retry_not_before, time.monotonic() + delay)
 
     async def structured(
         self,
@@ -120,6 +138,7 @@ class ArkProvider:
         *,
         max_output_tokens: int,
         max_attempts: int = 2,
+        max_transient_attempts: int | None = None,
     ) -> T:
         payload = {
             "model": self.model,
@@ -130,7 +149,11 @@ class ArkProvider:
             "text": {"format": {"type": "json_schema", "name": name, "schema": output.model_json_schema(), "strict": True}},
         }
         last: Exception | None = None
-        for _ in range(max_attempts):
+        invalid_outputs = 0
+        transient_failures = 0
+        transient_limit = max_transient_attempts or max_attempts
+        while invalid_outputs < max_attempts and transient_failures < transient_limit:
+            await self.wait_for_provider()
             try:
                 started = time.monotonic()
                 async with asyncio.timeout(self.request_timeout):
@@ -147,7 +170,18 @@ class ArkProvider:
                         request_id = 'redacted'
                     LOGGER.warning('model request failed stage=%s status=%s request_id=%s',
                         name, response.status_code, request_id)
-                    raise ProviderError("AI 服务暂时不可用", retryable=response.status_code >= 500 or response.status_code == 429)
+                    retryable = response.status_code >= 500 or response.status_code in (408, 429)
+                    error = ProviderError(
+                        "AI 服务请求受限，请稍后重试" if response.status_code == 429 else "AI 服务暂时不可用",
+                        retryable=retryable,
+                    )
+                    if not retryable:
+                        raise error
+                    last = error
+                    transient_failures += 1
+                    self.defer_requests(transient_failures,
+                        response.headers.get('retry-after') or ('5' if response.status_code == 429 else None))
+                    continue
                 response_payload = response.json()
                 if response_payload.get("status") == "incomplete":
                     if name.startswith('packaging_'):
@@ -161,30 +195,34 @@ class ArkProvider:
                 return output.model_validate_json(_output_text(response_payload))
             except ProviderError:
                 raise
-            except (TimeoutError, httpx.TimeoutException, httpx.NetworkError) as exc:
-                if name.startswith('packaging_'):
-                    LOGGER.warning('packaging model transport failed stage=%s type=%s elapsed=%.3f',
-                        name, type(exc).__name__, time.monotonic() - started)
+            except (TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                LOGGER.warning('%s transport failed stage=%s type=%s elapsed=%.3f',
+                    'packaging model' if name.startswith('packaging_') else 'model',
+                    name, type(exc).__name__, time.monotonic() - started)
                 last = exc
+                transient_failures += 1
+                self.defer_requests(transient_failures)
             except (ValueError, ValidationError, json.JSONDecodeError) as exc:
                 if name.startswith('packaging_'):
                     # Error input/ctx can contain model text; record only mechanical field locations.
                     fields = [str(error['loc']) for error in exc.errors(include_input=False, include_context=False)] if isinstance(exc, ValidationError) else []
                     LOGGER.warning('packaging model invalid stage=%s type=%s fields=%s', name, type(exc).__name__, fields)
                 last = exc
+                invalid_outputs += 1
+        if isinstance(last, ProviderError):
+            raise last
         error_type = ProviderOutputError if isinstance(last, ValueError) else ProviderError
         raise error_type(
             ("AI 服务响应超时，已保留成功步骤，请恢复未完成项"
              if isinstance(last, (TimeoutError, httpx.TimeoutException)) else
              "AI 服务连接中断，已保留成功步骤，请恢复未完成项"
-             if isinstance(last, httpx.NetworkError) else "AI 返回结构无效"),
-            retryable=isinstance(last, (TimeoutError, httpx.TimeoutException, httpx.NetworkError)),
+             if isinstance(last, (httpx.NetworkError, httpx.RemoteProtocolError)) else "AI 返回结构无效"),
+            retryable=isinstance(last, (TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)),
             split_recommended=isinstance(
                 last,
                 (
                     TimeoutError,
                     httpx.TimeoutException,
-                    httpx.NetworkError,
                     ValueError,
                     ValidationError,
                     json.JSONDecodeError,
@@ -201,6 +239,7 @@ class ArkProvider:
             ClassificationResult,
             "effect_template_mix_classification",
             max_output_tokens=classification_output_token_budget(materials),
+            max_transient_attempts=4,
         )
 
     async def trim(
@@ -233,4 +272,5 @@ class ArkProvider:
             TrimChoice,
             "effect_template_mix_trim",
             max_output_tokens=1_024,
+            max_transient_attempts=4,
         )

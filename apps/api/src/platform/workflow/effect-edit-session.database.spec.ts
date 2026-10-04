@@ -1,9 +1,29 @@
+import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { expect, it } from 'vitest';
+import type { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { WorkflowWorkingRepository } from './workflow-working.repository';
 
 const stages = ['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'] as const;
+
+// A session can only begin on the branch the user is on, and only from a root run or an already
+// published one: an unpublished child of another node is deliberately turned away. A live database
+// has many projects and their active runs move while the app is being used, so a fixture that
+// filtered for "whatever is active" would depend on unrelated activity. These specs instead pick a
+// run that could open an edit at all and make it the active one inside the rolled-back transaction.
+const branchable = {
+  OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
+};
+
+async function activateRun(
+  tx: Prisma.TransactionClient, projectId: string, workflowRunId: string,
+): Promise<void> {
+  await tx.workflowRun.updateMany({ where: {
+    projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+  }, data: { activeKey: null } });
+  await tx.workflowRun.update({ where: { id: workflowRunId }, data: { activeKey: 'ACTIVE' } });
+}
 
 it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1').each(stages)(
   'isolates %s in an unpublished child and returns unchanged edits to the parent',
@@ -19,7 +39,7 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1').each(stages)(
         const preferred = nodeId === 'SEGMENT_RENDER'
           ? await tx.workingArtifact.findFirst({ where: {
               nodeId, availability: 'AVAILABLE', workflowRun: {
-                workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+                workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable,
                 effectSegmentRenderBatches: { some: {
                   archivedAt: null, committedAt: { not: null },
                 } },
@@ -29,10 +49,11 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1').each(stages)(
         if (nodeId === 'SEGMENT_RENDER') expect(preferred).not.toBeNull();
         const source = preferred ?? await tx.workingArtifact.findFirst({ where: {
           nodeId, availability: 'AVAILABLE', workflowRun: {
-            workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+            workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable,
           },
         }, orderBy: { updatedAt: 'desc' } });
         if (!source) return;
+        await activateRun(tx, source.projectId, source.workflowRunId);
         const parent = await tx.workflowRun.findUniqueOrThrow({ where: { id: source.workflowRunId } });
         const before = await tx.workingArtifact.findUniqueOrThrow({ where: { id: source.id } });
         const begun = await repository.beginEffectNodeEditInTransaction(
@@ -164,9 +185,10 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
       await expect(db.$transaction(async (tx) => {
         const source = await tx.workingArtifact.findFirstOrThrow({ where: {
           nodeId: 'PROMPT_GENERATION', availability: 'AVAILABLE', workflowRun: {
-            workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+            workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable,
           },
         }, include: { dependencies: true, files: { include: { fileObject: true } } } });
+        await activateRun(tx, source.projectId, source.workflowRunId);
         const begin = await repository.beginEffectNodeEditInTransaction(
           tx, source.projectId, source.workflowRunId, 'PROMPT_GENERATION');
         expect(begin?.created).toBe(true);
@@ -235,8 +257,9 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         const source = await tx.workingArtifact.findFirstOrThrow({ where: {
           nodeId: 'TEMPLATE_MIX', availability: 'AVAILABLE',
           artifactKey: { startsWith: 'mix-template:' },
-          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable },
         }, orderBy: { updatedAt: 'desc' } });
+        await activateRun(tx, source.projectId, source.workflowRunId);
         const begun = await repository.beginEffectNodeEditInTransaction(
           tx, source.projectId, source.workflowRunId, 'TEMPLATE_MIX', 'BATCH');
         expect(begun).not.toBeNull();
@@ -281,8 +304,9 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         const source = await tx.workingArtifact.findFirstOrThrow({ where: {
           nodeId: 'FINAL_OUTPUT', availability: 'AVAILABLE',
           artifactKey: { startsWith: 'final-video:' },
-          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable },
         }, orderBy: { updatedAt: 'desc' } });
+        await activateRun(tx, source.projectId, source.workflowRunId);
         const outputRuns = await tx.effectFinalOutputRun.findMany({ where: {
           projectId: source.projectId, workflowRunId: source.workflowRunId,
         }, include: { items: true } });
@@ -338,8 +362,9 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         const source = await tx.workingArtifact.findFirstOrThrow({ where: {
           nodeId: 'TEMPLATE_MIX', availability: 'AVAILABLE',
           artifactKey: { startsWith: 'mix-template:' },
-          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
+          workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable },
         }, orderBy: { updatedAt: 'desc' } });
+        await activateRun(tx, source.projectId, source.workflowRunId);
         const workspace = await tx.effectImportWorkspace.findFirstOrThrow({ where: {
           projectId: source.projectId, workflowRunId: source.workflowRunId,
         }, include: { drafts: { include: { products: true } } } });
@@ -390,10 +415,21 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
             });
           }
         }
-        await tx.workflowRun.update({ where: { id: source.workflowRunId },
-          data: { activeKey: null } });
-        await tx.workflowRun.update({ where: { id: branch.id },
-          data: { activeKey: 'ACTIVE' } });
+        // The mix configuration lives in the node draft, so the branch needs one for the fork to
+        // clone — and its slot bindings name the clips the fork clones out of the same run.
+        const mixStates = await tx.workflowNodeState.findMany({ where: {
+          projectId: source.projectId, workflowRunId: source.workflowRunId,
+          nodeId: 'TEMPLATE_MIX',
+        } });
+        expect(mixStates.length).toBeGreaterThan(0);
+        await tx.workflowNodeState.createMany({ data: mixStates.map((state) => ({
+          projectId: source.projectId, workflowRunId: branch.id, nodeId: state.nodeId,
+          schemaVersion: state.schemaVersion, revision: state.revision,
+          contentHash: state.contentHash, executionInputHash: state.executionInputHash,
+          executionInputSchemaVersion: state.executionInputSchemaVersion,
+          state: state.state as never, savedAt: state.savedAt,
+        })) });
+        await activateRun(tx, source.projectId, branch.id);
         // Without the option this is the initial version: the branch itself is rewritten in place.
         const plain = await repository.beginEffectNodeEditInTransaction(
           tx, source.projectId, branch.id, 'TEMPLATE_MIX', 'BATCH');
@@ -408,13 +444,58 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         const childArtifacts = await tx.workingArtifact.findMany({ where: {
           projectId: source.projectId, workflowRunId: begun!.runId,
           availability: 'AVAILABLE',
-        }, select: { artifactKey: true } });
+        }, select: { id: true, artifactKey: true } });
         expect(childArtifacts.some((item) => item.artifactKey.startsWith('render-clip:'))).toBe(true);
         expect(childArtifacts.some((item) => item.artifactKey.startsWith('mix-template:'))).toBe(false);
         expect(childArtifacts.some((item) => item.artifactKey.startsWith('timeline-project:'))).toBe(false);
         expect(childArtifacts.some((item) => item.artifactKey.startsWith('timeline-package:'))).toBe(false);
         expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-video:'))).toBe(false);
         expect(childArtifacts.some((item) => item.artifactKey.startsWith('final-delivery:'))).toBe(false);
+        // The branch is not an edit session. Nothing is left unpublished for the user to save,
+        // publish or cancel, so the fields the editor banner and the cancel path read stay empty.
+        const child = await tx.workflowRun.findUniqueOrThrow({ where: { id: begun!.runId } });
+        expect(child.editSessionNodeId).toBeNull();
+        expect(child.editSessionPurpose).toBeNull();
+        expect(child.editBaselineHash).toBeNull();
+        expect(child.forkNodeId).toBe('TEMPLATE_MIX');
+        // The mix draft binds every slot to a clip artifact by id, so cloning it means rewriting
+        // those ids too. A draft still naming the ancestor's clips would freeze those ids into its
+        // packaging snapshot, and the packaging worker resolves the snapshot inside the branch.
+        const mixState = await tx.workflowNodeState.findFirstOrThrow({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId, nodeId: 'TEMPLATE_MIX',
+        } });
+        const clipIds = new Set(childArtifacts
+          .filter((item) => item.artifactKey.startsWith('render-clip:'))
+          .map((item) => item.id));
+        const bound = new Set<string>();
+        const collect = (value: unknown): void => {
+          if (Array.isArray(value)) { value.forEach(collect); return; }
+          if (!value || typeof value !== 'object') return;
+          for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+            if (key === 'bindings' && item && typeof item === 'object') {
+              for (const id of Object.values(item as Record<string, unknown>))
+                if (typeof id === 'string') bound.add(id);
+            }
+            collect(item);
+          }
+        };
+        collect(mixState.state);
+        expect(bound.size).toBeGreaterThan(0);
+        expect([...bound].filter((id) => !clipIds.has(id))).toEqual([]);
+        // Publishing is what turns a successful regeneration into a version. The branch is found by
+        // the fork it was opened for, since there is no session to match it against.
+        await tx.workingArtifact.create({ data: {
+          projectId: source.projectId, workflowRunId: begun!.runId, nodeId: 'TEMPLATE_MIX',
+          artifactKey: `mix-template:${randomUUID()}`, kind: 'STRUCTURED', name: '自动分支测试',
+          directory: 'EDITING_PROJECTS', type: 'MIX_TEMPLATE', contentHash: 'e'.repeat(64),
+        } });
+        const published = await repository.publishEffectNodeEditInTransaction(
+          tx, source.projectId, begun!.runId, 'TEMPLATE_MIX');
+        expect(published).toEqual(expect.objectContaining({
+          runId: begun!.runId, createdBranch: true,
+        }));
+        expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: begun!.runId } }))
+          .branchPublishedAt).not.toBeNull();
         throw rollback;
       }, { timeout: 120_000 })).rejects.toBe(rollback);
     } finally {
@@ -437,7 +518,7 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
       await expect(db.$transaction(async (tx) => {
         const source = await tx.workingArtifact.findFirstOrThrow({ where: {
           nodeId: 'SOURCE_IMPORT', availability: 'AVAILABLE', workflowRun: {
-            workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+            workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable,
           },
         } });
         const workspace = await tx.effectImportWorkspace.findFirstOrThrow({ where: {
@@ -488,10 +569,7 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
             });
           }
         }
-        await tx.workflowRun.update({ where: { id: source.workflowRunId },
-          data: { activeKey: null } });
-        await tx.workflowRun.update({ where: { id: branch.id },
-          data: { activeKey: 'ACTIVE' } });
+        await activateRun(tx, source.projectId, branch.id);
         const begun = await repository.beginEffectNodeEditInTransaction(
           tx, source.projectId, branch.id, 'SOURCE_IMPORT');
         expect(begun?.created).toBe(true);
@@ -507,4 +585,107 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
       await db.$disconnect();
     }
   },
+);
+
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
+  'carries the fill runs that produced the pool into a mix branch',
+  async () => {
+    const db = new PrismaService(new ConfigService({
+      DATABASE_URL: process.env.DATABASE_URL ??
+        'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
+    }));
+    const repository = new WorkflowWorkingRepository(db);
+    const rollback = new Error('EFFECT_EDIT_TEST_ROLLBACK');
+    try {
+      await expect(db.$transaction(async (tx) => {
+        // The workspace reads its AI 归槽 pool from the fill runs of the Run it is looking at, so a
+        // fork has to carry them. The source is the Run the render-clips come from, which is why the
+        // fixture asks for a run that has both the clips and the fills itself.
+        const source = await tx.workingArtifact.findFirstOrThrow({ where: {
+          nodeId: 'TEMPLATE_MIX', availability: 'AVAILABLE',
+          artifactKey: { startsWith: 'mix-template:' },
+          workflowRun: {
+            workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable,
+            effectTemplateMixAiRuns: { some: {
+              status: 'COMPLETED', outputVariantId: { not: null },
+            } },
+            workingArtifacts: { some: {
+              nodeId: 'SEGMENT_RENDER', availability: 'AVAILABLE',
+              artifactKey: { startsWith: 'render-clip:' },
+            } },
+          },
+        }, orderBy: { updatedAt: 'desc' } });
+        await activateRun(tx, source.projectId, source.workflowRunId);
+        const fills = await tx.effectTemplateMixAiRun.findMany({ where: {
+          projectId: source.projectId, workflowRunId: source.workflowRunId, status: 'COMPLETED',
+        } });
+        expect(fills.length).toBeGreaterThan(0);
+        const begun = await repository.beginEffectNodeEditInTransaction(
+          tx, source.projectId, source.workflowRunId, 'TEMPLATE_MIX', 'BATCH');
+        expect(begun).not.toBeNull();
+        expect(begun!.created).toBe(true);
+        const inherited = await tx.effectTemplateMixAiRun.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+        } });
+        expect(inherited.length).toBe(fills.length);
+        const sourceIds = new Set(fills.map((fill) => fill.id));
+        for (const run of inherited) {
+          // A copy is recognisable, and finished: the branch that carries it never ran the fill, so
+          // the version tree must not count it as a generation of its own.
+          expect(run.idempotencyKey.startsWith('inherit:')).toBe(true);
+          expect(sourceIds.has(run.id)).toBe(false);
+          expect(run.status).toBe('COMPLETED');
+          expect(run.progress).toBe(100);
+        }
+        // The frozen snapshot names material artifacts by id and content hash, and the fork rewrote
+        // both, so an inherited snapshot that still named the ancestor's clips would leave the pool
+        // unresolvable inside the branch. These are exactly the checks the workspace makes before it
+        // shows a pool, so a snapshot that passes them is one the library can actually render from.
+        const clips = await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+          nodeId: 'SEGMENT_RENDER', availability: 'AVAILABLE',
+        }, select: { id: true, contentHash: true, revision: true } });
+        const clipById = new Map(clips.map((clip) => [clip.id, clip]));
+        expect(clipById.size).toBeGreaterThan(0);
+        const prompts = await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+          nodeId: 'PROMPT_GENERATION', availability: 'AVAILABLE',
+        }, select: { id: true, contentHash: true, revision: true } });
+        const promptById = new Map(prompts.map((prompt) => [prompt.id, prompt]));
+        const snapshots = inherited.map((run) => run.inputSnapshot as {
+          materials?: { artifactId?: string; contentHash?: string; artifactRevision?: number }[];
+          promptArtifacts?: { id?: string; contentHash?: string; revision?: number }[];
+        });
+        const named = snapshots.flatMap((snapshot) => snapshot.materials ?? []);
+        expect(named.length).toBeGreaterThan(0);
+        for (const material of named) {
+          const clip = clipById.get(material.artifactId ?? '');
+          expect(clip).toBeDefined();
+          expect(clip!.contentHash).toBe(material.contentHash);
+          expect(clip!.revision).toBe(material.artifactRevision);
+        }
+        const promptSources = snapshots.flatMap((snapshot) => snapshot.promptArtifacts ?? []);
+        expect(promptSources.length).toBeGreaterThan(0);
+        for (const frozen of promptSources) {
+          const prompt = promptById.get(frozen.id ?? '');
+          expect(prompt).toBeDefined();
+          expect(prompt!.contentHash).toBe(frozen.contentHash);
+          expect(prompt!.revision).toBe(frozen.revision);
+        }
+        // The classification names materials by id, so it has to be re-pointed with the very same
+        // map as the snapshot it belongs to — a pool whose chips name no material is dropped.
+        const materialIds = new Set(named.map((material) => material.artifactId));
+        const classified = inherited.flatMap((run) =>
+          (Array.isArray(run.classificationResult) ? run.classificationResult : []) as {
+            materialId?: string;
+          }[]);
+        expect(classified.length).toBeGreaterThan(0);
+        expect(classified.filter((item) => !materialIds.has(item.materialId))).toEqual([]);
+        throw rollback;
+      }, { timeout: 120_000 })).rejects.toBe(rollback);
+    } finally {
+      await db.$disconnect();
+    }
+  },
+  60_000,
 );

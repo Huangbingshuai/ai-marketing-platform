@@ -36,6 +36,7 @@ export class SaveEffectTemplateMixDraftDto {
   @Min(1)
   expectedRevision!: number | null;
   @IsObject() draft!: Record<string, unknown>;
+  @IsOptional() @IsBoolean() compactResponse?: boolean;
 }
 
 export class EffectTemplateMixRevisionDto {

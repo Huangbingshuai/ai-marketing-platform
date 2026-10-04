@@ -72,11 +72,87 @@ export type EffectTemplateMixMaterial = {
   ratio: string;
   resolution: string;
   available: boolean;
+  /** Stable source identity for a render replacement; never infer it from its display name. */
+  sourcePromptId?: string;
+  /** False for an archived binding retained solely to keep the old timeline playable. */
+  activeSource?: boolean;
   /** Original Prompt metadata is revealed only from the explicit material action. */
   promptCode?: string;
   promptText?: string;
   promptCreativeCore?: string;
 };
+
+export type EffectTemplateMixSourceChange = {
+  slotId: string;
+  material?: EffectTemplateMixMaterial;
+  blockedReason?: string;
+};
+export type EffectTemplateMixSourcesData = {
+  materials: EffectTemplateMixMaterial[];
+  draftRevision: number | null;
+  /** Exact draft source dependencies, including new-id replacements not caught by old edges. */
+  pendingProjectCount?: number;
+};
+
+/** Compare exact render provenance, including replacements that have a new artifact id. */
+export function effectTemplateMixSourceChanges(
+  variant: EffectTemplateMixVariant,
+  materials: readonly EffectTemplateMixMaterial[],
+): EffectTemplateMixSourceChange[] {
+  return variant.slots.flatMap((slot): EffectTemplateMixSourceChange[] => {
+    const boundId = variant.bindings[slot.id];
+    if (!boundId) return [];
+    const previous = materials.find((material) => material.id === boundId);
+    if (!previous) return [{ slotId: slot.id, blockedReason: '原素材来源无法确认，请手动替换素材' }];
+    if (previous.available && previous.activeSource !== false) {
+      const revision = variant.bindingRevisions[slot.id];
+      if (typeof revision === 'number' && previous.artifactRevision === revision) return [];
+      return previous.duration + .001 < slot.duration
+        ? [{ slotId: slot.id, blockedReason: '新素材时长不足以保留当前片段长度' }]
+        : [{ slotId: slot.id, material: previous }];
+    }
+    const candidates = materials.filter((material) => material.available && material.activeSource !== false &&
+      (material.artifactKey === previous.artifactKey ||
+        (previous.sourcePromptId && material.sourcePromptId === previous.sourcePromptId)));
+    const files = new Map(candidates.map((material) => [material.fileObjectId, material]));
+    if (files.size !== 1) return [{ slotId: slot.id, blockedReason: files.size
+      ? '该素材存在多个新版本，无法自动确定替换来源' : '该素材没有可用的新版本，请手动替换素材' }];
+    const material = [...files.values()][0]!;
+    if (material.duration + .001 < slot.duration)
+      return [{ slotId: slot.id, blockedReason: '新素材时长不足以保留当前片段长度' }];
+    return [{ slotId: slot.id, material }];
+  });
+}
+
+/** Render clips carry their frozen Prompt request duration, not a live Prompt draft setting. */
+export function effectTemplateMixSlotDurationLimit(
+  materials: readonly Pick<EffectTemplateMixMaterial, 'duration' | 'available'>[],
+): number | null {
+  const durations = materials
+    .filter(
+      (material) =>
+        material.available && Number.isFinite(material.duration) && material.duration > 0,
+    )
+    .map((material) => material.duration);
+  return durations.length ? Math.max(...durations) : null;
+}
+
+export function effectTemplateMixSlotDurationValid(
+  duration: number,
+  maximum: number | null,
+): boolean {
+  return (
+    maximum !== null && Number.isFinite(duration) && duration >= 4 && duration <= maximum + 1e-6
+  );
+}
+
+export function effectTemplateMixSlotDurationMessage(maximum: number | null): string {
+  return maximum === null
+    ? '暂无可用的上游渲染素材，请先完成视频渲染'
+    : maximum < 4
+      ? '上游素材时长不足 4 秒，无法配置模板槽位'
+      : `槽位时长必须为 4–${maximum} 秒（上限随当前分支的素材 Prompt 时长）`;
+}
 export type EffectTemplateMixCaption = {
   id: string;
   /** User-authored subtitle-only clip; it is independent of generated narration. */
@@ -211,7 +287,8 @@ export type EffectTemplateMixAiRun = {
   templateId: string;
   /**
    * Run the fill actually writes into. A regeneration forks an unpublished child, so this can
-   * differ from the Run the caller named; the editor has to follow it before it saves the draft.
+   * differ from the Run the caller named; the source editor stays on its current branch while this
+   * child runs in the background.
    */
   workflowRunId: string;
   operation?: 'FILL' | 'REFRESH_TRIMS';
@@ -278,8 +355,10 @@ export type EffectTemplateMixTemplateEntry = {
   aiFillLocked?: boolean;
   /** Hash of template configuration used by the latest successful smart-fill. */
   filledTemplateHash?: string;
-  /** True after packaging starts; this is a one-way lifecycle lock. */
+  /** Packaging has started in this Run; informational only, timeline editing stays available. */
   packagingLocked?: boolean;
+  /** A child packaging task is active; its source projects stay locked until the task ends. */
+  packagingSourceLocked?: boolean;
   /** True when current template configuration differs from the latest successful fill. */
   needsAiFill?: boolean;
   workspace: EffectTemplateMixWorkspace;
@@ -294,6 +373,8 @@ export type EffectTemplateMixDraft = {
     aiFillLocked?: boolean;
     filledTemplateHash?: string;
     packagingLocked?: boolean;
+    /** Read projection only; never trusted from a saved draft. */
+    packagingSourceLocked?: boolean;
     needsAiFill?: boolean;
     workspace: Omit<EffectTemplateMixWorkspace, 'materials'>;
   }[];
@@ -304,6 +385,8 @@ export type EffectTemplateMixWorkspaceData = {
   draftRevision: number | null;
   /** A successful render batch (or an already confirmed render pool) exists in this Run. */
   templateCreationReady?: boolean;
+  /** Read-only cap from this branch's committed render batch; never trusted from client drafts. */
+  slotDurationMaxSeconds?: number | null;
   materials: EffectTemplateMixMaterial[];
   commits: {
     templateId: string;
@@ -320,7 +403,10 @@ export type SaveEffectTemplateMixRequest = {
   workflowRunId: string;
   expectedRevision: number | null;
   draft: EffectTemplateMixDraft;
+  /** Autosave needs only the persisted revision, not a rebuilt material/task workbench. */
+  compactResponse?: boolean;
 };
+export type SaveEffectTemplateMixData = { draftRevision: number };
 export type EffectTemplateMixRevisionRequest = {
   workflowRunId: string;
   expectedRevision: number;

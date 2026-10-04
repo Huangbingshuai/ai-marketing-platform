@@ -14,8 +14,8 @@ import {
   EFFECT_TEMPLATE_MIX_JOB_TYPE,
 } from '../../../platform/job/job.constants';
 import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
-import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { templateConfigurationHash } from './template-mix-lifecycle';
+import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -79,6 +79,54 @@ export class EffectPackagingRepository {
         })
       : [];
     return [...recent, ...older];
+  }
+  /** A package running in this Run or in its direct child locks the source project. */
+  async sourceLockedTemplateIds(projectId: string, workflowRunId: string): Promise<string[]> {
+    const rows = await this.db.effectPackagingRun.findMany({
+      where: {
+        projectId,
+        status: { in: ['QUEUED', 'RUNNING'] },
+        OR: [
+          { workflowRunId },
+          { workflowRun: { parentWorkflowRunId: workflowRunId, forkNodeId: 'TEMPLATE_MIX' } },
+        ],
+      },
+      distinct: ['templateId'],
+      select: { templateId: true },
+    });
+    return rows.map(({ templateId }) => templateId);
+  }
+  latestChild(projectId: string, workflowRunId: string, templateId: string) {
+    return this.db.effectPackagingRun.findFirst({
+      where: {
+        projectId,
+        templateId,
+        OR: [
+          { workflowRunId },
+          { workflowRun: {
+            parentWorkflowRunId: workflowRunId,
+            forkNodeId: 'TEMPLATE_MIX',
+          } },
+        ],
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      include: PACKAGING_INCLUDE,
+    });
+  }
+  activeUnpublishedChild(projectId: string, workflowRunId: string, templateId: string) {
+    return this.db.effectPackagingRun.findFirst({
+      where: {
+        projectId,
+        templateId,
+        status: { in: ['QUEUED', 'RUNNING'] },
+        workflowRun: {
+          parentWorkflowRunId: workflowRunId,
+          forkNodeId: 'TEMPLATE_MIX',
+          branchPublishedAt: null,
+        },
+      },
+      select: { id: true },
+    });
   }
   private enqueue(tx: Prisma.TransactionClient, projectId: string, runId: string) {
     const payload = {
@@ -204,30 +252,6 @@ export class EffectPackagingRepository {
         })
       )
         throw new ConflictException('智能填充正在运行，暂不能开始智能成片包装');
-      if (!currentEntry.packagingLocked) {
-        const lockedDraft = {
-          ...currentDraft,
-          templates: currentDraft.templates.map((entry) =>
-            entry.id === input.templateId
-              ? {
-                  ...entry,
-                  aiFillLocked: false,
-                  packagingLocked: true,
-                  filledTemplateHash: input.expectedTemplateHash,
-                }
-              : entry,
-          ),
-        };
-        await tx.workflowNodeState.update({
-          where: { id: nodeState.id },
-          data: {
-            state: json(lockedDraft),
-            contentHash: workflowStateHash(lockedDraft),
-            revision: { increment: 1 },
-            savedAt: new Date(),
-          },
-        });
-      }
       if (
         await tx.effectPackagingRun.count({
           where: {
@@ -239,6 +263,15 @@ export class EffectPackagingRepository {
         })
       )
         throw new ConflictException('当前模板已有包装任务运行中');
+      const rebound = input.snapshots.filter((snapshot) => snapshot.sourceTrimMaterials?.length);
+      if (rebound.length) {
+        currentEntry.workspace.variants = currentEntry.workspace.variants.map((variant) =>
+          rebound.find((snapshot) => snapshot.variant.id === variant.id)?.variant ?? variant);
+        currentEntry.workspace.editVersion += 1;
+        await tx.workflowNodeState.update({ where: { id: nodeState.id }, data: {
+          state: json(currentDraft), contentHash: workflowStateHash(currentDraft), revision: { increment: 1 },
+        } });
+      }
       const run = await tx.effectPackagingRun.create({
         data: {
           projectId: input.projectId,

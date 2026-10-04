@@ -25,11 +25,19 @@ export class EffectTemplateMixController {
     return this.service.workspace(projectId, query.workflowRunId);
   }
 
+  @Get('sources')
+  async sources(@Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Query() query: EffectTemplateMixWorkspaceQueryDto) {
+    return this.service.materialSources(projectId, query.workflowRunId);
+  }
+
   @Put('draft')
   saveDraft(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
     @Body() body: SaveEffectTemplateMixDraftDto,
   ) {
+    if (body.compactResponse)
+      return this.service.saveDraft(projectId, body.workflowRunId, body.expectedRevision, body.draft, true);
     return this.service.saveDraft(projectId, body.workflowRunId, body.expectedRevision, body.draft);
   }
 
@@ -84,6 +92,15 @@ export class EffectTemplateMixController {
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
   ) {
     return this.service.aiRun(projectId, runId);
+  }
+
+  @Get('templates/:templateId/background-ai-run')
+  backgroundAiRun(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('templateId', new ParseUUIDPipe({ version: '4' })) templateId: string,
+    @Query() query: EffectTemplateMixWorkspaceQueryDto,
+  ) {
+    return this.service.backgroundAiRun(projectId, query.workflowRunId, templateId);
   }
 
   @Post('templates/:templateId/variants/:variantId/refill')

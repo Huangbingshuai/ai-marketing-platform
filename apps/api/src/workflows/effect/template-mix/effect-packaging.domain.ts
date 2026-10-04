@@ -276,24 +276,7 @@ export function packagingSnapshot(
       throw new BadRequestException('分离音频必须对应其原视频素材');
     visit(material.artifactId);
   }
-  const facts = [...used.values()]
-    .filter((a) => a.artifactKey.startsWith('marketing-insight:'))
-    .flatMap((a) => {
-      const payload = record(a.payload);
-      const values = [
-        'productName',
-        'productCategory',
-        'coreSpecification',
-        'priceRange',
-        'visualFeatures',
-      ].map((k) => payload[k]);
-      if (Array.isArray(payload.sellingPoints)) values.push(...payload.sellingPoints);
-      return values.flatMap((text, index) =>
-        typeof text === 'string' && text.trim()
-          ? [{ id: `${a.id}:${index}`, text, artifactId: a.id, revision: a.revision }]
-          : [],
-      );
-    });
+  const facts = packagingFacts(used.values());
   if (!facts.length)
     throw new BadRequestException('缺少素材所消费的已确认商品信息，不能生成商品口播');
   return {
@@ -312,6 +295,28 @@ export function packagingSnapshot(
       nodeId: a.nodeId,
     })),
   };
+}
+
+/** The same confirmed-fact projection is used by full packaging and source-local refresh. */
+export function packagingFacts(artifacts: Iterable<WorkingArtifact>): PackagingSnapshot['facts'] {
+  return [...artifacts]
+    .filter((a) => a.artifactKey.startsWith('marketing-insight:'))
+    .flatMap((a) => {
+      const payload = record(a.payload);
+      const values = [
+        'productName',
+        'productCategory',
+        'coreSpecification',
+        'priceRange',
+        'visualFeatures',
+      ].map((k) => payload[k]);
+      if (Array.isArray(payload.sellingPoints)) values.push(...payload.sellingPoints);
+      return values.flatMap((text, index) =>
+        typeof text === 'string' && text.trim()
+          ? [{ id: `${a.id}:${index}`, text, artifactId: a.id, revision: a.revision }]
+          : [],
+      );
+    });
 }
 
 /** Validate structure/provenance only. Meaning and factual support are reviewed by AI. */
@@ -347,22 +352,6 @@ export function validatePackagingCheckpoint(
     start >= 0 &&
     end > start &&
     end <= EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS + 0.001;
-  /**
-   * Fades are editor-only and optional, so an absent field is legal — the pipeline default applies.
-   * When one is present it has to be a real duration that fits inside the clip, or the render would
-   * be asked to fade in and out of the same sample.
-   */
-  const fades = (audio: { duration: number; fadeIn?: number; fadeOut?: number }) => {
-    const fadeIn = audio.fadeIn ?? 0;
-    const fadeOut = audio.fadeOut ?? 0;
-    return (
-      Number.isFinite(fadeIn) &&
-      Number.isFinite(fadeOut) &&
-      fadeIn >= 0 &&
-      fadeOut >= 0 &&
-      fadeIn + fadeOut <= audio.duration + 0.05
-    );
-  };
   const facts = new Set(snapshot.facts.map((f) => f.id));
   const slotLayout = checkpoint.narrationLayoutVersion === 'SLOT_V1';
   const segmentedCaptions = checkpoint.captionLayoutVersion === 'SEGMENT_V1' ||

@@ -52,6 +52,7 @@ import {
 } from './dto/effect-template-mix.dto';
 import { EffectPackagingService } from './effect-packaging.service';
 import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard';
+import { SourceTrimsDto } from './dto/effect-source-trims.dto';
 
 export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
   @IsString() @MinLength(1) @MaxLength(500) idempotencyKey!: string;
@@ -155,6 +156,14 @@ export class EffectPackagingController {
   ) {
     return this.service.list(projectId, query.workflowRunId, templateId);
   }
+  @Get('templates/:templateId/background-packaging-run')
+  background(
+    @Param('projectId', uuid) projectId: string,
+    @Param('templateId', uuid) templateId: string,
+    @Query() query: EffectTemplateMixWorkspaceQueryDto,
+  ) {
+    return this.service.latestBackground(projectId, query.workflowRunId, templateId);
+  }
   @Get('packaging-runs/:runId')
   get(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {
     return this.service.get(projectId, runId);
@@ -201,6 +210,11 @@ export class EffectPackagingController {
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectPackagingWorkerController {
   constructor(@Inject(EffectPackagingService) readonly service: EffectPackagingService) {}
+  @Put(':runId/items/:itemId/trims')
+  trims(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
+    @Headers('x-attempt-token') token: string, @Body() body: SourceTrimsDto) {
+    return this.service.sourceTrims(body.projectId, runId, token, itemId, body.trims);
+  }
   @Post(':runId/claim')
   claim(@Param('runId', uuid) runId: string, @Body() body: EffectTemplateMixWorkerProjectDto) {
     return this.service.repo.claim(body.projectId, runId);
@@ -266,7 +280,15 @@ export class EffectPackagingWorkerController {
     @Body() body: PackagingAudioUploadDto,
     @UploadedFile() file: { path: string; size: number } | undefined,
   ) {
-    return this.service.upload(body.projectId, runId, token, itemId, role, file, body.segmentFrames);
+    return this.service.upload(
+      body.projectId,
+      runId,
+      token,
+      itemId,
+      role,
+      file,
+      body.segmentFrames,
+    );
   }
 }
 

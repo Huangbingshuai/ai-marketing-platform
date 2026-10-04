@@ -7,6 +7,7 @@ import { expect, it } from 'vitest';
 import type { EffectTemplateMixVariant } from '@ai-marketing/contracts';
 import { PrismaService } from '../../../database/prisma.service';
 import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
+import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { EffectTemplateMixService } from '../template-mix/effect-template-mix.service';
 import type { StoragePort } from '../../../platform/file/storage.port';
 import { visualHash } from '../template-mix/effect-packaging.domain';
@@ -78,13 +79,28 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 }),
               ),
             );
+            const promptId = randomUUID();
+            const prompt = await tx.workingArtifact.create({ data: {
+              projectId, workflowRunId, nodeId: 'PROMPT_GENERATION',
+              artifactKey: `prompt-batch:${promptId}`, kind: 'STRUCTURED', name: '测试素材 Prompt',
+              directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT', contentHash: 'e'.repeat(64),
+              payload: { items: [{ id: promptId, content: '隔离测试商品画面' }] },
+            } });
+            const material = await tx.workingArtifact.create({ data: {
+              projectId, workflowRunId, nodeId: 'SEGMENT_RENDER',
+              artifactKey: `render-clip:${randomUUID()}`, kind: 'FILE', name: '测试素材',
+              directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT', contentHash: 'f'.repeat(64),
+              payload: { promptId, fileObjectId: files[0]!.id, durationSeconds: 20 },
+              dependencies: { create: [{ sourceType: 'WORKING_ARTIFACT',
+                sourceArtifactId: prompt.id, sourceKey: prompt.artifactKey, sourceRevision: 1 }] },
+            } });
             const variants: EffectTemplateMixVariant[] = Array.from({ length: 100 }, (_, i) => ({
               id: randomUUID(),
               name: `测试成片${i + 1}`,
-              slots: [],
-              bindings: {},
-              bindingRevisions: {},
-              offsets: {},
+              slots: [{ id: 's', role: 'PRODUCT', purpose: 'PRODUCT_DISPLAY', label: '产品', duration: 10, transition: '硬切' }],
+              bindings: { s: material.id },
+              bindingRevisions: { s: 1 },
+              offsets: { s: 0 },
               appliedTemplateVersion: 1,
               manualSlotIds: [],
               conflictSlotIds: [],
@@ -102,7 +118,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 nodeId: 'TEMPLATE_MIX',
                 revision: 1,
                 contentHash: 'c'.repeat(64),
-                state: { templates: [{ id: templateId, workspace: { variants } }] },
+                state: { templates: [{ id: templateId, workspace: { template: { name: '隔离测试' }, variants } }] },
               },
             });
             const packaging = await tx.effectPackagingRun.create({
@@ -168,11 +184,22 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 payload: { variant: v },
               },
             }));
+            const outputSourceWorkspace = async (_projectId: string, runId: string) => {
+              const [state, artifacts] = await Promise.all([
+                tx.workflowNodeState.findFirstOrThrow({ where: { projectId, workflowRunId: runId,
+                  nodeId: 'TEMPLATE_MIX' } }),
+                tx.workingArtifact.findMany({ where: { projectId, workflowRunId: runId },
+                  include: { dependencies: true } }),
+              ]);
+              const clip = artifacts.find((artifact) => artifact.artifactKey.startsWith('render-clip:'))!;
+              return { draft: state.state, artifacts, materials: [{ id: clip.id, artifactId: clip.id,
+                artifactRevision: clip.revision, fileObjectId: files[0]!.id, duration: 20,
+                available: true, contentHash: clip.contentHash, ratio: '3:4' }] };
+            };
             const mix = {
               prepareValidation: async () => ({ variants, inputs }),
-              workspace: async () => ({
-                materials: [{ fileObjectId: files[0]!.id, ratio: '3:4' }],
-              }),
+              workspace: outputSourceWorkspace,
+              outputSourceWorkspace,
             } as unknown as EffectTemplateMixService;
             let uploaded = 0;
             const deleted: string[] = [];
@@ -201,6 +228,10 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               mix,
               new WorkflowWorkingRepository(scopedDb),
               storage,
+              { getEffectBranchTree: async () => ({ projectId, activeWorkflowRunId: workflowRunId,
+                branches: [{ workflowRunId, parentWorkflowRunId: null, forkNodeId: null,
+                  forkTemplateId: null, createdAt: new Date().toISOString(), templates: [{ templateId }] }] })
+              } as unknown as WorkflowWorkingService,
             );
             // A package that is still running must not queue anything or commit a version.
             await tx.effectPackagingRun.update({
@@ -241,6 +272,10 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             expect(run.workflowRunId).not.toBe(workflowRunId);
             expect(run.status).toBe('QUEUED');
             expect(run.items).toHaveLength(100);
+            expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: workflowRunId } })).activeKey)
+              .toBe('ACTIVE');
+            expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: run.workflowRunId } })).activeKey)
+              .toBeNull();
             expect(
               (await tx.effectFinalOutputRun.findUniqueOrThrow({ where: { id: queued.id } })).status,
             ).toBe('PENDING_RENDER');

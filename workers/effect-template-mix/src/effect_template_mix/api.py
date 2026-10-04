@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
@@ -34,7 +35,8 @@ def _unwrap(value: Any) -> Any:
 class InternalApi:
     ROOT = "internal/workers/effect-template-mix"
 
-    def __init__(self, base_url: str, token: str, timeout: float) -> None:
+    def __init__(self, base_url: str, token: str, timeout: float, max_attempts: int = 4) -> None:
+        self.max_attempts = max(1, max_attempts)
         self.client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
@@ -45,10 +47,21 @@ class InternalApi:
         await self.client.aclose()
 
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        try:
-            response = await self.client.request(method, path, **kwargs)
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise ApiError("internal API unavailable", retryable=True) from exc
+        for attempt in range(self.max_attempts):
+            try:
+                response = await self.client.request(method, path, **kwargs)
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                # A failed connection sent no mutation. Ambiguous POST timeouts must
+                # not replay a claim and acquire a second attempt token.
+                safe_replay = isinstance(exc, httpx.ConnectError) or method.upper() in ("GET", "PUT")
+                if safe_replay and attempt + 1 < self.max_attempts:
+                    await asyncio.sleep(min(8, 2 ** (attempt + 1)))
+                    continue
+                raise ApiError("internal API unavailable", retryable=True) from exc
+            if response.status_code >= 500 and method.upper() in ("GET", "PUT") and attempt + 1 < self.max_attempts:
+                await asyncio.sleep(min(8, 2 ** (attempt + 1)))
+                continue
+            break
         if response.status_code >= 400:
             message = "internal API rejected request"
             try:

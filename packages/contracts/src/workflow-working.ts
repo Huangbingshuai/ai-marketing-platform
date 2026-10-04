@@ -157,6 +157,8 @@ export type EffectWorkflowBranch = {
   forkNodeId: EffectWorkflowBranchNodeId | null;
   forkTemplateId: string | null;
   forkMixStage?: 'TEMPLATE' | 'FILL' | 'PACKAGING' | null;
+  /** A delivered picture-only branch received its first package in place. */
+  packagingInOutputBranch?: boolean;
   label: string;
   currentNodeId: string | null;
   createdAt: string;
@@ -169,6 +171,39 @@ export type EffectWorkflowBranchTreeData = {
   activeWorkflowRunId: string | null;
   branches: EffectWorkflowBranch[];
 };
+
+/** Current template tips within the selected rendering/manual-copy lineage. Shared by tree and output. */
+export function effectTemplateBranchTips(
+  branches: readonly EffectWorkflowBranch[],
+  contextRunId: string | null,
+): Map<string, EffectWorkflowBranch> {
+  const byId = new Map(branches.map((branch) => [branch.workflowRunId, branch]));
+  const context = contextRunId ? byId.get(contextRunId) : undefined;
+  const renderOwner = (branch: EffectWorkflowBranch): string => {
+    const seen = new Set<string>();
+    let cursor = branch;
+    while (cursor.parentWorkflowRunId && !seen.has(cursor.workflowRunId) &&
+      (cursor.forkNodeId === 'TEMPLATE_MIX' || cursor.forkNodeId === 'FINAL_OUTPUT')) {
+      seen.add(cursor.workflowRunId);
+      const parent = byId.get(cursor.parentWorkflowRunId);
+      if (!parent) break;
+      cursor = parent;
+    }
+    return cursor.workflowRunId;
+  };
+  const scoped = context ? branches.filter((branch) => renderOwner(branch) === renderOwner(context)) : [];
+  const tips = new Map<string, EffectWorkflowBranch>();
+  for (const templateId of new Set(scoped.flatMap((branch) => branch.templates.map((t) => t.templateId)))) {
+    const latest = scoped.filter((branch) => branch.forkTemplateId === templateId &&
+      (branch.forkNodeId === 'TEMPLATE_MIX' || branch.forkNodeId === 'FINAL_OUTPUT'))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.workflowRunId.localeCompare(a.workflowRunId))[0];
+    const selected = context?.forkTemplateId === templateId ? context : undefined;
+    const fallback = context?.templates.some((t) => t.templateId === templateId) ? context :
+      scoped.find((branch) => branch.templates.some((t) => t.templateId === templateId));
+    if (selected ?? latest ?? fallback) tips.set(templateId, (selected ?? latest ?? fallback)!);
+  }
+  return tips;
+}
 export type ActivateEffectWorkflowBranchData = { run: WorkflowRun };
 export type CreateEffectWorkflowBranchRequest = { idempotencyKey: string };
 export type CreateEffectWorkflowBranchData = {
