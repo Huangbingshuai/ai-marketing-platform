@@ -49,6 +49,12 @@ export interface StoragePort {
   putShared(input: SharedStoragePutInput): Promise<StoredObject>;
   open(key: string, range?: StorageRange): Promise<StoredStream>;
   delete(key: string): Promise<void>;
+  /** Internal provider access only, after validating the frozen file and worker lease. */
+  signedReadUrl?(
+    key: string,
+    expiresSeconds: number,
+    expectedSizeBytes: number,
+  ): Promise<string | null>;
 }
 
 export const STORAGE_PORT = Symbol('StoragePort');

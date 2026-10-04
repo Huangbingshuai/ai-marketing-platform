@@ -1,5 +1,7 @@
 export type AppEnvironment = 'development' | 'test' | 'production';
-export type StorageDriver = 'local' | 'minio';
+import { tosS3Endpoint } from '../platform/file/tos-endpoint';
+
+export type StorageDriver = 'local' | 'minio' | 'tos';
 
 export type EnvironmentVariables = {
   APP_ENV: AppEnvironment;
@@ -61,8 +63,8 @@ const parsePort = (value: unknown, key: string, defaultValue: number): number =>
 
 const parseStorageDriver = (value: unknown): StorageDriver => {
   const driver = value ?? 'local';
-  if (driver !== 'local' && driver !== 'minio') {
-    throw new Error('环境变量 STORAGE_DRIVER 必须是 local 或 minio');
+  if (driver !== 'local' && driver !== 'minio' && driver !== 'tos') {
+    throw new Error('环境变量 STORAGE_DRIVER 必须是 local、minio 或 tos');
   }
   return driver;
 };
@@ -109,6 +111,15 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     requiredString(minioBucket, 'MINIO_BUCKET');
     requiredString(minioAccessKey, 'MINIO_ACCESS_KEY');
     requiredString(minioSecretKey, 'MINIO_SECRET_KEY');
+  }
+
+  if (storageDriver === 'tos') {
+    const endpoint = requiredString(raw.TOS_ENDPOINT, 'TOS_ENDPOINT').trim();
+    const region = requiredString(raw.TOS_REGION, 'TOS_REGION').trim();
+    tosS3Endpoint(endpoint, region);
+    requiredString(raw.TOS_BUCKET, 'TOS_BUCKET');
+    requiredString(raw.TOS_ACCESS_KEY_ID, 'TOS_ACCESS_KEY_ID');
+    requiredString(raw.TOS_SECRET_ACCESS_KEY, 'TOS_SECRET_ACCESS_KEY');
   }
 
   const effectExtractionWorkerToken =

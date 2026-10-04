@@ -340,9 +340,10 @@ const promptTaskNeedsUpdate = (
     : null;
   return Boolean(
     !prompt ||
-      createHash('sha256').update(prompt.content.trim()).digest('hex') !== snapshot.promptContentHash ||
-      prompt.targetDurationSeconds !== snapshot.request.duration ||
-      sharedPromptHash !== snapshot.sharedPromptHash,
+    createHash('sha256').update(prompt.content.trim()).digest('hex') !==
+      snapshot.promptContentHash ||
+    prompt.targetDurationSeconds !== snapshot.request.duration ||
+    sharedPromptHash !== snapshot.sharedPromptHash,
   );
 };
 
@@ -429,8 +430,7 @@ export class EffectSegmentRenderService {
       ),
     ]);
     const productName =
-      insightProductName(marketingInsight?.payload) ??
-      (record.product.name.trim() || '未命名产品');
+      insightProductName(marketingInsight?.payload) ?? (record.product.name.trim() || '未命名产品');
     const upstreamStale = Boolean(
       !prompt ||
       prompt.freshness !== 'CURRENT' ||
@@ -855,9 +855,11 @@ export class EffectSegmentRenderService {
         const item = promptBatch.items.find(({ id }) => id === task.promptId);
         if (!item) throw conflict('该 Prompt 已从当前批次移除，请创建新渲染批次');
         const previous = requestSnapshot(task.requestSnapshot);
-        const renderSettings = previous.renderSettings ?? (settingsNode
-          ? this.settingsFromState(settingsNode.state)
-          : this.legacySettings(promptArtifact.payload));
+        const renderSettings =
+          previous.renderSettings ??
+          (settingsNode
+            ? this.settingsFromState(settingsNode.state)
+            : this.legacySettings(promptArtifact.payload));
         if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
         const compiled = this.compileSeedanceRequest(() =>
           compileEffectSeedanceRequest(
@@ -1453,6 +1455,28 @@ export class EffectSegmentRenderService {
       snapshot.repair?.sourceVersion !== task.activeOutputVersion
     )
       throw conflict('视频返修来源快照已失效');
+    if (this.config.get<string>('STORAGE_DRIVER') === 'tos') {
+      const fileObject = await this.repository.fileObject(
+        task.projectId,
+        task.workflowRunId,
+        video.fileObjectId,
+      );
+      if (
+        !fileObject ||
+        fileObject.sha256 !== video.contentHash ||
+        fileObject.sizeBytes !== video.sizeBytes ||
+        fileObject.mimeType.toLocaleLowerCase('en-US') !== video.mimeType
+      )
+        throw conflict('Seedance 参考视频文件已失效');
+      const expiresSeconds = 30 * 60;
+      const url = await this.storage.signedReadUrl?.(
+        fileObject.storageKey,
+        expiresSeconds,
+        video.sizeBytes,
+      );
+      if (!url) throw conflict('Seedance 参考视频访问地址尚未配置');
+      return { url, expiresAt: new Date(Date.now() + expiresSeconds * 1000).toISOString() };
+    }
     const publicBaseUrl = this.config.get<string>('SEEDANCE_REFERENCE_PUBLIC_BASE_URL')?.trim();
     const signingSecret = this.config.get<string>('SEEDANCE_REFERENCE_SIGNING_SECRET')?.trim();
     if (!publicBaseUrl || !signingSecret) throw conflict('Seedance 参考视频访问地址尚未配置');
@@ -1836,7 +1860,11 @@ export class EffectSegmentRenderService {
     // committed batches predate the edit child and must not publish it.
     if (!batch.committedAt || batch.committedAt < batch.createdAt) return;
     const run = await this.repository.workflowRun(projectId, batch.workflowRunId);
-    if (run?.parentWorkflowRunId && !run.branchPublishedAt && run.editSessionNodeId === 'SEGMENT_RENDER')
+    if (
+      run?.parentWorkflowRunId &&
+      !run.branchPublishedAt &&
+      run.editSessionNodeId === 'SEGMENT_RENDER'
+    )
       await this.workflowWorkingService.publishEffectNodeEdit(
         projectId,
         batch.workflowRunId,
@@ -1877,14 +1905,16 @@ export class EffectSegmentRenderService {
     > = [],
   ): Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }> {
     const sourceSnapshot = sourcePackageSnapshot(record.tasks[0]?.requestSnapshot);
-    const promptDependency = (sourcePrompt: EffectSegmentRenderRequestSnapshot['sourcePrompt']) => ({
-        sourceType: 'WORKING_ARTIFACT' as const,
-        sourceNodeId: 'PROMPT_GENERATION',
-        sourceArtifactId: sourcePrompt?.artifactId ?? record.sourcePromptArtifactId,
-        sourceKey: 'prompt-batch:' + record.productId,
-        sourceRevision: sourcePrompt?.revision ?? record.sourcePromptRevision,
-        sourceHash: sourcePrompt?.contentHash ?? record.sourcePromptHash,
-      });
+    const promptDependency = (
+      sourcePrompt: EffectSegmentRenderRequestSnapshot['sourcePrompt'],
+    ) => ({
+      sourceType: 'WORKING_ARTIFACT' as const,
+      sourceNodeId: 'PROMPT_GENERATION',
+      sourceArtifactId: sourcePrompt?.artifactId ?? record.sourcePromptArtifactId,
+      sourceKey: 'prompt-batch:' + record.productId,
+      sourceRevision: sourcePrompt?.revision ?? record.sourcePromptRevision,
+      sourceHash: sourcePrompt?.contentHash ?? record.sourcePromptHash,
+    });
     const sourceDependencies = [
       ...(sourceSnapshot
         ? [
@@ -1927,50 +1957,51 @@ export class EffectSegmentRenderService {
         contentHash: task.outputContentHash!,
       };
     });
-    const existingByKey = new Map(existingArtifacts.map((artifact) => [artifact.artifactKey, artifact]));
-    const clipArtifacts = completed.map((task) => {
-      const snapshot = requestSnapshot(task.requestSnapshot);
-      const artifactKey = 'render-clip:' + task.id;
-      const payload = clips.find(({ taskId }) => taskId === task.id)!;
-      const existing = existingByKey.get(artifactKey);
-      const existingPayload =
-        existing?.payload && typeof existing.payload === 'object'
-          ? (existing.payload as Record<string, unknown>)
-          : null;
-      const unchangedCurrentClip = Boolean(
-        existing &&
+    const existingByKey = new Map(
+      existingArtifacts.map((artifact) => [artifact.artifactKey, artifact]),
+    );
+    const clipArtifacts = completed
+      .map((task) => {
+        const snapshot = requestSnapshot(task.requestSnapshot);
+        const artifactKey = 'render-clip:' + task.id;
+        const payload = clips.find(({ taskId }) => taskId === task.id)!;
+        const existing = existingByKey.get(artifactKey);
+        const existingPayload =
+          existing?.payload && typeof existing.payload === 'object'
+            ? (existing.payload as Record<string, unknown>)
+            : null;
+        const unchangedCurrentClip = Boolean(
+          existing &&
           existing.freshness === 'CURRENT' &&
           existing.availability === 'AVAILABLE' &&
           existingPayload?.fileObjectId === payload.fileObjectId &&
           existingPayload?.contentHash === payload.contentHash &&
           existingPayload?.promptContentHash === payload.promptContentHash &&
           existingPayload?.durationSeconds === payload.durationSeconds,
-      );
-      if (unchangedCurrentClip) return null;
-      return {
-        artifactKey,
-        input: {
-          kind: 'FILE',
-          name: record.product.name + ' ' + task.renderCode + ' 视频片段',
-          directory: 'VIDEO_MATERIALS',
-          type: 'VIDEO_MATERIAL',
-          tags: ['效果类', 'AI视频片段', snapshot.primaryPurpose],
-          payload,
-          metadata: { productId: record.productId, taskId: task.id, promptId: task.promptId },
-          originalFileName: task.outputFileName!,
-          mimeType: task.outputMimeType!,
-          sizeBytes: task.outputSizeBytes!,
-          storageKey: task.outputStorageKey!,
-          fileChecksum: task.outputContentHash!,
-          sourceRunId: task.id,
-          sourceArtifactId: task.promptId,
-          dependencies: [
-            promptDependency(snapshot.sourcePrompt),
-            ...sourceDependencies,
-          ],
-        } satisfies WorkingArtifactUpsertInput,
-      };
-    }).filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact));
+        );
+        if (unchangedCurrentClip) return null;
+        return {
+          artifactKey,
+          input: {
+            kind: 'FILE',
+            name: record.product.name + ' ' + task.renderCode + ' 视频片段',
+            directory: 'VIDEO_MATERIALS',
+            type: 'VIDEO_MATERIAL',
+            tags: ['效果类', 'AI视频片段', snapshot.primaryPurpose],
+            payload,
+            metadata: { productId: record.productId, taskId: task.id, promptId: task.promptId },
+            originalFileName: task.outputFileName!,
+            mimeType: task.outputMimeType!,
+            sizeBytes: task.outputSizeBytes!,
+            storageKey: task.outputStorageKey!,
+            fileChecksum: task.outputContentHash!,
+            sourceRunId: task.id,
+            sourceArtifactId: task.promptId,
+            dependencies: [promptDependency(snapshot.sourcePrompt), ...sourceDependencies],
+          } satisfies WorkingArtifactUpsertInput,
+        };
+      })
+      .filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact));
     const dependencies = [promptDependency(undefined), ...sourceDependencies];
     const batchArtifact = {
       artifactKey: 'render-batch:' + record.productId,

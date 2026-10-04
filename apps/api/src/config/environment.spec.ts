@@ -83,6 +83,43 @@ describe('validateEnvironment', () => {
     ).toThrow('MINIO_PORT');
   });
 
+  it('requires TOS credentials and rejects non-regional or insecure endpoints', () => {
+    const tos = {
+      ...validEnvironment,
+      STORAGE_DRIVER: 'tos',
+      TOS_ENDPOINT: 'tos-cn-beijing.volces.com',
+      TOS_REGION: 'cn-beijing',
+      TOS_BUCKET: 'private-assets',
+      TOS_ACCESS_KEY_ID: 'test-access',
+      TOS_SECRET_ACCESS_KEY: 'test-secret',
+    };
+    expect(validateEnvironment(tos)).toMatchObject({
+      STORAGE_DRIVER: 'tos',
+      TOS_REGION: 'cn-beijing',
+    });
+    for (const key of [
+      'TOS_ENDPOINT',
+      'TOS_REGION',
+      'TOS_BUCKET',
+      'TOS_ACCESS_KEY_ID',
+      'TOS_SECRET_ACCESS_KEY',
+    ])
+      expect(() => validateEnvironment({ ...tos, [key]: '' })).toThrow(key);
+    for (const endpoint of [
+      'http://tos-cn-beijing.volces.com',
+      'localhost:9000',
+      'https://tos-cn-guangzhou.volces.com',
+      'https://tos-cn-beijing.volces.com/path',
+      'https://tos-cn-beijing.volces.com?secret=bad',
+      'https://user@tos-cn-beijing.volces.com',
+    ])
+      expect(() => validateEnvironment({ ...tos, TOS_ENDPOINT: endpoint })).toThrow();
+    expect(
+      validateEnvironment({ ...tos, TOS_ENDPOINT: 'https://tos-s3-cn-beijing.volces.com' })
+        .STORAGE_DRIVER,
+    ).toBe('tos');
+  });
+
   it('requires dedicated workflow worker tokens in production', () => {
     expect(() => validateEnvironment({ ...validEnvironment, APP_ENV: 'production' })).toThrow(
       'EFFECT_EXTRACTION_WORKER_TOKEN',

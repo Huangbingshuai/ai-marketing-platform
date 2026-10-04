@@ -107,13 +107,43 @@ class SegmentRenderConsumer:
                         context, claim.input.input_images
                     )
                 await self._api.heartbeat(context, 5)
-            output = await self._provider.render(
-                claim.input,
-                reference_images,
-                reference_video_url,
-                progress,
-                claim.provider_task_id,
-            )
+            try:
+                output = await self._provider.render(
+                    claim.input,
+                    reference_images,
+                    reference_video_url,
+                    progress,
+                    claim.provider_task_id,
+                )
+            except ProviderError as exc:
+                if (
+                    claim.input.operation != "REPAIR"
+                    or provider_task_id is not None
+                    or exc.code not in {
+                        "SEEDANCE_SOURCE_VIDEO_EXPIRED",
+                        "SEEDANCE_SOURCE_VIDEO_UNAVAILABLE",
+                    }
+                ):
+                    raise
+                # These errors are raised before POST/create only. Do not retry
+                # any failure after the provider has accepted a billable task.
+                await self._api.heartbeat(context, 5)
+                try:
+                    reference_video_url = await self._api.reference_video_url(context)
+                except InternalApiError as recovery_error:
+                    if (
+                        recovery_error.status_code == 409
+                        and "参考视频访问地址尚未配置" in str(recovery_error)
+                    ):
+                        raise ProviderError(
+                            "REFERENCE_VIDEO_RECOVERY_NOT_CONFIGURED",
+                            "原视频临时地址已失效，请配置公网素材访问地址后重新返修；原素材已保留",
+                            retryable=False,
+                        ) from recovery_error
+                    raise
+                output = await self._provider.render(
+                    claim.input, [], reference_video_url, progress, None
+                )
             output = await postprocess_render_output(output)
             provider_task_id = output.provider_task_id
             await self._complete_limited(context, output)

@@ -6,9 +6,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LocalStorageAdapter } from './local-storage.adapter';
 import {
   MinioStorageAdapter,
+  createMinioClient,
   selectStorageAdapter,
   type MinioClient,
 } from './minio-storage.adapter';
+import { tosS3Endpoint } from './tos-endpoint';
 
 const keyContext = {
   projectName: '项目甲',
@@ -20,11 +22,24 @@ const keyContext = {
   originalFileName: '主图.png',
 };
 
-const config = (driver: 'local' | 'minio' = 'minio') =>
+const config = (driver: 'local' | 'minio' | 'tos' = 'minio') =>
   ({
-    get: (key: string) => ({ STORAGE_DRIVER: driver, MINIO_BUCKET: 'ai-marketing-assets' })[key],
+    get: (key: string) =>
+      ({
+        STORAGE_DRIVER: driver,
+        MINIO_BUCKET: 'ai-marketing-assets',
+        TOS_BUCKET: 'private-tos-assets',
+      })[key],
     getOrThrow: (key: string) =>
-      ({ STORAGE_DRIVER: driver, MINIO_BUCKET: 'ai-marketing-assets' })[key],
+      ({
+        STORAGE_DRIVER: driver,
+        MINIO_BUCKET: 'ai-marketing-assets',
+        TOS_BUCKET: 'private-tos-assets',
+        TOS_ENDPOINT: 'tos-cn-beijing.volces.com',
+        TOS_REGION: 'cn-beijing',
+        TOS_ACCESS_KEY_ID: 'fake-access',
+        TOS_SECRET_ACCESS_KEY: 'fake-secret',
+      })[key],
   }) as unknown as ConfigService;
 
 const client = (overrides: Partial<MinioClient> = {}) =>
@@ -36,6 +51,9 @@ const client = (overrides: Partial<MinioClient> = {}) =>
     getObject: vi.fn().mockResolvedValue(Readable.from('abcdef')),
     getPartialObject: vi.fn().mockResolvedValue(Readable.from('bcd')),
     removeObject: vi.fn().mockResolvedValue(undefined),
+    presignedGetObject: vi
+      .fn()
+      .mockResolvedValue('https://private-assets.example.test/file?signed=fixture'),
     ...overrides,
   }) as unknown as MinioClient;
 
@@ -46,6 +64,59 @@ const readAll = async (stream: Readable): Promise<string> => {
 };
 
 describe('MinioStorageAdapter', () => {
+  it('normalizes TOS endpoints and creates an HTTPS regional S3 client without sending requests', () => {
+    expect(tosS3Endpoint('tos-cn-beijing.volces.com', 'cn-beijing')).toBe(
+      'tos-s3-cn-beijing.volces.com',
+    );
+    expect(tosS3Endpoint('https://tos-s3-cn-beijing.volces.com/', 'cn-beijing')).toBe(
+      'tos-s3-cn-beijing.volces.com',
+    );
+    expect(createMinioClient(config('local'))).toBeNull();
+    expect(createMinioClient(config('tos'))).toMatchObject({
+      host: 'tos-s3-cn-beijing.volces.com',
+      port: 443,
+      protocol: 'https:',
+      region: 'cn-beijing',
+      pathStyle: false,
+    });
+  });
+
+  it('requires an existing TOS bucket instead of silently creating a cloud resource', async () => {
+    const tos = client({ bucketExists: vi.fn().mockResolvedValue(false) });
+    const adapter = new MinioStorageAdapter(config('tos'), tos);
+    await expect(adapter.onModuleInit()).rejects.toThrow('TOS');
+    expect(tos.makeBucket).not.toHaveBeenCalled();
+  });
+
+  it('selects TOS and provides short private URLs only for size-verified provider files', async () => {
+    const tos = client();
+    const adapter = new MinioStorageAdapter(config('tos'), tos);
+    expect(selectStorageAdapter(config('tos'), {} as LocalStorageAdapter, adapter)).toBe(adapter);
+    const stored = await adapter.put({
+      projectId: 'project-a',
+      stream: Readable.from('abcdef'),
+      sizeBytes: 6,
+      keyContext,
+    });
+    expect(tos.putObject).toHaveBeenCalledWith(
+      'private-tos-assets',
+      stored.key,
+      expect.any(Readable),
+      6,
+      expect.any(Object),
+    );
+    const partial = await adapter.open(stored.key, { start: 1, end: 3 });
+    expect(await readAll(partial.stream)).toBe('bcd');
+    await expect(adapter.signedReadUrl(stored.key, 1800, 6)).resolves.toContain('https://');
+    expect(tos.presignedGetObject).toHaveBeenCalledWith('private-tos-assets', stored.key, 1800);
+    await expect(adapter.signedReadUrl(stored.key, 1800, 7)).rejects.toThrow('size');
+    for (const expires of [0, -1, 3601, 1.5])
+      await expect(adapter.signedReadUrl(stored.key, expires, 6)).rejects.toThrow('expiry');
+    expect(tos.presignedGetObject).toHaveBeenCalledTimes(1);
+    await expect(
+      new MinioStorageAdapter(config(), tos).signedReadUrl(stored.key, 1800, 6),
+    ).resolves.toBeNull();
+  });
   it('creates a missing bucket during initialization', async () => {
     const minio = client({ bucketExists: vi.fn().mockResolvedValue(false) });
     const adapter = new MinioStorageAdapter(config(), minio);
@@ -123,7 +194,9 @@ describe('MinioStorageAdapter', () => {
         'x-amz-meta-asset-id': 'vivi',
       }),
     );
-    expect(vi.mocked(minio.putObject).mock.calls[0]?.[4]).not.toHaveProperty('x-amz-meta-project-id');
+    expect(vi.mocked(minio.putObject).mock.calls[0]?.[4]).not.toHaveProperty(
+      'x-amz-meta-project-id',
+    );
   });
 
   it('supports complete and ranged reads with strict bounds', async () => {

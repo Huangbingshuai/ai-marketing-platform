@@ -22,9 +22,9 @@
 - `SEGMENT_RENDER_DOWNLOAD_CONCURRENCY`：同时下载 Seedance 视频结果以及向内部 API 回写成品的数量，默认各 3。
 - `SEGMENT_RENDER_REFERENCE_CACHE_BYTES`：商品参考图 Base64 的进程内 LRU 缓存上限，默认 128 MiB。
 
-视频返修优先复用当前采用视频的 Ark 原任务 ID：Worker 先查询原任务换取新的临时 TOS 地址，再用 Seedance 2.5 精确编辑模式创建返修任务。因此，系统内刚生成的视频在本地开发环境也不需要把 API 暴露到公网。
+视频返修优先复用当前采用视频的 Ark 原任务 ID：Worker 查询原任务后，以不携带 Ark 凭据的小范围读取检查输出地址，再用 Seedance 2.5 精确编辑模式创建返修任务。查询旧任务不会更新或延长输出 URL 的有效期；仅在原地址仍可用时，本地开发环境无需公网 API。
 
-仅当视频没有可复用的 Ark 原任务 ID 时，才回退为由 API 生成短时签名的公网参考视频地址。启用该回退前，需要在 API 进程配置：
+视频没有可复用的 Ark 原任务 ID，或者旧任务/输出 URL 已过期时，回退为由 API 为当前冻结素材文件生成短时签名的公网参考视频地址。没有配置时明确失败并保留原素材，不把过期 URL 发给供应商。启用该回退前，需要在 API 进程配置：
 
 - `SEEDANCE_REFERENCE_PUBLIC_BASE_URL`：供应商能够访问的 API 公网前缀，包含全局 `/api`，例如 `https://api.example.com/api`
 - `SEEDANCE_REFERENCE_SIGNING_SECRET`：至少 32 个字符的独立 HMAC 密钥

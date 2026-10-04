@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+import pytest
 
 from seedance_worker.consumer import SegmentRenderConsumer
+from seedance_worker.api_client import InternalApiError
 from seedance_worker.models import ClaimResponse, RenderOutput, RenderSnapshot
 from seedance_worker.providers import ProviderError
 
@@ -231,3 +233,84 @@ async def test_consumer_limits_parallel_result_uploads_independently() -> None:
 
     assert api.peak_uploads == 2
     assert all(message.acked for message in messages)
+
+
+class RepairApi(Api):
+    def __init__(self, unavailable: bool = False, resumed: bool = False) -> None:
+        super().__init__()
+        self.unavailable = unavailable
+        self.resumed = resumed
+        self.references = 0
+
+    async def claim(self, task_id: str, project_id: str) -> ClaimResponse:
+        claim = await super().claim(task_id, project_id)
+        data = render_snapshot().model_dump(by_alias=True)
+        data.update({"operation": "REPAIR", "inputImages": [], "inputVideo": {
+            "fileObjectId": "saved-video", "providerTaskId": "source-task", "originalFileName": "saved.mp4",
+            "mimeType": "video/mp4", "sizeBytes": 1024, "contentHash": "f" * 64, "durationSeconds": 5,
+        }, "repair": {"sourceVersion": 1, "startMs": 0, "endMs": 2000,
+            "instruction": "修复画面", "region": None}})
+        return claim.model_copy(update={"input": RenderSnapshot.model_validate(data),
+            "provider_task_id": "existing-repair" if self.resumed else None})
+
+    async def reference_video_url(self, context: Any) -> str:
+        self.references += 1
+        if self.unavailable:
+            raise InternalApiError("Seedance 参考视频访问地址尚未配置", retryable=False, status_code=409)
+        return await super().reference_video_url(context)
+
+
+class RepairProvider(Provider):
+    def __init__(self, error_code: str) -> None:
+        super().__init__()
+        self.code = error_code
+        self.calls = 0
+
+    async def render(self, snapshot: RenderSnapshot, reference_images: list[str],
+        reference_video_url: str | None, progress: Any, provider_task_id: str | None = None,
+    ) -> RenderOutput:
+        self.calls += 1
+        assert not reference_images
+        if self.calls == 1:
+            raise ProviderError(self.code, "参考视频失败", retryable=False)
+        assert reference_video_url is not None
+        assert provider_task_id is None
+        await progress(50, "new-repair")
+        return RenderOutput(provider_task_id="new-repair", content=b"video", file_name="P001.mp4")
+
+
+@pytest.mark.parametrize("error_code", ["SEEDANCE_SOURCE_VIDEO_EXPIRED", "SEEDANCE_SOURCE_VIDEO_UNAVAILABLE"])
+async def test_repair_recovers_owned_video_before_creating(error_code: str) -> None:
+    api = RepairApi()
+    provider = RepairProvider(error_code)
+    message = Message(queue_body())
+    consumer = SegmentRenderConsumer(rabbitmq_url="amqp://unused", queue_name="test.render", api=api, provider=provider)
+    await consumer.handle(message)  # type: ignore[arg-type]
+    assert message.acked
+    assert api.references == 1 and provider.calls == 2
+    assert api.completed is not None and not api.failures
+
+
+async def test_repair_missing_public_access_is_explicit_and_preserves_output() -> None:
+    api = RepairApi(unavailable=True)
+    provider = RepairProvider("SEEDANCE_SOURCE_VIDEO_EXPIRED")
+    message = Message(queue_body())
+    consumer = SegmentRenderConsumer(rabbitmq_url="amqp://unused", queue_name="test.render", api=api, provider=provider)
+    await consumer.handle(message)  # type: ignore[arg-type]
+    assert message.acked and api.completed is None
+    assert provider.calls == 1 and api.references == 1
+    assert api.failures[0]["error_code"] == "REFERENCE_VIDEO_RECOVERY_NOT_CONFIGURED"
+    assert "原素材已保留" in api.failures[0]["error_message"]
+    assert not api.failures[0]["retryable"]
+
+
+@pytest.mark.parametrize("resumed,error_code", [(True, "SEEDANCE_SOURCE_VIDEO_EXPIRED"), (False, "SEEDANCE_HTTP_400")])
+async def test_repair_does_not_recreate_existing_or_rejected_tasks(resumed: bool, error_code: str) -> None:
+    api = RepairApi(resumed=resumed)
+    provider = RepairProvider(error_code)
+    message = Message(queue_body())
+    consumer = SegmentRenderConsumer(rabbitmq_url="amqp://unused", queue_name="test.render", api=api, provider=provider)
+    await consumer.handle(message)  # type: ignore[arg-type]
+    assert message.acked
+    assert provider.calls == 1 and api.references == 0
+    assert api.completed is None and api.failures

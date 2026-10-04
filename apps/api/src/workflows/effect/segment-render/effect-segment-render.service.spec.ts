@@ -181,6 +181,7 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     open: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
+    signedReadUrl: vi.fn(),
   };
   const workflowWorkingService = {
     beginEffectNodeEdit: vi.fn().mockImplementation(async (_projectId: string, runId: string) => ({
@@ -217,6 +218,78 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe('EffectSegmentRenderService', () => {
+  it('signs TOS reference files without public API configuration and rejects invalid frozen sources', async () => {
+    const video = {
+      fileObjectId: 'file-a',
+      contentHash: 'e'.repeat(64),
+      sizeBytes: 1024,
+      mimeType: 'video/mp4',
+    };
+    const task = {
+      id: 'task-a',
+      projectId: 'project-a',
+      workflowRunId: 'run-a',
+      status: 'RUNNING',
+      operationKind: 'REPAIR',
+      renderVersion: 2,
+      activeOutputVersion: 1,
+      attemptToken: 'attempt-a',
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      outputFileObjectId: video.fileObjectId,
+      outputContentHash: video.contentHash,
+      requestSnapshot: { operation: 'REPAIR', inputVideo: video, repair: { sourceVersion: 1 } },
+    };
+    const file = {
+      id: video.fileObjectId,
+      sha256: video.contentHash,
+      sizeBytes: video.sizeBytes,
+      mimeType: video.mimeType,
+      storageKey: 'projects/project-a/source.mp4',
+    };
+    const { service, repository, storage } = serviceWith({
+      configValues: {
+        STORAGE_DRIVER: 'tos',
+        SEEDANCE_REFERENCE_PUBLIC_BASE_URL: undefined,
+        SEEDANCE_REFERENCE_SIGNING_SECRET: undefined,
+      },
+      task: vi.fn().mockResolvedValue(task),
+      fileObject: vi.fn().mockResolvedValue(file),
+    });
+    storage.signedReadUrl.mockResolvedValue(
+      'https://private-bucket.example.test/source.mp4?signed=fixture',
+    );
+    const signed = await service.referenceVideoUrl('project-a', task.id, 'attempt-a', 2);
+    expect(signed.url).toContain('private-bucket');
+    expect(Date.parse(signed.expiresAt) - Date.now()).toBeGreaterThan(1_790_000);
+    expect(repository.fileObject).toHaveBeenCalledWith('project-a', 'run-a', video.fileObjectId);
+    expect(storage.signedReadUrl).toHaveBeenCalledWith(file.storageKey, 1800, video.sizeBytes);
+    expect(storage.open).not.toHaveBeenCalled();
+    for (const broken of [
+      null,
+      { ...file, sha256: 'f'.repeat(64) },
+      { ...file, sizeBytes: 999 },
+      { ...file, mimeType: 'text/plain' },
+    ]) {
+      repository.fileObject.mockResolvedValue(broken);
+      await expect(
+        service.referenceVideoUrl('project-a', task.id, 'attempt-a', 2),
+      ).rejects.toBeInstanceOf(ConflictException);
+    }
+    for (const patch of [
+      { attemptToken: 'other-attempt' },
+      { leaseExpiresAt: new Date(0) },
+      { renderVersion: 3 },
+      { status: 'COMPLETED' },
+      { outputContentHash: 'f'.repeat(64) },
+      { activeOutputVersion: 2 },
+    ]) {
+      repository.task.mockResolvedValue({ ...task, ...patch });
+      await expect(
+        service.referenceVideoUrl('project-a', task.id, 'attempt-a', 2),
+      ).rejects.toBeInstanceOf(ConflictException);
+    }
+    expect(storage.signedReadUrl).toHaveBeenCalledTimes(1);
+  });
   it('creates a paid rerender in an unpublished child rather than mutating its parent run', async () => {
     const { service, repository, workflowWorkingService } = serviceWith();
     workflowWorkingService.beginEffectNodeEdit.mockResolvedValue({
@@ -267,8 +340,11 @@ describe('EffectSegmentRenderService', () => {
     });
     repository.batch.mockResolvedValue(created.batch);
 
-    await (service as unknown as { autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void> })
-      .autoCommitCompletedBatch('project-a', created.batch.id);
+    await (
+      service as unknown as {
+        autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void>;
+      }
+    ).autoCommitCompletedBatch('project-a', created.batch.id);
 
     expect(repository.commitValidatedBatch).toHaveBeenCalledOnce();
     expect(workflowWorkingService.publishEffectNodeEdit).not.toHaveBeenCalled();
@@ -289,7 +365,13 @@ describe('EffectSegmentRenderService', () => {
     );
 
     await expect(
-      service.deleteMaterials('project-a', created.batch.id, [created.batch.tasks[0].id], 1, 'delete-denied'),
+      service.deleteMaterials(
+        'project-a',
+        created.batch.id,
+        [created.batch.tasks[0].id],
+        1,
+        'delete-denied',
+      ),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(repository.deleteMaterials).not.toHaveBeenCalled();
   });
@@ -307,16 +389,23 @@ describe('EffectSegmentRenderService', () => {
     created.batch.committedAt = new Date('2026-09-03T00:01:00.000Z');
     repository.batch.mockResolvedValue(created.batch);
     repository.workflowRun.mockResolvedValue({
-      id: 'run-child', parentWorkflowRunId: 'run-a', branchPublishedAt: null,
+      id: 'run-child',
+      parentWorkflowRunId: 'run-a',
+      branchPublishedAt: null,
       editSessionNodeId: 'SEGMENT_RENDER',
     });
 
-    await (service as unknown as { autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void> })
-      .autoCommitCompletedBatch('project-a', created.batch.id);
+    await (
+      service as unknown as {
+        autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void>;
+      }
+    ).autoCommitCompletedBatch('project-a', created.batch.id);
 
     expect(repository.commitValidatedBatch).not.toHaveBeenCalled();
     expect(workflowWorkingService.publishEffectNodeEdit).toHaveBeenCalledWith(
-      'project-a', 'run-child', 'SEGMENT_RENDER',
+      'project-a',
+      'run-child',
+      'SEGMENT_RENDER',
     );
   });
 
@@ -334,7 +423,9 @@ describe('EffectSegmentRenderService', () => {
     repository.batch.mockResolvedValue(created.batch);
     repository.latestBatch.mockResolvedValue(created.batch);
     repository.workflowRun.mockResolvedValue({
-      id: 'run-child', parentWorkflowRunId: 'run-a', branchPublishedAt: null,
+      id: 'run-child',
+      parentWorkflowRunId: 'run-a',
+      branchPublishedAt: null,
       editSessionNodeId: 'SEGMENT_RENDER',
     });
     workflowWorkingService.publishEffectNodeEdit.mockRejectedValueOnce(new Error('transient'));
@@ -585,8 +676,9 @@ describe('EffectSegmentRenderService', () => {
     const result = await service.batch('project-a', created.batch.id);
 
     expect(result.batch.refreshScope).toBe('SELECTIVE');
-    expect(result.batch.tasks.filter(({ needsUpdate }) => needsUpdate).map(({ promptId }) => promptId))
-      .toEqual([item.id]);
+    expect(
+      result.batch.tasks.filter(({ needsUpdate }) => needsUpdate).map(({ promptId }) => promptId),
+    ).toEqual([item.id]);
   });
 
   it('lets a batch that already matches the current Prompt be validated while its copies are uncommitted', async () => {

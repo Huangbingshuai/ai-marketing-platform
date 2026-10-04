@@ -256,16 +256,32 @@ class ArkSeedanceProvider:
         fallback_url: str | None,
         deadline: float,
     ) -> str:
+        # A signed URL for the frozen local file is an explicit recovery source.
+        # Looking up an old Ark task again does NOT renew its output URL.
+        if fallback_url is not None:
+            if await self._reference_video_readable(fallback_url):
+                return fallback_url
+            raise ProviderError(
+                "SEEDANCE_REFERENCE_VIDEO_UNAVAILABLE",
+                "系统保存的参考视频地址无法访问，请检查公网素材访问配置",
+                retryable=False,
+            )
         source_task_id = (
             snapshot.input_video.provider_task_id
             if snapshot.input_video is not None
             else None
         )
         if source_task_id is not None:
-            source = await self._read_task_with_retry(
-                source_task_id,
-                deadline,
-            )
+            try:
+                source = await self._read_task_with_retry(source_task_id, deadline)
+            except ProviderError as exc:
+                if exc.code != "SEEDANCE_HTTP_404":
+                    raise
+                raise ProviderError(
+                    "SEEDANCE_SOURCE_VIDEO_UNAVAILABLE",
+                    "Seedance 原视频任务已过期或删除，请改用系统保存的素材",
+                    retryable=False,
+                ) from exc
             status = (_text(source.get("status")) or "").casefold()
             source_url = self._output_url(source)
             if status not in {"succeeded", "completed", "success"} or not source_url:
@@ -274,14 +290,53 @@ class ArkSeedanceProvider:
                     "Seedance 原视频任务已不可复用",
                     retryable=False,
                 )
+            if not await self._reference_video_readable(source_url):
+                raise ProviderError(
+                    "SEEDANCE_SOURCE_VIDEO_EXPIRED",
+                    "Seedance 原视频临时地址已失效，请改用系统保存的素材",
+                    retryable=False,
+                )
             return source_url
-        if fallback_url is not None:
-            return fallback_url
         raise ProviderError(
             "REFERENCE_VIDEO_REQUIRED",
             "视频返修任务缺少参考视频",
             retryable=False,
         )
+
+    async def _reference_video_readable(self, url: str) -> bool:
+        # HEAD is not consistently supported by provider object storage. Stream
+        # a one-byte range instead, close immediately, and never send Ark auth.
+        try:
+            async with self._download_client.stream(
+                "GET", url, headers={"Range": "bytes=0-0"}
+            ) as response:
+                if response.status_code in {400, 401, 403, 404, 410}:
+                    return False
+                if response.status_code >= 400:
+                    raise ProviderError(
+                        "SEEDANCE_REFERENCE_VIDEO_NETWORK",
+                        "参考视频读取暂时失败，请稍后重试",
+                        retryable=response.status_code == 429
+                        or response.status_code >= 500,
+                    )
+                content_type = (
+                    response.headers.get("content-type", "").split(";", 1)[0].strip()
+                )
+                if content_type and content_type not in {
+                    "video/mp4",
+                    "video/quicktime",
+                    "application/octet-stream",
+                }:
+                    return False
+                async for chunk in response.aiter_bytes(chunk_size=1):
+                    return bool(chunk)
+                return False
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                "SEEDANCE_REFERENCE_VIDEO_NETWORK",
+                "参考视频读取暂时失败，请稍后重试",
+                retryable=True,
+            ) from exc
 
     async def _read_task_with_retry(
         self, provider_task_id: str, deadline: float
