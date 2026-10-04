@@ -22,6 +22,10 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   effectTemplateMixContentDuration,
+  effectTemplateMixSourceChanges,
+  effectTemplateMixSlotDurationLimit,
+  effectTemplateMixSlotDurationMessage,
+  effectTemplateMixSlotDurationValid,
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
   PACKAGING_AUDIO_GAIN_CEILING,
@@ -44,6 +48,8 @@ import {
   Bot,
   Captions,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clapperboard,
   Film,
   Focus,
@@ -65,6 +71,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from '@lucide/vue';
+import { createScopedTimelineHistory } from './effect-template-mix-history';
 import {
   computed,
   nextTick,
@@ -81,16 +88,25 @@ import {
   createEffectCaptionVoice,
   createEffectTemplateMixAiRun,
   createEmptyEffectTemplateMixVariant,
+  getBackgroundEffectTemplateMixAiRun,
   getEffectTemplateMixAiRun,
   loadEffectTemplateMixWorkspace,
+  loadEffectTemplateMixSources,
   saveEffectTemplateMixDraft,
   serializeEffectTemplateMixDraft,
   syncEffectFinalOutput,
   updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
-import { apiUrl } from '../../../api/http-client';
+import { ApiClientError, apiUrl } from '../../../api/http-client';
+import { MixDraftRaceGuard, rebaseMixDraft, saveLatestMixDraft } from './effect-template-mix-draft-race';
 import { resolveEffectTemplateMixMaterialRoles } from '@ai-marketing/contracts';
+import {
+  activateEffectWorkflowBranch,
+  getEffectWorkflowBranchTree,
+} from '../../../platform/workflow/api/workflow-working.api';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import { effectBranchNavigationMatches, type EffectBranchNavigation } from '../shared/effect-branch-navigation';
+import { stepTemplateMixDuration } from './effect-template-mix-duration-input';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
   EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY,
@@ -122,6 +138,10 @@ import {
   type AudioRowTrack,
 } from './effect-template-mix-audio-lanes';
 import { rememberWorkbench, takeWorkbench } from './effect-template-mix-workbench-handoff';
+import {
+  forgetPackagingNavigation,
+  markPackagingBranchOpened,
+} from './effect-packaging-navigation';
 import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
 import EffectMusicLibrary from './EffectMusicLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
@@ -129,11 +149,17 @@ import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-wa
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
 import { splitRangeAtPlayhead } from './effect-template-mix-split';
 import { TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
+import {
+  isMixWorkspaceSwitching,
+  readMixWorkspaceWithDeadline,
+} from './effect-template-mix-workspace-load';
 
 const props = defineProps<{
   products: EffectImportProduct[];
   projectId: string;
   workflowRunId: string;
+  branchTemplateId?: string | null;
+  branchNavigation?: EffectBranchNavigation | null;
   previewTarget?: {
     projectId: string;
     workflowRunId: string;
@@ -144,18 +170,51 @@ const props = defineProps<{
 const emit = defineEmits<{
   back: [];
   next: [];
-  workflowRunChange: [];
+  workflowRunChange: [
+    detail?: {
+      kind: 'FILL' | 'PACKAGING';
+      workflowRunId: string;
+      fromRevision: number | null;
+      toRevision: number | null;
+    },
+  ];
   notice: [text: string, kind: Notice['kind']];
 }>();
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type TemplateUi = { selectedSlotId: string; selectedVariantId: string };
 
 const pageState = ref<'ERROR' | 'LOADING' | 'READY'>('LOADING');
-const runSwitching = ref(false);
+const installedWorkspaceScope = ref('');
+const requestedWorkspaceScope = ref<string | null>(null);
+const currentWorkspaceScope = computed(() => `${props.projectId}:${props.workflowRunId}`);
+const runSwitching = computed(
+  () =>
+    pageState.value === 'READY' &&
+    isMixWorkspaceSwitching(
+      requestedWorkspaceScope.value,
+      installedWorkspaceScope.value,
+      currentWorkspaceScope.value,
+    ),
+);
+let workbenchActive = true;
+let openingPackagingRunId: string | null = null;
+let openingFillRunId: string | null = null;
+let deferredPackagingCompletion: {
+  run: PackagingRun;
+  variantId: string;
+  projectId: string;
+  sourceWorkflowRunId: string;
+} | null = null;
+let deferredFillCompletion: {
+  run: EffectTemplateMixAiRun;
+  projectId: string;
+  sourceWorkflowRunId: string;
+} | null = null;
 const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
 // Keep the confirmed clip pool available while the initial template draft is bootstrapped.
 const sourceMaterials = ref<EffectTemplateMixMaterial[]>([]);
+const renderSlotDurationLimit = ref<number | null>(null);
 const templateCreationReady = ref(false);
 const checkingTemplateCreation = ref(false);
 const activeTemplateId = ref('');
@@ -178,10 +237,11 @@ const packagingActionLabel = computed(() =>
   packagingActionText(packagingReady.value, packagingRunStatus.value),
 );
 const packagingActionBlockReason = computed(() => {
+  if (runSwitching.value) return '正在同步新分支，请稍后再包装。';
   const entry = activeEntry.value;
   if (!entry) return null;
-  if (entry.needsAiFill)
-    return '当前模板或成片仍需重新智能填充；请先更新素材并完成混剪校验。';
+  if (entry.packagingSourceLocked) return '智能成片包装正在进行，暂时不能再次包装。';
+  if (entry.needsAiFill) return '当前模板或成片仍需重新智能填充；请先更新素材并完成混剪校验。';
   return null;
 });
 const committedVersions = reactive<Record<string, number>>({});
@@ -191,6 +251,12 @@ const saveState = ref<'dirty' | 'saved' | 'saving'>('saved');
 const mutating = ref(false);
 const fillStartPending = ref(false);
 const aiRuns = ref<EffectTemplateMixAiRun[]>([]);
+const backgroundAiRun = ref<EffectTemplateMixAiRun | null>(null);
+let backgroundAiTimer: ReturnType<typeof setTimeout> | undefined;
+let backgroundAiGeneration = 0;
+const backgroundAiBusy = computed(() =>
+  ['QUEUED', 'RUNNING'].includes(backgroundAiRun.value?.status ?? ''),
+);
 const classificationPools = ref<EffectTemplateMixClassificationPool[]>([]);
 const activeAiRun = computed(
   () =>
@@ -199,6 +265,12 @@ const activeAiRun = computed(
         run.templateId === activeTemplateId.value &&
         (run.status === 'QUEUED' || run.status === 'RUNNING'),
     ) ?? null,
+);
+const displayedBackgroundAi = computed(
+  () => backgroundAiBusy.value && backgroundAiRun.value?.templateId === activeTemplateId.value,
+);
+const displayedAiRun = computed(() =>
+  displayedBackgroundAi.value ? backgroundAiRun.value : activeAiRun.value,
 );
 const failedAiRun = computed(() => {
   const latest = aiRuns.value.find((run) => run.templateId === activeTemplateId.value);
@@ -290,7 +362,7 @@ const deletingTemplateId = ref('');
 const workflowDialogOpen = ref(false);
 const selectedWorkflowStage = ref<EffectTemplateMixAiRun['stage'] | null>(null);
 const notice = ref<Notice | null>(null);
-const newTemplateName = ref('新品跑量模板');
+const newTemplateName = ref('');
 const templateNameBeforeEdit = ref('');
 const templateNameKey = (name: string): string => name.normalize('NFKC').trim().toLowerCase();
 const hasTemplateNameConflict = (name: string, exceptId?: string): boolean => {
@@ -308,14 +380,6 @@ const activeTemplateNameConflict = computed(() =>
     ? hasTemplateNameConflict(workspace.value.template.name, activeTemplateId.value)
     : false,
 );
-const nextAvailableTemplateName = (baseName: string): string => {
-  if (!hasTemplateNameConflict(baseName)) return baseName;
-  for (let suffix = 2; suffix < 1000; suffix += 1) {
-    const candidate = `${baseName} ${suffix}`;
-    if (!hasTemplateNameConflict(candidate)) return candidate;
-  }
-  return `${baseName} ${crypto.randomUUID().slice(0, 8)}`;
-};
 const displayedTimelineSlotId = ref('');
 const playerUnavailableSlotId = ref('');
 const transitionFrame = ref('');
@@ -371,6 +435,7 @@ type TimelineEditSnapshot = {
 };
 const timelineUndoStack = ref<TimelineEditSnapshot[]>([]);
 const timelineRedoStack = ref<TimelineEditSnapshot[]>([]);
+const timelineHistoryStore = createScopedTimelineHistory<TimelineEditSnapshot>();
 const createNameInput = ref<HTMLInputElement | null>(null);
 const dialogTrigger = ref<HTMLElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
@@ -381,12 +446,19 @@ let controller: AbortController | undefined;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSave: Promise<boolean> | undefined;
-let queuedOutputSync: { projectId: string; workflowRunId: string;
-  revision: number; templateIds: Set<string> } | null = null;
+const draftRace = new MixDraftRaceGuard();
+let savedDraftBaseline: EffectTemplateMixDraft | null = null;
+let draftSaveBlocked = false;
+let queuedOutputSync: {
+  projectId: string;
+  workflowRunId: string;
+  revision: number;
+  templateIds: Set<string>;
+} | null = null;
 let outputSyncTask: Promise<void> | null = null;
 let outputSyncErrorShown = false;
-const outputSyncChannel = typeof BroadcastChannel === 'undefined' ? null
-  : new BroadcastChannel('effect-final-output-sync');
+const outputSyncChannel =
+  typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('effect-final-output-sync');
 const queuedOutputRevision = (): number | null => queuedOutputSync?.revision ?? null;
 let playbackAnimationFrame: number | undefined;
 let playerScrubberAnimations: Animation[] = [];
@@ -413,27 +485,31 @@ const pollControllers = new Map<string, AbortController>();
 const activeEntry = computed(
   () => catalog.value.find(({ id }) => id === activeTemplateId.value) ?? null,
 );
-const packagingLocked = computed(() => Boolean(activeEntry.value?.packagingLocked));
-/**
- * Only a packaging run that is still working locks anything. Once it is over, the package is a
- * finished result in its own Run, and a new fill lands on a branch of its own instead of touching
- * it — so a completed package never takes the template configuration away. An unknown status is
- * not a running one: the packaging panel only reports it in the workbench view, and the template
- * configuration is read from the config view.
- */
-const packagingInFlight = computed(
+const pendingPackagingScope = ref('');
+const packagingScopeKey = computed(
+  () => `${props.projectId}:${props.workflowRunId}:${activeTemplateId.value}`,
+);
+const packagingSourceAutoLocked = computed(
   () =>
-    packagingLocked.value &&
-    ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value ?? ''),
+    Boolean(activeEntry.value?.packagingSourceLocked) ||
+    pendingPackagingScope.value === packagingScopeKey.value,
+);
+/**
+ * A packaging run that is still working blocks a new fill from the same Run. A completed package
+ * keeps its own result and never makes its parent timeline read-only.
+ */
+const packagingInFlight = computed(() =>
+  ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value ?? ''),
 );
 const projectEditLocked = computed(() =>
   Boolean(
+    runSwitching.value ||
     activeEntry.value?.aiFillLocked ||
     activeAiRun.value ||
-    fillStartPending.value,
+    fillStartPending.value ||
+    packagingSourceAutoLocked.value,
   ),
 );
-/** Only smart fill mutates slot assignments; packaging works from its frozen snapshot. */
 const templateEditLocked = projectEditLocked;
 /**
  * The voice only feeds future packaging and voice redos, never existing audio, so it stays editable
@@ -442,6 +518,13 @@ const templateEditLocked = projectEditLocked;
  */
 const voiceSelectLocked = computed(() => projectEditLocked.value);
 const workspace = computed(() => activeEntry.value?.workspace ?? null);
+const templateSlotDurationLimit = computed(() => renderSlotDurationLimit.value);
+const templateDurationInputLocked = computed(
+  () =>
+    templateEditLocked.value ||
+    templateSlotDurationLimit.value === null ||
+    templateSlotDurationLimit.value < 4,
+);
 const activeUi = computed(() =>
   activeEntry.value ? uiByTemplate[activeEntry.value.id] : undefined,
 );
@@ -451,6 +534,20 @@ const selectedVariant = computed(
     workspace.value?.variants[0] ??
     null,
 );
+const timelineHistoryScope = computed(() => JSON.stringify([
+  props.projectId,
+  props.workflowRunId,
+  activeTemplateId.value,
+  selectedVariant.value?.id ?? '',
+]));
+const activateTimelineHistoryScope = (): void => {
+  const history = timelineHistoryStore.switchScope(timelineHistoryScope.value, {
+    undo: timelineUndoStack.value,
+    redo: timelineRedoStack.value,
+  });
+  timelineUndoStack.value = history.undo;
+  timelineRedoStack.value = history.redo;
+};
 /**
  * Which row each visible audio clip sits on, using the same definition the timeline draws with.
  * Muting is a property of the row rather than of the clip, so every playback path has to resolve a
@@ -468,29 +565,15 @@ const audioRowByClipId = computed<Record<string, number>>(() => {
 });
 const mutedAudioClip = (clipId: string): boolean =>
   audioRowMuted.value[audioRowByClipId.value[clipId] ?? 0] ?? false;
-const selectedVariantRefreshSlotIds = computed(() => {
-  const variant = selectedVariant.value;
-  if (!variant || !workspace.value) return [];
-  return variant.slots.flatMap((slot) => {
-    const materialId = variant.bindings[slot.id];
-    const material = materialId
-      ? workspace.value?.materials.find(({ id }) => id === materialId)
-      : undefined;
-    const boundRevision = variant.bindingRevisions[slot.id];
-    return material?.available &&
-      (typeof boundRevision !== 'number' ||
-        !Number.isInteger(boundRevision) ||
-        material.artifactRevision > boundRevision)
-      ? [slot.id]
-      : [];
-  });
-});
+const variantSourceChanges = (variant: EffectTemplateMixVariant) =>
+  effectTemplateMixSourceChanges(variant, sourceMaterials.value);
+const templatePendingUpdateCount = (entry: EffectTemplateMixTemplateEntry) =>
+  entry.workspace.variants.filter((variant) => variantSourceChanges(variant).length > 0).length;
+const selectedVariantRefreshSlotIds = computed(() => selectedVariant.value
+  ? variantSourceChanges(selectedVariant.value).map((row) => row.slotId) : []);
 const canUndoTimeline = computed(() => timelineUndoStack.value.length > 0);
 const canRedoTimeline = computed(() => timelineRedoStack.value.length > 0);
-const clearTimelineHistory = (): void => {
-  timelineUndoStack.value = [];
-  timelineRedoStack.value = [];
-};
+let groupedTimelineMove = false;
 const captureTimelineSnapshot = (): TimelineEditSnapshot | null => {
   const variant = selectedVariant.value;
   if (!variant) return null;
@@ -504,6 +587,7 @@ const captureTimelineSnapshot = (): TimelineEditSnapshot | null => {
   };
 };
 const rememberTimelineEdit = (): void => {
+  if (groupedTimelineMove) return;
   const snapshot = captureTimelineSnapshot();
   if (!snapshot) return;
   timelineUndoStack.value = [...timelineUndoStack.value.slice(-49), snapshot];
@@ -1045,7 +1129,7 @@ const availableMaterials = computed(() => {
   ]);
   const byFile = new Map<string, EffectTemplateMixMaterial>();
   for (const material of workspace.value?.materials ?? []) {
-    if (!material.available) continue;
+    if (!material.available || material.activeSource === false) continue;
     const fileId = material.fileObjectId || material.id;
     const previous = byFile.get(fileId);
     const rank = (id: string) =>
@@ -1111,12 +1195,18 @@ const aiFillBlockReason = computed<string | null>(() => {
     return '上一步没有已确认的视频素材，请先在视频渲染节点生成素材。';
   const variant = selectedVariant.value;
   const lockedSlotIds = new Set(variant?.manualSlotIds ?? []);
-  const lockedMaterialIds = new Set(
+  const lockedFileIds = new Set(
     [...lockedSlotIds]
       .map((slotId) => variant?.bindings[slotId] ?? '')
-      .filter((materialId) => Boolean(materialId)),
+      .filter((materialId) => Boolean(materialId))
+      .map((materialId) => {
+        const material = workspace.value?.materials.find(({ id }) => id === materialId);
+        return material?.fileObjectId || materialId;
+      }),
   );
-  const candidates = availableMaterials.value.filter(({ id }) => !lockedMaterialIds.has(id));
+  const candidates = availableMaterials.value.filter(
+    ({ fileObjectId, id }) => !lockedFileIds.has(fileObjectId || id),
+  );
   const unlockedSlots = slots.filter(({ id }) => !lockedSlotIds.has(id));
   const expired = expiredMaterialCount.value;
   const detail = expired ? `，其中 ${expired} 条已过期（对应的 Prompt 已更新）` : '';
@@ -1219,7 +1309,7 @@ const aiStageOutputs: Record<EffectTemplateMixAiRun['stage'], string> = {
 };
 const workflowRunForDisplay = computed(
   () =>
-    activeAiRun.value ??
+    displayedAiRun.value ??
     failedAiRun.value ??
     aiRuns.value.find((run) => run.templateId === activeTemplateId.value) ??
     null,
@@ -1291,9 +1381,13 @@ const openCreate = async (event: MouseEvent): Promise<void> => {
       const response = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
       if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return;
       templateCreationReady.value =
-        response.data.templateCreationReady ?? response.data.materials.some((item) => item.available);
+        response.data.templateCreationReady ??
+        response.data.materials.some((item) => item.available);
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : '无法检查视频渲染状态，请稍后重试', 'error');
+      showNotice(
+        error instanceof Error ? error.message : '无法检查视频渲染状态，请稍后重试',
+        'error',
+      );
       return;
     } finally {
       checkingTemplateCreation.value = false;
@@ -1308,7 +1402,7 @@ const openCreate = async (event: MouseEvent): Promise<void> => {
     }
   }
   dialogTrigger.value = trigger;
-  newTemplateName.value = nextAvailableTemplateName('新品跑量模板');
+  newTemplateName.value = '';
   createOpen.value = true;
   await nextTick();
   createNameInput.value?.focus();
@@ -1423,13 +1517,19 @@ const initializeUi = (): void => {
 const installWorkspaceData = (
   data: Awaited<ReturnType<typeof loadEffectTemplateMixWorkspace>>['data'],
 ): void => {
-  clearTimelineHistory();
   resetTimelinePlayerState();
   sourceMaterials.value = data.materials;
+  renderSlotDurationLimit.value =
+    data.slotDurationMaxSeconds !== undefined
+      ? data.slotDurationMaxSeconds
+      : effectTemplateMixSlotDurationLimit(data.materials);
   templateCreationReady.value =
     data.templateCreationReady ?? data.materials.some((item) => item.available);
   catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
   draftRevision.value = data.draftRevision;
+  savedDraftBaseline = cloneMix(serializeEffectTemplateMixDraft(data.draft.templates, data.draft.activeTemplateId));
+  draftSaveBlocked = false;
+  draftRace.changed();
   activeTemplateId.value =
     catalog.value.find(({ id }) => id === data.draft.activeTemplateId)?.id ??
     catalog.value[0]?.id ??
@@ -1447,6 +1547,7 @@ const installWorkspaceData = (
     .filter(({ stale }) => !stale)
     .forEach(({ templateId, editVersion }) => (committedVersions[templateId] = editVersion));
   initializeUi();
+  activateTimelineHistoryScope();
   // The rows are compacted against the packaging checkpoint, which only exists for the project the
   // user is on, so only that one is normalized here.
   if (selectedVariant.value) normalizeVariantAudioLanes(selectedVariant.value);
@@ -1473,7 +1574,16 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
   }
   const previousVariantCount =
     catalog.value.find(({ id }) => id === run.templateId)?.workspace.variants.length ?? 0;
+  if (!(await flushPendingEdits())) return;
+  const readToken = draftRace.readToken();
+  const scope = currentWorkspaceScope.value;
   const response = await loadEffectTemplateMixWorkspace(props.projectId, props.workflowRunId);
+  if (scope !== currentWorkspaceScope.value) return;
+  if (!draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')) {
+    // The worker is complete, so ordinary running-task polling cannot recover this skipped read.
+    pollTimers.set(run.id, setTimeout(() => void finishAiRun(run), 1200));
+    return;
+  }
   installWorkspaceData(response.data);
   const variantId = run.outputVariantId;
   const ui = uiByTemplate[run.templateId];
@@ -1532,6 +1642,9 @@ const pollAiRun = async (runId: string): Promise<void> => {
     showNotice(error instanceof Error ? error.message : '智能填充进度读取失败', 'error');
   }
 };
+let loadedWorkspaceRunId = '';
+let requestedWorkspaceRunId = '';
+let focusedBranchTemplate: { workflowRunId: string; templateId: string } | null = null;
 const load = async (): Promise<void> => {
   stopPolling();
   controller?.abort();
@@ -1539,22 +1652,56 @@ const load = async (): Promise<void> => {
   const requestController = controller;
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
+  requestedWorkspaceScope.value = `${projectId}:${workflowRunId}`;
+  requestedWorkspaceRunId = workflowRunId;
   const wasReady = pageState.value === 'READY';
   if (!wasReady) pageState.value = 'LOADING';
   try {
     if (!projectId || !workflowRunId) throw new Error('当前工作流运行尚未准备好');
-    const response = await loadEffectTemplateMixWorkspace(
-      projectId,
-      workflowRunId,
-      requestController.signal,
+    // A same-Run background reload must not race an autosave or discard its unsaved tail.
+    if (wasReady && installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
+      !(await flushPendingEdits())) return;
+    if (requestController !== controller || projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId) return;
+    const readToken = draftRace.readToken();
+    const response = await readMixWorkspaceWithDeadline(
+      (signal) => loadEffectTemplateMixWorkspace(projectId, workflowRunId, signal),
+      requestController,
     );
     if (
       requestController !== controller ||
       projectId !== props.projectId ||
       workflowRunId !== props.workflowRunId
-    ) return;
+    )
+      return;
+    if (wasReady && installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
+      !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')) {
+      for (const run of aiRuns.value.filter(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
+        void pollAiRun(run.id);
+      return;
+    }
+    const switchedRun = loadedWorkspaceRunId !== workflowRunId;
+    const branchTemplateId =
+      switchedRun || focusedBranchTemplate?.workflowRunId === workflowRunId
+        ? props.branchTemplateId
+        : null;
     installWorkspaceData(response.data);
+    installedWorkspaceScope.value = `${projectId}:${workflowRunId}`;
+    loadedWorkspaceRunId = workflowRunId;
+    if (branchTemplateId && catalog.value.some(({ id }) => id === branchTemplateId)) {
+      activeTemplateId.value = branchTemplateId;
+      focusedBranchTemplate = { workflowRunId, templateId: branchTemplateId };
+    } else if (switchedRun) {
+      focusedBranchTemplate = null;
+    }
     pageState.value = 'READY';
+    if (
+      switchedRun &&
+      branchTemplateId &&
+      response.data.draft.activeTemplateId !== branchTemplateId &&
+      activeTemplateId.value === branchTemplateId
+    )
+      scheduleSave();
     const running = response.data.aiRuns?.filter(
       ({ status }) => status === 'QUEUED' || status === 'RUNNING',
     );
@@ -1565,7 +1712,7 @@ const load = async (): Promise<void> => {
         (!targetVariantId || entry.workspace.variants.some(({ id }) => id === targetVariantId)),
       );
     });
-    const handoff = !wasReady || runSwitching.value ? takeWorkbench(workflowRunId) : null;
+    const handoff = !wasReady || switchedRun ? takeWorkbench(workflowRunId) : null;
     if (resumedRun) {
       activeTemplateId.value = resumedRun.templateId;
       const ui = uiByTemplate[resumedRun.templateId];
@@ -1589,7 +1736,8 @@ const load = async (): Promise<void> => {
         if (ui) {
           ui.selectedVariantId =
             entry.workspace.variants.find(({ id }) => id === handoff.variantId)?.id ??
-            (entry.workspace.variants[0]?.id ?? '');
+            entry.workspace.variants[0]?.id ??
+            '';
           ui.selectedSlotId =
             entry.workspace.variants.find(({ id }) => id === ui.selectedVariantId)?.slots[0]?.id ??
             '';
@@ -1598,23 +1746,45 @@ const load = async (): Promise<void> => {
         view.value = 'EDITOR';
       }
     }
+    await applyBranchNavigation();
     applyPreviewTarget();
     for (const run of running ?? []) void pollAiRun(run.id);
+    void refreshBackgroundAiRun();
+    queueMicrotask(resumeDeferredFill);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
     if (requestController !== controller || workflowRunId !== props.workflowRunId) return;
+    if (wasReady && (saveState.value === 'dirty' || saveState.value === 'saving')) {
+      showNotice('工作区暂未刷新，本页未保存的编辑已保留', 'warning');
+      return;
+    }
     errorMessage.value = error instanceof Error ? error.message : '混剪工作区加载失败';
     pageState.value = 'ERROR';
   } finally {
-    if (requestController === controller) runSwitching.value = false;
+    if (requestController === controller) requestedWorkspaceScope.value = null;
   }
+};
+/** Read authoritative freshness as soon as a saved change becomes visible to the server. */
+const notifyOutputChange = (projectId: string, workflowRunId: string): void => {
+  const detail = { projectId, workflowRunId };
+  window.dispatchEvent(new CustomEvent('effect-final-output-sync', { detail }));
+  outputSyncChannel?.postMessage(detail);
 };
 /** Coalesce rapid edits, but retain every edited template across successive draft revisions. */
 const queueOutputSync = (revision: number, templateId: string): void => {
-  const sameScope = queuedOutputSync?.projectId === props.projectId &&
+  // This queue is entered only after a draft/audio save. Delivered-film freshness must not wait
+  // for the separate pending-preview synchronization request.
+  notifyOutputChange(props.projectId, props.workflowRunId);
+  const sameScope =
+    queuedOutputSync?.projectId === props.projectId &&
     queuedOutputSync?.workflowRunId === props.workflowRunId;
-  if (!sameScope) queuedOutputSync = { projectId: props.projectId,
-    workflowRunId: props.workflowRunId, revision, templateIds: new Set() };
+  if (!sameScope)
+    queuedOutputSync = {
+      projectId: props.projectId,
+      workflowRunId: props.workflowRunId,
+      revision,
+      templateIds: new Set(),
+    };
   queuedOutputSync!.revision = Math.max(queuedOutputSync!.revision, revision);
   if (templateId) queuedOutputSync!.templateIds.add(templateId);
   if (!outputSyncTask) outputSyncTask = drainOutputSync();
@@ -1631,17 +1801,17 @@ const drainOutputSync = async (): Promise<void> => {
         if (queued.projectId !== props.projectId || queued.workflowRunId !== props.workflowRunId)
           break;
         try {
-          const response = await syncEffectFinalOutput(queued.projectId,
-            queued.workflowRunId, { expectedDraftRevision: queued.revision,
-              ...(templateId ? { templateId } : {}) });
+          const response = await syncEffectFinalOutput(queued.projectId, queued.workflowRunId, {
+            expectedDraftRevision: queued.revision,
+            ...(templateId ? { templateId } : {}),
+          });
           const newerRevision = queuedOutputRevision();
-          if (response.data.superseded && newerRevision !== null &&
-            newerRevision > queued.revision)
+          if (response.data.superseded && newerRevision !== null && newerRevision > queued.revision)
             queueOutputSync(newerRevision, templateId);
           else if (!response.data.superseded) {
             outputSyncErrorShown = false;
-            outputSyncChannel?.postMessage({ projectId: queued.projectId,
-              workflowRunId: queued.workflowRunId });
+            if (response.data.refreshed.length)
+              notifyOutputChange(queued.projectId, queued.workflowRunId);
           }
         } catch {
           if (!outputSyncErrorShown) {
@@ -1665,44 +1835,87 @@ const drainOutputSync = async (): Promise<void> => {
  */
 const persist = (keepalive = false): Promise<boolean> => {
   clearTimeout(saveTimer);
+  const scope = currentWorkspaceScope.value;
   const previous = pendingSave ?? Promise.resolve(true);
+  const save = async (): Promise<boolean> => {
+    if (scope !== currentWorkspaceScope.value || draftSaveBlocked) return false;
+    const saved = await saveLatestMixDraft(async () => {
+      if (scope !== currentWorkspaceScope.value) return false;
+      const result = await persistNow(keepalive);
+      clearTimeout(saveTimer);
+      return result;
+    }, () => scope === currentWorkspaceScope.value && saveState.value === 'dirty');
+    return saved && scope === currentWorkspaceScope.value;
+  };
   const next = previous.then(
-    () => persistNow(keepalive),
-    () => persistNow(keepalive),
+    save,
+    save,
   );
   pendingSave = next;
   return next;
 };
 const persistNow = async (keepalive = false): Promise<boolean> => {
-  if (pageState.value !== 'READY') return false;
+  if (pageState.value !== 'READY' || installedWorkspaceScope.value !== currentWorkspaceScope.value)
+    return false;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  draftRace.beginWrite();
   saveState.value = 'saving';
   try {
     const savedTemplateId = activeTemplateId.value;
-    const result = await saveEffectTemplateMixDraft(
-      props.projectId,
-      props.workflowRunId,
-      draftRevision.value,
-      serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value),
-      keepalive,
+    let snapshot = cloneMix(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value));
+    const write = () => saveEffectTemplateMixDraft(
+      projectId, workflowRunId, draftRevision.value, snapshot, keepalive, true,
     );
+    let result;
+    try {
+      result = await write();
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.status !== 409 ||
+        !error.message.includes('节点内容已在其他页面更新') || !savedDraftBaseline) throw error;
+      const latest = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
+      if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return false;
+      const remote = serializeEffectTemplateMixDraft(latest.data.draft.templates, latest.data.draft.activeTemplateId);
+      const merged = rebaseMixDraft(savedDraftBaseline,
+        cloneMix(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value)), remote);
+      if (!merged) {
+        draftSaveBlocked = true;
+        throw new Error('当前模板在其他页面也有修改，本页编辑已保留，未覆盖对方内容。请先处理另一页面的编辑。');
+      }
+      draftRevision.value = latest.data.draftRevision;
+      savedDraftBaseline = cloneMix(remote);
+      catalog.value = merged.templates.map((entry) => hydrate(entry, latest.data.materials));
+      activeTemplateId.value = merged.activeTemplateId;
+      snapshot = cloneMix(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value));
+      // Only one guarded rebase; a second concurrent write is not force-overwritten.
+      result = await write();
+    }
+    if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return false;
     draftRevision.value = result.data.draftRevision;
-    saveState.value = 'saved';
+    savedDraftBaseline = snapshot;
+    saveState.value = JSON.stringify(snapshot) ===
+      JSON.stringify(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value))
+      ? 'saved' : 'dirty';
     if (typeof result.data.draftRevision === 'number')
       queueOutputSync(result.data.draftRevision, savedTemplateId);
     return true;
   } catch (error) {
+    if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return false;
     if (error instanceof Error && error.message.includes('已进入智能填充并锁定')) {
       saveState.value = 'saved';
-      await load();
+      queueMicrotask(() => void load());
       showNotice('智能填充开始后，此模板已锁定；如需修改请新建模板', 'warning');
       return false;
     }
     saveState.value = 'dirty';
     showNotice(error instanceof Error ? error.message : '草稿保存失败', 'error');
     return false;
+  } finally {
+    draftRace.endWrite();
   }
 };
 const scheduleSave = (): void => {
+  if (runSwitching.value) return;
   if (projectEditLocked.value) {
     clearTimeout(saveTimer);
     saveState.value = 'saved';
@@ -1710,10 +1923,14 @@ const scheduleSave = (): void => {
     return;
   }
   saveState.value = 'dirty';
+  // A new edit (including undoing the conflicting change) may retry the guarded merge.
+  draftSaveBlocked = false;
+  draftRace.changed();
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => (pendingSave = persist()), 450);
+  saveTimer = setTimeout(() => (pendingSave = persist()), 150);
 };
 const bump = (): void => {
+  if (groupedTimelineMove) return;
   if (workspace.value) workspace.value.editVersion += 1;
   scheduleSave();
 };
@@ -2917,9 +3134,9 @@ const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<vo
   if (
     entry.aiFillLocked ||
     Boolean(entry.filledTemplateHash) ||
-    entry.packagingLocked ||
     aiRuns.value.some(
-      (run) => run.templateId === entry.id &&
+      (run) =>
+        run.templateId === entry.id &&
         (run.status === 'QUEUED' || run.status === 'RUNNING' || run.status === 'COMPLETED'),
     ) ||
     committedVersions[entry.id]
@@ -2941,9 +3158,8 @@ const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<vo
   try {
     if (!(await persist())) return;
     const remaining = catalog.value.filter(({ id }) => id !== entry.id);
-    const nextActiveId = activeTemplateId.value === entry.id
-      ? (remaining[0]?.id ?? '')
-      : activeTemplateId.value;
+    const nextActiveId =
+      activeTemplateId.value === entry.id ? (remaining[0]?.id ?? '') : activeTemplateId.value;
     const result = await saveEffectTemplateMixDraft(
       props.projectId,
       props.workflowRunId,
@@ -3207,6 +3423,7 @@ const previewLibraryMaterial = async (material: EffectTemplateMixMaterial): Prom
   }
 };
 const selectTemplate = (id: string): void => {
+  focusedBranchTemplate = null;
   playing.value = false;
   pauseTimelinePlayers();
   resetTimelinePlayerState();
@@ -3214,9 +3431,19 @@ const selectTemplate = (id: string): void => {
   stopPlaybackClock();
   transitionFrame.value = '';
   activeTemplateId.value = id;
-  clearTimelineHistory();
+  activateTimelineHistoryScope();
   resetWorkbenchDefaults();
   scheduleSave();
+};
+const focusBranchTemplate = (templateId: string): void => {
+  if (
+    pageState.value !== 'READY' ||
+    loadedWorkspaceRunId !== props.workflowRunId ||
+    !catalog.value.some(({ id }) => id === templateId)
+  )
+    return;
+  selectTemplate(templateId);
+  focusedBranchTemplate = { workflowRunId: props.workflowRunId, templateId };
 };
 const enterEditor = (): void => {
   playing.value = false;
@@ -3227,7 +3454,7 @@ const enterEditor = (): void => {
   transitionFrame.value = '';
   resetWorkbenchDefaults();
   playhead.value = 0;
-  clearTimelineHistory();
+  activateTimelineHistoryScope();
   view.value = 'EDITOR';
 };
 const selectVariant = (id: string): void => {
@@ -3244,8 +3471,36 @@ const selectVariant = (id: string): void => {
   activeUi.value.selectedSlotId =
     workspace.value.variants.find((item) => item.id === id)?.slots[0]?.id ?? '';
   playhead.value = 0;
-  clearTimelineHistory();
+  activateTimelineHistoryScope();
   void syncPlayerToPlayhead(false);
+};
+let lastBranchNavigation: EffectBranchNavigation | null = null;
+let branchNavigationReloading = false;
+const applyBranchNavigation = async (): Promise<void> => {
+  const target = props.branchNavigation;
+  if (!effectBranchNavigationMatches(target, props.projectId, props.workflowRunId) ||
+    target.nodeId !== 'TEMPLATE_MIX' || target === lastBranchNavigation ||
+    branchNavigationReloading || !workbenchActive || pageState.value !== 'READY' ||
+    installedWorkspaceScope.value !== currentWorkspaceScope.value)
+    return;
+  lastBranchNavigation = target;
+  workflowDialogOpen.value = false;
+  if (!target.templateId || !catalog.value.some(({ id }) => id === target.templateId)) {
+    view.value = 'CONFIG';
+    showNotice('所选模板不在此分支中，请从模板列表重新选择', 'warning');
+    return;
+  }
+  focusBranchTemplate(target.templateId);
+  if (target.mixStage === 'TEMPLATE') {
+    view.value = 'CONFIG';
+    return;
+  }
+  enterEditor();
+  await nextTick();
+  if (props.branchNavigation !== target ||
+    !effectBranchNavigationMatches(target, props.projectId, props.workflowRunId)) return;
+  if (target.mixStage === 'PACKAGING') openPackaging('WORKFLOW');
+  else if (target.mixStage === 'FILL') await openWorkflowDialog();
 };
 let lastPreviewTarget: typeof props.previewTarget = null;
 const applyPreviewTarget = (): void => {
@@ -3313,8 +3568,7 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
     return;
   }
   const targets = new Set(items.map(({ targetSlotId }) => targetSlotId));
-  const materialIds = items.map(({ materialId }) => materialId);
-  if (targets.size !== items.length || new Set(materialIds).size !== items.length) {
+  if (targets.size !== items.length) {
     showNotice('复制内容与目标槽位重复，请重新选择后粘贴', 'warning');
     return;
   }
@@ -3336,12 +3590,22 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
     showNotice('复制素材已失效或超出目标时长，未粘贴任何内容', 'warning');
     return;
   }
+  const pastedFiles = resolved.map((item) => item!.material.fileObjectId || item!.material.id);
+  if (new Set(pastedFiles).size !== pastedFiles.length) {
+    showNotice('复制内容重复使用了同一个视频素材', 'warning');
+    return;
+  }
   const overwrittenSlots = new Set(items.map(({ targetSlotId }) => targetSlotId));
   if (
     resolved.some((item) =>
-      variant.slots.some(
-        (slot) => !overwrittenSlots.has(slot.id) && variant.bindings[slot.id] === item!.material.id,
-      ),
+      variant.slots.some((slot) => {
+        if (overwrittenSlots.has(slot.id)) return false;
+        const bound = materials.find(({ id }) => id === variant.bindings[slot.id]);
+        return (
+          bound &&
+          (bound.fileObjectId || bound.id) === (item!.material.fileObjectId || item!.material.id)
+        );
+      }),
     )
   ) {
     showNotice('同一成片不能重复使用同一个视频素材', 'warning');
@@ -3645,32 +3909,6 @@ const changeTimelineTrimStart = (slotId: string, raw: number): void => {
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
   bump();
 };
-const resizeTimelineSlot = (
-  slotId: string,
-  side: 'LEFT' | 'RIGHT',
-  rawStart: number,
-  rawOffset: number,
-  rawDuration: number,
-): void => {
-  const variant = selectedVariant.value;
-  const slot = variant?.slots.find(({ id }) => id === slotId);
-  const material = slot ? materialForSlot(slot.id) : null;
-  if (!variant || !slot || !material) return;
-  const duration = Math.round(Number(rawDuration) * 1000) / 1000;
-  const offset = Math.round(Number(rawOffset) * 1000) / 1000;
-  const start = Math.round(Number(rawStart) * TIMELINE_FPS) / TIMELINE_FPS;
-  if (![duration, offset, start].every(Number.isFinite)) return;
-  const slotIndex = variant.slots.findIndex(({ id }) => id === slotId);
-  const hasMaterialOnSide = variant.slots.some((candidate, index) => {
-    if (candidate.id === slotId || !materialForSlot(candidate.id, variant)) return false;
-    return side === 'LEFT' ? index < slotIndex : index > slotIndex;
-  });
-  if (hasMaterialOnSide) return;
-  const nextOffset = Math.min(
-    Math.max(0, offset),
-    Math.max(0, Math.round((material.duration - 4) * 1000) / 1000),
-  );
-  if (material.duration < 4) return;
 /** Split the one selected timeline item at the playhead; its two pieces remain independently editable. */
 const splitTimelineMaterial = (
   target: { kind: 'VIDEO' | 'AUDIO' | 'CAPTION'; id: string },
@@ -3684,9 +3922,8 @@ const splitTimelineMaterial = (
     const slot = variant.slots.find(({ id }) => id === target.id);
     const range = currentTiming.value.slots.find(({ id }) => id === target.id);
     const material = materialForSlot(target.id, variant);
-    const cut = slot && range
-      ? splitRangeAtPlayhead(range.start, slot.duration, at, TIMELINE_FPS)
-      : null;
+    const cut =
+      slot && range ? splitRangeAtPlayhead(range.start, slot.duration, at, TIMELINE_FPS) : null;
     if (!slot || !material || !cut) return;
     const sourceOffset = Math.max(0, variant.offsets[target.id] ?? 0);
     const rightDuration = slot.duration - cut.leftDuration;
@@ -3718,7 +3955,8 @@ const splitTimelineMaterial = (
     };
     variant.slots.push(right);
     variant.bindings[right.id] = material.id;
-    variant.bindingRevisions[right.id] = variant.bindingRevisions[target.id] ?? material.artifactRevision;
+    variant.bindingRevisions[right.id] =
+      variant.bindingRevisions[target.id] ?? material.artifactRevision;
     variant.offsets[right.id] = sourceOffset + cut.leftDuration;
     variant.bindingMetadata ??= {};
     variant.bindingMetadata[right.id] = {
@@ -3775,16 +4013,17 @@ const splitTimelineMaterial = (
     return;
   }
 
-  const audioId = target.id.startsWith('detached:') ? target.id.slice('detached:'.length) : target.id;
+  const audioId = target.id.startsWith('detached:')
+    ? target.id.slice('detached:'.length)
+    : target.id;
   const detached = variant.detachedAudios?.find(({ id }) => id === audioId);
   const packageTarget = packagingAudioTarget(audioId);
-  const packagedAudio = packageTarget && packageTarget.kind !== 'CAPTION'
-    ? selectedPackaging.value && packagingAudio(selectedPackaging.value.checkpoint, packageTarget)
-    : undefined;
+  const packagedAudio =
+    packageTarget && packageTarget.kind !== 'CAPTION'
+      ? selectedPackaging.value && packagingAudio(selectedPackaging.value.checkpoint, packageTarget)
+      : undefined;
   const audio = detached ?? packagedAudio;
-  const cut = audio
-    ? splitRangeAtPlayhead(audio.start, audio.duration, at, TIMELINE_FPS)
-    : null;
+  const cut = audio ? splitRangeAtPlayhead(audio.start, audio.duration, at, TIMELINE_FPS) : null;
   if (!audio || !cut || (!detached && !selectedPackaging.value)) return;
   if ((variant.detachedAudios?.length ?? 0) >= 100) {
     showNotice('音频素材数量已达到上限，无法继续裁剪', 'warning');
@@ -3793,30 +4032,30 @@ const splitTimelineMaterial = (
   rememberTimelineEdit();
   const rightDuration = audio.duration - cut.leftDuration;
   const fadeIn = detached
-    ? detached.fadeIn ?? 0
+    ? (detached.fadeIn ?? 0)
     : packagingAudioFade(audio, packageTarget?.kind === 'MUSIC' ? 'MUSIC' : 'VOICE', 'fadeIn');
   const fadeOut = detached
-    ? detached.fadeOut ?? 0
+    ? (detached.fadeOut ?? 0)
     : packagingAudioFade(audio, packageTarget?.kind === 'MUSIC' ? 'MUSIC' : 'VOICE', 'fadeOut');
   const audioKind = detached
-    ? detached.audioKind ?? (detached.sourceAssetId ? 'MUSIC' : 'DETACHED')
+    ? (detached.audioKind ?? (detached.sourceAssetId ? 'MUSIC' : 'DETACHED'))
     : packageTarget?.kind === 'MUSIC'
       ? 'MUSIC'
       : 'VOICE';
   const right: EffectTemplateMixDetachedAudio = {
     id: crypto.randomUUID(),
-    ...(detached?.sourceAssetId ? { sourceAssetId: detached.sourceAssetId } : { sourceType: 'FILE' as const }),
+    ...(detached?.sourceAssetId
+      ? { sourceAssetId: detached.sourceAssetId }
+      : { sourceType: 'FILE' as const }),
     audioKind,
     ...(packageTarget?.kind === 'MUSIC' ? { loopSource: true } : {}),
     fileObjectId: audio.fileObjectId,
     name: `${detached?.name ?? (audioKind === 'MUSIC' ? '纯音乐' : '口播音频')}（后半段）`,
-    ...(
-      detached?.sourceDuration !== undefined
-        ? { sourceDuration: detached.sourceDuration }
-        : packageTarget?.kind === 'MUSIC'
-          ? {}
-          : { sourceDuration: (audio.offset ?? 0) + audio.duration }
-    ),
+    ...(detached?.sourceDuration !== undefined
+      ? { sourceDuration: detached.sourceDuration }
+      : packageTarget?.kind === 'MUSIC'
+        ? {}
+        : { sourceDuration: (audio.offset ?? 0) + audio.duration }),
     duration: rightDuration,
     start: at,
     offset: (audio.offset ?? 0) + cut.leftDuration,
@@ -3847,6 +4086,32 @@ const splitTimelineMaterial = (
   resetTimelinePlayerState();
   showNotice('音频已在播放针位置裁剪', 'success');
 };
+const resizeTimelineSlot = (
+  slotId: string,
+  side: 'LEFT' | 'RIGHT',
+  rawStart: number,
+  rawOffset: number,
+  rawDuration: number,
+): void => {
+  const variant = selectedVariant.value;
+  const slot = variant?.slots.find(({ id }) => id === slotId);
+  const material = slot ? materialForSlot(slot.id) : null;
+  if (!variant || !slot || !material) return;
+  const duration = Math.round(Number(rawDuration) * 1000) / 1000;
+  const offset = Math.round(Number(rawOffset) * 1000) / 1000;
+  const start = Math.round(Number(rawStart) * TIMELINE_FPS) / TIMELINE_FPS;
+  if (![duration, offset, start].every(Number.isFinite)) return;
+  const slotIndex = variant.slots.findIndex(({ id }) => id === slotId);
+  const hasMaterialOnSide = variant.slots.some((candidate, index) => {
+    if (candidate.id === slotId || !materialForSlot(candidate.id, variant)) return false;
+    return side === 'LEFT' ? index < slotIndex : index > slotIndex;
+  });
+  if (hasMaterialOnSide) return;
+  const nextOffset = Math.min(
+    Math.max(0, offset),
+    Math.max(0, Math.round((material.duration - 4) * 1000) / 1000),
+  );
+  if (material.duration < 4) return;
   const minimumDuration = 4;
   const maximumDuration = Math.min(15, Math.max(minimumDuration, material.duration - nextOffset));
   const nextDuration = Math.min(
@@ -3900,9 +4165,6 @@ const splitTimelineMaterial = (
 const changeTemplate = (): void => {
   if (!workspace.value) return;
   for (const [index, slot] of workspace.value.template.slots.entries()) {
-    slot.duration = Number.isFinite(Number(slot.duration))
-      ? Math.min(15, Math.max(4, Math.round(Number(slot.duration) * 10) / 10))
-      : 4;
     if (index === 0) {
       slot.transition = '硬切';
       slot.transitionDuration = 0;
@@ -3919,6 +4181,46 @@ const changeTemplate = (): void => {
     workspace.value.editVersion += 1;
   }
   scheduleSave();
+};
+const changeTemplateDuration = (slot: EffectTemplateMixSlot, event: Event): void => {
+  const input = event.target as HTMLInputElement;
+  const duration = Number(input.value);
+  if (
+    templateEditLocked.value ||
+    !effectTemplateMixSlotDurationValid(duration, templateSlotDurationLimit.value)
+  ) {
+    input.value = String(slot.duration);
+    if (!templateEditLocked.value)
+      showNotice(effectTemplateMixSlotDurationMessage(templateSlotDurationLimit.value), 'warning');
+    return;
+  }
+  const next = Math.round(duration * 10) / 10;
+  input.value = String(next);
+  if (next === slot.duration) return;
+  slot.duration = next;
+  changeTemplate();
+};
+const stepTemplateDuration = (
+  slot: EffectTemplateMixSlot,
+  direction: 1 | -1,
+  event: Event,
+): void => {
+  if (templateDurationInputLocked.value) return;
+  const input = (event.currentTarget as HTMLElement)
+    .closest('.slot-duration-control')
+    ?.querySelector('input');
+  if (!input) return;
+  const result = stepTemplateMixDuration(
+    Number(input.value),
+    templateSlotDurationLimit.value,
+    direction,
+  );
+  input.value = String(result.duration ?? slot.duration);
+  if (result.duration !== null && result.duration !== slot.duration) {
+    slot.duration = result.duration;
+    changeTemplate();
+  }
+  if (result.notice) showNotice(result.notice, 'warning');
 };
 const beginTemplateNameEdit = (): void => {
   templateNameBeforeEdit.value = workspace.value?.template.name ?? '';
@@ -4130,12 +4432,8 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
   resetTimelinePlayerState();
   bump();
 };
-const moveTimelineClip = (
-  slotId: string,
-  start: number,
-  lane: number,
-  insertLane?: number,
-): void => moveTimelineClips([{ slotId, start, lane, insertLane }]);
+const moveTimelineClip = (slotId: string, start: number, lane: number, insertLane?: number): void =>
+  moveTimelineClips([{ slotId, start, lane, insertLane }]);
 
 /** A dropped clip keeps a role so the timeline still labels it; the template's six roles are hints. */
 const EFFECT_TEMPLATE_MIX_PURPOSE_ROLES: Record<EffectTemplateMixPurpose, EffectTemplateMixRole> = {
@@ -4167,7 +4465,12 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
     showNotice('素材不足 4 秒，无法新增轨道', 'warning');
     return;
   }
-  if (Object.values(variant.bindings).includes(material.id)) {
+  if (
+    Object.values(variant.bindings).some((id) => {
+      const bound = workspace.value?.materials.find((item) => item.id === id);
+      return bound && (bound.fileObjectId || bound.id) === (material.fileObjectId || material.id);
+    })
+  ) {
     showNotice(`${material.code} 已用于当前成片，同一成片不能重复使用`, 'warning');
     return;
   }
@@ -4371,6 +4674,24 @@ const movePackagingAudios = (moves: TimelineAudioMove[]): void => {
   resetTimelinePlayerState();
   bump();
 };
+
+const moveTimelineSelection = (moves: {
+  videos: TimelineClipMove[];
+  audios: Array<{ clipId: string; start: number }>;
+}): void => {
+  if (!moves.videos.length && !moves.audios.length) return;
+  rememberTimelineEdit();
+  groupedTimelineMove = true;
+  try {
+    moveTimelineClips(moves.videos);
+    movePackagingAudios(moves.audios);
+  } finally {
+    groupedTimelineMove = false;
+  }
+  resetTimelinePlayerState();
+  bump();
+};
+
 const movePackagingAudio = (
   clipId: string,
   start: number,
@@ -4519,8 +4840,8 @@ const changeProjectDuration = (raw: string): void => {
   if (!selectedSlot.value || !selectedVariant.value) return;
   const duration = Math.round(Number(raw) * 10) / 10;
   const material = materialForSlot(selectedSlot.value.id);
-  if (!Number.isFinite(duration) || duration < 4 || duration > 15) {
-    showNotice('槽位时长必须为 4–15 秒', 'warning');
+  if (!effectTemplateMixSlotDurationValid(duration, templateSlotDurationLimit.value)) {
+    showNotice(effectTemplateMixSlotDurationMessage(templateSlotDurationLimit.value), 'warning');
     return;
   }
   if (
@@ -4588,7 +4909,8 @@ const deleteSelectedAudioClips = (clipIds: string[]): void => {
   }
   const checkpoint = selectedPackaging.value?.checkpoint;
   const removesDetached =
-    detachedIds.size > 0 && (variant.detachedAudios?.some((audio) => detachedIds.has(audio.id)) ?? false);
+    detachedIds.size > 0 &&
+    (variant.detachedAudios?.some((audio) => detachedIds.has(audio.id)) ?? false);
   const removesCaptionVoice =
     captionVoiceIds.size > 0 &&
     [...captionVoiceIds].some((id) => Boolean(checkpoint?.captionVoices?.[id]));
@@ -4705,7 +5027,14 @@ const beginTransitionDrag = (event: DragEvent, transition: EffectTemplateMixTran
   event.dataTransfer.setData('text/plain', transition);
 };
 const createEmptyVariant = async (): Promise<void> => {
-  if (!workspace.value || mutating.value || activeAiRun.value) return;
+  if (
+    runSwitching.value ||
+    !workspace.value ||
+    mutating.value ||
+    activeAiRun.value ||
+    packagingSourceAutoLocked.value
+  )
+    return;
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
   const templateId = activeTemplateId.value;
   const previousIds = new Set(workspace.value.variants.map(({ id }) => id));
@@ -4741,31 +5070,306 @@ const openPackaging = (target: 'ACTION' | 'WORKFLOW'): void => {
   }
   void packagingPanel.value?.open(target);
 };
+const handlePackagingSubmissionPending = (templateId: string, workflowRunId: string): void => {
+  if (workflowRunId !== props.workflowRunId || templateId !== activeTemplateId.value) return;
+  if (!activeEntry.value?.packagingLocked) pendingPackagingScope.value = packagingScopeKey.value;
+};
+const handlePackagingSubmissionSettled = (templateId: string, workflowRunId: string): void => {
+  const scope = `${props.projectId}:${workflowRunId}:${templateId}`;
+  if (pendingPackagingScope.value === scope) pendingPackagingScope.value = '';
+};
 const handlePackagingStarted = async (): Promise<void> => {
   await load();
-  if (activeEntry.value) activeEntry.value.packagingLocked = true;
 };
-/** 成片包装属于全量更新：后端先建隔离分支，编辑态必须跟着切到那个分支。 */
-const handlePackagingRunChange = (workflowRunId: string): void => {
-  showNotice('已按本次成片包装新建分支，正在切换…', 'success');
-  rememberWorkbench({
-    workflowRunId,
-    templateId: activeTemplateId.value,
-    variantId: selectedVariant.value?.id ?? '',
-  });
-  emit('workflowRunChange');
+const handleBackgroundPackagingStarted = async (): Promise<void> => {
+  const alreadyPackaged = Boolean(activeEntry.value?.packagingLocked);
+  // The first package temporarily locks its source while the child task runs. A repackage leaves
+  // the already packaged workbench editable, so only the first case needs a workspace refresh.
+  if (!alreadyPackaged) {
+    if (activeEntry.value) activeEntry.value.packagingSourceLocked = true;
+    await load();
+  }
+};
+const handleBackgroundPackagingFinished = async (
+  run: PackagingRun,
+  targetVariantId: string,
+): Promise<void> => {
+  if (!workbenchActive) {
+    deferredPackagingCompletion = {
+      run,
+      variantId: targetVariantId,
+      projectId: props.projectId,
+      sourceWorkflowRunId: props.workflowRunId,
+    };
+    return;
+  }
+  const sourceWorkflowRunId = props.workflowRunId;
+  const projectId = props.projectId;
+  const templateId = activeTemplateId.value;
+  const isCurrentWorkbench = () =>
+    projectId === props.projectId &&
+    sourceWorkflowRunId === props.workflowRunId &&
+    templateId === activeTemplateId.value &&
+    workbenchActive &&
+    pageState.value === 'READY';
+  if (run.status !== 'COMPLETED' || run.templateId !== templateId || !isCurrentWorkbench()) {
+    if (activeEntry.value?.packagingSourceLocked) await load();
+    return;
+  }
+  if (openingPackagingRunId) return;
+  openingPackagingRunId = run.id;
+  if (run.workflowRunId === sourceWorkflowRunId) {
+    try {
+      // The task can say COMPLETED just before its packaging artifacts are committed. Keep the
+      // current workbench visible and wait for that commit; this package fills the current
+      // delivered branch and must not activate another Run.
+      let committed = false;
+      for (let attempt = 0; attempt < 8 && isCurrentWorkbench(); attempt++) {
+        const tree = await getEffectWorkflowBranchTree(projectId);
+        committed = Boolean(
+          tree.data.branches
+            .find((branch) => branch.workflowRunId === sourceWorkflowRunId)
+            ?.templates.find((template) => template.templateId === templateId)?.packagingRevision,
+        );
+        if (committed) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+      }
+      if (!isCurrentWorkbench()) return;
+      if (!committed) {
+        showNotice('包装已完成，音画工程仍在保存，请稍后刷新工作台', 'warning');
+        return;
+      }
+      forgetPackagingNavigation(projectId, sourceWorkflowRunId, templateId, run.id);
+      markPackagingBranchOpened(projectId, sourceWorkflowRunId, templateId, sourceWorkflowRunId);
+      await load();
+      emit('workflowRunChange');
+    } catch (error) {
+      if (isCurrentWorkbench())
+        showNotice(error instanceof Error ? error.message : '刷新包装结果失败', 'error');
+    } finally {
+      if (openingPackagingRunId === run.id) openingPackagingRunId = null;
+    }
+    return;
+  }
+  // The worker marks its batch complete before publishing the child branch. Wait for the version
+  // tree to expose it before activating, so a fast progress poll cannot switch to a hidden draft.
+  let published = false;
+  let switched = false;
+  let fromRevision: number | null = null;
+  let toRevision: number | null = null;
+  try {
+    for (let attempt = 0; attempt < 8 && isCurrentWorkbench(); attempt++) {
+      const tree = await getEffectWorkflowBranchTree(projectId);
+      const targetBranch = tree.data.branches.find(
+        (branch) => branch.workflowRunId === run.workflowRunId,
+      );
+      if (targetBranch) {
+        const sourceBranch = tree.data.branches.find(
+          (branch) => branch.workflowRunId === sourceWorkflowRunId,
+        );
+        fromRevision =
+          sourceBranch?.templates.find((template) => template.templateId === templateId)
+            ?.packagingRevision ?? null;
+        toRevision =
+          targetBranch.templates.find((template) => template.templateId === templateId)
+            ?.packagingRevision ?? null;
+        published = true;
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    }
+    if (!isCurrentWorkbench()) return;
+    if (!published) {
+      showNotice('智能成片包装已完成，但新分支尚未发布，请在版本分支树中查看', 'warning');
+      return;
+    }
+    if (!(await flushPendingEdits())) {
+      showNotice('当前工程保存失败，请保存后从版本分支树打开包装结果', 'error');
+      return;
+    }
+    if (!isCurrentWorkbench()) return;
+    const variantId = targetVariantId || selectedVariant.value?.id || '';
+    await activateEffectWorkflowBranch(projectId, run.workflowRunId);
+    forgetPackagingNavigation(projectId, sourceWorkflowRunId, templateId, run.id);
+    markPackagingBranchOpened(projectId, sourceWorkflowRunId, templateId, run.workflowRunId);
+    rememberWorkbench({ workflowRunId: run.workflowRunId, templateId, variantId });
+    switched = true;
+    emit('workflowRunChange', {
+      kind: 'PACKAGING',
+      workflowRunId: run.workflowRunId,
+      fromRevision,
+      toRevision,
+    });
+  } catch (error) {
+    if (isCurrentWorkbench())
+      showNotice(error instanceof Error ? error.message : '打开智能成片包装分支失败', 'error');
+  } finally {
+    if (openingPackagingRunId === run.id) openingPackagingRunId = null;
+    if (!switched) {
+      if (isCurrentWorkbench() && activeEntry.value?.packagingSourceLocked) await load();
+    }
+  }
+};
+const handleBackgroundFillFinished = async (
+  run: EffectTemplateMixAiRun,
+  projectId: string,
+  sourceWorkflowRunId: string,
+): Promise<void> => {
+  if (run.status !== 'COMPLETED' || !run.workflowRunId || run.workflowRunId === sourceWorkflowRunId)
+    return;
+  if (!workbenchActive || activeTemplateId.value !== run.templateId) {
+    deferredFillCompletion = { run, projectId, sourceWorkflowRunId };
+    return;
+  }
+  const isCurrentWorkbench = () =>
+    projectId === props.projectId &&
+    sourceWorkflowRunId === props.workflowRunId &&
+    run.templateId === activeTemplateId.value &&
+    workbenchActive &&
+    pageState.value === 'READY';
+  if (!isCurrentWorkbench() || openingFillRunId) return;
+  openingFillRunId = run.id;
+  try {
+    let fromRevision: number | null = null;
+    let toRevision: number | null = null;
+    let published = false;
+    // The task status may reach COMPLETED before its confirmed artifacts publish the child Run.
+    for (let attempt = 0; attempt < 8 && isCurrentWorkbench(); attempt++) {
+      const tree = await getEffectWorkflowBranchTree(projectId);
+      const targetBranch = tree.data.branches.find(
+        (branch) => branch.workflowRunId === run.workflowRunId,
+      );
+      if (targetBranch) {
+        fromRevision =
+          tree.data.branches
+            .find((branch) => branch.workflowRunId === sourceWorkflowRunId)
+            ?.templates.find((template) => template.templateId === run.templateId)?.fillRevision ??
+          null;
+        toRevision =
+          targetBranch.templates.find((template) => template.templateId === run.templateId)
+            ?.fillRevision ?? null;
+        published = true;
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    }
+    if (!isCurrentWorkbench()) return;
+    if (!published) {
+      showNotice('智能填充已完成，但新分支尚未发布，请在版本分支树中查看', 'warning');
+      return;
+    }
+    if (!(await flushPendingEdits())) {
+      showNotice('当前工程保存失败，请保存后从版本分支树打开填充结果', 'error');
+      return;
+    }
+    if (!isCurrentWorkbench()) return;
+    await activateEffectWorkflowBranch(projectId, run.workflowRunId);
+    rememberWorkbench({
+      workflowRunId: run.workflowRunId,
+      templateId: run.templateId,
+      variantId: run.outputVariantId ?? run.targetVariantId ?? selectedVariant.value?.id ?? '',
+    });
+    emit('workflowRunChange', {
+      kind: 'FILL',
+      workflowRunId: run.workflowRunId,
+      fromRevision,
+      toRevision,
+    });
+  } catch (error) {
+    if (isCurrentWorkbench())
+      showNotice(error instanceof Error ? error.message : '打开智能填充分支失败', 'error');
+  } finally {
+    if (openingFillRunId === run.id) openingFillRunId = null;
+  }
+};
+const resumeDeferredFill = (): void => {
+  const deferred = deferredFillCompletion;
+  if (
+    !deferred ||
+    !workbenchActive ||
+    pageState.value !== 'READY' ||
+    deferred.projectId !== props.projectId ||
+    deferred.sourceWorkflowRunId !== props.workflowRunId ||
+    deferred.run.templateId !== activeTemplateId.value
+  )
+    return;
+  deferredFillCompletion = null;
+  void handleBackgroundFillFinished(deferred.run, deferred.projectId, deferred.sourceWorkflowRunId);
+};
+const pollBackgroundAiRun = async (
+  projectId: string,
+  sourceWorkflowRunId: string,
+  runId: string,
+  generation: number,
+): Promise<void> => {
+  try {
+    const response = await getEffectTemplateMixAiRun(projectId, runId);
+    if (
+      generation !== backgroundAiGeneration ||
+      projectId !== props.projectId ||
+      sourceWorkflowRunId !== props.workflowRunId
+    )
+      return;
+    backgroundAiRun.value = response.data;
+    if (['QUEUED', 'RUNNING'].includes(response.data.status)) {
+      backgroundAiTimer = setTimeout(
+        () => void pollBackgroundAiRun(projectId, sourceWorkflowRunId, runId, generation),
+        4000,
+      );
+    } else if (response.data.status === 'COMPLETED') {
+      await handleBackgroundFillFinished(response.data, projectId, sourceWorkflowRunId);
+    } else {
+      showNotice(response.data.errorMessage || '新智能填充分支未完成，请查看任务状态。', 'error');
+    }
+  } catch {
+    if (generation !== backgroundAiGeneration) return;
+    backgroundAiTimer = setTimeout(
+      () => void pollBackgroundAiRun(projectId, sourceWorkflowRunId, runId, generation),
+      5000,
+    );
+  }
+};
+const refreshBackgroundAiRun = async (): Promise<void> => {
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const templateId = activeTemplateId.value;
+  if (!projectId || !workflowRunId || !templateId) return;
+  clearTimeout(backgroundAiTimer);
+  const generation = ++backgroundAiGeneration;
+  try {
+    const response = await getBackgroundEffectTemplateMixAiRun(
+      projectId,
+      workflowRunId,
+      templateId,
+    );
+    if (
+      generation !== backgroundAiGeneration ||
+      projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId ||
+      templateId !== activeTemplateId.value
+    )
+      return;
+    backgroundAiRun.value = response.data;
+    if (response.data && ['QUEUED', 'RUNNING'].includes(response.data.status))
+      backgroundAiTimer = setTimeout(
+        () => void pollBackgroundAiRun(projectId, workflowRunId, response.data!.id, generation),
+        4000,
+      );
+    else if (response.data?.status === 'COMPLETED')
+      void handleBackgroundFillFinished(response.data, projectId, workflowRunId);
+  } catch {
+    // The source workbench remains usable even when background progress cannot be read.
+  }
 };
 const preparePackaging = async (): Promise<number | null> => {
-  if (selectedVariantRefreshSlotIds.value.length) {
-    showNotice('请先更新已替换素材的截取区间并完成混剪校验', 'error');
-    return null;
-  }
+  if (runSwitching.value) return null;
   return (await flushPendingEdits()) ? draftRevision.value : null;
 };
 const startAiFill = async (
   target: EffectTemplateMixVariant | null,
   refreshAffectedSlots = false,
 ): Promise<void> => {
+  if (runSwitching.value) return;
   // Packaging that is still running holds the Run the fill would read, so the fill has to wait. A
   // finished package does not: the fill forks its own branch and leaves that result alone.
   if (packagingInFlight.value && !refreshAffectedSlots) {
@@ -4773,6 +5377,10 @@ const startAiFill = async (
     return;
   }
   if (!workspace.value || mutating.value || activeAiRun.value) return;
+  if (backgroundAiBusy.value) {
+    showNotice('新分支正在智能填充，请等待任务完成', 'warning');
+    return;
+  }
   // Retry and other entry points bypass the disabled button, so the reason is checked here too —
   // sending the request would only come back as the generic "剩余未使用素材不足".
   if (!refreshAffectedSlots && aiFillBlockReason.value) {
@@ -4782,6 +5390,9 @@ const startAiFill = async (
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
   const templateId = activeTemplateId.value;
   const variantId = target?.id;
+  const keepCurrentWorkbench = workspace.value.variants.some((variant) =>
+    variant.slots.some((slot) => Boolean(variant.bindings[slot.id])),
+  );
   mutating.value = true;
   fillStartPending.value = true;
   try {
@@ -4793,17 +5404,26 @@ const startAiFill = async (
       variantId,
       refreshAffectedSlots,
     );
-    // A regeneration is a full update: the service forks an unpublished child before it starts the
-    // task. The editor has to move to that child before it reads or writes the draft again, so the
-    // retained workbench picks the running task up from the new Run instead of editing the published one.
+    // The task owns a frozen child. Keep editing the current published branch while it runs.
     if (result.data.workflowRunId !== props.workflowRunId) {
-      showNotice('已按本次重新生成新建分支，正在切换…', 'success');
-      rememberWorkbench({
-        workflowRunId: result.data.workflowRunId,
-        templateId,
-        variantId: variantId ?? selectedVariant.value?.id ?? '',
-      });
-      emit('workflowRunChange');
+      if (!keepCurrentWorkbench) {
+        rememberWorkbench({
+          workflowRunId: result.data.workflowRunId,
+          templateId,
+          variantId: variantId ?? selectedVariant.value?.id ?? '',
+        });
+        emit('workflowRunChange');
+        return;
+      }
+      clearTimeout(backgroundAiTimer);
+      backgroundAiGeneration += 1;
+      backgroundAiRun.value = result.data;
+      void pollBackgroundAiRun(
+        props.projectId,
+        props.workflowRunId,
+        result.data.id,
+        backgroundAiGeneration,
+      );
       return;
     }
     const workspaceResponse = await loadEffectTemplateMixWorkspace(
@@ -4832,9 +5452,6 @@ const startAiFill = async (
   }
 };
 const refill = (): void => void startAiFill(selectedVariant.value);
-const refreshAffectedClips = (): void => {
-  if (selectedVariantRefreshSlotIds.value.length) void startAiFill(selectedVariant.value, true);
-};
 const retryFailedAiRun = (): void => {
   const run = failedAiRun.value;
   if (run?.targetVariantId && activeUi.value) {
@@ -5419,19 +6036,19 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     pauseTimelinePlayers();
     playing.value = false;
     const lastFrame = Math.max(0, Math.ceil(previewDuration.value * TIMELINE_FPS) - 1);
-    const currentFrame = Math.min(
-      lastFrame,
-      Math.round(previewCurrentTime.value * TIMELINE_FPS),
-    );
+    const currentFrame = Math.min(lastFrame, Math.round(previewCurrentTime.value * TIMELINE_FPS));
     const direction = event.key === 'ArrowRight' ? 1 : -1;
     seekPreview(Math.max(0, Math.min(lastFrame, currentFrame + direction)) / TIMELINE_FPS);
   }
 };
 watch(
-  () => [props.projectId, props.workflowRunId],
-  () => void load(),
+  () => props.branchTemplateId,
+  (templateId) => {
+    if (templateId) focusBranchTemplate(templateId);
+  },
 );
 watch(() => props.previewTarget, applyPreviewTarget);
+watch(() => props.branchNavigation, () => void applyBranchNavigation(), { flush: 'post' });
 watch([() => previewSlot.value?.id, () => previewMaterial.value?.id], () => {
   if (!auditionMaterial.value) void syncPlayerToPlayhead(playing.value);
 });
@@ -5489,32 +6106,103 @@ watch(materialPageCount, (count) => {
 watch(
   () => [props.projectId, props.workflowRunId],
   () => {
+    deferredPackagingCompletion = null;
+    deferredFillCompletion = null;
+    backgroundAiGeneration += 1;
+    clearTimeout(backgroundAiTimer);
+    backgroundAiRun.value = null;
+    packagingReady.value = false;
+    packagingRunStatus.value = null;
+    packagingFailures.value = [];
+    selectedPackaging.value = null;
     // The parent keeps this component alive across a fork. Continue showing the workbench until
     // the child Run's draft arrives, while blocking edits against the previous Run.
-    runSwitching.value = pageState.value === 'READY';
+    clearTimeout(saveTimer);
     void load();
   },
 );
+watch(activeTemplateId, () => {
+  packagingReady.value = false;
+  packagingRunStatus.value = null;
+  packagingFailures.value = [];
+  selectedPackaging.value = null;
+  void refreshBackgroundAiRun();
+  resumeDeferredFill();
+});
+let sourcePollTimer: ReturnType<typeof setInterval> | undefined;
+let sourcePollController: AbortController | undefined;
+const startSourcePolling = (): void => {
+  if (!sourcePollTimer) sourcePollTimer = setInterval(() => void refreshMaterialSources(), 5000);
+};
+const refreshMaterialSources = async (): Promise<void> => {
+  if (!workbenchActive || pageState.value !== 'READY' || sourcePollController || mutating.value ||
+      loadedWorkspaceRunId !== props.workflowRunId) return;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const request = new AbortController();
+  sourcePollController = request;
+  try {
+    const { data } = await loadEffectTemplateMixSources(projectId, workflowRunId, request.signal);
+    if (!workbenchActive || request.signal.aborted || projectId !== props.projectId || workflowRunId !== props.workflowRunId) return;
+    sourceMaterials.value = data.materials;
+    for (const entry of catalog.value) entry.workspace.materials = data.materials;
+    // Never overwrite dirty user edits when a local output refresh saves a new engineering revision.
+    if (data.draftRevision !== draftRevision.value && saveState.value === 'saved' && !pendingSave)
+      await load();
+  } catch {
+    // A transient source refresh must not empty the current material pool.
+  } finally {
+    if (sourcePollController === request) sourcePollController = undefined;
+  }
+};
 onMounted(() => {
   updateWorkbenchMode();
   window.addEventListener('resize', updateWorkbenchMode);
   window.addEventListener('keydown', onEditorKeydown);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   void load();
+  startSourcePolling();
 });
 let mixWorkbenchWasDeactivated = false;
 onActivated(() => {
+  workbenchActive = true;
+  startSourcePolling();
   if (!mixWorkbenchWasDeactivated) {
     applyPreviewTarget();
     return;
   }
   mixWorkbenchWasDeactivated = false;
+  branchNavigationReloading = true;
   void (async () => {
-    if (!(await flushPendingEdits())) return;
-    await load();
+    try {
+      if (loadedWorkspaceRunId !== props.workflowRunId) {
+        // The parent already flushed the old Run before activation. Never save its still mounted
+        // catalog through the new Run's props while the isolated draft is being loaded.
+        if (requestedWorkspaceRunId !== props.workflowRunId) await load();
+        return;
+      }
+      if (!(await flushPendingEdits())) return;
+      await load();
+      const deferred = deferredPackagingCompletion;
+      deferredPackagingCompletion = null;
+      if (
+        deferred &&
+        deferred.projectId === props.projectId &&
+        deferred.sourceWorkflowRunId === props.workflowRunId
+      )
+        void handleBackgroundPackagingFinished(deferred.run, deferred.variantId);
+      resumeDeferredFill();
+    } finally {
+      branchNavigationReloading = false;
+      await applyBranchNavigation();
+    }
   })();
 });
 onDeactivated(() => {
+  workbenchActive = false;
+  clearInterval(sourcePollTimer);
+  sourcePollTimer = undefined;
+  sourcePollController?.abort();
   mixWorkbenchWasDeactivated = true;
   playing.value = false;
   pauseTimelinePlayers();
@@ -5522,6 +6210,9 @@ onDeactivated(() => {
   packagingPanel.value?.stopPlaybackAudio();
 });
 onBeforeUnmount(() => {
+  workbenchActive = false;
+  clearInterval(sourcePollTimer);
+  sourcePollController?.abort();
   outputSyncChannel?.close();
   stopPlaybackClock();
   if (pendingSeekSyncFrame !== undefined) cancelAnimationFrame(pendingSeekSyncFrame);
@@ -5549,17 +6240,22 @@ onBeforeUnmount(() => {
   clearTimeout(saveTimer);
   clearTimeout(noticeTimer);
   stopPolling();
+  backgroundAiGeneration += 1;
+  clearTimeout(backgroundAiTimer);
   window.removeEventListener('keydown', onEditorKeydown);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   if (saveState.value === 'dirty') void persist(true);
 });
-defineExpose({ flushPendingEdits });
+const getBranchTreeTemplateId = (): string | null =>
+  view.value === 'EDITOR' ? activeTemplateId.value || null : null;
+const getCurrentTemplateId = (): string | null => activeTemplateId.value || null;
+defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId, focusBranchTemplate });
 </script>
 
 <template>
   <section class="mix-node" :aria-busy="pageState === 'LOADING' || runSwitching">
     <div v-if="runSwitching" class="mix-run-switch" role="status" aria-live="polite">
-      <LoaderCircle class="spin" :size="17" /> 正在载入新分支，当前工作台保持可见
+      <LoaderCircle class="spin" :size="17" /> 正在同步新分支，当前工作台保持可见
     </div>
     <Transition name="notice"
       ><div v-if="notice" class="notice" :class="notice.kind" role="status">
@@ -5606,11 +6302,7 @@ defineExpose({ flushPendingEdits });
             class="template-list__row"
             :class="{ active: entry.id === activeTemplateId }"
           >
-            <button
-              type="button"
-              class="template-list__select"
-              @click="selectTemplate(entry.id)"
-            >
+            <button type="button" class="template-list__select" @click="selectTemplate(entry.id)">
               <span
                 ><b>{{ entry.workspace.template.name }}</b
                 ><small
@@ -5619,6 +6311,8 @@ defineExpose({ flushPendingEdits });
                 ></span
               >
             </button>
+            <small v-if="templatePendingUpdateCount(entry)" class="source-update-badge"
+              >{{ templatePendingUpdateCount(entry) }} 个待更新</small>
             <button
               type="button"
               class="template-list__delete"
@@ -5626,9 +6320,15 @@ defineExpose({ flushPendingEdits });
               :title="`删除模板 ${entry.workspace.template.name}`"
               :disabled="Boolean(deletingTemplateId)"
               @click="deleteTemplate(entry)"
-            ><Trash2 :size="15" /></button>
+            >
+              <Trash2 :size="15" />
+            </button>
           </div>
-          <button class="button new-template" :disabled="checkingTemplateCreation" @click="openCreate">
+          <button
+            class="button new-template"
+            :disabled="checkingTemplateCreation"
+            @click="openCreate"
+          >
             <Plus :size="14" />新建模板
           </button>
         </aside>
@@ -5678,15 +6378,45 @@ defineExpose({ flushPendingEdits });
               <code
                 >{{ formatEffectTemplateMixTime(templateTiming.slots[index]?.start ?? 0) }} —
                 {{ formatEffectTemplateMixTime(templateTiming.slots[index]?.end ?? 0) }}</code
-              ><input
-                v-model.number="slot.duration"
-                type="number"
-                min="4"
-                max="15"
-                step=".1"
-                :disabled="templateEditLocked"
-                @change="changeTemplate"
-              /><template v-if="index < workspace.template.slots.length - 1">
+              >
+              <span class="slot-duration-control">
+                <input
+                  :value="slot.duration"
+                  type="number"
+                  min="4"
+                  :max="templateSlotDurationLimit ?? undefined"
+                  :title="effectTemplateMixSlotDurationMessage(templateSlotDurationLimit)"
+                  :aria-label="`${EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role]}时长（秒）`"
+                  step=".1"
+                  :disabled="templateDurationInputLocked"
+                  @change="changeTemplateDuration(slot, $event)"
+                  @blur="changeTemplateDuration(slot, $event)"
+                  @keydown.enter="($event.target as HTMLInputElement).blur()"
+                  @keydown.up.prevent="stepTemplateDuration(slot, 1, $event)"
+                  @keydown.down.prevent="stepTemplateDuration(slot, -1, $event)"
+                />
+                <span class="slot-duration-arrows">
+                  <button
+                    type="button"
+                    :aria-label="`增加${EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role]}时长`"
+                    :disabled="templateDurationInputLocked"
+                    @pointerdown.prevent
+                    @click="stepTemplateDuration(slot, 1, $event)"
+                  >
+                    <ChevronUp :size="12" />
+                  </button>
+                  <button
+                    type="button"
+                    :aria-label="`减少${EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role]}时长`"
+                    :disabled="templateDurationInputLocked"
+                    @pointerdown.prevent
+                    @click="stepTemplateDuration(slot, -1, $event)"
+                  >
+                    <ChevronDown :size="12" />
+                  </button>
+                </span>
+              </span>
+              <template v-if="index < workspace.template.slots.length - 1">
                 <select
                   :value="templateTransitionForRow(index)?.transition ?? '硬切'"
                   :aria-label="`${EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role]}到下一槽位的转场`"
@@ -5710,7 +6440,8 @@ defineExpose({ flushPendingEdits });
                 >。
               </p>
               <p v-else-if="expiredMaterialCount" class="warning">
-                {{ expiredMaterialCount }} 条旧素材已过期；请先在视频渲染节点更新素材并完成校验，再重新智能填充。
+                {{ expiredMaterialCount }}
+                条旧素材已过期；请先在视频渲染节点更新素材并完成校验，再重新智能填充。
               </p>
               <p v-else class="warning">上一步没有已确认视频片段，可配置模板，但无法完成填充。</p>
               <small v-if="workspace.variants.length"
@@ -5725,8 +6456,12 @@ defineExpose({ flushPendingEdits });
               <WandSparkles :size="15" />进入精修工作台
             </button>
           </footer>
-          <p v-if="templateEditLocked" class="template-lock-banner" role="status">
-            <Lock :size="15" />智能填充正在运行，模板暂时锁定；任务结束后可修改。
+          <p v-if="templateEditLocked && !runSwitching" class="template-lock-banner" role="status">
+            <Lock :size="15" />{{
+              packagingSourceAutoLocked
+                ? '智能成片包装正在进行，成片工程暂时不能编辑；任务结束后自动解锁。'
+                : '智能填充正在运行，模板暂时锁定；任务结束后可修改。'
+            }}
           </p>
           <p
             v-else-if="activeEntry?.needsAiFill"
@@ -5735,7 +6470,7 @@ defineExpose({ flushPendingEdits });
           >
             <AlertCircle
               :size="15"
-            />模板配置或素材版本已变化；请逐条重新智能填充受影响的成片，完成后才能开始包装。
+            />当前模板配置或已绑定素材与确认版本不一致；请先修复受影响的成片，再开始包装。
           </p>
         </div>
         <div v-else class="panel config-panel config-panel--empty">
@@ -5762,34 +6497,16 @@ defineExpose({ flushPendingEdits });
             >
           </div>
           <div class="workbench-actions">
-            <button
-              v-if="selectedVariantRefreshSlotIds.length"
-              class="button primary"
-              type="button"
-              :disabled="
-                mutating || Boolean(activeAiRun) || selectedVariantRefreshSlotIds.length === 0
-              "
-              :title="`保留槽位和其他剪辑，只重新分析 ${selectedVariantRefreshSlotIds.length} 个已更新素材的截取起点`"
-              @click="refreshAffectedClips"
-            >
-              <LoaderCircle
-                v-if="activeAiRun?.operation === 'REFRESH_TRIMS'"
-                class="spin"
-                :size="15"
-              />
-              <WandSparkles v-else :size="15" />
-              {{
-                activeAiRun?.operation === 'REFRESH_TRIMS'
-                  ? '正在更新素材截取…'
-                  : `自动更新截取区间（${selectedVariantRefreshSlotIds.length}）`
-              }}
-            </button>
+            <small v-if="selectedVariantRefreshSlotIds.length" class="source-update-badge"
+              title="当前成片采用的渲染素材已变更；请在成片输出节点执行局部更新"
+            >待更新 · {{ selectedVariantRefreshSlotIds.length }} 个素材</small>
             <button
               class="button primary"
               type="button"
               :disabled="
                 mutating ||
                 Boolean(activeAiRun) ||
+                backgroundAiBusy ||
                 packagingInFlight ||
                 Boolean(aiFillBlockReason)
               "
@@ -5823,17 +6540,17 @@ defineExpose({ flushPendingEdits });
             <button class="button" @click="leaveEditor">返回模板配置</button>
           </div>
         </header>
-        <div v-if="templateEditLocked" class="template-lock-banner" role="status">
-          <Lock :size="15" />智能填充正在运行，模板和成片工程暂时锁定。
+        <div v-if="templateEditLocked && !runSwitching" class="template-lock-banner" role="status">
+          <Lock :size="15" />{{
+            packagingSourceAutoLocked
+              ? '智能成片包装正在进行，成片工程暂时不能编辑；任务结束后自动解锁。'
+              : '智能填充正在运行，模板和成片工程暂时锁定。'
+          }}
         </div>
-        <div
-          v-else-if="activeEntry?.needsAiFill"
-          class="template-lock-banner warning"
-          role="status"
-        >
+        <div v-if="activeEntry?.needsAiFill" class="template-lock-banner warning" role="status">
           <AlertCircle
             :size="15"
-          />模板配置或素材版本已变化；请重新智能填充受影响的成片。可用的原素材归属尽量保留，已过期素材会重新匹配。
+          />当前模板配置或已绑定素材与确认版本不一致；请检查受影响的槽位并重新智能填充。
         </div>
         <div
           v-if="packagingFailures.length"
@@ -5846,7 +6563,9 @@ defineExpose({ flushPendingEdits });
               .map((failure) => failure.name)
               .slice(0, 3)
               .join('、')
-          }}{{ packagingFailures.length > 3 ? ' 等' : '' }}。这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐；本次包装暂不计入版本，恢复失败项后重新包装成功才会新增分支。
+          }}{{
+            packagingFailures.length > 3 ? ' 等' : ''
+          }}。这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐；本次包装暂不计入版本，恢复失败项后重新包装成功才会新增分支。
           <button class="button compact" type="button" @click="openPackaging('WORKFLOW')">
             打开包装面板恢复
           </button>
@@ -5916,11 +6635,18 @@ defineExpose({ flushPendingEdits });
                   {{ option.label }} <small>{{ option.count }}</small>
                 </button>
               </div>
-              <p v-if="expiredMaterialCount && !availableMaterials.length" class="material-expired-banner" role="status">
+              <p
+                v-if="expiredMaterialCount && !availableMaterials.length"
+                class="material-expired-banner"
+                role="status"
+              >
                 <AlertCircle :size="14" />当前没有已确认的可用素材；请先在视频渲染节点完成校验。
               </p>
               <p v-else-if="expiredMaterialCount" class="material-expired-banner" role="status">
-                <AlertCircle :size="14" />已载入 {{ availableMaterials.length }} 条当前素材；{{ expiredMaterialCount }} 条旧素材仅保留在原成片工程中，不参与重新智能填充。
+                <AlertCircle :size="14" />已载入 {{ availableMaterials.length }} 条当前素材；{{
+                  expiredMaterialCount
+                }}
+                条旧素材仅保留在原成片工程中，不参与重新智能填充。
               </p>
               <div v-if="filteredMaterials.length" ref="materialGrid" class="material-grid">
                 <article
@@ -6430,6 +7156,7 @@ defineExpose({ flushPendingEdits });
                     !selectedVariant ||
                     packagingPanel?.busy ||
                     packagingPanel?.active ||
+                    packagingPanel?.backgroundActive ||
                     packagingPanel?.loading ||
                     Boolean(packagingActionBlockReason)
                   "
@@ -6440,12 +7167,18 @@ defineExpose({ flushPendingEdits });
                   @click="openPackaging('ACTION')"
                 >
                   <LoaderCircle
-                    v-if="packagingPanel?.busy || packagingPanel?.active"
+                    v-if="
+                      packagingPanel?.busy ||
+                      packagingPanel?.active ||
+                      packagingPanel?.backgroundActive
+                    "
                     class="spin"
                     :size="13"
                   />
                   {{
-                    packagingPanel?.busy || packagingPanel?.active
+                    packagingPanel?.busy ||
+                    packagingPanel?.active ||
+                    packagingPanel?.backgroundActive
                       ? '成片包装中…'
                       : packagingActionLabel
                   }}
@@ -6461,7 +7194,9 @@ defineExpose({ flushPendingEdits });
                 <button
                   class="button compact primary"
                   type="button"
-                  :disabled="mutating || Boolean(activeAiRun)"
+                  :disabled="
+                    runSwitching || mutating || Boolean(activeAiRun) || packagingSourceAutoLocked
+                  "
                   title="新建一个不包含任何素材的空成片工程"
                   @click="createEmptyVariant"
                 >
@@ -6479,6 +7214,7 @@ defineExpose({ flushPendingEdits });
                   variant.id === selectedVariant?.id,
                   packagingReady,
                   packagingFailureByVariant.get(variant.id)?.message,
+                  variantSourceChanges(variant).length,
                 ]"
                 :class="{
                   active: variant.id === selectedVariant?.id,
@@ -6510,6 +7246,7 @@ defineExpose({ flushPendingEdits });
                 </span>
                 <div class="project-card-info">
                   <b>{{ variantDisplayName(variant, index) }}</b>
+                  <small v-if="variantSourceChanges(variant).length" class="source-update-badge">待更新</small>
                   <small class="project-duration">{{ variantDuration(variant).toFixed(0) }}s</small>
                   <span
                     class="project-status"
@@ -6630,11 +7367,15 @@ defineExpose({ flushPendingEdits });
         </div>
         <div class="editor-workflow-progress">
           <WorkflowRunProgress
-            v-if="activeAiRun"
+            v-if="displayedAiRun"
             class="mix-run-progress"
-            :progress="activeAiRun.progress"
-            :summary="aiStageLabels[activeAiRun.stage]"
-            attempt-label="完成后自动把六个片段铺入当前视频轨"
+            :progress="displayedAiRun.progress"
+            :summary="aiStageLabels[displayedAiRun.stage]"
+            :attempt-label="
+              displayedBackgroundAi
+                ? '完成后可在版本分支树中打开'
+                : '完成后自动把六个片段铺入当前视频轨'
+            "
             action-label="查看当前工作流"
             @show-details="openWorkflowDialog"
           />
@@ -6655,7 +7396,10 @@ defineExpose({ flushPendingEdits });
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
             @started="handlePackagingStarted"
-            @run-change="handlePackagingRunChange"
+            @submission-pending="handlePackagingSubmissionPending"
+            @submission-settled="handlePackagingSubmissionSettled"
+            @background-started="handleBackgroundPackagingStarted"
+            @background-finished="handleBackgroundPackagingFinished"
             @status="packagingRunStatus = $event"
             @failures="packagingFailures = $event"
           />
@@ -6749,6 +7493,7 @@ defineExpose({ flushPendingEdits });
           :template-id="activeTemplateId"
           :packaging="selectedPackaging"
           :read-only="projectEditLocked"
+          :packaging-source-lock="packagingSourceAutoLocked"
           :can-redo="canRedoTimeline && !projectEditLocked"
           :can-undo="canUndoTimeline && !projectEditLocked"
           :duration="currentDuration"
@@ -6775,6 +7520,7 @@ defineExpose({ flushPendingEdits });
           @add-music-asset="addMusicAssetToTimeline"
           @move-audio-clip="movePackagingAudio"
           @move-audio-clips="movePackagingAudios"
+          @move-timeline-selection="moveTimelineSelection"
           @resize-audio-clip="resizePackagingAudio"
           @move-clip="moveTimelineClip"
           @move-clips="moveTimelineClips"
@@ -7105,6 +7851,16 @@ defineExpose({ flushPendingEdits });
 </template>
 
 <style scoped>
+.source-update-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #fff6e6;
+  color: #a66a0b;
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
+}
 .mix-node {
   --blue: #2563eb;
   position: relative;
@@ -7116,20 +7872,18 @@ defineExpose({ flushPendingEdits });
   border-radius: 18px;
 }
 .mix-run-switch {
-  position: absolute;
-  z-index: 20;
-  inset: 0;
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  align-items: center;
   gap: 8px;
-  padding-top: 28px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
   color: #193565;
-  background: #f4f7ff80;
-  border-radius: inherit;
+  background: #edf4ff;
+  border: 1px solid #dce5f0;
+  border-radius: 8px;
   font-size: 13px;
   font-weight: 700;
-  cursor: wait;
+  pointer-events: none;
 }
 .panel {
   min-width: 0;
@@ -7475,6 +8229,49 @@ button:disabled {
   color: #64748b;
   font-size: 11px;
 }
+.slot-duration-control {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.slot-duration-control input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 25px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.slot-duration-control input::-webkit-inner-spin-button,
+.slot-duration-control input::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+.slot-duration-arrows {
+  position: absolute;
+  right: 5px;
+  top: 4px;
+  bottom: 4px;
+  display: grid;
+  width: 17px;
+  grid-template-rows: 1fr 1fr;
+}
+.slot-duration-arrows button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #64748b;
+  background: #f1f5f9;
+  border: 0;
+  cursor: pointer;
+}
+.slot-duration-arrows button:hover:not(:disabled) {
+  color: #2563eb;
+  background: #dbeafe;
+}
+.slot-duration-arrows button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .slot-transition-empty {
   color: #94a3b8;
   font-size: 18px;
@@ -7636,28 +8433,26 @@ button:disabled {
   outline: 0;
 }
 .material-role-filters {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   flex: none;
   min-width: 0;
-  gap: 6px;
+  gap: 5px;
   margin: 0 12px 8px;
 }
 .material-role-filters button {
   display: flex;
-  flex: 0 0 96px;
   align-items: center;
   justify-content: center;
-  width: 96px;
-  height: 30px;
-  box-sizing: border-box;
-  gap: 4px;
-  padding: 0 8px;
+  min-width: 0;
+  min-height: 25px;
+  gap: 3px;
+  padding: 0 4px;
   border: 1px solid #dce5f0;
   border-radius: 5px;
   color: #52647e;
   background: #fff;
-  font-size: 11px;
+  font-size: 9px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -7670,7 +8465,7 @@ button:disabled {
 }
 .material-role-filters small {
   color: inherit;
-  font-size: 10px;
+  font-size: 8px;
 }
 .material-grid {
   display: grid;

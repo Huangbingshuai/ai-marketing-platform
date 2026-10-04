@@ -135,7 +135,7 @@ export function timelineAudioClipRefs(
     if (!detachedAudioSourceUrl(audio, materials, projectId)) continue;
     refs.push({
       id: `detached:${audio.id}`,
-      kind: audio.sourceAssetId ? 'MUSIC' : 'DETACHED',
+      kind: audio.audioKind ?? (audio.sourceAssetId ? 'MUSIC' : 'DETACHED'),
       source: 'DETACHED',
       ...span(audio),
     });

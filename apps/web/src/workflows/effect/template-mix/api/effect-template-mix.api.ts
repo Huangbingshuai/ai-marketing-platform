@@ -2,8 +2,10 @@ import type {
   ApiResponse,
   EffectTemplateMixDraft,
   EffectTemplateMixAiRun,
-  EffectTemplateMixTemplateEntry,
   EffectTemplateMixWorkspaceData,
+  EffectTemplateMixSourcesData,
+  SaveEffectTemplateMixData,
+  SaveEffectTemplateMixRequest,
   PackagingItem,
   SyncFinalOutputData,
   SyncFinalOutputRequest,
@@ -26,8 +28,14 @@ export const loadEffectTemplateMixWorkspace = (
     signal,
   });
 
+export const loadEffectTemplateMixSources = (projectId: string, workflowRunId: string,
+  signal?: AbortSignal): Promise<ApiResponse<EffectTemplateMixSourcesData>> =>
+  requestJson(basePath(projectId) + '/sources?workflowRunId=' + encodeURIComponent(workflowRunId), {
+    operation: '刷新混剪素材来源', signal,
+  });
+
 export const serializeEffectTemplateMixDraft = (
-  entries: EffectTemplateMixTemplateEntry[],
+  entries: EffectTemplateMixDraft['templates'],
   activeTemplateId: string,
 ): EffectTemplateMixDraft => ({
   schemaVersion: 1,
@@ -61,19 +69,31 @@ export const serializeEffectTemplateMixDraft = (
   ),
 });
 
-export const saveEffectTemplateMixDraft = (
+export function saveEffectTemplateMixDraft(
+  projectId: string, workflowRunId: string, expectedRevision: number | null,
+  draft: EffectTemplateMixDraft, keepalive?: boolean,
+): Promise<ApiResponse<EffectTemplateMixWorkspaceData>>;
+export function saveEffectTemplateMixDraft(
+  projectId: string, workflowRunId: string, expectedRevision: number | null,
+  draft: EffectTemplateMixDraft, keepalive: boolean, compactResponse: true,
+): Promise<ApiResponse<SaveEffectTemplateMixData>>;
+export function saveEffectTemplateMixDraft(
   projectId: string,
   workflowRunId: string,
   expectedRevision: number | null,
   draft: EffectTemplateMixDraft,
   keepalive = false,
-): Promise<ApiResponse<EffectTemplateMixWorkspaceData>> =>
-  requestJson(basePath(projectId) + '/draft', {
+  compactResponse = false,
+): Promise<ApiResponse<EffectTemplateMixWorkspaceData | SaveEffectTemplateMixData>> {
+  const body: SaveEffectTemplateMixRequest = { workflowRunId, expectedRevision, draft,
+    ...(compactResponse ? { compactResponse: true } : {}) };
+  return requestJson(basePath(projectId) + '/draft', {
     method: 'PUT',
     operation: '保存混剪草稿',
-    body: { workflowRunId, expectedRevision, draft },
+    body,
     keepalive,
   });
+}
 
 export const createEmptyEffectTemplateMixVariant = (
   projectId: string,
@@ -123,6 +143,20 @@ export const getEffectTemplateMixAiRun = (
     signal,
   });
 
+export const getBackgroundEffectTemplateMixAiRun = (
+  projectId: string,
+  workflowRunId: string,
+  templateId: string,
+): Promise<ApiResponse<EffectTemplateMixAiRun | null>> =>
+  requestJson(
+    basePath(projectId) +
+      '/templates/' +
+      encodeURIComponent(templateId) +
+      '/background-ai-run?workflowRunId=' +
+      encodeURIComponent(workflowRunId),
+    { operation: '读取新分支智能填充进度' },
+  );
+
 export const applyEffectTemplateMixVariant = (
   projectId: string,
   workflowRunId: string,
@@ -158,11 +192,14 @@ export const syncEffectFinalOutput = (
   workflowRunId: string,
   options: Pick<SyncFinalOutputRequest, 'templateId' | 'expectedDraftRevision'> = {},
 ): Promise<ApiResponse<SyncFinalOutputData>> =>
-  requestJson('/projects/' + encodeURIComponent(projectId) + '/workflows/effect/final-output/sync', {
-    method: 'POST',
-    operation: '同步成片待渲染区',
-    body: { workflowRunId, ...options },
-  });
+  requestJson(
+    '/projects/' + encodeURIComponent(projectId) + '/workflows/effect/final-output/sync',
+    {
+      method: 'POST',
+      operation: '同步成片待渲染区',
+      body: { workflowRunId, ...options },
+    },
+  );
 
 /**
  * Speak one subtitle's text again with the item's own frozen voice. `text` is an assertion the
