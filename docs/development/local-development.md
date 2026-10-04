@@ -5,6 +5,14 @@
 - 根目录 `.env.example` 只提供安全占位符。开发者复制为被 Git 忽略的 `.env` 后填写本机配置。
 - 不要把真实 Ark、Seedance、TOS、MinIO 或内部 Worker Token 写进 Git、测试、截图、Prompt 或日志。
 
+## TOS 存储与 MinIO 迁移
+
+- `STORAGE_DRIVER=tos` 使用已创建的私有普通 TOS 桶；填写 `TOS_ENDPOINT/TOS_REGION/TOS_BUCKET/TOS_ACCESS_KEY_ID/TOS_SECRET_ACCESS_KEY`。本地服务使用 HTTPS 外网地域 Endpoint，原生地址自动转换为 S3 地址；不支持 Bucket 域名、内网地址或跨地域混配。使用仅限该桶的读写授权，不开放公共读写。
+- 桶不存在或无权限时明确失败，不自动创建云桶、不回退本地存储。视频、音频与下载仍经 API 和项目权限读取；Worker 不获取 TOS 密钥。
+- 旧素材不能通过只修改环境变量完成迁移。在 API 目录执行 `pnpm storage:migrate-tos` 只读盘点；`pnpm storage:migrate-tos --apply --concurrency=4` 同路径复制、计算源 SHA-256 并核对数据库引用。TOS 普通上传校验服务端 ETag 与本地 MD5，分片或无法确认的 ETag 完整下载核验 SHA-256；失败后可用同命令续传。检查点位于被 Git 忽略的 `.local-storage/migrations/`，日志不含凭证或签名地址。
+- 迁移期间保持 MinIO 为活动存储。最终暂停写入并补齐增量、全部校验成功后，再切换驱动并重启 API；保留原 MinIO 数据卷。切换后有新文件时，回滚前必须同步 TOS 增量，不能直接切回旧桶。
+- 效果类返修在 API 校验原片、项目/Run、版本及 Worker 租约后，签发最长 30 分钟的 TOS GET 地址，替代已过期的供应商地址，无需开放本机 API 公网访问。签名地址只作当前任务临时输入，不写入工程或数据库；是否接受参考输入由供应商最终校验，存储迁移不自动触发付费返修。
+
 ## 基础设施
 
 ```powershell
