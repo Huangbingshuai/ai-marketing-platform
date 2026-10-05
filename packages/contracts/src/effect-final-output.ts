@@ -32,6 +32,8 @@ export type SyncFinalOutputData = {
 /** Explicitly re-render user-selected films; the system does not infer which outputs need updating. */
 export type LocalUpdateFinalOutputRequest = {
   itemIds: string[];
+  /** Explicitly reconcile added/deleted projects in this template's current output branch. */
+  syncProjects?: boolean;
 };
 export type FinalOutputSourceTrim = { slotId: string; offset: number };
 export type StartFinalOutputRequest = {
@@ -114,6 +116,11 @@ export type FinalOutputRun = {
   status: FinalOutputStatus;
   createdAt: string;
   items: FinalOutputItem[];
+  /** Live project membership differences; absent when the source workspace was not loaded. */
+  projectChanges?: {
+    added: { variantId: string; name: string }[];
+    removedItemIds: string[];
+  };
   counts: {
     total: number;
     queued: number;

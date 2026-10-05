@@ -545,8 +545,9 @@ async function rerenderItem(item: FinalOutputRun['items'][number]) {
     itemRerenderingId.value = '';
   }
 }
-async function localUpdate(itemIds: string[]) {
-  if (!run.value || run.value.status !== 'COMPLETED' || busy.value || !itemIds.length) return;
+async function localUpdate(itemIds: string[], syncProjects = false) {
+  if (!run.value || run.value.status !== 'COMPLETED' || busy.value ||
+      (!itemIds.length && !syncProjects)) return;
   const target = run.value;
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
@@ -555,10 +556,14 @@ async function localUpdate(itemIds: string[]) {
     error.value = '成片状态已变化，请刷新后重试';
     return;
   }
+  const removed = target.projectChanges?.removedItemIds ?? [];
+  const removeCount = syncProjects ? removed.length : selected.filter((item) => removed.includes(item.id)).length;
+  const addCount = syncProjects ? target.projectChanges?.added.length ?? 0 : 0;
+  const renderCount = selected.filter((item) => !removed.includes(item.id)).length + addCount;
   const confirmed = await requestActionConfirmation({
     eyebrow: '局部更新成片',
-    title: `更新并重新渲染 ${selected.length} 条成片？`,
-    description: '将读取当前混剪工程。若使用的渲染素材已变更，模型会为变更槽位重新选取画面区间并生成口播和字幕，保留音乐及其他槽位。成功后在当前分支覆盖旧成片，不新增分支；此操作会产生生成或渲染费用。',
+    title: removeCount || addCount ? `同步成片工程（新增 ${addCount} 条，删除 ${removeCount} 条）？` : `更新并重新渲染 ${renderCount} 条成片？`,
+    description: `将读取当前混剪工程，在当前分支移除已删除工程的成片，并渲染新增或选中的变更工程，其他成片和历史分支不变。素材变更时仅重做受影响槽位的选区、口播和字幕。${renderCount ? '此操作会产生生成或渲染费用。' : '仅删除，不启动渲染任务。'}`,
     confirmLabel: '确认局部更新',
     tone: 'warning',
   });
@@ -567,7 +572,7 @@ async function localUpdate(itemIds: string[]) {
   busy.value = true;
   try {
     await requestJson(`/projects/${projectId}/workflows/effect/final-output/${target.id}/local-update`, {
-      method: 'POST', operation: '局部更新成片', body: { itemIds },
+      method: 'POST', operation: '局部更新成片', body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}) },
     });
     error.value = '';
     await refresh();
@@ -811,17 +816,17 @@ onBeforeUnmount(() => {
         <header class="workspace-heading">
           <div>
             <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' ? '待渲染成片' : '成片列表' }}</h3>
-            <p v-if="run.counts.stale">{{ run.counts.stale }} 条成片的混剪工程已变化；原成片仍可查看，局部更新后会覆盖当前分支中的对应文件。</p>
+            <p v-if="run.counts.stale">{{ run.counts.stale }} 条成片待更新<span v-if="run.projectChanges?.added.length || run.projectChanges?.removedItemIds.length">（新增 {{ run.projectChanges?.added.length ?? 0 }} 条，删除 {{ run.projectChanges?.removedItemIds.length ?? 0 }} 条）</span>；局部更新后同步当前分支，其他成片不变。</p>
             <p v-else>{{ run.status === 'PENDING_RENDER' ? '智能填充后的成片工程已同步；未包装条目可先导出仅画面成片，包装成功后会自动补齐音画' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
           </div>
           <div class="workspace-heading__actions">
             <button
-              v-if="run.status === 'COMPLETED' && staleItems.length"
+              v-if="run.status === 'COMPLETED' && run.counts.stale"
               class="secondary-button local-update-button"
               type="button"
               :disabled="busy"
-              @click="localUpdate(staleItems.map((item) => item.id))"
-            ><RefreshCw :size="14" />局部更新（{{ staleItems.length }}）</button>
+              @click="localUpdate(staleItems.map((item) => item.id), true)"
+            ><RefreshCw :size="14" />局部更新（{{ run.counts.stale }}）</button>
             <button
               v-if="downloadableItems.length"
               class="secondary-button selection-toggle"

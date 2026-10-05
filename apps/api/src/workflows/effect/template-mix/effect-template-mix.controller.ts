@@ -129,6 +129,17 @@ export class EffectTemplateMixController {
     );
   }
 
+  @Post('templates/:templateId/variants/:variantId/delete')
+  deleteVariant(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('templateId', new ParseUUIDPipe({ version: '4' })) templateId: string,
+    @Param('variantId', new ParseUUIDPipe({ version: '4' })) variantId: string,
+    @Body() body: EffectTemplateMixRevisionDto,
+  ) {
+    return this.service.deleteVariant(projectId, body.workflowRunId, templateId,
+      variantId, body.expectedRevision);
+  }
+
   @Post('templates/:templateId/apply-variant')
   applyVariant(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,

@@ -84,12 +84,14 @@ describe('effect final output re-render layout', () => {
 
   it('offers 局部更新 only for an already-exported batch that has moved upstream', () => {
     expect(pageSource).toContain('const staleItems = computed');
-    expect(pageSource).toContain("run.status === 'COMPLETED' && staleItems.length");
+    expect(pageSource).toContain("run.status === 'COMPLETED' && run.counts.stale");
     expect(pageSource).toContain('/final-output/${target.id}/local-update`');
     expect(pageSource).toContain('确认局部更新');
-    expect(pageSource).toContain('body: { itemIds }');
+    expect(pageSource).toContain('body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}) }');
     expect(pageSource).toContain('class="secondary-button local-update-button"');
-    expect(pageSource).toContain('局部更新（{{ staleItems.length }}）');
+    expect(pageSource).toContain('局部更新（{{ run.counts.stale }}）');
+    expect(pageSource).toContain('localUpdate(staleItems.map((item) => item.id), true)');
+    expect(pageSource).toContain('仅删除，不启动渲染任务。');
     expect(pageSource).toContain('.local-update-button {');
   });
 

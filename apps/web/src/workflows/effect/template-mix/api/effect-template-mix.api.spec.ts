@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createEffectTemplateMixAiRun, createEmptyEffectTemplateMixVariant, resumeEffectTemplateMixAppend, saveEffectTemplateMixDraft } from './effect-template-mix.api';
+import { createEffectTemplateMixAiRun, createEmptyEffectTemplateMixVariant, deleteEffectTemplateMixVariant, resumeEffectTemplateMixAppend, saveEffectTemplateMixDraft } from './effect-template-mix.api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('effect template mix API', () => {
+  it('scopes project deletion to the template and Run using the current draft revision', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: {} })));
+    vi.stubGlobal('fetch', fetchMock);
+    await deleteEffectTemplateMixVariant('p/1', 'current-run', 9, 't/1', 'v/1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/projects/p%2F1/workflows/effect/template-mix/templates/t%2F1/variants/v%2F1/delete');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ workflowRunId: 'current-run', expectedRevision: 9 });
+  });
   it('distinguishes same-branch append requests from a full fill and resumes the same task', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: {} })));
     vi.stubGlobal('fetch', fetchMock);

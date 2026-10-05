@@ -3011,6 +3011,16 @@ export class EffectTemplateMixService {
     };
   }
 
+  async deleteVariant(projectId: string, workflowRunId: string, templateId: string,
+    variantId: string, expectedRevision: number): Promise<EffectTemplateMixWorkspaceData> {
+    return this.mutate(projectId, workflowRunId, expectedRevision, templateId, (workspace) => {
+      const index = workspace.variants.findIndex((variant) => variant.id === variantId);
+      if (index < 0) this.notFound('当前成片工程不存在');
+      workspace.variants.splice(index, 1);
+      workspace.editVersion += 1;
+    });
+  }
+
   private async mutate(
     projectId: string,
     workflowRunId: string,

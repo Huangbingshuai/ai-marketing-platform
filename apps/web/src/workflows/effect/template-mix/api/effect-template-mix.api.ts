@@ -110,6 +110,15 @@ export const createEmptyEffectTemplateMixVariant = (
     },
   );
 
+export const deleteEffectTemplateMixVariant = (
+  projectId: string, workflowRunId: string, expectedRevision: number,
+  templateId: string, variantId: string,
+): Promise<ApiResponse<EffectTemplateMixWorkspaceData>> =>
+  requestJson(basePath(projectId) + '/templates/' + encodeURIComponent(templateId) +
+    '/variants/' + encodeURIComponent(variantId) + '/delete', {
+    method: 'POST', operation: '删除成片工程', body: { workflowRunId, expectedRevision },
+  });
+
 export const createEffectTemplateMixAiRun = (
   projectId: string,
   workflowRunId: string,

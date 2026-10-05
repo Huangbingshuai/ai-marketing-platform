@@ -89,6 +89,7 @@ import {
   createEffectTemplateMixAiRun,
   resumeEffectTemplateMixAppend,
   createEmptyEffectTemplateMixVariant,
+  deleteEffectTemplateMixVariant,
   getBackgroundEffectTemplateMixAiRun,
   getEffectTemplateMixAiRun,
   loadEffectTemplateMixWorkspace,
@@ -5065,9 +5066,55 @@ const createEmptyVariant = async (): Promise<void> => {
       ui.selectedSlotId = created.slots[0]?.id ?? '';
     }
     saveState.value = 'saved';
+    if (response.data.draftRevision !== null) queueOutputSync(response.data.draftRevision, templateId);
     showNotice('已新建空成片，可从左侧素材库拖入画面');
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '新建成片失败', 'error');
+  } finally {
+    mutating.value = false;
+  }
+};
+const deleteVariant = async (variantId: string): Promise<void> => {
+  if (projectEditLocked.value || mutating.value || !workspace.value) return;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const templateId = activeTemplateId.value;
+  const variant = workspace.value.variants.find((item) => item.id === variantId);
+  if (!variant) return;
+  const confirmed = await requestActionConfirmation({
+    eyebrow: '删除成片工程', title: `删除“${variant.name}”？`,
+    description: '删除当前模板中的此工程。已导出的成片仍保留，进入成片输出点击局部更新后才会移除对应成片；其他版本分支不受影响。',
+    confirmLabel: '删除工程', tone: 'danger',
+  });
+  if (!confirmed || props.projectId !== projectId || props.workflowRunId !== workflowRunId ||
+      activeTemplateId.value !== templateId || projectEditLocked.value || mutating.value) return;
+  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
+  if (props.projectId !== projectId || props.workflowRunId !== workflowRunId ||
+      activeTemplateId.value !== templateId || projectEditLocked.value) return;
+  mutating.value = true;
+  if (selectedVariant.value?.id === variantId) {
+    playing.value = false;
+    pauseTimelinePlayers();
+  }
+  try {
+    const response = await deleteEffectTemplateMixVariant(projectId, workflowRunId,
+      draftRevision.value, templateId, variantId);
+    if (props.projectId !== projectId || props.workflowRunId !== workflowRunId) return;
+    const selectedId = selectedVariant.value?.id;
+    installWorkspaceData(response.data);
+    activeTemplateId.value = templateId;
+    const entry = catalog.value.find((item) => item.id === templateId);
+    const next = entry?.workspace.variants.find((item) => item.id === selectedId) ?? entry?.workspace.variants[0];
+    if (next) selectVariant(next.id);
+    else if (uiByTemplate[templateId]) {
+      uiByTemplate[templateId]!.selectedVariantId = '';
+      uiByTemplate[templateId]!.selectedSlotId = '';
+    }
+    saveState.value = 'saved';
+    if (response.data.draftRevision !== null) queueOutputSync(response.data.draftRevision, templateId);
+    showNotice('已删除成片工程，已导出的成片可在成片输出局部更新');
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '删除成片失败', 'error');
   } finally {
     mutating.value = false;
   }
@@ -7261,6 +7308,8 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                   variant,
                   variant.id === selectedVariant?.id,
                   packagingReady,
+                  mutating,
+                  projectEditLocked,
                   packagingFailureByVariant.get(variant.id)?.message,
                   variantSourceChanges(variant).length,
                 ]"
@@ -7313,6 +7362,16 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                             : '可精修'
                     "
                   />
+                  <button
+                    class="project-delete-button"
+                    type="button"
+                    :disabled="projectEditLocked || mutating"
+                    :aria-label="`删除${variantDisplayName(variant, index)}`"
+                    title="删除成片工程"
+                    @click.stop="deleteVariant(variant.id)"
+                    @pointerdown.stop
+                    @keydown.stop
+                  ><Trash2 :size="13" /></button>
                   <small
                     v-if="packagingFailureByVariant.has(variant.id)"
                     class="project-package-failure"
@@ -9784,6 +9843,27 @@ button:disabled {
 /* The failure note gets its own line under the name, so a long message cannot push the dot out. */
 .project-card-info {
   flex-wrap: wrap;
+}
+.project-delete-button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: #64748b;
+  background: transparent;
+  cursor: pointer;
+}
+.project-delete-button:hover:not(:disabled) {
+  color: #dc2626;
+  background: #fef2f2;
+}
+.project-delete-button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
 }
 .projects article .project-package-failure {
   flex: 1 0 100%;

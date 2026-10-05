@@ -664,6 +664,73 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 (item) => item.id === target.id,
               )!.fileObjectId,
             ).toBe(saved.fileObjectId);
+
+            // Project membership is also an explicit same-branch local update, not a full export.
+            const entry = actualDraft.templates[0]!;
+            const keptVariant = entry.workspace.variants.find((variant) => variant.id !== target.variantId)!;
+            const added = { ...structuredClone(keptVariant), id: randomUUID(), name: '新增成片' };
+            entry.workspace.variants = [keptVariant, added];
+            await tx.workflowNodeState.update({ where: { projectId_workflowRunId_nodeId: {
+              projectId, workflowRunId, nodeId: 'TEMPLATE_MIX',
+            } }, data: { state: json(actualDraft), revision: { increment: 1 } } });
+            visualInputs.push({ artifactKey: `timeline-project:${templateId}:${added.id}`, input: {
+              kind: 'STRUCTURED', name: added.name, directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT',
+              payload: { templateId, variant: added },
+              dependencies: Object.values(added.bindings).map((id) => ({ sourceType: 'WORKING_ARTIFACT',
+                sourceNodeId: 'SEGMENT_RENDER', sourceArtifactId: id,
+                sourceKey: id === a.id ? a.artifactKey : b.artifactKey,
+                sourceRevision: added.bindingRevisions[Object.keys(added.bindings).find((slot) => added.bindings[slot] === id)!]!,
+              })),
+            } });
+            const membership = await service.get(projectId, output.id);
+            expect(membership.counts.stale).toBe(2);
+            expect(membership.projectChanges).toEqual({
+              added: [{ variantId: added.id, name: added.name }], removedItemIds: [target.id],
+            });
+            await service.localUpdate(projectId, output.id, { itemIds: [target.id], syncProjects: true });
+            const changed = await tx.effectFinalOutputItem.findMany({ where: { projectId, runId: output.id } });
+            expect(changed).toHaveLength(2);
+            expect(changed.find((item) => item.id === siblingId)).toEqual(siblingBefore);
+            expect(changed.find((item) => item.variantId === added.id)?.status).toBe('QUEUED');
+            expect(await tx.fileObject.findUnique({ where: { id: saved.fileObjectId! } })).not.toBeNull();
+            const appendClaim = await service.claim(projectId, output.id);
+            const appended = changed.find((item) => item.variantId === added.id)!;
+            await service.upload(projectId, output.id, appendClaim.attemptToken!, appended.id, {
+              path: mp4Path, size: mp4.length,
+            });
+            await service.finish(projectId, output.id, appendClaim.attemptToken!);
+            expect((await service.get(projectId, output.id)).counts.stale).toBe(0);
+            expect(await tx.workflowRun.count({ where: { projectId } })).toBe(1);
+            const nextDelivery = await tx.workingArtifact.findFirstOrThrow({ where: {
+              projectId, artifactKey: `final-delivery:${templateId}`,
+            } });
+            expect((nextDelivery.payload as { items: { id: string }[] }).items.map((item) => item.id))
+              .toEqual(expect.arrayContaining([siblingId, appended.id]));
+            expect((nextDelivery.payload as { items: { id: string }[] }).items.some((item) => item.id === target.id)).toBe(false);
+
+            // Removing one film alone rewrites delivery immediately, keeping the sibling file.
+            entry.workspace.variants = [keptVariant];
+            await tx.workflowNodeState.update({ where: { projectId_workflowRunId_nodeId: {
+              projectId, workflowRunId, nodeId: 'TEMPLATE_MIX',
+            } }, data: { state: json(actualDraft), revision: { increment: 1 } } });
+            const deletionOutbox = await tx.jobOutbox.findMany({ where: { projectId } });
+            await service.localUpdate(projectId, output.id, { itemIds: [appended.id] });
+            expect(await tx.effectFinalOutputItem.findMany({ where: { projectId, runId: output.id } }))
+              .toEqual([siblingBefore]);
+            expect(await tx.jobOutbox.findMany({ where: { projectId } })).toEqual(deletionOutbox);
+
+            entry.workspace.variants = [];
+            await tx.workflowNodeState.update({ where: { projectId_workflowRunId_nodeId: {
+              projectId, workflowRunId, nodeId: 'TEMPLATE_MIX',
+            } }, data: { state: json(actualDraft), revision: { increment: 1 } } });
+            const outboxBefore = await tx.jobOutbox.findMany({ where: { projectId } });
+            await service.localUpdate(projectId, output.id, { itemIds: [], syncProjects: true });
+            expect((await service.get(projectId, output.id)).items).toEqual([]);
+            expect(await tx.jobOutbox.findMany({ where: { projectId } })).toEqual(outboxBefore);
+            const emptyDelivery = await tx.workingArtifact.findFirstOrThrow({ where: {
+              projectId, artifactKey: `final-delivery:${templateId}`,
+            } });
+            expect((emptyDelivery.payload as { items: unknown[] }).items).toEqual([]);
             throw rollback;
           },
           { timeout: 120_000 },

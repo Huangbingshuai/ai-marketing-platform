@@ -136,6 +136,32 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('deletes only the requested project and allows an empty template without touching versions', async () => {
+    const { service, working } = harness();
+    const value = draft();
+    const other = structuredClone(value.templates[0]!);
+    other.id = 'other-template';
+    value.templates.push(other);
+    working.getNodeState.mockResolvedValue({ revision: 7, state: value });
+    const result = await service.deleteVariant('project', 'run', templateId, variantId, 7);
+    expect(result.draft.templates[0]!.workspace.variants).toEqual([]);
+    expect(result.draft.templates[0]!.workspace.editVersion).toBe(5);
+    expect(result.draft.templates[1]!.workspace.variants).toHaveLength(1);
+    expect(working.putNodeState).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX',
+      expect.objectContaining({ expectedRevision: 7 }));
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown projects and stale deletion revisions without saving', async () => {
+    const { service, working } = harness();
+    await expect(service.deleteVariant('project', 'run', templateId, 'foreign-variant', 7))
+      .rejects.toThrow('当前成片工程不存在');
+    await expect(service.deleteVariant('project', 'run', templateId, variantId, 6))
+      .rejects.toThrow('混剪草稿已在其他页面更新');
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
   it('returns only the persisted revision for compact autosave without rebuilding the workbench', async () => {
     const { working } = harness();
     const aiRuns = {

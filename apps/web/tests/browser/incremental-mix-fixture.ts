@@ -7,6 +7,7 @@ import type {
   EffectTemplateMixVariant,
 } from '@ai-marketing/contracts';
 import Mix from '../../src/workflows/effect/template-mix/EffectTemplateMixNodePage.vue';
+import ActionConfirmationDialog from '../../src/shared/components/ActionConfirmationDialog.vue';
 import '../../src/styles/global.css';
 
 const mode = ref('READY'),
@@ -65,6 +66,7 @@ const materials = Array.from({ length: 8 }, (_, i) => ({
   sourcePromptId: `p${i}`,
   activeSource: true,
 }));
+let projects = [structuredClone(variant)];
 const makeRun = (): EffectTemplateMixAiRun => ({
   id: 'qa-append',
   workflowRunId: 'qa-run',
@@ -108,7 +110,7 @@ const workspace = () => ({
               workspace: {
                 editVersion: 1,
                 template: { name: '隔离测试模板', editVersion: 1, slots },
-                variants: [structuredClone(variant)],
+                variants: structuredClone(projects),
               },
             },
           ],
@@ -144,6 +146,14 @@ window.fetch = async (input, init) => {
       mode.value = 'RUNNING';
     }
     data = makeRun();
+  } else if (path.includes('/variants/') && path.endsWith('/delete')) {
+    const id = decodeURIComponent(path.split('/variants/')[1]!.split('/')[0]!);
+    projects = projects.filter((project) => project.id !== id);
+    data = { ...workspace(), draftRevision: 2 };
+  } else if (path.endsWith('/empty-variants')) {
+    projects.push({ ...structuredClone(variant), id: `manual-${projects.length}`, name: '新建成片',
+      bindings: {}, bindingRevisions: {}, conflictSlotIds: slots.map((slot) => slot.id) });
+    data = { ...workspace(), draftRevision: 2 };
   } else if (path.includes('/template-mix?')) data = workspace();
   else if (path.includes('/draft')) data = { ...workspace(), draftRevision: 2 };
   else if (path.includes('/packaging-runs')) data = [];
@@ -176,6 +186,7 @@ createApp({
             {
               onClick: () => {
                 mode.value = value;
+                projects = [structuredClone(variant)];
                 version.value++;
               },
             },
@@ -197,5 +208,6 @@ createApp({
           notice.value = text;
         },
       }),
+      h(ActionConfirmationDialog),
     ]),
 }).mount('#app');

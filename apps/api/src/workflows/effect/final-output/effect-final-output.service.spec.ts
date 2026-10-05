@@ -1778,16 +1778,147 @@ describe('local update', () => {
     );
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
   });
-  it('tells the user to re-package when the draft no longer holds the film', async () => {
+  it('removes the last deleted project and commits an empty delivery without rendering or forking', async () => {
     const gone = await localUpdateHarness();
     gone.workspace.draft!.templates[0]!.workspace.variants = [];
-    await expect(gone.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('已不在当前成片工程中');
+    gone.db.effectFinalOutputItem.deleteMany.mockImplementation(async () => {
+      gone.items.splice(0);
+      return { count: 1 };
+    });
+    const before = await gone.service.get('p', 'out');
+    expect(before.projectChanges?.removedItemIds).toEqual(['item-0']);
+    expect(before.counts.stale).toBe(1);
+    const result = await gone.service.localUpdate('p', 'out', { itemIds: ['item-0'] });
+    expect(result.items).toEqual([]);
+    expect(result.counts.stale).toBe(0);
+    expect(gone.db.effectFinalOutputItem.deleteMany).toHaveBeenCalledWith({ where: {
+      projectId: 'p', runId: 'out', id: { in: ['item-0'] },
+    } });
+    expect(gone.working.commitValidatedArtifactsInTransaction).toHaveBeenCalledWith(
+      gone.db, 'p', 'w', 'FINAL_OUTPUT', [expect.objectContaining({
+        artifactKey: 'final-delivery:t', input: expect.objectContaining({
+          payload: expect.objectContaining({ items: [] }), files: [],
+        }),
+      })]);
+    expect(gone.db.jobOutbox.upsert).not.toHaveBeenCalled();
+    expect(gone.working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(gone.db.fileObject.delete).not.toHaveBeenCalled();
+    await expect(gone.service.localUpdate('p', 'out', { itemIds: [], syncProjects: true }))
+      .rejects.toThrow('无需局部更新');
+  });
+  it('still rejects unusable sources without queueing a task', async () => {
     // A missing source file is a real rendering error, not a semantic package-expiry decision.
     const broken = await localUpdateHarness();
     broken.workspace.materials = [];
     await expect(broken.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('原素材来源无法确认');
+    expect(broken.db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('detects added projects and renders only additions in the same branch using existing output settings', async () => {
+    const context = await membershipUpdateHarness();
+    const { service, db, working, items } = context;
+    const old = structuredClone(items[0]);
+    const before = await service.listPath('p', 'w');
+    expect(before[0]?.projectChanges?.added).toEqual([{ variantId: 'new-project', name: '新成片' }]);
+    expect(before[0]?.counts.stale).toBe(1);
+    expect(before[0]?.items[0]?.stale).toBe(false);
+    await service.localUpdate('p', 'out', { itemIds: [], syncProjects: true });
+    expect(items[0]).toEqual(old);
+    expect(items[1]).toMatchObject({ variantId: 'new-project', status: 'QUEUED',
+      snapshot: { resolution: '1080p', frameRate: 25, unpackaged: true } });
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifactsInTransaction).toHaveBeenCalledWith(db, 'p', 'w',
+      'TEMPLATE_MIX', [{ artifactKey: 'timeline-project:t:new-project', input: {} }]);
+    await expect(service.localUpdate('p', 'out', { itemIds: [], syncProjects: true }))
+      .rejects.toThrow('正在渲染');
+    expect(db.effectFinalOutputItem.create).toHaveBeenCalledOnce();
+  });
+  it('synchronizes additions and deletions together, without queueing the deleted project', async () => {
+    const { service, db, workspace, items } = await membershipUpdateHarness();
+    workspace.draft.templates[0]!.workspace.variants.splice(0, 1);
+    db.effectFinalOutputItem.deleteMany.mockImplementation(async () => {
+      const index = items.findIndex((item) => item.id === 'item-0');
+      items.splice(index, 1);
+      return { count: 1 };
+    });
+    const before = await service.get('p', 'out');
+    expect(before.counts.stale).toBe(2);
+    await service.localUpdate('p', 'out', { itemIds: ['item-0'], syncProjects: true });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ variantId: 'new-project', status: 'QUEUED' });
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledOnce();
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it('rejects incomplete additions before removing existing output or scheduling paid work', async () => {
+    const { service, db, mix, workspace, variant } = await membershipUpdateHarness();
+    workspace.draft.templates[0]!.workspace.variants.splice(0, 1);
+    mix.prepareValidation.mockResolvedValue({ variants: [variant], inputs: [] });
+    await expect(service.localUpdate('p', 'out', { itemIds: ['item-0'], syncProjects: true }))
+      .rejects.toThrow('新增成片工程仍有素材缺口');
+    expect(db.effectFinalOutputItem.deleteMany).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('requires explicit project synchronization for additions, and guards historical branches', async () => {
+    const { service, db, working } = await membershipUpdateHarness();
+    await expect(service.localUpdate('p', 'out', { itemIds: [] })).rejects.toThrow('请先选择');
+    working.beginEffectNodeEdit.mockClear();
+    db.workflowRun.findFirst.mockResolvedValue(null);
+    await expect(service.localUpdate('p', 'out', { itemIds: [], syncProjects: true }))
+      .rejects.toThrow('当前活动成片分支');
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('retains output settings after all projects were removed and a new one is added', async () => {
+    const { service, items, workspace, artifacts } = await membershipUpdateHarness();
+    items.splice(0);
+    workspace.draft.templates[0]!.workspace.variants.splice(0, 1);
+    const delivery = artifacts.find((artifact) => artifact.id === 'delivery')!;
+    (delivery as unknown as { payload: unknown }).payload = {
+      runId: 'out', resolution: '1080p', frameRate: 25, items: [],
+    };
+    const before = await service.get('p', 'out');
+    expect(before).toMatchObject({ resolution: '1080p', frameRate: 25, validated: true });
+    await service.localUpdate('p', 'out', { itemIds: [], syncProjects: true });
+    expect(items[0]).toMatchObject({ snapshot: { resolution: '1080p', frameRate: 25 } });
+  });
+  it('preserves manual audio, captions and imported music in a newly added project', async () => {
+    const { service, items, workspace } = await membershipUpdateHarness();
+    const added = workspace.draft.templates[0]!.workspace.variants[1]!;
+    added.voice = { fileObjectId: 'voice', name: '人工口播', start: 0, duration: 2, offset: 0, volume: .5 };
+    added.bgm = { fileObjectId: 'music', name: '人工音乐', start: 0, duration: 10, offset: 0, volume: .2 };
+    added.captions = [{ id: 'caption', text: '人工字幕', start: 0, end: 2 }];
+    added.detachedAudios = [{ id: 'imported', fileObjectId: 'music', name: '导入音乐',
+      sourceAssetId: 'project-music', sourceType: 'FILE', audioKind: 'MUSIC',
+      duration: 10, sourceDuration: 10, start: 0, offset: 0, volume: .2 }];
+    await service.localUpdate('p', 'out', { itemIds: [], syncProjects: true });
+    expect(items[1]).toMatchObject({ snapshot: { unpackaged: false,
+      timeline: { detachedAudios: added.detachedAudios },
+      packaging: { voices: { manual: added.voice }, music: added.bgm, captions: added.captions },
+    } });
   });
 });
+
+async function membershipUpdateHarness() {
+  const context = await localUpdateHarness();
+  const added = { ...structuredClone(context.variant), id: 'new-project', name: '新成片' };
+  context.workspace.draft.templates[0]!.workspace.variants.push(added);
+  context.mix.prepareValidation.mockResolvedValue({ variants: [context.variant, added],
+    inputs: [{ artifactKey: 'timeline-project:t:new-project', input: {} }] });
+  context.artifacts.push({ id: 'new-timeline', artifactKey: 'timeline-project:t:new-project',
+    nodeId: 'TEMPLATE_MIX', revision: 1, contentHash: 'new-timeline-hash', freshness: 'CURRENT',
+    availability: 'AVAILABLE', dependencies: [] } as never);
+  context.db.effectFinalOutputItem.create.mockImplementation(async ({ data }) => {
+    const item = { id: 'new-item', ...data, fileObjectId: null, assetId: null, progress: 0, errorMessage: null };
+    context.items.push(item);
+    return item;
+  });
+  context.db.fileObject.count.mockImplementation(async ({ where }) => where.id.in.length);
+  const baseline = context.items[0] as unknown as { snapshot: FinalOutputSnapshot };
+  baseline.snapshot.resolution = '1080p';
+  baseline.snapshot.frameRate = 25;
+  return context;
+}
 
 /**
  * A delivered batch whose draft has moved on. The snapshot is built by the real packaging callback so
