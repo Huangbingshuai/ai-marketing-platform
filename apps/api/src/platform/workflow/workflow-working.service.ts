@@ -33,6 +33,7 @@ import {
 } from './workflow-working.repository';
 import { workflowStateHash } from './workflow-state-hash';
 import { isInheritedFillKey } from './effect-branch-clone';
+import { effectArtifactSourceOwner, projectEffectBranchFreshness } from './effect-branch-freshness';
 import type { EffectEditBeginOptions } from './effect-edit-session';
 
 export { workflowStateHash } from './workflow-state-hash';
@@ -369,20 +370,24 @@ export class WorkflowWorkingService {
       }
     }
     if (!active) return { projectId, activeWorkflowRunId: null, branches: [] };
-    // The active mix draft is the authoritative template catalog shown by the configuration
-    // page. Historical artifacts remain available for lineage/version calculations, but a
-    // template removed from that catalog must not be resurrected as a live template node merely
-    // because an older branch still owns its immutable artifacts.
-    const activeCatalogRun = runs.find((run) => run.activeKey === 'ACTIVE') ?? active;
-    const activeMixState = activeCatalogRun.nodeStates?.[0]?.state;
-    const activeMixDraft = activeMixState && typeof activeMixState === 'object' &&
-      !Array.isArray(activeMixState)
-      ? activeMixState as Record<string, unknown>
-      : null;
-    const currentTemplateIds = activeMixDraft?.schemaVersion === 1 &&
-      Array.isArray(activeMixDraft.templates)
-      ? new Set(mixDraftTemplates(activeMixState).map(({ id }) => id))
-      : null;
+    // A saved catalog belongs to its branch, not the project's active pointer. Older sibling
+    // catalogs cannot hide templates created in another branch. For legacy children without
+    // a saved catalog, inherit the nearest parent's catalog instead of resurrecting removed
+    // templates from immutable artifacts alone.
+    const templateIdsFor = (run: (typeof runs)[number]): Set<string> | null => {
+      const visited = new Set<string>();
+      for (let cursor: (typeof runs)[number] | undefined = run;
+        cursor && !visited.has(cursor.id);
+        cursor = cursor.parentWorkflowRunId ? byId.get(cursor.parentWorkflowRunId) : undefined) {
+        visited.add(cursor.id);
+        const state = cursor.nodeStates?.[0]?.state;
+        const draft = state && typeof state === 'object' && !Array.isArray(state)
+          ? state as Record<string, unknown> : null;
+        if (draft?.schemaVersion === 1 && Array.isArray(draft.templates))
+          return new Set(mixDraftTemplates(state).map(({ id }) => id));
+      }
+      return null;
+    };
     let root = active;
     const seen = new Set<string>();
     while (root.parentWorkflowRunId && !seen.has(root.id)) {
@@ -628,7 +633,9 @@ export class WorkflowWorkingService {
           .filter((packaging) => packaging.templateId === templateId &&
             packaging.status === 'COMPLETED' && !packaging.idempotencyKey.includes(':package:'))
           .map((packaging) => packaging.completedAt?.getTime() ?? 0));
-        return { runId: run.id, templateId, units: revisions.length ? Math.max(...revisions) : 0,
+        // A package head is one branch version. Editing/updating films in place advances their
+        // artifact revisions, not the branch ordinal (otherwise version 01 disappears after an update).
+        return { runId: run.id, templateId, units: revisions.length ? 1 : 0,
           completedAt: completedAt || (run.branchPublishedAt ?? run.createdAt).getTime() };
       });
     }).sort((left, right) => left.completedAt - right.completedAt ||
@@ -652,6 +659,12 @@ export class WorkflowWorkingService {
       }
       return null;
     };
+    const projected = projectEffectBranchFreshness(runs, runs.flatMap((run) => run.workingArtifacts));
+    const freshnessById = new Map(projected.filter((artifact) => artifact.id)
+      .map((artifact) => [artifact.id, artifact.freshness]));
+    const artifactStatus = (artifacts: BranchArtifact[]) => artifacts.some((artifact) =>
+      (freshnessById.get(artifact.id) ?? artifact.freshness) === 'STALE')
+      ? 'STALE' as const : artifacts.length ? 'CONFIRMED' as const : 'PENDING' as const;
     const branches: EffectWorkflowBranch[] = runs
       .filter((run) => inTree.has(run.id) && drawn(run))
       .map((run) => {
@@ -659,6 +672,7 @@ export class WorkflowWorkingService {
         const forkNodeId = branchNodeIdOf(run);
         const forkMixStage = mixForkStage(run, forkNodeId);
         const forkTemplateId = mixForkTemplateId(run, forkNodeId, forkMixStage);
+        const currentTemplateIds = templateIdsFor(run);
         const templatesById = new Map<string, EffectWorkflowBranch['templates'][number]>();
         for (const artifact of visibleArtifacts) {
           const match =
@@ -769,6 +783,14 @@ export class WorkflowWorkingService {
           template.fillCreatedAt = artifactCreatedAt(fills);
           template.packagingCreatedAt = artifactCreatedAt(packages);
           template.deliveryCreatedAt = artifactCreatedAt(deliveries);
+          template.templateStatus = artifactStatus(visibleArtifacts.filter((artifact) =>
+            artifact.artifactKey === `mix-template:${template.templateId}`));
+          template.fillStatus = artifactStatus(fills);
+          template.packagingStatus = artifactStatus(packages);
+          // Delivery manifests freeze files and deliberately have no source dependencies. Include
+          // their per-film artifacts so a changed source still warns on the output tree node.
+          template.deliveryStatus = artifactStatus([...deliveries, ...visibleArtifacts.filter((artifact) =>
+            artifact.artifactKey.startsWith(`final-video:${template.templateId}:`))]);
         }
         return {
           workflowRunId: run.id,
@@ -797,19 +819,26 @@ export class WorkflowWorkingService {
           ),
           nodes: EFFECT_WORKFLOW_BRANCH_NODES.map((nodeId) => {
             const local = visibleArtifacts.filter((artifact) => artifact.nodeId === nodeId);
+            // A copied upstream snapshot can be stale for this mix branch without making the
+            // actual render/Prompt head stale. Display the head's status, not its consumers'.
+            const owner = effectArtifactSourceOwner(runs, run.id, nodeId,
+              runs.flatMap((branch) => branch.workingArtifacts));
+            const statusArtifacts = EFFECT_WORKFLOW_BRANCH_NODES.indexOf(nodeId) < 4
+              ? (byId.get(owner)?.workingArtifacts.filter((artifact) => artifact.nodeId === nodeId) ?? local)
+              : local;
             const revisionArtifacts = local.filter((artifact) =>
               artifact.artifactKey.startsWith(revisionKeyPrefix[nodeId]),
             );
             const count = {
-              current: local.filter((artifact) => artifact.freshness === 'CURRENT').length,
-              stale: local.filter((artifact) => artifact.freshness === 'STALE').length,
+              current: statusArtifacts.filter((artifact) => (freshnessById.get(artifact.id) ?? artifact.freshness) === 'CURRENT').length,
+              stale: statusArtifacts.filter((artifact) => (freshnessById.get(artifact.id) ?? artifact.freshness) === 'STALE').length,
             };
             return {
               nodeId,
-              status: count.current
-                ? ('CONFIRMED' as const)
-                : count.stale
-                  ? ('STALE' as const)
+              status: count.stale
+                ? ('STALE' as const)
+                : count.current
+                  ? ('CONFIRMED' as const)
                   : ('PENDING' as const),
               artifactCount: count.current + count.stale,
               revisions: revisionsOf(revisionArtifacts),

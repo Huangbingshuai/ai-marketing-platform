@@ -743,7 +743,14 @@ export async function beginEffectEditInTransaction(
       type: artifact.type,
       tags: artifact.tags,
       payload: remap(artifact.payload, { ...ids, ...artifactIds, ...hashReplacements }),
-      metadata: remap(artifact.metadata, { ...ids, ...artifactIds, ...hashReplacements }),
+      metadata: { ...((remap(artifact.metadata, { ...ids, ...artifactIds, ...hashReplacements }) ?? {}) as object),
+        branchSource: { artifactId: artifact.id, revision: artifact.revision,
+          ancestorArtifactIds: (() => {
+            const source = (artifact.metadata as { branchSource?: { artifactId?: string;
+              ancestorArtifactIds?: string[] } } | null)?.branchSource;
+            return [...new Set([...(source?.artifactId ? [source.artifactId] : []),
+              ...(source?.ancestorArtifactIds ?? [])])];
+          })() } },
       originalFileName: artifact.originalFileName,
       mimeType: artifact.mimeType,
       sizeBytes: artifact.sizeBytes,

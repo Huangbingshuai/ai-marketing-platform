@@ -63,6 +63,7 @@ describe('WorkflowWorkingRepository', () => {
       .fn()
       .mockImplementation(({ where }) =>
         Promise.resolve(
+          where.nodeId === 'SEGMENT_RENDER' ? [] :
           where.id ? ancestorArtifacts.filter(({ id }) => where.id.in.includes(id)) :
           where.workflowRunId === 'child'
             ? [item('child', 'SOURCE_IMPORT', 'source-package:a')]
@@ -76,13 +77,18 @@ describe('WorkflowWorkingRepository', () => {
 
     const result = await repository.listArtifacts('project-a', { workflowRunId: 'child' });
 
-    expect(result.map(({ id }) => id)).toEqual(['child:source-package:a', 'parent:insight:a']);
+    expect(result.map(({ id }) => id)).toEqual([
+      'child:source-package:a', 'parent:source-package:a', 'parent:insight:a',
+    ]);
+    expect(result.map(({ metadata }) => (metadata as { branchSourceOwner: boolean }).branchSourceOwner))
+      .toEqual([false, true, true]);
     expect(branchRead).toHaveBeenCalledOnce();
     expect(branchRead).toHaveBeenCalledWith(expect.objectContaining({ where: { projectId: 'project-a' } }));
-    expect(findMany).toHaveBeenCalledTimes(3);
-    expect(findMany.mock.calls[1]![0]).toMatchObject({ select: { id: true, artifactKey: true } });
-    expect(findMany.mock.calls[2]![0]).toMatchObject({ where: {
-      projectId: 'project-a', id: { in: ['parent:insight:a'] },
+    expect(findMany).toHaveBeenCalledTimes(4);
+    expect(findMany.mock.calls[1]![0]).toMatchObject({ where: { nodeId: 'SEGMENT_RENDER' } });
+    expect(findMany.mock.calls[2]![0]).toMatchObject({ select: { id: true, artifactKey: true } });
+    expect(findMany.mock.calls[3]![0]).toMatchObject({ where: {
+      projectId: 'project-a', id: { in: ['parent:source-package:a', 'parent:insight:a'] },
     } });
   });
   it('batches deep inheritance and preserves nearest keys and every crossed template fork', async () => {
@@ -129,7 +135,7 @@ describe('WorkflowWorkingRepository', () => {
       ]) }, workingArtifact: { findMany },
     } as unknown as PrismaService);
     expect(await repository.listArtifacts('p', { workflowRunId: 'child' })).toEqual([]);
-    expect(findMany).toHaveBeenCalledOnce();
+    expect(findMany).toHaveBeenCalledTimes(2);
   });
 
   it.each(['save', 'replace', 'hash-normalization'])(
@@ -428,11 +434,11 @@ describe('WorkflowWorkingRepository', () => {
     );
 
     expect(updateArtifacts).toHaveBeenNthCalledWith(1, {
-      where: { projectId: 'project-a', workflowRunId: 'run-a', id: { in: ['artifact-a'] } },
+      where: { projectId: 'project-a', id: { in: ['artifact-a'] } },
       data: { freshness: 'STALE' },
     });
     expect(updateArtifacts).toHaveBeenNthCalledWith(2, {
-      where: { projectId: 'project-a', workflowRunId: 'run-a', id: { in: ['artifact-b'] } },
+      where: { projectId: 'project-a', id: { in: ['artifact-b'] } },
       data: { freshness: 'STALE' },
     });
   });
@@ -548,7 +554,8 @@ describe('WorkflowWorkingRepository', () => {
       type: 'SOURCE_MATERIAL' as const,
       tags: ['产品 A', '食品'],
       payload: { productId: 'product-a', productName: '产品 A', completeness: 'INCOMPLETE' },
-      metadata: { productId: 'product-a', productName: '产品 A', legacyArtifactIds: ['old-a'] },
+      metadata: { productId: 'product-a', productName: '产品 A', legacyArtifactIds: ['old-a'],
+        branchSource: { artifactId: 'ancestor-a', revision: 1 }, branchSourceOwner: false },
       originalFileName: null,
       mimeType: null,
       sizeBytes: null,
@@ -610,10 +617,11 @@ describe('WorkflowWorkingRepository', () => {
     const transaction = {
       workflowRun: {
         findFirst: vi.fn().mockImplementation(({ where }) =>
-          where.id === 'child' ? child : where.id === 'parent' ? parent : null,
-        ),
+          where.id === 'child' ? child : where.id === 'parent' ? parent : null),
+        findMany: vi.fn().mockResolvedValue([child, parent]),
       },
-      fileObject: { count: fileCount },
+      workingArtifact: { findMany: vi.fn().mockResolvedValue([]) },
+      fileObject: { count: fileCount, findMany: vi.fn().mockResolvedValue([]) },
     };
     const repository = new WorkflowWorkingRepository({} as PrismaService);
     const validate = repository as unknown as {

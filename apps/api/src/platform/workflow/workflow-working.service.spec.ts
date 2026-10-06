@@ -47,6 +47,19 @@ describe('effect mix version scopes', () => {
     expect(branches[3]?.templates[0]?.packagingRevisions).toEqual([1]);
   });
 
+  it('keeps the first package at 01 after local updates and numbers subsequent branches without gaps', async () => {
+    const first = run('package-1', 'fill-1', 2, 'PACKAGING');
+    first.workingArtifacts.find((item) => item.artifactKey.startsWith('timeline-package:'))!.revision = 2;
+    const rows = [run('root', null, 0, 'TEMPLATE'), run('fill-1', 'root', 1, 'FILL'),
+      first, run('package-2', 'package-1', 3, 'PACKAGING')];
+    const branches = await treeOf(rows);
+    expect(branches.map((item) => item.templates[0]?.packagingRevision)).toEqual([null, null, 1, 2]);
+    expect(branches[2]?.templates[0]?.packagingRevisions).toEqual([2]);
+    first.workingArtifacts.find((item) => item.artifactKey.startsWith('timeline-package:'))!.revision = 5;
+    expect((await treeOf(rows)).map((item) => item.templates[0]?.packagingRevision))
+      .toEqual([null, null, 1, 2]);
+  });
+
   it('scopes picture-only exports to fill heads and packaged exports to package heads', async () => {
     const branches = await treeOf([
       run('root', null, 0, 'TEMPLATE'), run('fill-1', 'root', 1, 'FILL'),
@@ -149,6 +162,47 @@ describe('WorkflowWorkingService node activation', () => {
 });
 
 describe('WorkflowWorkingService effect branch tree', () => {
+  it.each(['old-sibling', 'new-fill'])(
+    'keeps a new template and its results visible when the active catalog is %s', async (activeId) => {
+      const at = (minute: number) => new Date(Date.UTC(2026, 9, 6, 5, minute));
+      const catalog = (ids: string[]) => [{ state: { schemaVersion: 1,
+        templates: ids.map((id) => ({ id, workspace: { template: { name: id }, variants: [] } })),
+      } }];
+      const artifact = (key: string, minute: number) => ({
+        nodeId: key.startsWith('render-') ? 'SEGMENT_RENDER' : 'TEMPLATE_MIX',
+        artifactKey: key, name: key, revision: 1, freshness: 'CURRENT', createdAt: at(minute),
+      });
+      const run = (id: string, parent: string | null, minute: number, ids: string[]) => ({
+        id, projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT', status: 'ACTIVE',
+        parentWorkflowRunId: parent, activeKey: id === activeId ? 'ACTIVE' : null,
+        forkNodeId: parent ? 'TEMPLATE_MIX' : null, forkTemplateId: parent ? '测试2' : null,
+        branchPublishedAt: at(minute), branchLabel: null, currentNodeId: 'TEMPLATE_MIX',
+        createdAt: at(minute), updatedAt: at(minute), nodeStates: catalog(ids),
+        effectTemplateMixAiRuns: [], effectPackagingRuns: [], workingArtifacts: [] as ReturnType<typeof artifact>[],
+      });
+      const root = run('root', null, 0, ['测试1']);
+      root.workingArtifacts = [artifact('render-batch:product', 0), artifact('mix-template:测试1', 0)];
+      const origin = run('origin', 'root', 1, ['测试1', '测试2']);
+      const old = run('old-sibling', 'root', 2, ['测试1']);
+      const filled = run('new-fill', 'origin', 3, ['测试1', '测试2']);
+      filled.workingArtifacts = [artifact('mix-template:测试2', 3), artifact('timeline-project:测试2:v', 3)];
+      const packaged = run('new-package', 'new-fill', 4, ['测试1', '测试2']);
+      packaged.workingArtifacts = [artifact('timeline-package:测试2:v', 4)];
+      const repository = { listEffectRunBranches: vi.fn().mockResolvedValue([root, origin, old, filled, packaged]) };
+      const service = new WorkflowWorkingService(repository as never,
+        { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never, {} as never);
+      const tree = await service.getEffectBranchTree('project-a');
+      expect(tree.branches.find((branch) => branch.workflowRunId === 'old-sibling')?.templates
+        .map((template) => template.templateId)).toEqual(['测试1']);
+      expect(tree.branches.find((branch) => branch.workflowRunId === 'origin')?.templates)
+        .toContainEqual(expect.objectContaining({ templateId: '测试2', templateRevision: null }));
+      expect(tree.branches.find((branch) => branch.workflowRunId === 'new-fill')?.templates)
+        .toContainEqual(expect.objectContaining({ templateId: '测试2', timelineVariantCount: 1 }));
+      expect(tree.branches.find((branch) => branch.workflowRunId === 'new-package')?.templates)
+        .toContainEqual(expect.objectContaining({ templateId: '测试2', packagingVariantCount: 1 }));
+    },
+  );
+
   it('does not resurrect removed templates from historical branch artifacts', async () => {
     const createdAt = new Date('2026-10-04T01:00:00.000Z');
     const templateArtifact = (templateId: string, name: string) => ({
@@ -425,7 +479,7 @@ describe('WorkflowWorkingService effect branch tree', () => {
     expect(tree.branches[0]?.templates).toEqual([]);
   });
 
-  it('uses the actual revision of each mix layer and never invents one for mixed product revisions', async () => {
+  it('preserves content revisions separately from packaging branch numbers and mixed product revisions', async () => {
     const createdAt = new Date('2026-09-28T01:00:00.000Z');
     const artifacts = [
       ['SOURCE_IMPORT', 'source-package:a', 1],
@@ -475,7 +529,7 @@ describe('WorkflowWorkingService effect branch tree', () => {
       templateRevisions: [5],
       fillRevision: 2,
       fillRevisions: [2],
-      packagingRevision: 4,
+      packagingRevision: 1,
       packagingRevisions: [4],
       fillCreatedAt: createdAt.toISOString(),
       packagingCreatedAt: createdAt.toISOString(),
@@ -559,7 +613,7 @@ describe('WorkflowWorkingService effect branch tree', () => {
     expect(tree.branches[1]?.templates[1]).toMatchObject({
       templateRevision: 2,
       fillRevision: 2,
-      packagingRevision: 2,
+      packagingRevision: 1,
       deliveryRevision: 2,
       deliveryCount: 1,
       deliveryCreatedAt: createdAt.toISOString(),

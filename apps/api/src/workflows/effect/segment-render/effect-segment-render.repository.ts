@@ -1902,7 +1902,7 @@ export class EffectSegmentRenderRepository {
       .map((item) => item.record.id);
     if (affectedIds.length) {
       const dependents = await transaction.workingArtifactDependency.findMany({ where: {
-        projectId, workflowRunId: parentRunId,
+        projectId,
         sourceType: 'WORKING_ARTIFACT', sourceArtifactId: { in: affectedIds },
       }, select: { dependentArtifactId: true } });
       if (dependents.length) await this.workingRepository.markArtifactIdsAndDependentsStaleInTransaction(
