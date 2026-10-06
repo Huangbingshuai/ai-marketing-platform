@@ -54,8 +54,10 @@ export type PackagingAudio = {
   voiceProfile?: EffectVoiceSelection;
   fileObjectId: string;
   duration: number;
-  /** Exact 24 kHz PCM frame count for each punctuation-delimited TTS clip, in caption order. */
+  /** 24 kHz caption intervals covering the PCM; short next-clause heads may extend the preceding interval. */
   segmentFrames?: number[];
+  /** Actual spoken intervals in the immutable source PCM (24 kHz), including first-clause silence. */
+  speechRanges?: { startFrame: number; endFrame: number }[];
   start: number;
   volume: number;
   /** Seconds trimmed from the source head; absent means 0 (pipeline canonical). */
@@ -155,11 +157,13 @@ export type PackagingCaptionBox = {
   y: number;
   /** Wrap width as a fraction of frame width (0.1–1). */
   width: number;
-  /** Font scale; 1 is the pipeline default (frame width / 22). */
+  /** Legacy per-caption scale retained for old checkpoints; current renders use the shared size. */
   scale: number;
 };
 export type UpdatePackagingAudioRequest = {
   expectedUpdatedAt: string;
+  /** One font size in CSS pixels shared by every subtitle on the packaged timeline. */
+  captionFontSize?: number;
   /** Keyed by script line id. */
   voices?: Record<string, PackagingAudioEdit>;
   music?: PackagingAudioEdit;
@@ -195,7 +199,7 @@ export type PackagingLine = {
 export type PackagingCheckpoint = {
   /** Absent for historical one-caption-per-voice packages, which remain playable. */
   /** V3 uses the actual PCM frame boundaries of separately synthesized clauses. */
-  captionLayoutVersion?: 'SEGMENT_V1' | 'SEGMENT_V2' | 'SEGMENT_V3';
+  captionLayoutVersion?: 'SEGMENT_V1' | 'SEGMENT_V2' | 'SEGMENT_V3' | 'SPEECH_V1';
   narrationMetrics?: Record<string, SlotNarrationMetrics>;
   /** Bounded item recovery budget, retained across worker restarts. */
   automaticRetries?: number;
@@ -239,6 +243,8 @@ export type PackagingCheckpoint = {
   voices?: Record<string, PackagingAudio>;
   music?: PackagingAudio;
   captions?: EffectTemplateMixCaption[];
+  /** Global subtitle font size in CSS pixels; historical checkpoints default to 16. */
+  captionFontSize?: number;
   /** Editor-authored caption geometry, keyed by caption id. Untouched by component redos. */
   captionBoxes?: Record<string, PackagingCaptionBox>;
   /**
@@ -255,6 +261,8 @@ export type PackagingSnapshot = {
   /** Optional only for pre-library tasks. New jobs freeze the server-selected profile. */
   voiceProfile?: EffectVoiceSelection;
   narrationLayoutVersion?: 'SLOT_V1';
+  /** Server-frozen rule for new synthesis; absent only on historical input snapshots. */
+  captionTimingPolicy?: 'SYNTHESIS_WORDS_V1';
   redoSlotId?: string;
   /** Local output refresh regenerates only these slots and keeps the music bed as edited. */
   redoSlotIds?: string[];

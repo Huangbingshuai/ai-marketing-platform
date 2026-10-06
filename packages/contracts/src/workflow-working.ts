@@ -135,18 +135,22 @@ export type EffectWorkflowBranchTemplate = {
   templateCreatedAt?: string | null;
   templateRevision?: number | null;
   templateRevisions?: number[];
+  templateStatus?: EffectWorkflowBranchNodeStatus;
   fillRevision: number | null;
   fillRevisions?: number[];
+  fillStatus?: EffectWorkflowBranchNodeStatus;
   fillCreatedAt?: string | null;
   /** Successful smart-fill in the local draft, awaiting explicit validation. */
   draftFillReady?: boolean;
   packagingRevision: number | null;
   packagingRevisions?: number[];
+  packagingStatus?: EffectWorkflowBranchNodeStatus;
   packagingCreatedAt?: string | null;
   timelineVariantCount: number;
   packagingVariantCount: number;
   deliveryRevision?: number | null;
   deliveryRevisions?: number[];
+  deliveryStatus?: EffectWorkflowBranchNodeStatus;
   deliveryCount?: number;
   deliveryCreatedAt?: string | null;
 };

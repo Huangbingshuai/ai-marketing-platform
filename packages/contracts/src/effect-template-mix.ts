@@ -76,6 +76,8 @@ export type EffectTemplateMixMaterial = {
   sourcePromptId?: string;
   /** False for an archived binding retained solely to keep the old timeline playable. */
   activeSource?: boolean;
+  /** Confirmed replacements/clones of the same source, scoped by the server to this Run. */
+  replacesMaterialIds?: string[];
   /** Original Prompt metadata is revealed only from the explicit material action. */
   promptCode?: string;
   promptText?: string;
@@ -94,6 +96,8 @@ export type EffectTemplateMixSourcesData = {
   pendingProjectCount?: number;
   /** Additions to each template's last successfully consumed pool; not changed old bindings. */
   pendingAddedMaterialIds?: Record<string, string[]>;
+  /** Purpose assignments projected onto the current render sources, never historical trims. */
+  classificationPools?: EffectTemplateMixClassificationPool[];
 };
 
 /** Compare exact render provenance, including replacements that have a new artifact id. */
@@ -322,9 +326,25 @@ export type EffectTemplateMixMaterialRoleOverrides = Record<string, EffectTempla
 export const resolveEffectTemplateMixMaterialRoles = (
   classifications: readonly EffectTemplateMixMaterialClassification[],
   overrides: EffectTemplateMixMaterialRoleOverrides = {},
+  materials: readonly Pick<EffectTemplateMixMaterial, 'id' | 'replacesMaterialIds'>[] = [],
 ): Map<string, EffectTemplateMixMaterialClassification> => {
   const result = new Map(classifications.map((item) => [item.materialId, item]));
-  for (const [materialId, role] of Object.entries(overrides)) {
+  // Carry purpose, not an old trim/assessment checkpoint. A reset is a deliberate choice too.
+  const inheritedOverrides: EffectTemplateMixMaterialRoleOverrides = {};
+  for (const material of materials) {
+    const aliases = material.replacesMaterialIds ?? [];
+    if (!result.has(material.id)) {
+      const previous = aliases.flatMap((id) => result.has(id) ? [result.get(id)!] : []);
+      if (previous.length && new Set(previous.map((item) => item.role)).size === 1)
+        result.set(material.id, { ...previous[0]!, materialId: material.id });
+    }
+    if (!Object.prototype.hasOwnProperty.call(overrides, material.id)) {
+      const choices = aliases.filter((id) => Object.prototype.hasOwnProperty.call(overrides, id))
+        .map((id) => overrides[id]!);
+      if (choices.length && new Set(choices).size === 1) inheritedOverrides[material.id] = choices[0]!;
+    }
+  }
+  for (const [materialId, role] of Object.entries({ ...inheritedOverrides, ...overrides })) {
     if (role === null) result.delete(materialId);
     else result.set(materialId, { materialId, role, matchScore: 1, source: 'MANUAL' });
   }
@@ -493,6 +513,10 @@ export type EffectTemplateMixAiSnapshot = {
   };
   refreshBindings?: Array<{ slotId: string; materialId: string; artifactRevision: number }>;
   maxOutputVariants: number;
+  /** New full-batch fills must cover every frozen material; historical snapshots omit this. */
+  requireAllMaterials?: boolean;
+  /** Full regeneration replaces only this template's inherited batch in its new Run on success. */
+  replaceExistingVariants?: boolean;
   lockedBindings: Array<{
     slotId: string;
     materialId: string;

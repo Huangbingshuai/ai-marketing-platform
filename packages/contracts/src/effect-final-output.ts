@@ -1,4 +1,5 @@
 import type {
+  PackagingAudio,
   PackagingCheckpoint,
   PackagingSnapshot,
 } from './effect-template-mix-packaging';
@@ -48,6 +49,8 @@ export type FinalOutputDependency = {
   contentHash: string;
 };
 export type FinalOutputSnapshot = {
+  /** Source repair of unexported projects reuses the refresh worker without encoding a final video. */
+  projectRefreshOnly?: boolean;
   /** Explicit export of newly appended films keeps completed films and the current branch. */
   appendOnly?: boolean;
   /** Await the append operation's authorized packaging before exporting the new film. */
@@ -66,7 +69,8 @@ export type FinalOutputSnapshot = {
     trimsReady?: boolean;
     ready?: boolean;
     stage?: string;
-    uploadedAudios?: Record<string, { fileObjectId: string; sha256: string; duration: number; segmentFrames?: number[] }>;
+    uploadedAudios?: Record<string, { fileObjectId: string; sha256: string; duration: number; segmentFrames?: number[];
+      speechRanges?: PackagingAudio['speechRanges'] }>;
   };
   timeline: PackagingSnapshot;
   packaging: PackagingCheckpoint;
