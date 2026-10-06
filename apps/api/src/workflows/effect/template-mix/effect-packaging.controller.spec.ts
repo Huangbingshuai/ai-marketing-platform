@@ -8,6 +8,28 @@ import {
 } from './effect-packaging.controller';
 
 describe('packaging audio update DTO', () => {
+  it('accepts a package-wide caption font size through the HTTP whitelist', async () => {
+    const dto = plainToInstance(UpdatePackagingAudioDto, {
+      expectedUpdatedAt: '2026-09-24T00:00:00.000Z',
+      captionFontSize: 17,
+    });
+
+    expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
+    expect(dto.captionFontSize).toBe(17);
+  });
+
+  it('rejects caption font sizes outside the editor range', async () => {
+    for (const captionFontSize of [7, 49, 16.5]) {
+      const dto = plainToInstance(UpdatePackagingAudioDto, {
+        expectedUpdatedAt: '2026-09-24T00:00:00.000Z',
+        captionFontSize,
+      });
+
+      expect(JSON.stringify(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })))
+        .toContain('captionFontSize');
+    }
+  });
+
   it('accepts a blank manually-created subtitle draft through the HTTP whitelist', async () => {
     const dto = plainToInstance(UpdatePackagingAudioDto, {
       expectedUpdatedAt: '2026-09-24T00:00:00.000Z',

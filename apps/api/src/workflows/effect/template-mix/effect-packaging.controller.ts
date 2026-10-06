@@ -20,6 +20,7 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsISO8601,
   IsNumber,
   IsObject,
@@ -62,6 +63,7 @@ export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
 }
 export class PackagingAudioUploadDto extends EffectTemplateMixWorkerProjectDto {
   @IsOptional() @IsString() @MaxLength(2500) segmentFrames?: string;
+  @IsOptional() @IsString() @MaxLength(32000) speechRanges?: string;
 }
 /** `text` is an assertion the server checks against the caption it will actually speak. */
 export class CreatePackagingCaptionVoiceDto {
@@ -108,6 +110,7 @@ export class PackagingCaptionBoxDto {
 }
 export class UpdatePackagingAudioDto {
   @IsISO8601() expectedUpdatedAt!: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(8) @Max(48) captionFontSize?: number;
   @IsOptional() @IsObject() voices?: Record<string, PackagingAudioEditDto>;
   // A generated caption narration is moved and trimmed exactly like a script-line voice, so it
   // takes the same per-clip shape and is keyed by caption id. Same as `voices`, the values are
@@ -288,6 +291,7 @@ export class EffectPackagingWorkerController {
       role,
       file,
       body.segmentFrames,
+      body.speechRanges,
     );
   }
 }

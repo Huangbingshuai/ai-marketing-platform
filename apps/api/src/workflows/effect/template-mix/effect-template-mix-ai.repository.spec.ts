@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../../database/prisma.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import type { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 
 const entry = (id: string, editVersion: number) => ({
@@ -46,6 +47,44 @@ const harness = (current: EffectTemplateMixDraft, revision: number) => {
     transaction,
   };
 };
+
+describe('authoritative fill source lineage', () => {
+  it('uses latest confirmed sources, excluding obsolete clones and unrelated stage records', async () => {
+    const sources = [
+      { id: 'latest', nodeId: 'SEGMENT_RENDER', freshness: 'CURRENT', availability: 'AVAILABLE',
+        metadata: { branchSourceOwner: true } },
+      { id: 'copy', nodeId: 'SEGMENT_RENDER', freshness: 'CURRENT', availability: 'AVAILABLE',
+        metadata: { branchSourceOwner: false } },
+      { id: 'stale', nodeId: 'SEGMENT_RENDER', freshness: 'STALE', availability: 'AVAILABLE' },
+      { id: 'missing', nodeId: 'SEGMENT_RENDER', freshness: 'CURRENT', availability: 'UNAVAILABLE' },
+      { id: 'template', nodeId: 'TEMPLATE_MIX', freshness: 'CURRENT', availability: 'AVAILABLE' },
+      { id: 'prompt', nodeId: 'PROMPT_GENERATION', freshness: 'CURRENT', availability: 'AVAILABLE' },
+    ];
+    const listArtifacts = vi.fn().mockResolvedValue(sources);
+    const repo = new EffectTemplateMixAiRepository({} as PrismaService,
+      { listArtifacts } as unknown as WorkflowWorkingRepository);
+    expect((await repo.sourceArtifacts('project', 'child')).map((item) => item.id)).toEqual(['latest', 'prompt']);
+    expect(listArtifacts).toHaveBeenCalledExactlyOnceWith('project', { workflowRunId: 'child' });
+  });
+
+  it.each(['current', 'changed', 'outside-lineage', 'not-frozen', 'not-selected'])(
+    'authorizes only selected, frozen and current ancestor media (%s)', async (state) => {
+      const artifact = { id: 'clip', nodeId: 'SEGMENT_RENDER', revision: state === 'changed' ? 3 : 2,
+        contentHash: 'new-hash', storageKey: 'new.mp4', originalFileName: 'new.mp4', mimeType: 'video/mp4',
+        sizeBytes: 64, freshness: 'CURRENT', availability: 'AVAILABLE', workflowRunId: 'ancestor' };
+      const listArtifacts = vi.fn().mockResolvedValue(state === 'outside-lineage' ? [] : [artifact]);
+      const repo = new EffectTemplateMixAiRepository({ effectTemplateMixAiRun: {
+        findFirst: vi.fn().mockResolvedValue({ workflowRunId: 'child',
+          selectionResult: state === 'not-selected' ? [] : [{ materialId: 'clip' }],
+          inputSnapshot: { materials: state === 'not-frozen' ? [] : [{ artifactId: 'clip', artifactRevision: 2, contentHash: 'new-hash' }] },
+        }),
+      } } as unknown as PrismaService, { listArtifacts } as unknown as WorkflowWorkingRepository);
+      const result = await repo.selectedFile('project', 'fill', 'clip', 'attempt');
+      if (state === 'current') expect(result?.artifact).toBe(artifact);
+      else expect(result).toBeNull();
+    },
+  );
+});
 
 describe('role choices during smart-fill', () => {
   it.each([false, true])(

@@ -88,7 +88,10 @@ describe('confirmed source edit boundary', () => {
       {},
       { assertEffectNodeWritable: vi.fn().mockRejectedValue(denied) },
     );
-    vi.spyOn(service, 'getDraft').mockResolvedValue({ id: 'draft-1', revision: 3 } as EffectImportDraft);
+    vi.spyOn(service, 'getDraft').mockResolvedValue({
+      id: 'draft-1',
+      revision: 3,
+    } as EffectImportDraft);
     await expect(service.deleteProduct('project-1', 'SINGLE', 'product-1', 3)).rejects.toBe(denied);
     expect(deleteProducts).not.toHaveBeenCalled();
   });
@@ -96,75 +99,108 @@ describe('confirmed source edit boundary', () => {
   it('permits an unconfirmed product in an unfinished initial BATCH without editing confirmed siblings', async () => {
     const deleteProducts = vi.fn().mockResolvedValue({
       deletedIds: ['pending-product'],
-      removedProducts: [{
-        id: 'pending-product', name: '待确认商品',
-        removedAt: new Date('2026-09-29T00:00:00.000Z'),
-        purgeAfter: new Date('2026-09-30T00:00:00.000Z'),
-      }],
+      removedProducts: [
+        {
+          id: 'pending-product',
+          name: '待确认商品',
+          removedAt: new Date('2026-09-29T00:00:00.000Z'),
+          purgeAfter: new Date('2026-09-30T00:00:00.000Z'),
+        },
+      ],
       revision: 4,
     });
     const guard = vi.fn().mockRejectedValue(new Error('confirmed run is read-only'));
-    const service = serviceWith({
-      isActiveInitialRun: vi.fn().mockResolvedValue(true),
-      draft: vi.fn().mockResolvedValue({
-        revision: 3, validatedRevision: null,
-        products: [{ id: 'confirmed-product' }, { id: 'pending-product' }],
-      }),
-      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
-        { artifactKey: 'source-package:confirmed-product' },
-      ]),
-      deleteProducts,
-    }, {}, { assertEffectNodeWritable: guard });
-    vi.spyOn(service, 'getDraft').mockResolvedValue({ id: 'draft-1', revision: 3 } as EffectImportDraft);
+    const service = serviceWith(
+      {
+        isActiveInitialRun: vi.fn().mockResolvedValue(true),
+        draft: vi.fn().mockResolvedValue({
+          revision: 3,
+          validatedRevision: null,
+          products: [{ id: 'confirmed-product' }, { id: 'pending-product' }],
+        }),
+        sourceWorkingArtifacts: vi
+          .fn()
+          .mockResolvedValue([{ artifactKey: 'source-package:confirmed-product' }]),
+        deleteProducts,
+      },
+      {},
+      { assertEffectNodeWritable: guard },
+    );
+    vi.spyOn(service, 'getDraft').mockResolvedValue({
+      id: 'draft-1',
+      revision: 3,
+    } as EffectImportDraft);
 
-    await expect(service.deleteProduct('project-1', 'BATCH', 'pending-product', 3))
-      .resolves.toMatchObject({ deleted: true, revision: 4 });
+    await expect(
+      service.deleteProduct('project-1', 'BATCH', 'pending-product', 3),
+    ).resolves.toMatchObject({ deleted: true, revision: 4 });
     expect(deleteProducts).toHaveBeenCalledWith('project-1', 'draft-1', ['pending-product'], 3);
     expect(guard).not.toHaveBeenCalled();
   });
 
   it('still rejects mutation of a confirmed sibling in that unfinished BATCH', async () => {
     const deleteProducts = vi.fn();
-    const service = serviceWith({
-      isActiveInitialRun: vi.fn().mockResolvedValue(true),
-      draft: vi.fn().mockResolvedValue({
-        revision: 3, validatedRevision: null,
-        products: [{ id: 'confirmed-product' }, { id: 'pending-product' }],
-      }),
-      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
-        { artifactKey: 'source-package:confirmed-product' },
-      ]),
-      deleteProducts,
-    }, {}, {
-      assertEffectNodeWritable: vi.fn().mockRejectedValue(new Error('confirmed run is read-only')),
-    });
-    vi.spyOn(service, 'getDraft').mockResolvedValue({ id: 'draft-1', revision: 3 } as EffectImportDraft);
+    const service = serviceWith(
+      {
+        isActiveInitialRun: vi.fn().mockResolvedValue(true),
+        draft: vi.fn().mockResolvedValue({
+          revision: 3,
+          validatedRevision: null,
+          products: [{ id: 'confirmed-product' }, { id: 'pending-product' }],
+        }),
+        sourceWorkingArtifacts: vi
+          .fn()
+          .mockResolvedValue([{ artifactKey: 'source-package:confirmed-product' }]),
+        deleteProducts,
+      },
+      {},
+      {
+        assertEffectNodeWritable: vi
+          .fn()
+          .mockRejectedValue(new Error('confirmed run is read-only')),
+      },
+    );
+    vi.spyOn(service, 'getDraft').mockResolvedValue({
+      id: 'draft-1',
+      revision: 3,
+    } as EffectImportDraft);
 
-    await expect(service.deleteProduct('project-1', 'BATCH', 'confirmed-product', 3))
-      .rejects.toThrow('confirmed run is read-only');
+    await expect(
+      service.deleteProduct('project-1', 'BATCH', 'confirmed-product', 3),
+    ).rejects.toThrow('confirmed run is read-only');
     expect(deleteProducts).not.toHaveBeenCalled();
   });
 
   it('can validate the next unconfirmed BATCH product after its sibling was confirmed', async () => {
     const products = [{ id: 'confirmed-product' }, { id: 'pending-product' }];
     const draftRecord = {
-      id: 'draft-1', mode: 'BATCH', revision: 3, validatedRevision: null, products,
+      id: 'draft-1',
+      mode: 'BATCH',
+      revision: 3,
+      validatedRevision: null,
+      products,
     };
     const commitProductValidation = vi.fn().mockResolvedValue({
       draft: draftRecord,
       artifacts: [{ artifactKey: 'source-package:pending-product', revision: 1, unchanged: false }],
       allProductsValidated: true,
     });
-    const service = serviceWith({
-      isActiveInitialRun: vi.fn().mockResolvedValue(true),
-      draft: vi.fn().mockResolvedValue(draftRecord),
-      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
-        { artifactKey: 'source-package:confirmed-product' },
-      ]),
-      commitProductValidation,
-    }, {}, {
-      assertEffectNodeWritable: vi.fn().mockRejectedValue(new Error('confirmed run is read-only')),
-    });
+    const service = serviceWith(
+      {
+        isActiveInitialRun: vi.fn().mockResolvedValue(true),
+        draft: vi.fn().mockResolvedValue(draftRecord),
+        sourceWorkingArtifacts: vi
+          .fn()
+          .mockResolvedValue([{ artifactKey: 'source-package:confirmed-product' }]),
+        commitProductValidation,
+      },
+      {},
+      {
+        assertEffectNodeWritable: vi
+          .fn()
+          .mockRejectedValue(new Error('confirmed run is read-only')),
+      },
+    );
     const internal = service as unknown as {
       initialized: (projectId: string) => Promise<unknown>;
       draftValue: (record: unknown) => unknown;
@@ -175,15 +211,19 @@ describe('confirmed source edit boundary', () => {
     vi.spyOn(internal, 'initialized').mockResolvedValue({});
     vi.spyOn(internal, 'draftValue').mockReturnValue({ id: 'draft-1' });
     vi.spyOn(internal, 'collectValidation').mockReturnValue([]);
-    vi.spyOn(internal, 'artifactCandidates').mockImplementation(
-      (product) => [{ artifactKey: `source-package:${product.id}`, input: {} }],
-    );
+    vi.spyOn(internal, 'artifactCandidates').mockImplementation((product) => [
+      { artifactKey: `source-package:${product.id}`, input: {} },
+    ]);
     vi.spyOn(internal, 'draftWithCommitState').mockResolvedValue({ id: 'draft-1' });
 
     const result = await service.validateProduct('project-1', 'BATCH', 'pending-product', 3);
     expect(result.valid).toBe(true);
     expect(commitProductValidation).toHaveBeenCalledWith(
-      'project-1', 'draft-1', 'BATCH', 'run-1', 3,
+      'project-1',
+      'draft-1',
+      'BATCH',
+      'run-1',
+      3,
       [{ artifactKey: 'source-package:pending-product', input: {} }],
       [
         { artifactKey: 'source-package:confirmed-product', input: {} },
@@ -195,23 +235,32 @@ describe('confirmed source edit boundary', () => {
 
   it('finalizes an unfinished BATCH after its last unconfirmed product was removed', async () => {
     const draftRecord = {
-      id: 'draft-1', mode: 'BATCH', revision: 4, validatedRevision: null,
+      id: 'draft-1',
+      mode: 'BATCH',
+      revision: 4,
+      validatedRevision: null,
       products: [{ id: 'confirmed-product' }],
     };
     const guard = vi.fn().mockRejectedValue(new Error('confirmed run is read-only'));
     const commitProductValidation = vi.fn().mockResolvedValue({
       draft: draftRecord,
-      artifacts: [{ artifactKey: 'source-package:confirmed-product', revision: 1, unchanged: true }],
+      artifacts: [
+        { artifactKey: 'source-package:confirmed-product', revision: 1, unchanged: true },
+      ],
       allProductsValidated: true,
     });
-    const service = serviceWith({
-      isActiveInitialRun: vi.fn().mockResolvedValue(true),
-      draft: vi.fn().mockResolvedValue(draftRecord),
-      sourceWorkingArtifacts: vi.fn().mockResolvedValue([
-        { artifactKey: 'source-package:confirmed-product' },
-      ]),
-      commitProductValidation,
-    }, {}, { assertEffectNodeWritable: guard });
+    const service = serviceWith(
+      {
+        isActiveInitialRun: vi.fn().mockResolvedValue(true),
+        draft: vi.fn().mockResolvedValue(draftRecord),
+        sourceWorkingArtifacts: vi
+          .fn()
+          .mockResolvedValue([{ artifactKey: 'source-package:confirmed-product' }]),
+        commitProductValidation,
+      },
+      {},
+      { assertEffectNodeWritable: guard },
+    );
     const internal = service as unknown as {
       initialized: (projectId: string) => Promise<unknown>;
       draftValue: (record: unknown) => unknown;
@@ -222,17 +271,24 @@ describe('confirmed source edit boundary', () => {
     vi.spyOn(internal, 'initialized').mockResolvedValue({});
     vi.spyOn(internal, 'draftValue').mockReturnValue({ id: 'draft-1' });
     vi.spyOn(internal, 'collectValidation').mockReturnValue([]);
-    vi.spyOn(internal, 'artifactCandidates').mockImplementation(
-      (product) => [{ artifactKey: `source-package:${product.id}`, input: {} }],
-    );
+    vi.spyOn(internal, 'artifactCandidates').mockImplementation((product) => [
+      { artifactKey: `source-package:${product.id}`, input: {} },
+    ]);
     vi.spyOn(internal, 'draftWithCommitState').mockResolvedValue({
-      id: 'draft-1', products: [{
-        id: 'confirmed-product', sourcePackageRevision: 1, commitStatus: 'COMMITTED',
-      }],
+      id: 'draft-1',
+      products: [
+        {
+          id: 'confirmed-product',
+          sourcePackageRevision: 1,
+          commitStatus: 'COMMITTED',
+        },
+      ],
     });
 
-    await expect(service.validate('project-1', 'BATCH', 4))
-      .resolves.toMatchObject({ validation: { valid: true }, allProductsValidated: true });
+    await expect(service.validate('project-1', 'BATCH', 4)).resolves.toMatchObject({
+      validation: { valid: true },
+      allProductsValidated: true,
+    });
     expect(guard).not.toHaveBeenCalled();
     expect(commitProductValidation).toHaveBeenCalledTimes(1);
   });
@@ -575,7 +631,7 @@ describe('EffectSourceImportService', () => {
     );
   });
 
-  it('soft-deletes a product without deleting its MinIO object immediately', async () => {
+  it('soft-deletes a product without deleting its stored object immediately', async () => {
     const deleteObject = vi.fn();
     const removedAt = new Date('2026-08-24T10:00:00.000Z');
     const purgeAfter = new Date('2026-08-25T10:00:00.000Z');

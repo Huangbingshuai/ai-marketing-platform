@@ -471,6 +471,34 @@ type DurationSource = Pick<
   WorkingArtifact,
   'id' | 'nodeId' | 'artifactKey' | 'freshness' | 'availability'
 > & { payload: unknown };
+/** Product/task ids are reminted on a fork. Prompt identity survives that fork. */
+const activeRenderKeysForRun = (artifacts: readonly (DurationSource & {
+  workflowRunId: string; revision: number; updatedAt?: string | Date;
+})[], workflowRunId: string): Set<string> | null => {
+  const batches = artifacts.filter((row) => row.nodeId === 'SEGMENT_RENDER' &&
+    row.artifactKey.startsWith('render-batch:') && row.freshness === 'CURRENT' &&
+    row.availability === 'AVAILABLE' && object((row as WorkingArtifact).metadata)?.branchSourceOwner !== false &&
+    Array.isArray(object(row.payload)?.clips))
+    .sort((a, b) => Number(b.workflowRunId === workflowRunId) - Number(a.workflowRunId === workflowRunId) ||
+      new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime() || b.revision - a.revision);
+  if (!batches.length) return null;
+  const clipByKey = new Map(artifacts.filter((row) => row.artifactKey.startsWith('render-clip:'))
+    .map((row) => [row.artifactKey, row]));
+  const keys = new Set<string>();
+  const claimedPrompts = new Set<string>();
+  for (const batch of batches) {
+    for (const raw of object(batch.payload)!.clips as unknown[]) {
+      const clip = object(raw);
+      if (typeof clip?.taskId !== 'string') continue;
+      const key = `render-clip:${clip.taskId}`;
+      const promptId = typeof clip.promptId === 'string' ? clip.promptId : object(clipByKey.get(key)?.payload)?.promptId;
+      if (typeof promptId === 'string' && claimedPrompts.has(promptId)) continue;
+      keys.add(key);
+      if (typeof promptId === 'string') claimedPrompts.add(promptId);
+    }
+  }
+  return keys;
+};
 const currentMaterialKeys = (
   artifacts: readonly DurationSource[],
   keepIds: ReadonlySet<string>,
@@ -522,12 +550,23 @@ const oneMaterialPerFile = (
     const fileObjectId = payload(artifact).fileObjectId;
     const key = typeof fileObjectId === 'string' && fileObjectId ? fileObjectId : artifact.id;
     const seen = byFile.get(key);
-    if (!seen || (seen.workflowRunId !== workflowRunId && artifact.workflowRunId === workflowRunId))
+    if (!seen || (object(artifact.metadata)?.branchSourceOwner === true &&
+      object(seen.metadata)?.branchSourceOwner !== true) ||
+      (object(seen.metadata)?.branchSourceOwner !== true &&
+        seen.workflowRunId !== workflowRunId && artifact.workflowRunId === workflowRunId))
       byFile.set(key, artifact);
   }
   return [
     ...new Map(
-      [...byFile.values(), ...bound.values()].map((artifact) => [artifact.id, artifact]),
+      [...byFile.values()].map((artifact) => {
+        // An unchanged bound clone of the exact current file remains a valid source identity.
+        // Do not turn every copied slot into a replacement simply because its id was reminted.
+        const currentBound = [...bound.values()].find((candidate) =>
+          renderFileKey(candidate) === renderFileKey(artifact) && candidate.freshness === 'CURRENT' &&
+          candidate.availability === 'AVAILABLE');
+        const selected = currentBound ?? artifact;
+        return [selected.id, selected] as const;
+      }).concat([...bound.values()].map((artifact) => [artifact.id, artifact] as const)),
     ).values(),
   ];
 };
@@ -542,17 +581,11 @@ const materialsFromArtifacts = (
   const promptSources = promptSourcesFromArtifacts(artifacts);
   // Batch membership, not CURRENT alone, identifies replacements. Old clips may remain
   // CURRENT for playback even after the confirmed batch replaces their task ids.
-  const activeBatches = artifacts.filter((artifact) => artifact.nodeId === 'SEGMENT_RENDER' &&
-    artifact.artifactKey.startsWith('render-batch:') && artifact.freshness === 'CURRENT' &&
-    artifact.availability === 'AVAILABLE');
-  const batchKeys = new Set(activeBatches.flatMap((artifact) => {
-      const clips = object(artifact.payload)?.clips;
-      return Array.isArray(clips) ? clips.flatMap((raw) => {
-        const taskId = object(raw)?.taskId;
-        return typeof taskId === 'string' ? [`render-clip:${taskId}`] : [];
-      }) : [];
-    }));
-  return oneMaterialPerFile(
+  const batchKeys = activeRenderKeysForRun(artifacts, workflowRunId);
+  const activeFiles = new Set(artifacts.filter((artifact) =>
+    batchKeys?.has(artifact.artifactKey) && artifact.freshness === 'CURRENT' &&
+    artifact.availability === 'AVAILABLE').map(renderFileKey));
+  const materials = oneMaterialPerFile(
     artifacts,
     currentMaterialKeys(artifacts, keepIds),
     workflowRunId,
@@ -560,9 +593,22 @@ const materialsFromArtifacts = (
   )
     .map((artifact): EffectTemplateMixMaterial | null => {
       const material = materialFrom(artifact, promptSources);
-      return material ? { ...material, activeSource: !activeBatches.length || batchKeys.has(artifact.artifactKey) } : null;
+      return material ? { ...material, activeSource: batchKeys === null || batchKeys.has(artifact.artifactKey) ||
+        (material.available && activeFiles.has(renderFileKey(artifact))) } : null;
     })
     .filter((item): item is EffectTemplateMixMaterial => Boolean(item));
+  const live = materials.filter((row) => row.activeSource && row.available);
+  return materials.map((material) => {
+    if (!material.activeSource || !material.available) return material;
+    const peers = live.filter((row) => material.sourcePromptId
+      ? row.sourcePromptId === material.sourcePromptId : row.artifactKey === material.artifactKey);
+    if (new Set(peers.map((row) => row.fileObjectId)).size !== 1) return material;
+    const aliases = artifacts.filter((row) => row.nodeId === 'SEGMENT_RENDER' &&
+      row.artifactKey.startsWith('render-clip:') && row.id !== material.id &&
+      (row.artifactKey === material.artifactKey || (material.sourcePromptId &&
+        object(row.payload)?.promptId === material.sourcePromptId))).map((row) => row.id);
+    return aliases.length ? { ...material, replacesMaterialIds: aliases } : material;
+  });
 };
 
 const slotDurationLimitFromArtifacts = (artifacts: readonly DurationSource[]): number | null => {
@@ -1066,7 +1112,7 @@ export class EffectTemplateMixService {
     return result;
   }
 
-  /** Output freshness needs sources and the saved draft, not AI history or workbench locks. */
+  /** Refresh sources and purpose pools without serializing AI run details or loading workbench locks. */
   async materialSources(projectId: string, workflowRunId: string): Promise<EffectTemplateMixSourcesData> {
     const source = await this.outputSourceWorkspace(projectId, workflowRunId);
     const history = [
@@ -1074,6 +1120,8 @@ export class EffectTemplateMixService {
       ...(await this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId) ?? []),
     ];
     return { materials: source.materials, draftRevision: source.draftRevision,
+      classificationPools: this.toWorkspaceData(source.draft, source.draftRevision, workflowRunId,
+        source.artifacts, [], [], [], [], [], false, history).classificationPools,
       pendingAddedMaterialIds: Object.fromEntries(source.draft.templates.map((entry) => [entry.id,
         entry.workspace.variants.length ? pendingAddedMaterials(entry.id, source.materials, history) : []])),
       pendingProjectCount: source.draft.templates.reduce((count, entry) => count + entry.workspace.variants
@@ -1496,19 +1544,11 @@ export class EffectTemplateMixService {
         }
       }
     }
-    const activeRenderBatches = artifacts.filter((artifact) => artifact.nodeId === 'SEGMENT_RENDER' &&
-      artifact.artifactKey.startsWith('render-batch:'));
-    const activeRenderKeys = new Set(activeRenderBatches.flatMap((artifact) => {
-        const clips = object(artifact.payload)?.clips;
-        return Array.isArray(clips) ? clips.flatMap((row) => {
-          const taskId = object(row)?.taskId;
-          return typeof taskId === 'string' ? [`render-clip:${taskId}`] : [];
-        }) : [];
-      }));
+    const activeRenderKeys = activeRenderKeysForRun(artifacts, workflowRunId);
     const renderCandidates = artifacts.filter(
       (artifact) =>
         artifact.nodeId === 'SEGMENT_RENDER' && artifact.artifactKey.startsWith('render-clip:') &&
-        (!activeRenderBatches.length || activeRenderKeys.has(artifact.artifactKey)),
+        (activeRenderKeys === null || activeRenderKeys.has(artifact.artifactKey)),
     );
     const { artifacts: renderArtifacts, canonicalIdById } = distinctRenderFiles(
       renderCandidates,
@@ -1630,12 +1670,18 @@ export class EffectTemplateMixService {
       break;
     }
     const effectiveRoles = resolveEffectTemplateMixMaterialRoles(
-      priorItems,
+      this.toWorkspaceData(draft, nodeState.revision, workflowRunId, artifacts as unknown as WorkingArtifact[],
+        [], [], [], [], [], false, [...previousRuns, ...inheritedRuns]).classificationPools
+        .find((pool) => pool.templateId === templateId)?.items ?? priorItems,
       entry!.materialRoleOverrides,
+      materialsFromArtifacts(artifacts as unknown as WorkingArtifact[], workflowRunId),
     );
     const materialRoleAssignments: Record<string, EffectTemplateMixRole> = {};
     const manualMaterialRoles: Record<string, EffectTemplateMixRole> = {};
+    const effectiveSourceMaterials = materialsFromArtifacts(artifacts as unknown as WorkingArtifact[], workflowRunId);
     for (const [id, item] of effectiveRoles) {
+      if (!canonicalIdById.has(id) && effectiveSourceMaterials.some((material) => material.activeSource !== false &&
+        material.replacesMaterialIds?.includes(id) && effectiveRoles.has(material.id))) continue;
       const canonicalId = canonicalIdById.get(id);
       const material = canonicalId ? materialById.get(canonicalId) : undefined;
       const slot = slots.find((candidate) => candidate.role === item.role);
@@ -1728,7 +1774,8 @@ export class EffectTemplateMixService {
       (slot) => !lockedBindings.some((binding) => binding.slotId === slot.id),
     );
     const lockedIds = new Set(lockedBindings.map(({ materialId }) => materialId));
-    const existingVariantBindings = entry!.workspace.variants
+    const replaceExistingVariants = !target && !appendNewMaterials;
+    const existingVariantBindings = (replaceExistingVariants ? [] : entry!.workspace.variants)
       .filter((variant) => variant.id !== targetVariantId)
       .map((variant) =>
         slots
@@ -1790,7 +1837,8 @@ export class EffectTemplateMixService {
       } } : {}),
       targetVariantId: targetVariantId ?? null,
       ...(refreshAffectedSlots ? { trimOnly: true, refreshBindings } : {}),
-      maxOutputVariants: target ? 1 : 100 - entry!.workspace.variants.length,
+      maxOutputVariants: target ? 1 : replaceExistingVariants ? 100 : 100 - entry!.workspace.variants.length,
+      ...(replaceExistingVariants ? { requireAllMaterials: true, replaceExistingVariants: true } : {}),
       lockedBindings,
       existingVariantBindings,
       reuseCounts: Object.fromEntries(
@@ -2193,6 +2241,14 @@ export class EffectTemplateMixService {
         for (const selection of variant) trimPlan.set(selection.materialId, selection);
       }
       selections = [...trimPlan.values()];
+      if (snapshot.requireAllMaterials) {
+        const missing = snapshot.materials.filter((material) => !trimPlan.has(material.id));
+        if (missing.length)
+          throw new ApiHttpException(
+            `未能覆盖全部素材（${missing.length} 条）：${missing.slice(0, 10).map((material) => material.code).join('、')}。请检查归槽、时长及本批次可生成数量`,
+            HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR',
+          );
+      }
       if (!selections.length)
         throw new ApiHttpException(
           '剩余素材不足以再生成一条完整成片',
@@ -2413,17 +2469,9 @@ export class EffectTemplateMixService {
           current.contentHash === source.contentHash
         );
       });
-    const currentBatches = currentSources.filter((source) => source.nodeId === 'SEGMENT_RENDER' &&
-      source.artifactKey.startsWith('render-batch:'));
-    const currentBatchClipKeys = new Set(currentBatches.flatMap((source) => {
-      const clips = object(source.payload)?.clips;
-      return Array.isArray(clips) ? clips.flatMap((clip) => {
-        const taskId = object(clip)?.taskId;
-        return typeof taskId === 'string' ? [`render-clip:${taskId}`] : [];
-      }) : [];
-    }));
+    const currentBatchClipKeys = activeRenderKeysForRun(currentSources, run.workflowRunId);
     const activeCurrentClips = currentSources.filter((source) => source.nodeId === 'SEGMENT_RENDER' &&
-      source.artifactKey.startsWith('render-clip:') && (!currentBatches.length || currentBatchClipKeys.has(source.artifactKey)));
+      source.artifactKey.startsWith('render-clip:') && (currentBatchClipKeys === null || currentBatchClipKeys.has(source.artifactKey)));
     const currentClipFiles = [
       ...new Set(
         activeCurrentClips.map(renderFileKey),
@@ -2506,24 +2554,35 @@ export class EffectTemplateMixService {
           .map((index) => savedSelections.filter((selection) => (selection.variantIndex ?? 0) === index))
       : enumerateAssignedVariants(
           unlockedSlots,
-          materials,
+          materials.filter((material) => savedSelections.some((selection) => selection.materialId === material.id)),
           classifications,
           snapshot.existingVariantBindings ?? [],
           snapshot.maxOutputVariants ?? 0,
           undefined,
-          snapshot.materialRoleAssignments,
+          { ...snapshot.materialRoleAssignments,
+            ...Object.fromEntries(savedSelections.map((selection) => [selection.materialId, selection.role])) },
         );
+    if (snapshot.requireAllMaterials) {
+      const used = new Set(variantSelections.flatMap((group) => group.map((selection) => selection.materialId)));
+      if (snapshot.materials.some((material) => !used.has(material.id)))
+        throw new ApiHttpException('成片批次未覆盖全部素材，旧检查点不能作为完整成功结果',
+          HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+    }
     if (
       !variantSelections.length ||
       (snapshot.targetVariantId && variantSelections[0]!.length !== unlockedSlots.length) ||
       (!snapshot.targetVariantId &&
-        entry!.workspace.variants.length + variantSelections.length > 100)
+        (snapshot.replaceExistingVariants ? 0 : entry!.workspace.variants.length) + variantSelections.length > 100) ||
+      (snapshot.replaceExistingVariants && Boolean(snapshot.targetVariantId || snapshot.incremental))
     )
       throw new ApiHttpException(
         'AI 成片批次结构无效或超过模板工程上限',
         HttpStatus.BAD_REQUEST,
         'VALIDATION_ERROR',
       );
+    // Only the unpublished child changes, and only after all source/trim/hash checks succeeded.
+    // A full refill is a fresh batch, not additions to the parent batch inherited in node state.
+    if (snapshot.replaceExistingVariants) entry!.workspace.variants = [];
     const outputVariantIds: string[] = [];
     let draftChanged = false;
     for (const group of variantSelections) {
@@ -3131,9 +3190,6 @@ export class EffectTemplateMixService {
       workflowRunId,
       boundMaterialIds(draft.templates.flatMap((entry) => entry.workspace.variants)),
     );
-    const availableMaterialIds = new Set(
-      materials.filter(({ available }) => available).map(({ id }) => id),
-    );
     const lockedSet = new Set(lockedTemplateIds);
     const packagedSet = new Set(packagingLockedIds);
     const sourceLockSet = new Set(sourceLockedTemplateIds);
@@ -3144,7 +3200,7 @@ export class EffectTemplateMixService {
         const packagingLocked = packagedSet.has(entry.id);
         const packagingSourceLocked = sourceLockSet.has(entry.id) && !packagingLocked;
         const aiFillLocked = lockedSet.has(entry.id);
-        const needsAiFill = this.needsRefill(entry, filledTemplateHash, availableMaterialIds);
+        const needsAiFill = this.needsRefill(entry, filledTemplateHash);
         return {
           ...entry,
           ...(filledTemplateHash ? { filledTemplateHash } : {}),
@@ -3173,20 +3229,14 @@ export class EffectTemplateMixService {
           editVersion: Number(data.workspaceVersion ?? template?.editVersion ?? 0),
         };
       });
-    const sourceById = new Map(
-      [...artifacts, ...classificationSources].map((artifact) => [artifact.id, artifact]),
-    );
-    const activeMaterials = materials.filter(({ available }) => available);
+    const activeMaterials = materials.filter((material) => material.available && material.activeSource !== false);
     const classificationPools: EffectTemplateMixClassificationPool[] = [];
     const pooledTemplates = new Set<string>();
     // This Run's own fills come first: a branch that re-filled shows what it ran, and only falls
     // back to what it inherited for the templates it left alone.
     const poolRuns = [
       ...aiRunRecords,
-      ...inheritedAiRuns.flatMap((run) => {
-        const remapped = remapInheritedFill(run, artifacts, activeMaterials);
-        return remapped ? [remapped] : [];
-      }),
+      ...inheritedAiRuns,
     ];
     for (const run of poolRuns) {
       if (
@@ -3198,29 +3248,17 @@ export class EffectTemplateMixService {
       const entry = workspaceDraft.templates.find(({ id }) => id === run.templateId);
       const snapshot = run.inputSnapshot as EffectTemplateMixAiSnapshot;
       const classifications = run.classificationResult as EffectTemplateMixAiClassification[];
-      const frozenById = new Map(snapshot.materials.map((material) => [material.id, material]));
-      const poolByFile = new Map<string, EffectTemplateMixAiSnapshot['materials'][number]>();
-      for (const material of activeMaterials) {
-        const frozen = frozenById.get(material.id);
-        const current = frozen ? sourceById.get(frozen.id) : undefined;
-        if (frozen && current?.revision === frozen.artifactRevision && current.contentHash === frozen.contentHash &&
-            material.promptText === frozen.prompt && !poolByFile.has(frozen.fileObjectId))
-          poolByFile.set(frozen.fileObjectId, frozen);
-      }
-      const poolSnapshotMaterials = [...poolByFile.values()];
-      const poolIds = new Set(poolSnapshotMaterials.map(({ id }) => id));
-      const selectedMaterials = activeMaterials.filter(({ id }) => poolIds.has(id));
       if (
         !entry ||
         classificationSlotSignature(entry.workspace.template.slots) !==
           classificationSlotSignature(snapshot.template.slots) ||
-        !classificationsValid(snapshot, classifications, true) || !selectedMaterials.length
+        !classificationsValid(snapshot, classifications, true)
       )
         continue;
       const pools = buildAssignedPools(
         entry.workspace.template.slots,
-        selectedMaterials,
-        classifications.filter(({ materialId }) => poolIds.has(materialId)),
+        snapshot.materials.map((material) => ({ ...material, available: true })),
+        classifications,
         new Set(),
         snapshot.materialRoleAssignments,
       );
@@ -3230,15 +3268,22 @@ export class EffectTemplateMixService {
         templateEditVersion: entry.workspace.template.editVersion,
         items: AI_MIX_ROLES.flatMap((role) =>
           (pools.get(role) ?? [])
-            .map((item) => ({
-              materialId: item.materialId,
+            .flatMap((item) => {
+              const frozen = snapshot.materials.find((material) => material.id === item.materialId)!;
+              const candidates = activeMaterials.filter((material) =>
+                material.promptText === frozen.prompt &&
+                (material.fileObjectId === frozen.fileObjectId ||
+                  (material.sourcePromptId && material.sourcePromptId === frozen.promptId)));
+              if (new Set(candidates.map((material) => material.fileObjectId)).size !== 1) return [];
+              return [{
+              materialId: candidates[0]!.id,
               role,
               matchScore: item.matchScore,
               ...(classifications.find((row) => row.materialId === item.materialId)?.source ===
               'MANUAL'
                 ? { source: 'MANUAL' as const }
                 : {}),
-            }))
+            }]; })
             .sort(
               (left, right) =>
                 right.matchScore - left.matchScore ||
@@ -3246,6 +3291,10 @@ export class EffectTemplateMixService {
             ),
         ),
       });
+      if (!classificationPools[classificationPools.length - 1]!.items.length) {
+        classificationPools.pop();
+        continue;
+      }
       pooledTemplates.add(run.templateId);
     }
     return {
@@ -3295,19 +3344,11 @@ export class EffectTemplateMixService {
   private needsRefill(
     entry: EffectTemplateMixDraft['templates'][number],
     filledTemplateHash: string | undefined,
-    availableMaterialIds?: ReadonlySet<string>,
   ): boolean {
     const currentHash = templateConfigurationHash(entry.workspace.template);
     if (filledTemplateHash && currentHash !== filledTemplateHash) return true;
     return entry.workspace.variants.some((variant) => {
       if (!Object.values(variant.bindings).some(Boolean)) return false;
-      if (
-        availableMaterialIds &&
-        Object.values(variant.bindings).some(
-          (materialId) => materialId && !availableMaterialIds.has(materialId),
-        )
-      )
-        return true;
       if (!filledTemplateHash) return false;
       return variant.appliedTemplateHash
         ? variant.appliedTemplateHash !== currentHash

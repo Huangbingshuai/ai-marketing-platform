@@ -16,6 +16,7 @@ import {
 import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
 import { templateConfigurationHash } from './template-mix-lifecycle';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { activeMixSourceUpdates, lockMixNodeForSourceUpdate } from '../../../platform/workflow/effect-mix-source-update-lock';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -227,6 +228,10 @@ export class EffectPackagingRepository {
       const currentDraft = nodeState.state as unknown as EffectTemplateMixDraft;
       const currentEntry = currentDraft.templates.find((entry) => entry.id === input.templateId);
       if (!currentEntry) throw new ConflictException('模板不存在，请刷新后重试');
+      const sourceUpdates = await activeMixSourceUpdates(tx, input.projectId, input.workflowRunId);
+      if (sourceUpdates.some((update) => update.templateId === input.templateId &&
+          input.snapshots.some((snapshot) => snapshot.variant.id === update.baselineVariant.id)))
+        throw new ConflictException('局部更新正在进行，对应成片暂时不能开始智能成片包装');
       if (
         templateConfigurationHash(currentEntry.workspace.template) !== input.expectedTemplateHash ||
         (currentEntry.filledTemplateHash &&
@@ -427,12 +432,22 @@ export class EffectPackagingRepository {
   ) {
     const expected = new Date(expectedUpdatedAt);
     if (Number.isNaN(expected.getTime())) throw new ConflictException('包装结果已被修改，请刷新');
-    const result = await this.db.effectPackagingItem.updateMany({
-      where: { id: itemId, projectId, updatedAt: expected },
-      data: { checkpoint: json(checkpoint) },
+    return this.db.$transaction(async (tx) => {
+      const item = await tx.effectPackagingItem.findFirst({ where: { id: itemId, projectId },
+        include: { run: { select: { workflowRunId: true, templateId: true } } } });
+      if (!item) throw new ConflictException('包装结果已被修改，请刷新');
+      await lockMixNodeForSourceUpdate(tx, projectId, item.run.workflowRunId);
+      const updates = await activeMixSourceUpdates(tx, projectId, item.run.workflowRunId);
+      if (updates.some((update) => update.templateId === item.run.templateId &&
+          update.baselineVariant.id === item.variantId))
+        throw new ConflictException('局部更新正在进行，对应成片的字幕和音频暂时不能编辑；任务结束后自动解锁');
+      const result = await tx.effectPackagingItem.updateMany({
+        where: { id: itemId, projectId, updatedAt: expected },
+        data: { checkpoint: json(checkpoint) },
+      });
+      if (result.count !== 1) throw new ConflictException('包装结果已被修改，请刷新');
+      return tx.effectPackagingItem.findFirstOrThrow({ where: { id: itemId, projectId } });
     });
-    if (result.count !== 1) throw new ConflictException('包装结果已被修改，请刷新');
-    return this.db.effectPackagingItem.findFirstOrThrow({ where: { id: itemId, projectId } });
   }
   finish(projectId: string, id: string, token: string) {
     return this.db.$transaction(async (tx) => {

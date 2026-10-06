@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { parseVoiceSegmentFrames, wavDuration } from './effect-packaging-audio';
+import { parseVoiceSegmentFrames, parseVoiceSpeechRanges, wavDuration } from './effect-packaging-audio';
 export { parseVoiceSegmentFrames, wavDuration } from './effect-packaging-audio';
 import type {
   CreatePackagingCaptionVoiceRequest,
@@ -427,9 +427,15 @@ export class EffectPackagingService {
           delete cp.musicTaskId;
           delete cp.musicSubmissionPending;
         }
-        if (body.component === 'CAPTIONS') delete cp.captions;
+        if (body.component === 'CAPTIONS') {
+          if (Object.values(cp.voices ?? {}).some((audio) => !audio.speechRanges?.length))
+            throw new BadRequestException('口播缺少本次合成的字词时间戳，不能严格对齐字幕；请重新生成该槽位口播');
+          delete cp.captions;
+        }
         checkpoints[index] = cp;
       }
+    if (body.component !== 'MUSIC')
+      for (const snapshot of snapshots) snapshot.captionTimingPolicy = 'SYNTHESIS_WORDS_V1';
     const id = await this.repo.create({
       projectId,
       workflowRunId,
@@ -674,6 +680,7 @@ export class EffectPackagingService {
       }
     }
     const next: PackagingCheckpoint = { ...old };
+    if (body.captionFontSize !== undefined) next.captionFontSize = body.captionFontSize;
     if (voices) next.voices = voices;
     // `next` starts as a copy of the old checkpoint, so a deleted bed has to be taken off it rather
     // than merely left unwritten. A request that simply says nothing about the music keeps it.
@@ -690,11 +697,13 @@ export class EffectPackagingService {
           return { ...c, start: voice.start, end: voice.start + voice.duration };
         const previous = old.voices?.[lineId];
         if (!previous) return c;
-        const scale = voice.duration / previous.duration;
+        // Trimming is not time-stretching. Source speech timestamps move by the placement/cut
+        // delta; scaling them by the trimmed length makes later words appear early again.
+        const shift = voice.start - previous.start - (voice.offset ?? 0) + (previous.offset ?? 0);
         return {
           ...c,
-          start: voice.start + (c.start - previous.start) * scale,
-          end: voice.start + (c.end - previous.start) * scale,
+          start: Math.max(0, c.start + shift),
+          end: Math.max(0.001, c.end + shift),
         };
       });
     if (captionBoxes) next.captionBoxes = captionBoxes;
@@ -970,6 +979,13 @@ export class EffectPackagingService {
     }
     const { snapshot, item, run } = await this.workerItem(projectId, runId, token, itemId);
     const old = item.checkpoint as PackagingCheckpoint;
+    if (snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1')
+      for (const [lineId, audio] of Object.entries(patch.voices ?? {})) {
+        const saved = old.voices?.[lineId];
+        if (audio.speechRanges && (!saved?.speechRanges || saved.fileObjectId !== audio.fileObjectId ||
+            workflowStateHash(saved.speechRanges) !== workflowStateHash(audio.speechRanges)))
+          throw new BadRequestException('口播字词时间戳与已上传音频不一致');
+      }
     const next = { ...old, ...patch, voices: { ...old.voices, ...patch.voices } };
     validatePackagingCheckpoint(
       snapshot,
@@ -1044,14 +1060,18 @@ export class EffectPackagingService {
     role: string,
     file: { path: string; size: number } | undefined,
     segmentFramesJson?: string,
+    speechRangesJson?: string,
   ) {
     const { run, snapshot } = await this.workerItem(projectId, runId, token, itemId);
     if (!file || file.size > 100 * 1024 * 1024 || !/^(music|voice-[a-zA-Z0-9_-]{1,50})$/.test(role))
       throw new BadRequestException('包装音频无效');
     const duration = await wavDuration(file.path, file.size);
-    if (segmentFramesJson !== undefined && role === 'music')
+    if ((segmentFramesJson !== undefined || speechRangesJson !== undefined) && role === 'music')
       throw new BadRequestException('音乐不支持口播片段边界');
     const segmentFrames = parseVoiceSegmentFrames(segmentFramesJson, duration);
+    const speechRanges = parseVoiceSpeechRanges(speechRangesJson, duration);
+    if (role !== 'music' && snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1' && !speechRanges)
+      throw new BadRequestException('本次配音缺少字词时间戳，不能保存为严格对齐的包装结果');
     const hash = createHash('sha256');
     for await (const chunk of createReadStream(file.path)) hash.update(chunk);
     const sha256 = hash.digest('hex');
@@ -1117,6 +1137,7 @@ export class EffectPackagingService {
           fileObjectId: created.id,
           duration,
           ...(segmentFrames ? { segmentFrames } : {}),
+          ...(speechRanges ? { speechRanges } : {}),
           start: role === 'music' ? 0 : (line?.start ?? -1),
           volume: 1,
         };

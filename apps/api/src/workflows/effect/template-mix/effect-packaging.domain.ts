@@ -19,6 +19,7 @@ import type {
 import { BadRequestException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { validSpeechRanges } from './effect-packaging-audio';
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -354,10 +355,11 @@ export function validatePackagingCheckpoint(
     end <= EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS + 0.001;
   const facts = new Set(snapshot.facts.map((f) => f.id));
   const slotLayout = checkpoint.narrationLayoutVersion === 'SLOT_V1';
+  const speechCaptions = checkpoint.captionLayoutVersion === 'SPEECH_V1';
   const segmentedCaptions = checkpoint.captionLayoutVersion === 'SEGMENT_V1' ||
-    checkpoint.captionLayoutVersion === 'SEGMENT_V2' || checkpoint.captionLayoutVersion === 'SEGMENT_V3';
+    checkpoint.captionLayoutVersion === 'SEGMENT_V2' || checkpoint.captionLayoutVersion === 'SEGMENT_V3' || speechCaptions;
   const captionsV2 = checkpoint.captionLayoutVersion === 'SEGMENT_V2' ||
-    checkpoint.captionLayoutVersion === 'SEGMENT_V3';
+    checkpoint.captionLayoutVersion === 'SEGMENT_V3' || speechCaptions;
   const captionsV3 = checkpoint.captionLayoutVersion === 'SEGMENT_V3';
   if (checkpoint.narrationLayoutVersion !== undefined && !slotLayout) fail();
   if (checkpoint.captionLayoutVersion !== undefined && (!segmentedCaptions || !slotLayout)) fail();
@@ -376,6 +378,7 @@ export function validatePackagingCheckpoint(
           'voices',
           'music',
           'captions',
+          'captionFontSize',
           'captionBoxes',
           'captionVoices',
           'captionLayoutVersion',
@@ -384,6 +387,13 @@ export function validatePackagingCheckpoint(
           'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'voiceSlotRetries', 'automaticRetries', 'narrationMetrics',
         ].includes(k),
     )
+  )
+    fail();
+  if (
+    checkpoint.captionFontSize !== undefined &&
+    (!Number.isInteger(checkpoint.captionFontSize) ||
+      checkpoint.captionFontSize < 8 ||
+      checkpoint.captionFontSize > 48)
   )
     fail();
   if (checkpoint.automaticRetries !== undefined &&
@@ -503,6 +513,10 @@ export function validatePackagingCheckpoint(
       const line = checkpoint.script?.[index];
       const limit = slotLayout ? (line?.end ?? 0) : (checkpoint.script?.[index + 1]?.start ?? snapshot.duration);
       const offset = audio?.offset ?? 0;
+      const timingRequired = snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1' &&
+        (!snapshot.redoSlotId || line?.slotId === snapshot.redoSlotId) &&
+        (!snapshot.redoSlotIds?.length || snapshot.redoSlotIds.includes(line?.slotId ?? ''));
+      if (timingRequired && !audio?.speechRanges?.length) fail();
       if (
         !line ||
         !audio ||
@@ -523,7 +537,12 @@ export function validatePackagingCheckpoint(
       if (audio.segmentFrames &&
         (!Array.isArray(audio.segmentFrames) || !audio.segmentFrames.length || audio.segmentFrames.length > 500 ||
           audio.segmentFrames.some((frames) => !Number.isSafeInteger(frames) || frames <= 0) ||
-          Math.abs(audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 - audio.duration) > .001)) fail();
+          (edited
+            ? audio.duration + offset > audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 + .001
+            : Math.abs(audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 - audio.duration) > .001))) fail();
+      // Timing metadata belongs to the immutable source PCM, not an editor's trimmed window.
+      const sourceSeconds = (audio.segmentFrames?.reduce((sum, frames) => sum + frames, 0) ?? 0) / 24_000;
+      if (audio.speechRanges !== undefined && !validSpeechRanges(audio.speechRanges, sourceSeconds || audio.duration + offset)) fail();
     }
   // A generated caption narration is editor-owned, so — like a caption box — it is checked for
   // shape and bounds and for nothing else. It has no script line to line up with and no slot to
@@ -613,7 +632,10 @@ export function validatePackagingCheckpoint(
         (!manual && !segmentedCaptions && !edited && c.text !== script!.text) ||
         // A deleted voice has nothing to align to, so the alignment rules only hold when one exists.
         (!manual && !segmentedCaptions && !edited && audio &&
-          (c.start !== audio.start || Math.abs(c.end - c.start - audio.duration) > 0.002)) ||
+          (audio.speechRanges?.length
+            ? Math.abs(c.start - (audio.start + audio.speechRanges[0]!.startFrame / 24_000 - (audio.offset ?? 0))) > .001 ||
+              Math.abs(c.end - (audio.start + audio.speechRanges.at(-1)!.endFrame / 24_000 - (audio.offset ?? 0))) > .001
+            : c.start !== audio.start || Math.abs(c.end - c.start - audio.duration) > 0.002)) ||
         (!manual &&
           segmentedCaptions &&
           !edited &&
@@ -648,17 +670,23 @@ export function validatePackagingCheckpoint(
         parts.some((part, index) => part.segmentIndex !== index || part.segmentCount !== parts.length) ||
         // The pipeline lays a line's cards edge to edge; the editor may pull one away, which opens
         // a gap rather than breaking anything, so the rule only holds the worker write path.
-        (!edited && captionsV2 && parts.some((part, index) => index > 0 &&
+        (!edited && captionsV2 && !audio?.speechRanges && parts.some((part, index) => index > 0 &&
           Math.abs(part.start - parts[index - 1]!.end) > 0.001)) ||
         (!edited && parts.map((part) => part.text).join('').replace(/\s/gu, '') !==
           line.text.replace(captionsV2 ? /[，,。.!！？?；;：:…\s]/gu : /[\p{P}\s]/gu, '')) ||
         // Frame alignment is only meaningful for a line that still has its narration.
-        (captionsV3 && audio && (!audio.segmentFrames || parts.length !== audio.segmentFrames.length ||
+        (captionsV3 && audio && !audio.speechRanges && (!audio.segmentFrames || parts.length !== audio.segmentFrames.length ||
           (!edited && parts.some((part, index) => {
             const startFrames = audio.segmentFrames!.slice(0, index).reduce((sum, n) => sum + n, 0);
             const endFrames = startFrames + audio.segmentFrames![index]!;
             return Math.abs(part.start - (audio.start + startFrames / 24_000)) > .001 ||
               Math.abs(part.end - (audio.start + endFrames / 24_000)) > .001;
+          })))) ||
+        ((speechCaptions || audio?.speechRanges) && audio && (!audio.speechRanges || parts.length !== audio.speechRanges.length ||
+          (!edited && parts.some((part, index) => {
+            const range = audio.speechRanges![index]!;
+            return Math.abs(part.start - (audio.start + range.startFrame / 24_000 - (audio.offset ?? 0))) > .001 ||
+              Math.abs(part.end - (audio.start + range.endFrame / 24_000 - (audio.offset ?? 0))) > .001;
           }))))));
     })) fail();
   }
@@ -708,6 +736,12 @@ export function validatePackagingCheckpoint(
     const audio = checkpoint.voices?.[line.id];
     return audio && !audio.segmentFrames;
   })) fail();
+  if (ready && speechCaptions && checkpoint.script?.some((line) => {
+    const audio = checkpoint.voices?.[line.id];
+    return audio && !audio.speechRanges;
+  })) fail();
+  if (ready && snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1' &&
+      !snapshot.redoSlotId && !snapshot.redoSlotIds?.length && !speechCaptions) fail();
 }
 
 export function requireSlotPackaging(snapshot: PackagingSnapshot, checkpoint: PackagingCheckpoint): void {
@@ -728,7 +762,9 @@ export function canonicalizeCheckpoint(
     ? Object.fromEntries(
         Object.entries(checkpoint.voices).map(([id, audio]) => {
           const line = checkpoint.script?.find((s) => s.id === id);
-          return [id, { ...audio, start: line?.start ?? audio.start, offset: 0 }];
+          return [id, { ...audio, start: line?.start ?? audio.start, offset: 0,
+            ...(audio.speechRanges && audio.segmentFrames
+              ? { duration: audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 } : {}) }];
         }),
       )
     : checkpoint.voices;
@@ -742,6 +778,11 @@ export function canonicalizeCheckpoint(
           const lineId = checkpoint.captionLayoutVersion ? caption.voiceLineId : caption.id;
           const audio = lineId ? voices?.[lineId] : undefined;
           if (!audio) return caption;
+          if (audio.speechRanges && caption.segmentIndex !== undefined) {
+            const range = audio.speechRanges[caption.segmentIndex];
+            if (range) return { ...caption, start: audio.start + range.startFrame / 24_000,
+              end: audio.start + range.endFrame / 24_000 };
+          }
           if (!checkpoint.captionLayoutVersion)
             return { ...caption, start: audio.start, end: audio.start + audio.duration };
           const previous = checkpoint.voices?.[lineId!];

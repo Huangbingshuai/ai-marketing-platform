@@ -379,6 +379,43 @@ describe('slot-bound narration layout', () => {
     cp.voices!['line-1']!.segmentFrames = [57_600];
     expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
   });
+  it('validates spoken ranges including first-clause silence and gaps', () => {
+    const { frozen, cp } = segmentedV2();
+    cp.captionLayoutVersion = 'SPEECH_V1';
+    cp.voices!['line-1']!.speechRanges = [{ startFrame: 4800, endFrame: 24000 }, { startFrame: 33600, endFrame: 55200 }];
+    cp.captions![0]!.start = .2; cp.captions![0]!.end = 1;
+    cp.captions![1]!.start = 1.4; cp.captions![1]!.end = 2.3;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).not.toThrow();
+    cp.captions![0]!.start = 0;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).not.toThrow();
+    cp.voices!['line-1']!.speechRanges![1]!.endFrame = 100000;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).toThrow();
+  });
+  it('cannot downgrade a new packaging job to historical duration-based captions', () => {
+    const { frozen, cp } = segmentedV2();
+    frozen.captionTimingPolicy = 'SYNTHESIS_WORDS_V1';
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
+    cp.voices!['line-1']!.speechRanges = [{ startFrame: 0, endFrame: 28800 }, { startFrame: 28800, endFrame: 57600 }];
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
+    cp.captionLayoutVersion = 'SPEECH_V1';
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).not.toThrow();
+  });
+  it('keeps source speech ranges intact when the editor trims the narration tail', () => {
+    const { frozen, cp } = segmentedV2();
+    cp.captionLayoutVersion = 'SPEECH_V1';
+    cp.voices!['line-1']!.segmentFrames = [24_000, 33_600];
+    cp.voices!['line-1']!.speechRanges = [{ startFrame: 4800, endFrame: 24000 }, { startFrame: 33600, endFrame: 55200 }];
+    cp.voices!['line-1']!.duration = 2;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, false)).toThrow();
+    const canonical = canonicalizeCheckpoint(frozen, cp);
+    expect(canonical.voices!['line-1']!.duration).toBe(2.4);
+    expect(canonical.captions!.map(c => [c.start, c.end])).toEqual([[.2, 1], [1.4, 2.3]]);
+    expect(() => validatePackagingCheckpoint(frozen, canonical, true)).not.toThrow();
+    cp.voices!['line-1']!.offset = .5;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).toThrow();
+  });
   it.each([4, 15])('accepts %s-second slots', (duration) => {
     const v = variant();
     v.slots[0]!.duration = duration;
@@ -1031,6 +1068,18 @@ describe('packaging snapshots and validation', () => {
       const bad = checkpoint();
       bad.captionBoxes = { 'line-1': box };
       expect(() => validatePackagingCheckpoint(snapshot(), bad, true, true)).toThrow();
+    }
+  });
+  it('accepts a shared caption font size in the supported pixel range', () => {
+    for (const size of [8, 16, 48]) {
+      const valid = checkpoint();
+      valid.captionFontSize = size;
+      expect(() => validatePackagingCheckpoint(snapshot(), valid, true, true)).not.toThrow();
+    }
+    for (const size of [7, 49, 16.5]) {
+      const invalid = checkpoint();
+      invalid.captionFontSize = size;
+      expect(() => validatePackagingCheckpoint(snapshot(), invalid, true, true)).toThrow();
     }
   });
   it('keeps caption geometry through a component redo and rejects forged keys', () => {

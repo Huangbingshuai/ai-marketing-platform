@@ -9,6 +9,7 @@ import type {
   EffectTemplateMixVariant,
   FinalOutputSnapshot,
   PackagingCheckpoint,
+  EffectTemplateMixWorkspaceData,
 } from '@ai-marketing/contracts';
 import { PrismaService } from '../../../database/prisma.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
@@ -21,9 +22,60 @@ import type { WorkflowWorkingService } from '../../../platform/workflow/workflow
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { EffectTemplateMixService } from '../template-mix/effect-template-mix.service';
 import { packagingSnapshot, visualHash } from '../template-mix/effect-packaging.domain';
+import { EffectPackagingRepository } from '../template-mix/effect-packaging.repository';
 import { EffectFinalOutputService } from './effect-final-output.service';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
+
+// Optional reproduction against a named local project: every write and Outbox stays in an
+// uncommitted transaction. This verifies real saved inputs without dispatching paid work.
+it.skipIf(process.env.EFFECT_OUTPUT_LIVE_PROJECT_TEST !== '1')('accepts all affected projects from the local workbench without dispatching work', async () => {
+  const projectId = process.env.EFFECT_OUTPUT_TEST_PROJECT_ID!;
+  const workflowRunId = process.env.EFFECT_OUTPUT_TEST_WORKFLOW_RUN_ID!;
+  const templateId = process.env.EFFECT_OUTPUT_TEST_TEMPLATE_ID!;
+  expect(projectId && workflowRunId && templateId).toBeTruthy();
+  const response = await fetch(`http://localhost:3100/api/projects/${encodeURIComponent(projectId)}/workflows/effect/template-mix?workflowRunId=${encodeURIComponent(workflowRunId)}`);
+  expect(response.ok).toBe(true);
+  const { data: workspace } = await response.json() as { data: EffectTemplateMixWorkspaceData };
+  const db = new PrismaService(new ConfigService({ DATABASE_URL: process.env.DATABASE_URL ??
+    'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public' }));
+  const rollback = new Error('LOCAL_PROJECT_REFRESH_TEST_ROLLBACK');
+  try {
+    await expect(db.$transaction(async (tx) => {
+      const scopedDb = new Proxy(tx, { get(target, key) { return key === '$transaction'
+        ? (fn: (client: typeof tx) => unknown) => fn(tx) : Reflect.get(target, key); } }) as unknown as PrismaService;
+      const working = new WorkflowWorkingRepository(scopedDb);
+      const service = new EffectFinalOutputService(scopedDb, {
+        workspace: async () => workspace,
+      } as unknown as EffectTemplateMixService, working, {} as StoragePort, {
+        getEffectBranchTree: async () => ({ projectId, activeWorkflowRunId: workflowRunId,
+          branches: [{ workflowRunId, parentWorkflowRunId: null, forkNodeId: null,
+            templates: [{ templateId }] }] }),
+      } as unknown as WorkflowWorkingService);
+      const run = await tx.effectFinalOutputRun.findFirstOrThrow({ where: { projectId, workflowRunId, templateId },
+        orderBy: { createdAt: 'desc' }, include: { items: true } });
+      const batchCount = await tx.effectFinalOutputRun.count({ where: { projectId, workflowRunId, templateId } });
+      const { effectTemplateMixSourceChanges } = await import('@ai-marketing/contracts');
+      const variants = workspace.draft!.templates.find((entry) => entry.id === templateId)!.workspace.variants;
+      const affected = variants.filter((variant) => effectTemplateMixSourceChanges(variant, workspace.materials).length);
+      expect(affected.length).toBeGreaterThan(0);
+      const ids = run.items.filter((item) => affected.some((variant) => variant.id === item.variantId)).map((item) => item.id);
+      expect(ids.length).toBe(affected.length);
+      await service.localUpdate(projectId, run.id, { itemIds: ids });
+      const updated = await tx.effectFinalOutputItem.findMany({ where: { runId: run.id }, orderBy: { id: 'asc' } });
+      for (const item of updated) {
+        if (ids.includes(item.id)) {
+          expect(item.status).toBe('QUEUED');
+          const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+          expect(snapshot.sourceRefresh?.slots.length).toBeGreaterThan(0);
+          expect(effectTemplateMixSourceChanges(snapshot.timeline.variant, workspace.materials)).toEqual([]);
+        } else expect(item).toEqual(run.items.find((before) => before.id === item.id));
+      }
+      expect(await tx.effectFinalOutputRun.count({ where: { projectId, workflowRunId, templateId } })).toBe(batchCount);
+      throw rollback;
+    }, { timeout: 120_000 })).rejects.toBe(rollback);
+  } finally { await db.$disconnect(); }
+});
 function wav(): Buffer {
   const bytes = Buffer.alloc(44 + 96_000);
   bytes.write('RIFF');
@@ -43,9 +95,9 @@ function wav(): Buffer {
 
 // Outbox and all fixture writes remain invisible in this outer transaction and are rolled back.
 // Storage and supplier interactions are explicit local test doubles; no paid task is dispatched.
-it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
-  'source refresh selects fresh trims, stages audio, atomically replaces same-branch delivery and preserves siblings',
-  async () => {
+it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1').each([false, true])(
+  'source refresh selects fresh trims and preserves siblings, unexported project only=%s',
+  async (projectRefreshOnly) => {
     const db = new PrismaService(
       new ConfigService({
         DATABASE_URL:
@@ -399,6 +451,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               where: { projectId },
               include: { items: true },
             });
+            if (!projectRefreshOnly) {
             await tx.effectFinalOutputRun.update({
               where: { id: output.id },
               data: {
@@ -416,6 +469,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 size: mp4.length,
               });
             await service.finish(projectId, output.id, firstClaim.attemptToken!);
+            }
             expect((await service.get(projectId, output.id)).counts.stale).toBe(0);
             const target = output.items.find((item) => item.variantId === variants[0]!.id)!;
             const siblingId = output.items.find((item) => item.variantId === variants[1]!.id)!.id;
@@ -432,8 +486,14 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               'SEGMENT_RENDER',
               [{ artifactKey: a.artifactKey, input: clipInput(0, 2) }],
             );
+            // The real UI used to call ordinary sync before local-update. A changed source must
+            // survive that call untouched so the explicit refresh can freeze its replacement.
+            const beforeSync = await tx.effectFinalOutputItem.findUniqueOrThrow({ where: { id: target.id } });
+            expect(await service.syncFromDraft(projectId, workflowRunId)).toEqual({ refreshed: [] });
+            expect((await tx.effectFinalOutputItem.findUniqueOrThrow({ where: { id: target.id } })).snapshot)
+              .toEqual(beforeSync.snapshot);
             const listed = await service.get(projectId, output.id);
-            expect(listed.items.find((item) => item.id === target.id)!.stale).toBe(true);
+            if (!projectRefreshOnly) expect(listed.items.find((item) => item.id === target.id)!.stale).toBe(true);
             expect(listed.items.find((item) => item.id === siblingId)!.stale).toBe(false);
             const originalPackage = packaging.items.find(
               (item) => item.variantId === target.variantId,
@@ -461,6 +521,28 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             await expect(
               service.localUpdate(projectId, output.id, { itemIds: [target.id] }),
             ).rejects.toThrow('正在渲染');
+            // Real transactional saves cannot modify the frozen project or its audio, while
+            // sibling projects remain editable. Every fixture write rolls back with this test.
+            const lockedState = await tx.workflowNodeState.findUniqueOrThrow({ where: {
+              projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX' },
+            } });
+            const lockedDraft = json(lockedState.state) as EffectTemplateMixDraft;
+            const editedTarget = json(lockedDraft) as EffectTemplateMixDraft;
+            editedTarget.templates[0]!.workspace.variants[0]!.name = '修改更新中成片';
+            await expect(working.saveNodeState(projectId, workflowRunId, 'TEMPLATE_MIX',
+              workflowStateHash(editedTarget), editedTarget, lockedState.revision, 1))
+              .rejects.toThrow('局部更新正在进行');
+            const audio = await tx.effectPackagingItem.findUniqueOrThrow({ where: { id: originalPackage.id } });
+            await expect(new EffectPackagingRepository(scopedDb).updateCheckpoint(projectId, audio.id,
+              audio.checkpoint as PackagingCheckpoint, audio.updatedAt.toISOString()))
+              .rejects.toThrow('局部更新正在进行');
+            const editedSibling = json(lockedDraft) as EffectTemplateMixDraft;
+            editedSibling.templates[0]!.workspace.variants[1]!.name = '可编辑的其他成片';
+            const siblingSave = await working.saveNodeState(projectId, workflowRunId, 'TEMPLATE_MIX',
+              workflowStateHash(editedSibling), editedSibling, lockedState.revision, 1);
+            expect(siblingSave.conflict).toBe(false);
+            await working.saveNodeState(projectId, workflowRunId, 'TEMPLATE_MIX',
+              workflowStateHash(lockedDraft), lockedDraft, siblingSave.record.revision, 1);
             let claim = await service.claim(projectId, output.id);
             const expiredAttempt = claim.attemptToken!;
             await tx.workingArtifact.update({ where: { id: a.id }, data: { revision: 3 } });
@@ -473,7 +555,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               '素材二次变化',
             );
             await service.finish(projectId, output.id, expiredAttempt);
-            expect((await service.get(projectId, output.id)).status).toBe('PARTIAL');
+            expect((await service.get(projectId, output.id)).status).toBe(projectRefreshOnly ? 'FAILED' : 'PARTIAL');
             await service.retry(projectId, output.id);
             claim = await service.claim(projectId, output.id);
             await expect(
@@ -481,7 +563,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 { slotId: 'a', offset: 5 },
               ]),
             ).rejects.toThrow('租约已失效');
-            expect(claim.items!.filter((item) => item.status !== 'COMPLETED')).toHaveLength(1);
+            expect(claim.items!.filter((item) => item.status === 'QUEUED')).toHaveLength(1);
             const queued = claim.items!.find((item) => item.id === target.id)!
               .snapshot as unknown as FinalOutputSnapshot;
             expect(queued.sourceRefresh?.slots[0]?.material.artifactRevision).toBe(3);
@@ -533,6 +615,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               'voice-new-a',
               { path: wavPath, size: wav().length },
               '[48000]',
+              '[{"startFrame":0,"endFrame":48000}]',
             );
             expect(
               await service.refreshAudio(
@@ -543,6 +626,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 'voice-new-a',
                 { path: wavPath, size: wav().length },
                 '[48000]',
+                '[{"startFrame":0,"endFrame":48000}]',
               ),
             ).toEqual(voice);
             const staged = (
@@ -601,6 +685,13 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 revision: factSource.revision,
               },
             });
+            if (projectRefreshOnly) {
+              await expect(service.upload(projectId, output.id, claim.attemptToken!, target.id, {
+                path: mp4Path, size: mp4.length,
+              })).rejects.toThrow('不能上传成片文件');
+              await service.completeProjectRefresh(projectId, output.id, claim.attemptToken!, target.id);
+              await service.completeProjectRefresh(projectId, output.id, claim.attemptToken!, target.id);
+            } else {
             failUpload = true;
             await expect(
               service.upload(projectId, output.id, claim.attemptToken!, target.id, {
@@ -613,9 +704,10 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               path: mp4Path,
               size: mp4.length,
             });
+            }
             await service.finish(projectId, output.id, claim.attemptToken!);
             const result = await service.get(projectId, output.id);
-            expect(result.status).toBe('COMPLETED');
+            expect(result.status).toBe(projectRefreshOnly ? 'PENDING_RENDER' : 'COMPLETED');
             expect(result.counts.stale).toBe(0);
             expect(await tx.workflowRun.count({ where: { projectId } })).toBe(1);
             const actualDraft = (await sourceWorkspace())
@@ -652,6 +744,16 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             const saved = await tx.effectFinalOutputItem.findUniqueOrThrow({
               where: { id: target.id },
             });
+            if (projectRefreshOnly) {
+              expect(saved.fileObjectId).toBeNull();
+              expect(saved.assetId).toBeNull();
+              expect(saved.status).toBe('PENDING_RENDER');
+              expect((saved.snapshot as unknown as FinalOutputSnapshot).projectRefreshOnly).toBeUndefined();
+              expect((saved.snapshot as unknown as FinalOutputSnapshot).sourceRefresh).toBeUndefined();
+              expect(await tx.workingArtifact.count({ where: { projectId, artifactKey: { startsWith: 'final-delivery:' } } })).toBe(0);
+              expect(await tx.asset.count({ where: { projectId, type: 'FINAL_VIDEO' } })).toBe(0);
+              throw rollback;
+            }
             expect(saved.fileObjectId).not.toBe(oldFile);
             expect(
               (saved.snapshot as unknown as FinalOutputSnapshot).sourceRefresh,

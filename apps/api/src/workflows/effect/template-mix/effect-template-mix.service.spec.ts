@@ -3,6 +3,7 @@ import type {
   EffectTemplateMixVariant,
   WorkingArtifact,
 } from '@ai-marketing/contracts';
+import { effectTemplateMixSourceChanges } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
@@ -90,6 +91,44 @@ const source = {
   },
 } as WorkingArtifact;
 
+describe('inherited render replacements in a selected mix branch', () => {
+  it('updates only changed source slots and keeps unchanged cloned bindings current', async () => {
+    const { working, service } = harness();
+    const state = draft();
+    const variant = state.templates[0]!.workspace.variants[0]!;
+    variant.slots.push({ ...variant.slots[0]!, id: 'unchanged-slot' });
+    variant.bindings['unchanged-slot'] = 'unchanged-copy';
+    variant.bindingRevisions['unchanged-slot'] = 1;
+    const clip = (id: string, task: string, file: string, promptId: string, revision: number,
+      owner: boolean, freshness = 'CURRENT'): WorkingArtifact => ({ ...source,
+        id, artifactKey: `render-clip:${task}`, revision, freshness: freshness as 'CURRENT',
+        workflowRunId: owner ? 'render-head' : 'branch', metadata: { branchSourceOwner: owner },
+        payload: { ...source.payload as object, fileObjectId: file, promptId },
+      });
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state });
+    working.listArtifacts.mockResolvedValue({ items: [
+      clip(sourceId, 'copy-task', 'old', 'p', 2, false, 'STALE'),
+      clip('replacement', 'new-task', 'new', 'p', 3, true),
+      clip('unchanged-copy', 'unchanged-copy-task', 'same', 'q', 1, false),
+      clip('unchanged-original', 'unchanged-task', 'same', 'q', 1, true),
+      { ...source, id: 'batch', workflowRunId: 'render-head', artifactKey: 'render-batch:product',
+        metadata: { branchSourceOwner: true }, payload: { clips: [
+          { taskId: 'new-task', promptId: 'p' }, { taskId: 'unchanged-task', promptId: 'q' }] } },
+      { ...source, id: 'copied-batch', workflowRunId: 'branch', artifactKey: 'render-batch:copy-product',
+        metadata: { branchSourceOwner: false }, payload: { clips: [
+          { taskId: 'copy-task', promptId: 'p' }, { taskId: 'unchanged-copy-task', promptId: 'q' }] } },
+    ], total: 6 });
+    const result = await service.workspace('project', 'branch');
+    expect(effectTemplateMixSourceChanges(variant, result.materials))
+      .toEqual([{ slotId, material: expect.objectContaining({ id: 'replacement' }) }]);
+    expect(result.materials.filter((row) => row.activeSource && row.available).map((row) => row.id))
+      .toEqual(['replacement', 'unchanged-copy']);
+    expect(result.draft.templates[0]?.needsAiFill).toBe(false);
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+});
+
 const harness = () => {
   const working = {
     // A fill with no published version to protect stays in the Run it was asked for.
@@ -136,6 +175,26 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('replaces an ancestor repair source even while both committed batches are CURRENT', async () => {
+    const { service, working } = harness();
+    const old = { ...source, workflowRunId: 'parent', payload: { ...(source.payload as object), promptId: 'prompt' } };
+    const replacement = { ...source, id: 'repaired', workflowRunId: 'run', artifactKey: 'render-clip:repair',
+      payload: { ...(source.payload as object), promptId: 'prompt', fileObjectId: 'new-file' } };
+    const oldBatch = { ...old, id: 'old-batch', artifactKey: 'render-batch:old-product',
+      payload: { clips: [{ taskId: 'task-1', promptId: 'prompt' }] } };
+    const newBatch = { ...replacement, id: 'new-batch', artifactKey: 'render-batch:new-product',
+      payload: { clips: [{ taskId: 'repair', promptId: 'prompt' }] } };
+    const candidate = { ...replacement, id: 'unadopted', artifactKey: 'render-clip:candidate',
+      payload: { ...(replacement.payload as object), fileObjectId: 'candidate-file' } };
+    const items = [old, oldBatch, candidate, newBatch, replacement] as WorkingArtifact[];
+    working.listArtifacts.mockResolvedValue({ items, total: items.length });
+    const result = await service.outputSourceWorkspace('project', 'run');
+    expect(result.materials.filter((material) => material.activeSource).map((material) => material.id)).toEqual(['repaired']);
+    expect(result.materials.find((material) => material.id === 'repaired')?.replacesMaterialIds).toContain(sourceId);
+    expect(result.materials.find((material) => material.id === sourceId)).toMatchObject({ available: true, activeSource: false });
+    expect((await service.materialSources('project', 'run')).pendingProjectCount).toBe(1);
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
   it('deletes only the requested project and allows an empty template without touching versions', async () => {
     const { service, working } = harness();
     const value = draft();
@@ -1420,6 +1479,11 @@ describe('EffectTemplateMixService', () => {
 
     const snapshot = create.mock.calls[0]![0].snapshot;
     expect(snapshot.materials[0]).toMatchObject({ prompt: '原始画面 Prompt 0' });
+    expect(snapshot.requireAllMaterials).toBe(true);
+    expect(snapshot.replaceExistingVariants).toBe(true);
+    expect(snapshot.targetVariantId).toBeNull();
+    expect(snapshot.maxOutputVariants).toBe(100);
+    expect(snapshot.existingVariantBindings).toEqual([]);
     expect(snapshot.workspaceHash).toBe(workflowStateHash(state.templates[0]!.workspace));
     expect(JSON.stringify(snapshot)).not.toContain('primaryPurpose');
     expect(JSON.stringify(snapshot)).not.toContain('compatiblePurposes');
@@ -2299,6 +2363,25 @@ describe('EffectTemplateMixService', () => {
     ]);
     // The fill is not this Run's own, so the fill history still shows what this Run ran.
     expect(result.aiRuns).toEqual([]);
+  });
+
+  it('projects the original purpose onto a regenerated file in lightweight source polling', async () => {
+    const currentPrompt = { ...promptBatch, payload: { items: [{ id: 'stable-prompt', content: '原始镜头' }] } };
+    const currentClip = { ...source, id: 'replacement', artifactKey: 'render-clip:new-task',
+      payload: { ...(source.payload as object), promptId: 'stable-prompt', fileObjectId: 'new-file' } };
+    const fill = inheritedFill();
+    Object.assign(fill.inputSnapshot.materials[0]!, { promptId: 'stable-prompt', prompt: '原始镜头', fileObjectId: 'old-file' });
+    const working = { getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
+      listArtifacts: vi.fn().mockResolvedValue({ items: [currentPrompt, currentClip] }) };
+    const aiRepository = { listRecent: vi.fn().mockResolvedValue([]), inheritedMixAiRuns: vi.fn().mockResolvedValue([fill]) };
+    const service = new EffectTemplateMixService(working as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository);
+    const result = await service.materialSources('project', 'run');
+    expect(result.classificationPools?.[0]?.items).toEqual([{ materialId: 'replacement', role: 'HOOK', matchScore: 0.9 }]);
+    expect(result.materials[0]?.fileObjectId).toBe('new-file');
+    expect(result.materials[0]).not.toHaveProperty('trimStartSeconds');
+    currentPrompt.payload.items[0]!.content = '已修改的另一创意';
+    expect((await service.materialSources('project', 'run')).classificationPools).toEqual([]);
   });
 
   it('drops an inherited fill whose clips are not the ones this Run holds', async () => {

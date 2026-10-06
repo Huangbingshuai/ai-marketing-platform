@@ -304,6 +304,7 @@ describe('packaging service output boundary', () => {
         idempotencyKey: 'fresh-full-package' });
       const input = repo.create.mock.calls[0]![0];
       expect(input.workflowRunId).toBe('child');
+      expect(input.snapshots[0].captionTimingPolicy).toBe('SYNTHESIS_WORDS_V1');
       expect(input.snapshots[0].variant).toMatchObject({ bindingRevisions: { a: 2 }, offsets: { a: 0 } });
       expect(input.snapshots[0].sourceTrimMaterials).toEqual([{ slotId: 'a', material: child.materials[0] }]);
       expect(input.snapshots[0].dependencies).toContainEqual({ artifactId: 'batch', artifactKey: 'render-batch:active',
@@ -346,6 +347,21 @@ describe('packaging service output boundary', () => {
     await service.checkpoint('p', 'run', 'attempt', 'item', 'VOICE', {}, '生成失败');
     expect(service.workerItem).not.toHaveBeenCalled();
     expect(repo.checkpoint).toHaveBeenCalledWith('p', 'run', 'attempt', 'item', 'VOICE', {}, '生成失败');
+  });
+  it('rejects changed word timestamps after the audio has been atomically uploaded', async () => {
+    const { service, repo } = harness();
+    const item = completedItem();
+    const snapshot = item.snapshot as PackagingSnapshot;
+    snapshot.captionTimingPolicy = 'SYNTHESIS_WORDS_V1';
+    item.checkpoint.voices!['line-1']!.speechRanges = [{ startFrame: 4800, endFrame: 21600 }];
+    vi.spyOn(service, 'workerItem').mockResolvedValue({ item, snapshot,
+      run: { workflowRunId: 'w', templateId: 't' } } as never);
+    const voice = structuredClone(item.checkpoint.voices!['line-1']!);
+    voice.speechRanges![0]!.startFrame = 2400;
+    await expect(service.checkpoint('p', 'run', 'attempt', 'item', 'VOICE', {
+      voices: { 'line-1': voice },
+    })).rejects.toThrow('字词时间戳与已上传音频不一致');
+    expect(repo.checkpoint).not.toHaveBeenCalled();
   });
   it('refuses packaging until a template change has been refilled', async () => {
     const { service, repo, mix } = harness();
@@ -548,7 +564,9 @@ describe('packaging service output boundary', () => {
         sourceTimelineHash: visualHash(variant),
         narrationLayoutVersion: 'SLOT_V1',
       },
-      checkpoint: { ...completedItem().checkpoint, narrationLayoutVersion: 'SLOT_V1' },
+      checkpoint: { ...completedItem().checkpoint, narrationLayoutVersion: 'SLOT_V1', voices: {
+        'line-1': { ...completedItem().checkpoint.voices!['line-1']!, speechRanges: [{ startFrame: 0, endFrame: 57600 }] },
+      } },
     }));
     repo.list.mockResolvedValue([{ items: originals }]);
     vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
@@ -708,7 +726,8 @@ describe('packaging service output boundary', () => {
       const previousCheckpoint: PackagingCheckpoint = {
         narrationLayoutVersion: 'SLOT_V1',
         voices: {
-          a: { fileObjectId: 'voice-a', start: 0.4, offset: 0.2, duration: 1.5, volume: 0.6 },
+          a: { fileObjectId: 'voice-a', start: 0.4, offset: 0.2, duration: 1.5, volume: 0.6,
+            speechRanges: [{ startFrame: 4800, endFrame: 36000 }] },
         },
         music: { fileObjectId: 'music-a', start: 1, offset: 2, duration: 5, volume: 0.1 },
         captions: [{ id: 'a', text: '旧字幕', start: 0.4, end: 1.9 }],
@@ -970,6 +989,31 @@ describe('packaging service output boundary', () => {
       }),
     ).rejects.toThrow('超出真实音频长度');
     expect(repo.updateCheckpoint).not.toHaveBeenCalled();
+  });
+  it('moves source-timed captions without scaling them when narration is trimmed', async () => {
+    const { service, repo } = harness();
+    const item = completedItem();
+    item.checkpoint.narrationLayoutVersion = 'SLOT_V1';
+    item.checkpoint.captionLayoutVersion = 'SPEECH_V1';
+    item.checkpoint.script![0]!.slotId = 'a';
+    (item.snapshot as PackagingSnapshot).clips = [{ slotId: 'a', start: 0, duration: 4 } as PackagingSnapshot['clips'][number]];
+    item.checkpoint.voices!['line-1']!.segmentFrames = [24_000, 33_600];
+    item.checkpoint.voices!['line-1']!.speechRanges = [{ startFrame: 4800, endFrame: 24000 }, { startFrame: 33600, endFrame: 55200 }];
+    item.checkpoint.captions = [
+      { id: 'caption-1', voiceLineId: 'line-1', segmentIndex: 0, segmentCount: 2, text: '商品', start: .2, end: 1 },
+      { id: 'caption-2', voiceLineId: 'line-1', segmentIndex: 1, segmentCount: 2, text: '很好', start: 1.4, end: 2.3 },
+    ];
+    repo.get.mockResolvedValue({ ...completedRun(), items: [item] });
+    repo.updateCheckpoint.mockResolvedValue(item);
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      voices: { 'line-1': { start: 3, offset: .1, duration: 2, volume: 1 } },
+    });
+    const written = repo.updateCheckpoint.mock.calls[0]![2];
+    expect(written.captions[0].start).toBeCloseTo(3.1);
+    expect(written.captions[1].start).toBeCloseTo(4.3);
+    expect(written.captions[1].end).toBeCloseTo(5.2);
+    expect(written.voices['line-1'].speechRanges).toEqual(item.checkpoint.voices!['line-1']!.speechRanges);
   });
   it('sorts a caption replacement and rejects unknown audio ids', async () => {
     const { service, repo } = harness();
@@ -1271,15 +1315,18 @@ describe('packaging service output boundary', () => {
     const saved = completedItem();
     saved.checkpoint.captions = item.checkpoint.captions;
     saved.checkpoint.captionBoxes = { 'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 } };
+    saved.checkpoint.captionFontSize = 23;
     repo.updateCheckpoint.mockResolvedValue(saved);
     await service.updateAudio('p', 'run', 'item', {
       expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      captionFontSize: 23,
       boxes: { 'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 } },
     });
     const [, , written] = repo.updateCheckpoint.mock.calls[0]!;
     expect(written.captionBoxes).toEqual({
       'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 },
     });
+    expect(written.captionFontSize).toBe(23);
     // Captions themselves are untouched by a geometry-only edit.
     expect(written.captions).toEqual([{ id: 'line-1', text: '商品', start: 0, end: 2.4 }]);
   });

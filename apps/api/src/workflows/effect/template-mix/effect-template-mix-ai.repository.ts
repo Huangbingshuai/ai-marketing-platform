@@ -7,6 +7,7 @@ import type {
 } from '@ai-marketing/contracts';
 import type { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
+import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import {
   EFFECT_TEMPLATE_MIX_JOB_TYPE,
@@ -19,7 +20,10 @@ const leaseUntil = (now: Date): Date => new Date(now.getTime() + 2 * 60 * 1000);
 
 @Injectable()
 export class EffectTemplateMixAiRepository {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(WorkflowWorkingRepository) private readonly working: WorkflowWorkingRepository = new WorkflowWorkingRepository(prisma),
+  ) {}
 
   listRecent(projectId: string, workflowRunId: string) {
     return this.prisma.effectTemplateMixAiRun.findMany({
@@ -272,22 +276,15 @@ export class EffectTemplateMixAiRepository {
     return this.prisma.effectTemplateMixAiRun.findFirst({ where: { projectId, id: runId } });
   }
 
-  sourceArtifacts(projectId: string, workflowRunId: string) {
-    return this.prisma.workingArtifact.findMany({
-      where: {
-        projectId,
-        workflowRunId,
-        nodeId: { in: ['PROMPT_GENERATION', 'SEGMENT_RENDER'] },
-        freshness: 'CURRENT',
-        availability: 'AVAILABLE',
-      },
-      include: {
-        files: {
-          include: { fileObject: true },
-          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
-        },
-      },
-    });
+  async sourceArtifacts(projectId: string, workflowRunId: string, transaction?: Prisma.TransactionClient) {
+    // Use the same authoritative lineage as the library. A CURRENT database clone can still be
+    // an obsolete snapshot; never freeze it as a source for a newly filled template.
+    const working = transaction
+      ? new WorkflowWorkingRepository(transaction as unknown as PrismaService) : this.working;
+    return (await working.listArtifacts(projectId, { workflowRunId })).filter((artifact) =>
+      ['PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(artifact.nodeId) &&
+      artifact.freshness === 'CURRENT' && artifact.availability === 'AVAILABLE' &&
+      (artifact.metadata as { branchSourceOwner?: boolean } | null)?.branchSourceOwner !== false);
   }
 
   async selectedFile(projectId: string, runId: string, materialId: string, attemptToken: string) {
@@ -306,18 +303,13 @@ export class EffectTemplateMixAiRepository {
       !selections.some((item) => (item as { materialId?: unknown }).materialId === materialId)
     )
       return null;
-    const artifact = await this.prisma.workingArtifact.findFirst({
-      where: {
-        projectId,
-        workflowRunId: run.workflowRunId,
-        id: materialId,
-        nodeId: 'SEGMENT_RENDER',
-        freshness: 'CURRENT',
-        availability: 'AVAILABLE',
-      },
-      include: { files: { include: { fileObject: true }, orderBy: { sortOrder: 'asc' } } },
-    });
+    const frozen = (run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot)?.materials
+      ?.find((material) => material.artifactId === materialId);
+    if (!frozen) return null;
+    const artifact = (await this.sourceArtifacts(projectId, run.workflowRunId))
+      .find((source) => source.id === materialId && source.nodeId === 'SEGMENT_RENDER');
     if (
+      artifact?.revision !== frozen.artifactRevision || artifact.contentHash !== frozen.contentHash ||
       !artifact?.storageKey ||
       !artifact.originalFileName ||
       !artifact.mimeType ||
@@ -421,16 +413,7 @@ export class EffectTemplateMixAiRepository {
           contentHash: item.contentHash,
         })),
       ];
-      const currentSources = await transaction.workingArtifact.findMany({
-        where: {
-          projectId: input.projectId,
-          workflowRunId: input.workflowRunId,
-          id: { in: frozenSources.map(({ id }) => id) },
-          freshness: 'CURRENT',
-          availability: 'AVAILABLE',
-        },
-        select: { id: true, revision: true, contentHash: true },
-      });
+      const currentSources = await this.sourceArtifacts(input.projectId, input.workflowRunId, transaction);
       const currentById = new Map(currentSources.map((item) => [item.id, item]));
       if (
         frozenSources.some((source) => {

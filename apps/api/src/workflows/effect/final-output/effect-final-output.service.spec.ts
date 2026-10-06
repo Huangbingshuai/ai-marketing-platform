@@ -1724,13 +1724,55 @@ describe('local update', () => {
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
     expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
   });
-  it('refuses a batch that is still rendering or was never exported', async () => {
+  it('refuses a running batch and unchanged unexported projects', async () => {
     const queued = await localUpdateHarness();
     queued.run.status = 'RUNNING';
     await expect(queued.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('正在渲染');
     const pending = await localUpdateHarness();
     pending.run.status = 'PENDING_RENDER';
-    await expect(pending.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('尚未导出');
+    pending.items[0]!.fileObjectId = null; pending.items[0]!.assetId = null;
+    await expect(pending.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('没有需要更新的素材');
+  });
+  it.each([false, true])('sync preserves source refresh baseline and queues an unexported project, replacement id=%s', async (replacementId) => {
+    const { service, db, working, run, items, workspace, artifacts } = await localUpdateHarness(false);
+    run.status = 'PENDING_RENDER';
+    items[0]!.status = 'PENDING_RENDER'; items[0]!.fileObjectId = null; items[0]!.assetId = null;
+    workspace.materials[0]!.artifactRevision = 2;
+    artifacts[0]!.id = 'clip';
+    artifacts[0]!.revision = 2;
+    const sourceArtifact = artifacts[0] as unknown as { payload: Record<string, unknown> };
+    sourceArtifact.payload = { ...sourceArtifact.payload, fileObjectId: 'video', contentHash: 'clip-hash' };
+    workspace.materials[0]!.artifactId = 'clip';
+    if (replacementId) {
+      const old = workspace.materials[0]!;
+      Object.assign(old, { activeSource: false, sourcePromptId: 'pr', artifactRevision: 1 });
+      const replacement = { ...old, id: 'replacement', artifactId: 'replacement', artifactRevision: 2 };
+      Object.assign(replacement, { activeSource: true });
+      workspace.materials.push(replacement);
+      artifacts[0]!.id = 'replacement';
+    }
+    db.fileObject.count.mockImplementation(({ where }) => Promise.resolve(where.id.in.length));
+    db.effectPackagingItem.findMany.mockResolvedValue([]);
+    (items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot.unpackaged = true;
+    Object.assign(db.effectPackagingItem, { findFirst: vi.fn().mockResolvedValue(null) });
+    db.workflowNodeState.findUnique.mockResolvedValue({ state: workspace.draft });
+    db.workingArtifact.findFirst.mockResolvedValue(artifacts[0]);
+    const baseline = JSON.stringify((items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot);
+    expect(await service.syncFromDraft('p', 'w')).toEqual({ refreshed: [] });
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+    expect(JSON.stringify((items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot)).toBe(baseline);
+    await service.localUpdate('p', 'out', { itemIds: ['item-0'] });
+    const snapshot = (items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot;
+    expect(snapshot.projectRefreshOnly).toBe(true);
+    expect(snapshot.sourceRefresh?.slots.map((row) => row.slotId)).toEqual(['s']);
+    expect(snapshot.timeline.variant.bindings.s).toBe(replacementId ? 'replacement' : 'clip');
+    expect(snapshot.timeline.variant.bindingRevisions.s).toBe(2);
+    expect(run.status).toBe('QUEUED');
+    expect(items[0]!.fileObjectId).toBeNull();
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
   });
   it('refuses unchanged films and a non-active branch without creating a paid task', async () => {
     const unchanged = await localUpdateHarness();

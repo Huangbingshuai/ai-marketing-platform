@@ -68,6 +68,7 @@ class SourceCheckpointDto extends EffectTemplateMixWorkerProjectDto {
 }
 class SourceAudioDto extends EffectTemplateMixWorkerProjectDto {
   @IsOptional() @IsString() @MaxLength(2500) segmentFrames?: string;
+  @IsOptional() @IsString() @MaxLength(32000) speechRanges?: string;
 }
 
 @Controller('projects/:projectId/workflows/effect')
@@ -142,7 +143,7 @@ export class EffectFinalOutputWorkerController {
   audio(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
     @Param('role') role: string, @Headers('x-attempt-token') token: string,
     @Body() body: SourceAudioDto, @UploadedFile() file?: { path: string; size: number }) {
-    return this.service.refreshAudio(body.projectId, runId, token, itemId, role, file, body.segmentFrames);
+    return this.service.refreshAudio(body.projectId, runId, token, itemId, role, file, body.segmentFrames, body.speechRanges);
   }
   @Post(':runId/claim')
   claim(@Param('runId', uuid) runId: string, @Body() body: EffectTemplateMixWorkerProjectDto) {
@@ -163,6 +164,11 @@ export class EffectFinalOutputWorkerController {
     @Body() body: EffectTemplateMixWorkerProjectDto,
   ) {
     return this.service.finish(body.projectId, runId, token);
+  }
+  @Post(':runId/items/:itemId/complete-source-refresh')
+  completeProjectRefresh(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
+    @Headers('x-attempt-token') token: string, @Body() body: EffectTemplateMixWorkerProjectDto) {
+    return this.service.completeProjectRefresh(body.projectId, runId, token, itemId);
   }
   @Put(':runId/items/:itemId/progress')
   progress(

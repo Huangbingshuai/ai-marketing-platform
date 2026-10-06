@@ -296,18 +296,14 @@ export const selectAssignedVariant = (
   return selections;
 };
 
-/** Default pairwise overlap budget: two variants may share at most two slots' clips. */
+/** Soft overlap preference; coverage is never blocked by this legacy preference. */
 export const MAX_SLOT_REUSE_OVERLAP = 2;
 
 /**
- * Enumerate as many six-slot variants as the material pool allows, reusing clips
- * across variants while guaranteeing any two variants share at most `maxOverlap`
- * same-slot clips. The hard slot assignment collapses "撞一个槽位" into "共享一条素材",
- * because a clip can only ever appear on its assigned slot.
- *
- * Existing variants seed the collision sets so newly generated projects stay within
- * budget against what is already on the timeline, and least-used clips are preferred to
- * spread reuse before any clip needs to be shared a third time.
+ * Cover all assigned materials, then grow only while combinations bring useful novelty.
+ * The output ceiling is not a target. A bounded deterministic search balances quantity,
+ * duration-weighted distance, new shot pairs and usage without enumerating permutations.
+ * All comparisons are structural; they do not claim semantic/visual dissimilarity.
  */
 export const enumerateAssignedVariants = (
   slots: Array<{ id: string; role: EffectTemplateMixRole; duration: number }>,
@@ -319,59 +315,209 @@ export const enumerateAssignedVariants = (
   fixedRoles: Readonly<Record<string, EffectTemplateMixRole>> = {},
 ): EffectTemplateMixAiSelection[][] => {
   const pools = buildAssignedPools(slots, materials, classifications, new Set(), fixedRoles);
-  if (slots.some((slot) => !pools.get(slot.role)?.length)) return [];
-  const bindingKey = (slotId: string, materialId: string): string => `${slotId}:${materialId}`;
-  const allSets = existingGroups.map(
-    (group) => new Set(group.map(({ slotId, materialId }) => bindingKey(slotId, materialId))),
+  const limit = Math.max(0, Math.floor(maxVariants));
+  if (!slots.length || !limit || slots.some((slot) => !pools.get(slot.role)?.length)) return [];
+  const ordered = slots.map((slot) => pools.get(slot.role)!);
+  const flexible = ordered.flatMap((pool, index) => (pool.length > 1 ? [index] : []));
+  const flexibleDuration = flexible.reduce((sum, index) => sum + slots[index]!.duration, 0);
+  const pairPositions = flexible.flatMap((left, index) =>
+    flexible.slice(index + 1).map((right) => [left, right] as const),
   );
+  const eligibleIds = new Set(ordered.flatMap((pool) => pool.map((item) => item.materialId)));
+  const signature = (ids: Array<string | undefined>) => JSON.stringify(ids);
+  const references = existingGroups.map((group) =>
+    slots.map((slot) => group.find((binding) => binding.slotId === slot.id)?.materialId),
+  );
+  const excluded = new Set(references.map(signature));
   const usage = new Map<string, number>();
-  const results: EffectTemplateMixAiSelection[][] = [];
-
-  const buildOne = (): EffectTemplateMixAiSelection[] | null => {
-    const chosen: EffectTemplateMixAiSelection[] = [];
-    const overlap = allSets.map(() => 0);
-    const orderedPools = slots.map((slot) =>
-      [...pools.get(slot.role)!].sort(
+  const covered = new Set<string>();
+  const pairUsage = new Map<string, number>();
+  const pairKey = (left: number, leftId: string, right: number, rightId: string) =>
+    JSON.stringify(left < right ? [left, leftId, right, rightId] : [right, rightId, left, leftId]);
+  const pairs = (ids: Array<string | undefined>) =>
+    pairPositions.flatMap(([left, right]) =>
+      ids[left] && ids[right] ? [pairKey(left, ids[left]!, right, ids[right]!)] : [],
+    );
+  for (const ids of references) {
+    for (const id of ids) if (id) usage.set(id, (usage.get(id) ?? 0) + 1);
+    for (const pair of pairs(ids)) pairUsage.set(pair, (pairUsage.get(pair) ?? 0) + 1);
+  }
+  type Candidate = {
+    items: AssignedPoolItem[];
+    ids: string[];
+    key: string;
+    maximumOverlap: number;
+    squaredOverlap: number;
+    minimumChangedDuration: number;
+    minimumChangedSlots: number;
+  };
+  const candidates = new Map<string, Candidate>();
+  const overlap = (ids: string[], reference: Array<string | undefined>) =>
+    ids.reduce((count, id, index) => count + Number(reference[index] === id), 0);
+  const compare = (candidate: Candidate, reference: Array<string | undefined>) => {
+    const shared = overlap(candidate.ids, reference);
+    const changed = flexible.filter((index) => candidate.ids[index] !== reference[index]);
+    candidate.maximumOverlap = Math.max(candidate.maximumOverlap, shared);
+    candidate.squaredOverlap += shared * shared;
+    candidate.minimumChangedSlots = Math.min(candidate.minimumChangedSlots, changed.length);
+    candidate.minimumChangedDuration = Math.min(
+      candidate.minimumChangedDuration,
+      changed.reduce((sum, index) => sum + slots[index]!.duration, 0),
+    );
+  };
+  const freshPairs = (candidate: Candidate) =>
+    pairs(candidate.ids).filter((key) => !pairUsage.has(key)).length;
+  const addsNovelty = (candidate: Candidate) =>
+    pairPositions.length > 0 &&
+    candidate.minimumChangedSlots >= Math.ceil(flexible.length / 2) &&
+    candidate.minimumChangedDuration + 1e-6 >= flexibleDuration / 2 &&
+    freshPairs(candidate) >= Math.ceil(pairPositions.length / 2);
+  const add = (items: AssignedPoolItem[]) => {
+    const ids = items.map((item) => item.materialId);
+    const key = signature(ids);
+    if (excluded.has(key) || candidates.has(key) || new Set(ids).size !== slots.length) return;
+    const candidate: Candidate = {
+      items,
+      ids,
+      key,
+      maximumOverlap: 0,
+      squaredOverlap: 0,
+      minimumChangedDuration: flexibleDuration,
+      minimumChangedSlots: flexible.length,
+    };
+    for (const reference of references) compare(candidate, reference);
+    if (covered.size === eligibleIds.size && !addsNovelty(candidate)) return;
+    candidates.set(key, candidate);
+  };
+  // Local fixed seed makes retries/input ordering reproducible; no global random state.
+  let seed = 0x6d2b79f5;
+  const random = () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 0x1_0000_0000;
+  };
+  const replenish = () => {
+    for (let count = 0; count < 256 && candidates.size < 2048; count++)
+      add(ordered.map((pool) => pool[Math.floor(random() * pool.length)]!));
+    // Search underserved combinations as well as uniform samples. Each pick stays in its pool.
+    for (let count = 0; count < 32 && candidates.size < 2048; count++) {
+      const items: AssignedPoolItem[] = [];
+      const order = ordered
+        .map((_, index) => ({ index, value: random() }))
+        .sort((left, right) => left.value - right.value);
+      for (const { index } of order) {
+        const cost = (item: AssignedPoolItem) => {
+          const repeats = flexible.includes(index)
+            ? flexible.reduce(
+                (sum, other) =>
+                  sum +
+                  (items[other]
+                    ? (pairUsage.get(
+                        pairKey(index, item.materialId, other, items[other]!.materialId),
+                      ) ?? 0)
+                    : 0),
+                0,
+              )
+            : 0;
+          return (
+            Number(covered.has(item.materialId)) * 1000 +
+            repeats * 4 +
+            (usage.get(item.materialId) ?? 0)
+          );
+        };
+        const choices = [...ordered[index]!].sort(
+          (left, right) =>
+            cost(left) - cost(right) ||
+            right.matchScore - left.matchScore ||
+            left.materialId.localeCompare(right.materialId),
+        );
+        items[index] = choices[Math.floor(random() * Math.min(3, choices.length))]!;
+      }
+      add(items);
+    }
+  };
+  // Each role's largest pool is visited in full, independent of random or quality rank.
+  const coverageSize = Math.max(...ordered.map((pool) => pool.length));
+  for (let index = 0; index < coverageSize; index++)
+    add(ordered.map((pool) => pool[index % pool.length]!));
+  const directed = (): AssignedPoolItem[] | null => {
+    const choices = ordered.map((pool) =>
+      [...pool].sort(
         (left, right) =>
+          Number(covered.has(left.materialId)) - Number(covered.has(right.materialId)) ||
           (usage.get(left.materialId) ?? 0) - (usage.get(right.materialId) ?? 0) ||
           right.matchScore - left.matchScore ||
           left.materialId.localeCompare(right.materialId),
       ),
     );
-    const search = (slotIndex: number): boolean => {
-      if (slotIndex === slots.length) return true;
-      const slot = slots[slotIndex]!;
-      for (const item of orderedPools[slotIndex]!) {
-        const key = bindingKey(slot.id, item.materialId);
-        let blocked = false;
-        for (let setIndex = 0; setIndex < allSets.length; setIndex += 1) {
-          if (allSets[setIndex]!.has(key) && overlap[setIndex]! >= maxOverlap) {
-            blocked = true;
-            break;
-          }
-        }
-        if (blocked) continue;
-        for (let setIndex = 0; setIndex < allSets.length; setIndex += 1) {
-          if (allSets[setIndex]!.has(key)) overlap[setIndex]! += 1;
-        }
-        chosen.push(toSelection(slot, item));
-        if (search(slotIndex + 1)) return true;
-        chosen.pop();
-        for (let setIndex = 0; setIndex < allSets.length; setIndex += 1) {
-          if (allSets[setIndex]!.has(key)) overlap[setIndex]! -= 1;
-        }
+    const picked: AssignedPoolItem[] = [];
+    let visits = 0;
+    const search = (index: number): boolean => {
+      if (++visits > 4096) return false;
+      if (index === slots.length)
+        return !excluded.has(signature(picked.map((item) => item.materialId)));
+      for (const item of choices[index]!) {
+        picked.push(item);
+        if (search(index + 1)) return true;
+        picked.pop();
       }
       return false;
     };
-    return search(0) ? chosen : null;
+    return search(0) ? picked : null;
   };
-
-  while (results.length < Math.max(0, maxVariants)) {
-    const variant = buildOne();
-    if (!variant) break;
-    allSets.push(new Set(variant.map(({ slotId, materialId }) => bindingKey(slotId, materialId))));
-    for (const { materialId } of variant) usage.set(materialId, (usage.get(materialId) ?? 0) + 1);
-    results.push(variant);
+  const results: EffectTemplateMixAiSelection[][] = [];
+  const rank = (candidate: Candidate): number[] => [
+    candidate.ids.filter((id) => !covered.has(id)).length,
+    candidate.minimumChangedDuration,
+    candidate.minimumChangedSlots,
+    freshPairs(candidate),
+    -Math.max(0, candidate.maximumOverlap - maxOverlap),
+    -candidate.maximumOverlap,
+    -pairs(candidate.ids).reduce((sum, pair) => sum + (pairUsage.get(pair) ?? 0), 0),
+    -candidate.squaredOverlap,
+    -candidate.ids.reduce((sum, id) => sum + (usage.get(id) ?? 0), 0),
+    candidate.items.reduce((sum, item) => sum + item.matchScore, 0),
+  ];
+  const better = (left: number[], right: number[]): boolean => {
+    for (let index = 0; index < left.length; index++)
+      if (Math.abs(left[index]! - right[index]!) > 1e-9) return left[index]! > right[index]!;
+    return false;
+  };
+  while (results.length < limit) {
+    // Coverage precedes diversity: scarce footage may require some unavoidable repetition.
+    if (covered.size < eligibleIds.size) {
+      const items = directed();
+      if (items) add(items);
+    }
+    const coverageComplete = covered.size === eligibleIds.size;
+    if (coverageComplete)
+      for (const [key, candidate] of candidates)
+        if (!addsNovelty(candidate)) candidates.delete(key);
+    let best: Candidate | undefined,
+      bestRank: number[] = [];
+    // A few bounded guided searches avoid stopping solely on an unlucky sample.
+    for (let attempt = 0; attempt < 3 && !best; attempt++) {
+      replenish();
+      for (const candidate of candidates.values()) {
+        const score = rank(candidate);
+        if (!best || better(score, bestRank)) {
+          best = candidate;
+          bestRank = score;
+        }
+      }
+    }
+    if (!best) break;
+    candidates.delete(best.key);
+    excluded.add(best.key);
+    references.push(best.ids);
+    for (const id of best.ids) {
+      covered.add(id);
+      usage.set(id, (usage.get(id) ?? 0) + 1);
+    }
+    for (const pair of pairs(best.ids)) pairUsage.set(pair, (pairUsage.get(pair) ?? 0) + 1);
+    results.push(best.items.map((item, index) => toSelection(slots[index]!, item)));
+    for (const candidate of candidates.values()) compare(candidate, best.ids);
   }
   return results;
 };

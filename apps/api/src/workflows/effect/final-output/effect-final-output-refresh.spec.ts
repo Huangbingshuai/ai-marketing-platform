@@ -27,6 +27,7 @@ const baseline = (): PackagingCheckpoint => ({
     },
     { id: 'manual', manual: true, text: '手工标题', start: 0, end: 3 },
   ],
+  captionFontSize: 20,
   captionBoxes: {
     'a-caption': { x: 0.5, y: 0.1, width: 0.9, scale: 1 },
     manual: { x: 0.2, y: 0.5, width: 0.4, scale: 2 },
@@ -101,6 +102,7 @@ describe('same-branch source-refresh content boundaries', () => {
     expect(result.voices).toEqual({});
     expect(result.captions!.map((caption) => caption.id)).toEqual(['manual']);
     expect(result.captionBoxes).toEqual({ manual: original.captionBoxes!.manual });
+    expect(result.captionFontSize).toBe(20);
     expect(result.captionVoices).toEqual(original.captionVoices);
     expect(result.music).toEqual(original.music);
     expect(original.voices!.a).toBeDefined();
@@ -116,6 +118,11 @@ describe('same-branch source-refresh content boundaries', () => {
     expect(() => assertRefreshPreservesContent(snapshot(original), cp)).not.toThrow();
     cp.music!.volume = 0.9;
     expect(() => assertRefreshPreservesContent(snapshot(original), cp)).toThrow('未受影响');
+    const fontSizeChanged = refreshed(original);
+    fontSizeChanged.captionFontSize = 24;
+    expect(() => assertRefreshPreservesContent(snapshot(original), fontSizeChanged)).toThrow(
+      '未受影响',
+    );
   });
   it('rejects forged voice files, real-duration mismatch and bad caption timing', () => {
     const original = baseline();
@@ -139,5 +146,21 @@ describe('same-branch source-refresh content boundaries', () => {
     const partial = withoutChangedSlots(original, ['a']);
     validateRefreshCheckpoint(snapshot(original), partial, false);
     expect(() => validateRefreshCheckpoint(snapshot(original), partial, true)).toThrow();
+  });
+  it('keeps actual speech ranges identical to the atomically uploaded audio metadata', () => {
+    const original = baseline();
+    const input = snapshot(original);
+    const ranges = [{ startFrame: 4800, endFrame: 21600 }];
+    input.sourceRefresh!.uploadedAudios!['voice-new']!.speechRanges = ranges;
+    const cp = refreshed(original);
+    cp.voices!.new!.speechRanges = structuredClone(ranges);
+    const caption = cp.captions!.find((row) => row.id === 'new-caption')!;
+    caption.start = .2;
+    caption.end = .9;
+    expect(() => validateRefreshCheckpoint(input, cp, true)).not.toThrow();
+    cp.voices!.new!.speechRanges![0]!.startFrame = 2400;
+    expect(() => assertRefreshPreservesContent(input, cp)).toThrow(
+      '音频不属于本任务或真实时长不一致',
+    );
   });
 });

@@ -363,10 +363,16 @@ describe('effect template mix domain', () => {
     expect(selectAssignedVariant(slots, materials, classifications)).toHaveLength(6);
   });
 
-  it('reuses clips across variants while keeping pairwise overlap within budget', () => {
+  it('expands beyond coverage but stops on diminishing novelty rather than filling a quota', () => {
     const { slots, materials, classifications } = assignedSetup(3);
     const variants = enumerateAssignedVariants(slots, materials, classifications, [], 100);
     expect(variants.length).toBeGreaterThan(3);
+    expect(variants.length).toBeLessThan(100);
+    expect(
+      new Set(variants.flatMap((variant) => variant.map((selection) => selection.materialId))).size,
+    ).toBe(18);
+    let totalShared = 0,
+      pairCount = 0;
     for (let left = 0; left < variants.length; left += 1) {
       for (let right = left + 1; right < variants.length; right += 1) {
         const bindings = new Map(
@@ -375,9 +381,181 @@ describe('effect template mix domain', () => {
         const shared = variants[right]!.filter(
           ({ slotId, materialId }) => bindings.get(slotId) === materialId,
         ).length;
-        expect(shared).toBeLessThanOrEqual(2);
+        expect(shared).toBeLessThanOrEqual(3);
+        totalShared += shared;
+        pairCount++;
       }
     }
+    expect(totalShared / pairCount).toBeLessThan(2.4);
+    expect(
+      enumerateAssignedVariants(
+        slots,
+        [...materials].reverse(),
+        [...classifications].reverse(),
+        [],
+        100,
+      ),
+    ).toEqual(variants);
+    expect(enumerateAssignedVariants(slots, materials, classifications, [], 50)).toEqual(variants);
+    // Completion freezes selected roles instead of reassigning them; it must reproduce
+    // the classification-stage output exactly, not just the material count.
+    const fixedRoles = Object.fromEntries(variants.flat().map((row) => [row.materialId, row.role]));
+    expect(
+      enumerateAssignedVariants(slots, materials, classifications, [], 100, undefined, fixedRoles),
+    ).toEqual(variants);
+  });
+
+  it('uses every one of twenty clips despite singleton pain and end roles', () => {
+    const { slots, materials, classifications } = assignedSetup(5);
+    const counts = [4, 1, 5, 4, 5, 1];
+    const keep = new Set(
+      slots.flatMap((slot, index) =>
+        classifications
+          .filter((row) => row.scores[slot.role] > 0)
+          .slice(0, counts[index])
+          .map((row) => row.materialId),
+      ),
+    );
+    const eligible = materials.filter((material) => keep.has(material.id));
+    const rows = classifications.filter((row) => keep.has(row.materialId));
+    const variants = enumerateAssignedVariants(slots, eligible, rows, [], 100);
+    expect(variants.length).toBeGreaterThan(5);
+    expect(variants.length).toBeLessThan(100);
+    expect(
+      new Set(variants.flatMap((variant) => variant.map((selection) => selection.materialId))).size,
+    ).toBe(20);
+    expect(
+      new Set(
+        variants.slice(0, 5).flatMap((variant) => variant.map((selection) => selection.materialId)),
+      ).size,
+    ).toBe(20);
+    expect(
+      new Set(
+        variants.map((variant) => JSON.stringify(variant.map((selection) => selection.materialId))),
+      ).size,
+    ).toBe(variants.length);
+    const pools = buildAssignedPools(slots, eligible, rows);
+    for (const variant of variants) {
+      expect(new Set(variant.map((selection) => selection.materialId)).size).toBe(6);
+      for (const selection of variant)
+        expect(
+          pools.get(selection.role)?.some((item) => item.materialId === selection.materialId),
+        ).toBe(true);
+    }
+  });
+
+  it('exhausts unique combinations rather than generating copies to reach a target', () => {
+    const { slots, materials, classifications } = assignedSetup(1);
+    const first = enumerateAssignedVariants(slots, materials, classifications, [], 100);
+    expect(first).toHaveLength(1);
+    expect(enumerateAssignedVariants(slots, materials, classifications, first, 100)).toEqual([]);
+  });
+
+  it('covers large spaces with bounded sampling and avoids existing combinations', () => {
+    const { slots, materials, classifications } = assignedSetup(10);
+    const first = enumerateAssignedVariants(slots, materials, classifications, [], 100);
+    const next = enumerateAssignedVariants(slots, materials, classifications, first, 100);
+    expect(first).toHaveLength(100);
+    expect(next.length).toBeGreaterThanOrEqual(10);
+    expect(next.length).toBeLessThan(100);
+    const all = [...first, ...next].map((variant) =>
+      JSON.stringify(variant.map((row) => row.materialId)),
+    );
+    expect(new Set(all).size).toBe(first.length + next.length);
+    for (const variants of [first, next])
+      expect(
+        new Set(variants.flatMap((variant) => variant.map((row) => row.materialId))).size,
+      ).toBe(60);
+  });
+
+  it('requires new flexible shot pairs and duration-weighted distance after full coverage', () => {
+    const { slots, materials, classifications } = assignedSetup(5);
+    const counts = [5, 1, 5, 5, 3, 1];
+    slots.forEach((slot, index) => {
+      slot.duration = [4, 10, 10, 10, 6, 8][index]!;
+    });
+    materials.forEach((item) => {
+      item.duration = 10;
+    });
+    const keep = new Set(
+      slots.flatMap((slot, index) =>
+        classifications
+          .filter((row) => row.scores[slot.role] > 0)
+          .slice(0, counts[index])
+          .map((row) => row.materialId),
+      ),
+    );
+    const variants = enumerateAssignedVariants(
+      slots,
+      materials.filter((item) => keep.has(item.id)),
+      classifications.filter((row) => keep.has(row.materialId)),
+      [],
+      100,
+    );
+    expect(variants.length).toBeGreaterThan(5);
+    expect(variants.length).toBeLessThan(100);
+    const flexible = [0, 2, 3, 4];
+    const covered = new Set<string>(),
+      usedPairs = new Set<string>();
+    const pairs = (ids: string[]) =>
+      flexible.flatMap((left, index) =>
+        flexible
+          .slice(index + 1)
+          .map((right) => JSON.stringify([left, ids[left], right, ids[right]])),
+      );
+    const previous: string[][] = [];
+    for (const variant of variants) {
+      const ids = variant.map((row) => row.materialId);
+      if (covered.size === keep.size) {
+        expect(pairs(ids).filter((key) => !usedPairs.has(key)).length).toBeGreaterThanOrEqual(3);
+        for (const reference of previous) {
+          const changed = flexible.filter((index) => ids[index] !== reference[index]);
+          expect(changed.length).toBeGreaterThanOrEqual(2);
+          expect(
+            changed.reduce((sum, index) => sum + slots[index]!.duration, 0),
+          ).toBeGreaterThanOrEqual(15);
+        }
+      }
+      for (const id of ids) covered.add(id);
+      for (const key of pairs(ids)) usedPairs.add(key);
+      previous.push(ids);
+    }
+    expect(covered.size).toBe(20);
+  });
+
+  it('does not inflate quantity by swapping only short clips around a long repeated shot', () => {
+    const { slots, materials, classifications } = assignedSetup(3);
+    slots[2]!.duration = 40;
+    materials.forEach((item) => {
+      item.duration = 40;
+    });
+    const variants = enumerateAssignedVariants(slots, materials, classifications, [], 100);
+    // Coverage uses each long product shot once. Every extra would share it with an earlier
+    // film and could change only 15 of the 55 replaceable seconds, so it adds no useful distance.
+    expect(variants).toHaveLength(3);
+    expect(
+      new Set(variants.flatMap((variant) => variant.map((item) => item.materialId))).size,
+    ).toBe(18);
+  });
+
+  it('covers a single flexible slot without inventing novelty or borrowing clips', () => {
+    const { slots, materials, classifications } = assignedSetup(7);
+    const keep = new Set(
+      classifications
+        .filter((row) => row.scores.PRODUCT > 0 || row.materialId.endsWith('-0'))
+        .map((row) => row.materialId),
+    );
+    const variants = enumerateAssignedVariants(
+      slots,
+      materials.filter((item) => keep.has(item.id)),
+      classifications.filter((row) => keep.has(row.materialId)),
+      [],
+      100,
+    );
+    expect(variants).toHaveLength(7);
+    expect(
+      new Set(variants.flatMap((variant) => variant.map((item) => item.materialId))).size,
+    ).toBe(12);
   });
 
   it('returns no variants when a slot role has no assigned clips', () => {

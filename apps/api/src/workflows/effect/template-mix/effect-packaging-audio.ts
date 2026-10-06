@@ -1,5 +1,32 @@
 import { BadRequestException } from '@nestjs/common';
 import { open } from 'node:fs/promises';
+import type { PackagingAudio } from '@ai-marketing/contracts';
+
+export function validSpeechRanges(value: unknown, sourceSeconds: number): value is NonNullable<PackagingAudio['speechRanges']> {
+  if (!Array.isArray(value) || !value.length || value.length > 500) return false;
+  let previousEnd = 0;
+  return value.every((row: unknown) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+    const range = row as Record<string, unknown>;
+    const start = range.startFrame, end = range.endFrame;
+    if (Object.keys(range).length !== 2 || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+        Number(start) < previousEnd || Number(end) <= Number(start) ||
+        Number(end) > Math.round(sourceSeconds * 24_000)) return false;
+    previousEnd = Number(end);
+    return true;
+  });
+}
+
+export function parseVoiceSpeechRanges(value: string | undefined, duration: number): PackagingAudio['speechRanges'] {
+  if (value === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!validSpeechRanges(parsed, duration)) throw new Error('invalid speech ranges');
+    return parsed;
+  } catch {
+    throw new BadRequestException('口播语音区间与音频不一致');
+  }
+}
 
 export async function wavDuration(path: string, size: number): Promise<number> {
   const handle = await open(path, 'r');

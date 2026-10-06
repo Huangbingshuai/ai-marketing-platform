@@ -32,6 +32,7 @@ function harness() {
     },
     workingArtifact: { findMany: vi.fn().mockResolvedValue([]) },
     effectTemplateMixAiRun: { count: vi.fn().mockResolvedValue(0) },
+    effectFinalOutputItem: { findMany: vi.fn().mockResolvedValue([]) },
     workflowNodeState: {
       findUnique: vi.fn().mockResolvedValue({ id: 'state', revision: 1, state: testDraft }),
       update: vi.fn(),
@@ -290,6 +291,8 @@ describe('packaging lease and durable task repository', () => {
   });
   it('locks editor audio edits by updatedAt and rejects lost updates', async () => {
     const { db, repo } = harness();
+    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', variantId: 'v',
+      run: { workflowRunId: 'w', templateId: 't' } });
     db.effectPackagingItem.updateMany.mockResolvedValue({ count: 1 });
     db.effectPackagingItem.findFirstOrThrow.mockResolvedValue({ id: 'i' });
     await repo.updateCheckpoint('p', 'i', { musicTaskId: 'x' }, '2026-01-01T00:00:00.000Z');
@@ -303,6 +306,23 @@ describe('packaging lease and durable task repository', () => {
     );
     await expect(repo.updateCheckpoint('p', 'i', {}, 'not-a-date')).rejects.toThrow('已被修改');
     expect(db.effectPackagingItem.findFirstOrThrow).toHaveBeenCalledTimes(1);
+  });
+  it('rejects edits to updating captions/audio but leaves other projects editable', async () => {
+    const { db, repo } = harness();
+    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', variantId: 'v',
+      run: { workflowRunId: 'w', templateId: 't' } });
+    db.effectFinalOutputItem.findMany.mockResolvedValue([{ snapshot: { sourceRefresh: {
+      workflowRunId: 'w', templateId: 't', baselineVariant: { id: 'v' },
+    } } }]);
+    await expect(repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z'))
+      .rejects.toThrow('局部更新正在进行');
+    expect(db.effectPackagingItem.updateMany).not.toHaveBeenCalled();
+    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', variantId: 'sibling',
+      run: { workflowRunId: 'w', templateId: 't' } });
+    db.effectPackagingItem.updateMany.mockResolvedValue({ count: 1 });
+    await repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z');
+    expect(db.effectPackagingItem.updateMany).toHaveBeenCalledOnce();
+    expect(db.$queryRaw).toHaveBeenCalled();
   });
   it('cancel invalidates the attempt and only cancels unfinished items', async () => {
     const { db, repo } = harness();

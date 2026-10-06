@@ -72,6 +72,7 @@ export function assertRefreshPreservesContent(
     'script',
     'voices',
     'captions',
+    'captionFontSize',
     'captionBoxes',
     'captionVoices',
     'music',
@@ -89,7 +90,8 @@ export function assertRefreshPreservesContent(
     if (
       !actual ||
       Math.abs(actual.duration - voice.duration) > 0.001 ||
-      workflowStateHash(actual.segmentFrames ?? []) !== workflowStateHash(voice.segmentFrames ?? [])
+      workflowStateHash(actual.segmentFrames ?? []) !== workflowStateHash(voice.segmentFrames ?? []) ||
+      workflowStateHash(actual.speechRanges ?? []) !== workflowStateHash(voice.speechRanges ?? [])
     )
       throw new ConflictException('局部更新音频不属于本任务或真实时长不一致');
   }
