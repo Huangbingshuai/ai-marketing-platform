@@ -69,11 +69,13 @@ class Consumer:
         final_output: FinalOutputHandler | None = None,
         voice_preview: VoicePreviewHandler | None = None,
         caption_voice: CaptionVoiceHandler | None = None,
+        video_import_provider: ArkProvider | None = None,
     ) -> None:
         self.rabbitmq_url = rabbitmq_url
         self.queue = queue
         self.api = api
         self.provider = provider
+        self.video_import_provider = video_import_provider or provider
         self.max_video_bytes = max_video_bytes
         self.classification_batch_size = classification_batch_size
         self.classification_input_token_budget = classification_input_token_budget
@@ -109,7 +111,7 @@ class Consumer:
             await message.ack()
             return
         if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'VIDEO_IMPORT_DESCRIPTION':
-            await handle_video_import(message, envelope, self.api, self.provider, self.request_slots)
+            await handle_video_import(message, envelope, self.api, self.video_import_provider, self.request_slots)
             return
         if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'VOICE_PREVIEW':
             if self.voice_preview is None:

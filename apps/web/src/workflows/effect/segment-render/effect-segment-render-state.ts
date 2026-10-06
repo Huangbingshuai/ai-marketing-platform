@@ -37,6 +37,8 @@ export type EffectSegmentRenderRepair = {
 };
 
 export type EffectSegmentRenderTask = {
+  creativeCore?: string;
+  dimensions?: Partial<EffectPromptDimensions>;
   id: string;
   renderCode: string;
   productId: string;
@@ -100,6 +102,9 @@ const effectSegmentRenderTaskFromApi = (
 ): EffectSegmentRenderTask => ({
   ...task,
   compatibleFragmentTypes: [...task.compatiblePurposes],
+  ...(task.independentImport
+    ? { creativeCore: task.creativeCore ?? '', dimensions: task.dimensions ?? {} }
+    : {}),
   activeVersion: task.output?.version ?? 1,
   repair: task.repair
     ? {

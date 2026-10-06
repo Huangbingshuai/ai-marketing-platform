@@ -1187,12 +1187,17 @@ model EffectSegmentImportDraft {
   sizeBytes Int
   storageKey String @db.VarChar(500)
   sha256 String @db.Char(64)
-  durationSeconds Float
-  width Int
-  height Int
+    durationSeconds Float
+    width Int
+    height Int
+    frameRate Float?
   status String @default("READY") @db.VarChar(20)
   descriptionStatus String @default("IDLE") @db.VarChar(20)
   promptText String @default("")
+  primaryPurpose String? @db.VarChar(30)
+  compatiblePurposes String[] @default([])
+  creativeCore String @default("") @db.VarChar(160)
+  dimensions Json @default("{}")
   errorMessage String? @db.VarChar(500)
   descriptionKey String? @db.VarChar(500)
   attemptToken String? @db.Uuid

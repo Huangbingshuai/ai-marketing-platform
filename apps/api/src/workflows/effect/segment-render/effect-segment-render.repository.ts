@@ -6,6 +6,7 @@ import {
   EFFECT_SEGMENT_RENDER_QUEUE,
 } from '@ai-marketing/contracts';
 import type {
+  EffectSegmentImportConfirmItem,
   EffectSegmentRenderInputImage,
   EffectSegmentRenderRepairDecision,
   EffectSegmentRenderRepairInput,
@@ -20,6 +21,7 @@ import {
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { exitEffectEditInTransaction } from '../../../platform/workflow/effect-edit-session';
+import { findDuplicateSegmentImport } from './effect-segment-import-duplicate';
 import type {
   EffectSegmentRenderImportedFile,
   EffectSegmentRenderStoredFile,
@@ -778,7 +780,7 @@ export class EffectSegmentRenderRepository {
   async appendImportedMaterials(
     projectId: string,
     batchId: string,
-    items: Array<{ draftId: string; promptText: string }>,
+    items: EffectSegmentImportConfirmItem[],
     expectedBatchRevision: number,
     idempotencyKey: string,
   ) {
@@ -860,10 +862,26 @@ export class EffectSegmentRenderRepository {
         });
         if (!draft || ['RUNNING', 'QUEUED'].includes(draft.descriptionStatus))
           return 'DRAFT_CONFLICT' as const;
-        drafts.push({ draft, promptText: item.promptText });
+        drafts.push({
+          draft,
+          promptText: item.promptText,
+          primaryPurpose: item.primaryPurpose,
+          compatiblePurposes: item.compatiblePurposes,
+          creativeCore: item.creativeCore ?? '',
+          dimensions: item.dimensions ?? {},
+        });
       }
       if (!this.workingRepository || !batch.tasks[0])
         throw new Error('IMPORT_SOURCE_CONTEXT_MISSING');
+      const hashes = new Set<string>();
+      for (const { draft } of drafts) {
+        if (
+          hashes.has(draft.sha256) ||
+          (await findDuplicateSegmentImport(transaction, projectId, batchId, draft.sha256, false))
+        )
+          return 'DUPLICATE_CONTENT' as const;
+        hashes.add(draft.sha256);
+      }
       const base = batch.tasks[0]
         .generationRequestSnapshot as unknown as EffectSegmentRenderRequestSnapshot;
       const promptDurationMaxSeconds = Math.max(
@@ -880,7 +898,14 @@ export class EffectSegmentRenderRepository {
         0,
         ...batch.tasks.map((task) => Number(task.renderCode.replace(/^R-/u, '')) || 0),
       );
-      for (const { draft, promptText } of drafts) {
+      for (const {
+        draft,
+        promptText,
+        primaryPurpose,
+        compatiblePurposes,
+        creativeCore,
+        dimensions,
+      } of drafts) {
         const id = randomUUID();
         const snapshot: EffectSegmentRenderRequestSnapshot = {
           ...base,
@@ -888,8 +913,10 @@ export class EffectSegmentRenderRepository {
           promptId: draft.id,
           promptCode: `I-${++codeIndex}`,
           promptText,
-          primaryPurpose: 'PRODUCT_DISPLAY',
-          compatiblePurposes: [],
+          primaryPurpose,
+          compatiblePurposes,
+          creativeCore,
+          dimensions,
           promptContentHash: workflowStateHash(promptText),
           inputImages: [],
           inputVideo: null,
@@ -951,6 +978,10 @@ export class EffectSegmentRenderRepository {
           data: {
             status: 'IMPORTED',
             promptText,
+            primaryPurpose,
+            compatiblePurposes,
+            creativeCore,
+            dimensions,
             importedTaskId: id,
           },
         });

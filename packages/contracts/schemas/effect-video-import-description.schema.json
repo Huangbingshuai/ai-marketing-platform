@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["promptText", "primaryPurpose", "compatiblePurposes", "creativeCore", "dimensions"],
+  "$defs": {
+    "VideoImportDimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["narrative", "scene", "persona", "productRelation", "camera", "emotion"],
+      "properties": {
+        "narrative": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "scene": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "persona": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "productRelation": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "camera": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "emotion": { "type": "string", "minLength": 1, "maxLength": 120 }
+      }
+    }
+  },
+  "properties": {
+    "creativeCore": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "dimensions": { "$ref": "#/$defs/VideoImportDimensions" },
+    "promptText": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "primaryPurpose": { "type": "string", "enum": ["HOOK", "PRODUCT_DISPLAY", "EFFECT", "CTA"] },
+    "compatiblePurposes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "type": "string", "enum": ["HOOK", "PRODUCT_DISPLAY", "EFFECT", "CTA"] }
+    }
+  }
+}

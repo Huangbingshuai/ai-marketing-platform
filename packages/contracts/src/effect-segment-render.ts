@@ -1,10 +1,12 @@
 import type {
   EffectPromptFragmentType,
+  EffectPromptDimensions,
   EffectPromptRenderCapabilityKey,
   SeedanceRatio,
   SeedanceResolution,
 } from './effect-prompt-generation';
 import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
+import { EFFECT_PROMPT_FRAGMENT_TYPES, EFFECT_PROMPT_DIMENSIONS } from './effect-prompt-generation';
 
 export const EFFECT_SEGMENT_RENDER_API_BASE =
   '/api/projects/:projectId/workflows/effect/segment-render' as const;
@@ -31,7 +33,7 @@ export const effectSegmentRenderSettingsNodeId = (productId: string): string =>
 export const EFFECT_SEGMENT_RENDER_LIMITS = {
   maxTasksPerBatch: 100,
   maxTaskIdsPerOperation: 100,
-  maxImportFilesPerOperation: 100,
+  maxImportFilesPerOperation: 5,
   maxReferenceImages: 30,
   maxReferenceImagesSeedance20: 9,
   maxReferenceImageBytes: 30 * 1024 * 1024 - 1,
@@ -79,17 +81,101 @@ export type EffectSegmentRenderSourcePackage = EffectSegmentRenderSourcePrompt;
 
 export type EffectSegmentImportDescriptionStatus =
   'IDLE' | 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
-export type EffectSegmentImportDraft = {
+export const EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES = {
+  VIDEO_READ_FAILED: '视频读取失败：暂时无法读取上传的视频，请重试或重新上传。',
+  VIDEO_INTEGRITY_FAILED: '视频校验失败：读取内容与上传文件不一致，请重新上传。',
+  FRAME_EXTRACTION_FAILED: '视频抽帧失败：无法提取用于识别的画面，请检查视频是否可正常播放。',
+  AI_TIMEOUT: 'AI 识别超时：识别服务未在规定时间内返回，请重新识别或手工填写。',
+  AI_CONNECTION_FAILED: 'AI 连接中断：未收到完整识别结果，请重新识别或手工填写。',
+  AI_RATE_LIMITED: 'AI 服务限流：当前请求较多，请稍后重新识别。',
+  AI_SERVICE_FAILED: 'AI 服务请求失败：识别服务暂不可用，请稍后重新识别。',
+  AI_OUTPUT_TRUNCATED: 'AI 返回不完整：识别结果被截断，请重新识别或手工填写。',
+  AI_OUTPUT_INVALID:
+    'AI 返回格式错误：提示词、片段类型或创意信息不符合要求，请重新识别或手工填写。',
+  TEMPLATE_INVALID: 'AI 描述校验失败：时间分段或提示词模板字段不完整，请重新识别或手工填写。',
+  TASK_TIMEOUT: '识别任务超时：处理时间超过上限，请重新识别或手工填写。',
+  TASK_INTERRUPTED: '识别任务中断：任务连接或执行状态已失效，请重新识别。',
+  UNKNOWN: 'AI 描述生成失败：未记录具体原因，可重新识别或手工填写。',
+} as const;
+export type EffectSegmentImportFailureCode = keyof typeof EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES;
+export const EFFECT_SEGMENT_IMPORT_FAILURE_CODES = Object.keys(
+  EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES,
+) as EffectSegmentImportFailureCode[];
+export const EFFECT_SEGMENT_IMPORT_DIMENSION_LIMITS = {
+  narrative: 120,
+  scene: 120,
+  persona: 160,
+  productRelation: 240,
+  camera: 160,
+  emotion: 120,
+} as const;
+export type EffectSegmentImportCreativeMetadata = {
+  creativeCore?: string;
+  dimensions?: Partial<EffectPromptDimensions>;
+};
+export type EffectSegmentImportDraft = EffectSegmentImportCreativeMetadata & {
   id: string;
   fileName: string;
   sizeBytes: number;
   durationSeconds: number;
+  /** Actual video stream metadata; optional for older API responses/drafts. */
+  width?: number;
+  height?: number;
+  frameRate?: number | null;
   status: 'READY' | 'IMPORTED' | 'CANCELLED';
   descriptionStatus: EffectSegmentImportDescriptionStatus;
   promptText: string;
+  primaryPurpose?: EffectPromptFragmentType | null;
+  compatiblePurposes?: EffectPromptFragmentType[];
   errorMessage: string | null;
 };
-export type EffectSegmentImportConfirmItem = { draftId: string; promptText: string };
+export type EffectSegmentImportDescription = EffectSegmentImportCreativeMetadata & {
+  promptText: string;
+  primaryPurpose: EffectPromptFragmentType;
+  compatiblePurposes: EffectPromptFragmentType[];
+};
+/** Internal callback; missing failureCode preserves compatibility with older Workers. */
+export type EffectSegmentImportCompleteRequest = Partial<EffectSegmentImportDescription> & {
+  projectId: string;
+  failureCode?: EffectSegmentImportFailureCode;
+};
+export type EffectSegmentImportConfirmItem = EffectSegmentImportDescription & { draftId: string };
+export function effectSegmentImportDescriptionValid(
+  value: unknown,
+): value is EffectSegmentImportDescription {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<EffectSegmentImportDescription>;
+  if (
+    item.creativeCore !== undefined &&
+    (typeof item.creativeCore !== 'string' || item.creativeCore.length > 160)
+  )
+    return false;
+  if (item.dimensions !== undefined) {
+    if (!item.dimensions || typeof item.dimensions !== 'object' || Array.isArray(item.dimensions))
+      return false;
+    if (
+      Object.entries(item.dimensions).some(
+        ([key, text]) =>
+          !EFFECT_PROMPT_DIMENSIONS.some((dimension) => dimension.key === key) ||
+          typeof text !== 'string' ||
+          text.length > EFFECT_SEGMENT_IMPORT_DIMENSION_LIMITS[key as keyof EffectPromptDimensions],
+      )
+    )
+      return false;
+  }
+  return (
+    typeof item.promptText === 'string' &&
+    item.promptText.trim().length > 0 &&
+    item.promptText.length <= 4000 &&
+    EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.primaryPurpose as EffectPromptFragmentType) &&
+    Array.isArray(item.compatiblePurposes) &&
+    item.compatiblePurposes.length > 0 &&
+    item.compatiblePurposes.length <= 4 &&
+    new Set(item.compatiblePurposes).size === item.compatiblePurposes.length &&
+    item.compatiblePurposes.every((purpose) => EFFECT_PROMPT_FRAGMENT_TYPES.includes(purpose)) &&
+    item.compatiblePurposes.includes(item.primaryPurpose as EffectPromptFragmentType)
+  );
+}
 export type EffectSegmentImportDescriptionMessage = {
   schemaVersion: 2;
   taskType: 'VIDEO_IMPORT_DESCRIPTION';
@@ -149,7 +235,7 @@ export type EffectSegmentRenderInputImage = {
   sortOrder: number;
 };
 
-export type EffectSegmentRenderRequestSnapshot = {
+export type EffectSegmentRenderRequestSnapshot = EffectSegmentImportCreativeMetadata & {
   /** An independent, user-confirmed clip description, owned by the render artifact. */
   importedMaterial?: {
     schemaVersion: 1;
@@ -206,7 +292,7 @@ export type EffectSegmentRenderRepair = EffectSegmentRenderRepairInput & {
   candidate: EffectSegmentRenderOutput | null;
 };
 
-export type EffectSegmentRenderTask = {
+export type EffectSegmentRenderTask = EffectSegmentImportCreativeMetadata & {
   id: string;
   renderCode: string;
   productId: string;

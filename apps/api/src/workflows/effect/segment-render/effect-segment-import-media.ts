@@ -52,6 +52,7 @@ export type ImportVideoMetadata = {
   durationSeconds: number;
   width: number;
   height: number;
+  frameRate: number | null;
   mimeType: string;
 };
 
@@ -62,6 +63,7 @@ export function parseImportVideoMetadata(value: unknown, fileName: string): Impo
       codec_type?: string;
       width?: number;
       height?: number;
+      avg_frame_rate?: string;
       duration?: string;
       tags?: { DURATION?: string };
       disposition?: { attached_pic?: number };
@@ -109,9 +111,18 @@ export function parseImportVideoMetadata(value: unknown, fileName: string): Impo
     durationSeconds,
     width: video.width!,
     height: video.height!,
+    frameRate: parseAverageFrameRate(video.avg_frame_rate),
     mimeType:
       extension === '.webm' ? 'video/webm' : extension === '.mov' ? 'video/quicktime' : 'video/mp4',
   };
+}
+
+/** ffprobe reports rational average rates, including 0/0 for unavailable metadata. */
+function parseAverageFrameRate(value: string | undefined): number | null {
+  if (!value || !/^\d+(?:\.\d+)?(?:\/\d+(?:\.\d+)?)?$/u.test(value)) return null;
+  const [numerator, denominator = '1'] = value.split('/');
+  const rate = Number(numerator) / Number(denominator);
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
 export async function inspectImportVideo(
@@ -130,7 +141,7 @@ export async function inspectImportVideo(
         '-protocol_whitelist',
         'file,pipe',
         '-show_entries',
-        'format=format_name,duration:stream=codec_type,width,height,duration:stream_disposition=attached_pic:stream_tags=DURATION',
+        'format=format_name,duration:stream=codec_type,width,height,duration,avg_frame_rate:stream_disposition=attached_pic:stream_tags=DURATION',
         '-of',
         'json',
         path,

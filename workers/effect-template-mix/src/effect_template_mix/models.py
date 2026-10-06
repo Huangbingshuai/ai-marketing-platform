@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Role = Literal["HOOK", "PAIN_POINT", "PRODUCT", "SELLING_POINT", "TRANSFORMATION", "END"]
 
@@ -52,9 +52,35 @@ class VideoImportClaim(BaseModel):
     contentHash: str | None = None
 
 
+class VideoImportFailure(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    projectId: str
+    failureCode: Literal["VIDEO_READ_FAILED", "VIDEO_INTEGRITY_FAILED", "FRAME_EXTRACTION_FAILED", "AI_TIMEOUT", "AI_CONNECTION_FAILED", "AI_RATE_LIMITED", "AI_SERVICE_FAILED", "AI_OUTPUT_TRUNCATED", "AI_OUTPUT_INVALID", "TEMPLATE_INVALID", "TASK_TIMEOUT", "TASK_INTERRUPTED", "UNKNOWN"]
+
+
+class VideoImportDimensions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    narrative: str = Field(min_length=1, max_length=120)
+    scene: str = Field(min_length=1, max_length=120)
+    persona: str = Field(min_length=1, max_length=160)
+    productRelation: str = Field(min_length=1, max_length=240)
+    camera: str = Field(min_length=1, max_length=160)
+    emotion: str = Field(min_length=1, max_length=120)
+
+
 class VideoImportDescription(BaseModel):
     model_config = ConfigDict(extra="forbid")
     promptText: str = Field(min_length=1, max_length=4000)
+    primaryPurpose: Literal["HOOK", "PRODUCT_DISPLAY", "EFFECT", "CTA"]
+    compatiblePurposes: list[Literal["HOOK", "PRODUCT_DISPLAY", "EFFECT", "CTA"]] = Field(min_length=1, max_length=4)
+    creativeCore: str = Field(min_length=1, max_length=160)
+    dimensions: VideoImportDimensions
+
+    @model_validator(mode="after")
+    def validate_purposes(self) -> "VideoImportDescription":
+        if not self.promptText.strip() or not self.creativeCore.strip() or any(not value.strip() for value in self.dimensions.model_dump().values()) or len(set(self.compatiblePurposes)) != len(self.compatiblePurposes) or self.primaryPurpose not in self.compatiblePurposes:
+            raise ValueError("description and consistent unique purposes required")
+        return self
 
 
 class IncrementalInput(BaseModel):

@@ -6,6 +6,29 @@ const probe = (duration: string, format = 'mov,mp4,m4a,3gp,3g2,mj2') => ({
   streams: [{ codec_type: 'video', width: 720, height: 1280, duration }],
 });
 describe('actual imported video validation', () => {
+  it.each([
+    ['30/1', 30],
+    ['30000/1001', 30000 / 1001],
+    ['23.976', 23.976],
+    ['0/0', null],
+    ['30/0', null],
+    ['0/1', null],
+    ['N/A', null],
+    ['Infinity', null],
+    ['-24/1', null],
+    [undefined, null],
+  ])('reads average video frame rate %s without guessing missing metadata', (value, expected) => {
+    const input = probe('6');
+    expect(
+      parseImportVideoMetadata(
+        {
+          ...input,
+          streams: [{ ...input.streams[0], avg_frame_rate: value }],
+        },
+        'clip.mp4',
+      ).frameRate,
+    ).toBe(expected);
+  });
   it('uses picture duration, never a longer audio/container duration for slot matching', () => {
     expect(
       parseImportVideoMetadata(

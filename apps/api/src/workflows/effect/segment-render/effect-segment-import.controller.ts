@@ -21,8 +21,10 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
+  ArrayUnique,
   IsArray,
   IsInt,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -31,7 +33,15 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { EFFECT_SEGMENT_RENDER_LIMITS } from '@ai-marketing/contracts';
+import {
+  EFFECT_SEGMENT_RENDER_LIMITS,
+  EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_SEGMENT_IMPORT_FAILURE_CODES,
+  type EffectPromptFragmentType,
+  type EffectPromptDimensions,
+  type EffectSegmentImportCompleteRequest,
+  type EffectSegmentImportFailureCode,
+} from '@ai-marketing/contracts';
 import { UploadTemporaryFileCleanupInterceptor } from '../../../platform/file/upload-temporary-file-cleanup.interceptor';
 import { RawResponse } from '../../../common/raw-response.decorator';
 import { EffectTemplateMixWorkerGuard } from '../template-mix/effect-template-mix-worker.guard';
@@ -41,15 +51,35 @@ import type { UploadedSegmentRenderFile } from './effect-segment-render.types';
 export class ImportKeyDto {
   @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
 }
+export class ImportDimensionsDto {
+  @IsOptional() @IsString() @MaxLength(120) narrative?: string;
+  @IsOptional() @IsString() @MaxLength(120) scene?: string;
+  @IsOptional() @IsString() @MaxLength(160) persona?: string;
+  @IsOptional() @IsString() @MaxLength(240) productRelation?: string;
+  @IsOptional() @IsString() @MaxLength(160) camera?: string;
+  @IsOptional() @IsString() @MaxLength(120) emotion?: string;
+}
 export class ImportConfirmItemDto {
   @IsUUID('4') draftId!: string;
   @IsString() @IsNotEmpty() @MaxLength(4000) promptText!: string;
+  @IsIn(EFFECT_PROMPT_FRAGMENT_TYPES) primaryPurpose!: EffectPromptFragmentType;
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(4)
+  @ArrayUnique()
+  @IsIn(EFFECT_PROMPT_FRAGMENT_TYPES, { each: true })
+  compatiblePurposes!: EffectPromptFragmentType[];
+  @IsOptional() @IsString() @MaxLength(160) creativeCore?: string;
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ImportDimensionsDto)
+  dimensions?: Partial<EffectPromptDimensions>;
 }
 export class ImportConfirmDto extends ImportKeyDto {
   @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayMaxSize(100)
+  @ArrayMaxSize(EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation)
   @ValidateNested({ each: true })
   @Type(() => ImportConfirmItemDto)
   items!: ImportConfirmItemDto[];
@@ -60,8 +90,27 @@ export class ImportWorkerDto {
 export class ImportClaimDto extends ImportWorkerDto {
   @IsString() @IsNotEmpty() @MaxLength(500) requestId!: string;
 }
-export class ImportCompleteDto extends ImportWorkerDto {
+export class ImportCompleteDto
+  extends ImportWorkerDto
+  implements EffectSegmentImportCompleteRequest
+{
+  @IsOptional()
+  @IsIn(EFFECT_SEGMENT_IMPORT_FAILURE_CODES)
+  failureCode?: EffectSegmentImportFailureCode;
+  @IsOptional() @IsString() @MaxLength(160) creativeCore?: string;
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ImportDimensionsDto)
+  dimensions?: Partial<EffectPromptDimensions>;
   @IsOptional() @IsString() @MaxLength(4000) promptText?: string;
+  @IsOptional() @IsIn(EFFECT_PROMPT_FRAGMENT_TYPES) primaryPurpose?: EffectPromptFragmentType;
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(4)
+  @ArrayUnique()
+  @IsIn(EFFECT_PROMPT_FRAGMENT_TYPES, { each: true })
+  compatiblePurposes?: EffectPromptFragmentType[];
 }
 
 @Controller('projects/:projectId/workflows/effect/segment-render/batches/:batchId/imports')
@@ -149,7 +198,19 @@ export class EffectSegmentImportWorkerController {
     @Body() body: ImportCompleteDto,
     @Headers('x-attempt-token') token: string,
   ) {
-    return this.service.finish(body.projectId, id, token, body.promptText ?? null);
+    return this.service.finish(
+      body.projectId,
+      id,
+      token,
+      body.promptText ?? null,
+      body.primaryPurpose,
+      body.compatiblePurposes,
+      {
+        ...(body.creativeCore !== undefined ? { creativeCore: body.creativeCore } : {}),
+        ...(body.dimensions !== undefined ? { dimensions: body.dimensions } : {}),
+      },
+      body.failureCode,
+    );
   }
   @Get(':id/content')
   @RawResponse()

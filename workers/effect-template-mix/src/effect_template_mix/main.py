@@ -12,6 +12,7 @@ from .final_output import FinalOutputHandler
 from .final_output_cache import SourceCache
 from .caption_voice import CaptionVoiceHandler
 from .voice_preview import VoicePreviewHandler
+from .video_import import IMPORT_OUTPUT_TOKENS
 
 
 async def serve() -> None:
@@ -27,6 +28,8 @@ async def serve() -> None:
     )
     packaging_provider = PackagingProvider(settings.tts_api_key.get_secret_value(), settings.tts_speaker,
         settings.tts_resource_id, settings.music_access_key.get_secret_value(), settings.music_secret_key.get_secret_value(), settings.music_action)
+    import_provider = ArkProvider(settings.ark_base_url, settings.ark_api_key.get_secret_value(),
+        settings.video_import_model, settings.ark_timeout_seconds, IMPORT_OUTPUT_TOKENS, "medium")
     packaging = PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes,
         settings.packaging_item_concurrency, settings.packaging_model_concurrency, settings.packaging_tts_concurrency)
     consumer = Consumer(
@@ -43,6 +46,7 @@ async def serve() -> None:
         FinalOutputHandler(api, settings.max_video_bytes, settings.final_output_max_concurrency, packaging),
         VoicePreviewHandler(api, packaging_provider, packaging.requests),
         CaptionVoiceHandler(api, packaging_provider, packaging.requests),
+        video_import_provider=import_provider,
     )
     async def sweep_output_cache() -> None:
         while True:
@@ -62,6 +66,7 @@ async def serve() -> None:
         await consumer.close()
         await api.close()
         await provider.close()
+        await import_provider.close()
         await packaging_provider.close()
 
 

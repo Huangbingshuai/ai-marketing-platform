@@ -5,7 +5,6 @@ import type {
   EffectSegmentRenderBatch,
   EffectSegmentRenderExportFormat,
   EffectSegmentRenderSettings,
-  EffectSegmentImportDraft,
   SeedanceRatio,
   SeedanceResolution,
 } from '@ai-marketing/contracts';
@@ -14,6 +13,8 @@ import {
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_SEGMENT_IMPORT_DIMENSION_LIMITS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
@@ -65,11 +66,6 @@ import {
   exportEffectSegmentRenderMaterials,
   getEffectSegmentRenderTaskContent,
   getEffectSegmentRenderBatch,
-  stageEffectSegmentImport,
-  describeEffectSegmentImport,
-  getEffectSegmentImport,
-  cancelEffectSegmentImport,
-  confirmEffectSegmentImports,
   regenerateEffectSegmentRenderTasks,
   refreshEffectSegmentRenderBatch,
   saveEffectSegmentRenderSettings,
@@ -95,6 +91,22 @@ import {
   type EffectSegmentRenderWorkspace,
 } from './effect-segment-render-state';
 import { loadEffectSegmentRenderWorkspaceSnapshot } from './services/effect-segment-render-workspace.service';
+import {
+  createEffectSegmentImportBatch,
+  importRecognitionBusy,
+  importRecognitionLabel,
+  importColumnLocked,
+  importColumnReady,
+  importColumnError,
+  type ImportColumn,
+} from './effect-segment-import-batch';
+import {
+  importVideoResolution,
+  importVideoAspectRatio,
+  importVideoFrameRate,
+  importVideoDuration,
+  importVideoPreviewStyle,
+} from './effect-segment-import-media-info';
 
 const props = defineProps<{
   projectId: string;
@@ -129,15 +141,34 @@ const notice = ref<Notice | null>(null);
 const transferPanel = ref<TransferPanel>(null);
 const selectionMode = ref(false);
 const selectedTaskIds = ref<Set<string>>(new Set());
-const importDrafts = ref<EffectSegmentImportDraft[]>([]);
-const importError = ref('');
-let importSession = 0;
-let importPollingSession: number | null = null;
-let importPollingTimer: ReturnType<typeof setTimeout> | undefined;
-let importScope: { projectId: string; batchId: string } | null = null;
-let importConfirmRequest: { fingerprint: string; key: string } | null = null;
-const importBusy = (draft: EffectSegmentImportDraft) =>
-  ['QUEUED', 'RUNNING'].includes(draft.descriptionStatus);
+const imports = createEffectSegmentImportBatch({
+  revision: () => workspace.value?.batchRevision,
+  imported: (batch, count) => {
+    applyBatch(batch);
+    showNotice(`已新增 ${count} 个视频素材，保存修改后可用于混剪`);
+    void nextTick(() => transferCloseButton.value?.focus());
+  },
+});
+const importColumns = imports.columns;
+const importError = imports.error;
+const importConfirming = imports.confirming;
+const selectImportPrimary = (column: ImportColumn, purpose: EffectPromptFragmentType): void => {
+  if (!column.draft) return;
+  column.draft.primaryPurpose = purpose;
+  column.draft.compatiblePurposes = [
+    ...new Set([purpose, ...(column.draft.compatiblePurposes ?? [])]),
+  ];
+};
+const handleImportPreviewMetadata = (column: ImportColumn, event: Event): void => {
+  const video = event.currentTarget;
+  if (video instanceof HTMLVideoElement && video.src === column.previewUrl)
+    column.previewSize = readVideoSize(video);
+};
+const handleImportPreviewError = (column: ImportColumn, event: Event): void => {
+  const video = event.currentTarget;
+  if (video instanceof HTMLVideoElement && video.src === column.previewUrl)
+    column.previewError = true;
+};
 const importInput = ref<HTMLInputElement | null>(null);
 const transferCloseButton = ref<HTMLButtonElement | null>(null);
 const exportScope = ref<ExportScope>('ALL_TASKS');
@@ -389,17 +420,25 @@ const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
 
 const creativeCoreForTask = (task: EffectSegmentRenderTask): string =>
   task.independentImport
-    ? task.promptText
+    ? task.creativeCore || task.promptText
     : (cardCreativeCoreByPromptId.value[task.promptId] ?? '创意方向待同步');
 
+const detailsForTask = (task: EffectSegmentRenderTask) => {
+  if (!task.independentImport) return cardPromptDetailsByPromptId.value[task.promptId] ?? null;
+  if (!task.creativeCore && !Object.values(task.dimensions ?? {}).some(Boolean)) return null;
+  return {
+    creativeCore: task.creativeCore || '未填写',
+    dimensions: Object.fromEntries(
+      EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, task.dimensions?.[key] || '未填写']),
+    ) as EffectSegmentRenderPromptDetails['dimensions'],
+  };
+};
 const promptTaskDetails = computed(() =>
-  promptTask.value ? (cardPromptDetailsByPromptId.value[promptTask.value.promptId] ?? null) : null,
+  promptTask.value ? detailsForTask(promptTask.value) : null,
 );
 
 const previewTaskDetails = computed(() =>
-  previewTask.value
-    ? (cardPromptDetailsByPromptId.value[previewTask.value.promptId] ?? null)
-    : null,
+  previewTask.value ? detailsForTask(previewTask.value) : null,
 );
 
 const taskVideoUrl = (task: EffectSegmentRenderTask): string => {
@@ -774,22 +813,19 @@ const closeAllDialogs = (restoreFocus = false): void => {
 };
 
 const closeTransferPanel = (restoreFocus = false): void => {
-  if (operation.value === 'import') return;
-  const scope = importScope;
-  if (scope)
-    for (const draft of importDrafts.value.filter((item) => item.status === 'READY'))
-      void cancelEffectSegmentImport(scope.projectId, scope.batchId, draft.id).catch(
-        () => undefined,
-      );
-  importSession++;
-  importScope = null;
-  if (importPollingTimer) clearTimeout(importPollingTimer);
+  if (importConfirming.value && nodeActive) return;
+  imports.hide();
   transferPanel.value = null;
-  importDrafts.value = [];
   if (!restoreFocus) return;
   const trigger = dialogTrigger;
   dialogTrigger = null;
   void nextTick(() => trigger?.isConnected && trigger.focus());
+};
+
+const cancelImport = (): void => {
+  if (importConfirming.value) return;
+  imports.dispose();
+  closeTransferPanel(true);
 };
 
 const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
@@ -803,6 +839,7 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
   if (showLoading) {
     closeAllDialogs(false);
     closeTransferPanel(false);
+    imports.dispose();
     selectionMode.value = false;
     selectedTaskIds.value = new Set();
     page.value = 1;
@@ -1438,13 +1475,7 @@ const openTransferPanel = (panel: Exclude<TransferPanel, null>, event: Event): v
   if (panel === 'export' && exportScope.value === 'SELECTED' && !selectedTasks.value.length)
     exportScope.value = 'ALL_TASKS';
   transferPanel.value = panel;
-  if (panel === 'import') {
-    importError.value = '';
-    importDrafts.value = [];
-    importScope = { projectId: props.projectId, batchId: current.batchId };
-    importConfirmRequest = null;
-    importSession++;
-  }
+  if (panel === 'import') imports.start({ projectId: props.projectId, batchId: current.batchId });
   void nextTick(() => transferCloseButton.value?.focus());
 };
 
@@ -1452,148 +1483,24 @@ const handleImportFileChange = async (event: Event): Promise<void> => {
   const input = event.currentTarget as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   input.value = '';
-  const scope = importScope;
-  if (!scope || operation.value) return;
-  if (files.length + importDrafts.value.length > 100) {
-    importError.value = '单次最多导入 100 个视频';
-    return;
-  }
-  const session = importSession;
-  importError.value = '';
-  operation.value = 'import';
-  try {
-    for (const file of files) {
-      if (!/\.(?:mp4|mov|webm)$/iu.test(file.name) || file.size > 512 * 1024 * 1024) {
-        importError.value += `${file.name}：仅支持不超过 512 MB 的 MP4、MOV、WebM。\n`;
-        continue;
-      }
-      try {
-        const response = await stageEffectSegmentImport(
-          scope.projectId,
-          scope.batchId,
-          file,
-          crypto.randomUUID(),
-        );
-        if (session !== importSession || !nodeActive) {
-          void cancelEffectSegmentImport(
-            scope.projectId,
-            scope.batchId,
-            response.data.draft.id,
-          ).catch(() => undefined);
-          break;
-        }
-        importDrafts.value.push(response.data.draft);
-      } catch (error) {
-        if (session !== importSession || !nodeActive) break;
-        importError.value += `${file.name}：${safeMessage(error, '视频格式或时长不符合要求')}\n`;
-      }
-    }
-  } finally {
-    if (session === importSession) operation.value = null;
-  }
+  await imports.addFiles(files);
 };
 
-const pollImportDescriptions = async (): Promise<void> => {
-  if (importPollingTimer) clearTimeout(importPollingTimer);
-  const scope = importScope;
-  const session = importSession;
-  if (!scope || transferPanel.value !== 'import') return;
-  if (importPollingSession === session) return;
-  importPollingSession = session;
-  try {
-    for (const draft of importDrafts.value.filter(importBusy)) {
-      const response = await getEffectSegmentImport(scope.projectId, scope.batchId, draft.id);
-      if (session !== importSession || !nodeActive) return;
-      // Do not replace typed text during a queued/running response.
-      const { promptText, ...state } = response.data.draft;
-      Object.assign(draft, state);
-      if (draft.descriptionStatus === 'COMPLETED') draft.promptText = promptText;
-    }
-  } catch (error) {
-    if (session === importSession)
-      showNotice(safeMessage(error, '读取 AI 描述进度失败，将继续尝试'), 'warning');
-  } finally {
-    if (importPollingSession === session) importPollingSession = null;
-  }
-  if (session === importSession && nodeActive && importDrafts.value.some(importBusy))
-    importPollingTimer = setTimeout(() => {
-      void pollImportDescriptions();
-    }, 1500);
-};
-
-const generateImportPrompt = async (draft: EffectSegmentImportDraft): Promise<void> => {
-  const scope = importScope;
-  if (!scope || importBusy(draft) || operation.value) return;
-  const session = importSession;
-  draft.descriptionStatus = 'QUEUED';
-  draft.errorMessage = null;
-  try {
-    const response = await describeEffectSegmentImport(
-      scope.projectId,
-      scope.batchId,
-      draft.id,
-      crypto.randomUUID(),
-    );
-    if (session !== importSession || !nodeActive) return;
-    Object.assign(draft, response.data.draft);
-    void pollImportDescriptions();
-  } catch (error) {
-    draft.descriptionStatus = 'FAILED';
-    draft.errorMessage = safeMessage(error, 'AI 描述生成失败，可重试或手工填写');
-  }
-};
-
-const removeImportDraft = async (draft: EffectSegmentImportDraft): Promise<void> => {
-  const scope = importScope;
-  if (!scope || operation.value) return;
-  try {
-    await cancelEffectSegmentImport(scope.projectId, scope.batchId, draft.id);
-    importDrafts.value = importDrafts.value.filter((item) => item.id !== draft.id);
-  } catch (error) {
-    importError.value = safeMessage(error, '取消导入失败');
-  }
-};
-
-const confirmImport = async (): Promise<void> => {
-  if (!canEditMaterials.value) {
-    showNotice('请先进入编辑状态，再导入素材', 'warning');
-    return;
-  }
-  const current = workspace.value;
-  if (operation.value || !current?.batchId || typeof current.batchRevision !== 'number') return;
-  if (
-    !importDrafts.value.length ||
-    importDrafts.value.some((draft) => importBusy(draft) || !draft.promptText.trim())
-  )
-    return;
-  operation.value = 'import';
-  const session = importSession;
-  importError.value = '';
-  try {
-    const items = importDrafts.value.map((draft) => ({
-      draftId: draft.id,
-      promptText: draft.promptText.trim(),
-    }));
-    const fingerprint = JSON.stringify(items);
-    if (importConfirmRequest?.fingerprint !== fingerprint)
-      importConfirmRequest = { fingerprint, key: crypto.randomUUID() };
-    const response = await confirmEffectSegmentImports(props.projectId, current.batchId, {
-      expectedBatchRevision: current.batchRevision,
-      idempotencyKey: importConfirmRequest.key,
-      items,
-    });
-    if (session !== importSession || !nodeActive) return;
-    applyBatch(response.data.batch);
-    importDrafts.value.forEach((draft) => {
-      draft.status = 'IMPORTED';
-    });
-    operation.value = null;
-    closeTransferPanel(false);
-    showNotice(`已新增 ${response.data.importedCount} 个视频素材，保存修改后可用于混剪`);
-  } catch (error) {
-    if (session === importSession) importError.value = safeMessage(error, '视频素材导入失败');
-  } finally {
-    if (session === importSession) operation.value = null;
+const handleTransferKeydown = (event: KeyboardEvent): void => {
+  if (event.key !== 'Tab' || !(event.currentTarget instanceof HTMLElement)) return;
+  const focusable = [
+    ...event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, video[controls]',
+    ),
+  ].filter((element) => element.getClientRects().length > 0);
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last?.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first?.focus();
   }
 };
 
@@ -1817,6 +1724,7 @@ onDeactivated(() => {
   nodeActive = false;
   operation.value = null;
   closeTransferPanel(false);
+  imports.dispose();
   stopNodeRequests();
 });
 
@@ -1824,6 +1732,7 @@ onBeforeUnmount(() => {
   nodeActive = false;
   operation.value = null;
   closeTransferPanel(false);
+  imports.dispose();
   stopNodeRequests();
   taskVideoObserver?.disconnect();
   taskVideoObserver = null;
@@ -2466,12 +2375,8 @@ onBeforeUnmount(() => {
             compact
             heading="来源 Prompt"
           />
-          <p class="dialog-note">
-            {{
-              previewVariant === 'REPAIR'
-                ? '当前预览的是返修候选；采用前不会覆盖原视频。'
-                : `当前活动版本 v${previewTask.activeVersion}；返修候选会单独保存。`
-            }}
+          <p v-if="previewVariant === 'REPAIR'" class="dialog-note">
+            当前预览的是返修候选；采用前不会覆盖原视频。
           </p>
         </section>
       </div>
@@ -2717,17 +2622,32 @@ onBeforeUnmount(() => {
 
       <div
         v-if="transferPanel"
-        class="segment-transfer-backdrop"
+        :class="[
+          'segment-transfer-backdrop',
+          { 'segment-import-backdrop': transferPanel === 'import' },
+        ]"
         @mousedown.self="closeTransferPanel(true)"
       >
         <section
           class="segment-transfer-drawer"
+          :class="{
+            'segment-import-modal': transferPanel === 'import',
+            'segment-import-empty': transferPanel === 'import' && !importColumns.length,
+          }"
+          :style="
+            transferPanel === 'import'
+              ? {
+                  '--import-modal-width': `${importColumns.length ? Math.max(640, importColumns.length * 420 + 32) : 560}px`,
+                }
+              : undefined
+          "
           role="dialog"
           aria-modal="true"
           :aria-labelledby="
             transferPanel === 'import' ? 'segment-import-title' : 'segment-export-title'
           "
           @keydown.esc="closeTransferPanel(true)"
+          @keydown="handleTransferKeydown"
         >
           <header>
             <div>
@@ -2750,7 +2670,7 @@ onBeforeUnmount(() => {
               ref="transferCloseButton"
               type="button"
               aria-label="关闭素材传输面板"
-              :disabled="operation === 'import'"
+              :disabled="importConfirming"
               @click="closeTransferPanel(true)"
             >
               <X :size="17" />
@@ -2762,107 +2682,271 @@ onBeforeUnmount(() => {
               ref="importInput"
               class="visually-hidden"
               type="file"
-              accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
               multiple
+              accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
               @change="handleImportFileChange"
             />
-            <button
-              class="import-dropzone"
-              type="button"
-              :disabled="operation !== null"
-              @click="importInput?.click()"
-            >
-              <span><FileVideo2 :size="24" /></span>
-              <strong>{{
-                importDrafts.length ? '继续添加视频素材' : '选择要导入的视频素材'
-              }}</strong>
-              <small>支持 MP4、MOV、WebM；时长 4～30 秒，单个不超过 512 MB</small>
-            </button>
-            <div v-if="operation === 'import'" class="transfer-loading" role="status">
-              <LoaderCircle class="spin" :size="17" />正在校验视频格式与实际时长…
-            </div>
             <div v-if="importError" class="transfer-note" role="alert">
               <AlertCircle :size="15" />
               <p>{{ importError }}</p>
             </div>
-            <div v-if="importDrafts.length" class="import-review-list">
-              <div class="transfer-section-heading">
-                <strong>视频素材提示词</strong><span>{{ importDrafts.length }} 个文件</span>
-              </div>
-              <article v-for="draft in importDrafts" :key="draft.id" class="import-prompt-item">
-                <span><FileVideo2 :size="16" /></span>
-                <div>
-                  <strong :title="draft.fileName">{{ draft.fileName }}</strong>
-                  <small
-                    >{{ formatFileSize(draft.sizeBytes) }} ·
-                    {{ draft.durationSeconds.toFixed(2) }} 秒</small
+            <button
+              v-if="!importColumns.length"
+              class="import-dropzone"
+              type="button"
+              @click="importInput?.click()"
+            >
+              <span><FileVideo2 :size="24" /></span>
+              <strong>选择要导入的视频素材</strong>
+              <small>最多 5 个；支持 MP4、MOV、WebM；时长 4～30 秒，单个不超过 512 MB</small>
+            </button>
+            <div
+              v-else
+              class="import-review-list"
+              :style="{ '--import-columns': importColumns.length }"
+              aria-label="待导入视频"
+            >
+              <article v-for="column in importColumns" :key="column.key" class="import-prompt-item">
+                <div class="import-column-top">
+                  <div class="import-column-heading">
+                    <span><FileVideo2 :size="16" /></span>
+                    <strong :title="column.file.name">{{ column.file.name }}</strong>
+                    <button
+                      type="button"
+                      :aria-label="`移除 ${column.file.name}`"
+                      :disabled="column.confirming || column.removing"
+                      @click="imports.remove(column)"
+                    >
+                      <LoaderCircle v-if="column.removing" class="spin" :size="15" /><X
+                        v-else
+                        :size="15"
+                      />
+                    </button>
+                  </div>
+                  <div
+                    v-if="importColumnError(column)"
+                    class="transfer-note import-column-error"
+                    role="alert"
+                    aria-label="视频处理错误"
                   >
+                    <AlertCircle :size="15" />
+                    <p>{{ importColumnError(column) }}</p>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  :aria-label="`移除 ${draft.fileName}`"
-                  :disabled="operation !== null"
-                  @click="removeImportDraft(draft)"
-                >
-                  <X :size="15" />
-                </button>
-                <label class="repair-instruction-field import-prompt-field">
-                  <span>素材提示词</span>
-                  <textarea
-                    v-model="draft.promptText"
-                    :aria-label="`${draft.fileName} 的素材提示词`"
-                    rows="4"
-                    maxlength="4000"
-                    :disabled="importBusy(draft) || operation !== null"
-                    placeholder="描述视频画面、主体动作和镜头变化，也可点击 AI 智能生成后编辑。"
-                  />
-                </label>
-                <div class="import-prompt-actions">
-                  <small role="status">{{
-                    draft.errorMessage ??
-                    (importBusy(draft) ? 'AI 正在生成，请稍候…' : '确认前可自由编辑')
-                  }}</small>
-                  <button
-                    type="button"
-                    :disabled="importBusy(draft) || operation !== null"
-                    @click="generateImportPrompt(draft)"
+                <div class="import-column-body">
+                  <div
+                    class="large-preview import-video-preview"
+                    :style="importVideoPreviewStyle(column.previewSize ?? column.draft ?? {})"
                   >
-                    <LoaderCircle v-if="importBusy(draft)" class="spin" :size="14" /><Sparkles
-                      v-else
-                      :size="14"
+                    <video
+                      :ref="
+                        (element) => {
+                          column.video = element as HTMLVideoElement | null;
+                        }
+                      "
+                      :src="column.previewUrl"
+                      :aria-label="`${column.file.name} 的视频预览`"
+                      class="is-ready"
+                      controls
+                      playsinline
+                      preload="metadata"
+                      @loadedmetadata="handleImportPreviewMetadata(column, $event)"
+                      @error="handleImportPreviewError(column, $event)"
                     />
-                    {{ draft.descriptionStatus === 'COMPLETED' ? '重新生成提示词' : 'AI 智能生成' }}
+                  </div>
+                  <p v-if="column.previewError" class="import-preview-error" role="alert">
+                    当前浏览器无法播放此视频，请检查编码格式或使用其他播放器预览。
+                  </p>
+                  <div
+                    v-if="column.uploading || (!column.draft && !column.error)"
+                    class="transfer-loading"
+                    role="status"
+                  >
+                    <LoaderCircle class="spin" :size="17" />{{
+                      column.uploading ? '正在校验格式与时长…' : '等待上传…'
+                    }}
+                  </div>
+                  <template v-if="column.draft">
+                    <dl class="import-video-info">
+                      <div>
+                        <dt>时长</dt>
+                        <dd>{{ importVideoDuration(column.draft.durationSeconds) }} 秒</dd>
+                      </div>
+                      <div>
+                        <dt>分辨率</dt>
+                        <dd
+                          :title="`${(column.previewSize ?? column.draft).width ?? '—'} × ${(column.previewSize ?? column.draft).height ?? '—'}`"
+                        >
+                          {{ importVideoResolution(column.previewSize ?? column.draft) }}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>画幅</dt>
+                        <dd>{{ importVideoAspectRatio(column.previewSize ?? column.draft) }}</dd>
+                      </div>
+                      <div>
+                        <dt>帧率</dt>
+                        <dd>{{ importVideoFrameRate(column.draft.frameRate) }}</dd>
+                      </div>
+                      <div>
+                        <dt>大小</dt>
+                        <dd>{{ formatFileSize(column.draft.sizeBytes) }}</dd>
+                      </div>
+                      <div>
+                        <dt>格式</dt>
+                        <dd>{{ column.file.name.split('.').pop()?.toUpperCase() }}</dd>
+                      </div>
+                    </dl>
+                    <label class="repair-instruction-field import-prompt-field">
+                      <span>素材提示词 <em class="import-field-required">必填</em></span>
+                      <textarea
+                        v-model="column.draft.promptText"
+                        :aria-label="`${column.draft.fileName} 的素材提示词`"
+                        rows="4"
+                        maxlength="4000"
+                        :disabled="importColumnLocked(column)"
+                        placeholder="描述视频画面、主体动作和镜头变化，也可点击智能识别视频后编辑。"
+                      />
+                    </label>
+                    <fieldset class="import-purpose-field" :disabled="importColumnLocked(column)">
+                      <legend>主要片段类型 <em class="import-field-required">必填</em></legend>
+                      <div class="import-purpose-options">
+                        <label
+                          v-for="purpose in EFFECT_PROMPT_FRAGMENT_TYPES"
+                          :key="purpose"
+                          :class="{ selected: column.draft.primaryPurpose === purpose }"
+                        >
+                          <input
+                            type="radio"
+                            :name="`import-primary-${column.draft.id}`"
+                            :value="purpose"
+                            :checked="column.draft.primaryPurpose === purpose"
+                            @change="selectImportPrimary(column, purpose)"
+                          />
+                          {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose] }}
+                        </label>
+                      </div>
+                    </fieldset>
+                    <fieldset class="import-purpose-field" :disabled="importColumnLocked(column)">
+                      <legend>兼容片段类型 <em class="import-field-required">必填</em></legend>
+                      <div class="import-purpose-options">
+                        <label
+                          v-for="purpose in EFFECT_PROMPT_FRAGMENT_TYPES"
+                          :key="purpose"
+                          :class="{ selected: column.draft.compatiblePurposes?.includes(purpose) }"
+                        >
+                          <input
+                            v-model="column.draft.compatiblePurposes"
+                            type="checkbox"
+                            :value="purpose"
+                            :disabled="column.draft.primaryPurpose === purpose"
+                          />
+                          {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose] }}
+                        </label>
+                      </div>
+                    </fieldset>
+                    <label class="repair-instruction-field import-prompt-field">
+                      <span>创意方向 <em class="import-field-optional">选填</em></span>
+                      <textarea
+                        v-model="column.draft.creativeCore"
+                        :aria-label="`${column.file.name} 的创意方向`"
+                        rows="2"
+                        maxlength="160"
+                        :disabled="importColumnLocked(column)"
+                        placeholder="概括这段视频的观看事件和产品价值"
+                      />
+                    </label>
+                    <details v-if="column.draft.dimensions" class="import-creative-details">
+                      <summary>六维创意信息 <em class="import-field-optional">选填</em></summary>
+                      <label
+                        v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
+                        :key="dimension.key"
+                        class="repair-instruction-field import-prompt-field"
+                      >
+                        <span
+                          >{{ dimension.label }} <em class="import-field-optional">选填</em></span
+                        >
+                        <textarea
+                          v-model="column.draft.dimensions[dimension.key]"
+                          :aria-label="`${column.file.name} 的${dimension.label}`"
+                          rows="2"
+                          :maxlength="EFFECT_SEGMENT_IMPORT_DIMENSION_LIMITS[dimension.key]"
+                          :disabled="importColumnLocked(column)"
+                          :placeholder="`填写${dimension.label}，也可由智能识别视频后编辑`"
+                        />
+                      </label>
+                    </details>
+                  </template>
+                  <button
+                    v-if="column.error && !column.draft"
+                    type="button"
+                    :disabled="column.uploading || column.uploadQueued"
+                    @click="imports.retryUpload(column)"
+                  >
+                    重新上传
                   </button>
+                </div>
+                <div class="import-column-footer">
+                  <small role="status">{{
+                    importRecognitionBusy(column)
+                      ? 'AI 正在识别，请稍候…'
+                      : column.confirming
+                        ? '正在确认导入…'
+                        : '确认前可自由编辑'
+                  }}</small>
+                  <div class="import-column-actions">
+                    <button
+                      type="button"
+                      :disabled="!column.draft || importColumnLocked(column)"
+                      @click="imports.recognize(column)"
+                    >
+                      {{ importRecognitionLabel(column) }}
+                    </button>
+                    <button
+                      type="button"
+                      class="primary"
+                      :aria-label="`确认导入 ${column.file.name}`"
+                      :disabled="!importColumnReady(column)"
+                      @click="imports.confirm(column)"
+                    >
+                      <LoaderCircle v-if="column.confirming" class="spin" :size="14" />确认导入
+                    </button>
+                  </div>
                 </div>
               </article>
             </div>
-            <div class="transfer-note">
-              <AlertCircle :size="15" />
-              <p>
-                导入素材不会改变模板槽位时长上限，只能用于不长于该视频的槽位。AI
-                生成将使用模型服务。
-              </p>
-            </div>
-            <footer>
-              <button
-                type="button"
-                :disabled="operation !== null"
-                @click="closeTransferPanel(true)"
-              >
-                取消
-              </button>
-              <button
-                class="primary"
-                type="button"
-                :disabled="
-                  operation !== null ||
-                  !importDrafts.length ||
-                  importDrafts.some((draft) => importBusy(draft) || !draft.promptText.trim())
-                "
-                @click="confirmImport"
-              >
-                <LoaderCircle v-if="operation === 'import'" class="spin" :size="14" />确认导入
-              </button>
+            <footer class="import-batch-footer">
+              <span>{{ importColumns.length }} / 5 个待导入</span>
+              <div>
+                <button
+                  v-if="importColumns.length"
+                  type="button"
+                  :disabled="importColumns.length >= 5"
+                  @click="importInput?.click()"
+                >
+                  <Upload :size="14" />继续添加
+                </button>
+                <button
+                  v-if="importColumns.length > 1"
+                  type="button"
+                  :disabled="
+                    !importColumns.some((column) => column.draft && !importColumnLocked(column))
+                  "
+                  @click="imports.recognizeAll()"
+                >
+                  <Sparkles :size="14" />全部智能识别
+                </button>
+                <button type="button" :disabled="importConfirming" @click="cancelImport">
+                  取消导入
+                </button>
+                <button
+                  type="button"
+                  :disabled="importConfirming"
+                  @click="closeTransferPanel(true)"
+                >
+                  关闭
+                </button>
+              </div>
             </footer>
           </template>
 
@@ -4874,8 +4958,122 @@ select:disabled {
   margin-top: 7px;
 }
 .import-prompt-field,
+.import-purpose-field,
+.import-video-preview,
+.import-video-info,
+.import-preview-error,
 .import-prompt-actions {
   grid-column: 1 / -1;
+}
+.import-purpose-field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.import-purpose-field legend {
+  margin-bottom: 8px;
+  color: #35445c;
+  font-size: 11px;
+  font-weight: 600;
+}
+.import-purpose-options {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 7px;
+}
+.import-purpose-options label {
+  display: inline-flex;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  gap: 5px;
+  align-items: center;
+  border: 1px solid #dbe3ee;
+  border-radius: 7px;
+  padding: 6px 8px;
+  color: #697991;
+  background: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.import-purpose-options label.selected {
+  color: #2563eb;
+  border-color: #9bbbf5;
+  background: #f3f7ff;
+}
+.import-purpose-options input {
+  margin: 0;
+  accent-color: #2563eb;
+}
+.import-purpose-field:disabled {
+  opacity: 0.6;
+}
+.import-creative-details {
+  grid-column: 1 / -1;
+  color: #5577a8;
+  font-size: 11px;
+}
+.import-creative-details summary {
+  cursor: pointer;
+  padding: 8px 0;
+}
+.import-creative-details label {
+  display: block;
+}
+.import-review-list .import-field-required,
+.import-review-list .import-field-optional {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 500;
+}
+.import-review-list .import-field-required {
+  color: #dc5252;
+  background: #fff1f1;
+}
+.import-review-list .import-field-optional {
+  color: #8290a4;
+  background: #edf1f6;
+}
+.import-video-preview {
+  width: 100%;
+  border-radius: 9px;
+  background: #111827;
+}
+.import-video-preview video {
+  display: block;
+  height: 240px;
+  max-height: 35vh;
+}
+.import-video-info {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  gap: 10px 16px;
+  font-size: 11px;
+}
+.import-video-info > div {
+  display: grid;
+  grid-template-columns: 3em minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.import-video-info dt {
+  color: #8a96a9;
+}
+.import-video-info dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  color: #35445c;
+}
+.import-preview-error {
+  margin: 0;
+  color: #b45309;
+  font-size: 11px;
 }
 .import-prompt-actions {
   display: flex;
@@ -5023,6 +5221,166 @@ select:disabled {
   background: #2563eb;
   border-color: #2563eb;
 }
+
+/* Import uses the existing Prompt modal framing; export retains its drawer. */
+.segment-import-backdrop {
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.segment-import-modal {
+  width: min(var(--import-modal-width, 600px), 100%);
+  height: min(820px, calc(100dvh - 48px));
+  padding: 0 16px;
+  overflow: hidden;
+  border: 1px solid #dbe4f6;
+  border-radius: 20px;
+  box-shadow: 0 24px 70px #0f172a38;
+}
+.segment-import-modal > header {
+  flex: 0 0 auto;
+}
+.segment-import-modal > header p {
+  font-size: 11px;
+}
+.segment-import-modal > .import-dropzone {
+  flex: 0 0 auto;
+  margin: 18px 0;
+  min-height: 180px;
+  padding: 28px 20px;
+}
+.segment-import-modal.segment-import-empty {
+  height: auto;
+  max-height: calc(100dvh - 48px);
+}
+.segment-import-modal > .import-review-list {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  margin: 16px 0;
+  grid-template-columns: repeat(var(--import-columns), minmax(400px, 1fr));
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: auto;
+  padding-bottom: 6px;
+}
+.segment-import-modal .import-prompt-item {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 0;
+  align-items: stretch;
+  overflow: hidden;
+}
+.segment-import-modal .import-prompt-item + .import-prompt-item {
+  margin-top: 0;
+}
+.import-column-heading {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 12px;
+  gap: 8px;
+  border-bottom: 1px solid #e3e8f0;
+}
+.import-column-heading > span {
+  color: #5c79a4;
+}
+.import-column-error {
+  margin: 0;
+  border-radius: 0;
+}
+.import-column-error p {
+  overflow-wrap: anywhere;
+}
+.import-column-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.import-column-body > * {
+  flex-shrink: 0;
+}
+.import-column-body .import-video-preview video {
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+}
+.import-column-body .repair-instruction-field {
+  margin: 0;
+}
+.import-column-body .import-purpose-options {
+  gap: 4px;
+}
+.import-column-body .import-purpose-options label {
+  padding: 5px 4px;
+  font-size: 10px;
+}
+.import-column-footer {
+  flex: 0 0 auto;
+  padding: 10px 12px 12px;
+  border-top: 1px solid #e3e8f0;
+  background: #f8fbff;
+}
+.import-column-footer small {
+  min-height: 16px;
+  margin: 0 0 8px;
+}
+.import-column-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.import-column-actions button.primary {
+  color: #fff;
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.segment-import-modal > .import-batch-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  margin-top: 0;
+}
+.import-batch-footer > span {
+  color: #8793a6;
+  font-size: 11px;
+}
+.import-batch-footer > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+@media (max-width: 680px) {
+  .segment-import-backdrop {
+    padding: 12px;
+  }
+  .segment-import-modal {
+    height: calc(100dvh - 24px);
+    border-radius: 14px;
+  }
+  .import-batch-footer {
+    flex-wrap: wrap;
+    padding: 10px 0;
+  }
+}
+
 @media (max-width: 900px) {
   .segment-material-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));

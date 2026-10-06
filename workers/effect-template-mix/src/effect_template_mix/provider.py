@@ -25,14 +25,20 @@ class ProviderError(RuntimeError):
         *,
         retryable: bool,
         split_recommended: bool = False,
+        status_code: int | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.split_recommended = split_recommended
+        self.status_code = status_code
 
 
 class ProviderOutputError(ProviderError):
     """A received model response failed mechanical JSON/schema validation."""
+
+
+class ProviderIncompleteError(ProviderError):
+    """Provider explicitly reported a truncated/incomplete response."""
 
 
 SLOT_ROLE_DESCRIPTIONS: dict[str, str] = {
@@ -140,7 +146,7 @@ class ArkProvider:
         max_attempts: int = 2,
         max_transient_attempts: int | None = None,
     ) -> T:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "input": [{"role": "user", "content": content}],
             "store": False,
@@ -158,11 +164,12 @@ class ArkProvider:
                 started = time.monotonic()
                 async with asyncio.timeout(self.request_timeout):
                     response = await self.client.post("responses", json=payload)
-                if name.startswith('packaging_'):
+                if name.startswith('packaging_') or name == 'video_import_description':
                     request_id = response.headers.get('x-request-id', '')
                     if not re.fullmatch(r'[a-zA-Z0-9_.:-]{0,160}', request_id):
                         request_id = 'redacted'
-                    LOGGER.info('packaging model stage=%s status=%s elapsed=%.3f request_id=%s',
+                    LOGGER.info('%s stage=%s status=%s elapsed=%.3f request_id=%s',
+                        'packaging model' if name.startswith('packaging_') else 'video import model',
                         name, response.status_code, time.monotonic() - started, request_id)
                 if response.is_error:
                     request_id = response.headers.get('x-request-id', '')
@@ -174,6 +181,7 @@ class ArkProvider:
                     error = ProviderError(
                         "AI 服务请求受限，请稍后重试" if response.status_code == 429 else "AI 服务暂时不可用",
                         retryable=retryable,
+                        status_code=response.status_code,
                     )
                     if not retryable:
                         raise error
@@ -184,10 +192,11 @@ class ArkProvider:
                     continue
                 response_payload = response.json()
                 if response_payload.get("status") == "incomplete":
-                    if name.startswith('packaging_'):
-                        LOGGER.warning('packaging model incomplete stage=%s token_budget=%s request_id=%s',
+                    if name.startswith('packaging_') or name == 'video_import_description':
+                        LOGGER.warning('%s incomplete stage=%s token_budget=%s request_id=%s',
+                            'packaging model' if name.startswith('packaging_') else 'video import model',
                             name, payload['max_output_tokens'], request_id)
-                    raise ProviderError(
+                    raise ProviderIncompleteError(
                         "AI 输出超过当前分片容量",
                         retryable=False,
                         split_recommended=True,
@@ -203,7 +212,11 @@ class ArkProvider:
                 transient_failures += 1
                 self.defer_requests(transient_failures)
             except (ValueError, ValidationError, json.JSONDecodeError) as exc:
-                if name.startswith('packaging_'):
+                if name == 'video_import_description':
+                    # Even an unexpected field name may contain response data.
+                    count = exc.error_count() if isinstance(exc, ValidationError) else 0
+                    LOGGER.warning('video import model invalid stage=%s type=%s error_count=%s', name, type(exc).__name__, count)
+                elif name.startswith('packaging_'):
                     # Error input/ctx can contain model text; record only mechanical field locations.
                     fields = [str(error['loc']) for error in exc.errors(include_input=False, include_context=False)] if isinstance(exc, ValidationError) else []
                     LOGGER.warning('packaging model invalid stage=%s type=%s fields=%s', name, type(exc).__name__, fields)

@@ -301,6 +301,9 @@ const presentTask = (
     promptText: snapshot.promptText,
     fragmentType: snapshot.primaryPurpose,
     compatiblePurposes: [...snapshot.compatiblePurposes],
+    ...(snapshot.importedMaterial
+      ? { creativeCore: snapshot.creativeCore ?? '', dimensions: snapshot.dimensions ?? {} }
+      : {}),
     durationSeconds: snapshot.request.duration,
     source: 'PROMPT',
     origin: hasOutput && !task.providerTaskId ? 'EXTERNAL_IMPORT' : 'AI_GENERATED',

@@ -1,12 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
-import type { EffectSegmentImportDescriptionMessage } from '@ai-marketing/contracts';
+import type {
+  EffectSegmentImportDescriptionMessage,
+  EffectPromptFragmentType,
+  EffectSegmentImportCreativeMetadata,
+} from '@ai-marketing/contracts';
 import {
   EFFECT_TEMPLATE_MIX_JOB_TYPE,
   EFFECT_TEMPLATE_MIX_QUEUE,
 } from '../../../platform/job/job.constants';
 import type { Prisma } from '../../../generated/prisma/client';
+import { findDuplicateSegmentImport } from './effect-segment-import-duplicate';
 
 @Injectable()
 export class EffectSegmentImportRepository {
@@ -14,16 +20,36 @@ export class EffectSegmentImportRepository {
   find(projectId: string, id: string) {
     return this.prisma.effectSegmentImportDraft.findFirst({ where: { projectId, id } });
   }
+  async checkUpload(
+    projectId: string,
+    batchId: string,
+    uploadKey: string,
+    sha256: string,
+    reader: Pick<
+      Prisma.TransactionClient,
+      'effectSegmentImportDraft' | 'effectSegmentRenderTask'
+    > = this.prisma,
+  ) {
+    const existing = await reader.effectSegmentImportDraft.findUnique({
+      where: { projectId_uploadKey: { projectId, uploadKey } },
+    });
+    if (existing) return existing;
+    const duplicate = await findDuplicateSegmentImport(reader, projectId, batchId, sha256);
+    if (duplicate) throw duplicate;
+    return null;
+  }
   async stage(data: Prisma.EffectSegmentImportDraftUncheckedCreateInput) {
     return this.prisma.$transaction(async (tx) => {
       // Serialize concurrent replay with the same upload key through the owning batch.
       await tx.$queryRaw`SELECT "id" FROM "effect_segment_render_batches"
         WHERE "projectId" = ${data.projectId}::uuid AND "id" = ${data.batchId}::uuid FOR UPDATE`;
-      const existing = await tx.effectSegmentImportDraft.findUnique({
-        where: {
-          projectId_uploadKey: { projectId: data.projectId, uploadKey: data.uploadKey },
-        },
-      });
+      const existing = await this.checkUpload(
+        data.projectId,
+        data.batchId,
+        data.uploadKey,
+        data.sha256,
+        tx,
+      );
       if (existing) return { draft: existing, replayed: true };
       return { draft: await tx.effectSegmentImportDraft.create({ data }), replayed: false };
     });
@@ -36,6 +62,20 @@ export class EffectSegmentImportRepository {
       if (!draft || draft.status !== 'READY' || draft.expiresAt <= new Date()) return null;
       if (draft.descriptionKey === key || ['QUEUED', 'RUNNING'].includes(draft.descriptionStatus))
         return draft;
+      // Retain explicit recognition requests in the existing Outbox. Replaying an older
+      // request after a newer one must not start another paid recognition.
+      const replay = await tx.jobOutbox.findFirst({
+        where: {
+          projectId,
+          jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE,
+          AND: [
+            { payload: { path: ['taskType'], equals: 'VIDEO_IMPORT_DESCRIPTION' } },
+            { payload: { path: ['runId'], equals: id } },
+            { payload: { path: ['requestId'], equals: key } },
+          ],
+        },
+      });
+      if (replay) return draft;
       const next = await tx.effectSegmentImportDraft.update({
         where: { id },
         data: {
@@ -57,7 +97,7 @@ export class EffectSegmentImportRepository {
         data: {
           projectId,
           jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE,
-          aggregateId: id,
+          aggregateId: randomUUID(),
           routingKey: EFFECT_TEMPLATE_MIX_QUEUE,
           payload: message as unknown as Prisma.InputJsonValue,
         },
@@ -98,7 +138,16 @@ export class EffectSegmentImportRepository {
       data: { leaseExpiresAt: new Date(Date.now() + 120_000) },
     });
   }
-  async finish(projectId: string, id: string, token: string, promptText: string | null) {
+  async finish(
+    projectId: string,
+    id: string,
+    token: string,
+    promptText: string | null,
+    primaryPurpose?: EffectPromptFragmentType,
+    compatiblePurposes?: EffectPromptFragmentType[],
+    metadata: EffectSegmentImportCreativeMetadata = {},
+    failureMessage?: string,
+  ) {
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "effect_segment_import_drafts"
         WHERE "projectId" = ${projectId}::uuid AND "id" = ${id}::uuid FOR UPDATE`;
@@ -110,7 +159,12 @@ export class EffectSegmentImportRepository {
         draft?.status === 'READY' &&
         draft.attemptToken === token &&
         draft.descriptionStatus === finalStatus &&
-        (promptText === null || draft.promptText === promptText)
+        (promptText === null ||
+          (draft.promptText === promptText &&
+            draft.primaryPurpose === primaryPurpose &&
+            JSON.stringify(draft.compatiblePurposes) === JSON.stringify(compatiblePurposes) &&
+            draft.creativeCore === (metadata.creativeCore ?? '') &&
+            isDeepStrictEqual(draft.dimensions, metadata.dimensions ?? {})))
       )
         return { count: 1 };
       return tx.effectSegmentImportDraft.updateMany({
@@ -126,8 +180,15 @@ export class EffectSegmentImportRepository {
         data: {
           descriptionStatus: promptText === null ? 'FAILED' : 'COMPLETED',
           ...(promptText === null
-            ? { errorMessage: 'AI 描述生成失败，可重新生成或手工填写' }
-            : { promptText, errorMessage: null }),
+            ? { errorMessage: failureMessage ?? 'AI 描述生成失败，可重新生成或手工填写' }
+            : {
+                promptText,
+                primaryPurpose: primaryPurpose!,
+                compatiblePurposes: compatiblePurposes!,
+                creativeCore: metadata.creativeCore ?? '',
+                dimensions: metadata.dimensions ?? {},
+                errorMessage: null,
+              }),
           leaseExpiresAt: null,
         },
       });

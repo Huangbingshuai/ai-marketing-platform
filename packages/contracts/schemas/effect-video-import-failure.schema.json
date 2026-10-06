@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["projectId", "failureCode"],
+  "properties": {
+    "projectId": { "type": "string" },
+    "failureCode": {
+      "type": "string",
+      "enum": [
+        "VIDEO_READ_FAILED",
+        "VIDEO_INTEGRITY_FAILED",
+        "FRAME_EXTRACTION_FAILED",
+        "AI_TIMEOUT",
+        "AI_CONNECTION_FAILED",
+        "AI_RATE_LIMITED",
+        "AI_SERVICE_FAILED",
+        "AI_OUTPUT_TRUNCATED",
+        "AI_OUTPUT_INVALID",
+        "TEMPLATE_INVALID",
+        "TASK_TIMEOUT",
+        "TASK_INTERRUPTED",
+        "UNKNOWN"
+      ]
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import apiSource from './api/effect-segment-render.api.ts?raw';
+import importBatchSource from './effect-segment-import-batch.ts?raw';
 import sourcePromptSource from './components/EffectSegmentRenderSourcePrompt.vue?raw';
 import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
@@ -204,9 +205,9 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('原版本保持可回溯');
     expect(pageSource).not.toContain('批量删除');
     expect(pageSource).toContain('deleteEffectSegmentRenderMaterials');
-    expect(pageSource).toContain('stageEffectSegmentImport');
-    expect(pageSource).toContain('confirmEffectSegmentImports');
-    expect(pageSource).toContain('describeEffectSegmentImport');
+    expect(importBatchSource).toContain('stageEffectSegmentImport');
+    expect(importBatchSource).toContain('confirmEffectSegmentImports');
+    expect(importBatchSource).toContain('describeEffectSegmentImport');
     expect(pageSource).toContain('exportEffectSegmentRenderMaterials');
     expect(pageSource).not.toContain('尚未接入');
     expect(pageSource).not.toContain('AUTO_MATCHED');
@@ -217,6 +218,93 @@ describe('effect segment render material gallery layout', () => {
       'selectionMode ? toggleTaskSelection(task.id) : openPreview(task, $event)',
     );
     expect(pageSource).toContain('v-if="!selectionMode" class="material-card-actions"');
+  });
+
+  it('keeps import actions below optional creative fields, without redundant notices', () => {
+    expect(pageSource).not.toContain('导入素材不会改变模板槽位时长上限');
+    expect(pageSource).toContain('@click="imports.recognize(column)"');
+    expect(pageSource).toContain('@click="imports.confirm(column)"');
+    expect(pageSource.indexOf('class="import-creative-details"')).toBeLessThan(
+      pageSource.indexOf('class="import-column-footer"'),
+    );
+    expect(pageSource).toContain('v-model="column.draft.promptText"');
+  });
+
+  it('imports up to five videos in independent centered columns with per-column actions', () => {
+    const input = pageSource.match(/ref="importInput"[\s\S]*?\/>/u)?.[0];
+    expect(input).toContain('multiple');
+    expect(pageSource).toContain('v-for="column in importColumns"');
+    expect(pageSource).toContain(':key="column.key"');
+    expect(pageSource).toContain('importColumns.length >= 5');
+    expect(pageSource).toContain('@click="imports.recognizeAll()"');
+    expect(pageSource).toContain('segment-import-backdrop');
+    expect(pageSource).toContain('segment-import-modal');
+    expect(pageSource).toContain(
+      'grid-template-columns: repeat(var(--import-columns), minmax(400px, 1fr))',
+    );
+    const importGrid = pageSource.match(
+      /\.segment-import-modal > \.import-review-list \{([^}]+)\}/u,
+    )?.[1];
+    expect(importGrid).toContain('overflow-x: auto');
+    expect(importGrid).toContain('scrollbar-width: auto');
+    expect(pageSource).toContain('class="import-column-body"');
+    expect(importBatchSource).toContain('URL.createObjectURL(file)');
+    expect(importBatchSource).toContain('URL.revokeObjectURL(column.previewUrl)');
+    expect(importBatchSource).toContain('column.video?.pause()');
+    expect(pageSource).toContain('handleImportPreviewMetadata(column, $event)');
+    expect(pageSource).toContain(':src="column.previewUrl"');
+    expect(pageSource).toContain(':disabled="!importColumnReady(column)"');
+    expect(pageSource).toContain('@keydown="handleTransferKeydown"');
+    expect(pageSource).toContain('imports.dispose()');
+    expect(pageSource).toContain('imports.hide()');
+    expect(pageSource).toContain('@click="cancelImport"');
+    expect(pageSource).toContain('取消导入');
+    expect(pageSource).toContain(
+      'importVideoPreviewStyle(column.previewSize ?? column.draft ?? {})',
+    );
+    expect(pageSource).toContain('segment-import-empty');
+    const purposeRow = pageSource.match(/\.import-purpose-options \{([^}]+)\}/u)?.[1];
+    expect(purposeRow).toContain('flex-wrap: nowrap');
+    expect(purposeRow).not.toContain('overflow-x');
+    const purposeOption = pageSource.match(/\.import-purpose-options label \{([^}]+)\}/u)?.[1];
+    expect(purposeOption).toContain('flex: 0 0 auto');
+    expect(purposeOption).toContain('white-space: nowrap');
+    for (const label of ['时长', '分辨率', '画幅', '帧率', '大小', '格式'])
+      expect(pageSource).toContain(`<dt>${label}</dt>`);
+  });
+
+  it('shows six actual video facts in aligned columns', () => {
+    expect(pageSource).toContain('importVideoResolution(column.previewSize ?? column.draft)');
+    expect(pageSource).toContain('importVideoAspectRatio(column.previewSize ?? column.draft)');
+    expect(pageSource).toContain('importVideoFrameRate(column.draft.frameRate)');
+    expect(pageSource).toMatch(
+      /\.import-video-info\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/su,
+    );
+    expect(pageSource).toMatch(
+      /\.import-video-info > div\s*\{[^}]*grid-template-columns:\s*3em minmax\(0, 1fr\)/su,
+    );
+  });
+
+  it('requires purpose and prompt per column and applies complete independent AI results', () => {
+    for (const label of [
+      '主要片段类型',
+      '兼容片段类型',
+      'import-field-required',
+      'import-field-optional',
+    ])
+      expect(pageSource).toContain(label);
+    expect(pageSource).toContain('v-model="column.draft.creativeCore"');
+    expect(pageSource).toContain('v-model="column.draft.dimensions[dimension.key]"');
+    expect(pageSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
+    expect(pageSource).toContain('type="radio"');
+    expect(pageSource).toContain('v-model="column.draft.compatiblePurposes"');
+    expect(pageSource).toContain(':disabled="column.draft.primaryPurpose === purpose"');
+    expect(importBatchSource).toContain('effectSegmentImportDescriptionValid(column.draft)');
+    expect(importBatchSource).toContain(
+      'applyEffectSegmentImportRecognition(column.draft, response.data.draft)',
+    );
+    expect(importBatchSource).toContain('primaryPurpose: draft.primaryPurpose!');
+    expect(importBatchSource).toContain('compatiblePurposes: [...draft.compatiblePurposes!]');
   });
 
   it('spreads the four material actions across the full card footer', () => {
@@ -327,5 +415,34 @@ describe('effect segment render material gallery layout', () => {
     expect(parentSource).toContain('@back="selectWorkflowStep(2)"');
     expect(parentSource).toContain('@next="selectWorkflowStep(4)"');
     expect(parentSource).not.toContain('v-if="activeDownstreamBoundary"');
+  });
+
+  it('renders a text-only first/re-recognition action without a leading icon', () => {
+    const recognitionButton = pageSource.match(
+      /<button\s+type="button"[^>]*@click="imports\.recognize\(column\)"[^>]*>[\s\S]*?<\/button>/u,
+    )?.[0];
+    expect(recognitionButton).toContain('{{ importRecognitionLabel(column) }}');
+    expect(recognitionButton).not.toContain('<Sparkles');
+    expect(recognitionButton).not.toContain('<LoaderCircle');
+  });
+  it('does not show an active-version note or its empty container in ordinary previews', () => {
+    expect(pageSource).not.toContain('当前活动版本');
+    expect(pageSource).not.toContain('返修候选会单独保存');
+    expect(pageSource).toContain('<p v-if="previewVariant === \'REPAIR\'" class="dialog-note">');
+    expect(pageSource).toContain('当前预览的是返修候选；采用前不会覆盖原视频。');
+  });
+  it('keeps each video error above its scrollable body and removes the duplicate footer error', () => {
+    const top = pageSource.indexOf('class="import-column-top"');
+    const error = pageSource.indexOf('aria-label="视频处理错误"', top);
+    const body = pageSource.indexOf('class="import-column-body"', top);
+    expect(top).toBeGreaterThan(-1);
+    expect(error).toBeGreaterThan(top);
+    expect(error).toBeLessThan(body);
+    expect(pageSource.slice(top, body)).toContain('transfer-note import-column-error');
+    const footer = pageSource.slice(
+      pageSource.indexOf('class="import-column-footer"'),
+      pageSource.indexOf('class="import-batch-footer"'),
+    );
+    expect(footer).not.toContain('column.draft?.errorMessage');
   });
 });

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import {
+  effectSegmentImportDescriptionValid,
+  EFFECT_SEGMENT_IMPORT_FAILURE_CODES,
+  EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES,
   EFFECT_SEGMENT_RENDER_BATCH_STATUSES,
   EFFECT_SEGMENT_RENDER_JOB_TYPE,
   EFFECT_SEGMENT_RENDER_LIMITS,
@@ -14,13 +18,65 @@ import {
 } from './effect-segment-render';
 
 describe('effect segment render contract', () => {
+  it('shares a fixed safe failure-code contract with the Worker schema', () => {
+    const schema = JSON.parse(
+      readFileSync(
+        new URL('../schemas/effect-video-import-failure.schema.json', import.meta.url),
+        'utf8',
+      ),
+    );
+    expect(schema.properties.failureCode.enum).toEqual(EFFECT_SEGMENT_IMPORT_FAILURE_CODES);
+    expect(schema.required).toEqual(['projectId', 'failureCode']);
+    for (const message of Object.values(EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES)) {
+      expect(message).toMatch(/[\u4e00-\u9fff]/u);
+      expect(message).not.toMatch(/https?:\/\/|stack|token/iu);
+    }
+  });
+  it('limits each import selection to five independently confirmed videos', () => {
+    expect(EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation).toBe(5);
+  });
+  it('requires a prompt and legal primary/compatible purposes on import', () => {
+    const valid = {
+      promptText: '实际画面',
+      primaryPurpose: 'HOOK',
+      compatiblePurposes: ['HOOK', 'EFFECT'],
+    };
+    expect(effectSegmentImportDescriptionValid(valid)).toBe(true);
+    expect(
+      effectSegmentImportDescriptionValid({ ...valid, creativeCore: '', dimensions: {} }),
+    ).toBe(true);
+    expect(effectSegmentImportDescriptionValid({ ...valid, dimensions: { scene: '餐桌' } })).toBe(
+      true,
+    );
+    expect(effectSegmentImportDescriptionValid({ ...valid, creativeCore: 'x'.repeat(161) })).toBe(
+      false,
+    );
+    expect(
+      effectSegmentImportDescriptionValid({ ...valid, dimensions: { scene: 'x'.repeat(121) } }),
+    ).toBe(false);
+    expect(
+      effectSegmentImportDescriptionValid({ ...valid, dimensions: { unknown: '非法字段' } }),
+    ).toBe(false);
+    for (const changes of [
+      { promptText: ' ' },
+      { promptText: 'x'.repeat(4001) },
+      { primaryPurpose: null },
+      { primaryPurpose: 'PAIN' },
+      { compatiblePurposes: [] },
+      { compatiblePurposes: ['EFFECT'] },
+      { compatiblePurposes: ['HOOK', 'HOOK'] },
+      { compatiblePurposes: ['HOOK', 'PAIN'] },
+    ])
+      expect(effectSegmentImportDescriptionValid({ ...valid, ...changes })).toBe(false);
+    expect(effectSegmentImportDescriptionValid(null)).toBe(false);
+  });
   it('keeps queue routing and retry limits stable', () => {
     expect(EFFECT_SEGMENT_RENDER_QUEUE).toBe('effect.segment-render.requested');
     expect(EFFECT_SEGMENT_RENDER_JOB_TYPE).toBe('EFFECT_SEGMENT_RENDER');
     expect(EFFECT_SEGMENT_RENDER_LIMITS.maxAutoRetries).toBe(2);
     expect(EFFECT_SEGMENT_RENDER_LIMITS.maxAttempts).toBe(3);
     expect(EFFECT_SEGMENT_RENDER_LIMITS.maxPosterBytes).toBe(2 * 1024 * 1024);
-    expect(EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation).toBe(100);
+    expect(EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation).toBe(5);
   });
 
   it('covers page-facing task and batch states', () => {

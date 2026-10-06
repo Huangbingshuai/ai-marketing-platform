@@ -12,15 +12,23 @@ import {
 } from '@nestjs/common';
 import {
   EFFECT_SEGMENT_RENDER_LIMITS,
+  EFFECT_SEGMENT_IMPORT_FAILURE_CODES,
+  EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES,
+  effectSegmentImportDescriptionValid,
+  type EffectPromptFragmentType,
+  type EffectPromptDimensions,
+  type EffectSegmentImportCreativeMetadata,
   type EffectSegmentImportDraft,
   type EffectSegmentImportConfirmItem,
   type EffectSegmentImportDescriptionClaim,
+  type EffectSegmentImportFailureCode,
 } from '@ai-marketing/contracts';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { EffectSegmentRenderService } from './effect-segment-render.service';
 import { EffectSegmentRenderRepository } from './effect-segment-render.repository';
 import { EffectSegmentImportRepository } from './effect-segment-import.repository';
 import { inspectImportVideo } from './effect-segment-import-media';
+import { DuplicateSegmentImportError } from './effect-segment-import-duplicate';
 import type { UploadedSegmentRenderFile } from './effect-segment-render.types';
 
 type Record = NonNullable<Awaited<ReturnType<EffectSegmentImportRepository['find']>>>;
@@ -29,9 +37,16 @@ const present = (draft: Record): EffectSegmentImportDraft => ({
   fileName: draft.fileName,
   sizeBytes: draft.sizeBytes,
   durationSeconds: draft.durationSeconds,
+  width: draft.width,
+  height: draft.height,
+  frameRate: draft.frameRate,
   status: draft.status as EffectSegmentImportDraft['status'],
   descriptionStatus: draft.descriptionStatus as EffectSegmentImportDraft['descriptionStatus'],
   promptText: draft.promptText,
+  primaryPurpose: draft.primaryPurpose as EffectPromptFragmentType | null,
+  compatiblePurposes: draft.compatiblePurposes as EffectPromptFragmentType[],
+  creativeCore: draft.creativeCore,
+  dimensions: draft.dimensions as Partial<EffectPromptDimensions>,
   errorMessage: draft.errorMessage,
 });
 
@@ -86,6 +101,18 @@ export class EffectSegmentImportService implements OnModuleInit, OnModuleDestroy
     const hash = createHash('sha256');
     for await (const chunk of createReadStream(upload.path)) hash.update(chunk as Buffer);
     const sha256 = hash.digest('hex');
+    let existing;
+    try {
+      existing = await this.drafts.checkUpload(projectId, batchId, key, sha256);
+    } catch (error) {
+      if (error instanceof DuplicateSegmentImportError) throw new ConflictException(error.message);
+      throw error;
+    }
+    if (existing) {
+      if (existing.sha256 !== sha256 || existing.batchId !== batchId)
+        throw new ConflictException('导入幂等键已用于其他文件');
+      return { draft: present(existing), replayed: true };
+    }
     // eslint-disable-next-line no-control-regex
     const fileName = upload.originalname.replace(/[\\/\u0000-\u001f]/gu, '_').slice(0, 255);
     const stored = await this.storage.put({
@@ -121,6 +148,9 @@ export class EffectSegmentImportService implements OnModuleInit, OnModuleDestroy
         throw new ConflictException('导入幂等键已用于其他文件');
       retained = !result.replayed;
       return { draft: present(result.draft), replayed: result.replayed };
+    } catch (error) {
+      if (error instanceof DuplicateSegmentImportError) throw new ConflictException(error.message);
+      throw error;
     } finally {
       if (!retained) await this.storage.delete(stored.key).catch(() => undefined);
     }
@@ -152,13 +182,36 @@ export class EffectSegmentImportService implements OnModuleInit, OnModuleDestroy
     await this.renderService.importContext(projectId, batchId);
     if (
       !items.length ||
-      items.length > 100 ||
+      items.length > EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation ||
       new Set(items.map((item) => item.draftId)).size !== items.length
     )
       throw new BadRequestException('导入素材列表无效');
     const normalized = items.map((item) => ({
       draftId: item.draftId,
       promptText: item.promptText.trim(),
+      primaryPurpose: item.primaryPurpose,
+      compatiblePurposes: item.compatiblePurposes,
+      ...(item.creativeCore !== undefined
+        ? {
+            creativeCore:
+              typeof item.creativeCore === 'string' ? item.creativeCore.trim() : item.creativeCore,
+          }
+        : {}),
+      ...(item.dimensions !== undefined
+        ? {
+            dimensions:
+              item.dimensions &&
+              typeof item.dimensions === 'object' &&
+              !Array.isArray(item.dimensions)
+                ? Object.fromEntries(
+                    Object.entries(item.dimensions).map(([key, text]) => [
+                      key,
+                      typeof text === 'string' ? text.trim() : text,
+                    ]),
+                  )
+                : item.dimensions,
+          }
+        : {}),
     }));
     if (
       normalized.some(
@@ -168,6 +221,8 @@ export class EffectSegmentImportService implements OnModuleInit, OnModuleDestroy
       )
     )
       throw new BadRequestException('请为每个视频填写 1～4000 字的素材描述');
+    if (normalized.some((item) => !effectSegmentImportDescriptionValid(item)))
+      throw new BadRequestException('请选择主要片段类型和兼容片段类型，兼容类型须包含主要类型');
     const result = await this.renders.appendImportedMaterials(
       projectId,
       batchId,
@@ -177,9 +232,11 @@ export class EffectSegmentImportService implements OnModuleInit, OnModuleDestroy
     );
     if (!['UPDATED', 'REPLAYED'].includes(result))
       throw new ConflictException(
-        result === 'DRAFT_CONFLICT'
-          ? '导入草稿不可用或 AI 正在生成，请稍后再确认'
-          : '导入上下文已变化，请刷新后重试',
+        result === 'DUPLICATE_CONTENT'
+          ? '该视频与已导入的人工素材或本次确认列表重复，请移除重复视频'
+          : result === 'DRAFT_CONFLICT'
+            ? '导入草稿不可用或 AI 正在生成，请稍后再确认'
+            : '导入上下文已变化，请刷新后重试',
       );
     return {
       ...(await this.renderService.batch(projectId, batchId)),
@@ -228,14 +285,51 @@ export class EffectSegmentImportService implements OnModuleInit, OnModuleDestroy
       throw new ConflictException('任务租约失效');
     return { accepted: true };
   }
-  async finish(projectId: string, id: string, token: string, text: string | null) {
+  async finish(
+    projectId: string,
+    id: string,
+    token: string,
+    text: string | null,
+    primaryPurpose?: EffectPromptFragmentType,
+    compatiblePurposes?: EffectPromptFragmentType[],
+    metadata: EffectSegmentImportCreativeMetadata = {},
+    failureCode?: EffectSegmentImportFailureCode,
+  ) {
     if (typeof token !== 'string' || !token.trim()) throw new ConflictException('任务租约失效');
+    if (
+      failureCode !== undefined &&
+      (!EFFECT_SEGMENT_IMPORT_FAILURE_CODES.includes(failureCode) || text !== null)
+    )
+      throw new BadRequestException('视频识别失败原因无效');
     if (
       text !== null &&
       (!text.trim() || text.length > EFFECT_SEGMENT_RENDER_LIMITS.maxImportPromptLength)
     )
       throw new BadRequestException('视频描述结果无效');
-    if ((await this.drafts.finish(projectId, id, token, text?.trim() ?? null)).count !== 1)
+    if (
+      text !== null &&
+      !effectSegmentImportDescriptionValid({
+        promptText: text,
+        primaryPurpose,
+        compatiblePurposes,
+        ...metadata,
+      })
+    )
+      throw new BadRequestException('视频描述类型结果无效');
+    if (
+      (
+        await this.drafts.finish(
+          projectId,
+          id,
+          token,
+          text?.trim() ?? null,
+          primaryPurpose,
+          compatiblePurposes,
+          metadata,
+          ...(failureCode ? [EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES[failureCode]] : []),
+        )
+      ).count !== 1
+    )
       throw new ConflictException('任务租约失效');
     return { accepted: true };
   }

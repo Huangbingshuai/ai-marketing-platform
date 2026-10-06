@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     ark_base_url: str = Field(default="https://ark.cn-beijing.volces.com/api/v3", alias="ARK_BASE_URL")
     ark_api_key: SecretStr = Field(alias="ARK_API_KEY")
     model: str = Field(validation_alias=AliasChoices("ARK_TEMPLATE_MIX_MODEL", "ARK_MODEL"))
+    video_import_model: str = Field(default="doubao-seed-2-1-pro-260628", alias="ARK_VIDEO_IMPORT_MODEL", min_length=1)
     api_timeout_seconds: float = Field(default=90, alias="INTERNAL_API_TIMEOUT_SECONDS", gt=0)
     ark_timeout_seconds: float = Field(default=120, alias="ARK_TIMEOUT_SECONDS", gt=0)
     ark_max_output_tokens: int = Field(
