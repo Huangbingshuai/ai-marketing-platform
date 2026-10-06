@@ -220,6 +220,79 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe('EffectSegmentRenderService', () => {
+  it('commits an independent import with its own description without staling the upstream Prompt', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'import-fixture',
+    });
+    const { batch } = await repository.createBatch.mock.results[0]!.value;
+    const original = batch.tasks[0];
+    Object.assign(original, {
+      status: 'COMPLETED',
+      repairStatus: null,
+      outputFileObjectId: 'original-file',
+      outputStorageKey: 'staging/original.mp4',
+      outputFileName: 'P001.mp4',
+      outputMimeType: 'video/mp4',
+      outputSizeBytes: 1024,
+      outputContentHash: 'a'.repeat(64),
+      generationRequestSnapshot: original.requestSnapshot,
+    });
+    const importedSnapshot = {
+      ...original.requestSnapshot,
+      promptText: '用户确认的独立素材描述',
+      promptId: 'independent-prompt',
+      promptCode: 'I-002',
+      promptContentHash: 'i'.repeat(64),
+      importedMaterial: { schemaVersion: 1, width: 1280, height: 720, promptDurationMaxSeconds: 5 },
+      request: { ...original.requestSnapshot.request, duration: 30 },
+    };
+    batch.tasks.push({
+      ...original,
+      id: 'independent-task',
+      promptId: importedSnapshot.promptId,
+      renderCode: 'R-002',
+      providerTaskId: null,
+      requestSnapshot: importedSnapshot,
+      generationRequestSnapshot: importedSnapshot,
+      outputFileObjectId: 'import-file',
+      outputStorageKey: 'staging/import.mp4',
+      outputFileName: 'import.mp4',
+    });
+    repository.batch.mockResolvedValue(batch);
+    const presented = await service.batch('project-a', batch.id);
+    expect(presented.batch).toMatchObject({ stale: false, refreshScope: 'NONE' });
+    expect(presented.batch.tasks[1]).toMatchObject({
+      durationSeconds: 30,
+      independentImport: true,
+      needsUpdate: false,
+      promptText: '用户确认的独立素材描述',
+      origin: 'EXTERNAL_IMPORT',
+    });
+    const validated = await service.validate('project-a', batch.id, batch.revision);
+    expect(validated.valid).toBe(true);
+    const outputs = repository.commitValidatedBatch.mock.calls.at(-1)![5];
+    const clip = outputs.find(
+      (item: { artifactKey: string }) => item.artifactKey === 'render-clip:independent-task',
+    );
+    expect(clip.input.payload).toMatchObject({
+      durationSeconds: 30,
+      origin: 'EXTERNAL_IMPORT',
+      promptText: '用户确认的独立素材描述',
+    });
+    expect(
+      clip.input.dependencies.some(
+        (item: { sourceNodeId: string }) => item.sourceNodeId === 'PROMPT_GENERATION',
+      ),
+    ).toBe(false);
+    expect(
+      outputs.find((item: { artifactKey: string }) => item.artifactKey.startsWith('render-batch:'))
+        .input.payload.promptDurationMaxSeconds,
+    ).toBe(5);
+  });
   it('signs TOS reference files without public API configuration and rejects invalid frozen sources', async () => {
     const video = {
       fileObjectId: 'file-a',
@@ -686,12 +759,16 @@ describe('EffectSegmentRenderService', () => {
   it('detects additions without invalidating unchanged tasks and appends only the new Prompt', async () => {
     const { service, repository, workflowWorkingService } = serviceWith();
     await service.start('project-a', 'product-a', {
-      workflowRunId: 'run-a', expectedPromptArtifactRevision: 3,
-      expectedSettingsRevision: 0, idempotencyKey: 'initial',
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'initial',
     });
     const created = await repository.createBatch.mock.results[0]!.value;
     const record = created.batch;
-    record.tasks.forEach((task: { status: string }) => { task.status = 'COMPLETED'; });
+    record.tasks.forEach((task: { status: string }) => {
+      task.status = 'COMPLETED';
+    });
     repository.batch.mockResolvedValue(record);
     const next = promptBatch();
     next.items.push({ ...item, id: '99999999-9999-4999-8999-999999999999', code: 'P002' });
@@ -702,14 +779,23 @@ describe('EffectSegmentRenderService', () => {
     expect(view.pendingPromptIds).toEqual([next.items[1]!.id]);
     expect(view.tasks.every((task) => !task.needsUpdate)).toBe(true);
     await service.refresh('project-a', record.id, {
-      expectedBatchRevision: 1, expectedPromptArtifactRevision: 4, idempotencyKey: 'append',
+      expectedBatchRevision: 1,
+      expectedPromptArtifactRevision: 4,
+      idempotencyKey: 'append',
     });
     expect(workflowWorkingService.beginEffectNodeEdit).toHaveBeenLastCalledWith(
-      'project-a', 'run-a', 'SEGMENT_RENDER', 'MANUAL');
+      'project-a',
+      'run-a',
+      'SEGMENT_RENDER',
+      'MANUAL',
+    );
     const call = repository.regenerateTasks.mock.calls[0]!;
     expect(call[2]).toEqual([]);
     expect(call[5].addedTasks).toHaveLength(1);
-    expect(call[5].addedTasks[0]).toMatchObject({ promptId: next.items[1]!.id, renderCode: 'R-002' });
+    expect(call[5].addedTasks[0]).toMatchObject({
+      promptId: next.items[1]!.id,
+      renderCode: 'R-002',
+    });
     expect(call[5].addedTasks[0].requestSnapshot.sourcePrompt.revision).toBe(4);
     expect(repository.createBatch).toHaveBeenCalledTimes(1);
   });
@@ -717,8 +803,10 @@ describe('EffectSegmentRenderService', () => {
   it('does not rerender semantic metadata and rejects stale refresh inputs before opening an edit', async () => {
     const { service, repository, workflowWorkingService } = serviceWith();
     await service.start('project-a', 'product-a', {
-      workflowRunId: 'run-a', expectedPromptArtifactRevision: 3,
-      expectedSettingsRevision: 0, idempotencyKey: 'initial-metadata',
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'initial-metadata',
     });
     const record = (await repository.createBatch.mock.results[0]!.value).batch;
     repository.batch.mockResolvedValue(record);
@@ -728,9 +816,13 @@ describe('EffectSegmentRenderService', () => {
     repository.promptArtifact.mockResolvedValue({ ...promptArtifact(next), revision: 4 });
     expect((await service.batch('project-a', record.id)).batch.refreshScope).toBe('NONE');
     const callsBefore = workflowWorkingService.beginEffectNodeEdit.mock.calls.length;
-    await expect(service.refresh('project-a', record.id, {
-      expectedBatchRevision: 1, expectedPromptArtifactRevision: 3, idempotencyKey: 'stale',
-    })).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      service.refresh('project-a', record.id, {
+        expectedBatchRevision: 1,
+        expectedPromptArtifactRevision: 3,
+        idempotencyKey: 'stale',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
     expect(workflowWorkingService.beginEffectNodeEdit).toHaveBeenCalledTimes(callsBefore);
     expect(repository.regenerateTasks).not.toHaveBeenCalled();
   });

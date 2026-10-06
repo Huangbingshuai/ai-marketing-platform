@@ -34,10 +34,34 @@ class Material(BaseModel):
     fileObjectId: str
 
 
+class VideoImportMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schemaVersion: Literal[2]
+    taskType: Literal["VIDEO_IMPORT_DESCRIPTION"]
+    projectId: str
+    runId: str
+    requestId: str
+
+
+class VideoImportClaim(BaseModel):
+    claimed: bool
+    attemptToken: str | None = None
+    durationSeconds: float | None = Field(default=None, ge=4, le=30)
+    mimeType: str | None = None
+    sizeBytes: int | None = Field(default=None, gt=0, le=512 * 1024 * 1024)
+    contentHash: str | None = None
+
+
+class VideoImportDescription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    promptText: str = Field(min_length=1, max_length=4000)
+
+
 class IncrementalInput(BaseModel):
     materialIds: list[str]
     oldVariantIds: list[str]
     packageNewVariants: bool
+    combinationStrategy: Literal["ADAPTIVE"] | None = None
 
 
 class IncrementalBinding(BaseModel):
@@ -66,6 +90,7 @@ class IncrementalReview(BaseModel):
 
 
 class Snapshot(BaseModel):
+    durationFilteredImports: bool = False
     schemaVersion: Literal[1]
     template: dict[str, Any]
     draftRevision: int

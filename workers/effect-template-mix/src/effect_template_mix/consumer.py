@@ -20,6 +20,7 @@ from .packaging import PackagingHandler
 from .final_output import FinalOutputHandler
 from .caption_voice import CaptionVoiceHandler
 from .voice_preview import VoicePreviewHandler
+from .video_import import handle_video_import
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -106,6 +107,9 @@ class Consumer:
             envelope = json.loads(message.body)
         except (ValueError, UnicodeDecodeError):
             await message.ack()
+            return
+        if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'VIDEO_IMPORT_DESCRIPTION':
+            await handle_video_import(message, envelope, self.api, self.provider, self.request_slots)
             return
         if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'VOICE_PREVIEW':
             if self.voice_preview is None:
@@ -260,7 +264,7 @@ class Consumer:
                 )
                 rows = [rows_by_id[item.id] for item in snapshot.materials]
                 await report("MATCHING", 35)
-                if snapshot.incremental:
+                if snapshot.incremental and snapshot.incremental.combinationStrategy != "ADAPTIVE":
                     roles = await self.api.incremental_roles(runtime, rows)
                     async with semaphore:
                         plan = await self.provider.plan_incremental(snapshot, roles)

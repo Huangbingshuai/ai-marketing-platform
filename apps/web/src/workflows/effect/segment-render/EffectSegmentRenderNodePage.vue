@@ -5,6 +5,7 @@ import type {
   EffectSegmentRenderBatch,
   EffectSegmentRenderExportFormat,
   EffectSegmentRenderSettings,
+  EffectSegmentImportDraft,
   SeedanceRatio,
   SeedanceResolution,
 } from '@ai-marketing/contracts';
@@ -64,7 +65,11 @@ import {
   exportEffectSegmentRenderMaterials,
   getEffectSegmentRenderTaskContent,
   getEffectSegmentRenderBatch,
-  importEffectSegmentRenderMaterials,
+  stageEffectSegmentImport,
+  describeEffectSegmentImport,
+  getEffectSegmentImport,
+  cancelEffectSegmentImport,
+  confirmEffectSegmentImports,
   regenerateEffectSegmentRenderTasks,
   refreshEffectSegmentRenderBatch,
   saveEffectSegmentRenderSettings,
@@ -107,15 +112,6 @@ type TransferPanel = 'export' | 'import' | null;
 type ExportScope = 'ALL_TASKS' | 'FILTERED' | 'SELECTED';
 type RepairBoundary = 'end' | 'start';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
-type EffectSegmentRenderImportMatch = {
-  id: string;
-  fileIndex: number;
-  taskId: string | null;
-  fileName: string;
-  size: number;
-  promptCode: string | null;
-  status: 'AUTO_ASSIGNED' | 'CONFLICT' | 'MATCHED' | 'UNMATCHED';
-};
 
 const pageStatus = ref<PageStatus>('loading');
 const loadError = ref('');
@@ -133,8 +129,15 @@ const notice = ref<Notice | null>(null);
 const transferPanel = ref<TransferPanel>(null);
 const selectionMode = ref(false);
 const selectedTaskIds = ref<Set<string>>(new Set());
-const importFiles = ref<File[]>([]);
-const importMatches = ref<EffectSegmentRenderImportMatch[]>([]);
+const importDrafts = ref<EffectSegmentImportDraft[]>([]);
+const importError = ref('');
+let importSession = 0;
+let importPollingSession: number | null = null;
+let importPollingTimer: ReturnType<typeof setTimeout> | undefined;
+let importScope: { projectId: string; batchId: string } | null = null;
+let importConfirmRequest: { fingerprint: string; key: string } | null = null;
+const importBusy = (draft: EffectSegmentImportDraft) =>
+  ['QUEUED', 'RUNNING'].includes(draft.descriptionStatus);
 const importInput = ref<HTMLInputElement | null>(null);
 const transferCloseButton = ref<HTMLButtonElement | null>(null);
 const exportScope = ref<ExportScope>('ALL_TASKS');
@@ -300,13 +303,18 @@ const currentProduct = computed(
 );
 const tasks = computed(() => workspace.value?.tasks ?? []);
 const summary = computed(() => effectSegmentRenderSummary(tasks.value));
-const promptTasks = computed(() => tasks.value.filter((task) => task.source === 'PROMPT'));
+const promptTasks = computed(() =>
+  tasks.value.filter((task) => task.source === 'PROMPT' && !task.independentImport),
+);
 const completedTasks = computed(() => tasks.value.filter(isEffectSegmentRenderExportable));
 const hasBatch = computed(
   () => Boolean(workspace.value) && workspace.value?.batchStatus !== 'NOT_STARTED',
 );
-const hasConfirmedRender = computed(() => workspace.value?.workingArtifactRevision !== null &&
-  workspace.value?.workingArtifactRevision !== undefined);
+const hasConfirmedRender = computed(
+  () =>
+    workspace.value?.workingArtifactRevision !== null &&
+    workspace.value?.workingArtifactRevision !== undefined,
+);
 const canEditMaterials = computed(() => Boolean(props.editing || !hasConfirmedRender.value));
 const batchActive = computed(
   () => workspace.value?.batchStatus === 'QUEUED' || workspace.value?.batchStatus === 'RUNNING',
@@ -374,12 +382,15 @@ const exportRangeTasks = computed(() => {
 
 const canPreviewTask = (task: EffectSegmentRenderTask): boolean => Boolean(task.output);
 const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
+  !task.independentImport &&
   !isEffectSegmentRenderBusy(task.status) &&
   !task.repair &&
   !(task.needsUpdate && workspace.value?.refreshScope === 'FULL');
 
 const creativeCoreForTask = (task: EffectSegmentRenderTask): string =>
-  cardCreativeCoreByPromptId.value[task.promptId] ?? '创意方向待同步';
+  task.independentImport
+    ? task.promptText
+    : (cardCreativeCoreByPromptId.value[task.promptId] ?? '创意方向待同步');
 
 const promptTaskDetails = computed(() =>
   promptTask.value ? (cardPromptDetailsByPromptId.value[promptTask.value.promptId] ?? null) : null,
@@ -598,7 +609,9 @@ const canStartBatch = computed(
     !batchActive.value,
 );
 const tasksNeedingUpdate = computed(() => tasks.value.filter((task) => task.needsUpdate));
-const incrementalTaskCount = computed(() => tasksNeedingUpdate.value.length + (workspace.value?.pendingPromptIds?.length ?? 0));
+const incrementalTaskCount = computed(
+  () => tasksNeedingUpdate.value.length + (workspace.value?.pendingPromptIds?.length ?? 0),
+);
 const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
   if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
@@ -661,7 +674,8 @@ const pollBatch = async (): Promise<void> => {
       productId !== currentProductId.value ||
       workflowRunId !== props.workflowRunId ||
       response.data.batch.workflowRunId !== props.workflowRunId
-    ) return;
+    )
+      return;
     applyBatch(response.data.batch);
   } catch (error) {
     if (!isAbortError(error)) {
@@ -695,7 +709,11 @@ const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
   )
     showNotice('全部视频片段已完成并进入素材池');
   validated.value = nextWorkspace.commitStatus === 'COMMITTED' && !nextWorkspace.stale;
-  if (props.editing && previousCommitStatus !== 'COMMITTED' && nextWorkspace.commitStatus === 'COMMITTED')
+  if (
+    props.editing &&
+    previousCommitStatus !== 'COMMITTED' &&
+    nextWorkspace.commitStatus === 'COMMITTED'
+  )
     emit('workflow-run-change', props.workflowRunId);
   schedulePolling(nextWorkspace);
 };
@@ -706,7 +724,8 @@ const applyBatch = (batch: EffectSegmentRenderBatch): void => {
     !current ||
     batch.workflowRunId !== props.workflowRunId ||
     batch.productId !== currentProductId.value
-  ) return;
+  )
+    return;
   applyWorkspace(effectSegmentRenderWorkspaceWithBatch(current, batch));
 };
 
@@ -755,9 +774,18 @@ const closeAllDialogs = (restoreFocus = false): void => {
 };
 
 const closeTransferPanel = (restoreFocus = false): void => {
+  if (operation.value === 'import') return;
+  const scope = importScope;
+  if (scope)
+    for (const draft of importDrafts.value.filter((item) => item.status === 'READY'))
+      void cancelEffectSegmentImport(scope.projectId, scope.batchId, draft.id).catch(
+        () => undefined,
+      );
+  importSession++;
+  importScope = null;
+  if (importPollingTimer) clearTimeout(importPollingTimer);
   transferPanel.value = null;
-  importFiles.value = [];
-  importMatches.value = [];
+  importDrafts.value = [];
   if (!restoreFocus) return;
   const trigger = dialogTrigger;
   dialogTrigger = null;
@@ -993,20 +1021,20 @@ const startBatch = async (forceFull = false): Promise<void> => {
             tone: 'warning',
           }
         : rerendering
-        ? {
-            eyebrow: current.stale ? '按最新 Prompt 重新渲染' : '重新渲染全部片段',
-            title: `重新生成全部 ${promptCount.value} 个视频素材片段？`,
-            description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会创建隔离的新批次、提交 ${promptCount.value} 个真实 Seedance 任务并再次产生供应商费用。全部成功且校验通过后自动保存为新版本；原版本保持可回溯。`,
-            confirmLabel: `重新提交 ${promptCount.value} 个真实任务`,
-            tone: 'warning',
-          }
-        : {
-            eyebrow: '创建视频渲染批次',
-            title: `开始生成 ${promptCount.value} 个真实视频素材片段？`,
-            description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会提交 ${promptCount.value} 个真实 Seedance 任务并产生供应商费用。`,
-            confirmLabel: `提交 ${promptCount.value} 个真实任务`,
-            tone: 'warning',
-          },
+          ? {
+              eyebrow: current.stale ? '按最新 Prompt 重新渲染' : '重新渲染全部片段',
+              title: `重新生成全部 ${promptCount.value} 个视频素材片段？`,
+              description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会创建隔离的新批次、提交 ${promptCount.value} 个真实 Seedance 任务并再次产生供应商费用。全部成功且校验通过后自动保存为新版本；原版本保持可回溯。`,
+              confirmLabel: `重新提交 ${promptCount.value} 个真实任务`,
+              tone: 'warning',
+            }
+          : {
+              eyebrow: '创建视频渲染批次',
+              title: `开始生成 ${promptCount.value} 个真实视频素材片段？`,
+              description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会提交 ${promptCount.value} 个真实 Seedance 任务并产生供应商费用。`,
+              confirmLabel: `提交 ${promptCount.value} 个真实任务`,
+              tone: 'warning',
+            },
     ))
   )
     return;
@@ -1403,7 +1431,7 @@ const openTransferPanel = (panel: Exclude<TransferPanel, null>, event: Event): v
     return;
   }
   if (panel === 'import' && batchActive.value) {
-    showNotice('当前批次正在渲染，完成后才能导入替代素材', 'warning');
+    showNotice('当前批次正在渲染，完成后才能导入新增素材', 'warning');
     return;
   }
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
@@ -1411,60 +1439,119 @@ const openTransferPanel = (panel: Exclude<TransferPanel, null>, event: Event): v
     exportScope.value = 'ALL_TASKS';
   transferPanel.value = panel;
   if (panel === 'import') {
-    importFiles.value = [];
-    importMatches.value = [];
+    importError.value = '';
+    importDrafts.value = [];
+    importScope = { projectId: props.projectId, batchId: current.batchId };
+    importConfirmRequest = null;
+    importSession++;
   }
   void nextTick(() => transferCloseButton.value?.focus());
 };
 
-const inspectImportFiles = (files: File[]): void => {
-  const acceptedFiles = files
-    .filter(
-      (file) =>
-        ['video/mp4', 'video/quicktime', 'video/webm'].includes(file.type) ||
-        /\.(?:mp4|mov|webm)$/iu.test(file.name),
-    )
-    .slice(0, 100);
-  const reservedTaskIds = new Set<string>();
-  const matches = acceptedFiles.map<EffectSegmentRenderImportMatch>((file, fileIndex) => {
-    const promptCode = file.name
-      .match(/(?:^|[^a-z0-9])(P\d{3})(?:[^a-z0-9]|$)/iu)?.[1]
-      ?.toUpperCase();
-    const exactTask = promptCode
-      ? tasks.value.find(
-          (task) => task.promptCode.toUpperCase() === promptCode && !reservedTaskIds.has(task.id),
-        )
-      : undefined;
-    const availableTask =
-      exactTask ??
-      tasks.value.find((task) => !task.output && !task.repair && !reservedTaskIds.has(task.id));
-    if (availableTask) reservedTaskIds.add(availableTask.id);
-    return {
-      id: `${fileIndex}:${file.name}:${file.size}`,
-      fileIndex,
-      taskId: availableTask?.id ?? null,
-      fileName: file.name,
-      size: file.size,
-      promptCode: availableTask?.promptCode ?? promptCode ?? null,
-      status: !availableTask
-        ? 'UNMATCHED'
-        : exactTask
-          ? exactTask.output
-            ? 'CONFLICT'
-            : 'MATCHED'
-          : 'AUTO_ASSIGNED',
-    };
-  });
-  importFiles.value = acceptedFiles;
-  importMatches.value = matches;
-  if (acceptedFiles.length !== files.length)
-    showNotice('已忽略不支持的文件；仅支持 MP4、MOV 和 WebM，单次最多 100 个', 'warning');
+const handleImportFileChange = async (event: Event): Promise<void> => {
+  const input = event.currentTarget as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  const scope = importScope;
+  if (!scope || operation.value) return;
+  if (files.length + importDrafts.value.length > 100) {
+    importError.value = '单次最多导入 100 个视频';
+    return;
+  }
+  const session = importSession;
+  importError.value = '';
+  operation.value = 'import';
+  try {
+    for (const file of files) {
+      if (!/\.(?:mp4|mov|webm)$/iu.test(file.name) || file.size > 512 * 1024 * 1024) {
+        importError.value += `${file.name}：仅支持不超过 512 MB 的 MP4、MOV、WebM。\n`;
+        continue;
+      }
+      try {
+        const response = await stageEffectSegmentImport(
+          scope.projectId,
+          scope.batchId,
+          file,
+          crypto.randomUUID(),
+        );
+        if (session !== importSession || !nodeActive) {
+          void cancelEffectSegmentImport(
+            scope.projectId,
+            scope.batchId,
+            response.data.draft.id,
+          ).catch(() => undefined);
+          break;
+        }
+        importDrafts.value.push(response.data.draft);
+      } catch (error) {
+        if (session !== importSession || !nodeActive) break;
+        importError.value += `${file.name}：${safeMessage(error, '视频格式或时长不符合要求')}\n`;
+      }
+    }
+  } finally {
+    if (session === importSession) operation.value = null;
+  }
 };
 
-const handleImportFileChange = (event: Event): void => {
-  const input = event.currentTarget as HTMLInputElement;
-  inspectImportFiles([...importFiles.value, ...Array.from(input.files ?? [])]);
-  input.value = '';
+const pollImportDescriptions = async (): Promise<void> => {
+  if (importPollingTimer) clearTimeout(importPollingTimer);
+  const scope = importScope;
+  const session = importSession;
+  if (!scope || transferPanel.value !== 'import') return;
+  if (importPollingSession === session) return;
+  importPollingSession = session;
+  try {
+    for (const draft of importDrafts.value.filter(importBusy)) {
+      const response = await getEffectSegmentImport(scope.projectId, scope.batchId, draft.id);
+      if (session !== importSession || !nodeActive) return;
+      // Do not replace typed text during a queued/running response.
+      const { promptText, ...state } = response.data.draft;
+      Object.assign(draft, state);
+      if (draft.descriptionStatus === 'COMPLETED') draft.promptText = promptText;
+    }
+  } catch (error) {
+    if (session === importSession)
+      showNotice(safeMessage(error, '读取 AI 描述进度失败，将继续尝试'), 'warning');
+  } finally {
+    if (importPollingSession === session) importPollingSession = null;
+  }
+  if (session === importSession && nodeActive && importDrafts.value.some(importBusy))
+    importPollingTimer = setTimeout(() => {
+      void pollImportDescriptions();
+    }, 1500);
+};
+
+const generateImportPrompt = async (draft: EffectSegmentImportDraft): Promise<void> => {
+  const scope = importScope;
+  if (!scope || importBusy(draft) || operation.value) return;
+  const session = importSession;
+  draft.descriptionStatus = 'QUEUED';
+  draft.errorMessage = null;
+  try {
+    const response = await describeEffectSegmentImport(
+      scope.projectId,
+      scope.batchId,
+      draft.id,
+      crypto.randomUUID(),
+    );
+    if (session !== importSession || !nodeActive) return;
+    Object.assign(draft, response.data.draft);
+    void pollImportDescriptions();
+  } catch (error) {
+    draft.descriptionStatus = 'FAILED';
+    draft.errorMessage = safeMessage(error, 'AI 描述生成失败，可重试或手工填写');
+  }
+};
+
+const removeImportDraft = async (draft: EffectSegmentImportDraft): Promise<void> => {
+  const scope = importScope;
+  if (!scope || operation.value) return;
+  try {
+    await cancelEffectSegmentImport(scope.projectId, scope.batchId, draft.id);
+    importDrafts.value = importDrafts.value.filter((item) => item.id !== draft.id);
+  } catch (error) {
+    importError.value = safeMessage(error, '取消导入失败');
+  }
 };
 
 const confirmImport = async (): Promise<void> => {
@@ -1474,31 +1561,39 @@ const confirmImport = async (): Promise<void> => {
   }
   const current = workspace.value;
   if (operation.value || !current?.batchId || typeof current.batchRevision !== 'number') return;
-  const matched = importMatches.value.filter(
-    (match): match is EffectSegmentRenderImportMatch & { taskId: string } =>
-      match.status !== 'UNMATCHED' && Boolean(match.taskId),
-  );
-  if (!matched.length) return;
+  if (
+    !importDrafts.value.length ||
+    importDrafts.value.some((draft) => importBusy(draft) || !draft.promptText.trim())
+  )
+    return;
   operation.value = 'import';
+  const session = importSession;
+  importError.value = '';
   try {
-    const files = matched.map((match) => importFiles.value[match.fileIndex]!);
-    const response = await importEffectSegmentRenderMaterials(
-      props.projectId,
-      current.batchId,
-      {
-        expectedBatchRevision: current.batchRevision,
-        idempotencyKey: crypto.randomUUID(),
-        mappings: matched.map((match, fileIndex) => ({ fileIndex, taskId: match.taskId })),
-      },
-      files,
-    );
+    const items = importDrafts.value.map((draft) => ({
+      draftId: draft.id,
+      promptText: draft.promptText.trim(),
+    }));
+    const fingerprint = JSON.stringify(items);
+    if (importConfirmRequest?.fingerprint !== fingerprint)
+      importConfirmRequest = { fingerprint, key: crypto.randomUUID() };
+    const response = await confirmEffectSegmentImports(props.projectId, current.batchId, {
+      expectedBatchRevision: current.batchRevision,
+      idempotencyKey: importConfirmRequest.key,
+      items,
+    });
+    if (session !== importSession || !nodeActive) return;
     applyBatch(response.data.batch);
-    closeTransferPanel(false);
-    showNotice(`已导入 ${response.data.importedCount} 个视频素材`);
-  } catch (error) {
-    showNotice(safeMessage(error, '视频素材导入失败'), 'error');
-  } finally {
+    importDrafts.value.forEach((draft) => {
+      draft.status = 'IMPORTED';
+    });
     operation.value = null;
+    closeTransferPanel(false);
+    showNotice(`已新增 ${response.data.importedCount} 个视频素材，保存修改后可用于混剪`);
+  } catch (error) {
+    if (session === importSession) importError.value = safeMessage(error, '视频素材导入失败');
+  } finally {
+    if (session === importSession) operation.value = null;
   }
 };
 
@@ -1664,7 +1759,7 @@ const saveVersion = async (): Promise<void> => {
         ? `当前批次缺少 ${missingPromptCount.value} 个 Prompt 片段，请返回 Prompt 节点检查上游数据`
         : summary.value.failed
           ? '请逐条重新生成异常片段'
-        : '仍有片段正在生成，或存在待处理返修，请先处理后再保存';
+          : '仍有片段正在生成，或存在待处理返修，请先处理后再保存';
     showNotice(message, 'warning');
     return;
   }
@@ -1691,7 +1786,8 @@ const saveVersion = async (): Promise<void> => {
   }
 };
 
-const flushPendingEdits = async (): Promise<boolean> => operation.value === null && !editTransitioning.value;
+const flushPendingEdits = async (): Promise<boolean> =>
+  operation.value === null && !editTransitioning.value;
 
 defineExpose({ flushPendingEdits });
 
@@ -1719,11 +1815,15 @@ onActivated(() => {
 
 onDeactivated(() => {
   nodeActive = false;
+  operation.value = null;
+  closeTransferPanel(false);
   stopNodeRequests();
 });
 
 onBeforeUnmount(() => {
   nodeActive = false;
+  operation.value = null;
+  closeTransferPanel(false);
   stopNodeRequests();
   taskVideoObserver?.disconnect();
   taskVideoObserver = null;
@@ -1817,7 +1917,13 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            :disabled="!hasBatch || !canEditMaterials || batchActive || operation !== null || editTransitioning"
+            :disabled="
+              !hasBatch ||
+              !canEditMaterials ||
+              batchActive ||
+              operation !== null ||
+              editTransitioning
+            "
             @click="openTransferPanel('import', $event)"
           >
             <FolderInput :size="14" />导入素材
@@ -1832,9 +1938,13 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-if="workspace?.stale && workspace.refreshScope === 'SELECTIVE'"
-            class="secondary-button" type="button"
+            class="secondary-button"
+            type="button"
             :disabled="operation !== null || editTransitioning || !canStartBatch"
-            @click="startBatch(true)"><RefreshCw :size="14" />全部重新渲染</button>
+            @click="startBatch(true)"
+          >
+            <RefreshCw :size="14" />全部重新渲染
+          </button>
           <button
             class="primary-button start-render-button"
             type="button"
@@ -2174,7 +2284,12 @@ onBeforeUnmount(() => {
                 <button
                   v-else
                   type="button"
-                  :disabled="!canEditMaterials || operation !== null || !task.output || task.durationSeconds > 15"
+                  :disabled="
+                    !canEditMaterials ||
+                    operation !== null ||
+                    !task.output ||
+                    task.durationSeconds > 15
+                  "
                   @click="openRepair(task, $event)"
                 >
                   画面返修
@@ -2260,7 +2375,7 @@ onBeforeUnmount(() => {
         :complete="validated"
         :status-title="
           validated
-              ? '视频素材修改已保存'
+            ? '视频素材修改已保存'
             : !hasBatch
               ? workspace?.promptReady
                 ? '等待开始批量渲染'
@@ -2626,7 +2741,7 @@ onBeforeUnmount(() => {
                   {{ transferPanel === 'import' ? '导入外部视频素材' : '导出视频素材' }}
                 </h2>
                 <p v-if="transferPanel === 'import'">
-                  素材必须匹配到一个 Prompt 槽位，避免形成游离素材。
+                  校验视频后填写素材提示词，确认后新增素材，不替换已有视频。
                 </p>
                 <p v-else>选择导出范围和随包清单，已完成素材才会进入导出结果。</p>
               </div>
@@ -2635,6 +2750,7 @@ onBeforeUnmount(() => {
               ref="transferCloseButton"
               type="button"
               aria-label="关闭素材传输面板"
+              :disabled="operation === 'import'"
               @click="closeTransferPanel(true)"
             >
               <X :size="17" />
@@ -2658,58 +2774,90 @@ onBeforeUnmount(() => {
             >
               <span><FileVideo2 :size="24" /></span>
               <strong>{{
-                importFiles.length ? '继续添加视频素材' : '选择要导入的视频素材'
+                importDrafts.length ? '继续添加视频素材' : '选择要导入的视频素材'
               }}</strong>
-              <small>支持 MP4、MOV、WebM；文件名包含 Prompt 编号时优先精确匹配</small>
+              <small>支持 MP4、MOV、WebM；时长 4～30 秒，单个不超过 512 MB</small>
             </button>
-            <div
-              v-if="operation === 'import' && !importMatches.length"
-              class="transfer-loading"
-              role="status"
-            >
-              <LoaderCircle class="spin" :size="17" />正在检查文件并匹配 Prompt…
+            <div v-if="operation === 'import'" class="transfer-loading" role="status">
+              <LoaderCircle class="spin" :size="17" />正在校验视频格式与实际时长…
             </div>
-            <div v-else-if="importMatches.length" class="import-review-list">
+            <div v-if="importError" class="transfer-note" role="alert">
+              <AlertCircle :size="15" />
+              <p>{{ importError }}</p>
+            </div>
+            <div v-if="importDrafts.length" class="import-review-list">
               <div class="transfer-section-heading">
-                <strong>匹配结果</strong><span>{{ importMatches.length }} 个文件</span>
+                <strong>视频素材提示词</strong><span>{{ importDrafts.length }} 个文件</span>
               </div>
-              <article
-                v-for="match in importMatches"
-                :key="match.id"
-                :class="match.status.toLowerCase()"
-              >
+              <article v-for="draft in importDrafts" :key="draft.id" class="import-prompt-item">
                 <span><FileVideo2 :size="16" /></span>
                 <div>
-                  <strong>{{ match.fileName }}</strong>
+                  <strong :title="draft.fileName">{{ draft.fileName }}</strong>
                   <small
-                    >{{ formatFileSize(match.size) }} ·
-                    {{ match.promptCode ?? '未找到可用 Prompt 槽位' }}</small
+                    >{{ formatFileSize(draft.sizeBytes) }} ·
+                    {{ draft.durationSeconds.toFixed(2) }} 秒</small
                   >
                 </div>
-                <em>
-                  {{
-                    match.status === 'MATCHED'
-                      ? '编号匹配'
-                      : match.status === 'AUTO_ASSIGNED'
-                        ? '自动分配'
-                        : match.status === 'CONFLICT'
-                          ? '将替换现有素材'
-                          : '无法导入'
-                  }}
-                </em>
+                <button
+                  type="button"
+                  :aria-label="`移除 ${draft.fileName}`"
+                  :disabled="operation !== null"
+                  @click="removeImportDraft(draft)"
+                >
+                  <X :size="15" />
+                </button>
+                <label class="repair-instruction-field import-prompt-field">
+                  <span>素材提示词</span>
+                  <textarea
+                    v-model="draft.promptText"
+                    :aria-label="`${draft.fileName} 的素材提示词`"
+                    rows="4"
+                    maxlength="4000"
+                    :disabled="importBusy(draft) || operation !== null"
+                    placeholder="描述视频画面、主体动作和镜头变化，也可点击 AI 智能生成后编辑。"
+                  />
+                </label>
+                <div class="import-prompt-actions">
+                  <small role="status">{{
+                    draft.errorMessage ??
+                    (importBusy(draft) ? 'AI 正在生成，请稍候…' : '确认前可自由编辑')
+                  }}</small>
+                  <button
+                    type="button"
+                    :disabled="importBusy(draft) || operation !== null"
+                    @click="generateImportPrompt(draft)"
+                  >
+                    <LoaderCircle v-if="importBusy(draft)" class="spin" :size="14" /><Sparkles
+                      v-else
+                      :size="14"
+                    />
+                    {{ draft.descriptionStatus === 'COMPLETED' ? '重新生成提示词' : 'AI 智能生成' }}
+                  </button>
+                </div>
               </article>
             </div>
             <div class="transfer-note">
               <AlertCircle :size="15" />
-              <p>冲突素材会替换同一 Prompt 槽位的当前结果；替换后仍可单条重新生成。</p>
+              <p>
+                导入素材不会改变模板槽位时长上限，只能用于不长于该视频的槽位。AI
+                生成将使用模型服务。
+              </p>
             </div>
             <footer>
-              <button type="button" @click="closeTransferPanel(true)">取消</button>
+              <button
+                type="button"
+                :disabled="operation !== null"
+                @click="closeTransferPanel(true)"
+              >
+                取消
+              </button>
               <button
                 class="primary"
                 type="button"
                 :disabled="
-                  operation !== null || !importMatches.some((match) => match.status !== 'UNMATCHED')
+                  operation !== null ||
+                  !importDrafts.length ||
+                  importDrafts.some((draft) => importBusy(draft) || !draft.promptText.trim())
                 "
                 @click="confirmImport"
               >
@@ -4724,6 +4872,33 @@ select:disabled {
 }
 .import-review-list article + article {
   margin-top: 7px;
+}
+.import-prompt-field,
+.import-prompt-actions {
+  grid-column: 1 / -1;
+}
+.import-prompt-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.import-prompt-item button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 9px;
+  color: #3565df;
+  background: #f3f7ff;
+  border: 1px solid #dbe3ee;
+  border-radius: 7px;
+  font: inherit;
+  cursor: pointer;
+}
+.import-prompt-item button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .import-review-list article.unmatched {
   background: #fff7f6;

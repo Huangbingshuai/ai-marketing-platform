@@ -313,6 +313,7 @@ export const enumerateAssignedVariants = (
   maxVariants = 0,
   maxOverlap = MAX_SLOT_REUSE_OVERLAP,
   fixedRoles: Readonly<Record<string, EffectTemplateMixRole>> = {},
+  options: { requiredMaterialIds?: ReadonlySet<string> } = {},
 ): EffectTemplateMixAiSelection[][] => {
   const pools = buildAssignedPools(slots, materials, classifications, new Set(), fixedRoles);
   const limit = Math.max(0, Math.floor(maxVariants));
@@ -323,7 +324,11 @@ export const enumerateAssignedVariants = (
   const pairPositions = flexible.flatMap((left, index) =>
     flexible.slice(index + 1).map((right) => [left, right] as const),
   );
-  const eligibleIds = new Set(ordered.flatMap((pool) => pool.map((item) => item.materialId)));
+  const eligibleIds = new Set(
+    ordered
+      .flatMap((pool) => pool.map((item) => item.materialId))
+      .filter((id) => !options.requiredMaterialIds || options.requiredMaterialIds.has(id)),
+  );
   const signature = (ids: Array<string | undefined>) => JSON.stringify(ids);
   const references = existingGroups.map((group) =>
     slots.map((slot) => group.find((binding) => binding.slotId === slot.id)?.materialId),
@@ -374,6 +379,8 @@ export const enumerateAssignedVariants = (
     freshPairs(candidate) >= Math.ceil(pairPositions.length / 2);
   const add = (items: AssignedPoolItem[]) => {
     const ids = items.map((item) => item.materialId);
+    if (options.requiredMaterialIds && !ids.some((id) => options.requiredMaterialIds!.has(id)))
+      return;
     const key = signature(ids);
     if (excluded.has(key) || candidates.has(key) || new Set(ids).size !== slots.length) return;
     const candidate: Candidate = {
@@ -421,7 +428,7 @@ export const enumerateAssignedVariants = (
               )
             : 0;
           return (
-            Number(covered.has(item.materialId)) * 1000 +
+            Number(!eligibleIds.has(item.materialId) || covered.has(item.materialId)) * 1000 +
             repeats * 4 +
             (usage.get(item.materialId) ?? 0)
           );
@@ -445,7 +452,8 @@ export const enumerateAssignedVariants = (
     const choices = ordered.map((pool) =>
       [...pool].sort(
         (left, right) =>
-          Number(covered.has(left.materialId)) - Number(covered.has(right.materialId)) ||
+          Number(!eligibleIds.has(left.materialId) || covered.has(left.materialId)) -
+            Number(!eligibleIds.has(right.materialId) || covered.has(right.materialId)) ||
           (usage.get(left.materialId) ?? 0) - (usage.get(right.materialId) ?? 0) ||
           right.matchScore - left.matchScore ||
           left.materialId.localeCompare(right.materialId),
@@ -456,7 +464,11 @@ export const enumerateAssignedVariants = (
     const search = (index: number): boolean => {
       if (++visits > 4096) return false;
       if (index === slots.length)
-        return !excluded.has(signature(picked.map((item) => item.materialId)));
+        return (
+          !excluded.has(signature(picked.map((item) => item.materialId))) &&
+          (!options.requiredMaterialIds ||
+            picked.some((item) => options.requiredMaterialIds!.has(item.materialId)))
+        );
       for (const item of choices[index]!) {
         picked.push(item);
         if (search(index + 1)) return true;
@@ -468,7 +480,7 @@ export const enumerateAssignedVariants = (
   };
   const results: EffectTemplateMixAiSelection[][] = [];
   const rank = (candidate: Candidate): number[] => [
-    candidate.ids.filter((id) => !covered.has(id)).length,
+    candidate.ids.filter((id) => eligibleIds.has(id) && !covered.has(id)).length,
     candidate.minimumChangedDuration,
     candidate.minimumChangedSlots,
     freshPairs(candidate),
@@ -512,7 +524,7 @@ export const enumerateAssignedVariants = (
     excluded.add(best.key);
     references.push(best.ids);
     for (const id of best.ids) {
-      covered.add(id);
+      if (eligibleIds.has(id)) covered.add(id);
       usage.set(id, (usage.get(id) ?? 0) + 1);
     }
     for (const pair of pairs(best.ids)) pairUsage.set(pair, (pairUsage.get(pair) ?? 0) + 1);

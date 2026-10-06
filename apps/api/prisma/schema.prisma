@@ -1167,12 +1167,47 @@ model EffectSegmentRenderBatch {
   product                EffectImportProduct                   @relation(fields: [projectId, workflowRunId, productId], references: [projectId, workflowRunId, id], onDelete: Cascade)
   tasks                  EffectSegmentRenderTask[]
   operations             EffectSegmentRenderOperationReceipt[]
+  importDrafts           EffectSegmentImportDraft[]
 
   @@unique([projectId, id])
   @@unique([projectId, idempotencyKey])
   @@unique([projectId, workflowRunId, productId, activeKey])
   @@index([projectId, workflowRunId, productId, createdAt])
   @@map("effect_segment_render_batches")
+}
+
+model EffectSegmentImportDraft {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  workflowRunId String @db.Uuid
+  batchId String @db.Uuid
+  uploadKey String @db.VarChar(500)
+  fileName String @db.VarChar(255)
+  mimeType String @db.VarChar(120)
+  sizeBytes Int
+  storageKey String @db.VarChar(500)
+  sha256 String @db.Char(64)
+  durationSeconds Float
+  width Int
+  height Int
+  status String @default("READY") @db.VarChar(20)
+  descriptionStatus String @default("IDLE") @db.VarChar(20)
+  promptText String @default("")
+  errorMessage String? @db.VarChar(500)
+  descriptionKey String? @db.VarChar(500)
+  attemptToken String? @db.Uuid
+  leaseExpiresAt DateTime?
+  expiresAt DateTime
+  importedTaskId String? @db.Uuid
+  cleanedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  batch EffectSegmentRenderBatch @relation(fields: [projectId, batchId], references: [projectId, id], onDelete: Restrict)
+
+  @@unique([projectId, id])
+  @@unique([projectId, uploadKey])
+  @@index([status, expiresAt])
+  @@map("effect_segment_import_drafts")
 }
 
 model EffectSegmentRenderTask {

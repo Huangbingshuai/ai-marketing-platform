@@ -49,6 +49,7 @@ export type EffectSegmentRenderTask = {
   durationSeconds: number;
   source: EffectSegmentRenderSource;
   origin: EffectSegmentRenderOrigin;
+  independentImport?: boolean;
   sourceName: string;
   status: EffectSegmentRenderStatus;
   progress: number;

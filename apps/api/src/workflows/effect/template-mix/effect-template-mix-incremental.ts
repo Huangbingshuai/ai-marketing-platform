@@ -5,7 +5,11 @@ import type {
   EffectTemplateMixIncrementalPlan,
   EffectTemplateMixMaterial,
 } from '@ai-marketing/contracts';
-import { buildAssignedPools } from './effect-template-mix.domain';
+import {
+  effectTemplateMixMaterialFitsTemplate,
+  type EffectTemplateMixSlot,
+} from '@ai-marketing/contracts';
+import { buildAssignedPools, enumerateAssignedVariants } from './effect-template-mix.domain';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 
 type History = {
@@ -18,11 +22,13 @@ type History = {
 /** Stable Prompt provenance distinguishes a replacement from a genuinely new clip. */
 export function pendingAddedMaterials(
   templateId: string,
-  materials: readonly Pick<
+  materials: readonly (Pick<
     EffectTemplateMixMaterial,
     'id' | 'available' | 'activeSource' | 'sourcePromptId'
-  >[],
+  > &
+    Partial<Pick<EffectTemplateMixMaterial, 'duration'>>)[],
   history: readonly History[],
+  slots?: readonly Pick<EffectTemplateMixSlot, 'duration'>[],
 ): string[] {
   const knownPrompts = new Set<string>();
   let hasBaseline = false;
@@ -51,10 +57,33 @@ export function pendingAddedMaterials(
       (material) =>
         material.available &&
         material.activeSource !== false &&
+        (!slots || effectTemplateMixMaterialFitsTemplate(material.duration ?? NaN, slots)) &&
         Boolean(material.sourcePromptId) &&
         !knownPrompts.has(material.sourcePromptId!),
     )
     .map(({ id }) => id);
+}
+
+/** New runs share the full-fill combination policy; old snapshots keep their AI plan. */
+export function adaptiveIncrementalSelections(
+  snapshot: EffectTemplateMixAiSnapshot,
+  rows: EffectTemplateMixAiClassification[],
+): EffectTemplateMixAiSelection[] {
+  const addedIds = new Set(snapshot.incremental?.materialIds ?? []);
+  const groups = enumerateAssignedVariants(
+    snapshot.template.slots,
+    snapshot.materials.map((item) => ({ ...item, available: true })),
+    rows,
+    snapshot.existingVariantBindings,
+    snapshot.maxOutputVariants,
+    undefined,
+    snapshot.materialRoleAssignments,
+    { requiredMaterialIds: addedIds },
+  );
+  const selected = new Set(groups.flatMap((group) => group.map((item) => item.materialId)));
+  if (!groups.length || [...addedIds].some((id) => !selected.has(id)))
+    throw new Error('新增素材未能全部归入完整成片，请检查归槽、时长与可用素材');
+  return groups.flatMap((group, variantIndex) => group.map((item) => ({ ...item, variantIndex })));
 }
 
 export function incrementalRoleAssignments(

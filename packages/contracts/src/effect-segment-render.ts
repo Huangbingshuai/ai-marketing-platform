@@ -43,6 +43,9 @@ export const EFFECT_SEGMENT_RENDER_LIMITS = {
   maxReferenceVideoBytes: 50 * 1024 * 1024,
   maxRepairInstructionLength: 1000,
   minRepairDurationMs: 100,
+  minImportDurationSeconds: 4,
+  maxImportDurationSeconds: 30,
+  maxImportPromptLength: 4000,
 } as const;
 
 export const EFFECT_SEGMENT_RENDER_STATUSES = [
@@ -73,6 +76,35 @@ export type EffectSegmentRenderSourcePrompt = {
 };
 
 export type EffectSegmentRenderSourcePackage = EffectSegmentRenderSourcePrompt;
+
+export type EffectSegmentImportDescriptionStatus =
+  'IDLE' | 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+export type EffectSegmentImportDraft = {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+  durationSeconds: number;
+  status: 'READY' | 'IMPORTED' | 'CANCELLED';
+  descriptionStatus: EffectSegmentImportDescriptionStatus;
+  promptText: string;
+  errorMessage: string | null;
+};
+export type EffectSegmentImportConfirmItem = { draftId: string; promptText: string };
+export type EffectSegmentImportDescriptionMessage = {
+  schemaVersion: 2;
+  taskType: 'VIDEO_IMPORT_DESCRIPTION';
+  projectId: string;
+  runId: string;
+  requestId: string;
+};
+export type EffectSegmentImportDescriptionClaim = {
+  claimed: boolean;
+  attemptToken?: string;
+  durationSeconds?: number;
+  mimeType?: string;
+  sizeBytes?: number;
+  contentHash?: string;
+};
 
 export type EffectSegmentRenderProviderRequest = {
   model: string;
@@ -118,6 +150,13 @@ export type EffectSegmentRenderInputImage = {
 };
 
 export type EffectSegmentRenderRequestSnapshot = {
+  /** An independent, user-confirmed clip description, owned by the render artifact. */
+  importedMaterial?: {
+    schemaVersion: 1;
+    width: number;
+    height: number;
+    promptDurationMaxSeconds?: number;
+  };
   operation?: 'GENERATE' | 'REPAIR';
   promptId: string;
   promptCode: string;
@@ -180,6 +219,7 @@ export type EffectSegmentRenderTask = {
   durationSeconds: number;
   source: 'PROMPT';
   origin: EffectSegmentRenderOrigin;
+  independentImport?: boolean;
   sourceName: string;
   status: EffectSegmentRenderStatus;
   progress: number;

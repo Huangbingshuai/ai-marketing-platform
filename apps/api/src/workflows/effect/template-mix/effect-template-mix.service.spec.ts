@@ -99,31 +99,68 @@ describe('inherited render replacements in a selected mix branch', () => {
     variant.slots.push({ ...variant.slots[0]!, id: 'unchanged-slot' });
     variant.bindings['unchanged-slot'] = 'unchanged-copy';
     variant.bindingRevisions['unchanged-slot'] = 1;
-    const clip = (id: string, task: string, file: string, promptId: string, revision: number,
-      owner: boolean, freshness = 'CURRENT'): WorkingArtifact => ({ ...source,
-        id, artifactKey: `render-clip:${task}`, revision, freshness: freshness as 'CURRENT',
-        workflowRunId: owner ? 'render-head' : 'branch', metadata: { branchSourceOwner: owner },
-        payload: { ...source.payload as object, fileObjectId: file, promptId },
-      });
+    const clip = (
+      id: string,
+      task: string,
+      file: string,
+      promptId: string,
+      revision: number,
+      owner: boolean,
+      freshness = 'CURRENT',
+    ): WorkingArtifact => ({
+      ...source,
+      id,
+      artifactKey: `render-clip:${task}`,
+      revision,
+      freshness: freshness as 'CURRENT',
+      workflowRunId: owner ? 'render-head' : 'branch',
+      metadata: { branchSourceOwner: owner },
+      payload: { ...(source.payload as object), fileObjectId: file, promptId },
+    });
     working.getNodeState.mockResolvedValue({ revision: 7, state });
     working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state });
-    working.listArtifacts.mockResolvedValue({ items: [
-      clip(sourceId, 'copy-task', 'old', 'p', 2, false, 'STALE'),
-      clip('replacement', 'new-task', 'new', 'p', 3, true),
-      clip('unchanged-copy', 'unchanged-copy-task', 'same', 'q', 1, false),
-      clip('unchanged-original', 'unchanged-task', 'same', 'q', 1, true),
-      { ...source, id: 'batch', workflowRunId: 'render-head', artifactKey: 'render-batch:product',
-        metadata: { branchSourceOwner: true }, payload: { clips: [
-          { taskId: 'new-task', promptId: 'p' }, { taskId: 'unchanged-task', promptId: 'q' }] } },
-      { ...source, id: 'copied-batch', workflowRunId: 'branch', artifactKey: 'render-batch:copy-product',
-        metadata: { branchSourceOwner: false }, payload: { clips: [
-          { taskId: 'copy-task', promptId: 'p' }, { taskId: 'unchanged-copy-task', promptId: 'q' }] } },
-    ], total: 6 });
+    working.listArtifacts.mockResolvedValue({
+      items: [
+        clip(sourceId, 'copy-task', 'old', 'p', 2, false, 'STALE'),
+        clip('replacement', 'new-task', 'new', 'p', 3, true),
+        clip('unchanged-copy', 'unchanged-copy-task', 'same', 'q', 1, false),
+        clip('unchanged-original', 'unchanged-task', 'same', 'q', 1, true),
+        {
+          ...source,
+          id: 'batch',
+          workflowRunId: 'render-head',
+          artifactKey: 'render-batch:product',
+          metadata: { branchSourceOwner: true },
+          payload: {
+            clips: [
+              { taskId: 'new-task', promptId: 'p' },
+              { taskId: 'unchanged-task', promptId: 'q' },
+            ],
+          },
+        },
+        {
+          ...source,
+          id: 'copied-batch',
+          workflowRunId: 'branch',
+          artifactKey: 'render-batch:copy-product',
+          metadata: { branchSourceOwner: false },
+          payload: {
+            clips: [
+              { taskId: 'copy-task', promptId: 'p' },
+              { taskId: 'unchanged-copy-task', promptId: 'q' },
+            ],
+          },
+        },
+      ],
+      total: 6,
+    });
     const result = await service.workspace('project', 'branch');
-    expect(effectTemplateMixSourceChanges(variant, result.materials))
-      .toEqual([{ slotId, material: expect.objectContaining({ id: 'replacement' }) }]);
-    expect(result.materials.filter((row) => row.activeSource && row.available).map((row) => row.id))
-      .toEqual(['replacement', 'unchanged-copy']);
+    expect(effectTemplateMixSourceChanges(variant, result.materials)).toEqual([
+      { slotId, material: expect.objectContaining({ id: 'replacement' }) },
+    ]);
+    expect(
+      result.materials.filter((row) => row.activeSource && row.available).map((row) => row.id),
+    ).toEqual(['replacement', 'unchanged-copy']);
     expect(result.draft.templates[0]?.needsAiFill).toBe(false);
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
@@ -175,23 +212,91 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('keeps the frozen Prompt slot maximum when an independent import is longer', async () => {
+    const { service, working } = harness();
+    const imported = {
+      ...source,
+      id: 'imported',
+      artifactKey: 'render-clip:import-task',
+      payload: {
+        ...(source.payload as object),
+        fileObjectId: 'import-file',
+        contentHash: 'import-sha',
+        durationSeconds: 30,
+        origin: 'EXTERNAL_IMPORT',
+        promptText: '用户导入的视频描述',
+        importedMaterial: { schemaVersion: 1 },
+      },
+    } as WorkingArtifact;
+    working.listArtifacts.mockResolvedValue({
+      items: [
+        source,
+        imported,
+        {
+          ...source,
+          id: 'batch',
+          artifactKey: 'render-batch:product',
+          payload: {
+            promptDurationMaxSeconds: 10,
+            clips: [{ taskId: 'task-1' }, { taskId: 'import-task' }],
+          },
+        },
+      ],
+      total: 3,
+    });
+    const result = await service.workspace('project', 'run');
+    expect(result.slotDurationMaxSeconds).toBe(10);
+    expect(result.materials.find((row) => row.id === 'imported')).toMatchObject({
+      duration: 30,
+      origin: 'EXTERNAL_IMPORT',
+      promptText: '用户导入的视频描述',
+    });
+  });
   it('replaces an ancestor repair source even while both committed batches are CURRENT', async () => {
     const { service, working } = harness();
-    const old = { ...source, workflowRunId: 'parent', payload: { ...(source.payload as object), promptId: 'prompt' } };
-    const replacement = { ...source, id: 'repaired', workflowRunId: 'run', artifactKey: 'render-clip:repair',
-      payload: { ...(source.payload as object), promptId: 'prompt', fileObjectId: 'new-file' } };
-    const oldBatch = { ...old, id: 'old-batch', artifactKey: 'render-batch:old-product',
-      payload: { clips: [{ taskId: 'task-1', promptId: 'prompt' }] } };
-    const newBatch = { ...replacement, id: 'new-batch', artifactKey: 'render-batch:new-product',
-      payload: { clips: [{ taskId: 'repair', promptId: 'prompt' }] } };
-    const candidate = { ...replacement, id: 'unadopted', artifactKey: 'render-clip:candidate',
-      payload: { ...(replacement.payload as object), fileObjectId: 'candidate-file' } };
+    const old = {
+      ...source,
+      workflowRunId: 'parent',
+      payload: { ...(source.payload as object), promptId: 'prompt' },
+    };
+    const replacement = {
+      ...source,
+      id: 'repaired',
+      workflowRunId: 'run',
+      artifactKey: 'render-clip:repair',
+      payload: { ...(source.payload as object), promptId: 'prompt', fileObjectId: 'new-file' },
+    };
+    const oldBatch = {
+      ...old,
+      id: 'old-batch',
+      artifactKey: 'render-batch:old-product',
+      payload: { clips: [{ taskId: 'task-1', promptId: 'prompt' }] },
+    };
+    const newBatch = {
+      ...replacement,
+      id: 'new-batch',
+      artifactKey: 'render-batch:new-product',
+      payload: { clips: [{ taskId: 'repair', promptId: 'prompt' }] },
+    };
+    const candidate = {
+      ...replacement,
+      id: 'unadopted',
+      artifactKey: 'render-clip:candidate',
+      payload: { ...(replacement.payload as object), fileObjectId: 'candidate-file' },
+    };
     const items = [old, oldBatch, candidate, newBatch, replacement] as WorkingArtifact[];
     working.listArtifacts.mockResolvedValue({ items, total: items.length });
     const result = await service.outputSourceWorkspace('project', 'run');
-    expect(result.materials.filter((material) => material.activeSource).map((material) => material.id)).toEqual(['repaired']);
-    expect(result.materials.find((material) => material.id === 'repaired')?.replacesMaterialIds).toContain(sourceId);
-    expect(result.materials.find((material) => material.id === sourceId)).toMatchObject({ available: true, activeSource: false });
+    expect(
+      result.materials.filter((material) => material.activeSource).map((material) => material.id),
+    ).toEqual(['repaired']);
+    expect(
+      result.materials.find((material) => material.id === 'repaired')?.replacesMaterialIds,
+    ).toContain(sourceId);
+    expect(result.materials.find((material) => material.id === sourceId)).toMatchObject({
+      available: true,
+      activeSource: false,
+    });
     expect((await service.materialSources('project', 'run')).pendingProjectCount).toBe(1);
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
@@ -206,18 +311,24 @@ describe('EffectTemplateMixService', () => {
     expect(result.draft.templates[0]!.workspace.variants).toEqual([]);
     expect(result.draft.templates[0]!.workspace.editVersion).toBe(5);
     expect(result.draft.templates[1]!.workspace.variants).toHaveLength(1);
-    expect(working.putNodeState).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX',
-      expect.objectContaining({ expectedRevision: 7 }));
+    expect(working.putNodeState).toHaveBeenCalledWith(
+      'project',
+      'run',
+      'TEMPLATE_MIX',
+      expect.objectContaining({ expectedRevision: 7 }),
+    );
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
   });
 
   it('rejects unknown projects and stale deletion revisions without saving', async () => {
     const { service, working } = harness();
-    await expect(service.deleteVariant('project', 'run', templateId, 'foreign-variant', 7))
-      .rejects.toThrow('当前成片工程不存在');
-    await expect(service.deleteVariant('project', 'run', templateId, variantId, 6))
-      .rejects.toThrow('混剪草稿已在其他页面更新');
+    await expect(
+      service.deleteVariant('project', 'run', templateId, 'foreign-variant', 7),
+    ).rejects.toThrow('当前成片工程不存在');
+    await expect(service.deleteVariant('project', 'run', templateId, variantId, 6)).rejects.toThrow(
+      '混剪草稿已在其他页面更新',
+    );
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
 
@@ -234,11 +345,13 @@ describe('EffectTemplateMixService', () => {
     );
     const value = draft();
     value.templates[0]!.materialRoleOverrides = { [sourceId]: 'HOOK' };
-    await expect(service.saveDraft('project', 'run', 7, value, true))
-      .resolves.toEqual({ draftRevision: 8 });
+    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({
+      draftRevision: 8,
+    });
     expect(working.putNodeState).toHaveBeenCalledOnce();
     expect(working.putNodeState.mock.calls[0]![3].state.templates[0]).toMatchObject({
-      materialRoleOverrides: { [sourceId]: 'HOOK' }, materialRoleEditVersion: 1,
+      materialRoleOverrides: { [sourceId]: 'HOOK' },
+      materialRoleEditVersion: 1,
     });
     expect(aiRuns.listRecent).toHaveBeenCalledOnce(); // Lock/source validation still runs.
     expect(aiRuns.sourceArtifacts).not.toHaveBeenCalled();
@@ -259,12 +372,21 @@ describe('EffectTemplateMixService', () => {
     const { service, working } = harness();
     const result = await service.outputSourceWorkspace('project', 'run');
     expect(result.draft).toEqual(draft());
-    expect(result.materials).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: sourceId, artifactRevision: 2, fileObjectId: 'file-1', available: true }),
-    ]));
+    expect(result.materials).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: sourceId,
+          artifactRevision: 2,
+          fileObjectId: 'file-1',
+          available: true,
+        }),
+      ]),
+    );
     expect(working.getNodeStateOrNull).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
     expect(result.artifacts).toEqual([source]);
-    expect(working.listArtifacts).toHaveBeenCalledExactlyOnceWith('project', { workflowRunId: 'run' });
+    expect(working.listArtifacts).toHaveBeenCalledExactlyOnceWith('project', {
+      workflowRunId: 'run',
+    });
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
   it('reads only the draft when pending output needs a name rather than source differences', async () => {
@@ -277,14 +399,27 @@ describe('EffectTemplateMixService', () => {
   });
   it('keeps bound clips for playback but excludes retired clips from the live source pool', async () => {
     const { service, working } = harness();
-    const replacement = { ...source, id: 'replacement', artifactKey: 'render-clip:new-task',
-      payload: { ...(source.payload as Record<string, unknown>), fileObjectId: 'file-new' } };
-    const batch = { ...source, id: 'batch', kind: 'STRUCTURED', artifactKey: 'render-batch:pool',
-      payload: { clips: [{ taskId: 'new-task' }] } } as WorkingArtifact;
+    const replacement = {
+      ...source,
+      id: 'replacement',
+      artifactKey: 'render-clip:new-task',
+      payload: { ...(source.payload as Record<string, unknown>), fileObjectId: 'file-new' },
+    };
+    const batch = {
+      ...source,
+      id: 'batch',
+      kind: 'STRUCTURED',
+      artifactKey: 'render-batch:pool',
+      payload: { clips: [{ taskId: 'new-task' }] },
+    } as WorkingArtifact;
     working.listArtifacts.mockResolvedValue({ items: [source, replacement, batch], total: 3 });
     const result = await service.outputSourceWorkspace('project', 'run');
-    expect(result.materials.find((material) => material.id === source.id)).toMatchObject({ activeSource: false });
-    expect(result.materials.find((material) => material.id === replacement.id)).toMatchObject({ activeSource: true });
+    expect(result.materials.find((material) => material.id === source.id)).toMatchObject({
+      activeSource: false,
+    });
+    expect(result.materials.find((material) => material.id === replacement.id)).toMatchObject({
+      activeSource: true,
+    });
     expect((await service.materialSources('project', 'run')).pendingProjectCount).toBe(1);
     expect(result.draftRevision).toBe(7);
     batch.payload = { clips: [] };
@@ -345,25 +480,23 @@ describe('EffectTemplateMixService', () => {
         fileObjectId: `file-${index}`,
       },
     }));
-    const create = vi
-      .fn()
-      .mockResolvedValue({
-        kind: 'CREATED',
-        run: {
-          id: 'ai',
-          templateId,
-          workflowRunId: 'run',
-          targetVariantId: null,
-          outputVariantId: null,
-          status: 'QUEUED',
-          stage: 'CLASSIFYING',
-          progress: 0,
-          errorCode: null,
-          errorMessage: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
+    const create = vi.fn().mockResolvedValue({
+      kind: 'CREATED',
+      run: {
+        id: 'ai',
+        templateId,
+        workflowRunId: 'run',
+        targetVariantId: null,
+        outputVariantId: null,
+        status: 'QUEUED',
+        stage: 'CLASSIFYING',
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
     const repository = {
       sourceArtifacts: vi.fn().mockResolvedValue([prompt, ...clips]),
       listRecent: vi.fn().mockResolvedValue([]),
@@ -1661,6 +1794,60 @@ describe('EffectTemplateMixService', () => {
     ]);
     await service.createAiRun('project', 'run', templateId, 7, 'invalid-zero-trim-key');
     expect(create.mock.calls[6]![0].initialSelections).toBeUndefined();
+
+    // An independent import owns its editable description; it must not borrow an upstream
+    // Prompt with a coincident ID. A 4-second import cannot join any of these 5-second slots.
+    const importedClip = {
+      ...clips[0]!,
+      id: 'imported-picture',
+      artifactKey: 'render-clip:imported',
+      payload: {
+        ...clips[0]!.payload,
+        origin: 'EXTERNAL_IMPORT',
+        promptText: '独立视频的用户描述',
+        importedMaterial: { schemaVersion: 1 },
+        fileObjectId: 'independent-file',
+      },
+    };
+    const shortImport = {
+      ...importedClip,
+      id: 'short-import',
+      artifactKey: 'render-clip:short-import',
+      payload: {
+        ...importedClip.payload,
+        promptId: 'short-prompt',
+        fileObjectId: 'short-file',
+        durationSeconds: 4,
+      },
+    };
+    const importState = structuredClone(state);
+    importState.templates[0]!.workspace.template.slots.forEach((slot) => {
+      slot.duration = 5;
+    });
+    working.getNodeState.mockResolvedValue({ revision: 7, state: importState });
+    aiRepository.sourceArtifacts.mockResolvedValue([
+      promptArtifact,
+      ...clips.slice(1),
+      importedClip,
+      shortImport,
+    ]);
+    await service.createAiRun('project', 'run', templateId, 7, 'import-key');
+    const importSnapshot = create.mock.calls[7]![0].snapshot;
+    expect(importSnapshot.durationFilteredImports).toBe(true);
+    expect(importSnapshot.materials).toHaveLength(6);
+    expect(
+      importSnapshot.materials.some((material: { id: string }) => material.id === 'short-import'),
+    ).toBe(false);
+    expect(
+      importSnapshot.materials.find(
+        (material: { id: string }) => material.id === 'imported-picture',
+      ),
+    ).toMatchObject({
+      prompt: '独立视频的用户描述',
+    });
+    expect(importSnapshot.promptArtifacts).toContainEqual(
+      expect.objectContaining({ id: importedClip.id, revision: importedClip.revision }),
+    );
   });
 
   it('starts a refill on a template that has already been packaged', async () => {
@@ -2366,18 +2553,42 @@ describe('EffectTemplateMixService', () => {
   });
 
   it('projects the original purpose onto a regenerated file in lightweight source polling', async () => {
-    const currentPrompt = { ...promptBatch, payload: { items: [{ id: 'stable-prompt', content: '原始镜头' }] } };
-    const currentClip = { ...source, id: 'replacement', artifactKey: 'render-clip:new-task',
-      payload: { ...(source.payload as object), promptId: 'stable-prompt', fileObjectId: 'new-file' } };
+    const currentPrompt = {
+      ...promptBatch,
+      payload: { items: [{ id: 'stable-prompt', content: '原始镜头' }] },
+    };
+    const currentClip = {
+      ...source,
+      id: 'replacement',
+      artifactKey: 'render-clip:new-task',
+      payload: {
+        ...(source.payload as object),
+        promptId: 'stable-prompt',
+        fileObjectId: 'new-file',
+      },
+    };
     const fill = inheritedFill();
-    Object.assign(fill.inputSnapshot.materials[0]!, { promptId: 'stable-prompt', prompt: '原始镜头', fileObjectId: 'old-file' });
-    const working = { getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
-      listArtifacts: vi.fn().mockResolvedValue({ items: [currentPrompt, currentClip] }) };
-    const aiRepository = { listRecent: vi.fn().mockResolvedValue([]), inheritedMixAiRuns: vi.fn().mockResolvedValue([fill]) };
-    const service = new EffectTemplateMixService(working as unknown as WorkflowWorkingService,
-      aiRepository as unknown as EffectTemplateMixAiRepository);
+    Object.assign(fill.inputSnapshot.materials[0]!, {
+      promptId: 'stable-prompt',
+      prompt: '原始镜头',
+      fileObjectId: 'old-file',
+    });
+    const working = {
+      getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
+      listArtifacts: vi.fn().mockResolvedValue({ items: [currentPrompt, currentClip] }),
+    };
+    const aiRepository = {
+      listRecent: vi.fn().mockResolvedValue([]),
+      inheritedMixAiRuns: vi.fn().mockResolvedValue([fill]),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
     const result = await service.materialSources('project', 'run');
-    expect(result.classificationPools?.[0]?.items).toEqual([{ materialId: 'replacement', role: 'HOOK', matchScore: 0.9 }]);
+    expect(result.classificationPools?.[0]?.items).toEqual([
+      { materialId: 'replacement', role: 'HOOK', matchScore: 0.9 },
+    ]);
     expect(result.materials[0]?.fileObjectId).toBe('new-file');
     expect(result.materials[0]).not.toHaveProperty('trimStartSeconds');
     currentPrompt.payload.items[0]!.content = '已修改的另一创意';

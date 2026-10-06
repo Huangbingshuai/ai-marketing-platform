@@ -62,6 +62,8 @@ export type EffectTemplateMixMaterial = {
   name: string;
   duration: number;
   purpose: EffectTemplateMixPurpose;
+  /** External video duration must never raise the render/Prompt slot-duration ceiling. */
+  origin?: 'AI_GENERATED' | 'EXTERNAL_IMPORT';
   compatiblePurposes: EffectTemplateMixPurpose[];
   artifactId: string;
   artifactKey: string;
@@ -109,22 +111,34 @@ export function effectTemplateMixSourceChanges(
     const boundId = variant.bindings[slot.id];
     if (!boundId) return [];
     const previous = materials.find((material) => material.id === boundId);
-    if (!previous) return [{ slotId: slot.id, blockedReason: '原素材来源无法确认，请手动替换素材' }];
+    if (!previous)
+      return [{ slotId: slot.id, blockedReason: '原素材来源无法确认，请手动替换素材' }];
     if (previous.available && previous.activeSource !== false) {
       const revision = variant.bindingRevisions[slot.id];
       if (typeof revision === 'number' && previous.artifactRevision === revision) return [];
-      return previous.duration + .001 < slot.duration
+      return previous.duration + 0.001 < slot.duration
         ? [{ slotId: slot.id, blockedReason: '新素材时长不足以保留当前片段长度' }]
         : [{ slotId: slot.id, material: previous }];
     }
-    const candidates = materials.filter((material) => material.available && material.activeSource !== false &&
-      (material.artifactKey === previous.artifactKey ||
-        (previous.sourcePromptId && material.sourcePromptId === previous.sourcePromptId)));
+    const candidates = materials.filter(
+      (material) =>
+        material.available &&
+        material.activeSource !== false &&
+        (material.artifactKey === previous.artifactKey ||
+          (previous.sourcePromptId && material.sourcePromptId === previous.sourcePromptId)),
+    );
     const files = new Map(candidates.map((material) => [material.fileObjectId, material]));
-    if (files.size !== 1) return [{ slotId: slot.id, blockedReason: files.size
-      ? '该素材存在多个新版本，无法自动确定替换来源' : '该素材没有可用的新版本，请手动替换素材' }];
+    if (files.size !== 1)
+      return [
+        {
+          slotId: slot.id,
+          blockedReason: files.size
+            ? '该素材存在多个新版本，无法自动确定替换来源'
+            : '该素材没有可用的新版本，请手动替换素材',
+        },
+      ];
     const material = [...files.values()][0]!;
-    if (material.duration + .001 < slot.duration)
+    if (material.duration + 0.001 < slot.duration)
       return [{ slotId: slot.id, blockedReason: '新素材时长不足以保留当前片段长度' }];
     return [{ slotId: slot.id, material }];
   });
@@ -132,15 +146,37 @@ export function effectTemplateMixSourceChanges(
 
 /** Render clips carry their frozen Prompt request duration, not a live Prompt draft setting. */
 export function effectTemplateMixSlotDurationLimit(
-  materials: readonly Pick<EffectTemplateMixMaterial, 'duration' | 'available'>[],
+  materials: readonly (Pick<EffectTemplateMixMaterial, 'duration' | 'available'> &
+    Pick<EffectTemplateMixMaterial, 'origin'>)[],
 ): number | null {
   const durations = materials
     .filter(
       (material) =>
-        material.available && Number.isFinite(material.duration) && material.duration > 0,
+        material.origin !== 'EXTERNAL_IMPORT' &&
+        material.available &&
+        Number.isFinite(material.duration) &&
+        material.duration > 0,
     )
     .map((material) => material.duration);
   return durations.length ? Math.max(...durations) : null;
+}
+
+/** Equal duration is legal; missing/invalid durations are never usable. */
+export function effectTemplateMixMaterialFitsSlot(duration: number, slotDuration: number): boolean {
+  return (
+    Number.isFinite(duration) &&
+    Number.isFinite(slotDuration) &&
+    duration > 0 &&
+    slotDuration > 0 &&
+    duration + 0.001 >= slotDuration
+  );
+}
+
+export function effectTemplateMixMaterialFitsTemplate(
+  duration: number,
+  slots: readonly Pick<EffectTemplateMixSlot, 'duration'>[],
+): boolean {
+  return slots.some((slot) => effectTemplateMixMaterialFitsSlot(duration, slot.duration));
 }
 
 export function effectTemplateMixSlotDurationValid(
@@ -334,14 +370,16 @@ export const resolveEffectTemplateMixMaterialRoles = (
   for (const material of materials) {
     const aliases = material.replacesMaterialIds ?? [];
     if (!result.has(material.id)) {
-      const previous = aliases.flatMap((id) => result.has(id) ? [result.get(id)!] : []);
+      const previous = aliases.flatMap((id) => (result.has(id) ? [result.get(id)!] : []));
       if (previous.length && new Set(previous.map((item) => item.role)).size === 1)
         result.set(material.id, { ...previous[0]!, materialId: material.id });
     }
     if (!Object.prototype.hasOwnProperty.call(overrides, material.id)) {
-      const choices = aliases.filter((id) => Object.prototype.hasOwnProperty.call(overrides, id))
+      const choices = aliases
+        .filter((id) => Object.prototype.hasOwnProperty.call(overrides, id))
         .map((id) => overrides[id]!);
-      if (choices.length && new Set(choices).size === 1) inheritedOverrides[material.id] = choices[0]!;
+      if (choices.length && new Set(choices).size === 1)
+        inheritedOverrides[material.id] = choices[0]!;
     }
   }
   for (const [materialId, role] of Object.entries({ ...inheritedOverrides, ...overrides })) {
@@ -506,10 +544,14 @@ export type EffectTemplateMixAiSnapshot = {
   manualMaterialRoles?: Record<string, EffectTemplateMixRole>;
   materialRoleEditVersion?: number;
   trimOnly?: boolean;
+  /** New inputs omit external videos that cannot fit any template slot. */
+  durationFilteredImports?: boolean;
   incremental?: {
     materialIds: string[];
     oldVariantIds: string[];
     packageNewVariants: boolean;
+    /** Omitted by historical AI-planned runs. */
+    combinationStrategy?: 'ADAPTIVE';
   };
   refreshBindings?: Array<{ slotId: string; materialId: string; artifactRevision: number }>;
   maxOutputVariants: number;

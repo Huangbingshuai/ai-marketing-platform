@@ -25,6 +25,7 @@ import {
   effectTemplateMixContentDuration,
   effectTemplateMixSourceChanges,
   effectTemplateMixSlotDurationLimit,
+  effectTemplateMixMaterialFitsTemplate,
   effectTemplateMixSlotDurationMessage,
   effectTemplateMixSlotDurationValid,
   PACKAGING_AUDIO_DB_CEILING,
@@ -1382,6 +1383,8 @@ const availableMaterials = computed(() => {
   const byFile = new Map<string, EffectTemplateMixMaterial>();
   for (const material of workspace.value?.materials ?? []) {
     if (!material.available || material.activeSource === false) continue;
+    if (material.origin === 'EXTERNAL_IMPORT' && !effectTemplateMixMaterialFitsTemplate(
+      material.duration, workspace.value?.template.slots ?? [])) continue;
     const fileId = material.fileObjectId || material.id;
     const previous = byFile.get(fileId);
     const rank = (id: string) =>

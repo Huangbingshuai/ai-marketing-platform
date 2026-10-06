@@ -6,6 +6,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   incrementalVariantId,
+  adaptiveIncrementalSelections,
   pendingAddedMaterials,
   validateIncrementalPlan,
 } from './effect-template-mix-incremental';
@@ -87,6 +88,53 @@ describe('same-branch incremental material provenance', () => {
         { ...append, selectionResult: [{ materialId: 'new' }] },
       ]),
     ).toEqual([]);
+  });
+  it('only flags additions that fit at least one slot, including equality', () => {
+    const timed = pool.map((item) => ({ ...item, duration: 4 }));
+    expect(
+      pendingAddedMaterials('t', timed, [baseline], [{ duration: 5 }, { duration: 8 }]),
+    ).toEqual([]);
+    expect(
+      pendingAddedMaterials('t', timed, [baseline], [{ duration: 4 }, { duration: 8 }]),
+    ).toEqual(['new']);
+  });
+});
+
+describe('adaptive incremental combination reuse', () => {
+  it('covers additions, preserves roles/durations and excludes existing exact films', () => {
+    const { snapshot, rows } = fixture();
+    const selections = adaptiveIncrementalSelections(snapshot, rows);
+    expect(selections).toHaveLength(6);
+    expect(selections.filter((item) => item.materialId === 'new')).toHaveLength(1);
+    expect(new Set(selections.map((item) => item.materialId)).size).toBe(6);
+    expect(selections.every((item) => item.variantIndex === 0)).toBe(true);
+    snapshot.materials.find((item) => item.id === 'new')!.duration = 3;
+    expect(() => adaptiveIncrementalSelections(snapshot, rows)).toThrow('未能全部');
+  });
+  it('adds more than one cover round when new structural combinations are worthwhile', () => {
+    const { snapshot, rows } = fixture();
+    for (let roleIndex = 1; roleIndex < roles.length - 1; roleIndex++) {
+      for (let i = 0; i < 3; i++) {
+        const id = `extra-${roleIndex}-${i}`;
+        snapshot.materials.push({ ...snapshot.materials[roleIndex]!, id, promptId: id });
+        rows.push({ ...rows[roleIndex]!, materialId: id });
+        snapshot.materialRoleAssignments![id] = roles[roleIndex]!;
+        snapshot.incremental!.materialIds.push(id);
+      }
+    }
+    snapshot.maxOutputVariants = 100;
+    const selections = adaptiveIncrementalSelections(snapshot, rows);
+    const count = new Set(selections.map((item) => item.variantIndex)).size;
+    expect(count).toBeGreaterThan(4);
+    expect(count).toBeLessThan(100);
+    const covered = new Set(selections.map((item) => item.materialId));
+    expect(snapshot.incremental!.materialIds.every((id) => covered.has(id))).toBe(true);
+    for (let index = 0; index < count; index++) {
+      const group = selections.filter((item) => item.variantIndex === index);
+      expect(
+        group.some((item) => snapshot.incremental!.materialIds.includes(item.materialId)),
+      ).toBe(true);
+    }
   });
 });
 

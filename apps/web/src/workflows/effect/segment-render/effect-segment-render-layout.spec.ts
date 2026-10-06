@@ -8,7 +8,9 @@ import serviceSource from './services/effect-segment-render.mock-service.ts?raw'
 
 describe('effect segment render material gallery layout', () => {
   it('offers revision-guarded selective refresh for changed and newly added Prompts', () => {
-    expect(pageSource).toContain('tasksNeedingUpdate.value.length + (workspace.value?.pendingPromptIds?.length ?? 0)');
+    expect(pageSource).toContain(
+      'tasksNeedingUpdate.value.length + (workspace.value?.pendingPromptIds?.length ?? 0)',
+    );
     expect(pageSource).toContain('refreshEffectSegmentRenderBatch(');
     expect(pageSource).toContain('expectedBatchRevision: current.batchRevision');
     expect(pageSource).toContain('expectedPromptArtifactRevision: current.promptArtifactRevision');
@@ -202,7 +204,9 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('原版本保持可回溯');
     expect(pageSource).not.toContain('批量删除');
     expect(pageSource).toContain('deleteEffectSegmentRenderMaterials');
-    expect(pageSource).toContain('importEffectSegmentRenderMaterials');
+    expect(pageSource).toContain('stageEffectSegmentImport');
+    expect(pageSource).toContain('confirmEffectSegmentImports');
+    expect(pageSource).toContain('describeEffectSegmentImport');
     expect(pageSource).toContain('exportEffectSegmentRenderMaterials');
     expect(pageSource).not.toContain('尚未接入');
     expect(pageSource).not.toContain('AUTO_MATCHED');
@@ -289,7 +293,9 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('const height = videoSize?.height || heightPart || 9;');
     expect(pageSource).toContain('effectSegmentRenderFrameStyle(62, previewVideoSize.value)');
     expect(pageSource).toContain('effectSegmentRenderFrameStyle(44, repairVideoSize.value)');
-    expect(pageSource.match(/@loadedmetadata="handle(?:Preview|Repair)VideoMetadata"/gu)).toHaveLength(2);
+    expect(
+      pageSource.match(/@loadedmetadata="handle(?:Preview|Repair)VideoMetadata"/gu),
+    ).toHaveLength(2);
     expect(pageSource).toContain('element.videoWidth > 0 && element.videoHeight > 0');
     expect(pageSource).toMatch(
       /const clearPreview = \(\): void => \{[\s\S]*?previewVideoSize\.value = null;[\s\S]*?repairVideoSize\.value = null;/,

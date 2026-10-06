@@ -2,9 +2,33 @@ import { describe, expect, it } from 'vitest';
 import {
   effectTemplateMixSlotDurationLimit,
   effectTemplateMixSlotDurationValid,
+  effectTemplateMixMaterialFitsSlot,
+  effectTemplateMixMaterialFitsTemplate,
 } from './effect-template-mix';
 
 describe('template slot duration from frozen render requests', () => {
+  it('does not allow imported videos to raise the Prompt-derived maximum', () => {
+    expect(
+      effectTemplateMixSlotDurationLimit([
+        { duration: 10, available: true },
+        { duration: 30, available: true, origin: 'EXTERNAL_IMPORT' },
+      ]),
+    ).toBe(10);
+    expect(
+      effectTemplateMixSlotDurationLimit([
+        { duration: 30, available: true, origin: 'EXTERNAL_IMPORT' },
+      ]),
+    ).toBeNull();
+  });
+  it('allows equal-duration clips, rejects oversized slots and invalid durations', () => {
+    expect(effectTemplateMixMaterialFitsSlot(4, 4)).toBe(true);
+    expect(effectTemplateMixMaterialFitsSlot(4, 5)).toBe(false);
+    expect(effectTemplateMixMaterialFitsSlot(NaN, 4)).toBe(false);
+    expect(effectTemplateMixMaterialFitsTemplate(4, [{ duration: 5 }, { duration: 8 }])).toBe(
+      false,
+    );
+    expect(effectTemplateMixMaterialFitsTemplate(4, [{ duration: 5 }, { duration: 4 }])).toBe(true);
+  });
   it.each([4, 8, 10, 15])(
     'uses the current pool request duration %s as the inclusive maximum',
     (duration) => {

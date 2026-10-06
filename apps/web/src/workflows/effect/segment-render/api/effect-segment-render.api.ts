@@ -1,5 +1,7 @@
 import type {
   ApiResponse,
+  EffectSegmentImportDraft,
+  EffectSegmentImportConfirmItem,
   DecideEffectSegmentRenderRepairData,
   DecideEffectSegmentRenderRepairRequest,
   EffectSegmentRenderBatch,
@@ -92,7 +94,10 @@ export const refreshEffectSegmentRenderBatch = (
   signal?: AbortSignal,
 ): Promise<ApiResponse<{ batch: EffectSegmentRenderBatch; replayed: boolean }>> =>
   requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/refresh`, {
-    method: 'POST', body: input, operation: '局部更新渲染素材', signal,
+    method: 'POST',
+    body: input,
+    operation: '局部更新渲染素材',
+    signal,
   });
 
 export const importEffectSegmentRenderMaterials = (
@@ -157,6 +162,63 @@ export const startEffectSegmentRenderRepair = (
       signal,
     },
   );
+
+export const stageEffectSegmentImport = (
+  projectId: string,
+  batchId: string,
+  file: File,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<{ draft: EffectSegmentImportDraft }>> => {
+  const body = new FormData();
+  body.append('idempotencyKey', idempotencyKey);
+  body.append('files', file, file.name);
+  return requestJson(
+    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/imports/drafts`,
+    { method: 'POST', body, signal, operation: '校验导入视频' },
+  );
+};
+export const describeEffectSegmentImport = (
+  projectId: string,
+  batchId: string,
+  id: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<{ draft: EffectSegmentImportDraft }>> =>
+  requestJson(
+    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/imports/drafts/${encodeURIComponent(id)}/describe`,
+    { method: 'POST', body: { idempotencyKey }, operation: 'AI 生成视频素材提示词' },
+  );
+export const getEffectSegmentImport = (
+  projectId: string,
+  batchId: string,
+  id: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<{ draft: EffectSegmentImportDraft }>> =>
+  requestJson(
+    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/imports/drafts/${encodeURIComponent(id)}`,
+    { method: 'GET', signal, operation: '读取视频素材提示词进度' },
+  );
+export const cancelEffectSegmentImport = (projectId: string, batchId: string, id: string) =>
+  requestJson(
+    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/imports/drafts/${encodeURIComponent(id)}/cancel`,
+    { method: 'POST', operation: '取消视频素材导入' },
+  );
+export const confirmEffectSegmentImports = (
+  projectId: string,
+  batchId: string,
+  input: {
+    items: EffectSegmentImportConfirmItem[];
+    expectedBatchRevision: number;
+    idempotencyKey: string;
+  },
+): Promise<
+  ApiResponse<{ batch: EffectSegmentRenderBatch; importedCount: number; replayed: boolean }>
+> =>
+  requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/imports/confirm`, {
+    method: 'POST',
+    body: input,
+    operation: '新增视频素材',
+  });
 
 export const decideEffectSegmentRenderRepair = (
   projectId: string,
