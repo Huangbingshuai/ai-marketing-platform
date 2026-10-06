@@ -12,7 +12,7 @@ import pytest
 from effect_template_mix.api import ApiError, InternalApi
 from effect_template_mix.caption_voice import CaptionVoiceHandler
 from effect_template_mix.packaging import narration_windows, plan_script
-from effect_template_mix.packaging_provider import PackagingError, PackagingProvider, PackagingTransientError, VoicePermissionError
+from effect_template_mix.packaging_provider import PackagingError, PackagingProvider, PackagingTransientError, VoicePermissionError, TimedVoicePcm
 from effect_template_mix.provider import ArkProvider
 from effect_template_mix.voice_preview import VoicePreviewHandler, VoicePreviewMessage
 from test_packaging import plan_result, script_snapshot, item
@@ -123,10 +123,10 @@ async def test_packaging_persists_frozen_voice_and_real_utilization() -> None:
     value['snapshot']['voiceProfile'] = {'id': 'selected', 'speaker': 'frozen_voice', 'resourceId': 'seed-tts-2.0'}
     api, ark, provider = AsyncMock(spec=InternalApi), AsyncMock(spec=ArkProvider), AsyncMock(spec=PackagingProvider)
     api.request.return_value = {'fileObjectId': 'saved'}
-    provider.voice.return_value = b'\x01\x00' * 24000
+    provider.voice.return_value = TimedVoicePcm(b'\x01\x00' * 24000, 0, 24000)
     handler = PackagingHandler(api, ark, provider, 1000)
     await handler.process_item('/run', {}, 'project', value)
-    provider.voice.assert_awaited_once_with(value['checkpoint']['script'][0]['text'], speaker='frozen_voice', resource_id='seed-tts-2.0')
+    provider.voice.assert_awaited_once_with(value['checkpoint']['script'][0]['text'], speaker='frozen_voice', resource_id='seed-tts-2.0', require_timing=True)
     cp = value['checkpoint']
     slot = cp['script'][0]['slotId']
     assert cp['narrationMetrics'][slot]['audioSeconds'] == 1

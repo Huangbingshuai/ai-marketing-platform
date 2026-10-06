@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -72,6 +73,26 @@ class VoicePermissionError(PackagingError):
     pass
 
 
+class TimedVoicePcm(bytes):
+    """PCM with spoken start AND end from this synthesis response (24 kHz frames)."""
+
+    speech_start_frame: int
+    speech_end_frame: int
+
+    def __new__(cls, pcm: bytes, speech_start_frame: int, speech_end_frame: int) -> 'TimedVoicePcm':
+        value = super().__new__(cls, pcm)
+        if (not isinstance(speech_start_frame, int) or isinstance(speech_start_frame, bool)
+                or not 0 <= speech_start_frame < len(pcm) // 2):
+            raise PackagingError('配音字词时间戳超出音频范围')
+        value.speech_start_frame = speech_start_frame
+        end = speech_end_frame
+        if (not isinstance(end, int) or isinstance(end, bool)
+                or not speech_start_frame < end <= len(pcm) // 2):
+            raise PackagingError('配音字词结束时间戳超出音频范围')
+        value.speech_end_frame = end
+        return value
+
+
 class PackagingProvider:
     def __init__(self, tts_key: str, speaker: str, resource_id: str, access_key: str,
                  secret_key: str, music_action: str, client: httpx.AsyncClient | None = None,
@@ -97,15 +118,20 @@ class PackagingProvider:
         if not self.tts_key:
             raise PackagingError('未配置豆包配音 API Key')
 
-    async def voice(self, text: str, *, speaker: str | None = None, resource_id: str | None = None) -> bytes:
+    async def voice(self, text: str, *, speaker: str | None = None, resource_id: str | None = None,
+                    require_timing: bool = False) -> bytes:
         self.require_tts_configuration()
         selected, resource = speaker or self.speaker, resource_id or self.resource_id
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,120}', selected) or resource not in ('seed-tts-2.0', 'seed-tts-1.0', 'seed-tts-1.0-concurr'):
             raise PackagingError('配音音色或资源配置无效')
         headers = {'X-Api-Key': self.tts_key, 'X-Api-Resource-Id': resource, 'X-Api-Request-Id': str(uuid4())}
+        audio_params: dict[str, Any] = {'format': 'pcm', 'sample_rate': 24000}
+        if require_timing:
+            audio_params['enable_subtitle' if resource == 'seed-tts-2.0' else 'enable_timestamp'] = True
         payload = {'user': {'uid': 'effect-template-mix'}, 'req_params': {'text': text, 'speaker': selected,
-                   'audio_params': {'format': 'pcm', 'sample_rate': 24000}}}
+                   'audio_params': audio_params}}
         chunks: list[bytes] = []
+        word_times: list[tuple[float, float]] = []
         size = 0
         complete = False
         async with self.client.stream('POST', 'https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse',
@@ -120,10 +146,23 @@ class PackagingProvider:
                 if not line.startswith('data:'):
                     continue
                 row = json.loads(line[5:].strip())
-                if row.get('code') == 20000000:
-                    complete = True
-                    break
-                if row.get('code') != 0:
+                # Subtitle packets can arrive AFTER audio packets, including on the terminal
+                # response. Their times are relative to the whole request, not packet arrival.
+                sentence = row.get('sentence')
+                if require_timing and sentence is not None:
+                    if not isinstance(sentence, dict) or not isinstance(sentence.get('words'), list):
+                        raise PackagingError('配音字词时间戳格式无效')
+                    for word in sentence['words']:
+                        if not isinstance(word, dict):
+                            raise PackagingError('配音字词时间戳格式无效')
+                        start, end = word.get('startTime'), word.get('endTime')
+                        if (not isinstance(start, (int, float)) or isinstance(start, bool)
+                                or not isinstance(end, (int, float)) or isinstance(end, bool)
+                                or not math.isfinite(start) or not math.isfinite(end)
+                                or not 0 <= start < end):
+                            raise PackagingError('配音字词时间戳无效')
+                        word_times.append((float(start), float(end)))
+                if row.get('code') not in (0, 20000000):
                     if 'speaker permission' in str(row.get('message', '')).lower():
                         raise VoicePermissionError('当前火山音色未获授权')
                     raise PackagingError('豆包配音合成失败')
@@ -133,9 +172,24 @@ class PackagingProvider:
                     if size > 24_000 * 2 * 120:
                         raise PackagingError('单句配音超过容量上限')
                     chunks.append(chunk)
+                if row.get('code') == 20000000:
+                    complete = True
+                    break
         if not complete or not size or size % 2:
             raise PackagingTransientError('配音流未完整结束，正在自动恢复')
-        return b''.join(chunks)
+        pcm = b''.join(chunks)
+        if require_timing:
+            if not word_times:
+                raise PackagingError('配音未返回字词时间戳，字幕未生成；请重做该槽位口播')
+            # Exact duplicate subtitle packets are harmless; backward/overlapping words are not.
+            ordered = list(dict.fromkeys(word_times))
+            if any(start < previous_end - .001 for (_, previous_end), (start, _) in zip(ordered, ordered[1:])):
+                raise PackagingError('配音字词时间戳顺序无效')
+            if ordered[-1][1] > len(pcm) / 48000 + .001:
+                raise PackagingError('配音字词时间戳超出音频范围')
+            return TimedVoicePcm(pcm, math.ceil(ordered[0][0] * 24000),
+                                 min(len(pcm) // 2, math.ceil(ordered[-1][1] * 24000)))
+        return pcm
 
     async def music_request(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         async with self._music_lock:

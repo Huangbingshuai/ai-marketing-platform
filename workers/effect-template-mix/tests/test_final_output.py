@@ -37,6 +37,16 @@ def test_default_caption_position_uses_lower_three_percent_bottom_margin() -> No
     assert style.endswith(',29,1')
 
 
+@pytest.mark.parametrize('with_box', [False, True])
+def test_export_never_rounds_actual_speech_onset_earlier(with_box: bool) -> None:
+    caption = [{'id': 'speech', 'text': '实际起音', 'start': .20001, 'end': .90501}]
+    boxes = {'speech': {'x': .5, 'y': .03, 'width': .9, 'scale': 1}} if with_box else {}
+    event = next(line for line in captions_ass(caption, 720, 960, 1, boxes).splitlines()
+                 if line.startswith('Dialogue:'))
+    assert event.startswith('Dialogue: 0,0:00:00.21,0:00:00.91,')
+    assert final_output.ass_time(.2, round_up=True) == '0:00:00.20'
+
+
 def test_editor_reworded_subtitle_burns_its_own_text_not_the_narration() -> None:
     # The editor may reword a caption while the spoken line keeps its original script text.
     ass = captions_ass([{'text': '限时五折', 'start': .2, 'end': .9}], 720, 960, 1)
@@ -106,16 +116,34 @@ def test_subtitles_share_a_row_only_when_they_share_a_track() -> None:
         ], 720, 960, 4)
 
 
-def test_caption_box_moves_wraps_and_scales_one_event() -> None:
+def test_caption_box_moves_and_wraps_one_event_with_fixed_font_size() -> None:
     caption = [{'id': 'a1', 'text': '限时五折优惠活动今天最后一天抓紧时间下单抢购', 'start': .2, 'end': .9}]
     # 0.25 of 720 puts the block centre at 180; a 0.4 wrap is 288px, so margins are 36/396.
     line = [row for row in captions_ass(caption, 720, 1280, 1, {'a1': {'x': .25, 'y': .08, 'width': .4, 'scale': 1}}).splitlines() if row.startswith('Dialogue')][0]
     assert line.startswith('Dialogue: 0,0:00:00.20,0:00:00.90,Default,,36,396,102,,')
     assert '\\N' in line  # CJK is wrapped here because libass itself only breaks at spaces
     assert line.count('\\N') >= 1 and line.endswith('抢购')
-    # Font scale is relative to the pipeline default of width / 22.
+    # Legacy editor scale metadata must not change the fixed packaged subtitle size.
     big = [row for row in captions_ass(caption, 720, 1280, 1, {'a1': {'x': .5, 'y': .5, 'width': .9, 'scale': 2}}).splitlines() if row.startswith('Dialogue')][0]
-    assert '{\\fs66}' in big and ',640,,' in big
+    assert '{\\fs16}' in big and ',640,,' in big
+    style = next(line for line in captions_ass(caption, 1920, 1080, 1).splitlines() if line.startswith('Style: Default'))
+    assert style.startswith('Style: Default,Noto Sans CJK SC,16,')
+
+
+def test_shared_caption_font_size_applies_to_every_caption_and_style() -> None:
+    captions = [
+        {'id': 'a1', 'text': '第一条字幕', 'start': .2, 'end': .9},
+        {'id': 'a2', 'text': '第二条字幕', 'start': 1, 'end': 1.8},
+    ]
+    boxes = {'a1': {'x': .5, 'y': .03, 'width': .9, 'scale': 1}}
+    ass = captions_ass(captions, 720, 960, 2, boxes, caption_font_size=24)
+    style = next(line for line in ass.splitlines() if line.startswith('Style: Default'))
+    events = [line for line in ass.splitlines() if line.startswith('Dialogue:')]
+    assert style.startswith('Style: Default,Noto Sans CJK SC,24,')
+    assert len(events) == 2
+    assert all('Default' in line for line in events)
+    assert '{\\fs24}' in events[0]
+    assert ',0,0,0,,' in events[1]  # no box still inherits the same 24 px default style
 
 
 def test_caption_without_a_box_keeps_the_pipeline_style_byte_for_byte() -> None:

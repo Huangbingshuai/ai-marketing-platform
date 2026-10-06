@@ -9,7 +9,7 @@ import pytest
 
 from effect_template_mix.api import InternalApi
 from effect_template_mix.packaging import PackagingHandler, SlotVisionOutput, narration_windows, slot_vision_key
-from effect_template_mix.packaging_provider import PackagingProvider, PackagingError
+from effect_template_mix.packaging_provider import PackagingProvider, PackagingError, TimedVoicePcm
 from effect_template_mix.provider import ArkProvider
 
 
@@ -94,13 +94,13 @@ async def test_global_tts_pool_bounds_calls_and_retains_successful_slots() -> No
     api.request.return_value = {'fileObjectId': 'saved'}
     provider = AsyncMock(spec=PackagingProvider)
     active = maximum = 0
-    async def voice(_: str) -> bytes:
+    async def voice(_: str, **__: Any) -> bytes:
         nonlocal active, maximum
         active += 1
         maximum = max(maximum, active)
         await asyncio.sleep(.01)
         active -= 1
-        return b'\0\0' * 24000
+        return TimedVoicePcm(b'\0\0' * 24000, 0, 24000)
     provider.voice.side_effect = voice
     worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), provider, 1000)
     value = snapshot()

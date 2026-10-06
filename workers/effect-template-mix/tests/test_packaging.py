@@ -15,7 +15,7 @@ import pytest
 from effect_template_mix.api import ApiError, InternalApi
 from effect_template_mix.packaging import PackagingHandler, ScriptOutput, ScriptRow, VisionOutput, plan_script, script_structure_issues, shorten_voice_line, valid_vision, vision_frame_windows, valid_frame_vision
 from effect_template_mix.packaging_media import pcm_wav, visible_intervals
-from effect_template_mix.packaging_provider import MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError, signed_headers
+from effect_template_mix.packaging_provider import MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError, TimedVoicePcm, signed_headers
 from effect_template_mix.provider import ArkProvider
 from effect_template_mix.consumer import Consumer
 from effect_template_mix.packaging import FrameVisionOutput, NarrationPlan, NarrationRepair, materialize_script, narration_windows, run_packaging_shards, safe_error_chain, understand_frames
@@ -370,13 +370,14 @@ async def test_item_resume_skips_saved_voice_and_creates_exact_captions() -> Non
     ark = AsyncMock(spec=ArkProvider)
     adapter = AsyncMock(spec=PackagingProvider)
     row = item()
-    row['checkpoint']['voices'] = {'line-1': {'fileObjectId': 'voice', 'start': 1, 'duration': 2.123, 'volume': 1}}
+    row['checkpoint']['voices'] = {'line-1': {'fileObjectId': 'voice', 'start': 1, 'duration': 2.123, 'volume': 1,
+        'speechRanges': [{'startFrame': 0, 'endFrame': 50952}]}}
     worker = PackagingHandler(api, ark, adapter, 1000)
     await worker.process_item('/run', {}, 'project', row)
     adapter.voice.assert_not_called()
     adapter.submit_music.assert_not_called()
     ark.structured.assert_not_called()
-    assert row['checkpoint']['captionLayoutVersion'] == 'SEGMENT_V2'
+    assert row['checkpoint']['captionLayoutVersion'] == 'SPEECH_V1'
     assert row['checkpoint']['captions'] == [{
         'id': row['checkpoint']['captions'][0]['id'], 'voiceLineId': 'line-1',
         'segmentIndex': 0, 'segmentCount': 1,
@@ -391,10 +392,10 @@ async def test_music_wait_overlaps_tts_and_reuses_both_checkpoints(monkeypatch: 
     adapter = AsyncMock(spec=PackagingProvider)
     voice_started, music_started = asyncio.Event(), asyncio.Event()
 
-    async def voice(_: str) -> bytes:
+    async def voice(_: str, **__: Any) -> bytes:
         voice_started.set()
         await asyncio.wait_for(music_started.wait(), 1)
-        return b'\0\0' * 24_000 * 2
+        return TimedVoicePcm(b'\0\0' * 24_000 * 2, 0, 48000)
 
     async def submit_music(_: str, __: float) -> str:
         music_started.set()
@@ -429,7 +430,8 @@ async def test_dead_music_task_is_forgotten_so_recovery_submits_a_new_song(monke
     adapter.query_music.side_effect = MusicTaskFailed('纯音乐生成失败，请重做本条音乐')
     row = item()
     row['checkpoint'].pop('music')
-    row['checkpoint']['voices'] = {'line-1': {'fileObjectId': 'voice', 'start': 1, 'duration': 2, 'volume': 1}}
+    row['checkpoint']['voices'] = {'line-1': {'fileObjectId': 'voice', 'start': 1, 'duration': 2, 'volume': 1,
+        'speechRanges': [{'startFrame': 0, 'endFrame': 48000}]}}
     row['checkpoint']['musicTaskId'] = 'dead-task'
     worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000)
     with pytest.raises(MusicTaskFailed):
@@ -473,7 +475,7 @@ async def test_unknown_music_submission_never_auto_resubmits() -> None:
 async def test_tts_overrun_is_not_silently_truncated() -> None:
     api = AsyncMock(spec=InternalApi)
     adapter = AsyncMock(spec=PackagingProvider)
-    adapter.voice.return_value = b'\0\0' * 24_000 * 12
+    adapter.voice.return_value = TimedVoicePcm(b'\0\0' * 24_000 * 12, 0, 288000)
     ark = AsyncMock(spec=ArkProvider)
     row = item()
     row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
@@ -500,7 +502,8 @@ async def test_voice_fit_auto_replans_only_failed_slot_and_preserves_siblings() 
 
     async def voice(text: str, **_: Any) -> bytes:
         calls.append(text)
-        return b'\0\0' * 24_000 * (12 if text in ('超长的口播文案', '缩短口播') else 2)
+        frames = 24_000 * (12 if text in ('超长的口播文案', '缩短口播') else 2)
+        return TimedVoicePcm(b'\0\0' * frames, 0, frames)
 
     adapter.voice.side_effect = voice
     ark = AsyncMock(spec=ArkProvider)
@@ -512,7 +515,8 @@ async def test_voice_fit_auto_replans_only_failed_slot_and_preserves_siblings() 
     row['checkpoint']['script'].append({'id': 'line-2', 'slotId': 's2', 'text': '已存口播',
         'start': 5, 'end': 9, 'factIds': ['f']})
     row['checkpoint']['voices'] = {'line-2': {'fileObjectId': 'existing', 'start': 5,
-        'duration': 1, 'volume': 1, 'segmentFrames': [24_000]}}
+        'duration': 1, 'volume': 1, 'segmentFrames': [24_000],
+        'speechRanges': [{'startFrame': 0, 'endFrame': 24000}]}}
     ark.structured.side_effect = [
         ScriptRow(**{**row['checkpoint']['script'][0], 'text': '缩短口播'}),
         NarrationPlan.model_validate({'lines': [{'id': 'replanned', 'slotId': 's1', 'text': '新短句',
@@ -525,7 +529,7 @@ async def test_voice_fit_auto_replans_only_failed_slot_and_preserves_siblings() 
     assert row['checkpoint']['voices']['line-2']['fileObjectId'] == 'existing'
     assert row['checkpoint']['music']['fileObjectId'] == 'music'
     assert row['checkpoint']['script'][0]['text'] == '新短句'
-    assert row['checkpoint']['captionLayoutVersion'] == 'SEGMENT_V3'
+    assert row['checkpoint']['captionLayoutVersion'] == 'SPEECH_V1'
     adapter.submit_music.assert_not_called()
 
 
@@ -533,7 +537,7 @@ async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_rep
     api = AsyncMock(spec=InternalApi)
     api.request.return_value = {'fileObjectId': 'repaired-voice'}
     adapter = AsyncMock(spec=PackagingProvider)
-    adapter.voice.side_effect = [b'\0\0' * 24_000 * 12, b'\0\0' * 24_000 * 2]
+    adapter.voice.side_effect = [TimedVoicePcm(b'\0\0' * 24_000 * n, 0, 24000 * n) for n in (12, 2)]
     ark = AsyncMock(spec=ArkProvider)
     row = item()
     row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
@@ -543,7 +547,8 @@ async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_rep
     row['snapshot']['variant']['slots'].insert(0, {'id': 'previous', 'role': 'HOOK'})
     previous = {'id': 'previous', 'slotId': 'previous', 'text': '前句', 'start': 0, 'end': 4, 'factIds': ['f']}
     row['checkpoint']['script'].insert(0, previous)
-    row['checkpoint']['voices'] = {'previous': {'fileObjectId': 'saved', 'start': 0, 'duration': .5, 'volume': 1}}
+    row['checkpoint']['voices'] = {'previous': {'fileObjectId': 'saved', 'start': 0, 'duration': .5, 'volume': 1,
+        'speechRanges': [{'startFrame': 0, 'endFrame': 12000}]}}
     ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][1], 'text': '播'})]
     await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
     assert row['stage'] == 'READY'

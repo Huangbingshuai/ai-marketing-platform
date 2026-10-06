@@ -19,8 +19,8 @@ from pydantic import BaseModel, ConfigDict
 
 from .api import ApiError, InternalApi
 from .packaging_media import slot_frames, music_wav, pcm_wav, visible_intervals
-from .packaging_captions import captions_for_voice, voice_text_parts
-from .packaging_provider import MusicRateLimited, MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError
+from .packaging_captions import captions_for_voice, voice_text_parts, speech_aligned_segment_frames
+from .packaging_provider import MusicRateLimited, MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError, TimedVoicePcm
 from .provider import ArkProvider, ProviderError, ProviderOutputError
 from .models import Material, Slot
 from .video import sample_frames
@@ -636,9 +636,11 @@ class PackagingHandler:
                     cp['voices'] = merged_voices
                 item['stage'] = stage
 
-        async def upload(role: str, data: bytes, segment_frames: list[int] | None = None) -> str:
+        async def upload(role: str, data: bytes, segment_frames: list[int] | None = None,
+                         speech_ranges: list[dict[str, int]] | None = None) -> str:
             result = await self.api.request('POST', f'{endpoint}/audio/{role}', headers=headers,
-                data={'projectId': project_id, **({'segmentFrames': json.dumps(segment_frames)} if segment_frames else {})},
+                data={'projectId': project_id, **({'segmentFrames': json.dumps(segment_frames)} if segment_frames else {}),
+                      **({'speechRanges': json.dumps(speech_ranges)} if speech_ranges else {})},
                 files={'file': (role + '.wav', data, 'audio/wav')})
             return str(result['fileObjectId'])
 
@@ -691,12 +693,15 @@ class PackagingHandler:
             async def voice_pcm(text: str) -> bytes:
                 profile = snapshot.get('voiceProfile')
                 if profile:
-                    return await self.provider.voice(text, speaker=profile['speaker'], resource_id=profile['resourceId'])
-                return await self.provider.voice(text)
+                    return await self.provider.voice(text, speaker=profile['speaker'], resource_id=profile['resourceId'], require_timing=True)
+                return await self.provider.voice(text, require_timing=True)
 
-            async def synthesize_clauses(line: dict[str, Any]) -> tuple[bytes, float, list[int]]:
+            async def synthesize_clauses(line: dict[str, Any]) -> tuple[bytes, float, list[int], list[dict[str, int]]]:
                 pcm_chunks: list[bytes] = []
                 frames: list[int] = []
+                speech_starts: list[int] = []
+                speech_ranges: list[dict[str, int]] = []
+                position = 0
                 clauses = voice_text_parts(line['text'])
                 if len(clauses) > 32:
                     raise PackagingError('本槽位口播断句过多，请重做文案后再配音')
@@ -705,10 +710,17 @@ class PackagingHandler:
                         pcm = await voice_pcm(clause)
                     if not pcm or len(pcm) % 2:
                         raise PackagingError('配音片段 PCM 数据无效')
+                    if not isinstance(pcm, TimedVoicePcm):
+                        raise PackagingError('配音缺少字词时间戳，字幕未生成')
                     pcm_chunks.append(pcm)
                     frames.append(len(pcm) // 2)
-                data, duration = pcm_wav(b''.join(pcm_chunks))
-                return data, duration, frames
+                    speech_starts.append(pcm.speech_start_frame)
+                    speech_ranges.append({'startFrame': position + pcm.speech_start_frame,
+                                          'endFrame': position + pcm.speech_end_frame})
+                    position += len(pcm) // 2
+                pcm = b''.join(pcm_chunks)
+                data, duration = pcm_wav(pcm)
+                return data, duration, speech_aligned_segment_frames(pcm, frames, speech_starts), speech_ranges
 
             async def synthesize(index: int, line: dict[str, Any]) -> None:
                 if redo_slots and line['slotId'] not in redo_slots:
@@ -727,7 +739,7 @@ class PackagingHandler:
                         await save('VOICE', {'narrationMetrics': metrics})
                     return
                 await guard()
-                data, duration, frames = await synthesize_clauses(line)
+                data, duration, frames, speech_ranges = await synthesize_clauses(line)
                 # Never truncate spoken words to force fit. A long sentence remains a failed draft.
                 limit = line['end']
                 if line['start'] + duration > limit:
@@ -749,15 +761,15 @@ class PackagingHandler:
                             json={'projectId': project_id, 'stage': 'VOICE', 'checkpoint': {'script': revised_lines}})
                         cp['script'] = revised_lines
                     await guard()
-                    data, duration, frames = await synthesize_clauses(line)
+                    data, duration, frames, speech_ranges = await synthesize_clauses(line)
                     if line['start'] + duration > limit:
                         raise VoiceFitOverrun(line['slotId'], duration, limit - line['start'])
                 upload_started = time.monotonic()
-                file_id = await upload('voice-' + line['id'], data, frames)
+                file_id = await upload('voice-' + line['id'], data, frames, speech_ranges)
                 row = timings.setdefault(line['slotId'], {})
                 row['voiceUploadSeconds'] = row.get('voiceUploadSeconds', 0) + time.monotonic() - upload_started
                 voices[line['id']] = {'fileObjectId': file_id, 'start': line['start'], 'duration': duration,
-                    'volume': 1, 'segmentFrames': frames}
+                    'volume': 1, 'segmentFrames': frames, 'speechRanges': speech_ranges}
                 if snapshot.get('voiceProfile'):
                     voices[line['id']]['voiceProfile'] = snapshot['voiceProfile']
                 window = windows[line['slotId']]
@@ -852,7 +864,12 @@ class PackagingHandler:
                 LOGGER.info('packaging voice slot recovery item=%s slots=%s', item['id'], len(failed_ids))
             caption_started = time.monotonic()
             cp['voices'] = voices
-            caption_layout = ('SEGMENT_V3' if all(voice.get('segmentFrames') for voice in voices.values())
+            if snapshot.get('redoCaptionsOnly') and any(not voice.get('speechRanges') for voice in voices.values()):
+                # Never replace missing synthesis timestamps with RMS/energy or text-duration guesses.
+                # Existing films remain readable; rebuilding subtitles needs a timed voice source.
+                raise PackagingError('口播缺少本次合成的字词时间戳，不能严格对齐字幕；请重新生成该槽位口播')
+            caption_layout = ('SPEECH_V1' if all(voice.get('speechRanges') for voice in voices.values())
+                              else 'SEGMENT_V3' if all(voice.get('segmentFrames') for voice in voices.values())
                 else 'SEGMENT_V2')
             if redo_slots:
                 # A local update cannot migrate untouched historical captions or recreate ones
@@ -867,8 +884,12 @@ class PackagingHandler:
                             refreshed_captions.extend(captions_for_voice(line, voices[line['id']]))
                         else:
                             voice = voices[line['id']]
+                            ranges = voice.get('speechRanges')
+                            if not ranges:
+                                raise PackagingError('配音缺少字词时间戳，字幕未生成')
                             refreshed_captions.append({'id': line['id'], 'text': line['text'],
-                                'start': voice['start'], 'end': voice['start'] + voice['duration']})
+                                'start': voice['start'] + ranges[0]['startFrame'] / 24000,
+                                'end': voice['start'] + ranges[-1]['endFrame'] / 24000})
                 refreshed_captions.sort(key=lambda caption: caption['start'])
                 await save('CAPTIONS', {'captions': refreshed_captions})
             elif (cp.get('captionLayoutVersion') != caption_layout or

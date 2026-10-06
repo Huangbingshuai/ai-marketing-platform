@@ -1,4 +1,4 @@
-"""Create adjacent subtitle cards from one already-synthesized narration clip."""
+"""Build subtitles only from source-bound word timestamps, never predicted durations."""
 
 import hashlib
 import math
@@ -10,6 +10,27 @@ from .packaging_provider import PackagingError
 # An enumeration comma belongs to the displayed phrase. Sentence punctuation does not.
 CAPTION_BREAK_MARKS = frozenset('，,。.!！？?；;：:…')
 CLOSING_QUOTES = frozenset('”’」』）》】')
+
+
+def speech_aligned_segment_frames(pcm: bytes, frames: list[int],
+                                  speech_starts: list[int] | None = None) -> list[int]:
+    """Legacy partition metadata, computed only from explicit synthesis word onsets."""
+    if not frames or any(n <= 0 for n in frames) or len(pcm) != sum(frames) * 2:
+        raise PackagingError('配音片段时长与合成音频不一致')
+    if speech_starts is not None:
+        if len(speech_starts) != len(frames) or any(
+                not isinstance(onset, int) or isinstance(onset, bool) or not 0 <= onset < count
+                for onset, count in zip(speech_starts, frames)):
+            raise PackagingError('配音字词时间戳与片段不一致')
+        boundaries = [0]
+        position = 0
+        for index, count in enumerate(frames):
+            if index:
+                boundaries.append(position + speech_starts[index])
+            position += count
+        boundaries.append(position)
+        return [end - start for start, end in zip(boundaries, boundaries[1:])]
+    raise PackagingError('配音缺少字词时间戳，不能按音量预测字幕位置')
 
 
 def _caption_and_speech_parts(text: str) -> list[tuple[str, str]]:
@@ -51,53 +72,31 @@ def voice_text_parts(text: str) -> list[str]:
     return [spoken for _, spoken in _caption_and_speech_parts(text)]
 
 
-def caption_boundaries(parts: list[str], duration: float) -> list[float]:
-    """Allocate saved voice duration by text length, without media I/O or TTS calls."""
-    if not math.isfinite(duration) or duration <= 0:
-        raise PackagingError('配音时长无效，不能生成字幕')
-    weights = [max(1, len(''.join(part.split()))) for part in parts]
-    total = sum(weights)
-    minimum = min(.12, duration / (len(parts) * 2))
-    ends: list[float] = []
-    elapsed = 0
-    for index, weight in enumerate(weights[:-1]):
-        elapsed += weight
-        lower = ends[-1] + minimum if ends else minimum
-        upper = duration - (len(parts) - index - 1) * minimum
-        target = duration * elapsed / total
-        target = max(lower, min(upper, target))
-        ends.append(round(target, 6))
-    ends.append(duration)
-    return ends
-
-
 def captions_for_voice(line: dict[str, Any], voice: dict[str, Any]) -> list[dict[str, Any]]:
     parts = caption_text_parts(line['text'])
-    frames = voice.get('segmentFrames')
-    if frames is not None:
-        if len(frames) != len(parts) or any(not isinstance(n, int) or isinstance(n, bool) or n <= 0 for n in frames):
-            raise PackagingError('配音片段与字幕数量不一致')
-        if abs(sum(frames) / 24000 - float(voice['duration'])) > .001:
-            raise PackagingError('配音片段时长与合成音频不一致')
-        total = 0
-        boundaries = []
-        for count in frames:
-            total += count
-            boundaries.append(total / 24000)
-    else:
-        boundaries = caption_boundaries(parts, float(voice['duration']))
-    start = float(voice['start'])
-    captions: list[dict[str, Any]] = []
-    for index, (part, end) in enumerate(zip(parts, boundaries, strict=True)):
-        absolute_end = round(float(voice['start']) + end, 6)
-        captions.append({
+    ranges = voice.get('speechRanges')
+    if ranges is None:
+        raise PackagingError('口播缺少本次合成的字词时间戳，不能严格对齐字幕；请重新生成该槽位口播')
+    if ranges is not None:
+        if not isinstance(ranges, list) or len(ranges) != len(parts):
+            raise PackagingError('配音语音区间与字幕数量不一致')
+        previous_end = 0
+        intervals: list[tuple[float, float]] = []
+        for row in ranges:
+            if not isinstance(row, dict) or set(row) != {'startFrame', 'endFrame'}:
+                raise PackagingError('配音语音区间无效')
+            begin, end = row['startFrame'], row['endFrame']
+            if (any(not isinstance(n, int) or isinstance(n, bool) for n in (begin, end))
+                    or not previous_end <= begin < end <= round(float(voice['duration']) * 24000)):
+                raise PackagingError('配音语音区间超出音频范围')
+            previous_end = end
+            offset = float(voice.get('offset', 0))
+            intervals.append((begin / 24000 - offset, end / 24000 - offset))
+        return [{
             'id': 'caption-' + hashlib.sha256(f"{line['id']}:{index}".encode()).hexdigest()[:24],
-            'voiceLineId': line['id'],
-            'segmentIndex': index,
-            'segmentCount': len(parts),
+            'voiceLineId': line['id'], 'segmentIndex': index, 'segmentCount': len(parts),
             'text': part,
-            'start': start,
-            'end': absolute_end,
-        })
-        start = absolute_end
-    return captions
+            'start': round(float(voice['start']) + begin, 6),
+            'end': round(float(voice['start']) + end, 6),
+        } for index, (part, (begin, end)) in enumerate(zip(parts, intervals, strict=True))]
+    raise PackagingError('口播缺少本次合成的字词时间戳，不能严格对齐字幕；请重新生成该槽位口播')

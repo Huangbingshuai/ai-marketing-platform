@@ -79,6 +79,8 @@ class Snapshot(BaseModel):
     materials: list[Material]
     incremental: IncrementalInput | None = None
     maxOutputVariants: int = Field(default=100, ge=1, le=100)
+    requireAllMaterials: bool = False
+    replaceExistingVariants: bool = False
     existingVariantBindings: list[list[IncrementalBinding]] = Field(default_factory=list)
 
     @property

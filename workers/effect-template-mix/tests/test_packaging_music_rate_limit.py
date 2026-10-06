@@ -99,7 +99,8 @@ async def test_query_rate_limit_reuses_saved_task_without_paid_resubmit(monkeypa
         'narrationLayoutVersion': 'SLOT_V1',
         'vision': [{'start': 0, 'end': 43, 'description': '画面'}],
         'script': [{'id': 'line', 'slotId': 's', 'text': '口播', 'start': 0, 'end': 5, 'factIds': ['f']}],
-        'voices': {'line': {'fileObjectId': 'voice', 'start': 0, 'duration': 2, 'volume': 1}},
+        'voices': {'line': {'fileObjectId': 'voice', 'start': 0, 'duration': 2, 'volume': 1,
+                            'speechRanges': [{'startFrame': 0, 'endFrame': 48000}]}},
         'musicTaskId': 'existing-task', 'musicSubmissionPending': False}}
     await PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000).process_item('/run', {}, 'project', row)
     adapter.submit_music.assert_not_called()

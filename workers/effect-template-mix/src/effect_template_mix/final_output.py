@@ -154,8 +154,9 @@ def output_size(ratio: str, resolution: str = '720p') -> tuple[int, int]:
     return short_edge, round(short_edge * second / first / 2) * 2
 
 
-def ass_time(value: float) -> str:
-    ticks = round(value * 100)
+def ass_time(value: float, *, round_up: bool = False) -> str:
+    # ASS has centisecond precision. Never round a spoken onset down before the word starts.
+    ticks = math.ceil(value * 100 - 1e-7) if round_up else round(value * 100)
     return f'{ticks // 360000}:{ticks // 6000 % 60:02d}:{ticks // 100 % 60:02d}.{ticks % 100:02d}'
 
 
@@ -232,7 +233,9 @@ def _caption_lanes(captions: list[dict[str, Any]], fps: int) -> dict[str, int]:
 
 
 def captions_ass(captions: list[dict[str, Any]], width: int, height: int, duration: float,
-                 boxes: dict[str, dict[str, float]] | None = None, fps: int = 30) -> str:
+                 boxes: dict[str, dict[str, float]] | None = None, fps: int = 30,
+                 caption_font_size: int = 16) -> str:
+    font_size = max(8, min(48, int(caption_font_size)))
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -240,13 +243,13 @@ PlayResY: {height}
 WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Noto Sans CJK SC,{max(24, round(width / 22))},&H00FFFFFF,&H00FFFFFF,&H00181818,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,{round(height * .03)},1
+Style: Default,Noto Sans CJK SC,{font_size},&H00FFFFFF,&H00FFFFFF,&H00181818,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,{round(height * .03)},1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     boxes = boxes or {}
     lanes = _caption_lanes(captions, fps)
-    font_size = max(24, round(width / 22))
+    # One checkpoint-level size applies to every subtitle, independent of output resolution.
     lane_step = max(28, round(font_size * 1.35))
     for index, row in enumerate(captions):
         start, end = row['start'], row['end']
@@ -263,9 +266,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # line-height above that baseline rather than a tiny offset from the frame edge.
         lane_bottom = 0 if lane == 0 else round(height * .03) + lane * lane_step
         if not box:
-            header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,{lane_bottom},,{escape_ass(raw)}\n"
+            header += f"Dialogue: 0,{ass_time(start, round_up=True)},{ass_time(end, round_up=True)},Default,,0,0,{lane_bottom},,{escape_ass(raw)}\n"
             continue
-        size = max(8, round(max(24, round(width / 22)) * float(box['scale'])))
+        size = font_size
         wrap = max(1, round(float(box['width']) * width))
         # Slack for real font metrics, so libass never decides a line is a pixel too wide.
         lines = wrap_caption(raw, max(1.0, wrap / size * 0.98))
@@ -274,7 +277,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         bottom = max(0, min(round(float(box['y']) * height) + lane * lane_step,
                              max(0, height - block)))
         text = f'{{\\fs{size}}}' + '\\N'.join(escape_ass(line) for line in lines)
-        header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,{left},{width - wrap - left},{bottom},,{text}\n"
+        header += f"Dialogue: 0,{ass_time(start, round_up=True)},{ass_time(end, round_up=True)},Default,,{left},{width - wrap - left},{bottom},,{text}\n"
     return header
 
 
@@ -452,7 +455,8 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         f'amix=inputs={1 + (1 if music else 0) + len(voices) + len(detached)}:normalize=0:duration=longest,'
         f'alimiter=limit=0.95,atrim=duration={duration}[audio]']
     (directory / 'captions.ass').write_text(
-        captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes'), frame_rate), encoding='utf-8')
+        captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes'), frame_rate,
+                     int(cp.get('captionFontSize', 16))), encoding='utf-8')
     # Re-apply the selected constant frame rate after concat/xfade. Every interval branch is CFR,
     # but concat can yield a non-integer average rate when adjacent slot durations end between
     # frame boundaries.
@@ -585,6 +589,10 @@ class FinalOutputHandler:
                 try:
                     await progress(1)
                     snapshot = await self.prepare_refresh(root, endpoint, headers, project_id, item)
+                    if snapshot.get('projectRefreshOnly'):
+                        await retry_request(lambda: self.api.request('POST', f'{endpoint}/complete-source-refresh',
+                            headers=headers, json={'projectId': project_id}))
+                        return
                     ids = ({c['fileObjectId'] for c in snapshot['timeline']['clips']}
                         | {a['fileObjectId'] for a in snapshot['timeline'].get('detachedAudios', [])}
                         | {v['fileObjectId'] for v in snapshot['packaging']['voices'].values()}
@@ -647,7 +655,7 @@ class FinalOutputHandler:
                     stage('item', item_started)
                     STAGE_CONTEXT.reset(context)
             async def work() -> None:
-                pending = iter(i for i in claim['items'] if i['status'] != 'COMPLETED')
+                pending = iter(i for i in claim['items'] if i['status'] in ('QUEUED', 'RUNNING'))
                 async def consume() -> None:
                     for item in pending:
                         try:

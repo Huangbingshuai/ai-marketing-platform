@@ -16,6 +16,7 @@ from effect_template_mix.models import (
     SamplingCheckpoint,
     TrimCheckpoint,
     TrimOutput,
+    Snapshot,
 )
 from effect_template_mix.provider import ArkProvider, ProviderError, TrimChoice
 from effect_template_mix.reliability import (
@@ -38,6 +39,20 @@ def material(index: int) -> Material:
         contentHash="a" * 64,
         fileObjectId=f"f{index}",
     )
+
+
+def test_full_batch_coverage_requirement_is_frozen_and_old_snapshots_still_parse() -> None:
+    source = {
+        'schemaVersion': 1, 'template': {'slots': []}, 'draftRevision': 1,
+        'targetVariantId': None, 'lockedBindings': [], 'promptArtifacts': [],
+        'materials': [material(0).model_dump()],
+    }
+    assert Snapshot.model_validate(source).requireAllMaterials is False
+    assert Snapshot.model_validate(source).replaceExistingVariants is False
+    assert Snapshot.model_validate({**source, 'requireAllMaterials': True}).requireAllMaterials is True
+    replacement = Snapshot.model_validate({**source, 'requireAllMaterials': True, 'replaceExistingVariants': True})
+    assert replacement.replaceExistingVariants is True
+    assert replacement.model_dump()['replaceExistingVariants'] is True
 
 
 def test_classification_chunks_preserve_every_material_once() -> None:

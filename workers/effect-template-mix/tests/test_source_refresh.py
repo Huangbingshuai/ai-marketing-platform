@@ -11,7 +11,7 @@ from effect_template_mix.api import InternalApi
 from effect_template_mix.final_output import FinalOutputHandler
 from effect_template_mix.models import Material
 from effect_template_mix.packaging import PackagingHandler, ScriptOutput
-from effect_template_mix.packaging_provider import PackagingProvider, PackagingError
+from effect_template_mix.packaging_provider import PackagingProvider, PackagingError, TimedVoicePcm
 from effect_template_mix.provider import ArkProvider
 
 
@@ -24,6 +24,31 @@ async def test_normal_or_ready_exports_never_call_trim_or_packaging() -> None:
     packaging.select_source_trims.assert_not_called()
     packaging.process_item.assert_not_called()
     api.request.assert_not_called()
+
+
+async def test_unexported_refresh_commits_projects_and_never_downloads_or_encodes(monkeypatch: Any) -> None:
+    from effect_template_mix import final_output as module
+    api = AsyncMock(spec=InternalApi)
+    refreshed = {'projectRefreshOnly': True, 'sourceRefresh': {'ready': True}}
+    api.request.side_effect = lambda _method, path, **_kwargs: {
+        'terminal': False, 'attemptToken': 'token', 'items': [
+            {'id': 'changed', 'status': 'QUEUED', 'snapshot': refreshed},
+            {'id': 'untouched', 'status': 'PENDING_RENDER', 'snapshot': {}},
+        ]} if path.endswith('/claim') else {'accepted': True}
+    encoder = AsyncMock()
+    monkeypatch.setattr(module, 'render', encoder)
+    worker = FinalOutputHandler(api, 1000)
+    worker._download = AsyncMock()  # type: ignore[method-assign]
+    message = AsyncMock()
+    await worker.handle(message, {'projectId': '11111111-1111-4111-8111-111111111111',
+        'runId': '22222222-2222-4222-8222-222222222222'})
+    calls = [call.args[1] for call in api.request.call_args_list]
+    assert any(path.endswith('/changed/complete-source-refresh') for path in calls)
+    assert any(path.endswith('/finish') for path in calls)
+    assert not any('/untouched/' in path or path.endswith('/video') for path in calls)
+    worker._download.assert_not_called()
+    encoder.assert_not_called()
+    message.ack.assert_awaited_once()
 
 
 @pytest.mark.parametrize('trims_ready', [False, True])
@@ -66,7 +91,7 @@ async def test_redo_only_changed_slots_preserves_deleted_sibling_audio_captions_
     api = AsyncMock(spec=InternalApi)
     api.request.return_value = {'fileObjectId': 'new-voice'}
     adapter = AsyncMock(spec=PackagingProvider)
-    adapter.voice.return_value = b'\0\0' * 24000
+    adapter.voice.return_value = TimedVoicePcm(b'\0\0' * 24000, 0, 24000)
     ark = AsyncMock(spec=ArkProvider)
     row = {'id': 'i', 'stage': 'VISION', 'snapshot': {
         'narrationLayoutVersion': 'SLOT_V1', 'redoSlotIds': ['a'], 'preserveMusic': True,
@@ -103,7 +128,7 @@ async def test_redo_only_changed_slots_preserves_deleted_sibling_audio_captions_
     await worker.process_item('/run', {}, 'project', row)
     cp = row['checkpoint']
     assert selected_visions == ['a']
-    adapter.voice.assert_awaited_once_with('新口播')
+    adapter.voice.assert_awaited_once_with('新口播', require_timing=True)
     adapter.submit_music.assert_not_called()
     assert cp['music'] == baseline['music'] and cp['captionBoxes'] == baseline['captionBoxes']
     if deleted_script:
