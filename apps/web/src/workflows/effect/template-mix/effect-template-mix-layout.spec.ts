@@ -13,9 +13,41 @@ const pageSource = rawPageSource.replace(/\r\n/gu, '\n');
 const timelineSource = rawTimelineSource.replace(/\r\n/gu, '\n');
 
 describe('effect template mix workbench layout', () => {
+  it('regenerates the whole batch from the toolbar independently of selected-film locks', () => {
+    expect(pageSource).toContain('const refill = (): void => void startAiFill(null);');
+    expect(pageSource).not.toContain('const refill = (): void => void startAiFill(selectedVariant.value);');
+    const eligibility = pageSource.split('const aiFillBlockReason =')[1]?.split('const selectedBindingMetadata')[0];
+    expect(eligibility).toContain('const candidates = availableMaterials.value');
+    expect(eligibility).not.toContain('selectedVariant');
+    expect(eligibility).not.toContain('manualSlotIds');
+    expect(pageSource).toContain('按模板规则整批生成成片；原分支保留，完成后查看新批次');
+    expect(pageSource).toContain('const appendNewMaterials = (): void => void startAiFill(null, false, true);');
+    expect(pageSource).toContain('void startAiFill(selectedVariant.value, run.operation');
+  });
+  it('highlights stale template cards with an amber border even while selected', () => {
+    const row = pageSource.split('class="template-list__row"')[1]?.split('<button')[0];
+    expect(row).toContain("'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(pendingAddedMaterialIds[entry.id]?.length)");
+    expect(row).toContain('active: entry.id === activeTemplateId');
+    const style = pageSource.split('.template-list__row.is-source-stale {')[1]?.split('}')[0];
+    expect(style).toContain('border-color: #f59e0b;');
+    expect(style).toContain('box-shadow: inset 0 0 0 1px #f59e0b;');
+    expect(style).not.toContain('background:');
+    expect(pageSource.indexOf('.template-list__row.is-source-stale {'))
+      .toBeGreaterThan(pageSource.indexOf('.template-list__row.active {'));
+  });
+  it('labels affected film counts inside template cards instead of ambiguous artifact counts', () => {
+    expect(pageSource).toContain('{{ templatePendingUpdateCount(entry) }} 个成片待更新');
+    expect(pageSource).not.toContain('{{ templatePendingUpdateCount(entry) }} 个待更新');
+    const templateSelection = pageSource.split('class="template-list__select"')[1]?.split('</button>')[0];
+    expect(templateSelection).toContain('个成片待更新');
+    expect(pageSource).toContain('.template-list__select .source-update-badge');
+    expect(pageSource).toContain('justify-self: start;');
+  });
   it('refreshes authoritative sources without clearing the library or replacing unsaved edits', () => {
     expect(pageSource).toContain('loadEffectTemplateMixSources(projectId, workflowRunId, request.signal)');
     expect(pageSource).toContain('sourceMaterials.value = data.materials');
+    expect(pageSource).toContain('if (data.classificationPools) classificationPools.value = data.classificationPools');
+    expect(pageSource).not.toContain('watch([activeTemplateId, activeClassificationPool]');
     expect(pageSource).toContain('entry.workspace.materials = data.materials');
     expect(pageSource).toContain("saveState.value === 'saved' && !pendingSave");
     expect(pageSource).toContain('projectId !== props.projectId || workflowRunId !== props.workflowRunId');
@@ -24,8 +56,20 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('effectTemplateMixSourceChanges(variant, sourceMaterials.value)');
     expect(pageSource).toContain('templatePendingUpdateCount(entry)');
     expect(pageSource).toContain('variantSourceChanges(variant).length');
-    expect(pageSource).toContain('请在成片输出节点执行局部更新');
+    expect(pageSource).toContain('@click="updateSourceProjects"');
+    expect(pageSource).not.toContain('请在成片输出节点执行局部更新');
     expect(pageSource).not.toContain('@click="refreshSourceTrims"');
+  });
+  it('marks changed track clips and keeps project actions readable in narrow panels', () => {
+    expect(timelineSource).toContain("'is-source-stale': pendingSourceSlotIds.has(slot.id)");
+    expect(timelineSource).toContain('effectTemplateMixSourceChanges(props.variant, props.materials)');
+    expect(timelineSource).toContain('border: 2px solid #f59e0b;');
+    expect(timelineSource).toContain('class="source-stale-label">待更新');
+    expect(pageSource).toContain('minmax(min(100%, 130px), 1fr)');
+    expect(pageSource).toContain('minmax(min(100%, 145px), 1fr)');
+    expect(pageSource).toContain('grid-auto-rows: minmax(64px, auto);');
+    expect(pageSource).toContain('updateMixSourceProjects(context.project, run.id, ids)');
+    expect(pageSource).toContain('sourceUpdateRun.value = null;');
   });
   it('shows prefill role filters and saves material categories independently of timeline bindings', () => {
     expect(pageSource).toContain('<div class="material-role-filters" aria-label="素材归槽筛选">');
@@ -305,7 +349,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const availableMaterials = computed(');
     expect(pageSource).toContain('const expiredMaterialCount = computed(');
     expect(pageSource).toContain('const aiFillBlockReason = computed<string | null>(');
-    expect(pageSource).toContain('if (!refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {');
+    expect(pageSource).toContain('if (!target && !refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {');
     expect(pageSource).toContain("mutating.value = run.operation !== 'APPEND';");
     expect(pageSource).toContain('class="material-expired-banner"');
     expect(pageSource).not.toContain('class="material-expired-badge"');
@@ -766,9 +810,6 @@ describe('effect template mix workbench layout', () => {
     );
     expect(pageSource).toContain(
       '// Captured before the trim is written, so undo steps back to the untrimmed caption.',
-    );
-    expect(pageSource).toContain(
-      '// Captured before the new size is written, so undo steps back to the previous size.',
     );
   });
   it('lines any lane up against any other lane with one shared snap guide', () => {
@@ -1254,14 +1295,10 @@ describe('effect template mix workbench layout', () => {
     );
     expect(pageSource).toContain("box.querySelector<HTMLElement>('.player-caption')");
     expect(pageSource).toContain('setPointerCapture(event.pointerId)');
-    // A solid dot on the top-left corner scales the text; dragging it up enlarges.
-    expect(pageSource).toContain('class="caption-scale-handle"');
-    expect(pageSource).toContain("onCaptionBoxPointerDown($event, 'SCALE')");
-    expect(pageSource).toContain("'MOVE' | 'LEFT' | 'RIGHT' | 'SCALE'");
-    expect(pageSource).toContain('border-radius: 50%');
-    expect(pageSource).toContain('cursor: nwse-resize');
-    expect(pageSource).toContain('frameBottom: frame.bottom');
-    expect(pageSource).toContain('(origin.scale * distance) / startDistance');
+    // Font size is fixed at 16; only position and wrapping width remain editable.
+    expect(pageSource).not.toContain('class="caption-scale-handle"');
+    expect(pageSource).toContain("'MOVE' | 'LEFT' | 'RIGHT'");
+    expect(pageSource).not.toContain('(origin.scale * distance) / startDistance');
     // Five snap lines: the player's four borders plus the middle column, nothing else.
     expect(pageSource).toContain('class="caption-guide is-vertical"');
     expect(pageSource).toContain('class="caption-guide is-horizontal"');
@@ -1279,10 +1316,10 @@ describe('effect template mix workbench layout', () => {
     // The caption stops on the frame's edge, so the clamp uses the frame width, not the wrap box.
     expect(pageSource).toContain('frameWidth: frame.width / bounds.width');
     expect(pageSource).toContain('const half = Math.min(0.5, drag.frameWidth / 2)');
-    // Font size sits next to the text box and is stored as a scale of the pipeline default.
+    // The editor shows the same fixed font size as the preview and rendered output.
     expect(pageSource).toContain('class="caption-font-size"');
-    expect(pageSource).toContain('aria-label="增大字号"');
-    expect(pageSource).toContain('const changeCaptionScale = (step: number)');
+    expect(pageSource).toContain('字号 {{ stageCaptionFontSize }}');
+    expect(pageSource).not.toContain('aria-label="增大字号"');
     // Geometry is checkpoint state, so it is persisted rather than preview-only.
     expect(pageSource).toContain('checkpoint.captionBoxes = { ...(checkpoint.captionBoxes ?? {}),');
     expect(pageSource).toContain(
@@ -1337,8 +1374,8 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain(
       "const ids = mode === 'LEFT' || mode === 'RIGHT' ? [caption.id] : selectedCaptionIds.value;",
     );
-    // Scaling the set keeps one size, and the stepper is offered for a multi-selection too.
-    expect(pageSource).toContain('for (const id of ids) boxes[id] = { ...captionBox(id), scale };');
+    // Group selection still shows the fixed subtitle size without changing checkpoint scales.
+    expect(pageSource).toContain('字号 {{ stageCaptionFontSize }}');
     expect(pageSource).toContain('已选中 {{ selectedCaptionIds.length }} 条字幕');
     expect(pageSource).toContain('selectedCaptionIds.includes(previewCaption.id)');
   });

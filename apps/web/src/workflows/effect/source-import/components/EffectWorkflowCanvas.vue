@@ -53,7 +53,7 @@ const currentNode = computed(() => nodes[props.activeStep] ?? nodes[0]);
 const currentStepLabel = computed(() => String(props.activeStep + 1).padStart(2, '0'));
 const staleCount = (index: number) => props.staleCounts?.[index] ?? 0;
 const statusText = (index: number) => staleCount(index) > 0
-  ? `待更新 · ${staleCount(index)}` : nodes[index]?.status;
+  ? '待更新' : nodes[index]?.status;
 
 const nodeState = (index: number): NodeState => {
   if (index === props.activeStep) return 'current';
@@ -86,7 +86,7 @@ const nodeState = (index: number): NodeState => {
         <article class="effect-flow__node" :class="[nodeState(index), { 'needs-update': staleCount(index) > 0 }]">
           <button
             type="button" class="effect-flow__main"
-            :title="staleCount(index) > 0 ? `${node.title}有 ${staleCount(index)} 项内容需要更新，旧结果仍可查看` : node.title"
+            :title="staleCount(index) > 0 ? `${node.title}待更新，旧结果仍可查看` : node.title"
             @click="emit('select', index)">
             <span class="effect-flow__number">
               <AlertCircle v-if="staleCount(index) > 0" :size="17" :stroke-width="2.5" aria-hidden="true" />

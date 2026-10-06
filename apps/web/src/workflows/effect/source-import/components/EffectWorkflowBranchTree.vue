@@ -184,6 +184,7 @@ onBeforeUnmount(() => {
             <div class="branch-toolbar__legend">
               <span><i class="legend-current" />当前工作流路径</span>
               <span><i class="legend-other" />其他版本</span>
+              <span><i class="legend-stale" />待更新</span>
             </div>
             <button type="button" class="branch-copy-button"
               :disabled="switching || loading || Boolean(error) || forkDisabled || !tree?.activeWorkflowRunId"
@@ -305,6 +306,7 @@ onBeforeUnmount(() => {
                   :class="{
                     'branch-node--active': node.onActivePath,
                     'branch-node--current': node.isCurrentStage,
+                    'branch-node--stale': node.status === 'STALE',
                   }"
                   :disabled="switching || loading || Boolean(error)"
                   :style="{ left: `${node.x}px`, top: `${node.y}px` }"
@@ -328,8 +330,9 @@ onBeforeUnmount(() => {
                         ? '模板创建时间；旧草稿可能未记录'
                         : '已确认工作副本的创建时间；旧 revision 的单独确认时间不可追溯'
                     "
-                    >{{ artifactCreatedAtText(node.createdAt) }}</span
+                  >{{ artifactCreatedAtText(node.createdAt) }}</span
                   >
+                  <span v-if="node.status === 'STALE'" class="branch-node__stale">待更新</span>
                 </button>
               </div>
             </div>
@@ -456,6 +459,7 @@ onBeforeUnmount(() => {
 .legend-other {
   background: #a2b3cd;
 }
+.legend-stale { background: #f59e0b; }
 .branch-scroll {
   flex: 1;
   min-height: 0;
@@ -663,6 +667,16 @@ onBeforeUnmount(() => {
   box-shadow:
     0 0 0 5px rgba(223, 53, 71, 0.14),
     0 5px 18px rgba(211, 47, 63, 0.2);
+}
+.branch-node--stale {
+  border-color: #f59e0b;
+  background: #fffaf0;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18), 0 5px 15px rgba(146, 92, 12, 0.12);
+}
+.branch-node__stale {
+  color: #b45309;
+  font-size: 10px;
+  font-weight: 700;
 }
 .branch-node:disabled {
   cursor: wait;

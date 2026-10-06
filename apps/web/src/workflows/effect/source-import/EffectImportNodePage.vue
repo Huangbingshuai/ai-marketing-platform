@@ -61,7 +61,11 @@ import EffectTemplateMixNodePage from '../template-mix/EffectTemplateMixNodePage
 import EffectFinalOutputNodePage from '../final-output/EffectFinalOutputNodePage.vue';
 import { clearEffectWorkspacePrefetches } from '../shared/effect-workspace-prefetch';
 import { useEffectCanvasFreshness } from '../shared/effect-canvas-freshness';
-import { effectBranchNavigationMatches, effectTemplateStepNavigation, type EffectBranchNavigation } from '../shared/effect-branch-navigation';
+import {
+  effectBranchNavigationMatches,
+  effectTemplateStepNavigation,
+  type EffectBranchNavigation,
+} from '../shared/effect-branch-navigation';
 import { confirmDiscardEffectEdit } from '../shared/effect-edit-session';
 import {
   advanceEffectImportDraft,
@@ -637,7 +641,10 @@ const refreshRemovedProducts = async (): Promise<void> => {
   }
 };
 
-const loadProject = async (projectId: string, destination?: EffectBranchNavigation): Promise<void> => {
+const loadProject = async (
+  projectId: string,
+  destination?: EffectBranchNavigation,
+): Promise<void> => {
   if (!destination) branchNavigation.value = null;
   branchController?.abort();
   branchPrefetchController?.abort();
@@ -703,13 +710,18 @@ const loadProject = async (projectId: string, destination?: EffectBranchNavigati
     const loadedSourceDraft = draft.value as EffectImportDraft | null;
     sourceEditing.value = overview.data.run?.isTemporaryBranch
       ? overview.data.run.editNodeId === 'SOURCE_IMPORT'
-      : !(loadedSourceDraft?.products.some((product) => product.sourcePackageRevision !== null) ?? false);
+      : !(
+          loadedSourceDraft?.products.some((product) => product.sourcePackageRevision !== null) ??
+          false
+        );
     const sourceNodeState = overview.data.nodeStates.find(
       (item) => item.nodeId === 'SOURCE_IMPORT',
     );
     nodeStateRevision.value = sourceNodeState?.revision ?? 0;
     const explicitDestination = effectBranchNavigationMatches(
-      destination, projectId, workspace.value.workflowRunId,
+      destination,
+      projectId,
+      workspace.value.workflowRunId,
     );
     const restoredNodeId = explicitDestination
       ? destination.nodeId
@@ -757,7 +769,8 @@ const refreshActiveRunInPlace = (
       let nextWorkspace = workspaceResponse.data.workspace;
       if (nextWorkspace.currentMode === 'BATCH') {
         const normalized = await switchEffectImportMode(projectId, {
-          mode: 'SINGLE', expectedRevision: nextWorkspace.revision,
+          mode: 'SINGLE',
+          expectedRevision: nextWorkspace.revision,
         });
         nextWorkspace = normalized.data.workspace;
       }
@@ -768,15 +781,22 @@ const refreshActiveRunInPlace = (
       if (currentProjectId.value !== projectId) return;
 
       clearEffectWorkspacePrefetches();
-      const productId = draftResponse.data.products.find((product) => product.status === 'ACTIVE')?.id;
+      const productId = draftResponse.data.products.find(
+        (product) => product.status === 'ACTIVE',
+      )?.id;
       try {
         if (previousStep === 1)
           await prefetchEffectExtractionWorkspace({ projectId, draftId: draftResponse.data.id });
         else if (previousStep === 2)
-          await prefetchEffectPromptWorkspace({ projectId, workflowRunId: nextWorkspace.workflowRunId });
+          await prefetchEffectPromptWorkspace({
+            projectId,
+            workflowRunId: nextWorkspace.workflowRunId,
+          });
         else if (previousStep === 3 && productId)
           await prefetchEffectSegmentRenderWorkspace({
-            projectId, workflowRunId: nextWorkspace.workflowRunId, productId,
+            projectId,
+            workflowRunId: nextWorkspace.workflowRunId,
+            productId,
           });
       } catch {
         // The node's own loader displays a recoverable error if its prefetch fails.
@@ -803,9 +823,8 @@ const refreshActiveRunInPlace = (
       sourceEditing.value = overview.data.run?.isTemporaryBranch
         ? overview.data.run.editNodeId === 'SOURCE_IMPORT'
         : !nextSourceDraft.products.some((product) => product.sourcePackageRevision !== null);
-      nodeStateRevision.value = overview.data.nodeStates.find(
-        (item) => item.nodeId === 'SOURCE_IMPORT',
-      )?.revision ?? 0;
+      nodeStateRevision.value =
+        overview.data.nodeStates.find((item) => item.nodeId === 'SOURCE_IMPORT')?.revision ?? 0;
       activeStep.value = previousStep;
       selectedProductIds.value = new Set();
       saveState.value = 'clean';
@@ -815,12 +834,17 @@ const refreshActiveRunInPlace = (
       requestAnimationFrame(() => window.scrollTo({ top: previousScrollY, behavior: 'auto' }));
       if (previousStep === 0) void refreshRemovedProducts();
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : '编辑工作区切换失败，正在重新加载', 'error');
+      showNotice(
+        error instanceof Error ? error.message : '编辑工作区切换失败，正在重新加载',
+        'error',
+      );
       if (currentProjectId.value === projectId) await loadProject(projectId);
     } finally {
       if (showCurtain) runContextSwitching.value = false;
     }
-  })().finally(() => { activeRunRefresh = null; });
+  })().finally(() => {
+    activeRunRefresh = null;
+  });
   return activeRunRefresh;
 };
 
@@ -841,14 +865,17 @@ const handleTemplateMixWorkflowRunChange = async (detail?: {
     !previousRunId ||
     workspace.value?.workflowRunId === previousRunId ||
     workspace.value?.workflowRunId !== detail.workflowRunId
-  ) return;
+  )
+    return;
   const stage = detail.kind === 'FILL' ? '智能填充' : '成片包装';
-  const from = detail.fromRevision === null
-    ? `原${stage}分支`
-    : `${stage}版本${String(detail.fromRevision).padStart(2, '0')}`;
-  const to = detail.toRevision === null
-    ? `新${stage}分支`
-    : `${stage}版本${String(detail.toRevision).padStart(2, '0')}`;
+  const from =
+    detail.fromRevision === null
+      ? `原${stage}分支`
+      : `${stage}版本${String(detail.fromRevision).padStart(2, '0')}`;
+  const to =
+    detail.toRevision === null
+      ? `新${stage}分支`
+      : `${stage}版本${String(detail.toRevision).padStart(2, '0')}`;
   showBranchSwitchToast(`已从${from}切换至${to}`);
 };
 
@@ -1533,7 +1560,8 @@ const validateDraft = async (): Promise<void> => {
 
 const beginSourceEdit = async (): Promise<void> => {
   const workflowRunId = workspace.value?.workflowRunId;
-  if (!loadedProjectId.value || !workflowRunId || sourceEditBusy.value || sourceEditing.value) return;
+  if (!loadedProjectId.value || !workflowRunId || sourceEditBusy.value || sourceEditing.value)
+    return;
   sourceEditBusy.value = true;
   try {
     const result = await beginEffectNodeEdit(loadedProjectId.value, workflowRunId, 'SOURCE_IMPORT');
@@ -1603,7 +1631,7 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
       workflowRunId,
       activeStep.value,
       step,
-      activeStep.value === 4 ? templateMixNode.value?.getCurrentTemplateId() ?? null : null,
+      activeStep.value === 4 ? (templateMixNode.value?.getCurrentTemplateId() ?? null) : null,
     );
     activeStep.value = step;
     if (step !== 4) mixPreviewTarget.value = null;
@@ -1620,10 +1648,20 @@ const returnToOutputTemplateMix = async (templateId?: string): Promise<void> => 
   const projectId = currentProjectId.value;
   const workflowRunId = workspace.value?.workflowRunId;
   await selectWorkflowStep(4);
-  if (templateId && projectId && workflowRunId && projectId === currentProjectId.value &&
-    workflowRunId === workspace.value?.workflowRunId && activeStep.value === 4) {
+  if (
+    templateId &&
+    projectId &&
+    workflowRunId &&
+    projectId === currentProjectId.value &&
+    workflowRunId === workspace.value?.workflowRunId &&
+    activeStep.value === 4
+  ) {
     branchNavigation.value = {
-      projectId, workflowRunId, templateId, nodeId: 'TEMPLATE_MIX', mixStage: null,
+      projectId,
+      workflowRunId,
+      templateId,
+      nodeId: 'TEMPLATE_MIX',
+      mixStage: null,
     };
   }
 };
@@ -1639,7 +1677,8 @@ const prefetchBranchTree = (projectId: string): void => {
         !controller.signal.aborted &&
         loadedProjectId.value === projectId &&
         !branchTree.value
-      ) branchTree.value = result.data;
+      )
+        branchTree.value = result.data;
     })
     .catch(() => undefined)
     .finally(() => {
@@ -1674,7 +1713,7 @@ const loadBranchTree = async (): Promise<void> => {
 };
 const openBranchTree = (): void => {
   branchTreeTemplateId.value =
-    activeStep.value === 4 ? templateMixNode.value?.getBranchTreeTemplateId() ?? null : null;
+    activeStep.value === 4 ? (templateMixNode.value?.getBranchTreeTemplateId() ?? null) : null;
   branchTreeOpen.value = true;
   void loadBranchTree();
 };
@@ -1713,7 +1752,10 @@ const selectBranch = async (
       enqueueWorkflowNodeActivation(projectId, target.workflowRunId, target.nodeId);
       scheduleAdjacentWorkspacePrefetch();
     }
-    if (currentProjectId.value === projectId && workspace.value?.workflowRunId === target.workflowRunId) {
+    if (
+      currentProjectId.value === projectId &&
+      workspace.value?.workflowRunId === target.workflowRunId
+    ) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       if (switchedRun) showBranchSwitchToast('已切换至所选版本分支及节点');
     }
@@ -1769,22 +1811,34 @@ const previewFinalOutputItem = async (selection: {
   if (activeStep.value !== 4) mixPreviewTarget.value = null;
 };
 
-const handleFinalOutputWorkflowRunChange = async (
-  selection?: { workflowRunId: string; templateId: string },
-): Promise<void> => {
+const handleFinalOutputWorkflowRunChange = async (selection?: {
+  workflowRunId: string;
+  templateId: string;
+}): Promise<void> => {
   const projectId = currentProjectId.value;
   const previousRunId = workspace.value?.workflowRunId;
   if (!projectId) return;
-  if (selection) branchNavigation.value = {
-    projectId, ...selection, nodeId: 'FINAL_OUTPUT', mixStage: null,
-  };
+  if (selection)
+    branchNavigation.value = {
+      projectId,
+      ...selection,
+      nodeId: 'FINAL_OUTPUT',
+      mixStage: null,
+    };
   await refreshActiveRunInPlace(projectId, { showCurtain: false });
-  if (selection && currentProjectId.value === projectId &&
-    workspace.value?.workflowRunId !== selection.workflowRunId)
+  if (
+    selection &&
+    currentProjectId.value === projectId &&
+    workspace.value?.workflowRunId !== selection.workflowRunId
+  )
     await refreshActiveRunInPlace(projectId, { showCurtain: false });
-  if (selection && currentProjectId.value === projectId && previousRunId &&
+  if (
+    selection &&
+    currentProjectId.value === projectId &&
+    previousRunId &&
     previousRunId !== selection.workflowRunId &&
-    workspace.value?.workflowRunId === selection.workflowRunId)
+    workspace.value?.workflowRunId === selection.workflowRunId
+  )
     showBranchSwitchToast('成片导出完成，已自动切换至新成片分支');
 };
 
@@ -1889,7 +1943,10 @@ onBeforeUnmount(() => {
       <div v-if="runContextSwitching" class="run-switch-curtain" role="status" aria-live="polite">
         <div class="run-switch-card">
           <span class="run-switch-card__icon"><GitBranch :size="20" /></span>
-          <span><strong>正在切换编辑状态</strong><small>当前节点保持可见，正在载入对应版本</small></span>
+          <span
+            ><strong>正在切换编辑状态</strong
+            ><small>当前节点保持可见，正在载入对应版本</small></span
+          >
           <LoaderCircle class="spin" :size="18" />
         </div>
       </div>
@@ -1924,10 +1981,14 @@ onBeforeUnmount(() => {
       <div v-if="editingCurrentNode" class="effect-edit-mode-banner" role="status">
         <span class="effect-edit-mode-banner__icon"><Pencil :size="18" /></span>
         <span class="effect-edit-mode-banner__copy">
-          <strong>编辑草稿中 <small>{{ effectWorkflowNodeLabels[activeStep] }}</small></strong>
-          <span>{{ activeStep === 2 || activeStep === 3
-            ? '修改先保存在隔离草稿；保存修改会更新当前分支，取消编辑会放弃本次修改。'
-            : '修改会先保存在当前编辑副本；保存版本后才会发布，取消编辑会放弃本次修改。' }}</span>
+          <strong
+            >编辑草稿中 <small>{{ effectWorkflowNodeLabels[activeStep] }}</small></strong
+          >
+          <span>{{
+            activeStep === 2 || activeStep === 3
+              ? '修改先保存在隔离草稿；保存修改会更新当前分支，取消编辑会放弃本次修改。'
+              : '修改会先保存在当前编辑副本；保存版本后才会发布，取消编辑会放弃本次修改。'
+          }}</span>
         </span>
         <span class="effect-edit-mode-banner__badge">未发布</span>
       </div>
@@ -1998,7 +2059,12 @@ onBeforeUnmount(() => {
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
           :products="products"
-          :editing="Boolean(activeWorkflowRun?.isTemporaryBranch && activeWorkflowRun.editNodeId === 'SEGMENT_RENDER')"
+          :editing="
+            Boolean(
+              activeWorkflowRun?.isTemporaryBranch &&
+              activeWorkflowRun.editNodeId === 'SEGMENT_RENDER',
+            )
+          "
           @back="selectWorkflowStep(2)"
           @next="selectWorkflowStep(4)"
           @workflow-run-change="refreshActiveRunInPlace(currentProjectId)"
@@ -2048,7 +2114,10 @@ onBeforeUnmount(() => {
               <Pencil :size="14" />进入编辑
             </button>
             <button
-              v-else-if="activeWorkflowRun?.isTemporaryBranch && activeWorkflowRun.editNodeId === 'SOURCE_IMPORT'"
+              v-else-if="
+                activeWorkflowRun?.isTemporaryBranch &&
+                activeWorkflowRun.editNodeId === 'SOURCE_IMPORT'
+              "
               type="button"
               :disabled="sourceEditBusy || validatingDraft || transitioning"
               @click="cancelSourceEdit"
@@ -2060,15 +2129,16 @@ onBeforeUnmount(() => {
               type="button"
               :aria-busy="validatingDraft"
               :disabled="
-                transitioning || sourceEditBusy || saveState === 'saving' || !draft?.productCount ||
+                transitioning ||
+                sourceEditBusy ||
+                saveState === 'saving' ||
+                !draft?.productCount ||
                 validatingDraft
               "
               @click="validateDraft"
             >
               <LoaderCircle v-if="validatingDraft" class="spin" :size="14" />
-              <CheckCircle2 v-else :size="14" />{{
-                validatingDraft ? '正在校验…' : '保存版本'
-              }}
+              <CheckCircle2 v-else :size="14" />{{ validatingDraft ? '正在校验…' : '保存版本' }}
             </button>
             <div class="save-indicator" :class="saveState">
               <CloudUpload :size="14" />{{ saveStateLabel }}
@@ -2083,7 +2153,7 @@ onBeforeUnmount(() => {
               <span><RotateCcw :size="15" /></span>
               <div>
                 <strong>最近删除</strong>
-                <small>24 小时内可恢复，工作副本和 MinIO 文件仍保留</small>
+                <small>24 小时内可恢复，工作副本和关联文件仍保留</small>
               </div>
               <button
                 v-if="currentMode === 'SINGLE' && !singleProduct"
@@ -2102,7 +2172,11 @@ onBeforeUnmount(() => {
                 </span>
                 <button
                   type="button"
-                  :disabled="transitioning || !sourceEditing || (currentMode === 'SINGLE' && Boolean(singleProduct))"
+                  :disabled="
+                    transitioning ||
+                    !sourceEditing ||
+                    (currentMode === 'SINGLE' && Boolean(singleProduct))
+                  "
                   :title="
                     currentMode === 'SINGLE' && singleProduct
                       ? '单产品模式已有活动产品，无法同时恢复'
@@ -2168,7 +2242,12 @@ onBeforeUnmount(() => {
                     <button type="button" :disabled="!sourceEditing" @click="manifestOpen = true">
                       <FileSpreadsheet :size="14" />清单导入
                     </button>
-                    <button class="primary" type="button" :disabled="!sourceEditing" @click="createProduct">
+                    <button
+                      class="primary"
+                      type="button"
+                      :disabled="!sourceEditing"
+                      @click="createProduct"
+                    >
                       <Plus :size="14" />新增商品
                     </button>
                   </div>
@@ -2313,7 +2392,9 @@ onBeforeUnmount(() => {
 .effect-import-page--editing {
   background: linear-gradient(180deg, #fffaf1 0, #fff 260px);
   border-color: #edc881;
-  box-shadow: 0 0 0 3px #f2c9752b, 0 12px 34px #7a4e3b12;
+  box-shadow:
+    0 0 0 3px #f2c9752b,
+    0 12px 34px #7a4e3b12;
 }
 .effect-edit-mode-banner {
   display: flex;
@@ -2394,12 +2475,29 @@ onBeforeUnmount(() => {
   background: #eaf0ff;
   border-radius: 11px;
 }
-.run-switch-card > span:nth-child(2) { display: grid; flex: 1; gap: 3px; }
-.run-switch-card strong { font-size: 13px; }
-.run-switch-card small { color: #71809b; font-size: 11px; }
-.run-switch-card > svg { color: #285ff0; }
-.run-switch-enter-active, .run-switch-leave-active { transition: opacity .16s ease; }
-.run-switch-enter-from, .run-switch-leave-to { opacity: 0; }
+.run-switch-card > span:nth-child(2) {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+.run-switch-card strong {
+  font-size: 13px;
+}
+.run-switch-card small {
+  color: #71809b;
+  font-size: 11px;
+}
+.run-switch-card > svg {
+  color: #285ff0;
+}
+.run-switch-enter-active,
+.run-switch-leave-active {
+  transition: opacity 0.16s ease;
+}
+.run-switch-enter-from,
+.run-switch-leave-to {
+  opacity: 0;
+}
 .node-switch-progress {
   position: fixed;
   top: 144px;
@@ -2498,7 +2596,9 @@ onBeforeUnmount(() => {
 }
 .branch-switch-toast-enter-active,
 .branch-switch-toast-leave-active {
-  transition: opacity 0.35s ease, transform 0.45s ease;
+  transition:
+    opacity 0.35s ease,
+    transform 0.45s ease;
 }
 .branch-switch-toast-enter-from {
   opacity: 0;

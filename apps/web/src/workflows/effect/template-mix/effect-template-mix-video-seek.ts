@@ -19,6 +19,11 @@ export class TimelineVideoSeekQueue {
     this.states = new WeakMap<SeekableVideo, SeekState>();
   }
 
+  isSettled(video: SeekableVideo): boolean {
+    const state = this.stateFor(video);
+    return video.readyState >= 2 && !video.seeking && !state.inFlight && state.pendingTime === null;
+  }
+
   request(video: SeekableVideo, seconds: number, tolerance: number): boolean {
     const state = this.stateFor(video);
     state.pendingTime = seconds;
@@ -59,3 +64,15 @@ export class TimelineVideoSeekQueue {
     return state;
   }
 }
+
+/** Widen buffering without load(): reloading would discard a cached/decoded frame. */
+export const prepareTimelineVideo = (
+  video: SeekableVideo & { preload: string },
+  queue: TimelineVideoSeekQueue,
+  seconds: number,
+  tolerance: number,
+): void => {
+  video.preload = 'auto';
+  // Register the trim point even before metadata; readiness callbacks flush it later.
+  queue.request(video, seconds, tolerance);
+};

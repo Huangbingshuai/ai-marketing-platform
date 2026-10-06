@@ -10,6 +10,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   effectTemplateMixContentDuration,
+  effectTemplateMixSourceChanges,
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
   packagingAudioFade,
@@ -72,6 +73,8 @@ const props = withDefaults(
     readOnly?: boolean;
     /** An active packaging task keeps this source project's tracks locked until it ends. */
     packagingSourceLock?: boolean;
+    /** Local update freezes only the participating project's tracks until the task ends. */
+    sourceUpdateLock?: boolean;
     fps?: number;
     height?: number;
     materials: EffectTemplateMixMaterial[];
@@ -94,6 +97,7 @@ const props = withDefaults(
     canUndo: false,
     readOnly: false,
     packagingSourceLock: false,
+    sourceUpdateLock: false,
     fps: 30,
     height: 260,
     playing: false,
@@ -104,6 +108,9 @@ const props = withDefaults(
     captionVisible: true,
   },
 );
+
+const pendingSourceSlotIds = computed(() => new Set(props.variant
+  ? effectTemplateMixSourceChanges(props.variant, props.materials).map((change) => change.slotId) : []));
 
 const emit = defineEmits<{
   assignMaterial: [materialId: string, slotId: string];
@@ -433,8 +440,12 @@ const trackLocked = reactive<Record<string, boolean>>({
   VIDEO: false,
 });
 const trackIsLocked = (track: VisibleTrack): boolean =>
-  props.packagingSourceLock || Boolean(trackLocked[track]);
+  props.packagingSourceLock || props.sourceUpdateLock || Boolean(trackLocked[track]);
 const toggleTrackLock = (track: VisibleTrack): void => {
+  if (props.sourceUpdateLock) {
+    emit('requestNotice', '局部更新正在进行，此成片工程暂时不能编辑；任务结束后自动解锁。', 'warning');
+    return;
+  }
   if (props.packagingSourceLock) {
     emit('requestNotice', '智能成片包装正在进行，成片工程暂时不能编辑；任务结束后自动解锁。', 'warning');
     return;
@@ -559,6 +570,11 @@ const startPlaybackNeedle = (startSeconds: number, endSeconds = props.duration):
 };
 const animatedNeedleSeconds = (): number =>
   playbackNeedleStartSeconds + Number(playbackNeedleAnimation?.currentTime ?? 0) / 1000;
+const syncPlaybackNeedleClock = (seconds: number): void => {
+  if (playbackNeedleAnimation) {
+    playbackNeedleAnimation.currentTime = Math.max(0, seconds - playbackNeedleStartSeconds) * 1000;
+  } else setPlaybackNeedle(seconds);
+};
 const timelineShellStyle = computed(() => ({
   '--timeline-height': `${props.height}px`,
   '--track-header-width': `${trackHeaderWidth.value}px`,
@@ -2343,6 +2359,7 @@ defineExpose({
   scrollToLane,
   setPlaybackNeedle,
   startPlaybackNeedle,
+  syncPlaybackNeedleClock,
   stopPlaybackNeedle,
 });
 
@@ -3258,8 +3275,8 @@ onBeforeUnmount(() => {
             <div class="track-actions">
               <button
                 type="button"
-                :title="props.packagingSourceLock ? '智能成片包装中，暂时不能解锁' : trackIsLocked(track) ? '解锁轨道' : '锁定轨道'"
-                :aria-label="props.packagingSourceLock ? '包装中，暂时不能解锁轨道' : trackIsLocked(track) ? '解锁轨道' : '锁定轨道'"
+                :title="props.sourceUpdateLock ? '局部更新中，暂时不能解锁轨道' : props.packagingSourceLock ? '智能成片包装中，暂时不能解锁' : trackIsLocked(track) ? '解锁轨道' : '锁定轨道'"
+                :aria-label="props.sourceUpdateLock ? '局部更新中，暂时不能解锁轨道' : props.packagingSourceLock ? '包装中，暂时不能解锁轨道' : trackIsLocked(track) ? '解锁轨道' : '锁定轨道'"
                 @click="toggleTrackLock(track)"
               >
                 <Lock v-if="trackIsLocked(track)" :size="12" />
@@ -3398,6 +3415,7 @@ onBeforeUnmount(() => {
                   class="video-clip"
                   :class="{
                     'is-selected': selectedClipIds.includes(slot.id),
+                    'is-source-stale': pendingSourceSlotIds.has(slot.id),
                     'is-dragging':
                       clipDrag?.slotId === slot.id &&
                       clipDrag.started &&
@@ -3437,6 +3455,7 @@ onBeforeUnmount(() => {
                     <div class="clip-info">
                       <b>{{ materialForSlot(slot.id)?.code }}</b>
                       <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span>
+                      <em v-if="pendingSourceSlotIds.has(slot.id)" class="source-stale-label">待更新</em>
                       <em v-if="variant.bindingMetadata?.[slot.id]?.matchLevel === 'LOW_MATCH'"
                         >低匹配</em
                       >
@@ -4041,6 +4060,15 @@ onBeforeUnmount(() => {
 }
 .video-clip.is-dragging {
   opacity: 0.22;
+}
+.video-clip.is-source-stale {
+  border: 2px solid #f59e0b;
+  box-shadow: 0 0 0 1px #fcd34d;
+}
+.clip-info .source-stale-label {
+  flex: 0 0 auto;
+  color: #92400e;
+  background: #fef3c7;
 }
 .video-clip.is-low::after {
   width: 7px;

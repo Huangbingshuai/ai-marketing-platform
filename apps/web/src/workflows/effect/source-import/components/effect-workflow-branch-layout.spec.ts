@@ -52,6 +52,26 @@ const branch = (
 });
 
 describe('effect workflow branch tree layout', () => {
+  it('marks only the affected template layer, including inactive sibling branches', () => {
+    const main = branch('main', null, null, true);
+    main.templates[0]!.templateStatus = 'CONFIRMED';
+    main.templates[0]!.fillStatus = 'STALE';
+    main.templates[0]!.packagingStatus = 'STALE';
+    main.templates[0]!.deliveryStatus = 'STALE';
+    main.templates.push({ ...main.templates[0]!, templateId: 'unaffected',
+      fillStatus: 'CONFIRMED', packagingStatus: 'CONFIRMED', deliveryStatus: 'CONFIRMED' });
+    const sibling = branch('sibling', 'main', 'TEMPLATE_MIX');
+    sibling.forkMixStage = 'FILL';
+    sibling.forkTemplateId = 'template-a';
+    sibling.templates[0]!.fillStatus = 'STALE';
+    const layout = buildEffectBranchLayout([main, sibling]);
+    expect(layout.nodes.filter((node) => node.status === 'STALE').map((node) => node.key))
+      .toEqual(['main:MIX_FILL:template-a', 'main:MIX_PACKAGING:template-a',
+        'main:FINAL_OUTPUT:template-a', 'sibling:MIX_FILL:template-a']);
+    expect(treeSource).toContain("'branch-node--stale': node.status === 'STALE'");
+    expect(treeSource).toContain('border-color: #f59e0b');
+    expect(layout.nodes.find((node) => node.key === 'sibling:MIX_FILL:template-a')?.onActivePath).toBe(true);
+  });
   it('highlights all template paths in configuration and only the opened template in its editor', () => {
     const main = branch('main', null, null, true);
     main.currentNodeId = 'TEMPLATE_MIX';
@@ -569,6 +589,37 @@ describe('effect workflow branch tree layout', () => {
     expect(layout.nodes.filter((node) => node.stageKey === 'MIX_TEMPLATE')).toHaveLength(2);
     expect(layout.edges.some((edge) => edge.key ===
       'rendered:SEGMENT_RENDER:-->rendered:MIX_TEMPLATE:template-a')).toBe(true);
+  });
+
+  it('keeps another template path visible while the active old sibling does not contain it', () => {
+    const main = branch('main', null, null);
+    const origin = branch('origin', 'main', 'TEMPLATE_MIX');
+    origin.forkMixStage = 'PACKAGING';
+    origin.forkTemplateId = 'template-a';
+    const template = { templateId: 'template-new', name: '测试2', templateRevision: null,
+      fillRevision: null, packagingRevision: null, timelineVariantCount: 0, packagingVariantCount: 0 };
+    origin.templates.push(template);
+    const filled = branch('filled', 'origin', 'TEMPLATE_MIX');
+    filled.forkMixStage = 'TEMPLATE';
+    filled.forkTemplateId = template.templateId;
+    filled.templates.push({ ...template, templateRevision: 1, fillRevision: 1, timelineVariantCount: 3 });
+    const packaged = branch('packaged', 'filled', 'TEMPLATE_MIX');
+    packaged.forkMixStage = 'PACKAGING';
+    packaged.forkTemplateId = template.templateId;
+    packaged.templates.push({ ...filled.templates.at(-1)!, packagingRevision: 1, packagingVariantCount: 3 });
+    const active = branch('old-sibling', 'main', 'TEMPLATE_MIX', true);
+    active.forkMixStage = 'PACKAGING';
+    active.forkTemplateId = 'template-a';
+    const layout = buildEffectBranchLayout([main, origin, filled, packaged, active], 'template-a');
+    expect(layout.nodes.filter((node) => node.templateId === template.templateId)
+      .map((node) => node.key)).toEqual([
+        'origin:MIX_TEMPLATE:template-new', 'filled:MIX_FILL:template-new',
+        'packaged:MIX_PACKAGING:template-new',
+      ]);
+    expect(layout.edges.some((edge) => edge.key ===
+      'origin:MIX_TEMPLATE:template-new->filled:MIX_FILL:template-new')).toBe(true);
+    expect(layout.edges.some((edge) => edge.key ===
+      'filled:MIX_FILL:template-new->packaged:MIX_PACKAGING:template-new')).toBe(true);
   });
 
   it('omits mix layers when no template or result exists', () => {

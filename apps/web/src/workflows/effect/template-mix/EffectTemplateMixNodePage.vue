@@ -13,6 +13,7 @@ import type {
   EffectTemplateMixTemplateEntry,
   EffectTemplateMixTransition,
   EffectTemplateMixVariant,
+  FinalOutputRun,
   PackagingAudio,
   PackagingAudioEdit,
   PackagingCaptionBox,
@@ -94,20 +95,30 @@ import {
   getEffectTemplateMixAiRun,
   loadEffectTemplateMixWorkspace,
   loadEffectTemplateMixSources,
+  loadMixFinalOutputRuns,
+  updateMixSourceProjects,
+  getMixSourceUpdateRun,
   saveEffectTemplateMixDraft,
   serializeEffectTemplateMixDraft,
   syncEffectFinalOutput,
   updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
 import { ApiClientError, apiUrl } from '../../../api/http-client';
-import { MixDraftRaceGuard, rebaseMixDraft, saveLatestMixDraft } from './effect-template-mix-draft-race';
+import {
+  MixDraftRaceGuard,
+  rebaseMixDraft,
+  saveLatestMixDraft,
+} from './effect-template-mix-draft-race';
 import { resolveEffectTemplateMixMaterialRoles } from '@ai-marketing/contracts';
 import {
   activateEffectWorkflowBranch,
   getEffectWorkflowBranchTree,
 } from '../../../platform/workflow/api/workflow-working.api';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
-import { effectBranchNavigationMatches, type EffectBranchNavigation } from '../shared/effect-branch-navigation';
+import {
+  effectBranchNavigationMatches,
+  type EffectBranchNavigation,
+} from '../shared/effect-branch-navigation';
 import { stepTemplateMixDuration } from './effect-template-mix-duration-input';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
@@ -150,7 +161,7 @@ import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-th
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
 import { splitRangeAtPlayhead } from './effect-template-mix-split';
-import { TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
+import { prepareTimelineVideo, TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
 import {
   isMixWorkspaceSwitching,
   readMixWorkspaceWithDeadline,
@@ -217,7 +228,9 @@ const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
 // Keep the confirmed clip pool available while the initial template draft is bootstrapped.
 const sourceMaterials = ref<EffectTemplateMixMaterial[]>([]);
 const pendingAddedMaterialIds = ref<Record<string, string[]>>({});
-const pendingAddedCount = computed(() => pendingAddedMaterialIds.value[activeTemplateId.value]?.length ?? 0);
+const pendingAddedCount = computed(
+  () => pendingAddedMaterialIds.value[activeTemplateId.value]?.length ?? 0,
+);
 const renderSlotDurationLimit = ref<number | null>(null);
 const templateCreationReady = ref(false);
 const checkingTemplateCreation = ref(false);
@@ -245,7 +258,8 @@ const packagingActionBlockReason = computed(() => {
   const entry = activeEntry.value;
   if (!entry) return null;
   if (entry.packagingSourceLocked) return '智能成片包装正在进行，暂时不能再次包装。';
-  if (entry.needsAiFill) return '当前模板或成片仍需重新智能填充；请先更新素材并完成混剪校验。';
+  if (entry.needsAiFill) return '模板槽位配置已修改，请重新智能填充以应用新配置。';
+  if (templatePendingUpdateCount(entry)) return '成片引用的素材已更新，请先局部更新成片。';
   return null;
 });
 const committedVersions = reactive<Record<string, number>>({});
@@ -280,11 +294,25 @@ const failedAiRun = computed(() => {
   const latest = aiRuns.value.find((run) => run.templateId === activeTemplateId.value);
   return latest?.status === 'FAILED' ? latest : null;
 });
-const appendContinuationRun = computed(() => aiRuns.value.find((run) =>
-  run.templateId === activeTemplateId.value && run.operation === 'APPEND' &&
-  run.status === 'COMPLETED' && run.errorCode === 'APPEND_CONTINUATION_FAILED') ?? null);
-const completedAppendRun = computed(() => aiRuns.value.find((run) =>
-  run.templateId === activeTemplateId.value && run.operation === 'APPEND' && run.status === 'COMPLETED') ?? null);
+const appendContinuationRun = computed(
+  () =>
+    aiRuns.value.find(
+      (run) =>
+        run.templateId === activeTemplateId.value &&
+        run.operation === 'APPEND' &&
+        run.status === 'COMPLETED' &&
+        run.errorCode === 'APPEND_CONTINUATION_FAILED',
+    ) ?? null,
+);
+const completedAppendRun = computed(
+  () =>
+    aiRuns.value.find(
+      (run) =>
+        run.templateId === activeTemplateId.value &&
+        run.operation === 'APPEND' &&
+        run.status === 'COMPLETED',
+    ) ?? null,
+);
 const aiStageLabels: Record<EffectTemplateMixAiRun['stage'], string> = {
   CLASSIFYING: '大模型按 Prompt 归槽',
   MATCHING: '计算六槽位最优匹配',
@@ -360,8 +388,8 @@ const playerScrubberFill = ref<HTMLElement | null>(null);
 const playerScrubberThumb = ref<HTMLElement | null>(null);
 const playerTimecode = ref<HTMLSpanElement | null>(null);
 const stageElement = ref<HTMLElement | null>(null);
-/** The render burns captions at roughly 1/22 of the video width, so the preview matches. */
-const stageCaptionFontSize = ref(14);
+/** Generated subtitles start at 16 px, independent of the preview panel's width. */
+const stageCaptionFontSize = ref(16);
 const playerMenu = ref<'DISPLAY' | null>(null);
 const previewZoom = ref(100);
 const playerFullscreen = ref(false);
@@ -394,7 +422,6 @@ const playerUnavailableSlotId = ref('');
 const transitionFrame = ref('');
 const timelinePlayers = new Map<string, HTMLVideoElement>();
 const detachedAudioPlayers = new Map<string, HTMLAudioElement>();
-let primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 let positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 const timelineVideoSeeks = new TimelineVideoSeekQueue();
 const workbenchMain = ref<HTMLElement | null>(null);
@@ -481,13 +508,10 @@ let lastUiPlaybackMilliseconds = 0;
 let playbackSyncBoundaries: number[] = [];
 let nextPlaybackBoundaryIndex = 0;
 let activePlaybackSlotId = '';
-let activeTransitionSignature = '';
 let pendingSeekSyncFrame: number | undefined;
 let seekSyncRequestId = 0;
 let materialGridResizeObserver: ResizeObserver | null = null;
 let materialGridResizeFrame: number | undefined;
-let stageResizeObserver: ResizeObserver | null = null;
-let stageResizeFrame: number | undefined;
 const pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pollControllers = new Map<string, AbortController>();
 
@@ -510,7 +534,29 @@ const packagingSourceAutoLocked = computed(
 const packagingInFlight = computed(() =>
   ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value ?? ''),
 );
-const projectEditLocked = computed(() =>
+const sourceUpdateRun = ref<FinalOutputRun | null>(null);
+const sourceUpdateItemIds = ref<string[]>([]);
+const sourceUpdateStarting = ref(false);
+const sourceUpdatePendingVariantIds = ref<string[]>([]);
+const sourceUpdateBusy = computed(
+  () =>
+    sourceUpdateStarting.value ||
+    Boolean(
+      sourceUpdateRun.value &&
+      sourceUpdateRun.value.workflowRunId === props.workflowRunId &&
+      sourceUpdateRun.value.templateId === activeTemplateId.value &&
+      ['QUEUED', 'RUNNING'].includes(sourceUpdateRun.value.status),
+    ),
+);
+const sourceUpdateProgress = computed(() => {
+  const items =
+    sourceUpdateRun.value?.items.filter((item) => sourceUpdateItemIds.value.includes(item.id)) ??
+    [];
+  return items.length
+    ? Math.round(items.reduce((sum, item) => sum + item.progress, 0) / items.length)
+    : 0;
+});
+const workspaceTaskLocked = computed(() =>
   Boolean(
     runSwitching.value ||
     activeEntry.value?.aiFillLocked ||
@@ -519,13 +565,28 @@ const projectEditLocked = computed(() =>
     packagingSourceAutoLocked.value,
   ),
 );
-const templateEditLocked = projectEditLocked;
+const sourceUpdateLockedVariantIds = computed(() => new Set(
+  !sourceUpdateBusy.value ? [] : sourceUpdateStarting.value
+    ? sourceUpdatePendingVariantIds.value
+    : sourceUpdateRun.value?.items
+      .filter((item) => sourceUpdateItemIds.value.includes(item.id))
+      .map((item) => item.variantId) ?? [],
+));
+const variantSourceUpdateLocked = (variantId: string): boolean =>
+  sourceUpdateLockedVariantIds.value.has(variantId);
+const variantEditLocked = (variantId: string): boolean =>
+  workspaceTaskLocked.value || variantSourceUpdateLocked(variantId);
+const selectedSourceUpdateLocked = computed(() =>
+  Boolean(selectedVariant.value && variantSourceUpdateLocked(selectedVariant.value.id)),
+);
+const projectEditLocked = computed(() => workspaceTaskLocked.value || selectedSourceUpdateLocked.value);
+const templateEditLocked = computed(() => workspaceTaskLocked.value || sourceUpdateBusy.value);
 /**
  * The voice only feeds future packaging and voice redos, never existing audio, so it stays editable
  * once the run has finished. It is still locked while a run is in flight, because that run already
  * froze its own voice.
  */
-const voiceSelectLocked = computed(() => projectEditLocked.value);
+const voiceSelectLocked = computed(() => templateEditLocked.value);
 const workspace = computed(() => activeEntry.value?.workspace ?? null);
 const templateSlotDurationLimit = computed(() => renderSlotDurationLimit.value);
 const templateDurationInputLocked = computed(
@@ -578,10 +639,187 @@ const variantSourceChanges = (variant: EffectTemplateMixVariant) =>
   effectTemplateMixSourceChanges(variant, sourceMaterials.value);
 const templatePendingUpdateCount = (entry: EffectTemplateMixTemplateEntry) =>
   entry.workspace.variants.filter((variant) => variantSourceChanges(variant).length > 0).length;
-const selectedVariantRefreshSlotIds = computed(() => selectedVariant.value
-  ? variantSourceChanges(selectedVariant.value).map((row) => row.slotId) : []);
 const canUndoTimeline = computed(() => timelineUndoStack.value.length > 0);
 const canRedoTimeline = computed(() => timelineRedoStack.value.length > 0);
+let sourceUpdateTimer: ReturnType<typeof setTimeout> | undefined;
+let sourceUpdateGeneration = 0;
+function stopSourceUpdatePolling() {
+  sourceUpdateGeneration += 1;
+  clearTimeout(sourceUpdateTimer);
+}
+async function pollSourceUpdate(run: FinalOutputRun, generation: number) {
+  const project = props.projectId;
+  const workflow = props.workflowRunId;
+  try {
+    const response = await getMixSourceUpdateRun(project, run.id);
+    if (
+      generation !== sourceUpdateGeneration ||
+      project !== props.projectId ||
+      workflow !== props.workflowRunId
+    )
+      return;
+    sourceUpdateRun.value = response.data;
+    if (['QUEUED', 'RUNNING'].includes(response.data.status)) {
+      sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(response.data, generation), 1200);
+      return;
+    }
+    if (response.data.status === 'PENDING_RENDER' || response.data.status === 'COMPLETED') {
+      // Unaffected films remain editable during this task; save them before installing its result.
+      if (!(await flushPendingEdits())) return;
+      const saved = await loadEffectTemplateMixWorkspace(project, workflow);
+      if (
+        generation !== sourceUpdateGeneration ||
+        project !== props.projectId ||
+        workflow !== props.workflowRunId
+      )
+        return;
+      installWorkspaceData(saved.data);
+      notifyOutputChange(project, workflow, true);
+      await packagingPanel.value?.refresh();
+      sourceUpdateRun.value = null;
+      showNotice('局部更新已完成');
+    } else {
+      sourceUpdateRun.value = null;
+      showNotice(
+        response.data.items.find((item) => item.errorMessage)?.errorMessage ||
+          '局部更新未完成，请重试',
+        'error',
+      );
+    }
+  } catch (error) {
+    if (generation !== sourceUpdateGeneration) return;
+    showNotice(error instanceof Error ? error.message : '读取局部更新进度失败', 'error');
+    sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(run, generation), 3000);
+  }
+}
+async function updateSourceProjects() {
+  if (sourceUpdateBusy.value || projectEditLocked.value || mutating.value || !activeEntry.value)
+    return;
+  const context = {
+    project: props.projectId,
+    workflow: props.workflowRunId,
+    template: activeTemplateId.value,
+  };
+  const changes = activeEntry.value.workspace.variants.flatMap((variant) =>
+    variantSourceChanges(variant),
+  );
+  const blocked = changes.find((change) => change.blockedReason);
+  if (blocked) {
+    showNotice(blocked.blockedReason!, 'error');
+    return;
+  }
+  const count = templatePendingUpdateCount(activeEntry.value);
+  if (!count) return;
+  const confirmed = await requestActionConfirmation({
+    eyebrow: '局部更新',
+    title: `更新 ${count} 条成片工程？`,
+    description:
+      '将更新当前模板全部受影响的素材片段，仅重新选择这些片段的截取区间，并更新相关口播和字幕。已导出的成片同步重新渲染，其他片段和当前分支保持不变。此操作可能产生生成或渲染费用。',
+    confirmLabel: '确认局部更新',
+    tone: 'warning',
+  });
+  if (
+    !confirmed ||
+    context.project !== props.projectId ||
+    context.workflow !== props.workflowRunId ||
+    context.template !== activeTemplateId.value
+  )
+    return;
+  try {
+    if (
+      !(await flushPendingEdits()) ||
+      context.project !== props.projectId ||
+      context.workflow !== props.workflowRunId ||
+      context.template !== activeTemplateId.value
+    )
+      return;
+    sourceUpdatePendingVariantIds.value = (activeEntry.value?.workspace.variants ?? [])
+      .filter((variant) => variantSourceChanges(variant).length)
+      .map((variant) => variant.id);
+    sourceUpdateStarting.value = true;
+    let response = await loadMixFinalOutputRuns(context.project, context.workflow);
+    // Existing snapshots are the baseline for source refresh, not ordinary draft sync inputs.
+    // Reconciling them first validates obsolete binding revisions before local-update can replace them.
+    if (
+      !response.data.some(
+        (run) => run.templateId === context.template && run.workflowRunId === context.workflow,
+      )
+    ) {
+      if (
+        context.project !== props.projectId ||
+        context.workflow !== props.workflowRunId ||
+        context.template !== activeTemplateId.value
+      )
+        return;
+      await syncEffectFinalOutput(context.project, context.workflow, {
+        templateId: context.template,
+        ...(draftRevision.value !== null ? { expectedDraftRevision: draftRevision.value } : {}),
+      });
+      response = await loadMixFinalOutputRuns(context.project, context.workflow);
+    }
+    if (
+      context.project !== props.projectId ||
+      context.workflow !== props.workflowRunId ||
+      context.template !== activeTemplateId.value
+    )
+      return;
+    const run = response.data.find(
+      (run) => run.templateId === context.template && run.workflowRunId === context.workflow,
+    );
+    if (!run) throw new Error('当前模板的成片工程尚未确认，请先完成智能填充');
+    const affected = new Set(
+      (activeEntry.value?.workspace.variants ?? [])
+        .filter((variant) => variantSourceChanges(variant).length)
+        .map((variant) => variant.id),
+    );
+    const ids = run.items.filter((item) => affected.has(item.variantId)).map((item) => item.id);
+    if (ids.length !== affected.size) throw new Error('成片工程正在同步，请稍后重试');
+    sourceUpdatePendingVariantIds.value = [...affected];
+    const started = await updateMixSourceProjects(context.project, run.id, ids);
+    if (
+      context.project !== props.projectId ||
+      context.workflow !== props.workflowRunId ||
+      context.template !== activeTemplateId.value
+    )
+      return;
+    stopSourceUpdatePolling();
+    sourceUpdateItemIds.value = ids;
+    sourceUpdateRun.value = started.data;
+    void pollSourceUpdate(started.data, sourceUpdateGeneration);
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '局部更新失败', 'error');
+  } finally {
+    sourceUpdateStarting.value = false;
+    sourceUpdatePendingVariantIds.value = [];
+  }
+}
+async function resumeSourceUpdate() {
+  stopSourceUpdatePolling();
+  sourceUpdateRun.value = null;
+  sourceUpdateItemIds.value = [];
+  const generation = sourceUpdateGeneration;
+  if (!props.projectId || !props.workflowRunId || !activeTemplateId.value) return;
+  try {
+    const response = await loadMixFinalOutputRuns(props.projectId, props.workflowRunId);
+    if (generation !== sourceUpdateGeneration) return;
+    const run = response.data.find(
+      (run) =>
+        run.templateId === activeTemplateId.value &&
+        run.workflowRunId === props.workflowRunId &&
+        ['QUEUED', 'RUNNING'].includes(run.status),
+    );
+    if (run) {
+      sourceUpdateItemIds.value = run.items
+        .filter((item) => ['QUEUED', 'RUNNING'].includes(item.status))
+        .map((item) => item.id);
+      sourceUpdateRun.value = run;
+      void pollSourceUpdate(run, generation);
+    }
+  } catch {
+    /* Workspace errors remain on the normal load path. */
+  }
+}
+watch(() => [props.projectId, props.workflowRunId, activeTemplateId.value], resumeSourceUpdate);
 let groupedTimelineMove = false;
 const captureTimelineSnapshot = (): TimelineEditSnapshot | null => {
   const variant = selectedVariant.value;
@@ -931,6 +1169,7 @@ const stageStyle = computed(() => ({
   aspectRatio: String(stageAspectRatio.value),
   transform: previewZoom.value === 100 ? undefined : `scale(${previewZoom.value / 100})`,
 }));
+const captionPresentationTime = ref(0);
 const previewCurrentTime = computed(() =>
   auditionMaterial.value ? auditionTime.value : playhead.value,
 );
@@ -1053,7 +1292,8 @@ const previewCaption = computed(() => {
     selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
   return captions.find(
     (caption) =>
-      previewCurrentTime.value >= caption.start && previewCurrentTime.value < caption.end,
+      (playing.value ? captionPresentationTime.value : previewCurrentTime.value) >= caption.start &&
+      (playing.value ? captionPresentationTime.value : previewCurrentTime.value) < caption.end,
   );
 });
 const formatPlayerTimecode = (seconds: number): string => {
@@ -1075,6 +1315,8 @@ const formatPlayerTimecode = (seconds: number): string => {
 const syncPlayerTimecode = (seconds: number): void => {
   if (playerTimecode.value) {
     playerTimecode.value.textContent = formatPlayerTimecode(seconds);
+    playerTimecode.value.dataset.outputSeconds = String(seconds);
+    playerTimecode.value.dataset.clockSource = packagingPanel.value?.playbackAudioTime() != null ? 'audio' : 'timeline';
   }
 };
 const workbenchGridStyle = computed(() =>
@@ -1094,6 +1336,7 @@ const bestClassificationByMaterial = computed(() =>
   resolveEffectTemplateMixMaterialRoles(
     activeClassificationPool.value?.items ?? [],
     activeEntry.value?.materialRoleOverrides,
+    sourceMaterials.value,
   ),
 );
 const classificationForMaterial = (materialId: string) =>
@@ -1202,28 +1445,16 @@ const aiFillBlockReason = computed<string | null>(() => {
   if (!entry || !slots.length) return null;
   if (!workspace.value?.materials.length)
     return '上一步没有已确认的视频素材，请先在视频渲染节点生成素材。';
-  const variant = selectedVariant.value;
-  const lockedSlotIds = new Set(variant?.manualSlotIds ?? []);
-  const lockedFileIds = new Set(
-    [...lockedSlotIds]
-      .map((slotId) => variant?.bindings[slotId] ?? '')
-      .filter((materialId) => Boolean(materialId))
-      .map((materialId) => {
-        const material = workspace.value?.materials.find(({ id }) => id === materialId);
-        return material?.fileObjectId || materialId;
-      }),
-  );
-  const candidates = availableMaterials.value.filter(
-    ({ fileObjectId, id }) => !lockedFileIds.has(fileObjectId || id),
-  );
-  const unlockedSlots = slots.filter(({ id }) => !lockedSlotIds.has(id));
+  // The toolbar regenerates the whole template batch; selected-film manual bindings do not
+  // constrain it. Single-film/trim-only operations keep their server-side locking semantics.
+  const candidates = availableMaterials.value;
   const expired = expiredMaterialCount.value;
   const detail = expired ? `，其中 ${expired} 条已过期（对应的 Prompt 已更新）` : '';
   if (!candidates.length)
     return `当前没有已确认的可用素材${detail}；请先在视频渲染节点更新素材并完成校验。`;
-  if (candidates.length < unlockedSlots.length)
-    return `当前可用素材 ${candidates.length} 条${detail}，不足 ${unlockedSlots.length} 个待填槽位；请先在视频渲染节点更新素材并完成校验。`;
-  const shortSlot = unlockedSlots.find(
+  if (candidates.length < slots.length)
+    return `当前可用素材 ${candidates.length} 条${detail}，不足 ${slots.length} 个待填槽位；请先在视频渲染节点更新素材并完成校验。`;
+  const shortSlot = slots.find(
     (slot) => !candidates.some((material) => material.duration + 0.001 >= slot.duration),
   );
   if (shortSlot)
@@ -1537,7 +1768,9 @@ const installWorkspaceData = (
     data.templateCreationReady ?? data.materials.some((item) => item.available);
   catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
   draftRevision.value = data.draftRevision;
-  savedDraftBaseline = cloneMix(serializeEffectTemplateMixDraft(data.draft.templates, data.draft.activeTemplateId));
+  savedDraftBaseline = cloneMix(
+    serializeEffectTemplateMixDraft(data.draft.templates, data.draft.activeTemplateId),
+  );
   draftSaveBlocked = false;
   draftRace.changed();
   activeTemplateId.value =
@@ -1589,9 +1822,14 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
   const scope = currentWorkspaceScope.value;
   const response = await loadEffectTemplateMixWorkspace(props.projectId, props.workflowRunId);
   if (scope !== currentWorkspaceScope.value) return;
-  if (!draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')) {
+  if (
+    !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')
+  ) {
     // The worker is complete, so ordinary running-task polling cannot recover this skipped read.
-    pollTimers.set(run.id, setTimeout(() => void finishAiRun(run), 1200));
+    pollTimers.set(
+      run.id,
+      setTimeout(() => void finishAiRun(run), 1200),
+    );
     return;
   }
   installWorkspaceData(response.data);
@@ -1669,10 +1907,18 @@ const load = async (): Promise<void> => {
   try {
     if (!projectId || !workflowRunId) throw new Error('当前工作流运行尚未准备好');
     // A same-Run background reload must not race an autosave or discard its unsaved tail.
-    if (wasReady && installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
-      !(await flushPendingEdits())) return;
-    if (requestController !== controller || projectId !== props.projectId ||
-      workflowRunId !== props.workflowRunId) return;
+    if (
+      wasReady &&
+      installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
+      !(await flushPendingEdits())
+    )
+      return;
+    if (
+      requestController !== controller ||
+      projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId
+    )
+      return;
     const readToken = draftRace.readToken();
     const response = await readMixWorkspaceWithDeadline(
       (signal) => loadEffectTemplateMixWorkspace(projectId, workflowRunId, signal),
@@ -1684,9 +1930,14 @@ const load = async (): Promise<void> => {
       workflowRunId !== props.workflowRunId
     )
       return;
-    if (wasReady && installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
-      !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')) {
-      for (const run of aiRuns.value.filter(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
+    if (
+      wasReady &&
+      installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
+      !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')
+    ) {
+      for (const run of aiRuns.value.filter(
+        ({ status }) => status === 'QUEUED' || status === 'RUNNING',
+      ))
         void pollAiRun(run.id);
       return;
     }
@@ -1775,8 +2026,8 @@ const load = async (): Promise<void> => {
   }
 };
 /** Read authoritative freshness as soon as a saved change becomes visible to the server. */
-const notifyOutputChange = (projectId: string, workflowRunId: string): void => {
-  const detail = { projectId, workflowRunId };
+const notifyOutputChange = (projectId: string, workflowRunId: string, confirmed = false): void => {
+  const detail = { projectId, workflowRunId, ...(confirmed ? { confirmed: true } : {}) };
   window.dispatchEvent(new CustomEvent('effect-final-output-sync', { detail }));
   outputSyncChannel?.postMessage(detail);
 };
@@ -1849,18 +2100,18 @@ const persist = (keepalive = false): Promise<boolean> => {
   const previous = pendingSave ?? Promise.resolve(true);
   const save = async (): Promise<boolean> => {
     if (scope !== currentWorkspaceScope.value || draftSaveBlocked) return false;
-    const saved = await saveLatestMixDraft(async () => {
-      if (scope !== currentWorkspaceScope.value) return false;
-      const result = await persistNow(keepalive);
-      clearTimeout(saveTimer);
-      return result;
-    }, () => scope === currentWorkspaceScope.value && saveState.value === 'dirty');
+    const saved = await saveLatestMixDraft(
+      async () => {
+        if (scope !== currentWorkspaceScope.value) return false;
+        const result = await persistNow(keepalive);
+        clearTimeout(saveTimer);
+        return result;
+      },
+      () => scope === currentWorkspaceScope.value && saveState.value === 'dirty',
+    );
     return saved && scope === currentWorkspaceScope.value;
   };
-  const next = previous.then(
-    save,
-    save,
-  );
+  const next = previous.then(save, save);
   pendingSave = next;
   return next;
 };
@@ -1874,23 +2125,41 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
   try {
     const savedTemplateId = activeTemplateId.value;
     let snapshot = cloneMix(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value));
-    const write = () => saveEffectTemplateMixDraft(
-      projectId, workflowRunId, draftRevision.value, snapshot, keepalive, true,
-    );
+    const write = () =>
+      saveEffectTemplateMixDraft(
+        projectId,
+        workflowRunId,
+        draftRevision.value,
+        snapshot,
+        keepalive,
+        true,
+      );
     let result;
     try {
       result = await write();
     } catch (error) {
-      if (!(error instanceof ApiClientError) || error.status !== 409 ||
-        !error.message.includes('节点内容已在其他页面更新') || !savedDraftBaseline) throw error;
+      if (
+        !(error instanceof ApiClientError) ||
+        error.status !== 409 ||
+        !error.message.includes('节点内容已在其他页面更新') ||
+        !savedDraftBaseline
+      )
+        throw error;
       const latest = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
       if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return false;
-      const remote = serializeEffectTemplateMixDraft(latest.data.draft.templates, latest.data.draft.activeTemplateId);
+      const remote = serializeEffectTemplateMixDraft(
+        latest.data.draft.templates,
+        latest.data.draft.activeTemplateId,
+      );
       const merged = rebaseMixDraft(savedDraftBaseline,
-        cloneMix(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value)), remote);
+        cloneMix(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value)),
+        remote,
+      );
       if (!merged) {
         draftSaveBlocked = true;
-        throw new Error('当前模板在其他页面也有修改，本页编辑已保留，未覆盖对方内容。请先处理另一页面的编辑。');
+        throw new Error(
+          '当前模板在其他页面也有修改，本页编辑已保留，未覆盖对方内容。请先处理另一页面的编辑。',
+        );
       }
       draftRevision.value = latest.data.draftRevision;
       savedDraftBaseline = cloneMix(remote);
@@ -1903,9 +2172,11 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
     if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return false;
     draftRevision.value = result.data.draftRevision;
     savedDraftBaseline = snapshot;
-    saveState.value = JSON.stringify(snapshot) ===
+    saveState.value =
+      JSON.stringify(snapshot) ===
       JSON.stringify(serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value))
-      ? 'saved' : 'dirty';
+        ? 'saved'
+        : 'dirty';
     if (typeof result.data.draftRevision === 'number')
       queueOutputSync(result.data.draftRevision, savedTemplateId);
     return true;
@@ -2054,6 +2325,8 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
       : null;
   // The music bed is a single field rather than a keyed map, so its removal is its own flag.
   const removeMusic = Boolean(baseline.music) && !current.music;
+  const captionFontSize =
+    current.captionFontSize === baseline.captionFontSize ? null : (current.captionFontSize ?? 16);
   const captions =
     JSON.stringify(current.captions ?? []) === JSON.stringify(baseline.captions ?? [])
       ? null
@@ -2084,6 +2357,7 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
     !removedCaptionVoices.length &&
     !music &&
     !removeMusic &&
+    captionFontSize === null &&
     !captions &&
     !Object.keys(boxes).length
   )
@@ -2095,6 +2369,7 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
     removedCaptionVoices,
     music,
     removeMusic,
+    captionFontSize,
     captions,
     boxes,
   };
@@ -2171,6 +2446,7 @@ const flushAudioEdit = async (): Promise<void> => {
         : {}),
       ...(diff.music ? { music: diff.music } : {}),
       ...(diff.removeMusic ? { removeMusic: true } : {}),
+      ...(diff.captionFontSize !== null ? { captionFontSize: diff.captionFontSize } : {}),
       ...(diff.captions ? { captions: diff.captions } : {}),
       ...(Object.keys(diff.boxes).length ? { boxes: diff.boxes } : {}),
     });
@@ -2555,6 +2831,7 @@ const timelineRef = ref<{
   scrollToCaption: (captionId: string, time: number, duration?: number) => void;
   setPlaybackNeedle: (seconds: number) => void;
   startPlaybackNeedle: (startSeconds: number, endSeconds?: number) => void;
+  syncPlaybackNeedleClock: (seconds: number) => void;
   stopPlaybackNeedle: (seconds: number) => void;
 } | null>(null);
 /**
@@ -2609,6 +2886,9 @@ const CAPTION_SNAP = 0.015;
 const CAPTION_EDGE_GRAB = 10;
 const captionBox = (id: string): PackagingCaptionBox =>
   selectedPackaging.value?.checkpoint.captionBoxes?.[id] ?? DEFAULT_CAPTION_BOX;
+const captionFontSize = computed(
+  () => selectedPackaging.value?.checkpoint.captionFontSize ?? stageCaptionFontSize.value,
+);
 /**
  * Geometry lands on the checkpoint, so it is only offered once packaging has finished. A stale
  * checkpoint remains editable as a frozen snapshot; its source status is shown separately.
@@ -2619,17 +2899,14 @@ const captionEditable = computed(
 const captionTextEditable = computed(
   () => !projectEditLocked.value && (!selectedPackaging.value || captionEditable.value),
 );
-/** The caption the font stepper reads its current size from: the lone one, or the set's first. */
-const captionScaleTarget = computed(() => {
-  if (!captionEditable.value) return null;
-  return editingCaption.value?.id ?? selectedCaptionIds.value[0] ?? null;
-});
-const captionFontSize = computed(() => {
-  const target = captionScaleTarget.value;
-  return target
-    ? Math.max(11, Math.round(stageCaptionFontSize.value * captionBox(target).scale))
-    : stageCaptionFontSize.value;
-});
+const changeCaptionFontSize = (delta: number): void => {
+  if (!captionEditable.value) return;
+  const next = Math.min(48, Math.max(8, captionFontSize.value + delta));
+  if (next === captionFontSize.value) return;
+  editPackagingAudio((checkpoint) => {
+    checkpoint.captionFontSize = next;
+  });
+};
 /**
  * The caption narration the editor has asked for and not yet seen arrive. One at a time is enough:
  * the button is per-caption and disabled while busy, so a second request could only be a double
@@ -2701,7 +2978,7 @@ const captionBoxStyle = (id: string): Record<string, string> => {
     left: `${(box.x - box.width / 2) * 100}%`,
     width: `${box.width * 100}%`,
     bottom: `${box.y * 100}%`,
-    fontSize: `${Math.max(11, Math.round(stageCaptionFontSize.value * box.scale))}px`,
+    fontSize: `${captionFontSize.value}px`,
   };
 };
 /**
@@ -2825,7 +3102,7 @@ const onAudioParamsChange = (values: Record<string, number>): void => {
     }
   });
 };
-type CaptionDragMode = 'MOVE' | 'LEFT' | 'RIGHT' | 'SCALE';
+type CaptionDragMode = 'MOVE' | 'LEFT' | 'RIGHT';
 /** Snapped alignment lines, so the drag reads like an editor instead of free-floating. */
 const captionGuideX = ref<number | null>(null);
 const captionGuideY = ref<number | null>(null);
@@ -2848,7 +3125,6 @@ let captionDrag: {
   /** Visible frame size, which is what actually reaches a border — the wrap box is wider. */
   frameWidth: number;
   /** Client Y of the frame's bottom edge, which the corner drag scales the text away from. */
-  frameBottom: number;
   moved: boolean;
 } | null = null;
 /**
@@ -2926,7 +3202,6 @@ const onCaptionBoxPointerDown = (event: PointerEvent, forced?: CaptionDragMode):
     bounds,
     height: rect.height / bounds.height,
     frameWidth: frame.width / bounds.width,
-    frameBottom: frame.bottom,
     moved: false,
   };
 };
@@ -2943,14 +3218,7 @@ const onCaptionBoxPointerMove = (event: PointerEvent): void => {
   const next: Record<string, PackagingCaptionBox> = {};
   captionGuideX.value = null;
   captionGuideY.value = null;
-  if (drag.mode === 'SCALE') {
-    // Proportional, the way a corner resize works everywhere: the frame's bottom edge is the
-    // anchor, so pulling the dot up away from it enlarges the text and pushing it back shrinks it.
-    const startDistance = Math.max(1, drag.frameBottom - drag.startY);
-    const distance = Math.max(1, drag.frameBottom - event.clientY);
-    const scale = Math.min(4, Math.max(0.25, (origin.scale * distance) / startDistance));
-    for (const [id, box] of Object.entries(drag.boxes)) next[id] = { ...box, scale };
-  } else if (drag.mode === 'MOVE') {
+  if (drag.mode === 'MOVE') {
     // Clamped and snapped on the visible frame, not the wrap box: the text hugs its glyphs, so
     // the box's edges would stop it well short of the border and the line would never appear.
     const half = Math.min(0.5, drag.frameWidth / 2);
@@ -3018,22 +3286,6 @@ const onCaptionBoxPointerUp = (event: PointerEvent): void => {
   captionDrag = null;
   captionGuideX.value = null;
   captionGuideY.value = null;
-};
-/** Steps by one rendered pixel so the control reads in the same units the preview shows. */
-const changeCaptionScale = (step: number): void => {
-  const target = captionScaleTarget.value;
-  if (!target || !captionEditable.value) return;
-  const base = stageCaptionFontSize.value;
-  const scale = Math.min(4, Math.max(0.25, (captionFontSize.value + step) / base));
-  // A set holds one size, so every selected caption takes the stepped value.
-  const ids = selectedCaptionIds.value.length ? selectedCaptionIds.value : [target];
-  editPackagingAudio((checkpoint) => {
-    // Captured before the new size is written, so undo steps back to the previous size.
-    rememberTimelineEdit();
-    const boxes = { ...(checkpoint.captionBoxes ?? {}) };
-    for (const id of ids) boxes[id] = { ...captionBox(id), scale };
-    checkpoint.captionBoxes = boxes;
-  });
 };
 const updateWorkbenchMode = (): void => {
   compactWorkbench.value = window.innerWidth <= 1050;
@@ -3216,11 +3468,9 @@ const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string =
   );
 };
 const resetTimelinePlayerState = (): void => {
-  primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   timelineVideoSeeks.reset();
   activePlaybackSlotId = '';
-  activeTransitionSignature = '';
   for (const video of timelinePlayers.values()) video.pause();
   for (const player of detachedAudioPlayers.values()) {
     player.pause();
@@ -3319,11 +3569,11 @@ const timelinePlaybackStart = (slotId: string): number => {
   const duration = effectTemplateMixTransitionDuration(slot, previousSlot);
   return Math.max(previousRange.start, range.start - duration / 2);
 };
-const timelineSourceTime = (slotId: string): number | null => {
+const timelineSourceTime = (slotId: string, seconds = playhead.value): number | null => {
   const slot = selectedVariant.value?.slots.find(({ id }) => id === slotId);
   const material = materialForSlot(slotId);
   if (!slot || !material) return null;
-  const elapsed = Math.max(0, playhead.value - timelinePlaybackStart(slotId));
+  const elapsed = Math.max(0, seconds - timelinePlaybackStart(slotId));
   const offset = selectedVariant.value?.offsets[slotId] ?? 0;
   return Math.max(0, Math.min(material.duration - 1 / TIMELINE_FPS, offset + elapsed));
 };
@@ -3331,32 +3581,23 @@ const syncTimelineVideo = (
   slotId: string,
   resume: boolean,
   seekMode: 'drift' | 'once' = 'drift',
+  seconds = playhead.value,
 ): HTMLVideoElement | null => {
   const video = timelinePlayers.get(slotId);
-  const sourceTime = timelineSourceTime(slotId);
+  const sourceTime = timelineSourceTime(slotId, seconds);
   if (!video || sourceTime === null) return null;
-  if (
-    video.readyState === HTMLMediaElement.HAVE_NOTHING &&
-    video.src &&
-    !primedTimelinePlayers.has(video)
-  ) {
-    video.preload = 'auto';
-    video.load();
-    primedTimelinePlayers.add(video);
+  video.preload = 'auto';
+  const needsSeek =
+    seekMode === 'once'
+      ? !positionedTimelinePlayers.has(video)
+      : !resume ||
+        !positionedTimelinePlayers.has(video) ||
+        Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS;
+  if (needsSeek) {
+    timelineVideoSeeks.request(video, sourceTime, 1 / TIMELINE_FPS);
+    positionedTimelinePlayers.add(video);
   }
-  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-    const needsSeek =
-      seekMode === 'once'
-        ? !positionedTimelinePlayers.has(video)
-        : !resume ||
-          !positionedTimelinePlayers.has(video) ||
-          Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS;
-    if (needsSeek) {
-      timelineVideoSeeks.request(video, sourceTime, 1 / TIMELINE_FPS);
-      positionedTimelinePlayers.add(video);
-    }
-  }
-  if (resume && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.paused) {
+  if (resume && timelineVideoSeeks.isSettled(video) && video.paused) {
     void video.play().catch(() => undefined);
   }
   return video;
@@ -3370,19 +3611,24 @@ const primeUpcomingTimelinePlayer = (range: { id: string; end: number }): void =
         Boolean(materialForSlot(candidate.id)),
     )
     .sort((left, right) => left.start - right.start)[0];
+  const transition = transitionPreviewAt(
+    playing.value ? currentPlaybackClockSeconds() : playhead.value,
+  );
+  const keep = new Set([
+    range.id,
+    upcoming?.id,
+    transition?.outgoingSlot.id,
+    transition?.incomingSlot.id,
+  ]);
+  for (const [slotId, player] of timelinePlayers) {
+    player.preload = keep.has(slotId) ? 'auto' : 'metadata';
+  }
   if (!upcoming) return;
   const video = timelinePlayers.get(upcoming.id);
   if (!video) return;
-  if (!primedTimelinePlayers.has(video)) {
-    video.preload = 'auto';
-    video.load();
-    primedTimelinePlayers.add(video);
-  }
-  if (!positionedTimelinePlayers.has(video) && video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-    const targetTime = selectedVariant.value?.offsets[upcoming.id] ?? 0;
-    timelineVideoSeeks.request(video, targetTime, 1 / TIMELINE_FPS);
-    positionedTimelinePlayers.add(video);
-  }
+  const targetTime = selectedVariant.value?.offsets[upcoming.id] ?? 0;
+  prepareTimelineVideo(video, timelineVideoSeeks, targetTime, 1 / TIMELINE_FPS);
+  positionedTimelinePlayers.add(video);
 };
 const pauseTimelinePlayers = (exceptSlotId: string | string[] = ''): void => {
   const keep = new Set(Array.isArray(exceptSlotId) ? exceptSlotId : [exceptSlotId]);
@@ -3488,10 +3734,15 @@ let lastBranchNavigation: EffectBranchNavigation | null = null;
 let branchNavigationReloading = false;
 const applyBranchNavigation = async (): Promise<void> => {
   const target = props.branchNavigation;
-  if (!effectBranchNavigationMatches(target, props.projectId, props.workflowRunId) ||
-    target.nodeId !== 'TEMPLATE_MIX' || target === lastBranchNavigation ||
-    branchNavigationReloading || !workbenchActive || pageState.value !== 'READY' ||
-    installedWorkspaceScope.value !== currentWorkspaceScope.value)
+  if (
+    !effectBranchNavigationMatches(target, props.projectId, props.workflowRunId) ||
+    target.nodeId !== 'TEMPLATE_MIX' ||
+    target === lastBranchNavigation ||
+    branchNavigationReloading ||
+    !workbenchActive ||
+    pageState.value !== 'READY' ||
+    installedWorkspaceScope.value !== currentWorkspaceScope.value
+  )
     return;
   lastBranchNavigation = target;
   workflowDialogOpen.value = false;
@@ -3507,8 +3758,11 @@ const applyBranchNavigation = async (): Promise<void> => {
   }
   enterEditor();
   await nextTick();
-  if (props.branchNavigation !== target ||
-    !effectBranchNavigationMatches(target, props.projectId, props.workflowRunId)) return;
+  if (
+    props.branchNavigation !== target ||
+    !effectBranchNavigationMatches(target, props.projectId, props.workflowRunId)
+  )
+    return;
   if (target.mixStage === 'PACKAGING') openPackaging('WORKFLOW');
   else if (target.mixStage === 'FILL') await openWorkflowDialog();
 };
@@ -5066,7 +5320,8 @@ const createEmptyVariant = async (): Promise<void> => {
       ui.selectedSlotId = created.slots[0]?.id ?? '';
     }
     saveState.value = 'saved';
-    if (response.data.draftRevision !== null) queueOutputSync(response.data.draftRevision, templateId);
+    if (response.data.draftRevision !== null)
+      queueOutputSync(response.data.draftRevision, templateId);
     showNotice('已新建空成片，可从左侧素材库拖入画面');
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '新建成片失败', 'error');
@@ -5075,43 +5330,66 @@ const createEmptyVariant = async (): Promise<void> => {
   }
 };
 const deleteVariant = async (variantId: string): Promise<void> => {
-  if (projectEditLocked.value || mutating.value || !workspace.value) return;
+  if (variantEditLocked(variantId) || mutating.value || !workspace.value) return;
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
   const templateId = activeTemplateId.value;
   const variant = workspace.value.variants.find((item) => item.id === variantId);
   if (!variant) return;
   const confirmed = await requestActionConfirmation({
-    eyebrow: '删除成片工程', title: `删除“${variant.name}”？`,
-    description: '删除当前模板中的此工程。已导出的成片仍保留，进入成片输出点击局部更新后才会移除对应成片；其他版本分支不受影响。',
-    confirmLabel: '删除工程', tone: 'danger',
+    eyebrow: '删除成片工程',
+    title: `删除“${variant.name}”？`,
+    description:
+      '删除当前模板中的此工程。已导出的成片仍保留，进入成片输出点击局部更新后才会移除对应成片；其他版本分支不受影响。',
+    confirmLabel: '删除工程',
+    tone: 'danger',
   });
-  if (!confirmed || props.projectId !== projectId || props.workflowRunId !== workflowRunId ||
-      activeTemplateId.value !== templateId || projectEditLocked.value || mutating.value) return;
+  if (
+    !confirmed ||
+    props.projectId !== projectId ||
+    props.workflowRunId !== workflowRunId ||
+    activeTemplateId.value !== templateId ||
+    variantEditLocked(variantId) ||
+    mutating.value
+  )
+    return;
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
-  if (props.projectId !== projectId || props.workflowRunId !== workflowRunId ||
-      activeTemplateId.value !== templateId || projectEditLocked.value) return;
+  if (
+    props.projectId !== projectId ||
+    props.workflowRunId !== workflowRunId ||
+    activeTemplateId.value !== templateId ||
+    variantEditLocked(variantId)
+  )
+    return;
   mutating.value = true;
   if (selectedVariant.value?.id === variantId) {
     playing.value = false;
     pauseTimelinePlayers();
   }
   try {
-    const response = await deleteEffectTemplateMixVariant(projectId, workflowRunId,
-      draftRevision.value, templateId, variantId);
+    const response = await deleteEffectTemplateMixVariant(
+      projectId,
+      workflowRunId,
+      draftRevision.value,
+      templateId,
+      variantId,
+    );
     if (props.projectId !== projectId || props.workflowRunId !== workflowRunId) return;
     const selectedId = selectedVariant.value?.id;
     installWorkspaceData(response.data);
     activeTemplateId.value = templateId;
     const entry = catalog.value.find((item) => item.id === templateId);
-    const next = entry?.workspace.variants.find((item) => item.id === selectedId) ?? entry?.workspace.variants[0];
+    const next =
+      entry?.workspace.variants.find((item) => item.id === selectedId) ??
+      entry?.workspace.variants[0];
     if (next) selectVariant(next.id);
     else if (uiByTemplate[templateId]) {
       uiByTemplate[templateId]!.selectedVariantId = '';
       uiByTemplate[templateId]!.selectedSlotId = '';
     }
     saveState.value = 'saved';
-    if (response.data.draftRevision !== null) queueOutputSync(response.data.draftRevision, templateId);
+    if (response.data.draftRevision !== null)
+      queueOutputSync(response.data.draftRevision, templateId);
     showNotice('已删除成片工程，已导出的成片可在成片输出局部更新');
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '删除成片失败', 'error');
@@ -5440,7 +5718,7 @@ const startAiFill = async (
   }
   // Retry and other entry points bypass the disabled button, so the reason is checked here too —
   // sending the request would only come back as the generic "剩余未使用素材不足".
-  if (!refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {
+  if (!target && !refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {
     showNotice(aiFillBlockReason.value, 'warning');
     return;
   }
@@ -5495,12 +5773,12 @@ const startAiFill = async (
       appendNewMaterials
         ? '正在归槽新增素材并选择有观看差异的追加成片方案；完成后自动衔接该模板的包装设置'
         : refreshAffectedSlots
-        ? '正在为已更新素材位重新分析截取起点；槽位归属、其他素材和剪辑位置保持不变'
-        : target?.manualSlotIds.length
-          ? '智能填充已开始，人工槽位会保留，其余槽位重新计算'
-          : target
-            ? '重新智能填充已开始；可用的原素材归属尽量保留，已过期素材会重新匹配'
-            : '智能填充已开始；完成前不会创建成片工程',
+          ? '正在为已更新素材位重新分析截取起点；槽位归属、其他素材和剪辑位置保持不变'
+          : target?.manualSlotIds.length
+            ? '智能填充已开始，人工槽位会保留，其余槽位重新计算'
+            : target
+              ? '重新智能填充已开始；可用的原素材归属尽量保留，已过期素材会重新匹配'
+              : '智能填充已开始；完成前不会创建成片工程',
     );
     void pollAiRun(result.data.id);
   } catch (error) {
@@ -5511,7 +5789,8 @@ const startAiFill = async (
     mutating.value = false;
   }
 };
-const refill = (): void => void startAiFill(selectedVariant.value);
+// The top-level action regenerates a complete batch in a child Run, never just the selected film.
+const refill = (): void => void startAiFill(null);
 const appendNewMaterials = (): void => void startAiFill(null, false, true);
 const resumeAppend = async (): Promise<void> => {
   const run = appendContinuationRun.value;
@@ -5524,7 +5803,9 @@ const resumeAppend = async (): Promise<void> => {
     showNotice('新增成片已同步，所需包装任务已启动');
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '继续更新失败，请稍后重试', 'error');
-  } finally { mutating.value = false; }
+  } finally {
+    mutating.value = false;
+  }
 };
 const retryFailedAiRun = (): void => {
   const run = failedAiRun.value;
@@ -5590,7 +5871,6 @@ const stopPlaybackClock = (resumeBackgroundMediaWork = true, freezeVisualClock =
     syncPlayerTimecode(playhead.value);
   }
   activePlaybackSlotId = '';
-  activeTransitionSignature = '';
   if (resumeBackgroundMediaWork) {
     pauseEffectTemplateMixThumbnailCapture(false);
     pauseEffectTemplateMixWaveformDecoding(false);
@@ -5600,6 +5880,14 @@ const resetPlaybackClock = (): void => {
   playbackAnchorMilliseconds = performance.now();
   playbackAnchorSeconds = playhead.value;
 };
+const packagingPlaybackTime = (): number =>
+  playing.value
+    ? Math.min(
+        currentDuration.value,
+        packagingPanel.value?.playbackAudioTime() ??
+          playbackAnchorSeconds + (performance.now() - playbackAnchorMilliseconds) / 1000,
+      )
+    : playhead.value;
 const collectPlaybackSyncBoundaries = (): number[] => {
   const values = new Set<number>([0, currentDuration.value]);
   const variant = selectedVariant.value;
@@ -5648,14 +5936,7 @@ const resetPlaybackSyncBoundaries = (): void => {
   );
   if (nextPlaybackBoundaryIndex < 0) nextPlaybackBoundaryIndex = playbackSyncBoundaries.length;
 };
-const currentPlaybackClockSeconds = (): number =>
-  Math.max(
-    0,
-    Math.min(
-      currentDuration.value,
-      playbackAnchorSeconds + (performance.now() - playbackAnchorMilliseconds) / 1000,
-    ),
-  );
+const currentPlaybackClockSeconds = (): number => Math.max(0, packagingPlaybackTime());
 const syncPlayingVideoFrame = (): void => {
   const playbackTime = currentPlaybackClockSeconds();
   const transition = transitionPreviewAt(playbackTime);
@@ -5663,25 +5944,20 @@ const syncPlayingVideoFrame = (): void => {
     syncTransitionPlaybackAnimation(transition, playbackTime);
     const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
     pauseTimelinePlayers(activeIds);
-    const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}`;
-    const entering = activeTransitionSignature !== signature;
-    if (entering) activeTransitionSignature = signature;
-    const outgoing = syncTimelineVideo(
-      transition.outgoingSlot.id,
-      true,
-      entering ? 'drift' : 'once',
+    // Both players were positioned before the boundary. Do not re-seek the
+    // outgoing native clock or invalidate the incoming decoded first frame.
+    const outgoing = syncTimelineVideo(transition.outgoingSlot.id, true, 'once', playbackTime);
+    const incoming = syncTimelineVideo(transition.incomingSlot.id, true, 'once', playbackTime);
+    const incomingRange = currentTiming.value.slots.find(
+      ({ id }) => id === transition.incomingSlot.id,
     );
-    const incoming = syncTimelineVideo(
-      transition.incomingSlot.id,
-      true,
-      entering ? 'drift' : 'once',
-    );
+    if (incomingRange) primeUpcomingTimelinePlayer(incomingRange);
     if (!outgoing && !incoming) {
       displayedTimelineSlotId.value = '';
       return;
     }
     activePlaybackSlotId = transition.incomingSlot.id;
-    if (incoming?.readyState && incoming.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    if (incoming && timelineVideoSeeks.isSettled(incoming)) {
       playerUnavailableSlotId.value = '';
       displayedTimelineSlotId.value = transition.incomingSlot.id;
     }
@@ -5703,29 +5979,23 @@ const syncPlayingVideoFrame = (): void => {
     displayedTimelineSlotId.value = '';
     return;
   }
-  const sourceTime = timelineSourceTime(slot.id) ?? 0;
+  const sourceTime = timelineSourceTime(slot.id, playbackTime) ?? 0;
   const switchedSlot = activePlaybackSlotId !== slot.id;
-  const needsSlotSeek = switchedSlot || !positionedTimelinePlayers.has(video);
+  const needsSlotSeek = !positionedTimelinePlayers.has(video);
   if (switchedSlot) {
     activePlaybackSlotId = slot.id;
     displayedTimelineSlotId.value = '';
     pauseTimelinePlayers(slot.id);
-    for (const [slotId, otherVideo] of timelinePlayers) {
-      otherVideo.preload = slotId === slot.id ? 'auto' : 'metadata';
-    }
     video.preload = 'auto';
   }
-  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-    // Seek only when entering a clip. During playback the browser's native
-    // media clock owns frame delivery; correcting currentTime from our RAF on
-    // every drift would turn normal decode jitter into visible stutter.
-    if (needsSlotSeek) {
-      timelineVideoSeeks.request(video, Math.max(0, sourceTime), 1 / TIMELINE_FPS);
-      positionedTimelinePlayers.add(video);
-    }
+  // Only unprepared clips need positioning here. Natural boundary handoffs
+  // reuse the decoded frame; explicit scrub requests still seek precisely.
+  if (needsSlotSeek) {
+    timelineVideoSeeks.request(video, Math.max(0, sourceTime), 1 / TIMELINE_FPS);
+    positionedTimelinePlayers.add(video);
   }
   if (switchedSlot) primeUpcomingTimelinePlayer(range);
-  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+  if (timelineVideoSeeks.isSettled(video)) {
     playerUnavailableSlotId.value = '';
     displayedTimelineSlotId.value = slot.id;
     if (video.paused) void video.play().catch(() => undefined);
@@ -5736,12 +6006,18 @@ const updatePlaybackFrame = (now: number): void => {
     stopPlaybackClock();
     return;
   }
-  const next = playbackAnchorSeconds + (now - playbackAnchorMilliseconds) / 1000;
+  const next = currentPlaybackClockSeconds();
+  captionPresentationTime.value = next;
+  timelineRef.value?.syncPlaybackNeedleClock(next);
+  for (const animation of playerScrubberAnimations) {
+    animation.currentTime = Math.max(0, next - playbackAnchorSeconds) * 1000;
+  }
   syncPlayerTimecode(next);
   if (next >= currentDuration.value) {
     playhead.value = currentDuration.value;
     syncPlayerTimecode(currentDuration.value);
     playing.value = false;
+    packagingPanel.value?.stopPlaybackAudio();
     pauseTimelinePlayers();
     syncDetachedAudio();
     stopPlaybackClock();
@@ -5804,16 +6080,17 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
       else syncTransitionPlaybackAnimation(null, playbackTime);
       const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
       pauseTimelinePlayers(activeIds);
-      const outgoing = syncTimelineVideo(transition.outgoingSlot.id, resume);
-      const incoming = syncTimelineVideo(transition.incomingSlot.id, resume);
-      if (incoming?.readyState && incoming.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      const outgoing = syncTimelineVideo(transition.outgoingSlot.id, resume, 'drift', playbackTime);
+      const incoming = syncTimelineVideo(transition.incomingSlot.id, resume, 'drift', playbackTime);
+      const incomingRange = currentTiming.value.slots.find(
+        ({ id }) => id === transition.incomingSlot.id,
+      );
+      if (incomingRange) primeUpcomingTimelinePlayer(incomingRange);
+      if (incoming && timelineVideoSeeks.isSettled(incoming)) {
         playerUnavailableSlotId.value = '';
         displayedTimelineSlotId.value = transition.incomingSlot.id;
         transitionFrame.value = '';
-      } else if (
-        outgoing?.readyState &&
-        outgoing.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-      ) {
+      } else if (outgoing && timelineVideoSeeks.isSettled(outgoing)) {
         playerUnavailableSlotId.value = '';
         displayedTimelineSlotId.value = transition.outgoingSlot.id;
       }
@@ -5825,17 +6102,19 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
     // retry after Vue flushes once, but never keep an old seek request alive.
     if (!video) return false;
     pauseTimelinePlayers(slot.id);
-    const sourceTime = timelineSourceTime(slot.id);
+    video.preload = 'auto';
+    const sourceTime = timelineSourceTime(slot.id, playbackTime);
     if (sourceTime !== null) {
       timelineVideoSeeks.request(video, Math.max(0, sourceTime), 1 / TIMELINE_FPS);
+      positionedTimelinePlayers.add(video);
     }
     primeUpcomingTimelinePlayer(range);
-    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking) {
+    if (timelineVideoSeeks.isSettled(video)) {
       playerUnavailableSlotId.value = '';
       displayedTimelineSlotId.value = slot.id;
       transitionFrame.value = '';
     }
-    if (resume && video.paused) {
+    if (resume && timelineVideoSeeks.isSettled(video) && video.paused) {
       void video.play().catch(() => undefined);
     }
     return true;
@@ -5859,6 +6138,7 @@ const seek = (raw: number): void => {
   timelineRef.value?.setPlaybackNeedle(playhead.value);
   setPlayerScrubber(playhead.value);
   playbackSeekVersion.value += 1;
+  captionPresentationTime.value = playhead.value;
   if (playing.value) {
     resetPlaybackClock();
     resetPlaybackSyncBoundaries();
@@ -5898,9 +6178,12 @@ const togglePlay = async (): Promise<void> => {
   playing.value = true;
   // Start packaged audio before the async video seek so the browser still treats it as the
   // player's user gesture. The child continues syncing it to the shared playhead afterwards.
-  packagingPanel.value?.startPlaybackAudio();
-  syncDetachedAudio(true);
+  captionPresentationTime.value = playhead.value;
+  const audioReady = packagingPanel.value?.startPlaybackAudio(playhead.value);
   startPlaybackClock();
+  await audioReady;
+  if (!playing.value) return;
+  syncDetachedAudio(true);
   await syncPlayerToPlayhead(true);
 };
 const onTimelinePlayerReady = (slotId: string, seeked = false): void => {
@@ -6122,7 +6405,11 @@ watch(
   },
 );
 watch(() => props.previewTarget, applyPreviewTarget);
-watch(() => props.branchNavigation, () => void applyBranchNavigation(), { flush: 'post' });
+watch(
+  () => props.branchNavigation,
+  () => void applyBranchNavigation(),
+  { flush: 'post' },
+);
 watch([() => previewSlot.value?.id, () => previewMaterial.value?.id], () => {
   if (!auditionMaterial.value) void syncPlayerToPlayhead(playing.value);
 });
@@ -6134,8 +6421,13 @@ watch(
   () => [selectedSlot.value?.id, keyword.value, materialRoleFilter.value],
   () => (materialPage.value = 1),
 );
-watch([activeTemplateId, activeClassificationPool], () => {
+watch(activeTemplateId, () => {
   materialRoleFilter.value = preferredMaterialRole.value;
+});
+watch(activeClassificationPool, (pool, previous) => {
+  // Source polling replaces the pool object even when assignments are identical. Preserve the
+  // user's selected category instead of jumping back to the first category every five seconds.
+  if (pool && !previous) materialRoleFilter.value = preferredMaterialRole.value;
 });
 watch(materialGrid, (element) => {
   materialGridResizeObserver?.disconnect();
@@ -6152,26 +6444,6 @@ watch(materialGrid, (element) => {
     });
   });
   materialGridResizeObserver.observe(element);
-});
-watch(stageElement, (element) => {
-  stageResizeObserver?.disconnect();
-  stageResizeObserver = null;
-  if (stageResizeFrame !== undefined) cancelAnimationFrame(stageResizeFrame);
-  stageResizeFrame = undefined;
-  const measure = (): void => {
-    const size = element ? Math.max(11, Math.round(element.clientWidth / 22)) : 14;
-    if (size !== stageCaptionFontSize.value) stageCaptionFontSize.value = size;
-  };
-  measure();
-  if (!element) return;
-  stageResizeObserver = new ResizeObserver(() => {
-    if (stageResizeFrame !== undefined) cancelAnimationFrame(stageResizeFrame);
-    stageResizeFrame = requestAnimationFrame(() => {
-      stageResizeFrame = undefined;
-      measure();
-    });
-  });
-  stageResizeObserver.observe(element);
 });
 watch(materialColumnCount, () => (materialPage.value = 1));
 watch(materialPageCount, (count) => {
@@ -6209,16 +6481,29 @@ const startSourcePolling = (): void => {
   if (!sourcePollTimer) sourcePollTimer = setInterval(() => void refreshMaterialSources(), 5000);
 };
 const refreshMaterialSources = async (): Promise<void> => {
-  if (!workbenchActive || pageState.value !== 'READY' || sourcePollController || mutating.value ||
-      loadedWorkspaceRunId !== props.workflowRunId) return;
+  if (
+    !workbenchActive ||
+    pageState.value !== 'READY' ||
+    sourcePollController ||
+    mutating.value ||
+    loadedWorkspaceRunId !== props.workflowRunId
+  )
+    return;
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
   const request = new AbortController();
   sourcePollController = request;
   try {
     const { data } = await loadEffectTemplateMixSources(projectId, workflowRunId, request.signal);
-    if (!workbenchActive || request.signal.aborted || projectId !== props.projectId || workflowRunId !== props.workflowRunId) return;
+    if (
+      !workbenchActive ||
+      request.signal.aborted ||
+      projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId
+    )
+      return;
     sourceMaterials.value = data.materials;
+    if (data.classificationPools) classificationPools.value = data.classificationPools;
     pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
     for (const entry of catalog.value) entry.workspace.materials = data.materials;
     // Never overwrite dirty user edits when a local output refresh saves a new engineering revision.
@@ -6242,6 +6527,7 @@ let mixWorkbenchWasDeactivated = false;
 onActivated(() => {
   workbenchActive = true;
   startSourcePolling();
+  if (mixWorkbenchWasDeactivated) void resumeSourceUpdate();
   if (!mixWorkbenchWasDeactivated) {
     applyPreviewTarget();
     return;
@@ -6274,6 +6560,7 @@ onActivated(() => {
   })();
 });
 onDeactivated(() => {
+  stopSourceUpdatePolling();
   workbenchActive = false;
   clearInterval(sourcePollTimer);
   sourcePollTimer = undefined;
@@ -6285,6 +6572,7 @@ onDeactivated(() => {
   packagingPanel.value?.stopPlaybackAudio();
 });
 onBeforeUnmount(() => {
+  stopSourceUpdatePolling();
   workbenchActive = false;
   clearInterval(sourcePollTimer);
   sourcePollController?.abort();
@@ -6305,10 +6593,6 @@ onBeforeUnmount(() => {
   materialDragGhost = null;
   clearMaterialPointerTarget();
   materialGridResizeObserver?.disconnect();
-  stageResizeObserver?.disconnect();
-  stageResizeObserver = null;
-  if (stageResizeFrame !== undefined) cancelAnimationFrame(stageResizeFrame);
-  stageResizeFrame = undefined;
   if (materialGridResizeFrame !== undefined) cancelAnimationFrame(materialGridResizeFrame);
   window.removeEventListener('resize', updateWorkbenchMode);
   controller?.abort();
@@ -6324,7 +6608,12 @@ onBeforeUnmount(() => {
 const getBranchTreeTemplateId = (): string | null =>
   view.value === 'EDITOR' ? activeTemplateId.value || null : null;
 const getCurrentTemplateId = (): string | null => activeTemplateId.value || null;
-defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId, focusBranchTemplate });
+defineExpose({
+  flushPendingEdits,
+  getBranchTreeTemplateId,
+  getCurrentTemplateId,
+  focusBranchTemplate,
+});
 </script>
 
 <template>
@@ -6375,7 +6664,10 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
             v-for="entry in catalog"
             :key="entry.id"
             class="template-list__row"
-            :class="{ active: entry.id === activeTemplateId }"
+            :class="{
+              active: entry.id === activeTemplateId,
+              'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(pendingAddedMaterialIds[entry.id]?.length),
+            }"
           >
             <button type="button" class="template-list__select" @click="selectTemplate(entry.id)">
               <span
@@ -6383,13 +6675,15 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                 ><small
                   >{{ entry.workspace.template.slots.length }} 个槽位 ·
                   {{ entry.workspace.variants.length }} 个工程</small
-                ></span
-              >
+                >
+                <small v-if="templatePendingUpdateCount(entry)" class="source-update-badge"
+                  >{{ templatePendingUpdateCount(entry) }} 个成片待更新</small
+                >
+                <small v-if="pendingAddedMaterialIds[entry.id]?.length" class="source-update-badge"
+                  >新增素材待更新 · {{ pendingAddedMaterialIds[entry.id]?.length }}</small
+                >
+              </span>
             </button>
-            <small v-if="templatePendingUpdateCount(entry)" class="source-update-badge"
-              >{{ templatePendingUpdateCount(entry) }} 个待更新</small>
-            <small v-if="pendingAddedMaterialIds[entry.id]?.length" class="source-update-badge"
-              >新增素材待更新 · {{ pendingAddedMaterialIds[entry.id]?.length }}</small>
             <button
               type="button"
               class="template-list__delete"
@@ -6401,11 +6695,7 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
               <Trash2 :size="15" />
             </button>
           </div>
-          <button
-            class="button new-template"
-            :disabled="checkingTemplateCreation"
-            @click="openCreate"
-          >
+          <button class="button new-template" :disabled="checkingTemplateCreation" @click="openCreate">
             <Plus :size="14" />新建模板
           </button>
         </aside>
@@ -6511,10 +6801,7 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
           <footer>
             <div>
               <p v-if="availableMaterials.length">
-                已载入 {{ availableMaterials.length }} 个已确认视频片段<template
-                  v-if="expiredMaterialCount"
-                  >；旧成片另保留 {{ expiredMaterialCount }} 条历史素材</template
-                >。
+                已载入 {{ availableMaterials.length }} 个已确认视频片段。
               </p>
               <p v-else-if="expiredMaterialCount" class="warning">
                 {{ expiredMaterialCount }}
@@ -6526,9 +6813,25 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
               >
             </div>
             <button
-              v-if="pendingAddedCount" class="button" type="button"
+              v-if="(activeEntry && templatePendingUpdateCount(activeEntry)) || sourceUpdateBusy"
+              class="button source-update-button"
+              type="button"
+              :disabled="templateEditLocked || mutating || sourceUpdateBusy"
+              @click="updateSourceProjects"
+            >
+              <LoaderCircle v-if="sourceUpdateBusy" class="spin" :size="15" />
+              <RefreshCw v-else :size="15" />{{ sourceUpdateBusy ? '局部更新中…'
+                : `局部更新（${activeEntry ? templatePendingUpdateCount(activeEntry) : 0}）` }}
+            </button>
+            <button
+              v-if="pendingAddedCount"
+              class="button"
+              type="button"
               :disabled="mutating || Boolean(activeAiRun) || packagingInFlight || backgroundAiBusy"
-              @click="appendNewMaterials">局部更新 · {{ pendingAddedCount }} 个新增素材</button>
+              @click="appendNewMaterials"
+            >
+              局部更新 · {{ pendingAddedCount }} 个新增素材
+            </button>
             <button
               class="button primary"
               :disabled="!workspace.template.name.trim() || mutating"
@@ -6541,7 +6844,9 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
             <Lock :size="15" />{{
               packagingSourceAutoLocked
                 ? '智能成片包装正在进行，成片工程暂时不能编辑；任务结束后自动解锁。'
-                : '智能填充正在运行，模板暂时锁定；任务结束后可修改。'
+                : sourceUpdateBusy
+                  ? '局部更新正在进行，模板配置暂时锁定；任务结束后自动解锁。'
+                  : '智能填充正在运行，模板暂时锁定；任务结束后可修改。'
             }}
           </p>
           <p
@@ -6551,7 +6856,7 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
           >
             <AlertCircle
               :size="15"
-            />当前模板配置或已绑定素材与确认版本不一致；请先修复受影响的成片，再开始包装。
+            />模板槽位配置已修改，请重新智能填充以应用新配置。
           </p>
         </div>
         <div v-else class="panel config-panel config-panel--empty">
@@ -6579,13 +6884,28 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
           </div>
           <div class="workbench-actions">
             <button
-              v-if="pendingAddedCount" class="button" type="button"
+              v-if="pendingAddedCount"
+              class="button"
+              type="button"
               :disabled="mutating || Boolean(activeAiRun) || packagingInFlight || backgroundAiBusy"
-              @click="appendNewMaterials"><RefreshCw :size="15" />局部更新 · {{ pendingAddedCount }} 个新增素材</button>
-            <small
-              v-if="selectedVariantRefreshSlotIds.length" class="source-update-badge"
-              title="当前成片采用的渲染素材已变更；请在成片输出节点执行局部更新"
-            >待更新 · {{ selectedVariantRefreshSlotIds.length }} 个素材</small>
+              @click="appendNewMaterials"
+            >
+              <RefreshCw :size="15" />局部更新 · {{ pendingAddedCount }} 个新增素材
+            </button>
+            <button
+              v-if="(activeEntry && templatePendingUpdateCount(activeEntry)) || sourceUpdateBusy"
+              class="button source-update-button"
+              type="button"
+              :disabled="projectEditLocked || mutating || sourceUpdateBusy"
+              @click="updateSourceProjects"
+            >
+              <LoaderCircle v-if="sourceUpdateBusy" class="spin" :size="15" />
+              <RefreshCw v-else :size="15" />{{
+                sourceUpdateBusy
+                  ? '局部更新中…'
+                  : `局部更新（${activeEntry ? templatePendingUpdateCount(activeEntry) : 0}）`
+              }}
+            </button>
             <button
               class="button primary"
               type="button"
@@ -6596,7 +6916,7 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                 packagingInFlight ||
                 Boolean(aiFillBlockReason)
               "
-              :title="aiFillBlockReason ?? '按模板规则为每个槽位挑选一条不重复的当前素材'"
+              :title="aiFillBlockReason ?? '按模板规则整批生成成片；原分支保留，完成后查看新批次'"
               @click="refill"
             >
               <LoaderCircle v-if="activeAiRun" class="spin" :size="15" />
@@ -6626,17 +6946,19 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
             <button class="button" @click="leaveEditor">返回模板配置</button>
           </div>
         </header>
-        <div v-if="templateEditLocked && !runSwitching" class="template-lock-banner" role="status">
+        <div v-if="projectEditLocked && !runSwitching" class="template-lock-banner" role="status">
           <Lock :size="15" />{{
             packagingSourceAutoLocked
               ? '智能成片包装正在进行，成片工程暂时不能编辑；任务结束后自动解锁。'
-              : '智能填充正在运行，模板和成片工程暂时锁定。'
+              : selectedSourceUpdateLocked
+                ? '局部更新正在进行，此成片工程暂时不能编辑；任务结束后自动解锁。'
+                : '智能填充正在运行，模板和成片工程暂时锁定。'
           }}
         </div>
         <div v-if="activeEntry?.needsAiFill" class="template-lock-banner warning" role="status">
           <AlertCircle
             :size="15"
-          />当前模板配置或已绑定素材与确认版本不一致；请检查受影响的槽位并重新智能填充。
+          />模板槽位配置已修改，请重新智能填充以应用新配置。
         </div>
         <div
           v-if="packagingFailures.length"
@@ -6657,13 +6979,26 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
           </button>
         </div>
         <div v-if="appendContinuationRun" class="ai-run-card editor-run failed" role="alert">
-          <AlertCircle :size="18" /><div><b>新增成片需要继续更新</b><span>{{ appendContinuationRun.errorMessage }}</span></div>
-          <button class="button compact" :disabled="mutating" @click="resumeAppend">继续更新</button>
+          <AlertCircle :size="18" />
+          <div>
+            <b>新增成片需要继续更新</b><span>{{ appendContinuationRun.errorMessage }}</span>
+          </div>
+          <button class="button compact" :disabled="mutating" @click="resumeAppend">
+            继续更新
+          </button>
         </div>
         <details v-if="completedAppendRun" class="append-result" data-testid="append-result">
-          <summary>已追加 {{ completedAppendRun.outputVariantIds?.length ?? 0 }} 条成片，原工程保持不变{{ completedAppendRun.packageNewVariants ? '；新增成片按模板历史自动包装' : '' }}</summary>
-          <p v-for="item in completedAppendRun.newMaterialUsage" :key="item.materialId">{{ item.code }}：参与 {{ item.filmCount }} 条新增成片</p>
-          <p v-for="item in completedAppendRun.omittedNewMaterials" :key="item.materialId">{{ item.code }} 未采用：{{ item.reason }}（仍保留为待处理素材）</p>
+          <summary>
+            已追加 {{ completedAppendRun.outputVariantIds?.length ?? 0 }} 条成片，原工程保持不变{{
+              completedAppendRun.packageNewVariants ? '；新增成片按模板历史自动包装' : ''
+            }}
+          </summary>
+          <p v-for="item in completedAppendRun.newMaterialUsage" :key="item.materialId">
+            {{ item.code }}：参与 {{ item.filmCount }} 条新增成片
+          </p>
+          <p v-for="item in completedAppendRun.omittedNewMaterials" :key="item.materialId">
+            {{ item.code }} 未采用：{{ item.reason }}（仍保留为待处理素材）
+          </p>
         </details>
         <div v-if="failedAiRun" class="ai-run-card editor-run failed" role="alert">
           <AlertCircle :size="18" />
@@ -6736,12 +7071,6 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                 role="status"
               >
                 <AlertCircle :size="14" />当前没有已确认的可用素材；请先在视频渲染节点完成校验。
-              </p>
-              <p v-else-if="expiredMaterialCount" class="material-expired-banner" role="status">
-                <AlertCircle :size="14" />已载入 {{ availableMaterials.length }} 条当前素材；{{
-                  expiredMaterialCount
-                }}
-                条旧素材仅保留在原成片工程中，不参与重新智能填充。
               </p>
               <div v-if="filteredMaterials.length" ref="materialGrid" class="material-grid">
                 <article
@@ -7054,6 +7383,8 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                   class="player-caption-box"
                   :class="{ 'is-selected': selectedCaptionIds.includes(previewCaption.id) }"
                   :style="captionBoxStyle(previewCaption.id)"
+                  :data-caption-start="previewCaption.start"
+                  :data-caption-end="previewCaption.end"
                   @pointercancel="onCaptionBoxPointerUp"
                   @pointerdown="onCaptionBoxPointerDown"
                   @pointermove="onCaptionBoxPointerMove"
@@ -7061,14 +7392,6 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                 >
                   <div class="player-caption">
                     {{ previewCaption.text }}
-                    <button
-                      v-if="captionEditable && selectedCaptionIds.includes(previewCaption.id)"
-                      type="button"
-                      class="caption-scale-handle"
-                      title="向上拖动放大字幕，向下拖动缩小字幕"
-                      aria-label="拖动调整字幕字号"
-                      @pointerdown.stop="onCaptionBoxPointerDown($event, 'SCALE')"
-                    />
                   </div>
                 </div>
                 <div
@@ -7310,6 +7633,7 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                   packagingReady,
                   mutating,
                   projectEditLocked,
+                  variantSourceUpdateLocked(variant.id),
                   packagingFailureByVariant.get(variant.id)?.message,
                   variantSourceChanges(variant).length,
                 ]"
@@ -7324,7 +7648,9 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                       ? variant.conflictSlotIds.length + ' 个缺口'
                       : '时间轴完整'
                 } · ${
-                  variant.status === 'PENDING'
+                  variantSourceUpdateLocked(variant.id)
+                    ? '局部更新中，工程暂时锁定'
+                    : variant.status === 'PENDING'
                     ? '待同步'
                     : variant.conflictSlotIds.length
                       ? '待补齐'
@@ -7343,7 +7669,12 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                 </span>
                 <div class="project-card-info">
                   <b>{{ variantDisplayName(variant, index) }}</b>
-                  <small v-if="variantSourceChanges(variant).length" class="source-update-badge">待更新</small>
+                  <small v-if="variantSourceUpdateLocked(variant.id)" class="source-update-badge"
+                    ><Lock :size="10" />更新中</small
+                  >
+                  <small v-else-if="variantSourceChanges(variant).length" class="source-update-badge"
+                    >待更新</small
+                  >
                   <small class="project-duration">{{ variantDuration(variant).toFixed(0) }}s</small>
                   <span
                     class="project-status"
@@ -7365,13 +7696,15 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
                   <button
                     class="project-delete-button"
                     type="button"
-                    :disabled="projectEditLocked || mutating"
+                    :disabled="variantEditLocked(variant.id) || mutating"
                     :aria-label="`删除${variantDisplayName(variant, index)}`"
                     title="删除成片工程"
                     @click.stop="deleteVariant(variant.id)"
                     @pointerdown.stop
                     @keydown.stop
-                  ><Trash2 :size="13" /></button>
+                  >
+                    <Trash2 :size="13" />
+                  </button>
                   <small
                     v-if="packagingFailureByVariant.has(variant.id)"
                     class="project-package-failure"
@@ -7474,6 +7807,13 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
         </div>
         <div class="editor-workflow-progress">
           <WorkflowRunProgress
+            v-if="sourceUpdateBusy && sourceUpdateRun"
+            class="mix-run-progress"
+            :progress="sourceUpdateProgress"
+            summary="局部更新成片工程"
+            action-label=""
+          />
+          <WorkflowRunProgress
             v-if="displayedAiRun"
             class="mix-run-progress"
             :progress="displayedAiRun.progress"
@@ -7501,6 +7841,7 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
             :audio-row-by-clip-id="audioRowByClipId"
             @selected="onPackagingSelected"
             @preview="packagingPreviewEnabled = $event"
+            @playback-failed="playing = false"
             @ready="packagingReady = $event"
             @started="handlePackagingStarted"
             @submission-pending="handlePackagingSubmissionPending"
@@ -7511,88 +7852,90 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
             @failures="packagingFailures = $event"
           />
         </div>
-        <div v-if="editingCaption" class="caption-text-editor">
-          <Captions :size="14" aria-hidden="true" />
-          <span class="caption-text-time"
-            >{{ formatEffectTemplateMixTime(editingCaption.start) }} —
-            {{ formatEffectTemplateMixTime(editingCaption.end) }}</span
-          >
-          <input
-            ref="captionTextInput"
-            :value="editingCaption.text"
-            :disabled="!captionTextEditable"
-            maxlength="500"
-            placeholder="输入字幕文本"
-            aria-label="字幕文本"
-            @input="changeCaptionText"
-          />
-          <span class="caption-font-size">
-            <button
-              type="button"
-              aria-label="减小字号"
+        <div class="timeline-selection-editor-slot">
+          <div v-if="editingCaption" class="caption-text-editor">
+            <Captions :size="14" aria-hidden="true" />
+            <span class="caption-text-time"
+              >{{ formatEffectTemplateMixTime(editingCaption.start) }} —
+              {{ formatEffectTemplateMixTime(editingCaption.end) }}</span
+            >
+            <input
+              ref="captionTextInput"
+              :value="editingCaption.text"
+              :disabled="!captionTextEditable"
+              maxlength="500"
+              placeholder="输入字幕文本"
+              aria-label="字幕文本"
+              @input="changeCaptionText"
+            />
+            <span class="caption-font-size">
+              <button
+                type="button"
+                aria-label="减小字幕字号"
+                :disabled="!captionEditable || captionFontSize <= 8"
+                @click="changeCaptionFontSize(-1)"
+              >
+                −
+              </button>
+              <span>字号 {{ captionFontSize }}</span>
+              <button
+                type="button"
+                aria-label="增大字幕字号"
+                :disabled="!captionEditable || captionFontSize >= 48"
+                @click="changeCaptionFontSize(1)"
+              >
+                ＋
+              </button>
+              <!-- 用模板当前音色把这条字幕合成为一段新口播；不选音色，一键生成。 -->
+              <button
+                type="button"
+                class="caption-voice-generate"
+                :disabled="!captionVoiceReady"
+                @click="generateCaptionVoice"
+              >
+                {{ captionVoiceBusy ? '生成中…' : '生成口播' }}
+              </button>
+            </span>
+          </div>
+          <div v-else-if="selectedCaptionIds.length > 1" class="caption-text-editor">
+            <Captions :size="14" aria-hidden="true" />
+            <span class="caption-text-time">已选中 {{ selectedCaptionIds.length }} 条字幕</span>
+            <span class="caption-font-size">
+              <button
+                type="button"
+                aria-label="减小字幕字号"
+                :disabled="!captionEditable || captionFontSize <= 8"
+                @click="changeCaptionFontSize(-1)"
+              >
+                −
+              </button>
+              <span>字号 {{ captionFontSize }}</span>
+              <button
+                type="button"
+                aria-label="增大字幕字号"
+                :disabled="!captionEditable || captionFontSize >= 48"
+                @click="changeCaptionFontSize(1)"
+              >
+                ＋
+              </button>
+            </span>
+          </div>
+          <div v-else-if="audioStandard" class="audio-edit-row">
+            <AudioLines :size="14" aria-hidden="true" />
+            <span class="audio-edit-label">
+              {{ audioStandard.kind === 'MUSIC' ? '纯音乐' : '口播' }}
+              <template v-if="selectedAudioClipIds.length > 1">
+                · 已选中 {{ selectedAudioClipIds.length }} 条
+              </template>
+            </span>
+            <ParameterAdjustList
+              class="audio-edit-params"
               :disabled="!captionEditable"
-              @click="changeCaptionScale(-1)"
-            >
-              −
-            </button>
-            <span>字号 {{ captionFontSize }}</span>
-            <button
-              type="button"
-              aria-label="增大字号"
-              :disabled="!captionEditable"
-              @click="changeCaptionScale(1)"
-            >
-              ＋
-            </button>
-            <!-- 用模板当前音色把这条字幕合成为一段新口播；不选音色，一键生成。 -->
-            <button
-              type="button"
-              class="caption-voice-generate"
-              :disabled="!captionVoiceReady"
-              @click="generateCaptionVoice"
-            >
-              {{ captionVoiceBusy ? '生成中…' : '生成口播' }}
-            </button>
-          </span>
-        </div>
-        <div v-else-if="selectedCaptionIds.length > 1" class="caption-text-editor">
-          <Captions :size="14" aria-hidden="true" />
-          <span class="caption-text-time">已选中 {{ selectedCaptionIds.length }} 条字幕</span>
-          <span class="caption-font-size">
-            <button
-              type="button"
-              aria-label="减小字号"
-              :disabled="!captionEditable"
-              @click="changeCaptionScale(-1)"
-            >
-              −
-            </button>
-            <span>字号 {{ captionFontSize }}</span>
-            <button
-              type="button"
-              aria-label="增大字号"
-              :disabled="!captionEditable"
-              @click="changeCaptionScale(1)"
-            >
-              ＋
-            </button>
-          </span>
-        </div>
-        <div v-else-if="audioStandard" class="audio-edit-row">
-          <AudioLines :size="14" aria-hidden="true" />
-          <span class="audio-edit-label">
-            {{ audioStandard.kind === 'MUSIC' ? '纯音乐' : '口播' }}
-            <template v-if="selectedAudioClipIds.length > 1">
-              · 已选中 {{ selectedAudioClipIds.length }} 条
-            </template>
-          </span>
-          <ParameterAdjustList
-            class="audio-edit-params"
-            :disabled="!captionEditable"
-            :items="audioParamItems"
-            :model-value="audioParamValues"
-            @update:model-value="onAudioParamsChange"
-          />
+              :items="audioParamItems"
+              :model-value="audioParamValues"
+              @update:model-value="onAudioParamsChange"
+            />
+          </div>
         </div>
         <!-- Completed package audio and subtitles remain attached and editable as picture lanes move. -->
         <EffectTemplateMixTimeline
@@ -7601,6 +7944,7 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
           :packaging="selectedPackaging"
           :read-only="projectEditLocked"
           :packaging-source-lock="packagingSourceAutoLocked"
+          :source-update-lock="selectedSourceUpdateLocked"
           :can-redo="canRedoTimeline && !projectEditLocked"
           :can-undo="canUndoTimeline && !projectEditLocked"
           :duration="currentDuration"
@@ -7968,6 +8312,11 @@ defineExpose({ flushPendingEdits, getBranchTreeTemplateId, getCurrentTemplateId,
   font-style: normal;
   white-space: nowrap;
 }
+.button.source-update-button {
+  color: #a66a0b;
+  background: #fffaf0;
+  border-color: #f5ca80;
+}
 .mix-node {
   --blue: #2563eb;
   position: relative;
@@ -8154,6 +8503,10 @@ button:disabled {
   background: #eff6ff;
   border-color: #93c5fd;
 }
+.template-list__row.is-source-stale {
+  border-color: #f59e0b;
+  box-shadow: inset 0 0 0 1px #f59e0b;
+}
 .template-list__select {
   display: flex;
   flex: 1;
@@ -8164,6 +8517,10 @@ button:disabled {
   background: transparent;
   border: 0;
   border-radius: 8px;
+}
+.template-list__select .source-update-badge {
+  justify-self: start;
+  white-space: nowrap;
 }
 .template-list__delete {
   position: absolute;
@@ -9293,22 +9650,6 @@ button:disabled {
   outline-offset: 2px;
   pointer-events: none;
 }
-/* A solid dot marks the frame's top-left corner; dragging it away from the bottom edge scales
-   the caption. It re-enables pointer events the caption text itself switches off. */
-.caption-scale-handle {
-  position: absolute;
-  top: -5px;
-  left: -5px;
-  width: 11px;
-  height: 11px;
-  padding: 0;
-  border: 1px solid rgba(0, 0, 0, 0.45);
-  border-radius: 50%;
-  background: #fff;
-  cursor: nwse-resize;
-  touch-action: none;
-  pointer-events: auto;
-}
 /* The white frame hugs the caption itself rather than the whole wrap width, and only while this
    caption is the selected one. The box carries no handles: its own edge grab zones, measured on
    the text frame, do the stretching. */
@@ -9728,7 +10069,7 @@ button:disabled {
 .project-actions {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr));
   gap: 5px;
 }
 .project-actions .button {
@@ -9757,8 +10098,8 @@ button:disabled {
   flex: 1 1 auto;
   padding: 6px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  grid-auto-rows: 48px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  grid-auto-rows: minmax(64px, auto);
   align-content: start;
   justify-content: stretch;
   gap: 4px;
@@ -9844,6 +10185,16 @@ button:disabled {
 .project-card-info {
   flex-wrap: wrap;
 }
+.projects .project-card-info > b {
+  flex: 0 0 100%;
+}
+.project-card-info .source-update-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .project-delete-button {
   display: grid;
   place-items: center;
@@ -9862,7 +10213,7 @@ button:disabled {
   background: #fef2f2;
 }
 .project-delete-button:disabled {
-  opacity: .4;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 .projects article .project-package-failure {
@@ -9946,6 +10297,13 @@ button:disabled {
   border-top: 1px solid #d8e1ee;
   background: #fbf6f4;
   color: #8c3b2e;
+}
+.timeline-selection-editor-slot {
+  /* Keep the canvas at a fixed client-space position while a marquee toggles selection. */
+  flex: 0 0 41px;
+  height: 41px;
+  min-height: 41px;
+  overflow: hidden;
 }
 .caption-text-time {
   flex: none;

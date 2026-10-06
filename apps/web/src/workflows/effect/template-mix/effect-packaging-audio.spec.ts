@@ -1,77 +1,52 @@
 import { describe, expect, it } from 'vitest';
 import { packagingPlaybackError } from './effect-packaging-audio';
 import packagingSource from './EffectTemplateMixPackaging.vue?raw';
+import pageSource from './EffectTemplateMixNodePage.vue?raw';
 
 describe('packaging audio playback wiring', () => {
-  it('has no separate audio switch or control strip', () => {
-    expect(packagingSource).not.toContain('previewEnabled');
-    expect(packagingSource).not.toContain('packaging-strip');
-    expect(packagingSource).not.toContain('静音口播与配乐');
-    expect(packagingSource).not.toContain('开启同步试听');
-    expect(packagingSource).not.toContain('旧版整片口播');
+  it('uses one sample-scheduled transport for voices, caption voices and music', () => {
+    expect(packagingSource).toContain('new PackagingSampleClock(fileUrl)');
+    expect(packagingSource).toContain('checkpoint?.voices');
+    expect(packagingSource).toContain('checkpoint?.captionVoices');
+    expect(packagingSource).toContain('checkpoint?.music');
+    expect(packagingSource).toContain('rowMuted(id)');
+    expect(packagingSource).toContain('playbackAudioTime,');
+    expect(packagingSource).not.toContain('timelineEntryKey');
+    expect(packagingSource).not.toContain('primeElement(');
+    expect(packagingSource).not.toContain('@canplay="syncAudio()"');
   });
-  it('keeps completed and legacy variant audio available while the visual draft changes', () => {
+  it('keeps completed and legacy audio available and invalidates pause, seek and project changes', () => {
     expect(packagingSource).toContain("item.status === 'COMPLETED'");
+    expect(packagingSource).toContain("checkpoint.narrationLayoutVersion !== 'SLOT_V1'");
     expect(packagingSource).toContain('selectedVariant.value?.voice');
     expect(packagingSource).toContain('selectedVariant.value?.bgm');
-    expect(packagingSource).toContain('previewAvailable,');
-    expect(packagingSource).toMatch(/emit\('preview', enabled\);[\s\S]*?immediate: true/);
+    expect(packagingSource).toContain('() => props.seekVersion');
+    expect(packagingSource).toContain('() => props.playing');
+    expect(packagingSource).toContain('sampleClock.dispose()');
+    expect(packagingSource).toContain('emit(\'playbackFailed\')');
   });
-  it('keeps playback and error recovery controlled by the main player', () => {
-    expect(packagingSource).toContain('playbackBlocked[kind] || !props.playing');
-    expect(packagingSource).toContain('() => [props.playing, props.selectedVariantId]');
-    expect(packagingSource).toContain('playbackBlocked.MUSIC = false');
-    expect(packagingSource).toContain('playbackBlocked.VOICE = false');
-    expect(packagingSource).toContain('const timelineTime = props.playhead - audio.start');
-    expect(packagingSource).toContain('timelineTime + Math.max(0, audio.offset ?? 0)');
-    expect(packagingSource).toContain('element?.pause()');
-    expect(packagingSource).not.toMatch(/<audio[^>]*\bautoplay\b/);
+  it('reads output time every frame for captions without advancing the full editor tree each frame', () => {
+    expect(pageSource).toContain('packagingPanel.value?.playbackAudioTime()');
+    expect(pageSource).toContain('captionPresentationTime.value = next');
+    expect(pageSource).toContain('const next = currentPlaybackClockSeconds()');
+    expect(pageSource).toContain('now - lastUiPlaybackMilliseconds >= 1000');
+    expect(pageSource).toContain('syncPlaybackNeedleClock(next)');
+    expect(pageSource).toContain('await audioReady');
+    expect(pageSource).not.toContain(':playback-time="packagingPlaybackTime"');
   });
-  it('shares one mute flag per audio row and starts audio from the player gesture', () => {
-    // Rows carry no meaning, so the preview silences a clip by the row the workbench says it is on
-    // rather than by the kind of audio it is.
-    expect(packagingSource).toContain('audioRowMuted: boolean[]');
-    expect(packagingSource).toContain('audioRowByClipId: Record<string, number>');
-    expect(packagingSource).toContain('const rowMuted = (clipId: string): boolean =>');
-    expect(packagingSource).toContain('const currentVoiceEntry = computed<PreviewVoice | undefined>');
-    expect(packagingSource).toContain(
-      "['VOICE', voiceElement.value, currentVoice.value, rowMuted(currentVoiceEntry.value?.id ?? 'voice')]",
+  it('uses one editable package-wide subtitle font size for every preview caption', () => {
+    expect(pageSource).toContain('const stageCaptionFontSize = ref(16)');
+    expect(pageSource).not.toContain('element.clientWidth / 22');
+    expect(pageSource).toContain(
+      'selectedPackaging.value?.checkpoint.captionFontSize ?? stageCaptionFontSize.value',
     );
-    expect(packagingSource).toContain("['MUSIC', musicElement.value, currentMusic.value, rowMuted('music')]");
-    expect(packagingSource).toContain('element.muted = muted');
-    expect(packagingSource).toContain("kind === 'MUSIC' &&");
-    expect(packagingSource).toContain('narrationPlayingAt(currentVoice.value');
-    expect(packagingSource).toContain('? 0.35');
-    expect(packagingSource).not.toContain('voiceMuted');
-    expect(packagingSource).not.toContain('musicMuted');
-    expect(packagingSource).toContain('function startPlaybackAudio()');
-    expect(packagingSource).toContain('syncAudio(true)');
-    expect(packagingSource).toContain('startPlaybackAudio');
-  });
-  it('keeps legacy whole-film narration playable while repackaging', () => {
-    expect(packagingSource).toContain("narrationLayoutVersion !== 'SLOT_V1'");
-    expect(packagingSource).toContain('selectedVariant.value?.voice');
-    expect(packagingSource).toContain('selectedVariant.value?.bgm');
-    expect(packagingSource).toContain('previewAvailable');
-  });
-  it('plays a caption narration from an element of its own', () => {
-    // It is added *alongside* the script-line voices it was generated next to, so their clips
-    // overlap by design and one element cannot follow both.
-    expect(packagingSource).toContain('const captionVoiceElement = ref<HTMLAudioElement | null>(null);');
-    expect(packagingSource).toContain('CAPTION_VOICE: false');
-    expect(packagingSource).toContain(
-      'const currentCaptionVoiceEntry = computed<PreviewVoice | undefined>(',
-    );
-    expect(packagingSource).toContain("id: `capvoice:${captionId}`");
-    expect(packagingSource).toContain('ref="captionVoiceElement"');
-    // It joins the shared sync loop, so it gets the same seek, volume and fade treatment.
-    expect(packagingSource).toContain("'CAPTION_VOICE',");
-    expect(packagingSource).toContain("rowMuted(currentCaptionVoiceEntry.value?.id ?? ''),");
-    // A narration that starts long after the play gesture has to be primed or the browser refuses
-    // its later play(); both primed clips are released with the volume the prime borrowed.
-    expect(packagingSource).toContain('function primeElement(');
-    expect(packagingSource).toContain('primeElement(currentVoice.value, voiceElement.value,');
-    expect(packagingSource).toContain('releaseElement(captionVoiceElement.value);');
+    expect(pageSource).toContain('fontSize: `${captionFontSize.value}px`');
+    expect(pageSource).toContain('checkpoint.captionFontSize = next');
+    expect(pageSource).toContain('changeCaptionFontSize(-1)');
+    expect(pageSource).toContain('changeCaptionFontSize(1)');
+    expect(pageSource).not.toContain('stageCaptionFontSize.value * box.scale');
+    expect(pageSource).not.toContain('changeCaptionScale');
+    expect(pageSource).not.toContain('caption-scale-handle');
   });
 });
 

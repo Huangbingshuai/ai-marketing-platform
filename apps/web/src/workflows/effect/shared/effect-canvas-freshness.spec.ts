@@ -15,6 +15,30 @@ beforeEach(() => mocks.sources.mockResolvedValue({ data: { pendingProjectCount: 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe('effect canvas update projection', () => {
+  it('does not keep completed films stale because the template classified an older material pool', () => {
+    expect(artifactStaleCounts([
+      { ...artifact('pool', 'TEMPLATE_MIX'), artifactKey: 'mix-template:t', dependencies: [{
+        sourceType: 'WORKING_ARTIFACT', sourceNodeId: 'SEGMENT_RENDER', sourceArtifactId: 'old',
+        sourceRevision: 1,
+      }] } as WorkingArtifact,
+      { ...artifact('film', 'TEMPLATE_MIX', 'CURRENT'), artifactKey: 'timeline-project:t:v' },
+    ])[4]).toBe(0);
+    expect(artifactStaleCounts([
+      { ...artifact('film', 'TEMPLATE_MIX'), artifactKey: 'timeline-project:t:v' },
+      { ...artifact('package', 'TEMPLATE_MIX'), artifactKey: 'timeline-package:t:v' },
+    ])[4]).toBe(2); // Real unfinished consumers still warn.
+  });
+  it('does not mark source heads stale just because a mix branch keeps outdated input copies', () => {
+    expect(artifactStaleCounts([
+      { ...artifact('copy', 'SEGMENT_RENDER'), metadata: { branchSourceOwner: false } },
+      { ...artifact('prompt-copy', 'PROMPT_GENERATION'), metadata: { branchSourceOwner: false } },
+      { ...artifact('head', 'SEGMENT_RENDER', 'CURRENT'), metadata: { branchSourceOwner: true } },
+      artifact('affected-mix', 'TEMPLATE_MIX'),
+    ])).toEqual([0, 0, 0, 0, 1, 0]);
+    expect(artifactStaleCounts([
+      { ...artifact('stale-head', 'SEGMENT_RENDER'), metadata: { branchSourceOwner: true } },
+    ])[3]).toBe(1); // A real upstream Prompt change still invalidates its render result.
+  });
   it('counts only actual stale artifacts, normalizes node IDs and deduplicates inherited IDs', () => {
     expect(artifactStaleCounts([
       artifact('a', 'PROMPT_GENERATION:p'), artifact('a', 'PROMPT_GENERATION:p'),
@@ -33,10 +57,12 @@ describe('effect canvas update projection', () => {
       { ...output('b', 8), backgroundExportSourceRunId: 'other' }, output('b', 1),
     ])).toBe(3);
   });
-  it('connects non-color warnings and counts without changing node navigation', () => {
+  it('shows a non-color update warning without exposing artifact counts or changing navigation', () => {
     expect(canvas).toContain('needs-update');
     expect(canvas).toContain('<AlertCircle v-if="staleCount(index) > 0"');
-    expect(canvas).toContain('待更新 · ${staleCount(index)}');
+    expect(canvas).toContain("? '待更新' : nodes[index]?.status");
+    expect(canvas).not.toContain('待更新 · ${staleCount(index)}');
+    expect(canvas).not.toContain('有 ${staleCount(index)} 项内容');
     expect(canvas).toContain("emit('select', index)");
     expect(parent).toContain(':stale-counts="canvasStaleCounts"');
     expect(parent).toContain('@freshness="canvasFreshness.acceptOutputs"');
@@ -127,10 +153,20 @@ describe('effect canvas update projection', () => {
     expect(state.staleCounts.value[5]).toBe(1);
     expect(state.staleCounts.value[4]).toBe(0);
     expect(mocks.artifacts).toHaveBeenCalledTimes(1); // Saved drafts do not reconfirm artifacts.
+    mocks.artifacts.mockResolvedValue({ data: { items: [artifact('stale-film', 'TEMPLATE_MIX')] } });
+    listeners.get('effect-final-output-sync')!({ detail: { projectId: 'p', workflowRunId: 'w', confirmed: true } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.artifacts).toHaveBeenCalledTimes(2);
+    expect(state.staleCounts.value[4]).toBe(1);
+    mocks.artifacts.mockResolvedValue({ data: { items: [] } });
+    listeners.get('effect-final-output-sync')!({ detail: { projectId: 'p', workflowRunId: 'w', confirmed: true } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.artifacts).toHaveBeenCalledTimes(3);
+    expect(state.staleCounts.value[4]).toBe(0);
     channel.onmessage!({ data: { projectId: 'p', workflowRunId: 'w' } });
     await vi.advanceTimersByTimeAsync(0);
-    expect(mocks.output).toHaveBeenCalledTimes(3);
-    expect(mocks.artifacts).toHaveBeenCalledTimes(1);
+    expect(mocks.output).toHaveBeenCalledTimes(5);
+    expect(mocks.artifacts).toHaveBeenCalledTimes(3);
     app.unmount();
     expect(channel.close).toHaveBeenCalledOnce();
     expect(listeners.size).toBe(0);

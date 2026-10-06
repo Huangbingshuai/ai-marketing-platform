@@ -1,10 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createEffectTemplateMixAiRun, createEmptyEffectTemplateMixVariant, deleteEffectTemplateMixVariant, resumeEffectTemplateMixAppend, saveEffectTemplateMixDraft } from './effect-template-mix.api';
+import { createEffectTemplateMixAiRun, createEmptyEffectTemplateMixVariant, deleteEffectTemplateMixVariant, resumeEffectTemplateMixAppend, saveEffectTemplateMixDraft, loadMixFinalOutputRuns, updateMixSourceProjects, getMixSourceUpdateRun } from './effect-template-mix.api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('effect template mix API', () => {
+  it('sends a full-batch request without the currently selected film or append mode', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: {} })));
+    vi.stubGlobal('fetch', fetchMock);
+    await createEffectTemplateMixAiRun('project', 'parent-run', 9, 'template');
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1].body));
+    expect(body).toMatchObject({ workflowRunId: 'parent-run', expectedRevision: 9 });
+    expect(body).not.toHaveProperty('targetVariantId');
+    expect(body).not.toHaveProperty('appendNewMaterials');
+    expect(body).not.toHaveProperty('refreshAffectedSlots');
+    await createEffectTemplateMixAiRun('project', 'parent-run', 9, 'template', 'film-1');
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1].body))).toHaveProperty('targetVariantId', 'film-1');
+  });
+  it('updates all affected projects using the existing scoped local output task', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: {} })));
+    vi.stubGlobal('fetch', fetchMock);
+    await loadMixFinalOutputRuns('project/1', 'run/1');
+    expect(fetchMock.mock.calls[0]![0]).toContain('/projects/project%2F1/workflows/effect/final-output?workflowRunId=run%2F1');
+    await updateMixSourceProjects('project/1', 'output/1', ['film-2', 'film-4', 'film-5']);
+    expect(fetchMock.mock.calls[1]![0]).toContain('/final-output/output%2F1/local-update');
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1].body))).toEqual({ itemIds: ['film-2', 'film-4', 'film-5'] });
+    await getMixSourceUpdateRun('project/1', 'output/1');
+    expect(fetchMock.mock.calls[2]![0]).toContain('/projects/project%2F1/workflows/effect/final-output/output%2F1');
+  });
   it('scopes project deletion to the template and Run using the current draft revision', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: {} })));
     vi.stubGlobal('fetch', fetchMock);

@@ -11,7 +11,15 @@ export type EffectOutputFreshness = { projectId: string; workflowRunId: string; 
 
 export function artifactStaleCounts(artifacts: readonly WorkingArtifact[]): number[] {
   return NODE_IDS.map((id) => new Set(artifacts
-    .filter((a) => workflowNodeBaseId(a.nodeId) === id && a.freshness === 'STALE')
+    .filter((a) => workflowNodeBaseId(a.nodeId) === id && a.freshness === 'STALE' &&
+      // The template stores the classified input pool, not an individual film's consumed
+      // sources. Pool revisions do not require another local update after every film is current;
+      // the source projection below checks actual bindings and newly unclassified materials.
+      !(id === 'TEMPLATE_MIX' && a.artifactKey?.startsWith('mix-template:') &&
+        (a.dependencies ?? []).every((dependency) => workflowNodeBaseId(dependency.sourceNodeId) === 'SEGMENT_RENDER')) &&
+      // An obsolete copy is an input warning for its downstream consumer, not this source head.
+      !(a.metadata && typeof a.metadata === 'object' &&
+        (a.metadata as Record<string, unknown>).branchSourceOwner === false && NODE_IDS.indexOf(id) < 4))
     .map((a) => a.id)).size);
 }
 export function outputStaleCount(runs: readonly FinalOutputRun[]): number {
@@ -87,12 +95,12 @@ export function useEffectCanvasFreshness(scope: () => {
   }, { immediate: true });
   const focus = () => { if (document.visibilityState === 'visible') void refresh(); };
   const outputChanged = (value: unknown) => {
-    const changed = value as { projectId?: string; workflowRunId?: string } | null;
+    const changed = value as { projectId?: string; workflowRunId?: string; confirmed?: boolean } | null;
     const current = scope();
     if (!disposed && current.enabled && changed?.projectId === current.projectId &&
-      // A draft/audio save does not publish working-artifact revisions. Read the output delta
-      // first; the regular artifact poll still covers confirmed upstream changes.
-      changed.workflowRunId === current.workflowRunId) void refresh(true);
+      // Draft saves need only deltas; completed local updates confirm new artifacts too.
+      // Refresh those immediately rather than retaining their old warning until the timer.
+      changed.workflowRunId === current.workflowRunId) void refresh(!changed.confirmed);
   };
   const saved = (event: Event) => outputChanged((event as CustomEvent).detail);
   const channel = typeof BroadcastChannel === 'undefined' ? null :

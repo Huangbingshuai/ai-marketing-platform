@@ -305,7 +305,10 @@ export function buildEffectBranchLayout(
             (stage.key === 'MIX_TEMPLATE' && count === 0) ||
             (stage.key === 'MIX_FILL' && draftFillReady)
               ? 'PENDING'
-              : (state?.status ?? 'CONFIRMED'),
+              : ((stage.key === 'MIX_TEMPLATE' ? template.templateStatus
+                : stage.key === 'MIX_FILL' ? template.fillStatus
+                  : stage.key === 'MIX_PACKAGING' ? template.packagingStatus
+                    : template.deliveryStatus) ?? state?.status ?? 'CONFIRMED'),
           artifactCount: count,
           revision,
           revisions,

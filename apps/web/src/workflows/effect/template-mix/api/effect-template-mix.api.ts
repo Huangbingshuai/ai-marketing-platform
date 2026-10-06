@@ -4,6 +4,7 @@ import type {
   EffectTemplateMixAiRun,
   EffectTemplateMixWorkspaceData,
   EffectTemplateMixSourcesData,
+  FinalOutputRun,
   SaveEffectTemplateMixData,
   SaveEffectTemplateMixRequest,
   PackagingItem,
@@ -17,6 +18,18 @@ import { requestJson } from '../../../../api/http-client';
 
 const basePath = (projectId: string): string =>
   '/projects/' + encodeURIComponent(projectId) + '/workflows/effect/template-mix';
+
+const outputPath = (projectId: string): string =>
+  '/projects/' + encodeURIComponent(projectId) + '/workflows/effect/final-output';
+export const loadMixFinalOutputRuns = (projectId: string, workflowRunId: string, signal?: AbortSignal)
+  : Promise<ApiResponse<FinalOutputRun[]>> => requestJson(outputPath(projectId) +
+    '?workflowRunId=' + encodeURIComponent(workflowRunId), { operation: '读取成片工程更新任务', signal });
+export const updateMixSourceProjects = (projectId: string, runId: string, itemIds: string[])
+  : Promise<ApiResponse<FinalOutputRun>> => requestJson(outputPath(projectId) + '/' +
+    encodeURIComponent(runId) + '/local-update', { method: 'POST', operation: '局部更新成片工程', body: { itemIds } });
+export const getMixSourceUpdateRun = (projectId: string, runId: string, signal?: AbortSignal)
+  : Promise<ApiResponse<FinalOutputRun>> => requestJson(outputPath(projectId) + '/' + encodeURIComponent(runId),
+    { operation: '读取局部更新进度', signal });
 
 export const loadEffectTemplateMixWorkspace = (
   projectId: string,

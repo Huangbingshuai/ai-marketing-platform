@@ -18,4 +18,9 @@ describe('WorkflowRunProgress', () => {
     expect(componentSource).not.toContain('Prompt 生成');
     expect(componentSource).not.toContain('信息提炼');
   });
+  it('omits the action button and unused grid column when the label is empty', () => {
+    expect(componentSource).toContain('<button v-if="actionLabel"');
+    expect(componentSource).toContain("'without-action': !actionLabel");
+    expect(componentSource).toContain('grid-template-columns: minmax(120px, 1fr) auto;');
+  });
 });

@@ -4,6 +4,19 @@ import pageSource from './EffectTemplateMixNodePage.vue?raw';
 import timelineSource from './EffectTemplateMixTimeline.vue?raw';
 
 describe('template mix compositor playback clock', () => {
+  it('warms the next clip without reloads and reuses positioned frames at natural boundaries', () => {
+    expect(pageSource).toContain('prepareTimelineVideo(video, timelineVideoSeeks, targetTime');
+    const timelinePreparation = pageSource.slice(
+      pageSource.indexOf('const syncTimelineVideo ='),
+      pageSource.indexOf('const closeMaterialPreview ='),
+    );
+    expect(timelinePreparation.includes('video.load()')).toBe(false);
+    expect(pageSource).not.toContain("entering ? 'drift' : 'once'");
+    expect(pageSource).toContain('const needsSlotSeek = !positionedTimelinePlayers.has(video)');
+    expect(pageSource).toContain('if (incomingRange) primeUpcomingTimelinePlayer(incomingRange)');
+    expect(pageSource).toContain('timelineSourceTime(slot.id, playbackTime)');
+    expect(pageSource).toContain('resume && timelineVideoSeeks.isSettled(video) && video.paused');
+  });
   it('moves the timeline needle through a linear browser animation', () => {
     expect(timelineSource).toContain('const startPlaybackNeedle');
     expect(timelineSource).toContain('playheadElement.value');

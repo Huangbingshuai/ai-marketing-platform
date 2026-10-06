@@ -24,7 +24,7 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 </script>
 
 <template>
-  <section class="workflow-run-progress" aria-live="polite">
+  <section class="workflow-run-progress" :class="{ 'without-action': !actionLabel }" aria-live="polite">
     <div
       class="workflow-run-progress__track"
       role="progressbar"
@@ -43,7 +43,7 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
       <small v-if="attemptLabel">{{ attemptLabel }}</small>
       <em v-if="warning">{{ warning }}</em>
     </p>
-    <button type="button" @click="emit('showDetails', $event)">{{ actionLabel }}</button>
+    <button v-if="actionLabel" type="button" @click="emit('showDetails', $event)">{{ actionLabel }}</button>
   </section>
 </template>
 
@@ -66,6 +66,9 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
   overflow: hidden;
   background: #dbe7fa;
   border-radius: 99px;
+}
+.workflow-run-progress.without-action {
+  grid-template-columns: minmax(120px, 1fr) auto;
 }
 .workflow-run-progress__track span {
   display: block;
@@ -117,7 +120,8 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
   border-radius: 4px;
 }
 @media (max-width: 760px) {
-  .workflow-run-progress {
+  .workflow-run-progress,
+  .workflow-run-progress.without-action {
     grid-template-columns: 1fr;
   }
   .workflow-run-progress button {

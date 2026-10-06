@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { AlertCircle, Workflow, X } from '@lucide/vue';
 import { WorkflowRunProgress } from '@ai-marketing/ui';
 import {
@@ -11,19 +11,19 @@ import {
 } from './effect-packaging-progress';
 import { createPackagingPoller, packagingPollErrorMessage } from './effect-packaging-poller';
 import type { PackagingStage } from './effect-packaging-progress';
-import { packagingPlaybackError } from './effect-packaging-audio';
+import { PackagingSampleClock } from './effect-packaging-sample-clock';
+import type { ScheduledPackagingClip } from './effect-packaging-sample-clock';
 import {
   PACKAGING_STAGES,
   PACKAGING_STAGE_LABELS,
-  packagingAudioFade,
   packagingSlotBoundaryError,
 } from '@ai-marketing/contracts';
 import type {
   ApiResponse,
-  EffectTemplateMixAudio,
   EffectTemplateMixVariant,
   PackagingItem,
   PackagingRun,
+  PackagingAudio,
 } from '@ai-marketing/contracts';
 import { apiUrl, requestJson } from '../../../api/http-client';
 import {
@@ -54,6 +54,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   selected: [item: PackagingItem | null];
   preview: [enabled: boolean];
+  playbackFailed: [];
   ready: [ready: boolean];
   started: [];
   submissionPending: [templateId: string, workflowRunId: string];
@@ -331,6 +332,7 @@ function close() {
   dialog.value?.close();
 }
 defineExpose({
+  refresh,
   open,
   visible,
   busy,
@@ -340,6 +342,7 @@ defineExpose({
   starting,
   startPlaybackAudio,
   stopPlaybackAudio,
+  playbackAudioTime,
 });
 async function execute(action: () => Promise<unknown>) {
   if (busy.value) return;
@@ -427,355 +430,66 @@ async function command(action: 'retry') {
     await pollBackgroundRun(base.value, targetRunId, generation);
 }
 
-// Use the player clock without writing packaging fields back into the visual draft.
-const voiceElement = ref<HTMLAudioElement | null>(null),
-  musicElement = ref<HTMLAudioElement | null>(null);
-// A caption narration is added *alongside* the script-line voices it was generated next to, so its
-// clip overlaps theirs by design and needs an element of its own — one element follows one clip.
-const captionVoiceElement = ref<HTMLAudioElement | null>(null);
-// The main player owns all track playback. Only a failed play attempt blocks
-// audio until the next player gesture; there is no separate audition switch.
-const playbackBlocked = reactive({ MUSIC: false, VOICE: false, CAPTION_VOICE: false });
+// Decode once, then schedule every narration and music clip on one audio-device clock.
 const previewAvailable = computed(() => {
   const item = selected.value;
-  // A completed package remains audible while the user edits its visual timeline.
-  return Boolean(
-    (item && item.status === 'COMPLETED') ||
-    selectedVariant.value?.voice ||
-    selectedVariant.value?.bgm,
-  );
+  return Boolean((item && item.status === 'COMPLETED') || selectedVariant.value?.voice || selectedVariant.value?.bgm);
 });
-watch(
-  previewAvailable,
-  (enabled) => {
-    if (enabled) previewError.value = '';
-    emit('preview', enabled);
-  },
-  { immediate: true },
-);
-watch(
-  () => [props.playing, props.selectedVariantId],
-  () => {
-    playbackBlocked.MUSIC = false;
-    playbackBlocked.VOICE = false;
-    previewError.value = '';
-  },
-);
-type PreviewAudio = {
-  fileObjectId: string;
-  duration: number;
-  start: number;
-  volume: number;
-  offset?: number;
-  fadeIn?: number;
-  fadeOut?: number;
-};
-/** Silence is a property of the row a clip sits on, resolved through the workbench's own row map. */
+watch(previewAvailable, (enabled) => {
+  if (enabled) previewError.value = '';
+  emit('preview', enabled);
+}, { immediate: true });
 const rowMuted = (clipId: string): boolean =>
   props.audioRowMuted[props.audioRowByClipId[clipId] ?? 0] ?? false;
-/**
- * The narration line being previewed, carrying the timeline id that resolves it to a row. A slot
- * line is `voice:<lineId>` and the legacy whole-film voice is `voice`, so both are silenced by
- * whichever row the workbench draws them on.
- */
-type PreviewVoice = { id: string; audio: PreviewAudio };
-const currentVoiceEntry = computed<PreviewVoice | undefined>(() => {
-  if (!previewAvailable.value) return undefined;
-  const voices = Object.entries(selected.value?.checkpoint.voices ?? {})
-    .map(([lineId, audio]) => ({ id: `voice:${lineId}`, audio }))
-    .sort((left, right) => left.audio.start - right.audio.start);
-  const slotVoice =
-    voices.find(
-      ({ audio }) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
-    ) ?? voices.find(({ audio }) => audio.start > props.playhead);
-  if (slotVoice) return slotVoice;
-  // Legacy packaging stored one whole-film voice on the variant instead of a slot-keyed
-  // checkpoint. Keep that already-generated audio playable while the user repackages it.
-  if (!selected.value || selected.value.checkpoint.narrationLayoutVersion !== 'SLOT_V1') {
-    const legacy = selectedVariant.value?.voice as EffectTemplateMixAudio | undefined;
-    return legacy ? { id: 'voice', audio: legacy } : undefined;
+const previewAudioClips = computed<ScheduledPackagingClip[]>(() => {
+  if (!previewAvailable.value) return [];
+  const checkpoint = selected.value?.checkpoint;
+  const clips: ScheduledPackagingClip[] = Object.entries(checkpoint?.voices ?? {})
+    .map(([lineId, audio]) => ({ id: `voice:${lineId}`, kind: 'VOICE', audio, muted: rowMuted(`voice:${lineId}`) }));
+  for (const [captionId, audio] of Object.entries(checkpoint?.captionVoices ?? {})) {
+    const id = `capvoice:${captionId}`;
+    clips.push({ id, kind: 'VOICE', audio, muted: rowMuted(id) });
   }
-  return undefined;
-});
-const currentVoice = computed<PreviewAudio | undefined>(() => currentVoiceEntry.value?.audio);
-const nextVoice = computed<PreviewAudio | undefined>(() => {
-  if (!previewAvailable.value) return undefined;
-  const voices = Object.values(selected.value?.checkpoint.voices ?? {}).sort(
-    (left, right) => left.start - right.start,
-  );
-  const currentIndex = voices.findIndex(
-    (audio) => audio.fileObjectId === currentVoice.value?.fileObjectId,
-  );
-  return currentIndex >= 0
-    ? voices[currentIndex + 1]
-    : voices.find((audio) => audio.start > props.playhead);
-});
-const currentMusic = computed<PreviewAudio | undefined>(() => {
-  if (!previewAvailable.value) return undefined;
-  if (selected.value?.checkpoint.music) return selected.value.checkpoint.music;
-  if (!selected.value || selected.value.checkpoint.narrationLayoutVersion !== 'SLOT_V1') {
-    return selectedVariant.value?.bgm as EffectTemplateMixAudio | undefined;
+  if (!checkpoint || checkpoint.narrationLayoutVersion !== 'SLOT_V1') {
+    const legacy = selectedVariant.value?.voice as PackagingAudio | undefined;
+    if (!clips.length && legacy) clips.push({ id: 'voice', kind: 'VOICE', audio: legacy, muted: rowMuted('voice') });
   }
-  return undefined;
+  const music = checkpoint?.music ?? (checkpoint?.narrationLayoutVersion !== 'SLOT_V1'
+    ? selectedVariant.value?.bgm as PackagingAudio | undefined : undefined);
+  if (music) clips.push({ id: 'music', kind: 'MUSIC', audio: music, muted: rowMuted('music') });
+  return clips;
 });
-/**
- * The caption narration under the playhead, falling back to the next one the way a script-line voice
- * does — the element has to stay mounted across narrations, because a fresh element that was never
- * primed from the player's gesture has its `play()` refused. Its id is the timeline's own clip id
- * (`capvoice:` plus the caption), which is what lets the row map silence it by the row it is on.
- */
-const currentCaptionVoiceEntry = computed<PreviewVoice | undefined>(() => {
-  if (!previewAvailable.value) return undefined;
-  const voices = Object.entries(selected.value?.checkpoint.captionVoices ?? {})
-    .map(([captionId, audio]) => ({ id: `capvoice:${captionId}`, audio }))
-    .sort((left, right) => left.audio.start - right.audio.start);
-  return (
-    voices.find(
-      ({ audio }) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
-    ) ?? voices.find(({ audio }) => audio.start > props.playhead)
-  );
-});
-const currentCaptionVoice = computed<PreviewAudio | undefined>(
-  () => currentCaptionVoiceEntry.value?.audio,
-);
-const narrationPlayingAt = (audio: PreviewAudio | undefined, id: string): boolean =>
-  Boolean(
-    audio &&
-    !rowMuted(id) &&
-    props.playhead >= audio.start &&
-    props.playhead < audio.start + audio.duration,
-  );
-function syncAudio(forceSeek = false) {
-  for (const [kind, element, audio, muted] of [
-    [
-      'VOICE',
-      voiceElement.value,
-      currentVoice.value,
-      rowMuted(currentVoiceEntry.value?.id ?? 'voice'),
-    ],
-    ['MUSIC', musicElement.value, currentMusic.value, rowMuted('music')],
-    [
-      'CAPTION_VOICE',
-      captionVoiceElement.value,
-      currentCaptionVoice.value,
-      rowMuted(currentCaptionVoiceEntry.value?.id ?? ''),
-    ],
-  ] as const) {
-    if (!element || !audio || playbackBlocked[kind] || !props.playing) {
-      element?.pause();
-      if (element) {
-        element.dataset.timelineActive = 'false';
-        element.dataset.timelineStarting = 'false';
-        element.dataset.timelineEntryKey = '';
-      }
-      continue;
-    }
-    element.muted = muted;
-    if (muted) {
-      element.pause();
-      element.dataset.timelineActive = 'false';
-      element.dataset.timelineStarting = 'false';
-      element.dataset.timelineEntryKey = '';
-      continue;
-    }
-    const timelineTime = props.playhead - audio.start;
-    if (timelineTime < 0 || timelineTime >= audio.duration) {
-      if (timelineTime < 0 && element.dataset.timelinePriming === audio.fileObjectId) continue;
-      element.pause();
-      element.dataset.timelineActive = 'false';
-      element.dataset.timelineStarting = 'false';
-      element.dataset.timelineEntryKey = '';
-      continue;
-    }
-    const time = timelineTime + Math.max(0, audio.offset ?? 0);
-    // The fade default is the one place the kind matters, and it only splits music from speech —
-    // a caption narration fades like the voice it is.
-    const fadeKind: 'MUSIC' | 'VOICE' = kind === 'MUSIC' ? 'MUSIC' : 'VOICE';
-    const fadeIn = packagingAudioFade(audio, fadeKind, 'fadeIn');
-    const fadeOut = packagingAudioFade(audio, fadeKind, 'fadeOut');
-    const fadeInGain = fadeIn > 0 ? Math.min(1, Math.max(0, timelineTime / fadeIn)) : 1;
-    const fadeOutGain =
-      fadeOut > 0 ? Math.min(1, Math.max(0, (audio.duration - timelineTime) / fadeOut)) : 1;
-    const ducking =
-      kind === 'MUSIC' &&
-      (narrationPlayingAt(currentVoice.value, currentVoiceEntry.value?.id ?? 'voice') ||
-        narrationPlayingAt(currentCaptionVoice.value, currentCaptionVoiceEntry.value?.id ?? ''))
-        ? 0.35
-        : 1;
-    element.volume = Math.max(
-      0,
-      Math.min(1, audio.volume * ducking * Math.min(fadeInGain, fadeOutGain)),
-    );
-    if (element.readyState < HTMLMediaElement.HAVE_METADATA) {
-      if (element.dataset.timelinePriming === audio.fileObjectId) continue;
-      element.pause();
-      element.dataset.timelineActive = 'false';
-      element.dataset.timelineStarting = 'false';
-      continue;
-    }
-    const entryKey = `${audio.fileObjectId}:${audio.start}:${audio.offset ?? 0}`;
-    if (forceSeek || element.dataset.timelineEntryKey !== entryKey) {
-      try {
-        element.currentTime = time;
-      } catch {
-        // The active source is switching; the next media readiness event retries this seek.
-        element.dataset.timelineActive = 'false';
-        continue;
-      }
-      element.dataset.timelineEntryKey = entryKey;
-    }
-    // Do not start from the beginning while the requested seek is still being decoded.
-    // `seeked` and `canplay` call this again once the browser can output the right samples.
-    if (element.seeking || element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      if (element.dataset.timelinePriming === audio.fileObjectId) continue;
-      element.dataset.timelineActive = 'false';
-      continue;
-    }
-    element.dataset.timelineActive = 'true';
-    if (element.paused && element.dataset.timelineStarting !== 'true') {
-      const version = generation;
-      const fileId = audio.fileObjectId;
-      // Each element has to report against its own clip, or a caption narration's failure would be
-      // recorded as the script-line voice's and silence the wrong one.
-      const isMusic = element === musicElement.value;
-      const isCaptionVoice = element === captionVoiceElement.value;
-      element.dataset.timelineStarting = 'true';
-      void element
-        .play()
-        .catch((reason: unknown) => {
-          const current = isMusic
-            ? currentMusic.value
-            : isCaptionVoice
-              ? currentCaptionVoice.value
-              : currentVoice.value;
-          const bound = isMusic
-            ? musicElement.value
-            : isCaptionVoice
-              ? captionVoiceElement.value
-              : voiceElement.value;
-          const warning = packagingPlaybackError(
-            reason,
-            version === generation &&
-              !playbackBlocked[kind] &&
-              props.playing &&
-              bound === element &&
-              current?.fileObjectId === fileId,
-          );
-          if (!warning) return;
-          playbackBlocked[kind] = true;
-          previewError.value = warning;
-        })
-        .finally(() => {
-          element.dataset.timelineStarting = 'false';
-          if (element.dataset.timelineActive !== 'true') element.pause();
-        });
-    }
-  }
+const sampleClock = new PackagingSampleClock(fileUrl);
+function playbackAudioTime(): number | null {
+  return sampleClock.time();
 }
-/**
- * A narration line may begin well after the play button's user gesture. Prime the persistent element
- * silently now so the browser won't reject its later play(). Both the script-line voice and the
- * caption narration need this and neither can share an element, so it is one helper used twice.
- */
-function primeElement(
-  audio: PreviewAudio | undefined,
-  element: HTMLAudioElement | null,
-  clipId: string,
-): void {
-  if (!audio || !element || props.playhead >= audio.start) return;
-  const fileId = audio.fileObjectId;
-  const originalVolume = element.volume;
-  element.dataset.timelinePriming = fileId;
-  element.dataset.timelinePrimeVolume = String(originalVolume);
-  element.volume = 0;
-  element.muted = false;
-  try {
-    void element
-      .play()
-      .catch(() => undefined)
-      .finally(() => {
-        const ownsPrime = element.dataset.timelinePriming === fileId;
-        if (ownsPrime && element.dataset.timelineActive !== 'true') {
-          element.pause();
-          try {
-            element.currentTime = 0;
-          } catch {
-            // A source reload can temporarily make the current position unavailable.
-          }
-        }
-        const savedVolume = Number(element.dataset.timelinePrimeVolume);
-        element.volume = Number.isFinite(savedVolume) ? savedVolume : originalVolume;
-        element.dataset.timelinePrimeVolume = '';
-        element.muted = rowMuted(clipId);
-        if (ownsPrime) element.dataset.timelinePriming = '';
-        if (element.dataset.timelineActive !== 'true') element.pause();
-      });
-  } catch {
-    element.dataset.timelinePriming = '';
-    element.volume = originalVolume;
-    element.dataset.timelinePrimeVolume = '';
-    element.muted = rowMuted(clipId);
-  }
-}
-/** Stop one element and hand back the volume the prime borrowed from it. */
-function releaseElement(element: HTMLAudioElement | null): void {
-  if (!element) return;
-  element.pause();
-  element.dataset.timelineActive = 'false';
-  element.dataset.timelineStarting = 'false';
-  element.dataset.timelinePriming = '';
-  const primed = element.dataset.timelinePrimeVolume;
-  // A released marker is an empty string, not a level — reading it as 0 would silence the element.
-  if (primed) element.volume = Number(primed);
-  element.dataset.timelinePrimeVolume = '';
-}
-/** Start packaged audio directly from the player's user gesture. */
-function startPlaybackAudio() {
-  playbackBlocked.MUSIC = false;
-  playbackBlocked.VOICE = false;
-  playbackBlocked.CAPTION_VOICE = false;
+async function startPlaybackAudio(seconds = props.playhead): Promise<boolean> {
   previewError.value = '';
-  syncAudio(true);
-  primeElement(currentVoice.value, voiceElement.value, currentVoiceEntry.value?.id ?? 'voice');
-  primeElement(
-    currentCaptionVoice.value,
-    captionVoiceElement.value,
-    currentCaptionVoiceEntry.value?.id ?? '',
-  );
+  const version = generation;
+  try {
+    return await sampleClock.start(previewAudioClips.value, seconds);
+  } catch {
+    if (version === generation) {
+      previewError.value = '口播或配乐暂时无法播放，请再次点击播放；字幕不会提前继续。';
+      emit('playbackFailed');
+    }
+    return false;
+  }
 }
-function stopPlaybackAudio() {
-  releaseElement(voiceElement.value);
-  releaseElement(musicElement.value);
-  releaseElement(captionVoiceElement.value);
+function stopPlaybackAudio(): void {
+  sampleClock.stop();
 }
-watch(
-  () => [
-    props.playhead,
-    props.playing,
-    props.audioRowMuted,
-    props.audioRowByClipId,
-    playbackBlocked.VOICE,
-    playbackBlocked.MUSIC,
-    playbackBlocked.CAPTION_VOICE,
-    currentVoice.value?.fileObjectId,
-    currentVoice.value?.volume,
-    currentVoice.value?.fadeIn,
-    currentVoice.value?.fadeOut,
-    currentCaptionVoice.value?.fileObjectId,
-    currentCaptionVoice.value?.volume,
-    currentCaptionVoice.value?.fadeIn,
-    currentCaptionVoice.value?.fadeOut,
-    currentMusic.value?.fileObjectId,
-    currentMusic.value?.volume,
-    currentMusic.value?.fadeIn,
-    currentMusic.value?.fadeOut,
-  ],
-  () => void nextTick(() => syncAudio()),
-);
-watch(
-  () => props.seekVersion,
-  () => void nextTick(() => syncAudio(true)),
-);
+watch(() => JSON.stringify(previewAudioClips.value), () => {
+  if (props.playing) void startPlaybackAudio(sampleClock.time() ?? props.playhead);
+  else void sampleClock.prepare(previewAudioClips.value).catch(() => undefined);
+}, { immediate: true });
+watch(() => props.seekVersion, () => {
+  if (props.playing) void startPlaybackAudio(props.playhead);
+});
+watch(() => props.playing, (playing) => {
+  if (!playing) stopPlaybackAudio();
+});
+watch(() => props.selectedVariantId, () => stopPlaybackAudio());
 watch(
   () => [props.projectId, props.workflowRunId, props.templateId],
   () => {
@@ -792,9 +506,7 @@ watch(
     busy.value = false;
     starting.value = false;
     close();
-    playbackBlocked.MUSIC = false;
-    playbackBlocked.VOICE = false;
-    playbackBlocked.CAPTION_VOICE = false;
+    sampleClock.dispose();
     if (props.templateId) {
       void refresh();
       void loadBackgroundRun();
@@ -812,9 +524,7 @@ onBeforeUnmount(() => {
   clearTimeout(backgroundTimer);
   window.removeEventListener('focus', refreshOnReturn);
   document.removeEventListener('visibilitychange', refreshOnReturn);
-  voiceElement.value?.pause();
-  musicElement.value?.pause();
-  captionVoiceElement.value?.pause();
+  sampleClock.dispose();
 });
 </script>
 
@@ -836,41 +546,6 @@ onBeforeUnmount(() => {
   <div v-if="error && !visible && !active && !busy" class="notice error" role="alert">
     <AlertCircle :size="16" />{{ error }}<button @click="refresh">重新读取</button>
   </div>
-  <audio
-    v-if="currentVoice"
-    ref="voiceElement"
-    :src="fileUrl(currentVoice.fileObjectId)"
-    preload="auto"
-    @loadedmetadata="syncAudio()"
-    @seeked="syncAudio()"
-    @canplay="syncAudio()"
-  />
-  <audio
-    v-if="nextVoice"
-    :key="`prefetch:${nextVoice.fileObjectId}`"
-    :src="fileUrl(nextVoice.fileObjectId)"
-    preload="auto"
-    aria-hidden="true"
-  />
-  <audio
-    v-if="currentCaptionVoice"
-    ref="captionVoiceElement"
-    :src="fileUrl(currentCaptionVoice.fileObjectId)"
-    preload="auto"
-    @loadedmetadata="syncAudio()"
-    @seeked="syncAudio()"
-    @canplay="syncAudio()"
-  />
-  <audio
-    v-if="currentMusic"
-    :key="currentMusic.fileObjectId"
-    ref="musicElement"
-    :src="fileUrl(currentMusic.fileObjectId)"
-    preload="auto"
-    @loadedmetadata="syncAudio()"
-    @seeked="syncAudio()"
-    @canplay="syncAudio()"
-  />
   <dialog
     ref="dialog"
     class="packaging-dialog workflow-dialog"
