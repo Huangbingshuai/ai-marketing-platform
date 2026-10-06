@@ -85,7 +85,7 @@ Vue Web
 NestJS API ───── Prisma ───── PostgreSQL
    │  │
    │  ├─ Redis：任务进度与降级缓存
-   │  ├─ MinIO：导入文件与 Docling Markdown
+   │  ├─ TOS / 本地存储：项目文件与 Docling Markdown
    │  └─ RabbitMQ：异步任务消息
    │                   │
    │ internal API      ▼
@@ -101,7 +101,7 @@ NestJS API ───── Prisma ───── PostgreSQL
 
 - `apps/web` 只通过 HTTP API 访问后端，不导入后端源码，也不直连 Ark。
 - `apps/api` 负责项目隔离、业务规则、任务调度和数据持久化。
-- Python Worker 不直连 PostgreSQL、Prisma、MinIO 或 TOS，只使用受保护的 NestJS 内部 API。
+- Python Worker 不直连 PostgreSQL、Prisma 或对象存储，只使用受保护的 NestJS 内部 API。
 - RabbitMQ 消息只携带运行标识，不携带文档正文、图片、模型输入或密钥。
 - 前后端共享类型统一维护在 `packages/contracts`。
 
@@ -207,7 +207,7 @@ ARK_API_KEY=<仅保存在本机的真实 Key>
 
 Prompt Worker 的生产 Compose 默认启用 `PROMPT_SIMILARITY_MODE=vector`，并使用账号已授权的 `doubao-embedding-vision-251215`。该模型通过火山多模态 Embeddings 端点发送纯文本，每个请求一条正文并由独立并发门限控制；本地源码直接启动 Worker 时若未提供这些环境变量，配置类仍保持保守的 `trigram` 默认值。`vector` 模式缺少模型配置或调用失败会明确失败，不会静默退回字符匹配；需要只对照不接管结果时可显式设置 `shadow`。
 
-共享或正式环境还应替换 `.env` 中的 MinIO 密码和 `EFFECT_EXTRACTION_WORKER_TOKEN`。前端代码、测试、README、`.env.example` 和 Git 历史中都不得出现真实密钥。
+共享或正式环境还应替换 `.env` 中的 `EFFECT_EXTRACTION_WORKER_TOKEN`，并按需配置 TOS 凭据。前端代码、测试、README、`.env.example` 和 Git 历史中都不得出现真实密钥。
 
 本地非生产环境未显式配置 Worker Token 时，API 与 Docker Compose 使用一致的 `local-*` 开发默认值，避免任务已入队但 claim 持续 401。生产环境没有默认值，仍必须显式配置彼此一致的独立 Token。
 
@@ -218,7 +218,7 @@ docker compose up -d
 docker compose ps
 ```
 
-默认启动 PostgreSQL、Redis、RabbitMQ 和 MinIO。
+默认启动 PostgreSQL、Redis 和 RabbitMQ。对象文件可使用本地存储；接入 TOS 时，在 `.env` 配置 `STORAGE_DRIVER=tos` 与 TOS Endpoint、Region、Bucket 和凭据。
 
 ### 3. 初始化数据库并启动前后端
 
@@ -300,8 +300,6 @@ Worker 对原始 Prompt 与六槽位评分，执行唯一素材匹配、视频�
 | Web             | <http://localhost:5173>            |
 | API 健康检查    | <http://localhost:3000/api/health> |
 | RabbitMQ 管理台 | <http://localhost:15672>           |
-| MinIO API       | <http://localhost:9000>            |
-| MinIO Console   | <http://localhost:9001>            |
 
 RabbitMQ 本地默认账号为 `guest/guest`。如果修改 `API_PORT`，Vite 代理和 Docker Worker 会跟随根目录 `.env` 配置；自定义部署时也可设置 `VITE_API_PROXY_TARGET` 和 `INTERNAL_API_BASE_URL`。
 
@@ -409,7 +407,6 @@ ai-marketing-platform/
 │  ├─ seedance-worker/             # Seedance 异步 Worker
 │  ├─ effect-template-mix/         # 六槽位分类与视频截取 Worker
 │  └─ media-worker/                # 媒体处理 Worker
-├─ infrastructure/minio/           # 固定版本的本地 MinIO 镜像
 ├─ references/prototypes/          # 冻结原型
 ├─ docs/                           # 架构与实施文档
 ├─ compose.yaml
@@ -535,7 +532,6 @@ docker compose logs --tail 200 effect-extraction-worker
 - [Prompt 当前工作流实施方案](docs/workflows/effect/plans/效果类Prompt-单一当前工作流收敛实施方案.md)
 - [Prompt 视觉策略真实付费质量对比](docs/workflows/effect/evidence/Prompt视觉策略两轮真实付费质量对比-2026-08-28.md)
 - [Prompt 视觉事件修复付费续测报告](docs/workflows/effect/plans/效果类Prompt-视觉事件修复付费续测报告.md)
-- [MinIO 存储与本地部署方案](docs/workflows/effect/deployment/效果类导入素材-MinIO存储与本地部署方案.md)
 - [AI 信息提炼 Worker 说明](workers/effect-extraction/README.md)
 - [素材片段 Prompt Worker 说明](workers/effect-prompt-generation/README.md)
 - [模板混剪 Worker 说明](workers/effect-template-mix/README.md)

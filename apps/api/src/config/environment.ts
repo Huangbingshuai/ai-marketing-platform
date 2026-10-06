@@ -1,7 +1,7 @@
 export type AppEnvironment = 'development' | 'test' | 'production';
-import { tosS3Endpoint } from '../platform/file/tos-endpoint';
+import { tosEndpoint } from '../platform/file/tos-endpoint';
 
-export type StorageDriver = 'local' | 'minio' | 'tos';
+export type StorageDriver = 'local' | 'tos';
 
 export type EnvironmentVariables = {
   APP_ENV: AppEnvironment;
@@ -11,12 +11,6 @@ export type EnvironmentVariables = {
   LOCAL_STORAGE_ROOT: string | undefined;
   MAX_UPLOAD_BYTES: number;
   WORKING_FILE_CLEANUP_GRACE_HOURS: number;
-  MINIO_ENDPOINT: string | undefined;
-  MINIO_PORT: number;
-  MINIO_USE_SSL: boolean;
-  MINIO_BUCKET: string | undefined;
-  MINIO_ACCESS_KEY: string | undefined;
-  MINIO_SECRET_KEY: string | undefined;
   DATABASE_URL: string;
   REDIS_URL: string;
   RABBITMQ_URL: string;
@@ -63,19 +57,10 @@ const parsePort = (value: unknown, key: string, defaultValue: number): number =>
 
 const parseStorageDriver = (value: unknown): StorageDriver => {
   const driver = value ?? 'local';
-  if (driver !== 'local' && driver !== 'minio' && driver !== 'tos') {
-    throw new Error('环境变量 STORAGE_DRIVER 必须是 local、minio 或 tos');
+  if (driver !== 'local' && driver !== 'tos') {
+    throw new Error('环境变量 STORAGE_DRIVER 必须是 local 或 tos');
   }
   return driver;
-};
-
-const parseBoolean = (value: unknown, key: string, defaultValue: boolean): boolean => {
-  const normalized = String(value ?? defaultValue)
-    .trim()
-    .toLowerCase();
-  if (normalized === 'true') return true;
-  if (normalized === 'false') return false;
-  throw new Error(`环境变量 ${key} 必须是 true 或 false`);
 };
 
 const parsePositiveInteger = (value: unknown, key: string, defaultValue: number): number => {
@@ -101,22 +86,10 @@ const parseEnvironment = (value: unknown): AppEnvironment => {
 export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVariables => {
   const appEnvironment = parseEnvironment(raw.APP_ENV);
   const storageDriver = parseStorageDriver(raw.STORAGE_DRIVER);
-  const minioEndpoint = optionalString(raw.MINIO_ENDPOINT);
-  const minioBucket = optionalString(raw.MINIO_BUCKET);
-  const minioAccessKey = optionalString(raw.MINIO_ACCESS_KEY);
-  const minioSecretKey = optionalString(raw.MINIO_SECRET_KEY);
-
-  if (storageDriver === 'minio') {
-    requiredString(minioEndpoint, 'MINIO_ENDPOINT');
-    requiredString(minioBucket, 'MINIO_BUCKET');
-    requiredString(minioAccessKey, 'MINIO_ACCESS_KEY');
-    requiredString(minioSecretKey, 'MINIO_SECRET_KEY');
-  }
-
   if (storageDriver === 'tos') {
     const endpoint = requiredString(raw.TOS_ENDPOINT, 'TOS_ENDPOINT').trim();
     const region = requiredString(raw.TOS_REGION, 'TOS_REGION').trim();
-    tosS3Endpoint(endpoint, region);
+    tosEndpoint(endpoint, region);
     requiredString(raw.TOS_BUCKET, 'TOS_BUCKET');
     requiredString(raw.TOS_ACCESS_KEY_ID, 'TOS_ACCESS_KEY_ID');
     requiredString(raw.TOS_SECRET_ACCESS_KEY, 'TOS_SECRET_ACCESS_KEY');
@@ -161,12 +134,6 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
       'WORKING_FILE_CLEANUP_GRACE_HOURS',
       24,
     ),
-    MINIO_ENDPOINT: minioEndpoint,
-    MINIO_PORT: parsePort(raw.MINIO_PORT, 'MINIO_PORT', 9000),
-    MINIO_USE_SSL: parseBoolean(raw.MINIO_USE_SSL, 'MINIO_USE_SSL', false),
-    MINIO_BUCKET: minioBucket,
-    MINIO_ACCESS_KEY: minioAccessKey,
-    MINIO_SECRET_KEY: minioSecretKey,
     DATABASE_URL: requiredString(raw.DATABASE_URL, 'DATABASE_URL'),
     REDIS_URL: requiredString(raw.REDIS_URL, 'REDIS_URL'),
     RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),

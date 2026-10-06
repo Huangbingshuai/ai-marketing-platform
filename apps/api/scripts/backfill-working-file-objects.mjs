@@ -3,7 +3,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
-import { Client as MinioClient } from 'minio';
+import { TosClient } from '@volcengine/tos-sdk';
 import pg from 'pg';
 
 const args = new Set(process.argv.slice(2));
@@ -31,17 +31,46 @@ const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required');
 
 const storageDriver = process.env.STORAGE_DRIVER ?? 'local';
-const minio =
-  storageDriver === 'minio'
-    ? new MinioClient({
-        endPoint: process.env.MINIO_ENDPOINT ?? 'localhost',
-        port: Number(process.env.MINIO_PORT ?? 9000),
-        useSSL: String(process.env.MINIO_USE_SSL ?? 'false').toLowerCase() === 'true',
-        accessKey: process.env.MINIO_ACCESS_KEY ?? '',
-        secretKey: process.env.MINIO_SECRET_KEY ?? '',
+const tosRegion = process.env.TOS_REGION;
+const tosBucket = process.env.TOS_BUCKET;
+const tosEndpoint = process.env.TOS_ENDPOINT;
+if (storageDriver === 'tos') {
+  if (
+    !tosRegion ||
+    !tosBucket ||
+    !tosEndpoint ||
+    !process.env.TOS_ACCESS_KEY_ID ||
+    !process.env.TOS_SECRET_ACCESS_KEY
+  ) {
+    throw new Error('TOS region, endpoint, bucket, and credentials are required');
+  }
+  const endpointUrl = new URL(tosEndpoint.includes('://') ? tosEndpoint : `https://${tosEndpoint}`);
+  if (
+    endpointUrl.protocol !== 'https:' ||
+    ![`tos-${tosRegion}.volces.com`, `tos-s3-${tosRegion}.volces.com`].includes(
+      endpointUrl.hostname,
+    )
+  ) {
+    throw new Error('TOS_ENDPOINT must be an HTTPS regional endpoint matching TOS_REGION');
+  }
+}
+const storageClient =
+  storageDriver === 'tos'
+    ? new TosClient({
+        endpoint: `tos-${tosRegion}.volces.com`,
+        region: tosRegion,
+        secure: true,
+        enableVerifySSL: true,
+        accessKeyId: process.env.TOS_ACCESS_KEY_ID?.trim() ?? '',
+        accessKeySecret: process.env.TOS_SECRET_ACCESS_KEY?.trim() ?? '',
+        maxConnections: 8,
       })
     : null;
-const bucket = process.env.MINIO_BUCKET ?? 'ai-marketing-assets';
+if (storageClient) storageClient.axiosInst.defaults.proxy = false;
+if (storageDriver !== 'local' && storageDriver !== 'tos') {
+  throw new Error('STORAGE_DRIVER must be local or tos');
+}
+const bucket = tosBucket;
 const localRoot = resolve(process.cwd(), process.env.LOCAL_STORAGE_ROOT ?? '../../.local-storage');
 
 const sha256Stream = (stream) =>
@@ -70,8 +99,9 @@ try {
   report.total = result.rows.length;
   for (const row of result.rows) {
     try {
-      const stream = minio
-        ? await minio.getObject(bucket, row.storageKey)
+      const stream = storageClient
+        ? (await storageClient.getObjectV2({ bucket, key: row.storageKey, dataType: 'stream' }))
+            .data.content
         : createReadStream(resolve(localRoot, ...String(row.storageKey).split('/')));
       const checksum = await sha256Stream(stream);
       report.readable += 1;

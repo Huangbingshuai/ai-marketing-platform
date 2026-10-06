@@ -3,14 +3,12 @@
 ## 环境
 
 - 根目录 `.env.example` 只提供安全占位符。开发者复制为被 Git 忽略的 `.env` 后填写本机配置。
-- 不要把真实 Ark、Seedance、TOS、MinIO 或内部 Worker Token 写进 Git、测试、截图、Prompt 或日志。
+- 不要把真实 Ark、Seedance、TOS 或内部 Worker Token 写进 Git、测试、截图、Prompt 或日志。
 
-## TOS 存储与 MinIO 迁移
+## 对象存储
 
-- `STORAGE_DRIVER=tos` 使用已创建的私有普通 TOS 桶；填写 `TOS_ENDPOINT/TOS_REGION/TOS_BUCKET/TOS_ACCESS_KEY_ID/TOS_SECRET_ACCESS_KEY`。本地服务使用 HTTPS 外网地域 Endpoint，原生地址自动转换为 S3 地址；不支持 Bucket 域名、内网地址或跨地域混配。使用仅限该桶的读写授权，不开放公共读写。
+- `STORAGE_DRIVER=local` 使用本地开发存储；`STORAGE_DRIVER=tos` 通过火山官方 `@volcengine/tos-sdk` 使用已创建的私有普通 TOS 桶，并配置 `TOS_ENDPOINT/TOS_REGION/TOS_BUCKET/TOS_ACCESS_KEY_ID/TOS_SECRET_ACCESS_KEY`。本地服务直连 HTTPS 外网原生地域 Endpoint，不继承桌面 HTTP 代理；历史 S3 地址兼容规范化为原生地址，不支持 Bucket 域名、内网地址或跨地域混配。使用仅限该桶的读写授权，不开放公共读写。
 - 桶不存在或无权限时明确失败，不自动创建云桶、不回退本地存储。视频、音频与下载仍经 API 和项目权限读取；Worker 不获取 TOS 密钥。
-- 旧素材不能通过只修改环境变量完成迁移。在 API 目录执行 `pnpm storage:migrate-tos` 只读盘点；`pnpm storage:migrate-tos --apply --concurrency=4` 同路径复制、计算源 SHA-256 并核对数据库引用。TOS 普通上传校验服务端 ETag 与本地 MD5，分片或无法确认的 ETag 完整下载核验 SHA-256；失败后可用同命令续传。检查点位于被 Git 忽略的 `.local-storage/migrations/`，日志不含凭证或签名地址。
-- 迁移期间保持 MinIO 为活动存储。最终暂停写入并补齐增量、全部校验成功后，再切换驱动并重启 API；保留原 MinIO 数据卷。切换后有新文件时，回滚前必须同步 TOS 增量，不能直接切回旧桶。
 - 效果类返修在 API 校验原片、项目/Run、版本及 Worker 租约后，签发最长 30 分钟的 TOS GET 地址，替代已过期的供应商地址，无需开放本机 API 公网访问。签名地址只作当前任务临时输入，不写入工程或数据库；是否接受参考输入由供应商最终校验，存储迁移不自动触发付费返修。
 
 ## 基础设施
@@ -33,6 +31,8 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 - 容器访问宿主机使用 `host.docker.internal`，内部 API 端口跟随 `API_PORT`。
 
 ## 常规验证
+
+本地 API 若以 `node dist/main.js` 运行，构建只更新磁盘文件，不会更新已运行进程中的代码。修复后先确认监听 `API_PORT` 的进程启动方式；普通启动须在无活动任务时重启，不能把构建成功视为运行服务已经生效。重启后检查健康接口、进程启动时间及实际业务输入/请求；前端请求拦截与源码单测不能代替服务生效验证。
 
 模板混剪智能包装与智能填充共用原 Worker，但分别控制并发。`TEMPLATE_MIX_PACKAGING_ITEM_CONCURRENCY` 默认 6（最多 8），`TEMPLATE_MIX_PACKAGING_MODEL_CONCURRENCY` 和 `TEMPLATE_MIX_PACKAGING_TTS_CONCURRENCY` 默认各 4；预处理仍最多 2 条，音乐请求保留独立限流。调整包装并发后需要重建并重启原 `effect-template-mix-worker`，并让 API 进程读取相同的条目并发值，页面初始耗时估算才会一致。提高至 8 前先检查真实批次的 429、超时和分项耗时；20 分钟不能仅凭基线估算宣称达成。
 

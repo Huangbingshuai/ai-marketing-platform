@@ -30,57 +30,13 @@ describe('validateEnvironment', () => {
     );
   });
 
-  it('requires MinIO credentials only when the MinIO driver is selected', () => {
-    expect(() => validateEnvironment({ ...validEnvironment, STORAGE_DRIVER: 'minio' })).toThrow(
-      'MINIO_ENDPOINT',
-    );
-
-    expect(
-      validateEnvironment({
-        ...validEnvironment,
-        STORAGE_DRIVER: 'minio',
-        MINIO_ENDPOINT: 'localhost',
-        MINIO_PORT: '9000',
-        MINIO_USE_SSL: 'false',
-        MINIO_BUCKET: 'ai-marketing-assets',
-        MINIO_ACCESS_KEY: 'local-access',
-        MINIO_SECRET_KEY: 'local-secret',
-      }),
-    ).toMatchObject({
-      STORAGE_DRIVER: 'minio',
-      MINIO_ENDPOINT: 'localhost',
-      MINIO_PORT: 9000,
-      MINIO_USE_SSL: false,
-      MINIO_BUCKET: 'ai-marketing-assets',
-    });
-  });
-
-  it('rejects invalid storage driver and MinIO boolean values', () => {
+  it('rejects retired MinIO and other unsupported storage drivers', () => {
     expect(() => validateEnvironment({ ...validEnvironment, STORAGE_DRIVER: 's3' })).toThrow(
       'STORAGE_DRIVER',
     );
-    expect(() =>
-      validateEnvironment({
-        ...validEnvironment,
-        STORAGE_DRIVER: 'minio',
-        MINIO_ENDPOINT: 'localhost',
-        MINIO_USE_SSL: 'yes',
-        MINIO_BUCKET: 'bucket',
-        MINIO_ACCESS_KEY: 'access',
-        MINIO_SECRET_KEY: 'secret',
-      }),
-    ).toThrow('MINIO_USE_SSL');
-    expect(() =>
-      validateEnvironment({
-        ...validEnvironment,
-        STORAGE_DRIVER: 'minio',
-        MINIO_ENDPOINT: 'localhost',
-        MINIO_PORT: '70000',
-        MINIO_BUCKET: 'bucket',
-        MINIO_ACCESS_KEY: 'access',
-        MINIO_SECRET_KEY: 'secret',
-      }),
-    ).toThrow('MINIO_PORT');
+    expect(() => validateEnvironment({ ...validEnvironment, STORAGE_DRIVER: 'minio' })).toThrow(
+      'STORAGE_DRIVER',
+    );
   });
 
   it('requires TOS credentials and rejects non-regional or insecure endpoints', () => {

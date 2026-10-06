@@ -1,5 +1,5 @@
-/** TOS native and S3 endpoints are different; the existing client signs AWS S3 V4. */
-export const tosS3Endpoint = (endpoint: string, region: string): string => {
+/** Accept historical S3 configuration, but always use the official SDK's native endpoint. */
+export const tosEndpoint = (endpoint: string, region: string): string => {
   const parsed = new URL(endpoint.includes('://') ? endpoint : `https://${endpoint}`);
   if (
     parsed.protocol !== 'https:' ||
@@ -14,5 +14,5 @@ export const tosS3Endpoint = (endpoint: string, region: string): string => {
   ) {
     throw new Error('TOS_ENDPOINT 必须是与 TOS_REGION 一致的外网 HTTPS 地域地址');
   }
-  return `tos-s3-${region}.volces.com`;
+  return `tos-${region}.volces.com`;
 };

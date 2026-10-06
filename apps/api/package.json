@@ -12,9 +12,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "storage:migrate-readable": "node scripts/migrate-minio-readable-keys.mjs",
-    "storage:backfill-working-files": "node scripts/backfill-working-file-objects.mjs",
-    "storage:migrate-tos": "node scripts/migrate-minio-to-tos.mjs"
+    "storage:backfill-working-files": "node scripts/backfill-working-file-objects.mjs"
   },
   "dependencies": {
     "@ai-marketing/contracts": "workspace:*",
@@ -24,12 +22,12 @@
     "@nestjs/platform-express": "11.2.1",
     "@prisma/adapter-pg": "7.9.1",
     "@prisma/client": "7.9.1",
+    "@volcengine/tos-sdk": "2.9.1",
     "amqplib": "2.0.1",
     "archiver": "^8.0.0",
     "class-transformer": "0.5.1",
     "class-validator": "0.15.1",
     "exceljs": "4.4.0",
-    "minio": "8.0.7",
     "pg": "8.23.0",
     "redis": "6.2.1",
     "reflect-metadata": "0.2.2",

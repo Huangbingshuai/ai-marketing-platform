@@ -75,7 +75,7 @@ Hook 不是安全边界，也不能代替测试和代码评审。合并门禁最
 ## 4. 技术栈与目录边界
 
 - Web：Vue 3、TypeScript、Vite、Pinia、Vue Router、Axios。
-- API：NestJS、TypeScript、Prisma、PostgreSQL、RabbitMQ Outbox、Redis、S3/MinIO。
+- API：NestJS、TypeScript、Prisma、PostgreSQL、RabbitMQ Outbox、Redis、火山 TOS 对象存储（官方 SDK）。
 - AI Worker：Python、FastAPI、LangGraph、Pydantic、httpx、NumPy（Prompt 向量 MMR）。
 - 外部视频生成优先通过 Seedance/Ark 等适配器接入，不允许页面或业务服务直接绑定厂商协议。
 
