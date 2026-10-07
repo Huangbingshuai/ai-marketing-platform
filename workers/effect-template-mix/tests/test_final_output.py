@@ -327,6 +327,39 @@ async def test_timeline_gap_renders_black_and_keeps_the_frozen_duration(tmp_path
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+@pytest.mark.parametrize('content', ['audio', 'captions'])
+async def test_new_manual_project_without_video_renders_placed_content(
+    tmp_path: Path, monkeypatch: Any, content: str,
+) -> None:
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    snapshot = {'timeline': {'duration': 2, 'clips': []}, 'aspectRatio': '4:3',
+        'originalVolume': 0, 'resolution': '480p', 'frameRate': 30,
+        'packaging': {'voices': {}, 'captions': []}}
+    files = {}
+    if content == 'audio':
+        voice = tmp_path / 'voice.wav'
+        await encode(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+            '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', str(voice)], tmp_path)
+        files['voice'] = voice
+        snapshot['packaging']['voices']['manual'] = {'fileObjectId': 'voice',
+            'start': 0, 'duration': 2, 'offset': 0, 'volume': 1}
+    else:
+        snapshot['packaging']['captions'] = [{'id': 'title', 'text': 'Caption', 'start': 0, 'end': 2}]
+    output = await render(snapshot, files, tmp_path, AsyncMock())
+    info = await probe(output)
+    assert abs(float(info['format']['duration']) - 2) < .1
+    assert {'video', 'audio'} <= {stream['codec_type'] for stream in info['streams']}
+    if content == 'audio':
+        pcm = await command('ffmpeg', ['-v', 'error', '-i', str(output), '-vn',
+            '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'])
+        assert max(abs(value) for value in array.array('h', pcm)) > 500
+    else:
+        pixels = await command('ffmpeg', ['-v', 'error', '-i', str(output), '-ss', '1',
+            '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'])
+        assert max(pixels) > 100
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
 async def test_film_confirmed_without_a_package_renders_picture_only(tmp_path: Path, monkeypatch: Any) -> None:
     """A failed film is still submitted, so its empty package has to be a renderable state.
 

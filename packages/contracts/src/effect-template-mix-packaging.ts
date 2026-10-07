@@ -388,7 +388,9 @@ export type PackagingCaptionVoiceQueueMessage = {
 export const PACKAGING_NARRATION_LAYOUT = 'SLOT_V1' as const;
 /** Pure mechanical preflight shared by server and editor. */
 export function packagingSlotBoundaryError(variant: EffectTemplateMixVariant): string | null {
-  const rows = packagingTimelineClips(variant).sort((a, b) => a.start - b.start);
+  const rows = packagingTimelineClips(variant)
+    .filter(({ slot }) => !variant.bindings || Boolean(variant.bindings[slot.id]))
+    .sort((a, b) => a.start - b.start);
   if (
     rows.some(
       ({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 4 || slot.duration > 15,
@@ -544,8 +546,10 @@ export function packagingTimelineClips(variant: EffectTemplateMixVariant) {
   let cursor = 0;
   return variant.slots.map((slot) => {
     const start = variant.timelineStarts?.[slot.id] ?? cursor;
-    cursor = start + slot.duration;
-    return { slot, start, end: cursor, lane: variant.videoLanes?.[slot.id] ?? 0 };
+    const end = start + slot.duration;
+    // An unbound template marker is not a clip and cannot push real media to the right.
+    if (!variant.bindings || variant.bindings[slot.id]) cursor = end;
+    return { slot, start, end, lane: variant.videoLanes?.[slot.id] ?? 0 };
   });
 }
 /**
@@ -578,13 +582,36 @@ export function effectTemplateMixContentDuration(
   // including its length, so it counts here too — otherwise a line longer than the picture would
   // be rejected by the renderer's own bounds check instead of extending the film.
   for (const voice of [
-    ...Object.values(checkpoint?.voices ?? {}),
+    ...(checkpoint ? Object.values(checkpoint.voices ?? {}) : variant.voice ? [variant.voice] : []),
     ...Object.values(checkpoint?.captionVoices ?? {}),
   ]) {
     ends.push(voice.start + voice.duration);
   }
-  if (checkpoint?.music) ends.push(checkpoint.music.start + checkpoint.music.duration);
+  const music = checkpoint ? checkpoint.music : variant.bgm;
+  if (music) ends.push(music.start + music.duration);
   for (const caption of checkpoint?.captions ?? variant.captions ?? []) ends.push(caption.end);
+  return Math.max(0, ...ends);
+}
+/** Membership eligibility ignores template placeholders and preserved black ranges. */
+export function effectTemplateMixPlacedContentDuration(
+  variant: EffectTemplateMixVariant,
+  checkpoint?: PackagingCheckpoint | null,
+): number {
+  const ends: number[] = [];
+  const add = (start: number, duration: number) => {
+    if (Number.isFinite(start) && start >= 0 && Number.isFinite(duration) && duration > 0)
+      ends.push(start + duration);
+  };
+  for (const row of packagingTimelineClips(variant))
+    if (variant.bindings[row.slot.id]) add(row.start, row.slot.duration);
+  for (const audio of variant.detachedAudios ?? []) add(audio.start, audio.duration);
+  for (const voice of checkpoint ? Object.values(checkpoint.voices ?? {}) : variant.voice ? [variant.voice] : [])
+    add(voice.start, voice.duration);
+  for (const voice of Object.values(checkpoint?.captionVoices ?? {})) add(voice.start, voice.duration);
+  const music = checkpoint ? checkpoint.music : variant.bgm;
+  if (music) add(music.start, music.duration);
+  for (const caption of checkpoint?.captions ?? variant.captions ?? [])
+    if (caption.text.trim()) add(caption.start, caption.end - caption.start);
   return Math.max(0, ...ends);
 }
 /**

@@ -23,6 +23,9 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   effectTemplateMixContentDuration,
+  EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
+  packagingTimelineClips,
+  packagingTimelineDuration,
   effectTemplateMixSourceChanges,
   effectTemplateMixSlotDurationLimit,
   effectTemplateMixMaterialFitsTemplate,
@@ -931,13 +934,9 @@ const currentTiming = computed(() => {
   const variant = selectedVariant.value;
   const base = effectTemplateMixTiming(variant?.slots ?? []);
   if (!variant) return base;
-  const slots = base.slots.map((range) => {
-    const start = Math.max(0, variant.timelineStarts?.[range.id] ?? range.start);
-    const duration = range.end - range.start;
-    return { id: range.id, start, end: start + duration };
-  });
+  const slots = packagingTimelineClips(variant).map(({ slot, start, end }) => ({ id: slot.id, start, end }));
   return {
-    duration: Math.max(base.duration, ...slots.map(({ end }) => end)),
+    duration: packagingTimelineDuration(variant),
     slots,
   };
 });
@@ -947,15 +946,7 @@ const materialForSlot = (
 ): EffectTemplateMixMaterial | null =>
   workspace.value?.materials.find(({ id }) => id === variant?.bindings[slotId]) ?? null;
 const variantDuration = (variant: EffectTemplateMixVariant): number => {
-  const timing = effectTemplateMixTiming(variant.slots);
-  const occupiedEnds = timing.slots
-    .map((range) => {
-      const start = Math.max(0, variant.timelineStarts?.[range.id] ?? range.start);
-      return { id: range.id, end: start + (range.end - range.start) };
-    })
-    .filter(({ id }) => Boolean(materialForSlot(id, variant)))
-    .map(({ end }) => end);
-  return occupiedEnds.length ? Math.max(...occupiedEnds) : 0;
+  return packagingTimelineDuration(variant);
 };
 /**
  * The film's length: the furthest end over everything on the timeline, not just the video clips.
@@ -1480,13 +1471,16 @@ const selectedVariantDisplayName = computed(() => {
   );
 });
 const variantTemplateLabel = computed(() => workspace.value?.template.name?.trim() || '当前模板');
+const variantConflictCount = (variant: EffectTemplateMixVariant) =>
+  variant.conflictSlotIds.filter((id) => Boolean(variant.bindings[id])).length;
 const complete = computed(
   () =>
     Boolean(workspace.value?.variants.length) &&
     workspace.value!.variants.every(
       (variant) =>
-        !variant.conflictSlotIds.length &&
+        !variantConflictCount(variant) &&
         variant.slots.every((slot) => {
+          if (!variant.bindings[slot.id]) return true;
           const material = materialForSlot(slot.id, variant);
           return (
             material?.available &&
@@ -3932,13 +3926,13 @@ const pasteTimelineAudioMaterial = (audio: {
     showNotice('当前任务正在运行，暂时不能粘贴音频', 'warning');
     return;
   }
-  const start = Math.max(0, Math.min(currentDuration.value, audio.start));
+  const start = Math.max(0, audio.start);
   const duration = Math.min(
     audio.duration,
-    Math.max(0, currentDuration.value - start),
     Math.max(0, audio.sourceDuration - audio.offset),
   );
-  if (!audio.fileObjectId || duration < 0.1) {
+  if (!audio.fileObjectId || !Number.isFinite(start) || !Number.isFinite(duration) || duration < 0.1 ||
+      start + duration > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS) {
     showNotice('音频素材已失效，或播放头超出成片范围', 'warning');
     return;
   }
@@ -5834,7 +5828,7 @@ const addCaption = (): void => {
     return;
   }
   const start = quantizeTimelineTime(playhead.value);
-  const end = quantizeTimelineTime(Math.min(currentDuration.value, start + 3));
+  const end = Math.round(Math.min(EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS, start + 3) * TIMELINE_FPS) / TIMELINE_FPS;
   if (end - start < 1 / TIMELINE_FPS) {
     showNotice('播放头已到成片末尾，请先移动播放头再新增字幕', 'warning');
     return;
@@ -7583,7 +7577,7 @@ defineExpose({
                   "
                   :title="
                     packagingActionBlockReason ??
-                    '为本模板下全部完整成片生成口播、配乐和字幕，将调用付费 AI 服务'
+                    '为本模板下有视频内容的成片生成口播、配乐和字幕，将调用付费 AI 服务'
                   "
                   @click="openPackaging('ACTION')"
                 >
@@ -7647,15 +7641,15 @@ defineExpose({
                 :title="`${variantDisplayName(variant, index)} · ${variantDuration(variant).toFixed(1)}s · ${
                   packagingFailureByVariant.get(variant.id)
                     ? `包装失败：${packagingFailureByVariant.get(variant.id)!.message}`
-                    : variant.conflictSlotIds.length
-                      ? variant.conflictSlotIds.length + ' 个缺口'
+                    : variantConflictCount(variant)
+                      ? variantConflictCount(variant) + ' 个缺口'
                       : '时间轴完整'
                 } · ${
                   variantSourceUpdateLocked(variant.id)
                     ? '局部更新中，工程暂时锁定'
                     : variant.status === 'PENDING'
                     ? '待同步'
-                    : variant.conflictSlotIds.length
+                    : variantConflictCount(variant)
                       ? '待补齐'
                       : '可精修'
                 }`"
@@ -7683,7 +7677,7 @@ defineExpose({
                     class="project-status"
                     :class="{
                       pending: variant.status === 'PENDING',
-                      incomplete: variant.conflictSlotIds.length > 0,
+                      incomplete: variantConflictCount(variant) > 0,
                       failed: packagingFailureByVariant.has(variant.id),
                     }"
                     :title="
@@ -7691,7 +7685,7 @@ defineExpose({
                         ? `包装失败：${packagingFailureByVariant.get(variant.id)!.message}`
                         : variant.status === 'PENDING'
                           ? '待同步'
-                          : variant.conflictSlotIds.length
+                          : variantConflictCount(variant)
                             ? '待补齐'
                             : '可精修'
                     "

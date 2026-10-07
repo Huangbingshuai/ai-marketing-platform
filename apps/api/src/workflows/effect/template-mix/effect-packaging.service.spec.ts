@@ -836,7 +836,7 @@ describe('packaging service output boundary', () => {
     const { service } = harness();
     await expect(
       service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'key' }),
-    ).rejects.toThrow('完整成片');
+    ).rejects.toThrow('可包装的视频成片');
   });
   it('persists editor audio geometry while keeping file identity server-owned', async () => {
     const { service, repo } = harness();

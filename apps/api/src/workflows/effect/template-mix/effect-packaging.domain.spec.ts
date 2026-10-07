@@ -434,9 +434,19 @@ describe('slot-bound narration layout', () => {
   it('rejects overlap across different visual lanes', () => {
     const v = variant();
     v.slots.push({ ...v.slots[0]!, id: 's2' });
+    v.bindings.s2 = 'clip';
+    v.bindingRevisions.s2 = 1;
     v.timelineStarts = { s: 0, s2: 9 };
     v.videoLanes = { s2: 1 };
     expect(() => packagingSnapshot(v, materials, sources())).toThrow('槽位口播边界冲突');
+  });
+  it('packages actual video only, ignoring empty signs and their apparent overlap', () => {
+    const v = variant();
+    v.slots.unshift({ ...v.slots[0]!, id: 'sign', duration: 2 });
+    v.timelineStarts = { sign: 0, s: 0 };
+    const frozen = packagingSnapshot(v, materials, sources());
+    expect(frozen.clips.map(({ slotId }) => slotId)).toEqual(['s']);
+    expect(frozen.duration).toBe(10);
   });
   const overlaid = () => {
     const v = variant();

@@ -211,8 +211,7 @@ export class EffectPackagingService {
     const variants = entry.workspace.variants.filter(
       (v) =>
         (append ? append.variantIds.includes(v.id) : (!body.variantId || v.id === body.variantId)) &&
-        v.slots.length &&
-        v.slots.every((s) => v.bindings[s.id]),
+        v.slots.some((s) => v.bindings[s.id]),
     ).map((variant) => structuredClone(variant));
     const replacements = new Map<string, NonNullable<PackagingSnapshot['sourceTrimMaterials']>>();
     if (fullRedo) for (const variant of variants) {
@@ -232,7 +231,7 @@ export class EffectPackagingService {
         }
       }
     }
-    if (!variants.length) throw new BadRequestException('没有可包装的完整成片');
+    if (!variants.length) throw new BadRequestException('没有可包装的视频成片');
     if (append && variants.length !== append.variantIds.length)
       throw new ConflictException('新增成片工程已变化，不能包装旧目标');
     if (body.component && !['ALL', 'CAPTIONS'].includes(body.component) && !body.variantId)
@@ -241,7 +240,7 @@ export class EffectPackagingService {
       body.slotId &&
       (!body.variantId ||
         body.component !== 'VOICE' ||
-        !variants[0]?.slots.some((s) => s.id === body.slotId))
+        !variants[0]?.slots.some((s) => s.id === body.slotId && variants[0]?.bindings[s.id]))
     )
       throw new BadRequestException('单槽位重做必须选择当前成片中的口播槽位');
     const artifacts = (await this.working.listArtifacts(projectId, { workflowRunId })).items;

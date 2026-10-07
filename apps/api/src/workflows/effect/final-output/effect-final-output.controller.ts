@@ -52,6 +52,7 @@ export class SyncFinalOutputDto {
 export class LocalUpdateFinalOutputDto {
   @IsArray() @ArrayUnique() @IsUUID('4', { each: true }) itemIds!: string[];
   @IsOptional() @IsBoolean() syncProjects?: boolean;
+  @IsOptional() @IsInt() @Min(0) expectedDraftRevision?: number;
 }
 export class StartFinalOutputDto {
   @IsIn(FINAL_OUTPUT_RESOLUTIONS) resolution!: (typeof FINAL_OUTPUT_RESOLUTIONS)[number];

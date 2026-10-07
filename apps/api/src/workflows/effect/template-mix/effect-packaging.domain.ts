@@ -119,8 +119,11 @@ export function packagingClips(
   variant: EffectTemplateMixVariant,
   materials: EffectTemplateMixMaterial[],
   { byId, used, visit }: ReturnType<typeof artifactVisitor>,
+  allowUnboundSlots = false,
 ): PackagingSnapshot['clips'] {
-  return packagingTimelineClips(variant).map(({ slot, start, lane }) => {
+  return packagingTimelineClips(variant)
+    .filter(({ slot }) => variant.bindings[slot.id] || !allowUnboundSlots)
+    .map(({ slot, start, lane }) => {
     const m = materials.find((m) => m.id === variant.bindings[slot.id]);
     const offset = variant.offsets[slot.id] ?? 0;
     if (
@@ -183,14 +186,14 @@ export function packagingSnapshot(
   const boundaryError = packagingSlotBoundaryError(variant);
   if (boundaryError) throw new BadRequestException(boundaryError);
   if (
-    !variant.slots.length ||
-    variant.slots.length > 30 ||
+    !variant.slots.some((slot) => variant.bindings[slot.id]) ||
+    variant.slots.filter((slot) => variant.bindings[slot.id]).length > 30 ||
     effectTemplateMixContentDuration(variant) > EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS
   )
     throw new BadRequestException('包装时间轴超过容量上限');
   const visitor = artifactVisitor(artifacts);
   const { used, visit } = visitor;
-  const clips = packagingClips(variant, materials, visitor);
+  const clips = packagingClips(variant, materials, visitor, true);
   const timelineDuration = packagingTimelineDuration(variant);
   // A detached track is part of the film's content, so the film is at least as long as it is: the
   // only bound left is the capacity cap. (`timelineDuration` stays video-only — it is the frozen

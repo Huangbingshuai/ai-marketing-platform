@@ -27,6 +27,8 @@ import {
   effectTemplateMixSlotDurationMessage,
   effectTemplateMixSlotDurationValid,
   packagingTimelineDuration,
+  effectTemplateMixContentDuration,
+  effectTemplateMixPlacedContentDuration,
   packagingVisualVariant,
   resolveEffectTemplateMixMaterialRoles,
 } from '@ai-marketing/contracts';
@@ -3178,7 +3180,7 @@ export class EffectTemplateMixService {
     workflowRunId: string,
     expectedRevision: number,
     templateId: string,
-    options: { partial?: boolean } = {},
+    options: { partial?: boolean; manualOutput?: boolean; variantIds?: string[] } = {},
   ) {
     const nodeState = await this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX');
     if (nodeState.revision !== expectedRevision) {
@@ -3220,11 +3222,12 @@ export class EffectTemplateMixService {
     const allSourceIds = new Set<string>();
     const confirmed: EffectTemplateMixVariant[] = [];
     for (const variant of variants) {
+      if (options.variantIds && !options.variantIds.includes(variant.id)) continue;
       // A partial pass is how a smart fill confirms itself: the timeline it just filled is the
       // version, and a sibling the user has not finished editing must not veto that.
       const used = new Set<string>();
       try {
-        this.validateVariant(variant, sources, used);
+        this.validateVariant(variant, sources, used, options.manualOutput);
       } catch (error) {
         if (!options.partial) throw error;
         continue;
@@ -3720,8 +3723,12 @@ export class EffectTemplateMixService {
     variant: EffectTemplateMixVariant,
     sources: Map<string, WorkingArtifact>,
     allSourceIds: Set<string>,
+    manualOutput = false,
   ): void {
-    if (!variant.name.trim() || !slotsValid(variant.slots, 4) || variant.conflictSlotIds.length) {
+    const contentSlots = manualOutput ? variant.slots.filter((slot) => variant.bindings[slot.id]) : variant.slots;
+    if (!variant.name.trim() ||
+      !(manualOutput ? !contentSlots.length || slotsValid(contentSlots, 0.001) : slotsValid(contentSlots, 4)) ||
+      variant.conflictSlotIds.some((slotId) => !manualOutput || Boolean(variant.bindings[slotId]))) {
       throw new ApiHttpException(
         '成片工程仍有素材缺口或槽位配置无效',
         HttpStatus.BAD_REQUEST,
@@ -3739,6 +3746,7 @@ export class EffectTemplateMixService {
     }
     for (const slot of variant.slots) {
       const artifactId = variant.bindings[slot.id];
+      if (!artifactId && manualOutput) continue;
       const source = artifactId ? sources.get(artifactId) : undefined;
       const offset = variant.offsets[slot.id] ?? 0;
       if (
@@ -3761,7 +3769,10 @@ export class EffectTemplateMixService {
       used.add(renderFileKey(source));
       allSourceIds.add(source.id);
     }
-    const totalDuration = variant.slots.reduce((sum, slot) => sum + slot.duration, 0);
+    const totalDuration = manualOutput ? effectTemplateMixContentDuration(variant) :
+      variant.slots.reduce((sum, slot) => sum + slot.duration, 0);
+    if (manualOutput && !(effectTemplateMixPlacedContentDuration(variant) > 0))
+      throw new ApiHttpException('新增成片工程没有实际轨道内容', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
     for (const caption of variant.captions) {
       if (
         !caption.text.trim() ||

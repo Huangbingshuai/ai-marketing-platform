@@ -84,10 +84,11 @@ describe('effect final output re-render layout', () => {
 
   it('offers 局部更新 only for an already-exported batch that has moved upstream', () => {
     expect(pageSource).toContain('const staleItems = computed');
-    expect(pageSource).toContain("run.status === 'COMPLETED' && run.counts.stale");
+    expect(pageSource).toContain('v-if="canLocalUpdate"');
     expect(pageSource).toContain('/final-output/${target.id}/local-update`');
     expect(pageSource).toContain('确认局部更新');
-    expect(pageSource).toContain('body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}) }');
+    expect(pageSource).toContain('body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}),');
+    expect(pageSource).toContain('expectedDraftRevision');
     expect(pageSource).toContain('class="secondary-button local-update-button"');
     expect(pageSource).toContain('局部更新（{{ run.counts.stale }}）');
     expect(pageSource).toContain('localUpdate(staleItems.map((item) => item.id), true)');
@@ -107,10 +108,20 @@ describe('effect final output re-render layout', () => {
 
   it('keeps delivered films available without an expiry marker', () => {
     expect(pageSource).toContain('run: outputRun,');
-    expect(pageSource).toContain('v-if="item.stale" class="status-pill stale"');
+    expect(pageSource).toContain('v-else-if="item.stale" class="status-pill stale"');
     expect(pageSource).toContain('待更新</span>');
     expect(pageSource).toContain('.status-pill.stale {');
     expect(pageSource).toContain('v-if="item.fileObjectId"');
+  });
+  it('separates pending projects from downloadable output and uses real variant identities', () => {
+    const pending = pageSource.split('class="pending-projects"')[1]?.split('</section>')[0];
+    expect(pending).toContain('待渲染成片');
+    expect(pending).toContain(':key="project.variantId"');
+    expect(pending).toContain('openTimelinePreview(project.variantId)');
+    expect(pending).toContain('新增 · 待渲染');
+    expect(pending).toContain('project.blockedReason');
+    expect(pending).not.toContain('downloadItem');
+    expect(pending).not.toContain('rerenderItem');
   });
 
   it('uses the current mix template catalog as the only source of output template cards', () => {

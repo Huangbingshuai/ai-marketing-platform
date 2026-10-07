@@ -1055,6 +1055,29 @@ describe('EffectTemplateMixService', () => {
     });
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
   });
+  it('validates manual output with decorative empty template slots and one real clip', async () => {
+    const { service, working } = harness();
+    const state = draft();
+    const variant = state.templates[0]!.workspace.variants[0]!;
+    const marker = { ...variant.slots[0]!, id: 'empty-sign', duration: 0 };
+    variant.slots.unshift(marker);
+    variant.conflictSlotIds = [marker.id];
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    const result = await service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true });
+    expect(result.variants.map((item) => item.id)).toEqual([variantId]);
+  });
+  it('validates a caption-only manual output but not an empty sign-only project', async () => {
+    const { service, working } = harness();
+    const state = draft();
+    const variant = state.templates[0]!.workspace.variants[0]!;
+    variant.bindings = {};
+    variant.captions = [{ id: 'c', text: '标题', start: 0, end: 3 }];
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    expect((await service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true })).variants).toHaveLength(1);
+    variant.captions = [];
+    await expect(service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true }))
+      .rejects.toThrow('没有实际轨道内容');
+  });
 
   it('rejects repeated source clips inside one timeline', async () => {
     const { service, working } = harness();

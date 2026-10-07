@@ -35,6 +35,8 @@ export type LocalUpdateFinalOutputRequest = {
   itemIds: string[];
   /** Explicitly reconcile added/deleted projects in this template's current output branch. */
   syncProjects?: boolean;
+  /** Saved mix draft used by the confirmation dialog. */
+  expectedDraftRevision?: number;
 };
 export type FinalOutputSourceTrim = { slotId: string; offset: number };
 export type StartFinalOutputRequest = {
@@ -49,6 +51,8 @@ export type FinalOutputDependency = {
   contentHash: string;
 };
 export type FinalOutputSnapshot = {
+  /** Fence a locally appended/manual output against later draft edits or deletion. */
+  sourceDraft?: { workflowRunId: string; templateId: string; variantId: string; contentHash: string };
   /** Source repair of unexported projects reuses the refresh worker without encoding a final video. */
   projectRefreshOnly?: boolean;
   /** Explicit export of newly appended films keeps completed films and the current branch. */
@@ -122,8 +126,10 @@ export type FinalOutputRun = {
   items: FinalOutputItem[];
   /** Live project membership differences; absent when the source workspace was not loaded. */
   projectChanges?: {
-    added: { variantId: string; name: string }[];
+    added: { variantId: string; name: string; duration?: number;
+      cover?: FinalOutputItem['cover']; blockedReason?: string }[];
     removedItemIds: string[];
+    draftRevision?: number;
   };
   counts: {
     total: number;

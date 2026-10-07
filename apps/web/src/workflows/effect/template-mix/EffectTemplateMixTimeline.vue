@@ -10,6 +10,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   effectTemplateMixContentDuration,
+  packagingTimelineClips,
   effectTemplateMixSourceChanges,
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
@@ -465,7 +466,9 @@ const sequentialStarts = computed(() => {
   return starts;
 });
 const clipStart = (slotId: string): number =>
-  Math.max(0, props.variant?.timelineStarts?.[slotId] ?? sequentialStarts.value[slotId] ?? 0);
+  Math.max(0, props.variant && props.variant.bindings[slotId]
+    ? packagingTimelineClips(props.variant).find(({ slot }) => slot.id === slotId)?.start ?? 0
+    : sequentialStarts.value[slotId] ?? 0);
 const rawClipLane = (slotId: string): number =>
   Math.max(0, Math.round(props.variant?.videoLanes?.[slotId] ?? 0));
 const occupiedVideoLaneValues = computed(() => {
@@ -488,7 +491,7 @@ const clipLane = (slotId: string): number => {
  */
 const videoLaneCount = computed(() => Math.max(1, occupiedVideoLaneValues.value.length));
 const layoutSlots = computed(() =>
-  (props.variant?.slots ?? []).map((slot) => {
+  (props.variant?.slots ?? []).filter((slot) => props.variant?.bindings[slot.id]).map((slot) => {
     const start = activeClipStart(slot.id);
     return { id: slot.id, start, end: start + Math.max(0, activeSlotDuration(slot.id)) };
   }),
@@ -1103,7 +1106,7 @@ const clipStyle = (slot: EffectTemplateMixSlot): Record<string, string> => {
     ? edgeTrim.currentStart
     : isDraggedSelection
       ? Math.max(0, (drag?.initialStarts[slot.id] ?? range?.start ?? 0) + (delta?.start ?? 0))
-      : (range?.start ?? 0);
+      : (range?.start ?? clipStart(slot.id));
   const top = isVideoDragMember
     ? 7 + (drag?.initialLanes[slot.id] ?? clipLane(slot.id)) * 70 + (delta?.topPx ?? 0)
     : 7 + clipLane(slot.id) * 70;
@@ -1929,8 +1932,8 @@ const openEmptyTrackContextMenu = (event: MouseEvent, kind: 'VIDEO' | AudioTrack
       )
     : Math.max(0, Math.min(timelineDuration.value, props.playhead));
   const selectedTarget = selectedClipIds.value.at(-1) ?? props.selectedSlotId;
-  const missingTarget = props.variant?.slots.find((slot) => !materialForSlot(slot.id))?.id;
-  const targetSlotId = kind === 'VIDEO' ? selectedTarget || missingTarget || '' : undefined;
+  const targetSlotId = kind === 'VIDEO' && selectedTarget && props.variant?.bindings[selectedTarget]
+    ? selectedTarget : undefined;
   clipContextMenu.value = {
     kind: kind === 'VIDEO' ? 'EMPTY_VIDEO' : 'EMPTY_AUDIO',
     ...(targetSlotId ? { slotId: targetSlotId } : {}),
@@ -1978,12 +1981,12 @@ const pasteClipboard = (targetSlotId?: string, start?: number, row?: number): vo
   const clipboard = timelineClipboard.value;
   if (props.readOnly || !clipboard) return;
   if (clipboard.kind === 'VIDEO') {
-    const slots = props.variant?.slots ?? [];
+    const slots = (props.variant?.slots ?? []).filter(({ id }) => props.variant?.bindings[id]);
     const targets = selectedClipIds.value.length
       ? selectedClipIds.value
       : targetSlotId
         ? [targetSlotId]
-        : props.selectedSlotId
+        : props.selectedSlotId && props.variant?.bindings[props.selectedSlotId]
           ? [props.selectedSlotId]
           : [];
     if (targets.length === clipboard.entries.length) {
@@ -3053,7 +3056,7 @@ const onTimelineKeydown = (event: KeyboardEvent): void => {
   if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
   event.preventDefault();
   event.stopPropagation();
-  setSelection(props.variant?.slots.map(({ id }) => id) ?? []);
+  setSelection(props.variant?.slots.filter(({ id }) => props.variant?.bindings[id]).map(({ id }) => id) ?? []);
 };
 
 watch(
@@ -3414,6 +3417,7 @@ onBeforeUnmount(() => {
                   :key="slot.id"
                   class="video-clip"
                   :class="{
+                    'is-template-marker': !variant.bindings[slot.id],
                     'is-selected': selectedClipIds.includes(slot.id),
                     'is-source-stale': pendingSourceSlotIds.has(slot.id),
                     'is-dragging':
@@ -3422,7 +3426,7 @@ onBeforeUnmount(() => {
                       clipDrag.selectedSlotIds.length === 1,
                     'is-low': variant.bindingMetadata?.[slot.id]?.matchLevel === 'LOW_MATCH',
                     'is-missing':
-                      !materialForSlot(slot.id) || variant.conflictSlotIds.includes(slot.id),
+                      Boolean(variant.bindings[slot.id]) && (!materialForSlot(slot.id) || variant.conflictSlotIds.includes(slot.id)),
                     'is-material-target': materialDropSlotId === slot.id,
                     // Silencing the video track washes out the audio strip at the clip's foot — the
                     // picture itself is untouched, which is what 声音关闭 means.
@@ -3431,7 +3435,8 @@ onBeforeUnmount(() => {
                   :style="{
                     ...clipStyle(slot),
                   }"
-                  :data-slot-id="slot.id"
+                  :data-slot-id="variant.bindings[slot.id] ? slot.id : undefined"
+                  :aria-hidden="!variant.bindings[slot.id] ? true : undefined"
                   @pointerdown="onClipPointerDown($event, slot.id)"
                   @contextmenu="onVideoClipContextMenu($event, slot.id)"
                   @dblclick="onVideoClipDoubleClick($event, slot.id)"
@@ -3472,7 +3477,7 @@ onBeforeUnmount(() => {
                     />
                   </template>
                   <div v-else class="missing-copy">
-                    <b>待补素材</b>
+                    <b>{{ variant.bindings[slot.id] ? '素材不可用' : '模板槽位' }}</b>
                     <span
                       >{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }} · {{ slot.duration }}s</span
                     >
@@ -3520,7 +3525,7 @@ onBeforeUnmount(() => {
                   </span>
                 </article>
                 <button
-                  v-for="slot in variant.slots.slice(1).filter((slot) => slot.transition !== '硬切')"
+                  v-for="slot in variant.slots.slice(1).filter((slot, index) => slot.transition !== '硬切' && variant?.bindings[slot.id] && variant?.bindings[variant.slots[index]!.id])"
                   :key="`transition:${slot.id}`"
                   class="transition-junction"
                   :class="{
@@ -3688,6 +3693,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.video-clip.is-template-marker {
+  pointer-events: none;
+  user-select: none;
+}
 .mix-timeline-shell {
   --timeline-accent: #2563eb;
   --timeline-bg: #f6f8fc;
@@ -4083,6 +4092,14 @@ onBeforeUnmount(() => {
 .video-clip.is-missing {
   border: 1px dashed #ef8f8f;
   background: #fff1f2;
+}
+.video-clip.is-template-marker {
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  color: #64748b;
+}
+.video-clip.is-template-marker .missing-copy b {
+  color: #64748b;
 }
 /* 拖入的素材松手就会顶替这一条，所以它要看起来是被压住的那条：整条压暗，外加一圈描边，
    而不是像被选中那样只是变亮。描边画在元素自己的边框上，压暗画在内容层上，两者互不冲淡。 */

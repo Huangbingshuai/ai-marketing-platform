@@ -10,6 +10,7 @@ import {
   PACKAGING_AUDIO_DB_FLOOR,
   PACKAGING_AUDIO_GAIN_CEILING,
   effectTemplateMixContentDuration,
+  effectTemplateMixPlacedContentDuration,
   packagingAudioFade,
   packagingAudioFromDb,
   packagingAudioLevel,
@@ -189,5 +190,27 @@ describe('packaging content duration', () => {
 
   it('caps the film an hour out, which is the only bound left once length follows content', () => {
     expect(EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS).toBe(3600);
+  });
+  it('treats empty template slots as signs, not content or implicit gaps', () => {
+    const sparse = variant();
+    sparse.bindings = { b: 'clip' };
+    sparse.timelineStarts = {};
+    expect(packagingTimelineClips(sparse)[1]?.start).toBe(0);
+    expect(effectTemplateMixPlacedContentDuration(sparse)).toBe(6);
+    sparse.bindings = {};
+    expect(effectTemplateMixPlacedContentDuration(sparse)).toBe(0);
+    expect(effectTemplateMixContentDuration(sparse)).toBe(0);
+  });
+  it('counts only actual placed audio or captions for a new film', () => {
+    const empty = { ...variant(), bindings: {}, preservedTimelineEnd: 40 };
+    expect(effectTemplateMixPlacedContentDuration(empty)).toBe(0);
+    expect(effectTemplateMixPlacedContentDuration({ ...empty,
+      captions: [{ id: 'c', text: '字幕', start: 1, end: 3 }] })).toBe(3);
+    const voice = { fileObjectId: 'f', name: '音频', start: 2, duration: 5, offset: 0, volume: 1 };
+    expect(effectTemplateMixPlacedContentDuration({ ...empty, voice })).toBe(7);
+    expect(effectTemplateMixContentDuration({ ...variant(), bindings: {}, voice })).toBe(7);
+    expect(effectTemplateMixPlacedContentDuration({ ...empty, bgm: voice })).toBe(7);
+    expect(effectTemplateMixPlacedContentDuration({ ...empty,
+      captions: [{ id: 'c', text: ' ', start: 1, end: 3 }] })).toBe(0);
   });
 });

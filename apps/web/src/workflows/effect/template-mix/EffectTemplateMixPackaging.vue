@@ -92,7 +92,7 @@ const run = computed(() => {
 });
 const completeCount = computed(
   () =>
-    props.variants.filter((v) => v.slots.length && v.slots.every((s) => v.bindings[s.id])).length,
+    props.variants.filter((v) => v.slots.some((s) => v.bindings[s.id])).length,
 );
 const active = computed(() => runs.value.some((r) => ['QUEUED', 'RUNNING'].includes(r.status)));
 const backgroundActive = computed(() =>
@@ -105,7 +105,7 @@ const progress = computed(
 );
 const executionSummary = computed(() => {
   const value = progressRun.value;
-  if (!value) return `本次覆盖 ${completeCount.value} 条完整成片`;
+  if (!value) return `本次覆盖 ${completeCount.value} 条视频成片`;
   const e = value.execution;
   const base = `已完成 ${value.counts.completed} / ${value.counts.total} 条 · ${value.counts.shards} 个分片`;
   if (!e) return base;
@@ -168,7 +168,7 @@ watch(selected, (item) => emit('selected', item), { immediate: true });
 const packageableVariants = computed(() =>
   props.variants.filter(
     (variant) =>
-      variant.slots.length > 0 && variant.slots.every((slot) => Boolean(variant.bindings[slot.id])),
+      variant.slots.some((slot) => Boolean(variant.bindings[slot.id])),
   ),
 );
 /**

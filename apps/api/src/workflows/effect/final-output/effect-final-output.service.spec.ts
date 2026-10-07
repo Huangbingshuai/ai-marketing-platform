@@ -1860,7 +1860,9 @@ describe('local update', () => {
     const { service, db, working, items } = context;
     const old = structuredClone(items[0]);
     const before = await service.listPath('p', 'w');
-    expect(before[0]?.projectChanges?.added).toEqual([{ variantId: 'new-project', name: '新成片' }]);
+    expect(before[0]?.projectChanges?.added).toEqual([expect.objectContaining({
+      variantId: 'new-project', name: '新成片', duration: 10,
+    })]);
     expect(before[0]?.counts.stale).toBe(1);
     expect(before[0]?.items[0]?.stale).toBe(false);
     await service.localUpdate('p', 'out', { itemIds: [], syncProjects: true });
@@ -1890,6 +1892,55 @@ describe('local update', () => {
     expect(items[0]).toMatchObject({ variantId: 'new-project', status: 'QUEUED' });
     expect(db.effectFinalOutputItem.update).toHaveBeenCalledOnce();
     expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it('does not expose a new empty project or its template markers as pending output', async () => {
+    const { service, workspace, db } = await membershipUpdateHarness();
+    const added = workspace.draft.templates[0]!.workspace.variants[1]!;
+    added.bindings = {};
+    const before = await service.get('p', 'out');
+    expect(before.projectChanges?.added).toEqual([]);
+    expect(before.counts.stale).toBe(0);
+    await expect(service.localUpdate('p', 'out', { itemIds: [], syncProjects: true }))
+      .rejects.toThrow('无需局部更新');
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it.each(['captions', 'voice', 'detachedAudio'] as const)('renders an added %s-only project without filling template slots', async (kind) => {
+    const { service, workspace, items } = await membershipUpdateHarness();
+    const added = workspace.draft.templates[0]!.workspace.variants[1]!;
+    added.bindings = {};
+    if (kind === 'captions') added.captions = [{ id: 'c', text: '标题', start: 0, end: 3 }];
+    if (kind === 'voice') added.voice = { fileObjectId: 'voice', name: '口播', start: 0, duration: 3, offset: 0, volume: 1 };
+    if (kind === 'detachedAudio') added.detachedAudios = [{ id: 'audio', fileObjectId: 'voice',
+      name: '音频', sourceType: 'FILE', audioKind: 'VOICE', start: 0, duration: 3,
+      sourceDuration: 3, offset: 0, volume: 1 }];
+    expect((await service.get('p', 'out')).projectChanges?.added).toEqual([
+      expect.objectContaining({ variantId: added.id, duration: 3, cover: null }),
+    ]);
+    await service.localUpdate('p', 'out', { itemIds: [], syncProjects: true });
+    expect(items[1]).toMatchObject({ snapshot: { timeline: { clips: [], duration: 3 } } });
+  });
+  it('rejects an outdated draft confirmation before deletion or queueing', async () => {
+    const { service, workspace, db } = await membershipUpdateHarness();
+    Object.assign(workspace, { draftRevision: 8 });
+    await expect(service.localUpdate('p', 'out', { itemIds: [], syncProjects: true,
+      expectedDraftRevision: 7 })).rejects.toThrow('成片工程已变化');
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+    expect(db.effectFinalOutputItem.deleteMany).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('ignores decorative marker edits but fences real edits or deletion during rendering', async () => {
+    const { service, workspace, db, items } = await membershipUpdateHarness();
+    await service.localUpdate('p', 'out', { itemIds: [], syncProjects: true });
+    const snapshot = (items[1] as unknown as { snapshot: FinalOutputSnapshot }).snapshot;
+    const guard = service as unknown as { assertOutputDraft: (db: unknown, project: string, snapshot: FinalOutputSnapshot) => Promise<void> };
+    db.workflowNodeState.findUnique.mockResolvedValue({ state: workspace.draft });
+    const added = workspace.draft.templates[0]!.workspace.variants[1]!;
+    added.slots.push({ ...added.slots[0]!, id: 'marker', duration: 4 });
+    await expect(guard.assertOutputDraft(db, 'p', snapshot)).resolves.toBeUndefined();
+    added.captions = [{ id: 'changed', text: '新标题', start: 0, end: 3 }];
+    await expect(guard.assertOutputDraft(db, 'p', snapshot)).rejects.toThrow('已编辑或删除');
+    workspace.draft.templates[0]!.workspace.variants.splice(1);
+    await expect(guard.assertOutputDraft(db, 'p', snapshot)).rejects.toThrow('已编辑或删除');
   });
   it('rejects incomplete additions before removing existing output or scheduling paid work', async () => {
     const { service, db, mix, workspace, variant } = await membershipUpdateHarness();

@@ -157,6 +157,10 @@ const validateStatusTitle = computed(() => {
   if (run.value.validated) return '本批成片已全部导出';
   return run.value.status === 'PENDING_RENDER' ? '等待导出成片' : '等待成片导出完成';
 });
+const pendingProjects = computed(() => run.value?.projectChanges?.added ?? []);
+const removedItemIds = computed(() => new Set(run.value?.projectChanges?.removedItemIds ?? []));
+const canLocalUpdate = computed(() => Boolean(run.value?.projectChanges &&
+  ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(run.value.status) && run.value.counts.stale));
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
 const items = computed(() => run.value?.items.slice((page.value - 1) * pageSize.value, page.value * pageSize.value) ?? []);
 const downloadableItems = computed(() =>
@@ -546,7 +550,7 @@ async function rerenderItem(item: FinalOutputRun['items'][number]) {
   }
 }
 async function localUpdate(itemIds: string[], syncProjects = false) {
-  if (!run.value || run.value.status !== 'COMPLETED' || busy.value ||
+  if (!run.value || !canLocalUpdate.value || busy.value ||
       (!itemIds.length && !syncProjects)) return;
   const target = run.value;
   const projectId = props.projectId;
@@ -560,9 +564,10 @@ async function localUpdate(itemIds: string[], syncProjects = false) {
   const removeCount = syncProjects ? removed.length : selected.filter((item) => removed.includes(item.id)).length;
   const addCount = syncProjects ? target.projectChanges?.added.length ?? 0 : 0;
   const renderCount = selected.filter((item) => !removed.includes(item.id)).length + addCount;
+  const expectedDraftRevision = target.projectChanges?.draftRevision;
   const confirmed = await requestActionConfirmation({
     eyebrow: '局部更新成片',
-    title: removeCount || addCount ? `同步成片工程（新增 ${addCount} 条，删除 ${removeCount} 条）？` : `更新并重新渲染 ${renderCount} 条成片？`,
+    title: `局部更新成片（新增 ${addCount} 条，修改 ${renderCount - addCount} 条，删除 ${removeCount} 条）？`,
     description: `将读取当前混剪工程，在当前分支移除已删除工程的成片，并渲染新增或选中的变更工程，其他成片和历史分支不变。素材变更时仅重做受影响槽位的选区、口播和字幕。${renderCount ? '此操作会产生生成或渲染费用。' : '仅删除，不启动渲染任务。'}`,
     confirmLabel: '确认局部更新',
     tone: 'warning',
@@ -572,7 +577,8 @@ async function localUpdate(itemIds: string[], syncProjects = false) {
   busy.value = true;
   try {
     await requestJson(`/projects/${projectId}/workflows/effect/final-output/${target.id}/local-update`, {
-      method: 'POST', operation: '局部更新成片', body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}) },
+      method: 'POST', operation: '局部更新成片', body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}),
+        ...(expectedDraftRevision !== undefined ? { expectedDraftRevision } : {}) },
     });
     error.value = '';
     await refresh();
@@ -821,7 +827,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="workspace-heading__actions">
             <button
-              v-if="run.status === 'COMPLETED' && run.counts.stale"
+              v-if="canLocalUpdate"
               class="secondary-button local-update-button"
               type="button"
               :disabled="busy"
@@ -849,6 +855,32 @@ onBeforeUnmount(() => {
             @click="downloadSelected"
           ><Download :size="14" />{{ batchDownloading ? '已加入下载' : '批量下载' }}</button>
         </div>
+        <section v-if="pendingProjects.length" class="pending-projects" aria-labelledby="pending-projects-title">
+          <header class="workspace-heading">
+            <h3 id="pending-projects-title">待渲染成片</h3>
+            <span class="result-count">新增 {{ pendingProjects.length }} 条</span>
+          </header>
+          <div class="output-grid">
+            <article v-for="project in pendingProjects" :key="project.variantId" class="output-card pending-project-card">
+              <button class="output-preview pending-project-preview" type="button"
+                :aria-label="`预览${project.name}`" @click="openTimelinePreview(project.variantId)">
+                <EffectTemplateMixThumbnail v-if="project.cover" :source="fileUrl(project.cover.fileObjectId)"
+                  :time="project.cover.time" :version="previewVersion(project.cover)" :alt="project.name" />
+                <Film v-else class="pending-project-placeholder" :size="36" aria-hidden="true" />
+                <span class="preview-play-icon" aria-hidden="true"><Play :size="22" /></span>
+              </button>
+              <div class="output-info">
+                <div class="output-card__title">
+                  <h4 :title="project.name">{{ project.name }}</h4>
+                  <span class="status-pill stale">新增 · 待渲染</span>
+                </div>
+                <p class="output-meta">{{ Number(project.duration ?? 0).toFixed(1) }} 秒 · 局部更新后渲染</p>
+                <p v-if="project.blockedReason" class="item-error" role="status"><AlertCircle :size="13" />{{ project.blockedReason }}</p>
+              </div>
+            </article>
+          </div>
+        </section>
+        <h3 v-if="pendingProjects.length && items.length" class="delivered-projects-heading">已有成片</h3>
         <div v-if="items.length" class="output-grid">
           <article
             v-for="item in items"
@@ -898,7 +930,8 @@ onBeforeUnmount(() => {
                 <span class="status-pill" :class="statusTone(item.status)">
                   {{ labels[item.status] }}
                 </span>
-                <span v-if="item.stale" class="status-pill stale" title="混剪工程已修改，当前成片仍保留旧文件">待更新</span>
+                <span v-if="removedItemIds.has(item.id)" class="status-pill stale">待移除</span>
+                <span v-else-if="item.stale" class="status-pill stale" title="混剪工程已修改，当前成片仍保留旧文件">待更新</span>
                 <span
                   v-if="outputPackagingLabel(item)"
                   class="status-pill"
@@ -921,11 +954,11 @@ onBeforeUnmount(() => {
                 @click.stop
               ><Download :size="14" />下载成片</a>
               <button
-                v-if="item.stale && run.status === 'COMPLETED'"
+                v-if="item.stale && canLocalUpdate"
                 class="item-rerender-button item-local-update-button"
                 type="button"
                 :disabled="busy || active"
-                title="从当前混剪工程更新并重新渲染这条成片"
+                :title="removedItemIds.has(item.id) ? '移除当前分支中的对应成片' : '从当前混剪工程更新并重新渲染这条成片'"
                 @click.stop="localUpdate([item.id])"
               ><RefreshCw :size="14" />局部更新</button>
               <button
@@ -1681,6 +1714,33 @@ progress {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 7px;
+}
+.pending-projects {
+  margin-bottom: 20px;
+}
+.pending-projects .workspace-heading {
+  padding: 0 0 12px;
+}
+.pending-project-preview {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.pending-project-preview:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
+}
+.pending-project-preview :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.pending-project-placeholder {
+  opacity: .65;
+}
+.delivered-projects-heading {
+  margin: 0 0 12px;
+  font-size: 14px;
 }
 .output-card__title h4 {
   flex: 0 0 auto;
