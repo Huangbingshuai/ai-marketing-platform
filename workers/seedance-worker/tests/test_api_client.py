@@ -119,6 +119,8 @@ async def test_complete_uploads_video_and_optional_poster_together() -> None:
         provider_task_id="provider-a",
         content=b"video-content",
         file_name="P001.mp4",
+        duration=14,
+        actual_duration=14.9,
         poster=RenderPoster(content=b"poster-content", file_name="P001-poster.jpg"),
     )
     try:
@@ -131,3 +133,5 @@ async def test_complete_uploads_video_and_optional_poster_together() -> None:
     assert b'name="poster"; filename="P001-poster.jpg"' in body
     assert b"video-content" in body
     assert b"poster-content" in body
+    assert b'name="actualDuration"' in body
+    assert b"14.9" in body

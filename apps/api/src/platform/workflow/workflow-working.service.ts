@@ -1011,7 +1011,10 @@ export class WorkflowWorkingService {
     filters: WorkingArtifactListQuery,
   ): Promise<WorkingArtifactListData> {
     await this.projectService.get(projectId);
+    if (filters.view === 'SNAPSHOT' && !filters.workflowRunId)
+      throw new ApiHttpException('查看版本快照必须指定工作流运行', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
     const items = await this.repository.listArtifacts(projectId, {
+      ...(filters.view ? { view: filters.view } : {}),
       ...(filters.workflowRunId ? { workflowRunId: filters.workflowRunId } : {}),
       ...(filters.nodeId ? { nodeId: filters.nodeId } : {}),
       ...(filters.workflow ? { workflow: filters.workflow } : {}),

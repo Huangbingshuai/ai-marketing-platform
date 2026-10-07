@@ -7,6 +7,7 @@ import type {
   AssetWorkflow,
   AssetWorkflowSpace,
   WorkingArtifactKind,
+  WorkingArtifactListQuery,
   EffectTemplateMixMaterial,
 } from '@ai-marketing/contracts';
 import { Inject, Injectable } from '@nestjs/common';
@@ -693,19 +694,14 @@ export class WorkflowWorkingRepository {
 
   async listArtifacts(
     projectId: string,
-    filters: {
-      workflowRunId?: string;
-      nodeId?: string;
-      workflow?: AssetWorkflow;
-      space?: AssetWorkflowSpace;
-    },
+    filters: WorkingArtifactListQuery,
   ): Promise<WorkingArtifactRecord[]> {
     const where: Prisma.WorkingArtifactWhereInput = {
       projectId,
       ...(filters.workflowRunId ? { workflowRunId: filters.workflowRunId } : {}),
       ...(filters.nodeId ? { nodeId: filters.nodeId } : {}),
       workflowRun: {
-        status: { in: [...openRunStatuses] },
+        ...(filters.view === 'SNAPSHOT' ? {} : { status: { in: [...openRunStatuses] } }),
         ...(filters.workflow ? { workflow: filters.workflow } : {}),
         ...(filters.space ? { workflowSpace: filters.space } : {}),
       },
@@ -715,7 +711,8 @@ export class WorkflowWorkingRepository {
       include: workingArtifactInclude,
       orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
     });
-    if (!filters.workflowRunId) return localRead;
+    // Asset browsing must never replace saved history with a shared current source.
+    if (filters.view === 'SNAPSHOT' || !filters.workflowRunId) return localRead;
     const [local, branches] = await Promise.all([
       localRead,
       this.prisma.workflowRun.findMany({ where: { projectId }, select: {

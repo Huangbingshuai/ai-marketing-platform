@@ -16,7 +16,7 @@ import {
   type EffectVideoConfig,
   type PreviewEffectManifestData,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
+import { WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
   CheckCircle2,
@@ -259,11 +259,6 @@ const validatedCurrentRevision = computed(
     validationErrors.value.length === 0,
 );
 const selectedCount = computed(() => selectedProductIds.value.size);
-const failedProductCount = computed(
-  () =>
-    products.value.filter((product) => product.materials.some((item) => item.status === 'FAILED'))
-      .length,
-);
 const manifestCommitIdempotencyKey = computed(() =>
   manifestPreview.value ? manifestCommitKeys.getOrCreate(manifestPreview.value.id) : '',
 );
@@ -277,9 +272,6 @@ const saveStateLabel = computed(
       saved: '已自动保存',
       saving: '正在保存…',
     })[saveState.value],
-);
-const draftBarState = computed<'clean' | 'conflict' | 'dirty' | 'save_failed' | 'saved' | 'saving'>(
-  () => (saveState.value === 'saveError' ? 'save_failed' : saveState.value),
 );
 
 const showNotice = (text: string, kind: 'error' | 'success' | 'warning' = 'success'): void => {
@@ -2342,31 +2334,9 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <WorkflowNodeDraftBar
-            :detail="`当前产品 · 已自动保存到节点草稿`"
-            :state="draftBarState"
-            :state-label="saveStateLabel"
-            title="产品资料草稿"
-          />
 
           <WorkflowNodeFooter
-            :complete="validatedCurrentRevision"
             :show-validate="false"
-            :status-title="
-              validatedCurrentRevision ? '资料版本已保存' : '保存资料版本后可进入下一节点'
-            "
-            :status-detail="
-              [
-                singleProduct?.sourcePackageRevision !== null &&
-                singleProduct?.sourcePackageRevision !== undefined
-                  ? `已确认版本 ${singleProduct.sourcePackageRevision}`
-                  : '资料包尚未确认',
-                `${draft?.productCount ?? 0} 个产品`,
-                failedProductCount ? `${failedProductCount} 个产品存在失败资料` : '',
-              ]
-                .filter(Boolean)
-                .join(' · ')
-            "
             :next-disabled="transitioning || !validatedCurrentRevision || saveState === 'saving'"
             next-label="下一步：AI 信息提炼"
             @next="advanceDraft"

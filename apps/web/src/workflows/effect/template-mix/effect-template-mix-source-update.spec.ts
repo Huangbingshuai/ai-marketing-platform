@@ -5,6 +5,7 @@ import { resolveEffectTemplateMixMaterialRoles, packagingTimelineDuration } from
 import { effectTemplateMixTiming } from './effect-template-mix-state';
 import page from './EffectTemplateMixNodePage.vue?raw';
 import timeline from './EffectTemplateMixTimeline.vue?raw';
+import { ApiClientError, isNetworkError } from '../../../api/http-client';
 
 describe('current material library after repair or regeneration', () => {
   it('keeps deletion holes complete with their original extent, but not an unavailable bound source', () => {
@@ -92,6 +93,7 @@ function harness() {
     autoPackagingTemplateIds: ref([]),
     effectTemplateMixSourceUpdateSignature: vi.fn(() => 'confirmed-source-difference'),
     crypto: { randomUUID: () => 'confirmed-operation' }, load: vi.fn().mockResolvedValue(undefined),
+    ApiClientError, isNetworkError,
   };
   const executable = transpileModule(`async function execute() {${action}`, {
     compilerOptions: { target: ScriptTarget.ES2022 },
@@ -102,6 +104,57 @@ function harness() {
 }
 
 describe('workbench source update orchestration', () => {
+  it.each(['QUEUED', 'PENDING_RENDER'])('recovers only the exact persisted confirmation after a lost POST response (%s)', async (status) => {
+    const { context, execute } = harness();
+    context.updateMixSourceProjects.mockRejectedValue(new TypeError('Failed to fetch'));
+    context.loadMixFinalOutputRuns.mockResolvedValue({ data: [
+      { id: 'wrong-run', workflowRunId: 'other', templateId: 'template', sourceOperationId: 'confirmed-operation', items: [] },
+      { id: 'old-confirmation', workflowRunId: 'workflow', templateId: 'template', sourceOperationId: 'old', items: [] },
+      { id: 'confirmed', workflowRunId: 'workflow', templateId: 'template', sourceOperationId: 'confirmed-operation', status,
+        items: [{ id: 'changed', variantId: 'v2' }, { id: 'unaffected', variantId: 'v1' }] },
+    ] });
+    await execute();
+    expect(context.updateMixSourceProjects).toHaveBeenCalledOnce();
+    expect(context.sourceUpdateRun.value).toMatchObject({ id: 'confirmed', status });
+    expect(context.sourceUpdateItemIds.value).toEqual(['changed']);
+    expect(context.pollSourceUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 'confirmed' }), 1, undefined);
+    expect(context.showNotice).not.toHaveBeenCalled();
+  });
+  it('does not invent success or replay the write when the submission outcome is unknown', async () => {
+    const { context, execute } = harness();
+    context.updateMixSourceProjects.mockRejectedValue(new ApiClientError('服务器内部错误', 500));
+    context.loadMixFinalOutputRuns.mockResolvedValue({ data: [] });
+    await execute();
+    expect(context.updateMixSourceProjects).toHaveBeenCalledOnce();
+    expect(context.sourceUpdateRun.value).toBeNull();
+    expect(context.pollSourceUpdate).not.toHaveBeenCalled();
+    expect(context.showNotice).toHaveBeenCalledWith(expect.stringContaining('提交结果暂时无法确认'), 'warning');
+  });
+  it('ignores a recovered task if its template changed during the recovery read', async () => {
+    const { context, execute } = harness();
+    context.updateMixSourceProjects.mockRejectedValue(new TypeError('Failed to fetch'));
+    context.loadMixFinalOutputRuns.mockImplementation(async () => {
+      context.activeTemplateId.value = 'other';
+      return { data: [] };
+    });
+    await execute();
+    expect(context.pollSourceUpdate).not.toHaveBeenCalled();
+    expect(context.showNotice).not.toHaveBeenCalled();
+  });
+  it('retains the durable operation and retries a progress read instead of reporting task failure', async () => {
+    const source = page.split('async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSuccess?: (run: FinalOutputRun) => Promise<void>) {')[1]!
+      .split('\nasync function updateSourceProjects(')[0]!;
+    const run = { id: 'confirmed', workflowRunId: 'workflow', templateId: 'template', status: 'RUNNING' };
+    const context = { props: { projectId: 'project', workflowRunId: 'workflow' }, sourceUpdateGeneration: 1,
+      activeTemplateId: ref('template'), getMixSourceUpdateRun: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')),
+      sourceUpdateRun: ref(run), sourceUpdateTimer: undefined, setTimeout: vi.fn(() => 1), showNotice: vi.fn() };
+    const script = transpileModule(`async function execute(run, generation) {${source}`, {}).outputText;
+    const execute = new Function(...Object.keys(context), `${script}\nreturn execute;`)(...Object.values(context));
+    await execute(run, 1);
+    expect(context.sourceUpdateRun.value).toEqual(run);
+    expect(context.showNotice).toHaveBeenCalledWith(expect.stringContaining('正在重新连接'), 'warning');
+    expect(context.setTimeout).toHaveBeenCalledWith(expect.any(Function), 3000);
+  });
   it('clears cancelled net differences without polling, appending or invoking paid work', async () => {
     const { context, execute } = harness();
     context.updateMixSourceProjects.mockResolvedValue({ data: { noChanges: true } });

@@ -13,6 +13,9 @@ from effect_template_mix.models import Material
 from effect_template_mix.packaging import PackagingHandler, ScriptOutput
 from effect_template_mix.packaging_provider import PackagingProvider, PackagingError, TimedVoicePcm
 from effect_template_mix.provider import ArkProvider
+from effect_template_mix.provider import ProviderError, ProviderIncompleteError
+from effect_template_mix.api import ApiError
+from effect_template_mix.final_output import output_failure_message
 
 
 async def test_normal_or_ready_exports_never_call_trim_or_packaging() -> None:
@@ -80,6 +83,53 @@ async def test_missing_refresh_provider_fails_without_fallback_or_paid_work() ->
         await FinalOutputHandler(api, 1000).prepare_refresh('/run', '/item', {}, 'project',
             {'snapshot': {'sourceRefresh': {'slots': [{'slotId': 'a'}]}}})
     api.request.assert_not_called()
+
+
+async def test_refresh_retries_missing_work_and_persists_stage_and_budget(monkeypatch: Any) -> None:
+    api = AsyncMock(spec=InternalApi)
+    packaging = AsyncMock(spec=PackagingHandler)
+    cp = {'voices': {'old': 'keep'}, 'music': {'fileObjectId': 'old-music'}}
+    snapshot = {'sourceRefresh': {'trimsReady': True, 'stage': 'VISION'},
+                'timeline': {}, 'packaging': cp}
+    row = {'id': 'i', 'snapshot': snapshot}
+    calls = 0
+    async def process(_root: str, _headers: Any, _project: str, item: Any) -> None:
+        nonlocal calls
+        calls += 1
+        assert item['checkpoint'] is cp
+        if calls == 1:
+            cp['vision'] = ['saved']
+            item['stage'] = 'SCRIPT'
+            raise ProviderError('timeout', retryable=True)
+        assert cp['vision'] == ['saved'] and cp['automaticRetries'] == 1
+        item['outputSnapshot'] = {**snapshot, 'sourceRefresh': {'ready': True}}
+    packaging.process_item.side_effect = process
+    monkeypatch.setattr('effect_template_mix.packaging.asyncio.sleep', AsyncMock())
+    result = await FinalOutputHandler(api, 1000, packaging=packaging).prepare_refresh('/run', '/item', {}, 'p', row)
+    assert result['sourceRefresh']['ready'] and calls == 2
+    packaging.select_source_trims.assert_not_called()
+    assert cp['voices'] == {'old': 'keep'} and cp['music']['fileObjectId'] == 'old-music'
+    api.request.assert_awaited_once_with('PUT', '/item/checkpoint', headers={},
+        json={'projectId': 'p', 'stage': 'SCRIPT', 'checkpoint': {'automaticRetries': 1}})
+
+
+@pytest.mark.parametrize('error', [ProviderError('denied', retryable=False), ApiError('lease', retryable=False)])
+async def test_refresh_does_not_retry_permanent_provider_or_lease_errors(error: Exception) -> None:
+    api, packaging = AsyncMock(spec=InternalApi), AsyncMock(spec=PackagingHandler)
+    packaging.process_item.side_effect = error
+    with pytest.raises(type(error)):
+        await FinalOutputHandler(api, 1000, packaging=packaging).prepare_refresh('/run', '/item', {}, 'p',
+            {'id': 'i', 'snapshot': {'sourceRefresh': {'trimsReady': True}, 'timeline': {}, 'packaging': {}}})
+    assert packaging.process_item.await_count == 1
+    api.request.assert_not_called()
+
+
+@pytest.mark.parametrize('stage,label', [('VISION', '画面分析'), ('SCRIPT', '口播生成')])
+def test_refresh_model_error_is_not_encoding_error_or_fake_auto_recovery(stage: str, label: str) -> None:
+    result = output_failure_message(ProviderIncompleteError('sensitive', retryable=False),
+        {'sourceRefresh': {'trimsReady': True, 'stage': stage}})
+    assert label in result and '输出仍不完整' in result
+    assert '渲染失败' not in result and '自动恢复' not in result and 'sensitive' not in result
 
 
 @pytest.mark.parametrize('with_layout', [False, True])

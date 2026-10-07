@@ -2,11 +2,8 @@
 withDefaults(
   defineProps<{
     backLabel?: string;
-    complete?: boolean;
     nextDisabled?: boolean;
     nextLabel: string;
-    statusDetail: string;
-    statusTitle: string;
     validateDisabled?: boolean;
     validating?: boolean;
     validateLabel?: string;
@@ -15,7 +12,6 @@ withDefaults(
   }>(),
   {
     backLabel: '',
-    complete: false,
     nextDisabled: false,
     validateDisabled: false,
     validating: false,
@@ -45,26 +41,6 @@ defineEmits<{
       </svg>
       {{ backLabel }}
     </button>
-
-    <div
-      class="workflow-node-footer__status"
-      :class="{ complete }"
-      role="status"
-      aria-live="polite"
-    >
-      <svg v-if="complete" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="9" />
-        <path d="m8.5 12 2.2 2.2 4.8-5" />
-      </svg>
-      <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
-        <path d="M14 2v6h6M9 15l2 2 4-4" />
-      </svg>
-      <span>
-        <strong>{{ statusTitle }}</strong>
-        <small>{{ statusDetail }}</small>
-      </span>
-    </div>
 
     <div class="workflow-node-footer__actions">
       <button
@@ -110,42 +86,9 @@ defineEmits<{
   border-radius: 20px;
   box-shadow: 0 8px 25px #7a4e3b12;
 }
-.workflow-node-footer__status {
-  display: flex;
-  min-width: 220px;
-  margin-right: auto;
-  align-items: center;
-  gap: 8px;
-  color: #718096;
-}
-.workflow-node-footer__status.complete {
-  color: #168361;
-}
-.workflow-node-footer__status > svg {
-  width: 17px;
-  height: 17px;
-  flex: 0 0 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.workflow-node-footer__status strong,
-.workflow-node-footer__status small {
-  display: block;
-}
-.workflow-node-footer__status strong {
-  color: #41516a;
-  font-size: 10px;
-}
-.workflow-node-footer__status small {
-  margin-top: 3px;
-  color: #718096;
-  font-size: 8px;
-}
 .workflow-node-footer__actions {
   display: flex;
+  margin-left: auto;
   gap: 8px;
 }
 .workflow-node-footer button {
@@ -156,6 +99,8 @@ defineEmits<{
   align-items: center;
   justify-content: center;
   gap: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
   color: #41516a;
   background: #fff;
   border: 1px solid #d3ddea;
@@ -202,17 +147,12 @@ defineEmits<{
     align-items: stretch;
     flex-wrap: wrap;
   }
-  .workflow-node-footer__status {
-    min-width: 0;
-    flex: 1;
-  }
   .workflow-node-footer__actions {
     margin-left: auto;
   }
 }
 @media (max-width: 680px) {
   .workflow-node-footer__back,
-  .workflow-node-footer__status,
   .workflow-node-footer__actions {
     width: 100%;
   }

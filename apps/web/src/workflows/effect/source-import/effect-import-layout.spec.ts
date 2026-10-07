@@ -26,7 +26,9 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).toContain('branchNavigation.value = effectTemplateStepNavigation(');
     expect(pageSource).toContain('templateMixNode.value?.getCurrentTemplateId() ?? null');
     expect(pageSource).toContain('@back="returnToOutputTemplateMix"');
-    expect(pageSource).toContain('workflowRunId === workspace.value?.workflowRunId && activeStep.value === 4');
+    expect(pageSource).toMatch(/workflowRunId === workspace\.value\?\.workflowRunId\s*&&\s*activeStep\.value === 4/);
+    expect(pageSource).toContain('@navigation-consumed="branchNavigation = consumeEffectNavigation(branchNavigation, $event)"');
+    expect(pageSource).toContain('@preview-consumed="mixPreviewTarget = consumeEffectNavigation(mixPreviewTarget, $event)"');
   });
 
   it('copies the active branch only after flushing pending drafts', () => {
@@ -182,11 +184,11 @@ describe('effect import identity boundary', () => {
   it('keeps next-step access locked and places whole-node validation beside the edit button', () => {
     expect(pageSource).not.toContain('unnamedProductCount');
     expect(pageSource).toContain('validateEffectImportDraft(');
-    expect(pageSource).toContain('<WorkflowNodeDraftBar');
-    expect(pageSource).toContain('title="产品资料草稿"');
+    expect(pageSource).not.toContain('<WorkflowNodeDraftBar');
+    expect(pageSource).not.toContain('title="产品资料草稿"');
     expect(pageSource).toContain('<WorkflowNodeFooter');
-    expect(pageSource).toContain('已确认版本 ${singleProduct.sourcePackageRevision}');
-    expect(pageSource).toContain("'资料包尚未确认'");
+    expect(pageSource).not.toContain(':status-title=');
+    expect(pageSource).not.toContain(':status-detail=');
     expect(pageSource).not.toContain('`revision ${draft?.revision ?? 0}`');
     expect(pageSource).not.toContain('relockDownstreamNode');
     expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');

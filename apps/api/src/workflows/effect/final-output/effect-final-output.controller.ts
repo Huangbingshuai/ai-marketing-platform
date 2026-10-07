@@ -77,6 +77,10 @@ class SourceCheckpointDto extends EffectTemplateMixWorkerProjectDto {
   @IsIn(PACKAGING_STAGES) stage!: PackagingStage;
   @IsObject() checkpoint!: PackagingCheckpoint;
 }
+export class FinalOutputExportProgressQueryDto {
+  @IsUUID('4') sourceWorkflowRunId!: string;
+  @IsUUID('4') templateId!: string;
+}
 class SourceAudioDto extends EffectTemplateMixWorkerProjectDto {
   @IsOptional() @IsString() @MaxLength(2500) segmentFrames?: string;
   @IsOptional() @IsString() @MaxLength(32000) speechRanges?: string;
@@ -92,6 +96,11 @@ export class EffectFinalOutputController {
   ) {
     return this.service.list(projectId, query.workflowRunId);
   }
+  @Get('final-output/export-progress')
+  exportProgress(@Param('projectId', uuid) projectId: string,
+    @Query() query: FinalOutputExportProgressQueryDto) {
+    return this.service.exportProgress(projectId, query.sourceWorkflowRunId, query.templateId);
+  }
   @Get('final-output/:runId')
   get(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {
     return this.service.get(projectId, runId);
@@ -101,8 +110,9 @@ export class EffectFinalOutputController {
     @Param('projectId', uuid) projectId: string,
     @Param('runId', uuid) runId: string,
     @Body() body: StartFinalOutputDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.service.start(projectId, runId, body);
+    return this.service.start(projectId, runId, body, idempotencyKey);
   }
   @Post('final-output/sync')
   sync(@Param('projectId', uuid) projectId: string, @Body() body: SyncFinalOutputDto) {

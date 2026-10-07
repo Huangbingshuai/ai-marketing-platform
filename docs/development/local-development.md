@@ -36,6 +36,8 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 
 模板混剪智能包装与智能填充共用原 Worker，但分别控制并发。`TEMPLATE_MIX_PACKAGING_ITEM_CONCURRENCY` 默认 6（最多 8），`TEMPLATE_MIX_PACKAGING_MODEL_CONCURRENCY` 和 `TEMPLATE_MIX_PACKAGING_TTS_CONCURRENCY` 默认各 4；预处理仍最多 2 条，音乐请求保留独立限流。调整包装并发后需要重建并重启原 `effect-template-mix-worker`，并让 API 进程读取相同的条目并发值，页面初始耗时估算才会一致。提高至 8 前先检查真实批次的 429、超时和分项耗时；20 分钟不能仅凭基线估算宣称达成。
 
+包装与素材局部更新使用独立的模型请求配置：`TEMPLATE_MIX_PACKAGING_MODEL_TIMEOUT_SECONDS` 默认 300 秒，`TEMPLATE_MIX_PACKAGING_MODEL_MAX_OUTPUT_TOKENS` 默认 16384。截断响应按需扩大容量，达到上限的多槽位视觉分析继续拆分；不改动智能填充或素材导入配置。局部更新复用包装的有界断点恢复并保留成功步骤，持续失败仍明确报告，不保证供应商始终可用。
+
 效果类 Prompt Worker 默认 `PROMPT_MAX_CONCURRENCY=4`，同一进程共享 AI 并发额度；遇到供应商 429 后降到最多 2 路，现有退避重试继续生效，进程重启恢复配置值。评分输出预算默认 `ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS=8192`，按输入和输出容量动态分组，不截断事实或正文。本地 `.env` 的显式配置优先于默认值；调整配置或 Worker 代码后，应在无进行中任务时重建并重启对应 Worker，不能只重启前端。独立画面修正使用现有候选模型，不更换评分模型。
 
 TypeScript：

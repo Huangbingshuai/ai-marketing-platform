@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import assetDrawerSource from './AssetDrawer.vue?raw';
 import assetPreviewSource from './components/AssetPreview.vue?raw';
 import projectWorkspaceOverviewSource from './components/ProjectWorkspaceOverview.vue?raw';
+import projectAssetBrowserSource from './components/ProjectAssetBrowser.vue?raw';
 import {
   isImageFileAsset,
   isCurrentOnlyEffectImportAsset,
@@ -14,6 +15,38 @@ import {
 } from './asset-v4';
 
 describe('V4 asset center mapping', () => {
+  it('matches the system blue-white palette without changing the library layout', () => {
+    expect(assetDrawerSource).toContain('background: #f8faff;');
+    expect(assetDrawerSource).toContain('background: #eaf1ff;');
+    expect(assetDrawerSource).toContain('color: #17263f;');
+    expect(assetDrawerSource).not.toContain('background: #f7f7f6;');
+    expect(projectAssetBrowserSource).toContain('border-bottom-color: #2563eb;');
+    expect(projectAssetBrowserSource).toContain('.asset-tile:hover:not(.selected)');
+    expect(projectAssetBrowserSource).toContain('.asset-search:focus-within');
+    expect(projectAssetBrowserSource).not.toContain('background: #fafafa;');
+  });
+  it('shows effect source-node tabs instead of mixed media categories', () => {
+    expect(projectAssetBrowserSource).toContain("'来源节点'");
+    expect(projectAssetBrowserSource).toContain('filterBrowserAssetsByNode');
+    expect(projectAssetBrowserSource).toContain('selectedTab === option.value');
+    expect(projectAssetBrowserSource).toContain('selectTab(option.value)');
+    expect(projectAssetBrowserSource).not.toContain('v-for="option in ASSET_CATEGORIES"');
+    expect(projectAssetBrowserSource).toContain('selectedId.value = null');
+  });
+  it('opens the project library without a separate current-project sidebar entry', () => {
+    expect(assetDrawerSource).not.toContain('AssetCenterView');
+    expect(assetDrawerSource).not.toContain('@click="view = \'current\'"');
+    expect(assetDrawerSource).not.toContain('class="nav-current"');
+    expect(assetDrawerSource).not.toContain('class="nav-section-label"');
+    expect(assetDrawerSource).toContain('@click="enterProject(project)"');
+    expect(assetDrawerSource).toContain('class="project-row"');
+    expect(assetDrawerSource).toContain('enterProject(response.data)');
+    expect(assetDrawerSource).not.toContain("view.value = 'current'");
+    expect(assetDrawerSource).toContain('@click="backToProjects"');
+    expect(assetDrawerSource).not.toContain('globalProjectKeyword');
+    expect(assetDrawerSource).toContain('workflow: workflow.value, space: space.value');
+  });
+
   it('keeps the frozen type order for each workflow space', () => {
     expect(typesForSpace('FISSION_LOCAL_REPLACE').slice(0, 3)).toEqual([
       'SOURCE_VIDEO',
@@ -77,13 +110,8 @@ describe('V4 asset center mapping', () => {
         sourceNode: 'PROMPT',
       }),
     ).toBe(false);
-    expect(assetDrawerSource).toContain(
-      "view !== 'current' && !isCurrentOnlyEffectImportAsset(asset)",
-    );
+    expect(projectAssetBrowserSource).toContain('!isCurrentOnlyEffectImportAsset(projectAsset)');
     expect(assetDrawerSource).not.toContain('workingArtifactAsAsset');
-    expect(assetDrawerSource).toContain(
-      'Do not adapt working copies into fake ProjectAsset records',
-    );
     expect(projectWorkspaceOverviewSource).toContain('artifact.mainPreviewUrl');
     expect(projectWorkspaceOverviewSource).toContain('artifact.revision');
     expect(projectWorkspaceOverviewSource).toContain(
@@ -91,7 +119,6 @@ describe('V4 asset center mapping', () => {
     );
     expect(projectWorkspaceOverviewSource).toContain('草稿已保存');
     expect(projectWorkspaceOverviewSource).toContain("artifact.freshness === 'STALE'");
-    expect(assetDrawerSource).toContain('v-else-if="!currentOnlyDetail"');
     expect(assetPreviewSource).toContain('v-if="!isCurrentOnly"');
   });
 
@@ -122,34 +149,33 @@ describe('V4 asset center mapping', () => {
     ]);
     expect(assetPreviewSource).toContain('v-else-if="isVideoConfig"');
     expect(assetPreviewSource).toContain('previewConfigFields');
-    expect(assetDrawerSource).toContain('视频配置详情');
-    expect(assetDrawerSource).toContain('detailVideoConfigFields');
+    expect(projectAssetBrowserSource).toContain('assetTextFields(selected.value)');
   });
 
-  it('isolates effect source assets by a product-name selector backed by product id', () => {
-    expect(assetDrawerSource).toContain('按产品隔离');
-    expect(assetDrawerSource).toContain('aria-label="按产品名称筛选资产"');
-    expect(assetDrawerSource).toContain(
-      '...(productId.value ? { productId: productId.value } : {})',
+  it('isolates project assets and working copies by workflow, space and run', () => {
+    expect(projectAssetBrowserSource).toContain(
+      'workflow: scope.workflow, space: scope.space, workflowRunId: runId',
+    );
+    expect(projectAssetBrowserSource).toContain(
+      'workflow: scope.workflow, space: scope.space, page: next',
     );
   });
 
-  it('separates project drafts, working artifacts, archived assets and global publication', () => {
-    expect(assetDrawerSource).toContain('v-if="activeProject"');
-    expect(assetDrawerSource).toContain('v-else-if="view === \'current\'" class="asset-space"');
-    expect(assetDrawerSource).not.toContain('<section v-else class="asset-space">');
-    expect(assetDrawerSource).toContain(':can-resume="activeProject.id === currentProject?.id"');
+  it('enters assets directly instead of a workspace overview', () => {
+    expect(assetDrawerSource).toMatch(/<ProjectAssetBrowser\s+v-if="selectedProject"/);
+    expect(assetDrawerSource).not.toContain('ProjectWorkspaceOverview');
+    expect(projectAssetBrowserSource).toContain('props.currentProject?.id === props.project.id');
     expect(projectWorkspaceOverviewSource).toContain('工作流草稿');
     expect(projectWorkspaceOverviewSource).toContain('工作区产物');
-    expect(projectWorkspaceOverviewSource).toContain('已归档资产');
-    expect(projectWorkspaceOverviewSource).toContain('全局发布资产');
-    expect(projectWorkspaceOverviewSource).toContain('尚未实现“完成工作流并归档”');
-    expect(projectWorkspaceOverviewSource).toContain('全局发布能力暂未实现');
+    expect(projectWorkspaceOverviewSource).not.toContain('已归档资产');
+    expect(projectWorkspaceOverviewSource).not.toContain('全局发布资产');
+    expect(projectWorkspaceOverviewSource).not.toContain('archived-panel');
+    expect(projectWorkspaceOverviewSource).not.toContain('global-panel');
+    expect(projectWorkspaceOverviewSource).not.toContain('listAssets');
+    expect(projectWorkspaceOverviewSource).not.toContain('listAssetVersions');
     expect(projectWorkspaceOverviewSource).toContain('只有当前绑定项目可以直接返回节点继续编辑');
     expect(projectWorkspaceOverviewSource).toContain('visibleArtifacts.length');
     expect(projectWorkspaceOverviewSource).toContain('进入素材池');
-    expect(projectWorkspaceOverviewSource).toContain('pageSize: 96');
-    expect(projectWorkspaceOverviewSource).not.toContain('pageSize: 100');
     expect(projectWorkspaceOverviewSource).not.toContain('保存到项目资产库');
   });
 

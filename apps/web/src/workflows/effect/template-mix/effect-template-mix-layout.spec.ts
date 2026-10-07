@@ -13,6 +13,36 @@ const pageSource = rawPageSource.replace(/\r\n/gu, '\n');
 const timelineSource = rawTimelineSource.replace(/\r\n/gu, '\n');
 
 describe('effect template mix workbench layout', () => {
+  it('shows the shared vertical guide during video edge trimming and clears it on release', () => {
+    const begin = timelineSource.split('const beginEdgeTrim =')[1]?.split('const audioAreaTop')[0];
+    const move = timelineSource.split('if (edgeTrimDrag.value) {')[1]?.split('if (audioDrag.value) {')[0];
+    expect(begin).toContain("snapGuideTime.value = side === 'LEFT' ? initialStart : initialStart + slot.duration");
+    expect(move).toContain('snapEdgeTime(movingEdge, new Set([drag.slotId])');
+    expect(move).toContain("snapGuideTime.value = drag.side === 'LEFT' ? resized.start : resized.start + resized.duration");
+    expect(move).toContain('snapped.guide !== null');
+    expect(move).toContain('0.00001');
+    const release = timelineSource.split('function onWindowPointerUp(): void {')[1]?.split('const onWheel')[0];
+    expect(release).toContain('snapGuideTime.value = null;');
+    expect(timelineSource).toContain('class="snap-guide"');
+  });
+
+  it('keeps only the workbench entry in the template configuration footer', () => {
+    const footer = pageSource.split('<footer class="template-config-actions">')[1]?.split('</footer>')[0];
+    expect(footer).toBeDefined();
+    expect(footer?.match(/<button\b/gu)).toHaveLength(1);
+    expect(footer).toContain("@click=\"openTemplateWorkspace(activeTemplateId, 'EDITOR')\"");
+    expect(footer).toContain('进入精修工作台');
+    expect(footer).not.toContain('局部更新');
+    expect(footer).not.toContain('已载入');
+    expect(footer).not.toContain('已有');
+    expect(footer).not.toContain('<p');
+    expect(footer).not.toContain('<small');
+    expect(pageSource).toContain('.config-panel > .template-config-actions {\n  justify-content: flex-end;');
+    const workbench = pageSource.split('class="workbench-head"')[1]?.split('</header>')[0];
+    expect(workbench).toContain('@click="updateCurrentTemplate"');
+    expect(workbench).not.toContain('@click="updateSourceProjects"');
+    expect(workbench).not.toContain('@click="appendNewMaterials"');
+  });
   it('regenerates the whole batch from the toolbar independently of selected-film locks', () => {
     expect(pageSource).toContain('const refill = (): void => void startAiFill(null);');
     expect(pageSource).not.toContain('const refill = (): void => void startAiFill(selectedVariant.value);');
@@ -21,12 +51,12 @@ describe('effect template mix workbench layout', () => {
     expect(eligibility).not.toContain('selectedVariant');
     expect(eligibility).not.toContain('manualSlotIds');
     expect(pageSource).toContain('按模板规则整批生成成片；原分支保留，完成后查看新批次');
-    expect(pageSource).toContain('const appendNewMaterials = (): void => void startAiFill(null, false, true);');
+    expect(pageSource).toContain('await startAiFill(null, false, true, run.sourceOperationId);');
     expect(pageSource).toContain('void startAiFill(selectedVariant.value, run.operation');
   });
-  it('highlights stale template cards with an amber border even while selected', () => {
+  it('blends selected blue borders with amber warnings on stale template cards', () => {
     const row = pageSource.split('class="template-list__row"')[1]?.split('<button')[0];
-    expect(row).toContain("'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(pendingAddedMaterialIds[entry.id]?.length)");
+    expect(row).toContain("'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(templateAddedMaterialIds(entry.id).length)");
     expect(row).toContain('active: entry.id === activeTemplateId');
     const style = pageSource.split('.template-list__row.is-source-stale {')[1]?.split('}')[0];
     expect(style).toContain('border-color: #f59e0b;');
@@ -34,6 +64,12 @@ describe('effect template mix workbench layout', () => {
     expect(style).not.toContain('background:');
     expect(pageSource.indexOf('.template-list__row.is-source-stale {'))
       .toBeGreaterThan(pageSource.indexOf('.template-list__row.active {'));
+    const selectedStale = pageSource.split('.template-list__row.active.is-source-stale {')[1]?.split('}')[0];
+    expect(selectedStale).toContain('linear-gradient(112deg, #2563eb 0%, #7652c8 48%, #d97706 100%) border-box;');
+    expect(selectedStale).toContain('linear-gradient(135deg, #edf4ff 0%, #fff2d9 100%) padding-box');
+    expect(selectedStale).not.toContain('0 0 0');
+    expect(pageSource.indexOf('.template-list__row.active.is-source-stale {'))
+      .toBeGreaterThan(pageSource.indexOf('.template-list__row.is-source-stale {'));
   });
   it('labels affected film counts inside template cards instead of ambiguous artifact counts', () => {
     expect(pageSource).toContain('{{ templatePendingUpdateCount(entry) }} 个成片待更新');
@@ -65,14 +101,17 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('effectTemplateMixSourceChanges(props.variant, props.materials)');
     expect(timelineSource).toContain('border: 2px solid #f59e0b;');
     expect(timelineSource).toContain('class="source-stale-label">待更新');
-    expect(pageSource).toContain('minmax(min(100%, 130px), 1fr)');
+    expect(pageSource).toContain('flex: 0 0 154px;');
+    expect(pageSource).toContain('width: 154px;');
     expect(pageSource).toContain('minmax(min(100%, 145px), 1fr)');
     expect(pageSource).toContain('grid-auto-rows: minmax(64px, auto);');
-    expect(pageSource).toContain('updateMixSourceProjects(context.project, run.id, ids)');
+    expect(pageSource).toContain('updateMixSourceProjects(context.project, {');
+    expect(pageSource).toContain('workflowRunId: context.workflow,');
+    expect(pageSource).toContain('expectedDraftRevision: draftRevision.value,');
     expect(pageSource).toContain('sourceUpdateRun.value = null;');
   });
   it('shows prefill role filters and saves material categories independently of timeline bindings', () => {
-    expect(pageSource).toContain('<div class="material-role-filters" aria-label="素材归槽筛选">');
+    expect(pageSource).toContain('<div class="material-role-filters" aria-label="素材归槽筛选" tabindex="0">');
     expect(pageSource).toContain('@click="selectMaterialRole(\'UNASSIGNED\')"');
     expect(pageSource).toContain('待归槽 <small>{{ unassignedMaterialCount }}</small>');
     expect(pageSource).toContain('@click="chooseMaterialSlot(null)"');
@@ -89,8 +128,9 @@ describe('effect template mix workbench layout', () => {
       .split('.material-role-filters {')[1]
       ?.split('.material-grid {')[0];
     expect(pageSource).not.toContain("selectMaterialRole('ALL')");
-    expect(filtersStyle).toContain('grid-template-columns: repeat(7, minmax(0, 1fr));');
-    expect(filtersStyle).not.toContain('overflow-x: auto;');
+    expect(filtersStyle).toContain('flex-wrap: nowrap;');
+    expect(filtersStyle).toContain('overflow-x: auto;');
+    expect(filtersStyle).toContain('flex: 0 0 68px;');
     expect(filtersStyle).toContain('min-height: 25px;');
   });
   it('keeps undo and redo history separately for each project, run, template, and film', () => {
@@ -137,7 +177,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('title: `删除模板「${entry.workspace.template.name}」？`');
     expect(pageSource).not.toContain('window.confirm(');
     expect(pageSource).toContain(
-      '模板列表 <small class="template-list__count">共 {{ catalog.length }} 个</small>',
+      '模板列表 <small class="template-list__count">共 {{ templateListCatalog.length }} 个</small>',
     );
     expect(pageSource).toContain(
       "showNotice('尚未检测到已完成的渲染批次，正在刷新状态…', 'warning');",
@@ -268,14 +308,12 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('queueOutputSync(result.data.draftRevision, savedTemplateId)');
     expect(pageSource).toContain('expectedDraftRevision: queued.revision');
     expect(pageSource).toContain('const newerRevision = queuedOutputRevision();');
-    expect(pageSource).toContain('const syncOutputOnExit = async (): Promise<boolean> => {');
-    expect(pageSource).toContain('if (!(await flushPendingEdits())) return false;');
+    expect(pageSource).toContain('const flushPendingEdits = async (): Promise<boolean> => {');
     expect(pageSource).not.toContain('已同步成片待渲染区 ${refreshedCount} 条');
     expect(pageSource).toContain("new BroadcastChannel('effect-final-output-sync')");
     expect(pageSource).toContain('queueOutputSync(draftRevision.value, activeTemplateId.value)');
-    expect(pageSource).toContain('const returnToFinalOutput = async (): Promise<void> => {');
-    expect(pageSource).toContain('if (!(await syncOutputOnExit())) return;');
-    expect(pageSource).toContain('void syncOutputOnExit();');
+    expect(pageSource).not.toContain('returnToFinalOutput');
+    expect(pageSource).not.toContain('syncOutputOnExit');
   });
   it('never lets two draft saves share a revision', () => {
     // A drag outlives a save, so the debounce can fire again while the first request is still on the
@@ -290,7 +328,8 @@ describe('effect template mix workbench layout', () => {
     );
   });
   it('creates an empty film project separately from AI operations', () => {
-    expect(pageSource).toContain('<Plus :size="13" />新建成片');
+    expect(pageSource).toContain('aria-label="新建成片"');
+    expect(pageSource).toContain('class="button project-add"');
     expect(pageSource).toContain('@click="createEmptyVariant"');
     expect(pageSource).toContain('智能成片包装');
     expect(pageSource).toContain('<Workflow :size="13" />查看工作流');
@@ -534,7 +573,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('captureDisplayedFrame');
     expect(pageSource).toContain('player-transition-frame');
     expect(pageSource).not.toContain('resource-tabs-count');
-    expect(pageSource).toContain('grid-template-columns: repeat(7, minmax(0, 1fr));');
+    expect(pageSource).toContain('flex: 0 0 68px;');
     expect(pageSource).not.toContain('初次生成数量');
     expect(pageSource).toContain('templateTransitionForRow');
     expect(pageSource).toContain('index < workspace.template.slots.length - 1');
@@ -604,8 +643,10 @@ describe('effect template mix workbench layout', () => {
     );
     expect(timelineSource).toContain('if (edgeHandle?.disabled)');
     expect(timelineSource).toContain('const edgeThreshold = Math.min(12');
-    expect(timelineSource).toContain(':disabled="edgeTrimBlocked(slot.id, \'LEFT\')"');
-    expect(timelineSource).toContain(':disabled="edgeTrimBlocked(slot.id, \'RIGHT\')"');
+    expect(timelineSource).toContain(':disabled="edgeTrimBlocked(slot.id)"');
+    expect(timelineSource).not.toContain('左侧已有素材，无法调整左边缘');
+    expect(timelineSource).not.toContain('右侧已有素材，无法调整右边缘');
+    expect(timelineSource).toContain('let resized = resizeVideoRangeAtEdge(');
     expect(timelineSource).toContain("'resizeSlot'");
     expect(timelineSource).toContain('class="clip-duration-badge"');
     expect(timelineSource).toContain('formatTimecode(activeSlotDuration(slot.id))');
@@ -629,8 +670,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('aria-label="调整素材库宽度"');
     expect(pageSource).toContain("startPaneResize($event, 'LEFT')");
     expect(pageSource).toContain('@resize-slot="resizeTimelineSlot"');
-    expect(pageSource).toContain('const hasMaterialOnSide = variant.slots.some');
-    expect(pageSource).toContain('if (hasMaterialOnSide) return;');
+    expect(pageSource).not.toContain('const hasMaterialOnSide = variant.slots.some');
+    expect(pageSource).not.toContain('if (hasMaterialOnSide) return;');
+    expect(pageSource).toContain('...startsAfterIndependentTrim(');
     expect(pageSource).toContain('repeat(auto-fill, minmax(142px, 1fr))');
     expect(pageSource).toContain('materialUsageLabel(material.id)');
     expect(pageSource).toContain('同一成片不能重复使用');

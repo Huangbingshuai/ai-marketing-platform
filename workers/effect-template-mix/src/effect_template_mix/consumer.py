@@ -354,6 +354,14 @@ class Consumer:
             await self.api.complete(runtime, trims)
         except Exception as exc:
             LOGGER.exception("template mix task failed error=%s", type(exc).__name__)
+            if runtime is None and isinstance(exc, ApiError) and (exc.retryable or exc.status_code in (401, 403)):
+                # No lease means there is no task attempt on which to persist failure.
+                # Preserve the delivery instead of acknowledging an unclaimed job.
+                # A lost claim response is safe: a valid server lease rejects a duplicate
+                # claim, and the existing lease recovery handles that ambiguous case.
+                await asyncio.sleep(5)
+                await message.nack(requeue=True)
+                return
             if runtime:
                 retryable = isinstance(exc, (ApiError, ProviderError)) and exc.retryable
                 error_message = "智能填充服务暂时不可用，请重试" if retryable else "智能填充结果无效，请检查素材后重试"

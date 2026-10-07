@@ -41,6 +41,24 @@ def material(index: int) -> Material:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [None, 503, 401, 403])
+@pytest.mark.parametrize('redelivered', [False, True])
+async def test_unclaimed_api_failure_preserves_delivery(monkeypatch, status, redelivered) -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.claim.side_effect = ApiError('internal API unavailable', retryable=status in (None, 503), status_code=status)
+    monkeypatch.setattr('effect_template_mix.consumer.asyncio.sleep', AsyncMock())
+    consumer = Consumer('amqp://test', 'effect.template-mix.requested', api,
+                        AsyncMock(spec=ArkProvider), 1000, 10, 16000, 8192, 1)
+    message = AsyncMock()
+    message.redelivered = redelivered
+    message.body = b'{"schemaVersion":1,"projectId":"project","runId":"run","requestId":"request"}'
+    await consumer.handle(message)
+    message.nack.assert_awaited_once_with(requeue=True)
+    message.ack.assert_not_awaited()
+    api.fail.assert_not_awaited()
+
+
 def test_full_batch_coverage_requirement_is_frozen_and_old_snapshots_still_parse() -> None:
     source = {
         'schemaVersion': 1, 'template': {'slots': []}, 'draftRevision': 1,
@@ -67,6 +85,53 @@ def test_classification_chunks_preserve_every_material_once() -> None:
 
     assert all(1 <= len(batch) <= 4 for batch in batches)
     assert [item.id for batch in batches for item in batch] == [item.id for item in source]
+
+
+@pytest.mark.asyncio
+async def test_full_refill_classifies_the_entire_latest_pool_and_recomputes_trims(monkeypatch: pytest.MonkeyPatch) -> None:
+    roles = ("HOOK", "PAIN_POINT", "PRODUCT", "SELLING_POINT", "TRANSFORMATION", "END")
+    sources = [material(i) for i in range(7)]
+    sources[0] = sources[0].model_copy(update={"artifactRevision": 2, "fileObjectId": "edited-file"})
+    sources[-1] = sources[-1].model_copy(update={"artifactRevision": 9, "prompt": "新增后编辑的画面"})
+    api = AsyncMock(spec=InternalApi)
+    api.claim.return_value = Claim(terminal=False, attemptToken="lease", snapshot={
+        "schemaVersion": 1, "template": {"id": "t", "slots": [
+            {"id": f"s{i}", "role": role, "label": role, "duration": 4} for i, role in enumerate(roles)]},
+        "draftRevision": 2, "targetVariantId": None, "lockedBindings": [], "promptArtifacts": [],
+        "replaceExistingVariants": True, "requireAllMaterials": True,
+        "materialRoleAssignments": {}, "manualMaterialRoles": {},
+        "materials": [source.model_dump() for source in sources],
+    }, checkpoint={})
+    api.classify.return_value = [Selection(
+        variantIndex=batch, slotId=f"s{i}", role=role, materialId=f"m{6 if batch == 1 and i == 0 else i}",
+        matchScore=0.8, matchLevel="NORMAL", classificationReason="新归槽", duration=4,
+    ) for batch in range(2) for i, role in enumerate(roles)]
+    api.video.return_value = b"fake-video"
+    api.checkpoint_classifications.return_value = ClassificationCheckpoint(classifications=[], progress=30)
+    api.checkpoint_sampling.return_value = SamplingCheckpoint(materialIds=[])
+    api.checkpoint_trims.return_value = TrimCheckpoint(trims=[], progress=90)
+    provider = AsyncMock(spec=ArkProvider)
+
+    async def classify(_slots, batch):
+        return ClassificationResult.model_validate({"classifications": [
+            {"materialId": source.id, "scores": {role: 0.8 for role in roles}, "reasons": {}}
+            for source in batch]})
+
+    provider.classify.side_effect = classify
+    provider.trim.return_value = TrimChoice(trimStartSeconds=1, trimReason="重新选区")
+    monkeypatch.setattr("effect_template_mix.consumer.sample_frames", AsyncMock(return_value=[(1.0, b"frame")]))
+    consumer = Consumer("amqp://test", "effect.template-mix.requested", api, provider, 1000, 10, 16000, 8192, 1)
+    message = AsyncMock()
+    message.body = b'{"schemaVersion":1,"projectId":"project","runId":"run","requestId":"request"}'
+    await consumer.handle(message)
+    classified = [source.id for call in provider.classify.await_args_list for source in call.args[1]]
+    assert sorted(classified) == sorted(source.id for source in sources)
+    assert len(classified) == len(set(classified))
+    assert {row.materialId for row in api.classify.await_args.args[1]} == {source.id for source in sources}
+    assert provider.trim.await_count == len(api.classify.return_value)
+    api.complete.assert_awaited_once()
+    api.fail.assert_not_awaited()
+    message.ack.assert_awaited_once()
 
 
 @pytest.mark.asyncio

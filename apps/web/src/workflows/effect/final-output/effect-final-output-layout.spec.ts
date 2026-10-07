@@ -4,6 +4,12 @@ import pageSource from './EffectFinalOutputNodePage.vue?raw';
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 
 describe('effect final output re-render layout', () => {
+  it('uses yellow for current-branch updates and keeps whole exports blue', () => {
+    const localProgress = pageSource.split('v-if="localProgressVisible"')[1]?.split('/>')[0];
+    const exportProgress = pageSource.split('v-if="exportProgressVisible"')[1]?.split('/>')[0];
+    expect(localProgress).toContain('tone="update"');
+    expect(exportProgress).not.toContain('tone="update"');
+  });
   it('returns the selected template and never previews an inherited film against another branch draft', () => {
     expect(pageSource.match(/\$emit\('back', selectedTemplateId\)/gu)).toHaveLength(3);
     const previewSource = pageSource.match(/const openTimelinePreview = [\s\S]*?\n\};/)?.[0];
@@ -126,13 +132,13 @@ describe('effect final output re-render layout', () => {
 
   it('uses the current mix template catalog as the only source of output template cards', () => {
     expect(pageSource).toContain('if (!mixWorkspace.value) return []');
-    expect(pageSource).toContain('const workspaceTemplates = mixWorkspace.value?.draft.templates ?? []');
+    expect(pageSource).toContain('const workspaceTemplates = templateDirectory.value.entries');
     expect(pageSource).toContain('const cards: OutputTemplateCard[] = workspaceTemplates.map');
     expect(pageSource).not.toContain('for (const outputRun of latestByTemplate.values())');
     expect(pageSource).not.toContain('cards.push({ templateId: outputRun.templateId');
     expect(pageSource).not.toContain('for (const [templateId, path] of templatePaths.value)');
-    expect(pageSource).toContain('templatePaths.value.get(entry.id)?.name');
-    expect(pageSource).toContain('effectTemplateBranchTips(tree.data.branches');
+    expect(pageSource).toContain('templateName: entry.workspace.template.name');
+    expect(pageSource).toContain('readMixTemplateCatalog(tree.data, scopeId, result.data');
     expect(pageSource).toContain("'读取模板当前路径'");
   });
 
@@ -158,7 +164,8 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain("window.addEventListener('effect-final-output-sync', savedOutputSource)");
     expect(pageSource).toContain("window.removeEventListener('effect-final-output-sync', savedOutputSource)");
     expect(pageSource).toContain('async function reconcilePending()');
-    expect(pageSource).toContain('expectedDraftRevision: workspace.draftRevision');
+    expect(pageSource).toContain('expectedDraftRevision: source.draftRevision');
+    expect(pageSource).toContain('workflowRunId: sourceRunId, templateId: entry.id');
     expect(pageSource).toContain('void reconcilePending();');
     expect(pageSource).toContain("new BroadcastChannel('effect-final-output-sync')");
     expect(pageSource).toContain('outputSyncChannel?.close()');

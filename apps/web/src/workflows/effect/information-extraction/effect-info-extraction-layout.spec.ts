@@ -125,9 +125,9 @@ describe('effect info extraction result layout', () => {
   });
 
   it('uses the same global draft bar and footer, with validation beside the edit button', () => {
-    expect(pageSource).toContain('<WorkflowNodeDraftBar');
+    expect(pageSource).not.toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
-    expect(pageSource).toContain('back-label="上一步"');
+    expect(pageSource).toContain('back-label="上一步：资料导入"');
     expect(pageSource).toContain('next-label="下一步：Prompt 生成"');
     expect(pageSource).toContain('<Pencil :size="14" />进入编辑');
     expect(pageSource).toContain(':show-validate="false"');

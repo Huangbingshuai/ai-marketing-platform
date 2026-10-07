@@ -267,7 +267,11 @@ const nodeState = (index: number): NodeState => {
   box-shadow: inset 0 3px 0 #f59e0b;
 }
 .effect-flow__node.needs-update.current {
-  box-shadow: inset 0 3px 0 #f59e0b, 0 0 0 3px rgba(245, 158, 11, 0.12);
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(135deg, #eff5ff 0%, #fff4df 100%) padding-box,
+    linear-gradient(112deg, #2563eb 0%, #7652c8 48%, #d97706 100%) border-box;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.2), 0 2px 9px rgba(217, 119, 6, 0.17);
 }
 .effect-flow__node.needs-update .effect-flow__number {
   color: #b45309;

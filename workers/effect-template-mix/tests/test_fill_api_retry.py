@@ -31,6 +31,21 @@ async def test_checkpoint_recovers_connection_failure_with_same_lease(monkeypatc
     await api.close()
 
 
+async def test_claim_connect_timeout_retries_before_any_request_is_sent(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if len(calls) < 3:
+            raise httpx.ConnectTimeout('connection not established')
+        return httpx.Response(200, json={'terminal': True})
+    api = await make_api(handler)
+    monkeypatch.setattr('effect_template_mix.api.asyncio.sleep', AsyncMock())
+    result = await api.claim('project', 'run')
+    assert result.terminal and len(calls) == 3
+    assert all(r.content == calls[0].content for r in calls)
+    await api.close()
+
+
 @pytest.mark.parametrize('status', [400, 401, 403, 409])
 async def test_rejected_or_stale_lease_is_never_retried(status):
     calls = []

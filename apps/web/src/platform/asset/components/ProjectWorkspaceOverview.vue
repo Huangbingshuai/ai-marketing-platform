@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import type {
-  Asset,
-  AssetVersion,
   AssetWorkflow,
   AssetWorkflowSpace,
   Project,
@@ -11,12 +9,10 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   AlertTriangle,
-  Archive,
   ArrowRight,
   Clock3,
   FileText,
   FolderClock,
-  Globe2,
   Layers3,
   LoaderCircle,
   RefreshCw,
@@ -29,9 +25,7 @@ import {
   listWorkingArtifacts,
 } from '../../workflow/api/workflow-working.api';
 import { latestWorkflowNodeStateMap, workflowNodeBaseId } from '../../workflow/workflow-node-id';
-import { listAssets, listAssetVersions } from '../api/asset.api';
 import { SPACE_LABELS, WORKFLOW_META, typeLabel } from '../asset-v4';
-import AssetPreview from './AssetPreview.vue';
 import {
   aggregateWorkspaceArtifacts,
   finalVideoArtifactCounts,
@@ -67,8 +61,6 @@ const error = ref('');
 const run = ref<WorkflowRun | null>(null);
 const nodeStates = ref<WorkflowNodeState[]>([]);
 const artifacts = ref<WorkingArtifact[]>([]);
-const archivedAssets = ref<Asset[]>([]);
-const versionsByAsset = ref<Record<string, AssetVersion[]>>({});
 let controller: AbortController | undefined;
 let generation = 0;
 
@@ -219,17 +211,10 @@ const load = async (): Promise<void> => {
   run.value = null;
   nodeStates.value = [];
   artifacts.value = [];
-  archivedAssets.value = [];
-  versionsByAsset.value = {};
   try {
-    const [overviewResponse, assetResponse] = await Promise.all([
-      getActiveWorkflowRunOverview(props.project.id, props.workflow, props.space, request.signal),
-      listAssets(
-        props.project.id,
-        { workflow: props.workflow, space: props.space, page: 1, pageSize: 96 },
-        request.signal,
-      ),
-    ]);
+    const overviewResponse = await getActiveWorkflowRunOverview(
+      props.project.id, props.workflow, props.space, request.signal,
+    );
     if (request.signal.aborted || requestGeneration !== generation) return;
     run.value = overviewResponse.data.run;
     nodeStates.value = overviewResponse.data.nodeStates;
@@ -242,20 +227,6 @@ const load = async (): Promise<void> => {
       : null;
     if (request.signal.aborted || requestGeneration !== generation) return;
     artifacts.value = artifactResponse?.data.items ?? [];
-    archivedAssets.value = assetResponse.data.items;
-    const versionEntries = await Promise.all(
-      assetResponse.data.items.map(async (asset) => {
-        try {
-          const response = await listAssetVersions(props.project.id, asset.id, request.signal);
-          return [asset.id, response.data] as const;
-        } catch (versionError) {
-          if (isAbortError(versionError)) throw versionError;
-          return [asset.id, []] as const;
-        }
-      }),
-    );
-    if (request.signal.aborted || requestGeneration !== generation) return;
-    versionsByAsset.value = Object.fromEntries(versionEntries);
     status.value = 'success';
   } catch (loadError) {
     if (isAbortError(loadError) || requestGeneration !== generation) return;
@@ -429,52 +400,6 @@ onBeforeUnmount(() => controller?.abort());
           </div>
         </section>
 
-        <section class="overview-panel archived-panel">
-          <header>
-            <span><Archive :size="17" /></span>
-            <div>
-              <h3>已归档资产</h3>
-              <p>正式 ProjectAsset 与版本记录</p>
-            </div>
-            <b>{{ archivedAssets.length }}</b>
-          </header>
-          <div v-if="!archivedAssets.length" class="section-empty">
-            <Archive :size="27" /><strong>尚无已归档资产</strong>
-            <p>当前尚未实现“完成工作流并归档”，这里不会用工作副本冒充正式资产。</p>
-          </div>
-          <div v-else class="archived-list">
-            <article v-for="asset in archivedAssets" :key="asset.id">
-              <AssetPreview :asset="asset" compact />
-              <div>
-                <span>{{ typeLabel(asset.type) }}</span
-                ><strong>{{ asset.name }}</strong>
-                <p>{{ asset.originalFileName || '结构化资产' }}</p>
-                <footer>
-                  <em v-for="version in versionsByAsset[asset.id] ?? []" :key="version.id"
-                    >v{{ version.version }} · {{ formatTime(version.createdAt) }}</em
-                  ><em v-if="!versionsByAsset[asset.id]?.length"
-                    >v{{ asset.currentVersion ?? 1 }}</em
-                  >
-                </footer>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section class="overview-panel global-panel">
-          <header>
-            <span><Globe2 :size="17" /></span>
-            <div>
-              <h3>全局发布资产</h3>
-              <p>由当前项目明确发布、可跨项目复用</p>
-            </div>
-            <b>0</b>
-          </header>
-          <div class="section-empty">
-            <Globe2 :size="27" /><strong>暂无全局发布资产</strong>
-            <p>全局发布能力暂未实现；正式 ProjectAsset 不会自动成为全局资产。</p>
-          </div>
-        </section>
       </div>
     </template>
   </div>
@@ -710,8 +635,7 @@ onBeforeUnmount(() => controller?.abort());
   grid-template-columns: repeat(auto-fit, minmax(225px, 1fr));
   gap: 9px;
 }
-.artifact-grid article,
-.archived-list article {
+.artifact-grid article {
   display: flex;
   min-width: 0;
   padding: 8px;
@@ -734,8 +658,7 @@ onBeforeUnmount(() => controller?.abort());
   outline: none;
   transform: translateY(-1px);
 }
-.working-preview,
-.archived-list :deep(.asset-preview) {
+.working-preview {
   width: 72px;
   min-width: 72px;
   height: 72px;
@@ -803,19 +726,16 @@ onBeforeUnmount(() => controller?.abort());
   color: #344b70;
   font-weight: 800;
 }
-.artifact-copy,
-.archived-list article > div {
+.artifact-copy {
   min-width: 0;
   flex: 1;
 }
-.artifact-type,
-.archived-list article > div > span {
+.artifact-type {
   color: #2563eb;
   font-size: 9px;
   font-weight: 800;
 }
-.artifact-copy > strong,
-.archived-list article > div > strong {
+.artifact-copy > strong {
   display: block;
   margin-top: 3px;
   overflow: hidden;
@@ -823,8 +743,7 @@ onBeforeUnmount(() => controller?.abort());
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.artifact-copy > p,
-.archived-list article > div > p {
+.artifact-copy > p {
   margin: 4px 0;
   color: #8390a5;
   font-size: 9px;
@@ -839,8 +758,7 @@ onBeforeUnmount(() => controller?.abort());
 }
 .artifact-copy footer span,
 .artifact-copy footer em,
-.artifact-copy footer b,
-.archived-list footer em {
+.artifact-copy footer b {
   padding: 2px 5px;
   border-radius: 5px;
   background: #edf2f8;
@@ -888,20 +806,6 @@ onBeforeUnmount(() => controller?.abort());
   margin: 4px 0 0;
   font-size: 10px;
   line-height: 1.55;
-}
-.archived-list {
-  display: flex;
-  padding-top: 9px;
-  flex-direction: column;
-  gap: 8px;
-}
-.archived-list footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.global-panel .section-empty {
-  min-height: 156px;
 }
 @keyframes spin {
   to {

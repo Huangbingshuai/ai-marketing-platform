@@ -327,6 +327,20 @@ async def test_timeline_gap_renders_black_and_keeps_the_frozen_duration(tmp_path
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+async def test_all_removed_picture_renders_full_black_extent(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    snapshot = {'timeline': {'duration': 2, 'clips': []}, 'aspectRatio': '4:3',
+        'originalVolume': 0, 'resolution': '480p', 'frameRate': 30,
+        'packaging': {'voices': {}, 'captions': []}}
+    output = await render(snapshot, {}, tmp_path, AsyncMock())
+    info = await probe(output)
+    assert abs(float(info['format']['duration']) - 2) < .1
+    pixels = await command('ffmpeg', ['-v', 'error', '-i', str(output), '-ss', '1',
+        '-frames:v', '1', '-vf', 'scale=1:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'])
+    assert len(pixels) == 3 and max(pixels) < 30
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
 @pytest.mark.parametrize('content', ['audio', 'captions'])
 async def test_new_manual_project_without_video_renders_placed_content(
     tmp_path: Path, monkeypatch: Any, content: str,

@@ -196,6 +196,13 @@ class ArkProvider:
                         LOGGER.warning('%s incomplete stage=%s token_budget=%s request_id=%s',
                             'packaging model' if name.startswith('packaging_') else 'video import model',
                             name, payload['max_output_tokens'], request_id)
+                    # Packaging cannot split a single narration into arbitrary text pieces.
+                    # Retry a *received* incomplete response with more capacity, bounded by
+                    # the dedicated packaging provider limit. Other workflows keep their
+                    # existing partition/recovery behavior; transport failures never expand it.
+                    if name.startswith('packaging_') and payload['max_output_tokens'] < self.max_output_tokens:
+                        payload['max_output_tokens'] = min(self.max_output_tokens, payload['max_output_tokens'] * 2)
+                        continue
                     raise ProviderIncompleteError(
                         "AI 输出超过当前分片容量",
                         retryable=False,

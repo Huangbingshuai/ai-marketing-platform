@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import tempfile
 from pathlib import Path
 
@@ -52,6 +53,7 @@ async def postprocess_render_output(output: RenderOutput) -> RenderOutput:
             normalized_path = root / "faststart.mp4"
             poster_path = root / "poster.jpg"
             await asyncio.to_thread(source_path.write_bytes, output.content)
+            actual_duration = await _probe_duration(source_path)
 
             normalized = await _run_ffmpeg(
                 [
@@ -97,7 +99,30 @@ async def postprocess_render_output(output: RenderOutput) -> RenderOutput:
                     content=await asyncio.to_thread(poster_path.read_bytes),
                     file_name=Path(output.file_name).stem + "-poster.jpg",
                 )
-            return output.model_copy(update={"content": content, "poster": poster})
+            return output.model_copy(update={"content": content, "poster": poster, "actual_duration": actual_duration})
     except Exception as exc:
         LOGGER.warning("video post-processing skipped error=%s", type(exc).__name__)
         return output
+
+
+async def _probe_duration(path: Path) -> float | None:
+    """Read video-stream duration instead of Ark's floored integer duration."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
+    except TimeoutError:
+        process.kill()
+        await process.communicate()
+        return None
+    try:
+        value = float(stdout.decode().strip())
+        return value if process.returncode == 0 and math.isfinite(value) and value > 0 else None
+    except (ValueError, UnicodeError):
+        return None

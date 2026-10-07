@@ -313,6 +313,8 @@ class HttpInternalApi:
         }
         if output.duration is not None:
             data["duration"] = str(output.duration)
+        if output.actual_duration is not None:
+            data["actualDuration"] = str(output.actual_duration)
         if output.ratio is not None:
             data["ratio"] = output.ratio
         if output.resolution is not None:

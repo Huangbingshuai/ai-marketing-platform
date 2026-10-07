@@ -208,7 +208,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('role="switch"');
     expect(pageSource).toContain("editorMode === 'add' ? '添加提示词' : '保存编辑'");
     expect(pageSource).toContain('已有 Prompt 的时长不可修改');
-    expect(pageSource).toContain('currentCountStats.actualCount} 条 Prompt');
+    expect(pageSource).not.toContain('title="差异化 Prompt 批次草稿"');
   });
 
   it('publishes the new total before correcting an out-of-range page', () => {
@@ -290,9 +290,9 @@ describe('effect prompt generation current layout', () => {
   });
 
   it('keeps working-copy lifecycle and responsive interaction states', () => {
-    expect(pageSource).toContain('<WorkflowNodeDraftBar');
-    expect(pageSource).toContain('工作副本已更新');
-    expect(pageSource).toContain('尚未归档');
+    expect(pageSource).not.toContain('<WorkflowNodeDraftBar');
+    expect(pageSource).not.toContain('工作副本已更新');
+    expect(pageSource).not.toContain('尚未归档');
     expect(pageSource).not.toContain('保存到项目资产库');
     expect(pageSource).toContain('currentAttemptLabel');
     expect(pageSource).toContain('currentRetryWarning');

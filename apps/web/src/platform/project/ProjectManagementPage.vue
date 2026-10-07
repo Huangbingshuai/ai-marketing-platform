@@ -35,6 +35,9 @@ import {
 } from './project-context';
 import { pauseWorkflowRun } from '../workflow/api/workflow-working.api';
 import { loadProjectListWithRetry } from './project-load-retry';
+import { enterLibraryProject } from './enter-library-project';
+import { projectMatchesSpace, WORKFLOW_SPACES } from '../asset/asset-v4';
+import type { AssetWorkflowSpace } from '@ai-marketing/contracts';
 
 const assetDrawerOpen = ref(false);
 const createModalOpen = ref(false);
@@ -56,6 +59,8 @@ const effectNode = ref<{
 } | null>(null);
 const exitBusy = ref(false);
 const exitError = ref('');
+const projectEntryBusy = ref(false);
+const projectEntryError = ref('');
 let projectsController: AbortController | undefined;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 const CURRENT_PROJECT_STORAGE_KEY = 'ai-marketing.current-project-id';
@@ -155,11 +160,12 @@ provide(projectContextKey, {
 
 const closeAssetDrawer = (): void => {
   assetDrawerOpen.value = false;
+  projectEntryError.value = '';
   void nextTick(() => assetTrigger.value?.focus());
 };
 
 const resumeWorkflowNode = async (nodeId: string): Promise<void> => {
-  if (activeWorkflow.value !== 'EFFECT' || !effectNode.value) return;
+  if (projectEntryBusy.value || activeWorkflow.value !== 'EFFECT' || !effectNode.value) return;
   const resumed = await effectNode.value.resumeWorkflowNode(nodeId);
   if (!resumed) return;
   assetDrawerOpen.value = false;
@@ -187,9 +193,10 @@ const showCreateToast = (message: string): void => {
   }, 3000);
 };
 
-const exitProject = async (): Promise<void> => {
+const exitProject = async (): Promise<boolean> => {
   const project = currentProject.value;
-  if (!project || exitBusy.value) return;
+  if (exitBusy.value) return false;
+  if (!project) return true;
   exitBusy.value = true;
   exitError.value = '';
   try {
@@ -201,11 +208,51 @@ const exitProject = async (): Promise<void> => {
     }
     selectProject('');
     showCreateToast('草稿已自动保存并退出项目，未创建正式资产');
+    return true;
   } catch (error) {
     exitError.value = error instanceof Error ? error.message : '草稿保存失败，请重试';
     showCreateToast(exitError.value);
+    return false;
   } finally {
     exitBusy.value = false;
+  }
+};
+
+const enterAssetProject = async (
+  projectId: string,
+  workflow: AssetWorkflow,
+  space: AssetWorkflowSpace,
+): Promise<void> => {
+  if (projectEntryBusy.value || exitBusy.value || createBusy.value) return;
+  projectEntryBusy.value = true;
+  projectEntryError.value = '';
+  try {
+    if (!projects.value.some((project) => project.id === projectId)) await loadProjects();
+    const target = projects.value.find((project) => project.id === projectId);
+    if (
+      !target ||
+      !WORKFLOW_SPACES[workflow].includes(space) ||
+      !projectMatchesSpace(target, space)
+    ) {
+      projectEntryError.value = '该项目已不可用或不属于所选工作流，请刷新项目列表。';
+      return;
+    }
+    const entered = await enterLibraryProject(projectId, {
+      currentProjectId: () => currentProjectId.value,
+      leaveCurrent: exitProject,
+      selectProject,
+      changingWorkflow: activeWorkflow.value !== workflow,
+    });
+    if (!entered) {
+      projectEntryError.value = exitError.value || '未能进入项目，请稍后重试。';
+      return;
+    }
+    activeWorkflow.value = workflow;
+    closeAssetDrawer();
+  } catch {
+    projectEntryError.value = '进入项目失败，请稍后重试。';
+  } finally {
+    projectEntryBusy.value = false;
   }
 };
 
@@ -269,6 +316,7 @@ onBeforeUnmount(() => {
           :class="{ active: activeWorkflow === item.value }"
           type="button"
           :aria-pressed="activeWorkflow === item.value"
+          :disabled="projectEntryBusy || exitBusy"
           @click="activeWorkflow = item.value"
         >
           {{ item.label }}
@@ -279,7 +327,7 @@ onBeforeUnmount(() => {
           ref="createTrigger"
           :class="currentProject ? 'exit-entry' : 'create-entry'"
           type="button"
-          :disabled="exitBusy"
+          :disabled="exitBusy || projectEntryBusy"
           @click="handleProjectAction"
         >
           <LogOut v-if="currentProject" :size="15" />
@@ -346,8 +394,11 @@ onBeforeUnmount(() => {
     <AssetDrawer
       :open="assetDrawerOpen"
       :initial-workflow="activeWorkflow"
+      :entry-busy="projectEntryBusy"
+      :entry-error="projectEntryError"
       @close="closeAssetDrawer"
       @resume-node="resumeWorkflowNode"
+      @enter-project="enterAssetProject"
     />
 
     <Transition name="modal-fade">

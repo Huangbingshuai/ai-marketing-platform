@@ -41,7 +41,6 @@ import {
 } from '@ai-marketing/contracts';
 import {
   ParameterAdjustList,
-  WorkflowNodeDraftBar,
   WorkflowNodeFooter,
   WorkflowRunProgress,
 } from '@ai-marketing/ui';
@@ -110,7 +109,7 @@ import {
   syncEffectFinalOutput,
   updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
-import { ApiClientError, apiUrl } from '../../../api/http-client';
+import { ApiClientError, apiUrl, isNetworkError } from '../../../api/http-client';
 import {
   MixDraftRaceGuard,
   MixWorkspaceRevisionFence,
@@ -170,6 +169,7 @@ import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-th
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
 import { splitRangeAtPlayhead } from './effect-template-mix-split';
+import { resizeVideoRangeAtEdge, startsAfterIndependentTrim } from './effect-template-mix-edge-trim';
 import { prepareTimelineVideo, TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
 import {
   isMixWorkspaceSwitching,
@@ -795,7 +795,9 @@ async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSu
     }
   } catch (error) {
     if (!ownsUpdate()) return;
-    showNotice(error instanceof Error ? error.message : '读取局部更新进度失败', 'error');
+    // A failed read is not a failed durable task. Keep the confirmed operation and retry;
+    // only its explicit terminal status above can report an update failure.
+    showNotice('局部更新状态暂时未能读取，正在重新连接；已保存的更新不会撤回。', 'warning');
     sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(run, generation, afterSuccess), 3000);
   }
 }
@@ -841,6 +843,9 @@ async function updateSourceProjects(afterSuccess?: (run: FinalOutputRun) => Prom
     context.template !== activeTemplateId.value
   )
     return;
+  const operationId = crypto.randomUUID();
+  let affectedVariantIds = new Set<string>();
+  let submitted = false;
   try {
     if (
       !(await flushPendingEdits()) ||
@@ -860,8 +865,10 @@ async function updateSourceProjects(afterSuccess?: (run: FinalOutputRun) => Prom
         .map((variant) => variant.id),
     );
     sourceUpdatePendingVariantIds.value = [...affected];
+    affectedVariantIds = affected;
+    submitted = true;
     const started = await updateMixSourceProjects(context.project, {
-      operationId: crypto.randomUUID(),
+      operationId,
       workflowRunId: context.workflow, templateId: context.template,
       expectedDraftRevision: draftRevision.value, variantIds: [...affected],
       appendNewMaterials: true, expectedSourceSignature, expectedPackageNewVariants,
@@ -884,6 +891,29 @@ async function updateSourceProjects(afterSuccess?: (run: FinalOutputRun) => Prom
     sourceUpdateRun.value = started.data;
     void pollSourceUpdate(started.data, sourceUpdateGeneration, afterSuccess);
   } catch (error) {
+    const ownsRequest = () => context.project === props.projectId &&
+      context.workflow === props.workflowRunId && context.template === activeTemplateId.value;
+    if (!ownsRequest()) return;
+    // The transaction may have committed even if its response was lost. Reconcile by the
+    // exact confirmation ID, never replay a POST or resume another branch's latest batch.
+    if (submitted && (isNetworkError(error) || (error instanceof ApiClientError && error.status >= 500))) {
+      try {
+        const saved = await loadMixFinalOutputRuns(context.project, context.workflow);
+        if (!ownsRequest()) return;
+        const recovered = saved.data.find((run) => run.workflowRunId === context.workflow &&
+          run.templateId === context.template && run.sourceOperationId === operationId);
+        if (recovered) {
+          stopSourceUpdatePolling();
+          sourceUpdateItemIds.value = recovered.items.filter((item) => affectedVariantIds.has(item.variantId))
+            .map((item) => item.id);
+          sourceUpdateRun.value = recovered;
+          void pollSourceUpdate(recovered, sourceUpdateGeneration, afterSuccess);
+          return;
+        }
+      } catch { /* An unavailable read cannot prove that the transaction failed. */ }
+      if (ownsRequest()) showNotice('局部更新提交结果暂时无法确认，请刷新查看原任务；不要重复提交。', 'warning');
+      return;
+    }
     showNotice(error instanceof Error ? error.message : '局部更新失败', 'error');
   } finally {
     sourceUpdateStarting.value = false;
@@ -1610,26 +1640,6 @@ const validated = computed(
     committedVersions[activeTemplateId.value] === workspace.value?.editVersion &&
     saveState.value === 'saved',
 );
-/**
- * There is no validate button any more: a finished package commits the mix artifacts and queues its
- * films by itself. The footer still has to name where the template stands, including the partially
- * failed run that has nothing left to wait for but items to recover inside the packaging panel.
- */
-const validateStatusTitle = computed(() => {
-  if (validated.value && packagingReady.value) return '当前模板已确认';
-  if (pendingCount.value) return '仍有工程待同步';
-  if (!complete.value) return '请先补齐所有素材槽位';
-  // Ready with failures is still ready: saying "就绪" alone would hide that some films will play
-  // without narration, so the count is spelled out before the button is pressed.
-  if (packagingReady.value)
-    return packagingFailures.value.length
-      ? `成片包装就绪，其中 ${packagingFailures.value.length} 条失败将按无包装成片提交（仅画面）`
-      : '全部成片包装就绪';
-  if (packagingRunStatus.value === null) return '请先在包装面板中为全部成片生成包装';
-  return ['QUEUED', 'RUNNING'].includes(packagingRunStatus.value)
-    ? '成片包装进行中，请等待完成'
-    : '成片包装未全部就绪，请在包装面板中恢复未完成项';
-});
 const aiStageOrder: EffectTemplateMixAiRun['stage'][] = [
   'CLASSIFYING',
   'MATCHING',
@@ -4668,32 +4678,13 @@ const resizeTimelineSlot = (
   const offset = Math.round(Number(rawOffset) * 1000) / 1000;
   const start = Math.round(Number(rawStart) * TIMELINE_FPS) / TIMELINE_FPS;
   if (![duration, offset, start].every(Number.isFinite)) return;
-  const slotIndex = variant.slots.findIndex(({ id }) => id === slotId);
-  const hasMaterialOnSide = variant.slots.some((candidate, index) => {
-    if (candidate.id === slotId || !materialForSlot(candidate.id, variant)) return false;
-    return side === 'LEFT' ? index < slotIndex : index > slotIndex;
-  });
-  if (hasMaterialOnSide) return;
-  const nextOffset = Math.min(
-    Math.max(0, offset),
-    Math.max(0, Math.round((material.duration - 4) * 1000) / 1000),
-  );
-  if (material.duration < 4) return;
-  const minimumDuration = 4;
-  const maximumDuration = Math.min(15, Math.max(minimumDuration, material.duration - nextOffset));
-  const nextDuration = Math.min(
-    Math.max(minimumDuration, duration),
-    Math.round(maximumDuration * 1000) / 1000,
-  );
-  const currentStart =
-    variant.timelineStarts?.[slotId] ??
-    effectTemplateMixTiming(variant.slots).slots.find(({ id }) => id === slotId)?.start ??
-    0;
-  const hadExplicitTimelineStarts = Boolean(
-    variant.timelineStarts && Object.keys(variant.timelineStarts).length,
-  );
-  const originalRanges = effectTemplateMixTiming(variant.slots).slots;
-  const nextStart = Math.max(0, start);
+  const originalRanges = packagingTimelineClips(variant);
+  const currentStart = originalRanges.find(({ slot }) => slot.id === slotId)?.start ?? 0;
+  const resized = resizeVideoRangeAtEdge({ start: currentStart,
+    offset: variant.offsets[slotId] ?? 0, duration: slot.duration }, material.duration, side,
+    side === 'LEFT' ? start - currentStart : duration - slot.duration, TIMELINE_FPS);
+  if (!resized) return;
+  const { start: nextStart, offset: nextOffset, duration: nextDuration } = resized;
   if (
     nextDuration === slot.duration &&
     nextOffset === (variant.offsets[slotId] ?? 0) &&
@@ -4703,23 +4694,9 @@ const resizeTimelineSlot = (
   rememberTimelineEdit();
   slot.duration = nextDuration;
   variant.offsets[slotId] = nextOffset;
-  if (!hadExplicitTimelineStarts) {
-    variant.timelineStarts = {};
-    let cursor = 0;
-    for (const [index, currentSlot] of variant.slots.entries()) {
-      if (index < slotIndex) {
-        cursor = originalRanges[index]?.start ?? cursor;
-      } else if (index === slotIndex) {
-        cursor = nextStart;
-      } else {
-        cursor += variant.slots[index - 1]?.duration ?? 0;
-      }
-      variant.timelineStarts[currentSlot.id] = Math.max(0, cursor);
-    }
-  } else if (side === 'LEFT' || variant.timelineStarts?.[slotId] !== undefined) {
-    variant.timelineStarts ??= {};
-    variant.timelineStarts[slotId] = nextStart;
-  }
+  variant.timelineStarts = { ...variant.timelineStarts, ...startsAfterIndependentTrim(
+    originalRanges.map(({ slot, start }) => ({ id: slot.id, start })), slotId, nextStart,
+  ) };
   variant.bindingMetadata ??= {};
   variant.bindingMetadata[slotId] = {
     ...(variant.bindingMetadata[slotId] ?? { source: 'MANUAL' }),
@@ -8294,32 +8271,9 @@ defineExpose({
           @undo="undoTimelineEdit"
         />
       </section>
-      <WorkflowNodeDraftBar
-        v-if="workspace"
-        title="混剪模板与时间轴草稿"
-        :detail="
-          '当前模板：' +
-          workspace.template.name +
-          ' · ' +
-          workspace.variants.length +
-          ' 个工程' +
-          (pendingCount ? ' · ' + pendingCount + ' 个待同步' : '')
-        "
-        :state="saveState"
-        :state-label="
-          saveState === 'saving'
-            ? '正在自动保存…'
-            : saveState === 'dirty'
-              ? '有未保存修改'
-              : '草稿已保存'
-        "
-      />
       <WorkflowNodeFooter
         v-if="view !== 'CONFIG' && workspace"
-        back-label="上一步"
-        :complete="validated && packagingReady"
-        :status-title="validateStatusTitle"
-        :status-detail="'步骤 5 / 6 · ' + workspace.template.name"
+        back-label="上一步：片段渲染"
         next-label="下一步：成片输出"
         :show-validate="false"
         :show-next="false"
@@ -8788,6 +8742,13 @@ button:disabled {
 .template-list__row.is-source-stale {
   border-color: #f59e0b;
   box-shadow: inset 0 0 0 1px #f59e0b;
+}
+.template-list__row.active.is-source-stale {
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(135deg, #edf4ff 0%, #fff2d9 100%) padding-box,
+    linear-gradient(112deg, #2563eb 0%, #7652c8 48%, #d97706 100%) border-box;
+  box-shadow: 0 4px 13px rgba(37, 99, 235, 0.19), 0 2px 8px rgba(217, 119, 6, 0.15);
 }
 .template-list__select {
   display: flex;

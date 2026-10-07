@@ -15,7 +15,7 @@ import {
   EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
+import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   AlertCircle,
   ArrowLeft,
@@ -537,31 +537,6 @@ const originSourceLabel = (
 };
 const originSourceTitle = (sourceNames: readonly string[]): string =>
   `来源：${sourceNames.join('、') || '用户资料'}`;
-const saveStateLabel = computed(() => {
-  const state = currentState.value?.saveState ?? 'CLEAN';
-  return {
-    CLEAN: '已自动保存',
-    DIRTY: '有未保存修改',
-    SAVING: '正在保存…',
-    SAVED: '已自动保存',
-    SAVE_FAILED: '保存失败',
-  }[state];
-});
-const draftBarState = computed<'clean' | 'dirty' | 'save_failed' | 'saved' | 'saving'>(
-  () =>
-    (currentState.value?.saveState ?? 'CLEAN').toLowerCase() as
-      'clean' | 'dirty' | 'save_failed' | 'saved' | 'saving',
-);
-const commitStatusLabel = computed(() =>
-  currentState.value
-    ? {
-        UNVALIDATED: '尚未提交工作副本',
-        COMMITTED: `工作副本 revision ${currentState.value.workingArtifactRevision ?? 1}`,
-        DRAFT_CHANGED: '存在未保存的版本修改',
-        STALE: '工作副本待更新',
-      }[currentState.value.commitStatus]
-    : '',
-);
 const currentActionLabel = computed(() => {
   if (!currentState.value) return '开始 AI 提取';
   if (isExtractionRunning(currentState.value)) return 'AI 提取中…';
@@ -1795,30 +1770,14 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <WorkflowNodeDraftBar
-        v-if="currentState.result"
-        :detail="`${currentProduct.name} · 已自动保存到节点草稿 · ${commitStatusLabel}`"
-        :state="draftBarState"
-        :state-label="saveStateLabel"
-        title="AI 营销信息提炼草稿"
-      />
 
       <p v-if="validationMessage" class="validation-message" aria-live="polite">
         {{ validationMessage }}
       </p>
 
       <WorkflowNodeFooter
-        back-label="上一步"
-        :complete="readyForNext"
+        back-label="上一步：资料导入"
         :show-validate="false"
-        :status-title="
-          readyForNext
-            ? '全部产品已保存版本'
-            : currentState.commitStatus === 'COMMITTED'
-              ? '当前产品已提交，请继续保存其他产品'
-              : '审阅信息卡后保存版本即可继续'
-        "
-        :status-detail="`步骤 2 / 6 · ${currentProduct.name} · ${currentStatusMeta.label}`"
         :next-disabled="!readyForNext"
         next-label="下一步：Prompt 生成"
         @back="emit('back')"

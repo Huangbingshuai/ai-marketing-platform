@@ -21,11 +21,28 @@ from .api import InternalApi, ApiError
 from .final_output_cache import SourceCache, retry_request
 from .packaging_media import visible_intervals
 from .packaging_provider import PackagingError
-from .packaging import PackagingHandler
+from .packaging import PackagingHandler, recover_packaging_item
+from .provider import ProviderError, ProviderIncompleteError
 
 LOGGER = logging.getLogger(__name__)
 SOURCE_PROBE: ContextVar[Callable[[str, Path], Awaitable[dict[str, Any]]] | None] = ContextVar('final_source_probe', default=None)
 STAGE_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar('final_stage_context', default=None)
+
+
+def output_failure_message(error: Exception, snapshot: dict[str, Any]) -> str:
+    """Do not mislabel model failures as encoding, or echo arbitrary provider errors."""
+    if isinstance(error, ProviderError):
+        refresh = snapshot.get('sourceRefresh') or {}
+        stage = refresh.get('stage', 'SNAPSHOT')
+        label = ('素材选区' if not refresh.get('trimsReady') else
+                 '画面分析' if stage in ('SNAPSHOT', 'VISION') else '口播生成')
+        reason = ('模型输出仍不完整' if isinstance(error, ProviderIncompleteError) else
+                  'AI 服务超时或暂时不可用，自动重试已用尽' if error.retryable else
+                  'AI 配置、响应结构或请求被拒绝')
+        return f'{label}失败：{reason}；已保留旧结果和成功步骤，请重试失败项'
+    if isinstance(error, PackagingError):
+        return str(error)
+    return '成片渲染失败或超时，请重试失败项'
 
 
 def stage(name: str, started: float, **values: int | str | bool) -> None:
@@ -500,17 +517,28 @@ class FinalOutputHandler:
             return snapshot
         if self.packaging is None:
             raise PackagingError('素材局部更新的模型和包装服务尚未配置')
+        packaging = self.packaging
         if not refresh.get('trimsReady'):
             trims = await self.packaging.select_source_trims(root, endpoint, headers, project_id,
                 snapshot['timeline'], refresh['slots'])
             result = await self.api.request('PUT', f'{endpoint}/trims', headers=headers,
                 json={'projectId': project_id, 'trims': trims})
             snapshot = result['snapshot']
+            item['snapshot'] = snapshot
             refresh = snapshot['sourceRefresh']
         if not refresh.get('ready'):
             package_item = {'id': item['id'], 'snapshot': snapshot['timeline'],
                 'checkpoint': snapshot['packaging'], 'stage': refresh.get('stage', 'SNAPSHOT')}
-            await self.packaging.process_item(root, headers, project_id, package_item)
+            async def persist_retry(count: int) -> None:
+                await self.api.request('PUT', f'{endpoint}/checkpoint', headers=headers,
+                    json={'projectId': project_id, 'stage': package_item['stage'],
+                          'checkpoint': {'automaticRetries': count}})
+            try:
+                await recover_packaging_item(package_item,
+                    lambda: packaging.process_item(root, headers, project_id, package_item), persist_retry)
+            finally:
+                # Keep the latest saved stage for accurate terminal messages and recovery.
+                refresh['stage'] = package_item['stage']
             snapshot['packaging'] = package_item['checkpoint']
             if package_item.get('outputSnapshot'):
                 snapshot = package_item['outputSnapshot']
@@ -650,7 +678,7 @@ class FinalOutputHandler:
                         'exceptionType': type(exc).__name__}))
                     await retry_request(lambda: self.api.request('PUT', f'{endpoint}/progress', headers=headers,
                         json={'projectId': project_id, 'progress': 0,
-                              'errorMessage': str(exc) if isinstance(exc, PackagingError) else '成片渲染失败或超时，请重试失败项'}))
+                              'errorMessage': output_failure_message(exc, item['snapshot'])}))
                 finally:
                     stage('item', item_started)
                     STAGE_CONTEXT.reset(context)

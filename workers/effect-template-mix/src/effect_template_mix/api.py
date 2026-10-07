@@ -54,7 +54,7 @@ class InternalApi:
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 # A failed connection sent no mutation. Ambiguous POST timeouts must
                 # not replay a claim and acquire a second attempt token.
-                safe_replay = isinstance(exc, httpx.ConnectError) or method.upper() in ("GET", "PUT")
+                safe_replay = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) or method.upper() in ("GET", "PUT")
                 if safe_replay and attempt + 1 < self.max_attempts:
                     await asyncio.sleep(min(8, 2 ** (attempt + 1)))
                     continue

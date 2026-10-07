@@ -289,6 +289,7 @@ export const listWorkingArtifacts = (
   const search = new URLSearchParams();
   if (query.workflowRunId) search.set('workflowRunId', query.workflowRunId);
   if (query.nodeId) search.set('nodeId', query.nodeId);
+  if (query.view) search.set('view', query.view);
   if (query.workflow) search.set('workflow', query.workflow);
   if (query.space) search.set('space', query.space);
   const suffix = search.size ? `?${search.toString()}` : '';

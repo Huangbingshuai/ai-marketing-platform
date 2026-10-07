@@ -1,0 +1,98 @@
+import { requestRaw } from '../../api/http-client';
+import { assetFileFormat, type BrowserAsset } from './project-asset-browser';
+
+export const SOURCE_DOCUMENT_PREVIEW_LIMIT = 20 * 1024 * 1024;
+export type SourceDocumentWorkerResult = { text: string } | { error: string };
+export function sourceDocumentMode(item: BrowserAsset): 'TEXT' | 'DOCX' | 'PDF' | 'UNSUPPORTED' {
+  const format = assetFileFormat(item);
+  if (['TXT', 'MD', 'CSV', 'JSON'].includes(format)) return 'TEXT';
+  if (format === 'DOCX' || format === 'PDF') return format;
+  return 'UNSUPPORTED';
+}
+
+export function sourceDocumentContentPath(item: BrowserAsset): string {
+  const source = item.source;
+  const projectId = source.kind === 'working' ? source.artifact.projectId : source.asset.projectId;
+  const base = `/projects/${encodeURIComponent(projectId)}`;
+  if (source.kind === 'project')
+    return `${base}/assets/${encodeURIComponent(source.asset.id)}/content`;
+  if (source.file)
+    return `${base}/file-objects/${encodeURIComponent(source.file.fileObjectId)}/content`;
+  return `${base}/working-artifacts/${encodeURIComponent(source.artifact.id)}/content`;
+}
+
+export async function readSourceDocument(item: BrowserAsset, signal: AbortSignal): Promise<Blob> {
+  if (item.unavailable || !item.contentUrl) throw new Error('此版本的原文件暂不可用。');
+  if ((item.sizeBytes ?? 0) > SOURCE_DOCUMENT_PREVIEW_LIMIT)
+    throw new Error('文档超过 20 MB 预览上限，请下载原文件查看。');
+  const response = await requestRaw(sourceDocumentContentPath(item), {
+    signal,
+    operation: '读取文档',
+  });
+  if (Number(response.headers.get('content-length')) > SOURCE_DOCUMENT_PREVIEW_LIMIT) {
+    await response.body?.cancel();
+    throw new Error('文档超过 20 MB 预览上限，请下载原文件查看。');
+  }
+  if (!response.body) throw new Error('文档内容为空，请检查原文件。');
+  const reader = response.body.getReader();
+  const chunks: ArrayBuffer[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > SOURCE_DOCUMENT_PREVIEW_LIMIT) {
+        await reader.cancel();
+        throw new Error('文档超过 20 MB 预览上限，请下载原文件查看。');
+      }
+      chunks.push(Uint8Array.from(chunk.value).buffer);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new Blob(chunks, {
+    type: sourceDocumentMode(item) === 'PDF' ? 'application/pdf' : 'application/octet-stream',
+  });
+}
+
+/** Each document owns a bounded worker; abort, timeout and completion all terminate it. */
+export function parseSourceDocx(
+  buffer: ArrayBuffer,
+  signal: AbortSignal,
+  createWorker = () =>
+    new Worker(new URL('./asset-source-document.worker.ts', import.meta.url), { type: 'module' }),
+): Promise<string> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const worker = createWorker();
+    let settled = false;
+    const finish = (text: string | null, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+      worker.terminate();
+      if (error) reject(error);
+      else resolve(text ?? '');
+    };
+    const abort = () => finish(null, new DOMException('读取已取消', 'AbortError'));
+    const timeout = setTimeout(
+      () => finish(null, new Error('文档解析超时，请重试或下载原文件查看。')),
+      15_000,
+    );
+    signal.addEventListener('abort', abort, { once: true });
+    worker.onmessage = (event: MessageEvent<SourceDocumentWorkerResult>) => {
+      const result = event.data;
+      if ('error' in result) finish(null, new Error(result.error));
+      else finish(result.text);
+    };
+    worker.onerror = () => finish(null, new Error('文档解析失败，请重试或下载原文件查看。'));
+    try {
+      worker.postMessage(buffer, [buffer]);
+    } catch {
+      finish(null, new Error('文档解析未能启动，请重试。'));
+    }
+  });
+}

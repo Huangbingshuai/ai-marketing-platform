@@ -31,6 +31,9 @@ async def test_postprocess_uses_faststart_video_and_creates_poster(monkeypatch: 
         return True
 
     monkeypatch.setattr(video_processing, "_run_ffmpeg", fake_run)
+    async def fake_probe(path: Path) -> float:
+        return 14.9
+    monkeypatch.setattr(video_processing, "_probe_duration", fake_probe)
     output = RenderOutput(
         provider_task_id="provider-a",
         content=b"\x00\x00\x00\x18ftypmp42" + b"video" * 10,
@@ -43,3 +46,4 @@ async def test_postprocess_uses_faststart_video_and_creates_poster(monkeypatch: 
     assert processed.poster is not None
     assert processed.poster.content == b"jpeg-poster"
     assert processed.poster.file_name == "P001-poster.jpg"
+    assert processed.actual_duration == 14.9

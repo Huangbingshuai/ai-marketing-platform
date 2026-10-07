@@ -22,7 +22,7 @@ class TextContent(BaseModel):
 class ProviderRequest(BaseModel):
     model: str = Field(min_length=1)
     content: list[TextContent] = Field(min_length=1, max_length=1)
-    duration: int = Field(ge=1, le=30)
+    duration: float = Field(ge=1, le=30, allow_inf_nan=False)
     ratio: str = Field(min_length=1, max_length=20)
     resolution: str = Field(min_length=1, max_length=20)
 
@@ -55,9 +55,10 @@ class InputVideo(BaseModel):
     )
     original_file_name: str = Field(alias="originalFileName", min_length=1)
     mime_type: Literal["video/mp4", "video/quicktime"] = Field(alias="mimeType")
-    size_bytes: int = Field(alias="sizeBytes", ge=1, le=50 * 1024 * 1024)
+    size_bytes: int = Field(alias="sizeBytes", ge=1, le=200 * 1024 * 1024)
     content_hash: str = Field(alias="contentHash", min_length=64, max_length=64)
-    duration_seconds: float = Field(alias="durationSeconds", gt=0, le=15)
+    duration_seconds: float = Field(alias="durationSeconds", ge=4, le=30, allow_inf_nan=False)
+    ratio: str | None = None
 
 
 class RepairRegion(BaseModel):
@@ -69,6 +70,7 @@ class RepairRegion(BaseModel):
 
 class RepairInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+    provider_mode: Literal["VIDEO_EDIT", "VIDEO_REFERENCE"] = Field(default="VIDEO_EDIT", alias="providerMode")
 
     source_version: int = Field(alias="sourceVersion", ge=1)
     start_ms: int = Field(alias="startMs", ge=0)
@@ -102,12 +104,17 @@ class RenderSnapshot(BaseModel):
                 raise ValueError("repair snapshots require inputVideo and repair")
             if self.input_images:
                 raise ValueError("repair snapshots must not include inputImages")
-            if self.repair.end_ms > self.request.duration * 1000:
+            if self.repair.end_ms > self.input_video.duration_seconds * 1000:
                 raise ValueError("repair range exceeds the requested duration")
             if self.repair.end_ms <= self.repair.start_ms:
                 raise ValueError("repair range must have a positive duration")
-        elif not self.input_images:
-            raise ValueError("generation snapshots require inputImages")
+        else:
+            if not self.input_images:
+                raise ValueError("generation snapshots require inputImages")
+            if not self.request.duration.is_integer():
+                raise ValueError("generation duration must be an integer")
+        if self.operation == "REPAIR" and self.repair is not None and self.repair.provider_mode == "VIDEO_REFERENCE" and not self.request.duration.is_integer():
+            raise ValueError("reference generation duration must be an integer")
         return self
 
 
@@ -142,7 +149,8 @@ class RenderOutput(BaseModel):
     content: bytes
     file_name: str
     mime_type: str = "video/mp4"
-    duration: int | None = None
+    duration: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    actual_duration: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     ratio: str | None = None
     resolution: str | None = None
     poster: RenderPoster | None = None

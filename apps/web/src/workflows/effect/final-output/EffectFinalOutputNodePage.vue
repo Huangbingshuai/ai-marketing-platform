@@ -3,18 +3,18 @@ import { computed, nextTick, onActivated, onDeactivated, onBeforeUnmount, ref, w
 import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, X } from '@lucide/vue';
 import type {
   ApiResponse,
-  EffectTemplateMixMaterial,
   EffectTemplateMixWorkspaceData,
   EffectWorkflowBranchTreeData,
+  FinalOutputExportProgress,
   FinalOutputResolution,
   FinalOutputRun,
   SyncFinalOutputData,
 } from '@ai-marketing/contracts';
-import { effectTemplateBranchTips } from '@ai-marketing/contracts';
 import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import { apiUrl, requestJson } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import EffectTemplateMixThumbnail from '../template-mix/EffectTemplateMixThumbnail.vue';
+import { readMixTemplateCatalog, type MixTemplateCatalog } from '../template-mix/effect-template-mix-template-catalog';
 import { effectBranchNavigationMatches, type EffectBranchNavigation } from '../shared/effect-branch-navigation';
 import type { EffectOutputFreshness } from '../shared/effect-canvas-freshness';
 import { outputFileDescription, outputPackagingLabel, outputTemplateStatus } from './effect-final-output-status';
@@ -51,7 +51,7 @@ const runs = ref<FinalOutputRun[]>([]),
   selectedTemplateId = ref(''),
   selectedRunId = ref(''),
   mixWorkspace = ref<EffectTemplateMixWorkspaceData | null>(null),
-  templatePaths = ref(new Map<string, { name: string; variantCount: number }>()),
+  templateDirectory = ref<MixTemplateCatalog>({ entries: [], workflowRunIds: {}, pendingAddedMaterialIds: {}, workspaces: {} }),
   resolution = ref<FinalOutputResolution>('720p'),
   frameRate = ref<24 | 25 | 30 | 50 | 60>(30),
   page = ref(1),
@@ -64,6 +64,7 @@ const loading = ref(true),
   mixLoading = ref(true),
   busy = ref(false),
   exportStarting = ref(false),
+  liveExport = ref<FinalOutputExportProgress | null>(null),
   itemRerenderingId = ref(''),
   previewItem = ref<FinalOutputRun['items'][number] | null>(null),
   previewLoading = ref(false),
@@ -81,7 +82,7 @@ const templates = computed(() => {
       latestByTemplate.set(outputRun.templateId, outputRun);
   }
   if (!mixWorkspace.value) return [];
-  const workspaceTemplates = mixWorkspace.value?.draft.templates ?? [];
+  const workspaceTemplates = templateDirectory.value.entries;
   const cards: OutputTemplateCard[] = workspaceTemplates.map((entry) => {
     const outputRun = latestByTemplate.get(entry.id);
     const variants = entry.workspace.variants;
@@ -119,7 +120,7 @@ const templates = computed(() => {
       : '返回模板混剪，智能填充成功后成片工程会自动进入这里；随后可继续智能成片包装。';
     return {
       templateId: entry.id,
-      templateName: templatePaths.value.get(entry.id)?.name ?? entry.workspace.template.name,
+      templateName: entry.workspace.template.name,
       run: outputRun,
       pendingLabel,
       pendingTitle,
@@ -141,30 +142,42 @@ const active = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.va
 const backgroundExport = computed(() => runs.value.find((entry) =>
   entry.backgroundExportSourceRunId === run.value?.workflowRunId &&
   entry.templateId === selectedTemplateId.value));
-const exportActive = computed(() => Boolean(backgroundExport.value &&
-  ['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(backgroundExport.value.status)));
-const exportPublishing = computed(() => Boolean(backgroundExport.value?.status === 'COMPLETED' &&
-  !backgroundExport.value.backgroundExportPublished));
-const exportProgressVisible = computed(() => exportStarting.value || Boolean(backgroundExport.value &&
-  backgroundExport.value.status !== 'COMPLETED'));
+const currentExport = computed(() => {
+  const live = liveExport.value;
+  const full = backgroundExport.value;
+  const latest = live && live.backgroundExportSourceRunId === run.value?.workflowRunId &&
+    live.templateId === selectedTemplateId.value &&
+    (!full || Date.parse(live.createdAt) >= Date.parse(full.createdAt)) ? live : full;
+  if (exportStarting.value && exportAttempt && latest &&
+    Date.parse(latest.createdAt) < exportAttempt.startedAt - 5000) return undefined;
+  return latest;
+});
+const exportActive = computed(() => Boolean(currentExport.value &&
+  ['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(currentExport.value.status)));
+const exportPublishing = computed(() => Boolean(currentExport.value?.status === 'COMPLETED' &&
+  !currentExport.value.backgroundExportPublished));
+const exportProgressVisible = computed(() => exportStarting.value || Boolean(currentExport.value &&
+  currentExport.value.status !== 'COMPLETED'));
 const localProgressVisible = computed(() => Boolean(run.value &&
   ['QUEUED', 'RUNNING', 'FAILED', 'PARTIAL', 'CANCELLED'].includes(run.value.status)));
 const staleItems = computed(() => run.value?.items.filter((item) => item.stale) ?? []);
-const validateStatusTitle = computed(() => {
-  if (!run.value) return '等待成片输出';
-  if (run.value.counts.stale) return `${run.value.counts.stale} 条成片待局部更新`;
-  if (run.value.status === 'COMPLETED') return '本批成片已全部导出';
-  if (run.value.validated) return '本批成片已全部导出';
-  return run.value.status === 'PENDING_RENDER' ? '等待导出成片' : '等待成片导出完成';
-});
 const pendingProjects = computed(() => run.value?.projectChanges?.added ?? []);
 const removedItemIds = computed(() => new Set(run.value?.projectChanges?.removedItemIds ?? []));
 const canLocalUpdate = computed(() => Boolean(run.value?.projectChanges &&
   ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(run.value.status) && run.value.counts.stale));
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
-const items = computed(() => run.value?.items.slice((page.value - 1) * pageSize.value, page.value * pageSize.value) ?? []);
+const visibleItems = computed(() => {
+  const source = run.value;
+  if (!source) return [];
+  // The first export runs on a child branch. Show its live delivery state against the
+  // source's stable film order while the original branch remains selected.
+  if (source.status !== 'PENDING_RENDER' || !currentExport.value) return source.items;
+  const delivered = new Map(currentExport.value.items.map((item) => [item.variantId, item]));
+  return source.items.map((item) => ({ ...item, ...delivered.get(item.variantId) }));
+});
+const items = computed(() => visibleItems.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 const downloadableItems = computed(() =>
-  run.value?.items.filter((item) => item.status === 'COMPLETED' && Boolean(item.fileObjectId)) ?? [],
+  visibleItems.value.filter((item) => item.status === 'COMPLETED' && Boolean(item.fileObjectId)),
 );
 const selectedItems = computed(() =>
   downloadableItems.value.filter((item) => selectedItemIds.value.has(item.id)),
@@ -202,16 +215,14 @@ const handlePreviewVideoError = () => {
   previewLoading.value = false;
   previewError.value = '成片加载失败，请稍后重试';
 };
-const averageProgress = (value?: FinalOutputRun) => value?.items.length
+const averageProgress = (value?: Pick<FinalOutputRun, 'items'> | FinalOutputExportProgress | null) => value?.items.length
   ? Math.floor(value.items.reduce((sum, item) => sum + item.progress, 0) / value.items.length)
   : 0;
-const exportProgress = computed(() => averageProgress(backgroundExport.value));
+const exportProgress = computed(() => averageProgress(currentExport.value));
 const localProgress = computed(() => averageProgress(run.value));
 const exportProgressSummary = computed(() => {
-  if (exportStarting.value)
-    return `${run.value?.status === 'PENDING_RENDER' ? '导出成片' : '重新导出成片'} · 正在创建任务`;
-  const current = backgroundExport.value;
-  if (!current) return '正在导出成片';
+  const current = currentExport.value;
+  if (!current) return `${run.value?.status === 'PENDING_RENDER' ? '导出成片' : '重新导出成片'} · 正在创建任务`;
   return `${run.value?.status === 'PENDING_RENDER' ? '导出成片' : '重新导出成片'} · ${labels[current.status]} · ${current.counts.completed} / ${current.counts.total} 条完成`;
 });
 const localProgressSummary = computed(() => {
@@ -220,8 +231,8 @@ const localProgressSummary = computed(() => {
   const action = backgroundExport.value ? '局部更新成片' : '成片输出';
   return `${action} · ${labels[current.status]} · ${current.counts.completed} / ${current.counts.total} 条完成`;
 });
-const exportProgressWarning = computed(() => backgroundExport.value?.counts.failed
-  ? `${backgroundExport.value.counts.failed} 条成片失败或取消`
+const exportProgressWarning = computed(() => currentExport.value?.counts.failed
+  ? `${currentExport.value.counts.failed} 条成片失败或取消`
   : '');
 const localProgressWarning = computed(() => run.value?.counts.failed
   ? `${run.value.counts.failed} 条成片失败或取消`
@@ -243,20 +254,64 @@ const statusTone = (status: string) => {
 };
 const base = computed(() => `/projects/${props.projectId}/workflows/effect/final-output`);
 const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
-const mixMaterials = computed(
-  () => new Map((mixWorkspace.value?.materials ?? []).map((material) => [material.id, material])),
-);
 let timer: ReturnType<typeof setTimeout> | undefined;
+let exportTimer: ReturnType<typeof setTimeout> | undefined;
 let controller: AbortController | undefined;
 let mixController: AbortController | undefined;
+let exportController: AbortController | undefined;
 let generation = 0,
   mixGeneration = 0,
+  exportGeneration = 0,
   mounted = true;
 let initialActivationHandled = false;
 const pendingExportNavigation = new Set<string>();
 let openingExportRunId = '';
+let exportAttempt: { projectId: string; sourceRunId: string; templateId: string; startedAt: number } | null = null;
+const exportRetryKeys = new Map<string, string>();
 const outputSyncChannel = typeof BroadcastChannel === 'undefined' ? null
   : new BroadcastChannel('effect-final-output-sync');
+async function refreshExportProgress() {
+  const sourceRunId = run.value?.workflowRunId;
+  const templateId = selectedTemplateId.value;
+  const projectId = props.projectId;
+  const current = ++exportGeneration;
+  clearTimeout(exportTimer);
+  exportController?.abort();
+  exportController = new AbortController();
+  if (!sourceRunId || !templateId || !mounted) {
+    liveExport.value = null;
+    return;
+  }
+  try {
+    const result = await requestJson<ApiResponse<FinalOutputExportProgress | null>>(
+      `${base.value}/export-progress?sourceWorkflowRunId=${encodeURIComponent(sourceRunId)}&templateId=${encodeURIComponent(templateId)}`,
+      { operation: '读取成片导出进度', signal: exportController.signal },
+    );
+    if (current !== exportGeneration || projectId !== props.projectId ||
+      sourceRunId !== run.value?.workflowRunId || templateId !== selectedTemplateId.value) return;
+    liveExport.value = result.data;
+    if (result.data) {
+      const attempt = exportAttempt;
+      if (attempt?.projectId === projectId && attempt.sourceRunId === sourceRunId &&
+        attempt.templateId === templateId &&
+        Date.parse(result.data.createdAt) >= attempt.startedAt - 5000) {
+        pendingExportNavigation.add(result.data.id);
+        exportStarting.value = false;
+      }
+      if (['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(result.data.status))
+        pendingExportNavigation.add(result.data.id);
+      if (pendingExportNavigation.has(result.data.id) && result.data.status === 'COMPLETED' &&
+        result.data.backgroundExportPublished)
+        await viewExportBranch(result.data);
+    }
+  } catch {
+    // The full output read remains the fallback while this small status request is unavailable.
+  } finally {
+    if (current === exportGeneration && mounted)
+      exportTimer = setTimeout(() => { void refreshExportProgress(); },
+        exportStarting.value || exportActive.value || exportPublishing.value ? 2500 : 15000);
+  }
+}
 async function refresh() {
   const current = ++generation;
   controller?.abort();
@@ -269,6 +324,19 @@ async function refresh() {
     );
     if (current !== generation) return;
     runs.value = result.data;
+    // The POST may still be waiting for its response (or the following refresh) after the
+    // server has created the child. The read path is authoritative for its progress.
+    const attempt = exportAttempt;
+    if (attempt && attempt.projectId === props.projectId) {
+      const observed = result.data.find((entry) =>
+        entry.backgroundExportSourceRunId === attempt.sourceRunId &&
+        entry.templateId === attempt.templateId &&
+        Date.parse(entry.createdAt) >= attempt.startedAt - 5000);
+      if (observed) {
+        pendingExportNavigation.add(observed.id);
+        exportStarting.value = false;
+      }
+    }
     if (mounted) emit('freshness', { projectId: props.projectId, workflowRunId: props.workflowRunId, runs: result.data });
     const savedSettings = new Map(settingsByTemplate.value);
     for (const template of templates.value) {
@@ -303,33 +371,38 @@ async function refresh() {
   } finally {
     if (current === generation) {
       loading.value = false;
-      if (mounted) timer = setTimeout(() => void refresh(), 4000);
+      if (mounted) timer = setTimeout(() => {
+        // Mix catalog reads can outlast this timer. Refresh them on activation or
+        // explicit source changes so a slow read is not cancelled forever.
+        void refresh();
+      }, exportStarting.value || exportActive.value || exportPublishing.value ? 30000 : 8000);
     }
   }
 }
 async function refreshMixWorkspace(): Promise<EffectTemplateMixWorkspaceData | null> {
   const current = ++mixGeneration;
   mixController?.abort();
-  mixController = new AbortController();
+  const requestController = new AbortController();
+  mixController = requestController;
+  const projectId = props.projectId;
+  const scopeId = props.workflowRunId;
   if (!mixWorkspace.value) mixLoading.value = true;
   try {
-    const scopeId = props.workflowRunId;
     const [result, tree] = await Promise.all([requestJson<ApiResponse<EffectTemplateMixWorkspaceData>>(
-      `/projects/${props.projectId}/workflows/effect/template-mix?workflowRunId=${encodeURIComponent(props.workflowRunId)}`,
-      { operation: '读取混剪成片预览', signal: mixController.signal },
+      `/projects/${projectId}/workflows/effect/template-mix?workflowRunId=${encodeURIComponent(scopeId)}`,
+      { operation: '读取混剪成片预览', signal: requestController.signal },
     ), requestJson<ApiResponse<EffectWorkflowBranchTreeData>>(
-      `/projects/${props.projectId}/workflow-runs/effect/branches`,
-      { operation: '读取模板当前路径', signal: mixController.signal },
+      `/projects/${projectId}/workflow-runs/effect/branches`,
+      { operation: '读取模板当前路径', signal: requestController.signal },
     )]);
-    if (current === mixGeneration) {
+    const directory = await readMixTemplateCatalog(tree.data, scopeId, result.data,
+      async (workflowRunId) => (await requestJson<ApiResponse<EffectTemplateMixWorkspaceData>>(
+        `/projects/${projectId}/workflows/effect/template-mix?workflowRunId=${encodeURIComponent(workflowRunId)}`,
+        { operation: '读取模板当前工程', signal: requestController.signal },
+      )).data, scopeId);
+    if (current === mixGeneration && mounted && projectId === props.projectId && scopeId === props.workflowRunId) {
       mixWorkspace.value = result.data;
-      templatePaths.value = new Map([...effectTemplateBranchTips(tree.data.branches,
-        tree.data.branches.some((branch) => branch.workflowRunId === scopeId) ? scopeId :
-          tree.data.activeWorkflowRunId)].flatMap(([templateId, branch]) => {
-        const template = branch.templates.find((entry) => entry.templateId === templateId);
-        return template ? [[templateId, { name: template.name,
-          variantCount: template.timelineVariantCount }] as const] : [];
-      }));
+      templateDirectory.value = directory;
       mixError.value = '';
       if (!templates.value.some(({ templateId }) => templateId === selectedTemplateId.value))
         selectedTemplateId.value = templates.value[0]?.templateId ?? '';
@@ -353,13 +426,20 @@ async function reconcilePending(): Promise<void> {
   if (!workspace || !mounted || projectId !== props.projectId ||
     workflowRunId !== props.workflowRunId) return;
   try {
-    const response = await requestJson<ApiResponse<SyncFinalOutputData>>(
-      `/projects/${projectId}/workflows/effect/final-output/sync`, {
-        method: 'POST', operation: '对齐待渲染成片',
-        body: { workflowRunId, expectedDraftRevision: workspace.draftRevision },
-      },
-    );
-    if (!response.data.superseded && mounted && projectId === props.projectId &&
+    const directory = templateDirectory.value;
+    await Promise.all(directory.entries.map(async entry => {
+      const sourceRunId = directory.workflowRunIds[entry.id];
+      const source = directory.workspaces[sourceRunId ?? ''];
+      if (!sourceRunId || !source || !entry.workspace.variants.length) return;
+      await requestJson<ApiResponse<SyncFinalOutputData>>(
+        `/projects/${projectId}/workflows/effect/final-output/sync`, {
+          method: 'POST', operation: '对齐待渲染成片',
+          body: { workflowRunId: sourceRunId, templateId: entry.id,
+            expectedDraftRevision: source.draftRevision },
+        },
+      );
+    }));
+    if (mounted && projectId === props.projectId &&
       workflowRunId === props.workflowRunId) await refresh();
   } catch (reason) {
     if (mounted && projectId === props.projectId && workflowRunId === props.workflowRunId)
@@ -373,11 +453,14 @@ const refreshAll = () => {
 const outputChanged = (value: unknown) => {
   const scope = value as { projectId?: string; workflowRunId?: string } | null;
   if (!mounted || scope?.projectId !== props.projectId ||
-    scope.workflowRunId !== props.workflowRunId) return;
+    (scope.workflowRunId !== props.workflowRunId &&
+      !Object.values(templateDirectory.value.workflowRunIds).includes(scope.workflowRunId ?? ''))) return;
   // Update film warnings first. Workbench/history and tree reads are secondary and used to
   // compete with the same output query after every timeline save, especially across tabs.
   void refresh().then(() => {
-    if (mounted && scope.projectId === props.projectId && scope.workflowRunId === props.workflowRunId)
+    if (mounted && scope.projectId === props.projectId &&
+      (scope.workflowRunId === props.workflowRunId ||
+        Object.values(templateDirectory.value.workflowRunIds).includes(scope.workflowRunId ?? '')))
       void refreshMixWorkspace();
   });
 };
@@ -385,18 +468,18 @@ if (outputSyncChannel) outputSyncChannel.onmessage = (event: MessageEvent) => ou
 const savedOutputSource = (event: Event) => outputChanged((event as CustomEvent).detail);
 window.addEventListener('effect-final-output-sync', savedOutputSource);
 const previewClips = (item: FinalOutputRun['items'][number]): OutputPreviewClip[] => {
-  const entry = mixWorkspace.value?.draft.templates.find(({ id }) => id === run.value?.templateId);
+  const entry = templateDirectory.value.entries.find(({ id }) => id === run.value?.templateId);
   const variant = entry?.workspace.variants.find(({ id }) => id === item.variantId);
   if (!entry || !variant) return item.cover ? [item.cover] : [];
+  const mixMaterials = new Map(entry.workspace.materials.map(material => [material.id, material]));
   const clips = variant.slots
-    .map((slot) => mixMaterials.value.get(variant.bindings[slot.id] ?? ''))
-    .filter((material): material is EffectTemplateMixMaterial => Boolean(material?.available))
-    .map((material) => ({
-      fileObjectId: material.fileObjectId,
-      time: Math.min(0.12, material.duration / 2),
-      contentHash: material.contentHash,
-      version: `${material.artifactRevision}:${material.contentHash}`,
-    }));
+    .map((slot) => {
+      const material = mixMaterials.get(variant.bindings[slot.id] ?? '');
+      return material?.available ? { fileObjectId: material.fileObjectId,
+        time: Math.max(0, (variant.offsets[slot.id] ?? 0) + Math.min(0.12, slot.duration / 2)),
+        contentHash: material.contentHash, version: `${material.artifactRevision}:${material.contentHash}` } : null;
+    })
+    .filter((clip): clip is NonNullable<typeof clip> => Boolean(clip));
   if (!clips.length) return item.cover ? [item.cover] : [];
   const sampleIndexes = [...new Set([0, Math.floor((clips.length - 1) / 2), clips.length - 1])];
   return sampleIndexes.map((index) => clips[index]!);
@@ -448,7 +531,7 @@ async function retryFailedOutputs() {
   }
 }
 async function startRender() {
-  if (!run.value || exportStarting.value || exportActive.value || exportPublishing.value || busy.value) return;
+  if (!run.value || exportAttempt || exportStarting.value || exportActive.value || exportPublishing.value || busy.value) return;
   const selected = run.value;
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
@@ -457,6 +540,7 @@ async function startRender() {
     props.workflowRunId === workflowRunId && run.value?.id === selected.id &&
     selectedTemplateId.value === selected.templateId;
   const rerender = selected.status !== 'PENDING_RENDER';
+  let attempt: { projectId: string; sourceRunId: string; templateId: string; startedAt: number } | null = null;
   exportStarting.value = true;
   try {
     if (rerender) {
@@ -471,28 +555,46 @@ async function startRender() {
       if (!confirmed || !isCurrent()) return;
     }
     if (!isCurrent()) return;
+    attempt = { projectId, sourceRunId: selected.workflowRunId,
+      templateId: selected.templateId, startedAt: Date.now() };
+    exportAttempt = attempt;
+    void refreshExportProgress();
+    const retryScope = `${projectId}:${selected.id}:${settings.resolution}:${settings.frameRate}`;
+    const idempotencyKey = exportRetryKeys.get(retryScope) ?? crypto.randomUUID();
+    exportRetryKeys.set(retryScope, idempotencyKey);
     const response = await requestJson<ApiResponse<FinalOutputRun>>(
       `/projects/${projectId}/workflows/effect/final-output/${selected.id}/render`,
       {
         method: 'POST',
         operation: rerender ? '重新导出成片' : '开始导出成片',
+        headers: { 'Idempotency-Key': idempotencyKey },
         body: settings,
+        signal: AbortSignal.timeout(120_000),
       },
     );
     if (!isCurrent()) return;
+    exportRetryKeys.delete(retryScope);
     error.value = '';
+    exportStarting.value = false;
     pendingExportNavigation.add(response.data.id);
     runs.value = [...runs.value.filter((entry) => entry.id !== response.data.id),
       { ...response.data, backgroundExportSourceRunId: selected.workflowRunId }];
-    await refresh();
+    void refresh();
   } catch (reason) {
     if (!isCurrent()) return;
-    error.value = reason instanceof Error ? reason.message : '启动成片渲染失败';
+    if (!currentExport.value)
+      error.value = reason instanceof DOMException && reason.name === 'TimeoutError'
+        ? '创建任务响应超时，正在核对任务状态；可以稍后重试，重复请求不会创建第二批成片'
+        : reason instanceof Error ? reason.message : '启动成片渲染失败';
+    void refresh();
   } finally {
-    exportStarting.value = false;
+    if (!attempt || exportAttempt === attempt) {
+      exportStarting.value = false;
+      exportAttempt = null;
+    }
   }
 }
-async function viewExportBranch(exported: FinalOutputRun) {
+async function viewExportBranch(exported: FinalOutputRun | FinalOutputExportProgress) {
   if (exported.status !== 'COMPLETED' ||
     (exported.backgroundExportSourceRunId && !exported.backgroundExportPublished) ||
     !mounted || busy.value || openingExportRunId) return;
@@ -594,8 +696,11 @@ function stop() {
   ++mixGeneration;
   controller?.abort();
   mixController?.abort();
+  ++exportGeneration;
+  exportController?.abort();
   closePreviewDialog(false);
   clearTimeout(timer);
+  clearTimeout(exportTimer);
 }
 watch(
   () => [props.projectId, props.workflowRunId] as const,
@@ -610,6 +715,7 @@ watch(
       return;
     }
     runs.value = [];
+    liveExport.value = null;
     outputWorkflowRunId.value = props.workflowRunId;
     pendingExportNavigation.clear();
     selectedTemplateId.value = '';
@@ -619,7 +725,7 @@ watch(
     selectedItemIds.value = new Set();
     selectionMode.value = false;
     mixWorkspace.value = null;
-    templatePaths.value = new Map();
+    templateDirectory.value = { entries: [], workflowRunIds: {}, pendingAddedMaterialIds: {}, workspaces: {} };
     mixLoading.value = true;
     mixError.value = '';
     loading.value = true;
@@ -646,6 +752,9 @@ watch([() => props.branchNavigation, loading, mixLoading, templates], () => {
 watch(selectedTemplateId, () => {
   page.value = 1;
   selectedRunId.value = templateRuns.value[0]?.id ?? '';
+});
+watch([() => props.projectId, () => run.value?.workflowRunId, selectedTemplateId], () => {
+  void refreshExportProgress();
 });
 watch(selectedRunId, () => {
   page.value = 1;
@@ -682,6 +791,7 @@ onActivated(() => {
   // KeepAlive retains the old preview; entering from the mix workbench must reload its saved draft.
   void reconcilePending();
   void refresh();
+  void refreshExportProgress();
 });
 onDeactivated(stop);
 onBeforeUnmount(() => {
@@ -794,15 +904,15 @@ onBeforeUnmount(() => {
         >
           <LoaderCircle v-if="exportStarting || exportActive || exportPublishing" class="spin" :size="15" />
           <RefreshCw v-else-if="run.status !== 'PENDING_RENDER'" :size="15" />
-          <Play v-else :size="15" />{{ exportStarting ? '正在创建任务…' : exportActive ? `重新导出中 ${backgroundExport?.counts.completed}/${backgroundExport?.counts.total}` : exportPublishing ? '正在完成成片…' : run.status !== 'PENDING_RENDER' ? `重新导出成片（${run.counts.total}）` : `导出成片（${run.counts.total}）` }}
+          <Play v-else :size="15" />{{ currentExport && (exportActive || exportPublishing) ? `${run.status === 'PENDING_RENDER' ? '导出中' : '重新导出中'} ${currentExport.counts.completed}/${currentExport.counts.total}` : exportStarting ? '正在创建任务…' : run.status !== 'PENDING_RENDER' ? `重新导出成片（${run.counts.total}）` : `导出成片（${run.counts.total}）` }}
         </button>
       </section>
       <WorkflowRunProgress
         v-if="exportProgressVisible"
         class="output-run-progress"
-        :progress="exportStarting ? 0 : exportProgress"
+        :progress="exportProgress"
         :summary="exportProgressSummary"
-        :attempt-label="`按最新混剪工程重新渲染全部 ${run.counts.total} 条成片`"
+        :attempt-label="`按当前混剪工程${run.status === 'PENDING_RENDER' ? '导出' : '重新渲染'}全部 ${run.counts.total} 条成片`"
         :warning="exportProgressWarning"
         action-label="查看成片列表"
         @show-details="handleProgressAction"
@@ -810,6 +920,7 @@ onBeforeUnmount(() => {
       <WorkflowRunProgress
         v-if="localProgressVisible"
         class="output-run-progress"
+        tone="update"
         :progress="localProgress"
         :summary="localProgressSummary"
         :attempt-label="backgroundExport ? '仅更新当前选中的成片；整批导出独立进行' : '成片任务进度'"
@@ -821,7 +932,7 @@ onBeforeUnmount(() => {
       <section ref="outputWorkspaceElement" class="output-workspace" aria-labelledby="output-list-title">
         <header class="workspace-heading">
           <div>
-            <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' ? '待渲染成片' : '成片列表' }}</h3>
+            <h3 id="output-list-title">{{ run.status === 'PENDING_RENDER' && !currentExport ? '待渲染成片' : '成片列表' }}</h3>
             <p v-if="run.counts.stale">{{ run.counts.stale }} 条成片待更新<span v-if="run.projectChanges?.added.length || run.projectChanges?.removedItemIds.length">（新增 {{ run.projectChanges?.added.length ?? 0 }} 条，删除 {{ run.projectChanges?.removedItemIds.length ?? 0 }} 条）</span>；局部更新后同步当前分支，其他成片不变。</p>
             <p v-else>{{ run.status === 'PENDING_RENDER' ? '智能填充后的成片工程已同步；未包装条目可先导出仅画面成片，包装成功后会自动补齐音画' : '在左侧选择模板，查看并播放该模板输出的成片' }}</p>
           </div>
@@ -910,7 +1021,8 @@ onBeforeUnmount(() => {
                   @change.stop="toggleItemSelection(item.id)"
                 />
               </label>
-              <span v-if="previewClips(item).length" class="preview-cover preview-montage" aria-hidden="true">
+              <span v-if="previewClips(item).length" class="preview-cover preview-montage"
+                :style="{ gridTemplateColumns: `repeat(${previewClips(item).length}, minmax(0, 1fr))` }" aria-hidden="true">
                 <EffectTemplateMixThumbnail
                   v-for="(clip, clipIndex) in previewClips(item)"
                   :key="`${item.id}:${clip.fileObjectId}:${clip.contentHash}:${page}`"
@@ -921,7 +1033,7 @@ onBeforeUnmount(() => {
                 />
               </span>
               <span class="preview-play-icon" aria-hidden="true"><Play :size="22" /></span>
-              <small v-if="run.status === 'PENDING_RENDER'">等待导出</small>
+              <small v-if="item.status === 'PENDING_RENDER'">等待导出</small>
               <small v-else-if="item.status !== 'COMPLETED'">{{ item.progress }}%</small>
             </div>
             <div class="output-info">
@@ -938,8 +1050,8 @@ onBeforeUnmount(() => {
                   :class="outputPackagingLabel(item)?.tone"
                 >{{ outputPackagingLabel(item)?.text }}</span>
               </div>
-              <p class="output-meta">{{ outputFileDescription(item, run.status) }}</p>
-              <div v-if="run.status !== 'PENDING_RENDER' && item.status !== 'COMPLETED'" class="item-progress">
+              <p class="output-meta">{{ outputFileDescription(item, run.status === 'PENDING_RENDER' && currentExport ? currentExport.status : run.status) }}</p>
+              <div v-if="item.status !== 'PENDING_RENDER' && item.status !== 'COMPLETED'" class="item-progress">
                 <progress :value="item.progress" max="100" :aria-label="`${displayName(item)} 进度`" />
                 <strong>{{ item.progress }}%</strong>
               </div>
@@ -997,10 +1109,7 @@ onBeforeUnmount(() => {
           </nav>
       </section>
       <WorkflowNodeFooter
-        back-label="返回模板混剪"
-        :complete="Boolean(run.validated)"
-        :status-title="validateStatusTitle"
-        :status-detail="`步骤 6 / 6 · 当前模板：${selectedTemplate?.templateName ?? run.templateName}`"
+        back-label="上一步：模板混剪"
         next-label=""
         :show-validate="false"
         :show-next="false"

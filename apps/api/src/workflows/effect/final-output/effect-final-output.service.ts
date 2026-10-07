@@ -13,7 +13,9 @@ import type {
   EffectTemplateMixMaterial,
   EffectTemplateMixVariant,
   EffectTemplateMixWorkspaceData,
+  FinalOutputExportProgress,
   FinalOutputRun,
+  FinalOutputStatus,
   FinalOutputSnapshot,
   LocalUpdateFinalOutputRequest,
   SourceUpdateFinalOutputRequest,
@@ -1430,12 +1432,15 @@ export class EffectFinalOutputService {
     return id ? this.get(projectId, id) : { noChanges: true };
   }
 
-  async start(projectId: string, id: string, settings: StartFinalOutputRequest) {
+  async start(projectId: string, id: string, settings: StartFinalOutputRequest,
+    idempotencyKey?: string) {
     if (
       !FINAL_OUTPUT_RESOLUTIONS.includes(settings.resolution) ||
       !([24, 25, 30, 50, 60] as const).includes(settings.frameRate)
     )
       throw new BadRequestException('分辨率或帧率设置无效');
+    if (idempotencyKey && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey))
+      throw new BadRequestException('导出请求标识无效');
     const source = await this.db.effectFinalOutputRun.findFirst({
       where: { projectId, id },
       include,
@@ -1468,7 +1473,8 @@ export class EffectFinalOutputService {
     const edit = await this.working.beginEffectNodeEdit(
       projectId, tip.workflowRunId, 'FINAL_OUTPUT', 'BATCH',
       { always: true, keepParentActive: true,
-        templateId: source.templateId, templateScopeActiveRunId: active.id },
+        templateId: source.templateId, templateScopeActiveRunId: active.id,
+        ...(idempotencyKey ? { creationKey: `final-output:${id}:${idempotencyKey}` } : {}) },
     );
     if (!edit) throw new ConflictException('当前分支无法创建成片输出版本');
     const batch = await this.db.effectFinalOutputRun.findFirst({
@@ -1478,6 +1484,17 @@ export class EffectFinalOutputService {
     });
     if (!batch) throw new ConflictException('新版本的成片输出批次不存在');
     const targetId = batch.id;
+    if (!edit.created) {
+      const existing = await this.db.effectFinalOutputRun.findFirst({
+        where: { projectId, id: targetId }, include,
+      });
+      if (existing && ['QUEUED', 'RUNNING', 'COMPLETED'].includes(existing.status)) {
+        const snapshot = existing.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined;
+        if (snapshot?.resolution !== settings.resolution || snapshot?.frameRate !== settings.frameRate)
+          throw new ConflictException('该模板已有不同分辨率或帧率的导出任务，请刷新后查看');
+        return this.get(projectId, targetId);
+      }
+    }
     // The clone owns the draft frozen at branch creation, not the old delivery's geometry.
     try {
       const workspace = await this.mix.outputSourceWorkspace(projectId, edit.runId);
@@ -1486,8 +1503,12 @@ export class EffectFinalOutputService {
       const run = await tx.effectFinalOutputRun.findFirst({ where: { projectId, id: targetId }, include });
       if (!run) throw new NotFoundException('成片输出任务不存在');
       // The cloned batch is pending; duplicate calls cannot enqueue it twice.
-      if (run.status === 'QUEUED' || run.status === 'RUNNING')
-        throw new ConflictException('该模板已开始渲染，不能修改本批输出规格');
+      if (['QUEUED', 'RUNNING', 'COMPLETED'].includes(run.status)) {
+        const snapshot = run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined;
+        if (snapshot?.resolution !== settings.resolution || snapshot?.frameRate !== settings.frameRate)
+          throw new ConflictException('该模板已有不同分辨率或帧率的导出任务，请刷新后查看');
+        return;
+      }
       const variants = workspace.draft?.templates.find((entry) => entry.id === source.templateId)
         ?.workspace.variants ?? [];
       const outputVariants = variants.filter((variant) => run.items.some((item) => item.variantId === variant.id) ||
@@ -2022,6 +2043,39 @@ export class EffectFinalOutputService {
         backgroundExportPublished: Boolean(child.branchPublishedAt) });
     }
     return [...current, ...exports];
+  }
+
+  async exportProgress(projectId: string, sourceWorkflowRunId: string,
+    templateId: string): Promise<FinalOutputExportProgress | null> {
+    const child = await this.db.workflowRun.findFirst({ where: {
+      projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+      parentWorkflowRunId: sourceWorkflowRunId, forkNodeId: 'FINAL_OUTPUT',
+      forkTemplateId: templateId, editSessionNodeId: null,
+    }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: {
+      id: true, branchPublishedAt: true,
+      effectFinalOutputRuns: { where: { projectId, templateId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 1, select: {
+          id: true, workflowRunId: true, templateId: true, status: true, createdAt: true,
+          items: { select: { id: true, variantId: true, status: true, progress: true,
+            fileObjectId: true, assetId: true, errorMessage: true } },
+        } },
+    } });
+    const batch = child?.effectFinalOutputRuns[0];
+    if (!batch) return null;
+    const items = batch.items.map((item) => ({ ...item,
+      status: item.status as FinalOutputStatus }));
+    const count = (status: FinalOutputStatus) => items.filter((item) => item.status === status).length;
+    return {
+      id: batch.id, workflowRunId: batch.workflowRunId,
+      backgroundExportSourceRunId: sourceWorkflowRunId,
+      backgroundExportPublished: Boolean(child.branchPublishedAt),
+      templateId: batch.templateId, createdAt: batch.createdAt.toISOString(),
+      status: batch.status as FinalOutputStatus,
+      counts: { total: items.length, queued: count('QUEUED') + count('PENDING_RENDER'),
+        running: count('RUNNING'), completed: count('COMPLETED'),
+        failed: count('FAILED') + count('CANCELLED') },
+      items,
+    };
   }
 
   private async readOutputPathCatalog(projectId: string, pathIds: readonly string[]): Promise<OutputPathCatalog> {

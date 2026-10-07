@@ -64,6 +64,7 @@ import {
 import EffectTemplateMixFilmstrip from './EffectTemplateMixFilmstrip.vue';
 import EffectTemplateMixWaveform from './EffectTemplateMixWaveform.vue';
 import { splitRangeAtPlayhead } from './effect-template-mix-split';
+import { resizeVideoRangeAtEdge } from './effect-template-mix-edge-trim';
 
 const props = withDefaults(
   defineProps<{
@@ -1063,18 +1064,8 @@ const setAudioTrackElement = (track: AudioTrack, element: unknown): void => {
 const rangeForSlot = (slotId: string): { start: number; end: number } | null =>
   layoutSlots.value.find((item) => item.id === slotId) ?? null;
 
-const edgeTrimBlocked = (slotId: string, side: 'LEFT' | 'RIGHT'): boolean => {
-  const range = rangeForSlot(slotId);
-  if (!range) return true;
-  const threshold = 1 / props.fps;
-  return layoutSlots.value.some((candidate) => {
-    if (candidate.id === slotId || !materialForSlot(candidate.id)) return false;
-    if (side === 'LEFT') {
-      return candidate.start < range.start - threshold || candidate.end <= range.start + threshold;
-    }
-    return candidate.start >= range.end - threshold || candidate.end > range.end + threshold;
-  });
-};
+const edgeTrimBlocked = (slotId: string): boolean =>
+  props.readOnly || trackLocked.VIDEO || !materialForSlot(slotId);
 
 const transitionDurationFor = (slotId: string): number => {
   const slots = props.variant?.slots ?? [];
@@ -1705,8 +1696,7 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
     const nearLeftEdge = event.clientX <= bounds.left + edgeThreshold;
     const nearRightEdge = event.clientX >= bounds.right - edgeThreshold;
     if (
-      (nearLeftEdge && edgeTrimBlocked(slotId, 'LEFT')) ||
-      (nearRightEdge && edgeTrimBlocked(slotId, 'RIGHT'))
+      ((nearLeftEdge || nearRightEdge) && edgeTrimBlocked(slotId))
     ) {
       event.preventDefault();
       event.stopPropagation();
@@ -2056,7 +2046,7 @@ const beginEdgeTrim = (event: PointerEvent, slotId: string, side: 'LEFT' | 'RIGH
   if (props.readOnly || event.button !== 0 || trackLocked.VIDEO) return;
   const slot = props.variant?.slots.find(({ id }) => id === slotId);
   const material = slot ? materialForSlot(slotId) : null;
-  if (!slot || !material || edgeTrimBlocked(slotId, side)) return;
+  if (!slot || !material || edgeTrimBlocked(slotId)) return;
   event.preventDefault();
   event.stopPropagation();
   setSelection([slotId]);
@@ -2074,6 +2064,7 @@ const beginEdgeTrim = (event: PointerEvent, slotId: string, side: 'LEFT' | 'RIGH
     slotId,
     startClientX: event.clientX,
   };
+  snapGuideTime.value = side === 'LEFT' ? initialStart : initialStart + slot.duration;
   (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
   addWindowPointerListeners();
 };
@@ -2560,32 +2551,30 @@ function onWindowPointerMove(event: PointerEvent): void {
     const slot = props.variant?.slots.find(({ id }) => id === drag.slotId);
     const material = slot ? materialForSlot(slot.id) : null;
     if (!slot || !material) return;
-    const delta = quantizeToFrame((event.clientX - drag.startClientX) / pixelsPerSecond.value);
-    if (material.duration < 4) return;
-    const minimumDuration = 4;
-    const sourceEnd = drag.initialOffset + drag.initialDuration;
-    if (drag.side === 'LEFT') {
-      const requestedOffset = Math.max(
-        0,
-        Math.min(sourceEnd - minimumDuration, drag.initialOffset + delta),
-      );
-      const requestedDuration = sourceEnd - requestedOffset;
-      const maxTimelineDuration = drag.initialDuration + drag.initialStart;
-      const currentDuration = Math.max(
-        minimumDuration,
-        Math.min(15, requestedDuration, maxTimelineDuration),
-      );
-      drag.currentDuration = currentDuration;
-      drag.currentOffset = sourceEnd - currentDuration;
-      drag.currentStart = Math.max(0, drag.initialStart + drag.initialDuration - currentDuration);
-    } else {
-      drag.currentOffset = drag.initialOffset;
-      drag.currentDuration = Math.max(
-        minimumDuration,
-        Math.min(15, material.duration - drag.initialOffset, drag.initialDuration + delta),
-      );
-      drag.currentStart = drag.initialStart;
+    let resized = resizeVideoRangeAtEdge({ start: drag.initialStart,
+      offset: drag.initialOffset, duration: drag.initialDuration }, material.duration, drag.side,
+      (event.clientX - drag.startClientX) / pixelsPerSecond.value, props.fps);
+    if (!resized) return;
+    const minimum = Math.min(1 / props.fps, drag.initialDuration);
+    const movingEdge = drag.side === 'LEFT' ? resized.start : resized.start + resized.duration;
+    const snapped = snapEdgeTime(movingEdge, new Set([drag.slotId]), drag.side === 'LEFT'
+      ? { min: Math.max(0, drag.initialStart - drag.initialOffset),
+          max: drag.initialStart + drag.initialDuration - minimum }
+      : { min: drag.initialStart + minimum,
+          max: drag.initialStart + material.duration - drag.initialOffset });
+    if (snapped.guide !== null) {
+      const aligned = resizeVideoRangeAtEdge({ start: drag.initialStart,
+        offset: drag.initialOffset, duration: drag.initialDuration }, material.duration, drag.side,
+        snapped.time - (drag.side === 'LEFT' ? drag.initialStart : drag.initialStart + drag.initialDuration), props.fps);
+      // Only catch a legal frame; a fractional audio edge must not draw a false alignment.
+      if (aligned && Math.abs((drag.side === 'LEFT' ? aligned.start : aligned.start + aligned.duration) - snapped.time) < 0.00001)
+        resized = aligned;
     }
+    drag.currentStart = resized.start;
+    drag.currentOffset = resized.offset;
+    drag.currentDuration = resized.duration;
+    // Draw the actual moving edge even when magnetic snapping is switched off.
+    snapGuideTime.value = drag.side === 'LEFT' ? resized.start : resized.start + resized.duration;
     drag.moved = Math.abs(event.clientX - drag.startClientX) > 2;
     return;
   }
@@ -3485,37 +3474,21 @@ onBeforeUnmount(() => {
                   <button
                     v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
                     class="edge-trim-handle edge-trim-left"
-                    :class="{ 'is-disabled': edgeTrimBlocked(slot.id, 'LEFT') }"
+                    :class="{ 'is-disabled': edgeTrimBlocked(slot.id) }"
                     type="button"
-                    :disabled="edgeTrimBlocked(slot.id, 'LEFT')"
-                    :title="
-                      edgeTrimBlocked(slot.id, 'LEFT')
-                        ? '左侧已有素材，无法调整左边缘'
-                        : '拖动左边缘调整素材起点和时长'
-                    "
-                    :aria-label="
-                      edgeTrimBlocked(slot.id, 'LEFT')
-                        ? '左侧已有素材，无法调整左边缘'
-                        : '拖动左边缘调整素材起点和时长'
-                    "
+                    :disabled="edgeTrimBlocked(slot.id)"
+                    title="拖动左边缘调整素材起点和时长"
+                    aria-label="拖动左边缘调整素材起点和时长"
                     @pointerdown="beginEdgeTrim($event, slot.id, 'LEFT')"
                   />
                   <button
                     v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
                     class="edge-trim-handle edge-trim-right"
-                    :class="{ 'is-disabled': edgeTrimBlocked(slot.id, 'RIGHT') }"
+                    :class="{ 'is-disabled': edgeTrimBlocked(slot.id) }"
                     type="button"
-                    :disabled="edgeTrimBlocked(slot.id, 'RIGHT')"
-                    :title="
-                      edgeTrimBlocked(slot.id, 'RIGHT')
-                        ? '右侧已有素材，无法调整右边缘'
-                        : '拖动右边缘调整素材时长'
-                    "
-                    :aria-label="
-                      edgeTrimBlocked(slot.id, 'RIGHT')
-                        ? '右侧已有素材，无法调整右边缘'
-                        : '拖动右边缘调整素材时长'
-                    "
+                    :disabled="edgeTrimBlocked(slot.id)"
+                    title="拖动右边缘调整素材时长"
+                    aria-label="拖动右边缘调整素材时长"
                     @pointerdown="beginEdgeTrim($event, slot.id, 'RIGHT')"
                   />
                   <span v-if="edgeTrimDrag?.slotId === slot.id" class="trim-tooltip">

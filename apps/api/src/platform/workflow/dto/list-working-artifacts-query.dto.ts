@@ -1,7 +1,15 @@
-import { ASSET_WORKFLOWS, ASSET_WORKFLOW_SPACES } from '@ai-marketing/contracts';
+import {
+  ASSET_WORKFLOWS,
+  ASSET_WORKFLOW_SPACES,
+  WORKING_ARTIFACT_LIST_VIEWS,
+} from '@ai-marketing/contracts';
 import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class ListWorkingArtifactsQueryDto {
+  @IsOptional()
+  @IsIn([...WORKING_ARTIFACT_LIST_VIEWS])
+  view?: (typeof WORKING_ARTIFACT_LIST_VIEWS)[number];
+
   @IsOptional()
   @IsUUID('4')
   workflowRunId?: string;

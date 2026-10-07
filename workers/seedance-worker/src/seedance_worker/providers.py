@@ -121,7 +121,7 @@ class ArkSeedanceProvider:
                     snapshot, reference_video_url, deadline
                 )
             payload = snapshot.request.model_dump(mode="json")
-            if snapshot.operation == "REPAIR":
+            if snapshot.operation == "REPAIR" and snapshot.repair is not None and snapshot.repair.provider_mode == "VIDEO_EDIT":
                 # Seedance 2.5 exact video editing requires adaptive ratio and lets
                 # the provider preserve the input duration.
                 payload.update(
@@ -131,6 +131,8 @@ class ArkSeedanceProvider:
                         "ratio": "adaptive",
                     }
                 )
+            else:
+                payload["duration"] = int(snapshot.request.duration)
             payload["content"] = [
                 *payload["content"],
                 *[
@@ -228,7 +230,7 @@ class ArkSeedanceProvider:
                     content=content,
                     file_name=snapshot.prompt_code + ".mp4",
                     mime_type=mime_type,
-                    duration=self._optional_int(
+                    duration=self._optional_duration(
                         content_data.get("duration", result.get("duration"))
                     ),
                     ratio=_text(content_data.get("ratio", result.get("ratio"))),
@@ -484,12 +486,12 @@ class ArkSeedanceProvider:
             ) from exc
 
     @staticmethod
-    def _optional_int(value: Any) -> int | None:
+    def _optional_duration(value: Any) -> float | None:
         try:
-            parsed = int(value)
+            parsed = float(value)
         except (TypeError, ValueError):
             return None
-        return parsed if parsed > 0 else None
+        return parsed if parsed > 0 and parsed < float("inf") else None
 
     async def aclose(self) -> None:
         await self._client.aclose()

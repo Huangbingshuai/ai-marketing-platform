@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     )
     packaging_item_concurrency: int = Field(default=6, alias="TEMPLATE_MIX_PACKAGING_ITEM_CONCURRENCY", ge=1, le=8)
     packaging_model_concurrency: int = Field(default=4, alias="TEMPLATE_MIX_PACKAGING_MODEL_CONCURRENCY", ge=1, le=8)
+    packaging_model_timeout_seconds: float = Field(default=300, alias="TEMPLATE_MIX_PACKAGING_MODEL_TIMEOUT_SECONDS", gt=0, le=1200)
+    packaging_model_max_output_tokens: int = Field(default=16_384, alias="TEMPLATE_MIX_PACKAGING_MODEL_MAX_OUTPUT_TOKENS", ge=4096, le=32_768)
     packaging_tts_concurrency: int = Field(default=4, alias="TEMPLATE_MIX_PACKAGING_TTS_CONCURRENCY", ge=1, le=12)
     max_video_bytes: int = Field(default=512 * 1024 * 1024, alias="TEMPLATE_MIX_MAX_VIDEO_BYTES", ge=1)
     final_output_max_concurrency: int = Field(default=2, alias="FINAL_OUTPUT_MAX_CONCURRENCY", ge=1, le=4)

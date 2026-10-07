@@ -30,7 +30,7 @@ import {
   effectPromptRunGraphEdges,
   effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
+import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   Activity,
   AlertCircle,
@@ -2292,51 +2292,10 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <WorkflowNodeDraftBar
-        :detail="
-          partialPreview
-            ? `${currentProduct.name} · ${currentCountStats.actualCount} 条临时预览 · 未保存为节点结果`
-            : `${currentProduct.name} · ${currentCountStats.actualCount} 条 Prompt · ${currentState.commitStatus === 'COMMITTED' ? '已提交工作副本，尚未归档' : '已自动保存到节点草稿，尚未提交工作副本'}`
-        "
-        :state="
-          currentRunning || currentSaveStatus === 'saving'
-            ? 'saving'
-            : partialPreview
-              ? 'dirty'
-              : currentState.commitStatus === 'COMMITTED'
-                ? 'saved'
-                : 'dirty'
-        "
-        :state-label="
-          currentRunning
-            ? '正在生成…'
-            : partialPreview
-              ? '临时预览'
-              : currentSaveStatus === 'saving'
-                ? '正在保存'
-                : currentState.commitStatus === 'COMMITTED'
-                  ? '工作副本已更新'
-                  : currentState.commitStatus === 'STALE'
-                    ? '上游更新，结果已过期'
-                    : currentState.qualityStatus === 'NEEDS_REVIEW'
-                      ? '有质量建议'
-                      : '草稿已自动保存'
-        "
-        title="差异化 Prompt 批次草稿"
-      />
 
       <WorkflowNodeFooter
-        back-label="上一步"
-        :complete="allProductsCommitted"
+        back-label="上一步：AI 信息提炼"
         :show-validate="false"
-        :status-title="
-          allProductsCommitted
-            ? '全部产品 Prompt 已保存'
-            : currentRunning
-              ? '生成成功后自动保存版本'
-              : '请逐个保存未确认的 Prompt 草稿'
-        "
-        :status-detail="`步骤 3 / 6 · ${currentProduct.name} · ${currentState.commitStatus === 'COMMITTED' ? '当前工作副本' : '尚未提交工作副本'}`"
         :next-disabled="!allProductsCommitted || currentRunning"
         next-label="下一步：片段渲染"
         @back="emit('back')"

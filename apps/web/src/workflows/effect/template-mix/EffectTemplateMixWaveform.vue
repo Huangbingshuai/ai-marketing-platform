@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue';
 
+import { useEffectTemplateMixMediaVisibility } from './effect-template-mix-media-visibility';
+
 import {
   requestEffectTemplateMixWaveform,
   useEffectTemplateMixWaveform,
@@ -28,6 +30,7 @@ const props = withDefaults(
 
 const source = computed(() => props.source);
 const waveform = useEffectTemplateMixWaveform(source);
+const { host, visible } = useEffectTemplateMixMediaVisibility();
 /**
  * The gain the renderer will apply at a given point in the clip, as a linear ramp across each
  * fade. Fades are timeline seconds measured from the clip's head, so the same number drives both
@@ -65,11 +68,14 @@ const visibleBars = computed(() => {
 });
 const status = computed(() => waveform.value?.status ?? 'LOADING');
 
-watch(source, (nextSource) => requestEffectTemplateMixWaveform(nextSource), { immediate: true });
+watch([source, visible], ([nextSource, isVisible]) => {
+  if (isVisible) requestEffectTemplateMixWaveform(nextSource);
+}, { immediate: true });
 </script>
 
 <template>
   <div
+    ref="host"
     class="clip-waveform"
     :class="[
       `is-${status.toLowerCase()}`,

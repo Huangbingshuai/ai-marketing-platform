@@ -30,7 +30,10 @@ async def serve() -> None:
         settings.tts_resource_id, settings.music_access_key.get_secret_value(), settings.music_secret_key.get_secret_value(), settings.music_action)
     import_provider = ArkProvider(settings.ark_base_url, settings.ark_api_key.get_secret_value(),
         settings.video_import_model, settings.ark_timeout_seconds, IMPORT_OUTPUT_TOKENS, "medium")
-    packaging = PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes,
+    packaging_model = ArkProvider(settings.ark_base_url, settings.ark_api_key.get_secret_value(),
+        settings.model, settings.packaging_model_timeout_seconds,
+        settings.packaging_model_max_output_tokens, settings.ark_reasoning_effort)
+    packaging = PackagingHandler(api, packaging_model, packaging_provider, settings.max_video_bytes,
         settings.packaging_item_concurrency, settings.packaging_model_concurrency, settings.packaging_tts_concurrency)
     consumer = Consumer(
         settings.rabbitmq_url.get_secret_value(),
@@ -67,6 +70,7 @@ async def serve() -> None:
         await api.close()
         await provider.close()
         await import_provider.close()
+        await packaging_model.close()
         await packaging_provider.close()
 
 

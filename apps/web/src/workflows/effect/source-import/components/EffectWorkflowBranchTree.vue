@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { type EffectWorkflowBranchTreeData } from '@ai-marketing/contracts';
-import { X } from '@lucide/vue';
+import {
+  AudioLines, Clapperboard, Clock3, FileText, Film, FolderInput, FolderOpen,
+  GitBranch, LayoutTemplate, LocateFixed, Maximize, Minus, Plus, Sparkles, X,
+} from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { effectBranchDestination, type EffectBranchNavigation } from '../../shared/effect-branch-navigation';
 
 import {
   BRANCH_TREE_AXIS_WIDTH,
+  BRANCH_TREE_NODE_WIDTH,
+  BRANCH_TREE_NODE_HEIGHT,
   BRANCH_TREE_ROOT_TOP,
   BRANCH_TREE_STAGES,
   BRANCH_TREE_ROW_GAP,
@@ -13,6 +18,9 @@ import {
   buildEffectBranchLayout,
   type BranchTreeNode,
 } from './effect-workflow-branch-layout';
+import {
+  BRANCH_MAX_ZOOM, BRANCH_MIN_ZOOM, branchZoomScroll, clampBranchZoom, fitBranchZoom,
+} from './effect-workflow-branch-viewport';
 
 const props = defineProps<{
   projectName: string;
@@ -23,6 +31,9 @@ const props = defineProps<{
   forkDisabled: boolean;
   activeTemplateId: string | null;
   viewedWorkflowRunId?: string | null;
+  assetBrowse?: boolean;
+  selectableNodeKeys?: string[];
+  browsedNodeKey?: string;
 }>();
 const emit = defineEmits<{
   close: [];
@@ -33,10 +44,24 @@ const emit = defineEmits<{
 const dialog = ref<HTMLElement | null>(null);
 const scrollContainer = ref<HTMLElement | null>(null);
 const graphElement = ref<HTMLElement | null>(null);
+const treeZoom = ref(1);
+let initialViewReady = false;
 let returnFocus: HTMLElement | null = null;
 let previousBodyOverflow = '';
 const layout = computed(() =>
   buildEffectBranchLayout(props.tree?.branches ?? [], props.activeTemplateId, props.viewedWorkflowRunId),
+);
+const stageIcons = {
+  SOURCE_IMPORT: FolderInput, INFORMATION_EXTRACTION: Sparkles,
+  PROMPT_GENERATION: FileText, SEGMENT_RENDER: Film,
+  MIX_TEMPLATE: LayoutTemplate, MIX_FILL: Clapperboard,
+  MIX_PACKAGING: AudioLines, FINAL_OUTPUT: Film,
+};
+const currentViewNode = computed(() =>
+  (props.assetBrowse ? layout.value.nodes.find(node => node.key === props.browsedNodeKey) : undefined) ??
+  [...layout.value.nodes].filter(node => node.isCurrentStage)
+    .sort((left, right) => right.stageIndex - left.stageIndex)[0] ??
+  [...layout.value.nodes].reverse().find(node => node.onActivePath),
 );
 const mixStartIndex = BRANCH_TREE_STAGES.findIndex((stage) => stage.nodeId === 'TEMPLATE_MIX');
 const mixStages = BRANCH_TREE_STAGES.filter((stage) => stage.nodeId === 'TEMPLATE_MIX');
@@ -66,6 +91,8 @@ const artifactCreatedAtText = (value: string | null) => {
     hour12: false,
   }).format(date)}`;
 };
+const compactCreatedAtText = (value: string | null) =>
+  artifactCreatedAtText(value).replace(/^创建于 \d{4}\//, '');
 const statusText = (status: string, count: number) =>
   status === 'CONFIRMED'
     ? `已确认 · ${count} 项`
@@ -82,7 +109,8 @@ const nodeStatusText = (node: BranchTreeNode) =>
       : statusText(node.status, node.artifactCount);
 
 const selectNode = (node: BranchTreeNode) => {
-  if (!props.switching && !props.loading && !props.error)
+  if (!props.switching && !props.loading && !props.error &&
+    (!props.assetBrowse || props.selectableNodeKeys?.includes(node.key)))
     emit('select', effectBranchDestination(node));
 };
 const centerTree = async () => {
@@ -97,14 +125,71 @@ const centerTree = async () => {
     graph.getBoundingClientRect().left -
     scroll.getBoundingClientRect().left +
     scroll.scrollLeft +
-    layout.value.root.x;
+    layout.value.root.x * treeZoom.value;
   const visibleTreeCenter = axisWidth + (scroll.clientWidth - axisWidth) / 2;
   scroll.scrollLeft = Math.max(0, graphCenter - visibleTreeCenter);
 };
-const onViewportResize = () => void centerTree();
+const fitTree = async () => {
+  const scroll = scrollContainer.value;
+  if (!scroll) return;
+  treeZoom.value = fitBranchZoom(
+    { width: scroll.clientWidth, height: Math.max(0, scroll.clientHeight - 56) },
+    { width: layout.value.width + BRANCH_TREE_AXIS_WIDTH, height: layout.value.height },
+  );
+  await nextTick();
+  scroll.scrollLeft = 0;
+  scroll.scrollTop = 0;
+};
+const changeZoom = async (value: number) => {
+  const scroll = scrollContainer.value;
+  if (!scroll) return;
+  const previous = treeZoom.value;
+  const next = clampBranchZoom(value);
+  const left = branchZoomScroll(scroll.scrollLeft, scroll.clientWidth, previous, next);
+  const top = branchZoomScroll(scroll.scrollTop, scroll.clientHeight, previous, next);
+  treeZoom.value = next;
+  await nextTick();
+  scroll.scrollLeft = left;
+  scroll.scrollTop = top;
+};
+const locateCurrent = async () => {
+  const current = currentViewNode.value;
+  if (!current) return;
+  treeZoom.value = 1;
+  await nextTick();
+  const scroll = scrollContainer.value;
+  const card = Array.from(graphElement.value?.querySelectorAll<HTMLElement>('[data-branch-key]') ?? [])
+    .find(element => element.dataset.branchKey === current.key);
+  if (!scroll || !card) return;
+  const bounds = card.getBoundingClientRect();
+  const viewport = scroll.getBoundingClientRect();
+  const axisWidth = scroll.querySelector('.branch-axis-rail')?.getBoundingClientRect().width ?? 0;
+  scroll.scrollLeft += bounds.left + bounds.width / 2 - viewport.left -
+    (axisWidth + (scroll.clientWidth - axisWidth) / 2);
+  scroll.scrollTop += bounds.top + bounds.height / 2 - viewport.top - scroll.clientHeight / 2;
+  card.focus({ preventScroll: true });
+};
+const initializeView = async () => {
+  await nextTick();
+  if (!initialViewReady && scrollContainer.value && layout.value.nodes.length) {
+    initialViewReady = true;
+    const scroll = scrollContainer.value;
+    // Start readable. A full-tree overview can be requested explicitly rather
+    // than making every version label tiny on a short or narrow screen.
+    treeZoom.value = Math.max(0.8, fitBranchZoom(
+      { width: scroll.clientWidth, height: Math.max(0, scroll.clientHeight - 56) },
+      { width: layout.value.width + BRANCH_TREE_AXIS_WIDTH, height: layout.value.height },
+    ));
+    await centerTree();
+  }
+};
+const onViewportResize = () => {
+  // Keep the user's zoom/scroll during ordinary background refreshes.
+  if (initialViewReady) void centerTree();
+};
 watch(
   () => props.tree,
-  () => void centerTree(),
+  () => void initializeView(),
   { flush: 'post' },
 );
 const onKeydown = (event: KeyboardEvent) => {
@@ -137,7 +222,7 @@ onMounted(async () => {
   window.addEventListener('resize', onViewportResize);
   await nextTick();
   dialog.value?.focus();
-  await centerTree();
+  await initializeView();
 });
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown);
@@ -159,12 +244,15 @@ onBeforeUnmount(() => {
         tabindex="-1"
       >
         <header class="branch-header">
-          <div>
+          <div class="branch-header__intro">
+            <div class="branch-header__icon"><GitBranch :size="22" /></div>
+            <div>
             <span class="branch-eyebrow">EFFECT WORKFLOW</span>
             <h2 id="branch-title">版本分支树</h2>
             <p>
-              从项目向下展开各节点版本；分叉直接长在树上，红色标出当前工作流路径。点击其他分支的版本即可切换。
+              {{ assetBrowse ? '点击版本查看对应资产，不切换正在编辑的工作流。' : '以项目为中心，分支向两侧展开。点击版本切换工作流。' }}
             </p>
+            </div>
           </div>
           <button
             type="button"
@@ -191,10 +279,6 @@ onBeforeUnmount(() => {
               <span><i class="legend-other" />其他版本</span>
               <span><i class="legend-stale" />待更新</span>
             </div>
-            <button type="button" class="branch-copy-button"
-              :disabled="switching || loading || Boolean(error) || forkDisabled || !tree?.activeWorkflowRunId"
-              :title="forkDisabled ? '请先保存或取消当前编辑' : '复制当前分支的已确认内容'"
-              @click="emit('fork')">从当前分支新建分支</button>
             <span v-if="switching" class="branch-switching" role="status">正在切换分支…</span>
             <span v-else-if="loading" class="branch-switching" role="status">正在同步最新分支…</span>
             <span v-else-if="error" class="branch-switching branch-switching--error" role="alert">
@@ -202,6 +286,7 @@ onBeforeUnmount(() => {
               <button type="button" @click="emit('retry')">重试</button>
             </span>
           </div>
+          <div class="branch-workspace">
           <div
             ref="scrollContainer"
             class="branch-scroll"
@@ -213,6 +298,7 @@ onBeforeUnmount(() => {
               :style="{
                 minWidth: `${layout.width + BRANCH_TREE_AXIS_WIDTH}px`,
                 height: `${layout.height}px`,
+                zoom: treeZoom,
               }"
             >
               <div
@@ -301,29 +387,39 @@ onBeforeUnmount(() => {
                   :style="{ left: `${layout.root.x}px`, top: `${layout.root.y}px` }"
                   :aria-label="`项目：${projectName}`"
                 >
-                  {{ projectName }}
+                  <span class="branch-project-root__icon" aria-hidden="true"><FolderOpen :size="22" /></span>
+                  <span class="branch-project-root__content"><small>效果类项目</small><strong>{{ projectName }}</strong></span>
                 </div>
                 <button
                   v-for="node in layout.nodes"
                   :key="node.key"
+                  :data-branch-key="node.key"
+                  :data-stage="node.stageKey"
                   type="button"
                   class="branch-node"
                   :class="{
                     'branch-node--active': node.onActivePath,
-                    'branch-node--current': node.isCurrentStage,
+                    'branch-node--current': currentViewNode?.key === node.key,
                     'branch-node--stale': node.showStaleWarning,
                   }"
-                  :disabled="switching || loading || Boolean(error)"
-                  :style="{ left: `${node.x}px`, top: `${node.y}px` }"
+                  :disabled="switching || loading || Boolean(error) || (assetBrowse && !selectableNodeKeys?.includes(node.key))"
+                  :style="{ left: `${node.x}px`, top: `${node.y}px`, width: `${BRANCH_TREE_NODE_WIDTH}px`, height: `${BRANCH_TREE_NODE_HEIGHT}px` }"
                   :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node)}${node.onActivePath ? '，当前工作流路径' : ''}`"
                   :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node)}`"
                   @click="selectNode(node)"
                 >
+                  <span class="branch-node__heading">
+                    <span class="branch-node__icon" aria-hidden="true"><component :is="stageIcons[node.stageKey]" :size="19" /></span>
+                    <span class="branch-node__identity">
+                      <small>{{ stageName(node.stageKey) }}</small>
                   <strong>{{
                     node.stageKey === 'MIX_TEMPLATE'
                       ? (node.templateName ?? '模板')
                       : versionText(node.revision, node.revisions, node.artifactCount, node.status)
                   }}</strong>
+                    </span>
+                  </span>
+                  <span class="branch-node__footer">
                   <span
                     v-if="
                       node.stageKey === 'MIX_TEMPLATE' ||
@@ -332,15 +428,29 @@ onBeforeUnmount(() => {
                     class="branch-node__created-at"
                     :title="
                       node.stageKey === 'MIX_TEMPLATE'
-                        ? '模板创建时间；旧草稿可能未记录'
-                        : '已确认工作副本的创建时间；旧 revision 的单独确认时间不可追溯'
+                        ? `${artifactCreatedAtText(node.createdAt)} · 模板创建时间；旧草稿可能未记录`
+                        : `${artifactCreatedAtText(node.createdAt)} · 已确认工作副本创建时间`
                     "
-                  >{{ artifactCreatedAtText(node.createdAt) }}</span
+                  ><Clock3 :size="10" aria-hidden="true" />{{ compactCreatedAtText(node.createdAt) }}</span
                   >
                   <span v-if="node.showStaleWarning" class="branch-node__stale">待更新</span>
+                  <span v-else-if="currentViewNode?.key === node.key" class="branch-node__current">当前查看</span>
+                  </span>
                 </button>
               </div>
             </div>
+          </div>
+          <div class="branch-view-controls" role="group" aria-label="版本树视图">
+            <button type="button" @click="fitTree"><Maximize :size="15" />查看全图</button>
+            <button type="button" @click="locateCurrent"><LocateFixed :size="15" />定位当前</button>
+            <span class="branch-view-controls__separator" aria-hidden="true" />
+            <button type="button" aria-label="缩小版本树" :disabled="treeZoom <= BRANCH_MIN_ZOOM"
+              @click="changeZoom(treeZoom - 0.1)"><Minus :size="16" /></button>
+            <button type="button" class="branch-zoom-value" aria-label="恢复版本树原始大小"
+              @click="changeZoom(1)">{{ Math.round(treeZoom * 100) }}%</button>
+            <button type="button" aria-label="放大版本树" :disabled="treeZoom >= BRANCH_MAX_ZOOM"
+              @click="changeZoom(treeZoom + 0.1)"><Plus :size="16" /></button>
+          </div>
           </div>
         </template>
       </section>
@@ -368,10 +478,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  padding: 22px 32px;
+  padding: 18px 24px;
   gap: 16px;
   background: #fff;
   border-bottom: 1px solid #dfe7f4;
+}
+.branch-header__intro { display: flex; align-items: center; gap: 14px; }
+.branch-header__icon {
+  display: grid; width: 44px; height: 44px; flex: none; place-items: center;
+  color: #2563eb; background: #edf4ff; border: 1px solid #dce8fc; border-radius: 12px;
 }
 .branch-eyebrow {
   color: #2563eb;
@@ -382,7 +497,7 @@ onBeforeUnmount(() => {
 .branch-header h2 {
   margin: 4px 0;
   color: #17243d;
-  font-size: 25px;
+  font-size: 21px;
 }
 .branch-header p {
   margin: 0;
@@ -423,12 +538,28 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 54px;
-  padding: 7px 24px;
-  gap: 16px;
+  min-height: 52px;
+  padding: 8px 24px;
+  gap: 14px;
   background: #fff;
   border-bottom: 1px solid #e1e7f2;
 }
+.branch-view-controls {
+  position: absolute; bottom: 18px; left: 50%; z-index: 8; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 2px; padding: 3px;
+  background: rgba(255, 255, 255, 0.94); border: 1px solid #dce4ef; border-radius: 12px;
+  backdrop-filter: blur(12px); box-shadow: 0 6px 24px rgba(35, 55, 85, 0.12);
+  white-space: nowrap;
+}
+.branch-view-controls button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 34px; padding: 0 8px; color: #52647e; background: transparent;
+  border: 0; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.branch-view-controls button:hover { color: #1d4ed8; background: #fff; }
+.branch-view-controls button:disabled { color: #bcc6d5; cursor: not-allowed; }
+.branch-view-controls .branch-zoom-value { min-width: 46px; font-variant-numeric: tabular-nums; }
+.branch-view-controls__separator { width: 1px; height: 16px; margin: 0 4px; background: #dce4ef; }
 .branch-toolbar__legend {
   display: flex;
   flex-wrap: wrap;
@@ -436,17 +567,6 @@ onBeforeUnmount(() => {
   color: #697991;
   font-size: 12px;
 }
-.branch-copy-button {
-  margin-left: auto;
-  padding: 9px 14px;
-  color: #1d4ed8;
-  background: #eff5ff;
-  border: 1px solid #bcd0ff;
-  border-radius: 9px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.branch-copy-button:disabled { color: #9aa8bd; background: #f4f6fa; cursor: not-allowed; }
 .branch-toolbar__legend span {
   display: inline-flex;
   align-items: center;
@@ -454,8 +574,8 @@ onBeforeUnmount(() => {
 }
 .branch-toolbar__legend i {
   display: inline-block;
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
 }
 .legend-current {
@@ -464,12 +584,15 @@ onBeforeUnmount(() => {
 .legend-other {
   background: #a2b3cd;
 }
-.legend-stale { background: #f59e0b; }
+.legend-stale { background: #e0c200; }
+.branch-workspace { position: relative; display: flex; flex: 1; min-height: 0; }
 .branch-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: #fff;
+  background: #f8fafd;
+  scrollbar-width: thin;
+  scrollbar-color: #bcc9dc #f8fafd;
 }
 .branch-canvas {
   position: relative;
@@ -477,21 +600,21 @@ onBeforeUnmount(() => {
   width: 100%;
   box-sizing: border-box;
   background:
-    radial-gradient(circle at 24px 24px, #edf2f9 1px, transparent 1.3px) 0 0 / 24px 24px,
-    #fff;
+    radial-gradient(circle, #d7e1ee 0.8px, transparent 1px) 0 0 / 20px 20px,
+    #f4f7fb;
   border: 0;
 }
 .branch-stage-band {
   position: absolute;
   right: 0;
   left: 0;
-  background: rgba(250, 252, 255, 0.78);
-  border-top: 1px solid #edf1f7;
+  background: rgba(255, 255, 255, 0.12);
+  border-top: 1px dashed #e3eaf4;
   box-sizing: border-box;
   pointer-events: none;
 }
 .branch-stage-band--alternate {
-  background: rgba(242, 246, 252, 0.78);
+  background: rgba(236, 242, 250, 0.18);
 }
 .branch-graph {
   position: relative;
@@ -501,28 +624,32 @@ onBeforeUnmount(() => {
 .branch-project-root {
   position: absolute;
   z-index: 2;
-  display: grid;
-  width: 240px;
-  height: 72px;
-  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: 232px;
+  height: 88px;
+  padding: 16px;
   transform: translate(-50%, -50%);
-  place-items: center;
-  color: #253755;
-  background: #fff;
-  border: 2px solid #9eb4cf;
-  border-radius: 8px;
-  box-shadow: 0 5px 15px rgba(35, 67, 105, 0.12);
+  color: #fff;
+  background: #24334c;
+  border: 1.5px solid #354862;
+  border-radius: 16px;
+  box-shadow: 0 5px 16px rgba(35, 55, 85, 0.13);
   box-sizing: border-box;
   font-size: 14px;
   font-weight: 800;
   overflow-wrap: anywhere;
-  text-align: center;
+  text-align: left;
 }
+.branch-project-root__icon { display: grid; place-items: center; width: 42px; height: 42px; flex: none; border-radius: 11px; background: #3b4b65; color: #dfe9fc; }
+.branch-project-root__content { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.branch-project-root__content small { font-size: 10px; font-weight: 500; color: #b5c4da; letter-spacing: 1px; }
+.branch-project-root__content strong { font-size: 16px; line-height: 1.3; }
 .branch-project-root--active {
-  color: #b72437;
-  background: #fff5f5;
   border-color: #df3547;
 }
+.branch-project-root--active .branch-project-root__icon { color: #ffd5dd; background: #514053; }
 .branch-lines {
   position: absolute;
   inset: 0;
@@ -530,13 +657,13 @@ onBeforeUnmount(() => {
 }
 .branch-lines path {
   fill: none;
-  stroke: #b2c1d5;
-  stroke-width: 2.5;
+  stroke: #b8c8dc;
+  stroke-width: 1.7;
   stroke-linecap: round;
 }
 .branch-lines path.branch-line--active {
   stroke: #df3547;
-  stroke-width: 3.5;
+  stroke-width: 2.5;
 }
 .branch-lines path.branch-arrow {
   fill: #b2c1d5;
@@ -553,7 +680,7 @@ onBeforeUnmount(() => {
   flex: 0 0 178px;
   height: 100%;
   pointer-events: none;
-  background: #fafcff;
+  background: rgba(248, 250, 253, 0.97);
   border-right: 1px solid #e3eaf4;
   box-sizing: border-box;
 }
@@ -572,7 +699,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 .branch-axis--alternate {
-  background: #f2f6fc;
+  background: transparent;
 }
 .branch-axis-mix-group {
   position: absolute;
@@ -593,7 +720,7 @@ onBeforeUnmount(() => {
   padding: 0 10px;
   gap: 9px;
   color: #52647e;
-  background: #e8f0fc;
+  background: #f0f5fc;
   border-right: 1px solid #cbd9ed;
   font-size: 13px;
   font-weight: 700;
@@ -615,7 +742,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid #e0e8f3;
 }
 .branch-axis-mix-group__row:nth-child(even) {
-  background: #f2f6fc;
+  background: #f7f9fd;
 }
 .branch-axis__number {
   display: grid;
@@ -633,53 +760,86 @@ onBeforeUnmount(() => {
   z-index: 2;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 128px;
-  height: 72px;
-  padding: 4px 8px;
-  gap: 2px;
+  align-items: stretch;
+  justify-content: space-between;
+  padding: 12px;
+  gap: 8px;
   transform: translate(-50%, -50%);
   color: #3b5575;
   background: #fff;
-  border: 2px solid #9eb4cf;
-  border-radius: 8px;
-  box-shadow: 0 5px 15px rgba(35, 67, 105, 0.12);
+  border: 1.5px solid #c8d5e5;
+  border-radius: 16px;
+  box-shadow: 0 3px 7px rgba(35, 67, 105, 0.06);
   cursor: pointer;
   box-sizing: border-box;
 }
+.branch-node:hover:not(:disabled) {
+  box-shadow: 0 4px 12px rgba(35, 67, 105, 0.12);
+}
+.branch-node__heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.branch-node__icon { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 10px; color: #4378c8; background: #edf4ff; }
+.branch-node[data-stage='INFORMATION_EXTRACTION'] .branch-node__icon { color: #9363cf; background: #f3edfc; }
+.branch-node[data-stage='PROMPT_GENERATION'] .branch-node__icon { color: #6b69c6; background: #f0effc; }
+.branch-node[data-stage='SEGMENT_RENDER'] .branch-node__icon { color: #278e9a; background: #e9f7f8; }
+.branch-node[data-stage='MIX_PACKAGING'] .branch-node__icon { color: #9465b9; background: #f5edf9; }
+.branch-node[data-stage='FINAL_OUTPUT'] .branch-node__icon { color: #278c76; background: #e8f7f1; }
+.branch-node__identity { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.branch-node__identity small { font-size: 10px; font-weight: 500; color: #8391a5; white-space: nowrap; }
+.branch-node__footer { display: flex; align-items: center; justify-content: space-between; gap: 3px; min-height: 12px; }
 .branch-node strong {
   max-width: 100%;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.15;
-  overflow-wrap: anywhere;
-  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
 }
 .branch-node__created-at {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   max-width: 100%;
   color: #73859c;
-  font-size: 9px;
+  font-size: 10px;
   white-space: nowrap;
 }
 .branch-node--active {
   color: #b72437;
-  background: #fff5f5;
+  background: #fff;
   border-color: #df3547;
-  box-shadow: 0 5px 18px rgba(211, 47, 63, 0.2);
+  box-shadow: 0 2px 6px rgba(211, 47, 63, 0.08);
 }
 .branch-node--current {
   box-shadow:
-    0 0 0 5px rgba(223, 53, 71, 0.14),
-    0 5px 18px rgba(211, 47, 63, 0.2);
+    0 0 0 3px rgba(223, 53, 71, 0.1),
+    0 2px 6px rgba(211, 47, 63, 0.08);
 }
-.branch-node--stale {
-  border-color: #f59e0b;
-  background: #fffaf0;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18), 0 5px 15px rgba(146, 92, 12, 0.12);
+.branch-node.branch-node--stale {
+  color: #8a7600;
+  border-width: 1px;
+  border-color: #e0c200;
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(200, 175, 0, 0.08);
+}
+.branch-node.branch-node--stale.branch-node--active {
+  color: #b91c1c;
+  border-width: 2px;
+  border-color: transparent;
+  background:
+    linear-gradient(#fff, #fff) padding-box,
+    linear-gradient(112deg, #dc2626 0%, #dc2626 40%, #e0c200 100%) border-box;
+  box-shadow: 0 2px 6px rgba(185, 28, 28, 0.08);
+}
+.branch-node__current {
+  padding: 1px 6px; color: #bd3344; background: #ffecef; border-radius: 4px;
+  font-size: 9px; font-weight: 600; line-height: 1.2;
 }
 .branch-node__stale {
-  color: #b45309;
+  color: #8a7600;
+  background: #fff4bc;
+  padding: 1px 5px;
+  border-radius: 4px;
   font-size: 10px;
   font-weight: 700;
 }
@@ -706,9 +866,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .branch-close:focus-visible,
+.branch-view-controls button:focus-visible,
 .branch-node:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
+}
+@media (max-width: 1080px) {
+  .branch-toolbar { flex-wrap: wrap; gap: 8px 12px; }
+  .branch-toolbar__legend { gap: 10px; }
 }
 @media (max-width: 760px) {
   .branch-header {
@@ -718,10 +883,11 @@ onBeforeUnmount(() => {
     font-size: 21px;
   }
   .branch-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
     padding: 9px 14px;
   }
+  .branch-header__icon { display: none; }
+  .branch-header p { font-size: 11px; }
   .branch-scroll {
     padding: 0;
   }
@@ -745,5 +911,11 @@ onBeforeUnmount(() => {
     padding: 0 8px;
     font-size: 10px;
   }
+}
+@media (max-width: 420px) {
+  .branch-toolbar { gap: 10px; }
+  .branch-toolbar__legend { font-size: 10px; gap: 9px; }
+  .branch-view-controls { bottom: 12px; }
+  .branch-view-controls button { padding: 0 6px; font-size: 11px; gap: 4px; }
 }
 </style>

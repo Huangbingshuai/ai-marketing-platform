@@ -11,6 +11,55 @@ from seedance_worker.models import RenderSnapshot
 from seedance_worker.providers import ArkSeedanceProvider, ProviderError, _EvenRateLimiter
 
 
+@pytest.mark.parametrize("mode,duration", [("VIDEO_EDIT", 15.041667), ("VIDEO_EDIT", 30.0), ("VIDEO_REFERENCE", 6.0)])
+async def test_import_repair_protocol_and_fractional_output(mode: str, duration: float) -> None:
+    data = snapshot().model_dump(by_alias=True)
+    data.update({"operation": "REPAIR", "inputImages": [], "inputVideo": {
+        "fileObjectId": "import-file", "originalFileName": "import.mp4", "mimeType": "video/mp4",
+        "sizeBytes": 100 * 1024 * 1024, "contentHash": "f" * 64, "durationSeconds": duration,
+    }, "repair": {"providerMode": mode, "sourceVersion": 1, "startMs": 0,
+                  "endMs": int(duration * 1000), "instruction": "修改画面瑕疵", "region": None}})
+    data["request"]["duration"] = duration
+    repair = RenderSnapshot.model_validate(data)
+    calls: list[httpx.Request] = []
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.host == "tos.example.test":
+            return httpx.Response(206, content=b"v", headers={"content-type": "video/mp4"})
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "repair-import"})
+        if request.url.host == "files.example.test":
+            return httpx.Response(200, content=b"video", headers={"content-type": "video/mp4"})
+        return httpx.Response(200, json={"status": "succeeded", "content": {
+            "video_url": "https://files.example.test/output.mp4", "duration": duration - 0.2 if mode == "VIDEO_EDIT" else duration,
+        }})
+    provider = ArkSeedanceProvider(base_url="https://ark.example.test/api/v3", api_key="secret", timeout_seconds=10,
+        poll_interval_seconds=0.001, create_qps=1000, download_concurrency=2, max_download_bytes=1024, transport=httpx.MockTransport(handler))
+    try:
+        output = await provider.render(repair, [], "https://tos.example.test/import.mp4", lambda value, task_id: _record([], value, task_id))
+    finally:
+        await provider.aclose()
+    payload = json.loads(next(request.content for request in calls if request.method == "POST"))
+    if mode == "VIDEO_EDIT":
+        assert payload["omni_reference_task_type"] == "edit"
+        assert payload["duration"] == -1
+        assert payload["ratio"] == "adaptive"
+        assert output.duration == pytest.approx(duration - 0.2)
+    else:
+        assert "omni_reference_task_type" not in payload
+        assert payload["duration"] == 6
+        assert payload["ratio"] == "9:16"
+    assert payload["content"][1]["role"] == "reference_video"
+
+
+@pytest.mark.parametrize("duration", [6.04, float("nan"), float("inf"), 31])
+def test_generation_rejects_invalid_provider_duration(duration: float) -> None:
+    data = snapshot().model_dump(by_alias=True)
+    data["request"]["duration"] = duration
+    with pytest.raises(ValueError):
+        RenderSnapshot.model_validate(data)
+
+
 def snapshot() -> RenderSnapshot:
     return RenderSnapshot.model_validate(
         {

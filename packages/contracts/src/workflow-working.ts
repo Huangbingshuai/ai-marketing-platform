@@ -318,11 +318,14 @@ export type WorkingArtifact = {
   updatedAt: string;
 };
 
+export const WORKING_ARTIFACT_LIST_VIEWS = ['SNAPSHOT'] as const;
 export type WorkingArtifactListQuery = {
   workflowRunId?: string | undefined;
   nodeId?: string | undefined;
   workflow?: AssetWorkflow | undefined;
   space?: AssetWorkflowSpace | undefined;
+  /** Read only this Run's saved copies; do not project current lineage sources. Requires workflowRunId. */
+  view?: (typeof WORKING_ARTIFACT_LIST_VIEWS)[number] | undefined;
 };
 
 export type WorkingArtifactListData = {

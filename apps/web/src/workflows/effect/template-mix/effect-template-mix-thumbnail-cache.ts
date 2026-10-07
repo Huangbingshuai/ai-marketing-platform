@@ -15,6 +15,7 @@ const MAX_PERSISTENT_THUMBNAILS = 6_000;
 const thumbnailUrls = reactive(new Map<string, string>());
 const queuedKeys = new Set<string>();
 const runningKeys = new Set<string>();
+const runningSources = new Set<string>();
 const restoringKeys = new Set<string>();
 const pinCounts = new Map<string, number>();
 const retryAfter = new Map<string, number>();
@@ -99,13 +100,13 @@ const markFailure = (key: string): void => {
   scheduleRetry();
 };
 
-const finishJob = (key: string): void => {
-  runningKeys.delete(key);
-  drainQueue();
-};
-
-const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
-  runningKeys.add(key);
+/** Decode adjacent requested frames without reopening the same video eight times. */
+const captureThumbnail = (initialJob: ThumbnailJob): void => {
+  const { source, version } = initialJob;
+  const sessionKey = JSON.stringify([source, version]);
+  runningSources.add(sessionKey);
+  let job = initialJob;
+  runningKeys.add(job.key);
   const video = document.createElement('video');
   let completed = false;
   let timeout = 0;
@@ -117,23 +118,60 @@ const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
     video.removeAttribute('src');
     video.load();
   };
-  const settle = (callback: () => void): void => {
+  const close = (): void => {
     if (completed) return;
     completed = true;
-    activeCaptures.delete(key);
-    callback();
+    activeCaptures.delete(sessionKey);
+    runningKeys.delete(job.key);
+    runningSources.delete(sessionKey);
     cleanup();
-    finishJob(key);
+    drainQueue();
   };
-  const fail = (): void => settle(() => markFailure(key));
-  activeCaptures.set(key, () =>
-    settle(() => {
-      if (pinCounts.has(key) && !thumbnailUrls.has(key) && !queuedKeys.has(key)) {
-        queuedKeys.add(key);
-        queue.unshift(jobs.get(key) ?? { key, source, time, version: '' });
-      }
-    }),
-  );
+  const fail = (): void => {
+    if (completed) return;
+    markFailure(job.key);
+    // A failed source cannot yield its other frames either. Do not open it again per frame.
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      const pending = queue[index]!;
+      if (pending.source !== source || pending.version !== version) continue;
+      queue.splice(index, 1);
+      queuedKeys.delete(pending.key);
+      if (pinCounts.has(pending.key)) markFailure(pending.key);
+    }
+    close();
+  };
+  activeCaptures.set(sessionKey, () => {
+    if (pinCounts.has(job.key) && !thumbnailUrls.has(job.key) && !queuedKeys.has(job.key)) {
+      queuedKeys.add(job.key);
+      queue.unshift(job);
+    }
+    close();
+  });
+  const seekFrame = (): void => {
+    if (completed) return;
+    window.clearTimeout(timeout);
+    timeout = window.setTimeout(fail, 20_000);
+    capturing = false;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    targetTime = duration > 0
+      ? Math.min(Math.max(0.04, job.time), Math.max(0.04, duration - 0.04)) : 0;
+    if (Math.abs(video.currentTime - targetTime) < 0.02) capture();
+    else video.currentTime = targetTime;
+  };
+  const nextFrame = (): void => {
+    runningKeys.delete(job.key);
+    while (!completed) {
+      const index = queue.findIndex((pending) => pending.source === source && pending.version === version);
+      if (index < 0) { close(); return; }
+      job = queue.splice(index, 1)[0]!;
+      queuedKeys.delete(job.key);
+      if (!pinCounts.has(job.key) || thumbnailUrls.has(job.key) ||
+        Date.now() < (retryAfter.get(job.key) ?? 0)) continue;
+      runningKeys.add(job.key);
+      seekFrame();
+      return;
+    }
+  };
   const capture = (): void => {
     if (
       completed ||
@@ -159,14 +197,15 @@ const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
       capturing = true;
       canvas.toBlob(
         (blob) => {
+          // A paused/cancelled decoder must not publish a late canvas callback.
+          if (completed) return;
           if (!blob) {
             fail();
             return;
           }
-          settle(() => {
-            installThumbnail(key, blob);
-            void saveToDisk(key, blob);
-          });
+          installThumbnail(job.key, blob);
+          void saveToDisk(job.key, blob);
+          nextFrame();
         },
         'image/jpeg',
         0.78,
@@ -176,7 +215,7 @@ const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
     }
   };
 
-  timeout = window.setTimeout(() => fail(), 20_000);
+  timeout = window.setTimeout(fail, 20_000);
 
   video.muted = true;
   video.playsInline = true;
@@ -184,13 +223,7 @@ const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
   video.addEventListener('error', fail, { once: true });
   video.addEventListener(
     'loadedmetadata',
-    () => {
-      const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      targetTime =
-        duration > 0 ? Math.min(Math.max(0.04, time), Math.max(0.04, duration - 0.04)) : 0;
-      if (Math.abs(video.currentTime - targetTime) < 0.02) capture();
-      else video.currentTime = targetTime;
-    },
+    seekFrame,
     { once: true },
   );
   // These events may arrive before the seek has decoded a frame. Keep
@@ -204,8 +237,10 @@ const captureThumbnail = ({ key, source, time }: ThumbnailJob): void => {
 
 function drainQueue(): void {
   if (capturesPaused) return;
-  while (runningKeys.size < MAX_CONCURRENT_CAPTURES && queue.length) {
-    const job = queue.shift();
+  while (runningSources.size < MAX_CONCURRENT_CAPTURES && queue.length) {
+    const index = queue.findIndex((pending) => !runningSources.has(JSON.stringify([pending.source, pending.version])));
+    if (index < 0) return;
+    const job = queue.splice(index, 1)[0];
     if (!job) return;
     queuedKeys.delete(job.key);
     if (

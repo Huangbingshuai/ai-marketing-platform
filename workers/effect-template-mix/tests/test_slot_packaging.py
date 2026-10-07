@@ -11,6 +11,7 @@ from effect_template_mix.api import InternalApi
 from effect_template_mix.packaging import PackagingHandler, SlotVisionOutput, narration_windows, slot_vision_key
 from effect_template_mix.packaging_provider import PackagingProvider, PackagingError, TimedVoicePcm
 from effect_template_mix.provider import ArkProvider
+from effect_template_mix.provider import ProviderIncompleteError, ProviderError
 
 
 def snapshot(duration: float = 4) -> dict[str, Any]:
@@ -117,3 +118,60 @@ async def test_global_tts_pool_bounds_calls_and_retains_successful_slots() -> No
     assert len(item['checkpoint']['voices']) == len(item['checkpoint']['captions']) == 6
     await worker.process_item('/r', {}, 'p', item)
     assert provider.voice.await_count == 12
+
+
+async def test_incomplete_slot_vision_splits_without_downloading_frames_twice(tmp_path: Path, monkeypatch: Any) -> None:
+    api, ark = AsyncMock(spec=InternalApi), AsyncMock(spec=ArkProvider)
+    downloads = []
+    api.client = httpx.AsyncClient(base_url='http://test/', transport=httpx.MockTransport(
+        lambda req: downloads.append(req.url.path) or httpx.Response(200, content=b'video')))
+    monkeypatch.setattr('effect_template_mix.packaging.slot_frames', AsyncMock(return_value=[b'a', b'b', b'c']))
+    calls = []
+    async def describe(content: Any, *_: Any, **__: Any) -> SlotVisionOutput:
+        import json
+        ids = [c['slotId'] for c in json.loads(content[0]['text'])['slots']]
+        calls.append(ids)
+        if len(ids) > 1:
+            raise ProviderIncompleteError('incomplete', retryable=False, split_recommended=True)
+        return SlotVisionOutput.model_validate({'slots': [{'slotId': ids[0], 'description': '画面'}]})
+    ark.structured.side_effect = describe
+    worker = PackagingHandler(api, ark, AsyncMock(spec=PackagingProvider), 1000)
+    value = snapshot(8)
+    value['variant']['slots'] = [{'id': 'a'}, {'id': 'b'}]
+    value['clips'] = [{**value['clips'][0], 'slotId': c, 'duration': 4, 'start': i * 4, 'contentHash': c}
+                      for i, c in enumerate(['a', 'b'])]
+    cp: dict[str, Any] = {'timings': {}}
+    async def save(_stage: str, patch: Any) -> None:
+        cp.update(patch)
+    try:
+        await worker.slot_vision(value, cp, '/item', {}, 'p', tmp_path, AsyncMock(), save)
+        assert calls == [['a', 'b'], ['a'], ['b']] and len(downloads) == 2
+        assert set(cp['slotVision']) == {'a', 'b'} and not worker.vision_pending
+    finally:
+        await api.client.aclose()
+
+
+async def test_shared_vision_preserves_permanent_failure_and_can_be_retried(tmp_path: Path, monkeypatch: Any) -> None:
+    api, ark = AsyncMock(spec=InternalApi), AsyncMock(spec=ArkProvider)
+    api.client = httpx.AsyncClient(base_url='http://test/', transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, content=b'video')))
+    monkeypatch.setattr('effect_template_mix.packaging.slot_frames', AsyncMock(return_value=[b'a']))
+    async def rejected(*_: Any, **__: Any) -> None:
+        await asyncio.sleep(.01)
+        raise ProviderError('denied', retryable=False, status_code=401)
+    ark.structured.side_effect = rejected
+    worker = PackagingHandler(api, ark, AsyncMock(spec=PackagingProvider), 1000)
+    async def run(index: int) -> None:
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        await worker.slot_vision(snapshot(), {'timings': {}}, '/i', {}, 'p', directory, AsyncMock(), AsyncMock())
+    try:
+        results = await asyncio.gather(run(0), run(1), return_exceptions=True)
+        assert all(isinstance(e, ProviderError) and not e.retryable for e in results)
+        assert not worker.vision_pending and not worker.vision_cache
+        ark.structured.side_effect = None
+        ark.structured.return_value = SlotVisionOutput.model_validate({'slots': [{'slotId': 's', 'description': '画面'}]})
+        await run(2)
+        assert ark.structured.await_count == 2 and len(worker.vision_cache) == 1
+    finally:
+        await api.client.aclose()

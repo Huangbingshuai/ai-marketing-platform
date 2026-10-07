@@ -17,6 +17,44 @@ const pendingResults = new Map<string, EffectTemplateMixWaveform>();
 const queuedSources = new Set<string>();
 const runningSources = new Set<string>();
 let decodingPaused = false;
+let diskCache: Promise<Cache | null> | undefined;
+let persistedWrites = 0;
+const MAX_PERSISTENT_WAVEFORMS = 256;
+const openDiskCache = (): Promise<Cache | null> => {
+  diskCache ??= typeof caches === 'undefined' ? Promise.resolve(null)
+    : caches.open('effect-template-mix-waveforms-v1').catch(() => null);
+  return diskCache;
+};
+const cacheRequest = (source: string): string =>
+  `${window.location.origin}/__effect-template-mix-waveform-cache?source=${encodeURIComponent(source)}`;
+const restoreWaveform = async (source: string): Promise<EffectTemplateMixWaveform | null> => {
+  try {
+    const cache = await openDiskCache();
+    const response = await cache?.match(cacheRequest(source));
+    if (!response) return null;
+    const value: unknown = await response.json();
+    if (!value || typeof value !== 'object') return null;
+    const waveform = value as EffectTemplateMixWaveform;
+    if (waveform.status !== 'READY' || !Number.isFinite(waveform.duration) || waveform.duration <= 0 ||
+      !Array.isArray(waveform.samples) || waveform.samples.length > MAX_SAMPLES ||
+      !waveform.samples.every((sample) => typeof sample === 'number' && Number.isFinite(sample) && sample >= 0 && sample <= 1)) return null;
+    return waveform;
+  } catch { return null; }
+};
+const saveWaveform = async (source: string, waveform: EffectTemplateMixWaveform): Promise<void> => {
+  try {
+    const cache = await openDiskCache();
+    if (!cache) return;
+    await cache.put(cacheRequest(source), new Response(JSON.stringify(waveform),
+      { headers: { 'Content-Type': 'application/json' } }));
+    persistedWrites += 1;
+    if (persistedWrites % 32 === 0) {
+      const stored = await cache.keys();
+      for (const request of stored.slice(0, Math.max(0, stored.length - MAX_PERSISTENT_WAVEFORMS)))
+        await cache.delete(request);
+    }
+  } catch { /* Optional browser storage must not interrupt real waveform decoding. */ }
+};
 
 const setWaveform = (source: string, waveform: EffectTemplateMixWaveform): void => {
   if (decodingPaused) pendingResults.set(source, waveform);
@@ -31,12 +69,16 @@ const finishJob = (source: string): void => {
 const decodeWaveform = async (source: string): Promise<void> => {
   runningSources.add(source);
   setWaveform(source, { duration: 0, samples: [], status: 'LOADING' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const response = await fetch(source, { credentials: 'include' });
+    const restored = await restoreWaveform(source);
+    if (restored) { setWaveform(source, restored); return; }
+    const response = await fetch(source, { credentials: 'include', signal: controller.signal });
     if (!response.ok) throw new Error(`视频读取失败：${response.status}`);
     const encoded = await response.arrayBuffer();
     const audioContext = new OfflineAudioContext(1, 1, 44_100);
-    const audio = await audioContext.decodeAudioData(encoded.slice(0));
+    const audio = await audioContext.decodeAudioData(encoded);
     const sampleCount = Math.max(
       1,
       Math.min(MAX_SAMPLES, Math.ceil(audio.duration * SAMPLES_PER_SECOND)),
@@ -59,14 +101,17 @@ const decodeWaveform = async (source: string): Promise<void> => {
       referencePeak > 0
         ? samples.map((sample) => Math.max(0, Math.min(1, sample / referencePeak)))
         : [];
-    setWaveform(source, {
+    const waveform: EffectTemplateMixWaveform = {
       duration: audio.duration,
       samples: normalized,
       status: 'READY',
-    });
+    };
+    setWaveform(source, waveform);
+    void saveWaveform(source, waveform);
   } catch {
     setWaveform(source, { duration: 0, samples: [], status: 'FAILED' });
   } finally {
+    clearTimeout(timeout);
     finishJob(source);
   }
 };

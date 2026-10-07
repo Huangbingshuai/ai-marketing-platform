@@ -164,6 +164,14 @@ export type FinalOutputRun = {
     stale: number;
   };
 };
+/** Compact, project-scoped status for one background export; no timeline snapshots. */
+export type FinalOutputExportProgress = Pick<FinalOutputRun,
+  'id' | 'workflowRunId' | 'backgroundExportSourceRunId' | 'backgroundExportPublished' |
+  'templateId' | 'createdAt' | 'status'> & {
+  counts: Pick<FinalOutputRun['counts'], 'total' | 'queued' | 'running' | 'completed' | 'failed'>;
+  items: Pick<FinalOutputItem,
+    'id' | 'variantId' | 'status' | 'progress' | 'fileObjectId' | 'assetId' | 'errorMessage'>[];
+};
 export type FinalOutputQueueMessage = {
   schemaVersion: 2;
   taskType: 'FINAL_OUTPUT';

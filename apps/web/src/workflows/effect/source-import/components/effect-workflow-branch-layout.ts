@@ -19,12 +19,12 @@ export const BRANCH_TREE_STAGES = [
 ] as const satisfies readonly { key: string; nodeId: EffectWorkflowBranchNodeId; name: string }[];
 export type BranchStageKey = (typeof BRANCH_TREE_STAGES)[number]['key'];
 export const BRANCH_TREE_AXIS_WIDTH = 178;
-export const BRANCH_TREE_ROOT_TOP = 64;
-export const BRANCH_TREE_NODE_WIDTH = 128;
-export const BRANCH_TREE_NODE_HEIGHT = 72;
-export const BRANCH_TREE_LEAF_GAP = 188;
-export const BRANCH_TREE_SIDE_PADDING = 160;
-export const BRANCH_TREE_ROW_GAP = 116;
+export const BRANCH_TREE_ROOT_TOP = 60;
+export const BRANCH_TREE_NODE_WIDTH = 184;
+export const BRANCH_TREE_NODE_HEIGHT = 88;
+export const BRANCH_TREE_LEAF_GAP = 232;
+export const BRANCH_TREE_SIDE_PADDING = 144;
+export const BRANCH_TREE_ROW_GAP = 124;
 export const BRANCH_TREE_TOP = 184;
 
 export type BranchTreeNode = {
@@ -404,23 +404,30 @@ export function buildEffectBranchLayout(
   // A new template can live in an old Run. Order the actual drawing siblings by their
   // own creation time, not by the DFS order of the Runs that happen to contain them.
   const chronologicalNodes = (left: BranchTreeNode, right: BranchTreeNode) =>
-    nodeCreatedTime(left) - nodeCreatedTime(right);
+    nodeCreatedTime(left) - nodeCreatedTime(right) || left.key.localeCompare(right.key);
   const roots = nodes.filter((node) => !parentByKey.has(node.key));
   roots.sort(chronologicalNodes);
   let nextLeaf = 0;
-  const positioned = new Set<string>();
-  const place = (node: BranchTreeNode): number => {
-    if (positioned.has(node.key)) return node.x;
-    positioned.add(node.key);
+  const positioned = new Map<string, { left: number; right: number }>();
+  const place = (node: BranchTreeNode): { left: number; right: number } => {
+    const existing = positioned.get(node.key);
+    if (existing) return existing;
     const descendants = (childrenByKey.get(node.key) ?? [])
       .map((key) => nodeByKey.get(key))
       .filter((child): child is BranchTreeNode => !!child)
       .sort(chronologicalNodes);
-    const descendantXs = descendants.map(place);
-    node.x = descendantXs.length
-      ? (descendantXs[0]! + descendantXs[descendantXs.length - 1]!) / 2
+    const descendantSpans = descendants.map(place);
+    // Give each subtree its own leaf lanes, then center its parent over the
+    // entire occupied span. A single continuation stays vertical; forks grow
+    // on both sides without changing chronology, ownership or node identity.
+    const leafX = descendantSpans.length ? 0
       : BRANCH_TREE_SIDE_PADDING + nextLeaf++ * BRANCH_TREE_LEAF_GAP;
-    return node.x;
+    const span = descendantSpans.length
+      ? { left: descendantSpans[0]!.left, right: descendantSpans.at(-1)!.right }
+      : { left: leafX, right: leafX };
+    node.x = (span.left + span.right) / 2;
+    positioned.set(node.key, span);
+    return span;
   };
   for (const root of roots) place(root);
   for (const node of nodes) if (!positioned.has(node.key)) place(node);
