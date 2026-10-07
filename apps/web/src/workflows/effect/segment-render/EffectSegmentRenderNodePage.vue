@@ -15,8 +15,9 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_SEGMENT_IMPORT_DIMENSION_LIMITS,
+  resolveEffectImportedRenderSettings,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
+import { WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
   Check,
@@ -43,6 +44,7 @@ import {
   nextTick,
   onActivated,
   onBeforeUnmount,
+  onMounted,
   onDeactivated,
   ref,
   watch,
@@ -76,6 +78,7 @@ import {
 import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
   effectSegmentRenderPage,
+  effectSegmentRepairUnavailableReason,
   effectSegmentRenderPageCount,
   effectSegmentRenderCreativeCoreMap,
   effectSegmentRenderPromptDetailsMap,
@@ -308,6 +311,7 @@ let operationController: AbortController | null = null;
 let pollController: AbortController | null = null;
 let previewController: AbortController | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let pollEpoch = 0;
 let loadGeneration = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let nodeActive = true;
@@ -405,6 +409,9 @@ const allFilteredSelected = computed(
     selectableFilteredTasks.value.length > 0 &&
     selectableFilteredTasks.value.every((task) => selectedTaskIds.value.has(task.id)),
 );
+const showDeleteMaterials = computed(
+  () => Boolean(props.editing && selectionMode.value),
+);
 const exportRangeTasks = computed(() => {
   if (exportScope.value === 'SELECTED') return selectedTasks.value;
   if (exportScope.value === 'FILTERED') return filteredTasks.value;
@@ -413,7 +420,6 @@ const exportRangeTasks = computed(() => {
 
 const canPreviewTask = (task: EffectSegmentRenderTask): boolean => Boolean(task.output);
 const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
-  !task.independentImport &&
   !isEffectSegmentRenderBusy(task.status) &&
   task.updateKind !== 'REMOVE' &&
   !task.repair &&
@@ -642,7 +648,7 @@ const currentProductReady = computed(
     summary.value.running === 0 &&
     summary.value.failed === 0 &&
     tasks.value.every((task) => !task.repair) &&
-    !workspace.value?.stale &&
+    (!workspace.value?.stale || workspace.value?.canSaveFrozenResults) &&
     operation.value === null,
 );
 const canStartBatch = computed(
@@ -689,6 +695,7 @@ const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
 };
 
 const stopPolling = (): void => {
+  pollEpoch += 1;
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = undefined;
   pollController?.abort();
@@ -704,16 +711,22 @@ const needsPolling = (nextWorkspace: EffectSegmentRenderWorkspace): boolean =>
 
 const pollBatch = async (): Promise<void> => {
   const current = workspace.value;
-  if (!current?.batchId || !needsPolling(current)) return;
+  if (!current?.batchId || !nodeActive || pollController) return;
+  if (operation.value || document.visibilityState === 'hidden') {
+    schedulePolling(current);
+    return;
+  }
   const productId = current.productId;
   const batchId = current.batchId;
   const workflowRunId = props.workflowRunId;
+  const epoch = pollEpoch;
   const controller = new AbortController();
   pollController = controller;
   try {
     const response = await getEffectSegmentRenderBatch(props.projectId, batchId, controller.signal);
     if (
       controller.signal.aborted ||
+      epoch !== pollEpoch ||
       productId !== currentProductId.value ||
       workflowRunId !== props.workflowRunId ||
       response.data.batch.workflowRunId !== props.workflowRunId
@@ -733,11 +746,13 @@ const pollBatch = async (): Promise<void> => {
 const schedulePolling = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = undefined;
-  if (needsPolling(nextWorkspace)) pollTimer = setTimeout(() => void pollBatch(), 3000);
+  if (nodeActive && nextWorkspace.batchId)
+    pollTimer = setTimeout(() => void pollBatch(), needsPolling(nextWorkspace) ? 3000 : 10000);
 };
 
 const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
   if (nextWorkspace.productId !== currentProductId.value) return;
+  pollEpoch += 1;
   const previousStatus = workspace.value?.batchStatus;
   const previousCommitStatus = workspace.value?.commitStatus;
   workspace.value = nextWorkspace;
@@ -769,6 +784,9 @@ const applyBatch = (batch: EffectSegmentRenderBatch): void => {
     batch.productId !== currentProductId.value
   )
     return;
+  if (batch.id === current.batchId && (batch.revision < (current.batchRevision ?? 0) ||
+    (batch.latestPromptRevision != null && current.promptArtifactRevision != null &&
+      batch.latestPromptRevision < current.promptArtifactRevision))) return;
   applyWorkspace(effectSegmentRenderWorkspaceWithBatch(current, batch));
 };
 
@@ -1095,6 +1113,7 @@ const startBatch = async (forceFull = false): Promise<void> => {
         {
           expectedBatchRevision: current.batchRevision!,
           expectedPromptArtifactRevision: current.promptArtifactRevision!,
+          ...(current.refreshSignature ? { expectedDifferenceSignature: current.refreshSignature } : {}),
           idempotencyKey: crypto.randomUUID(),
         },
         controller.signal,
@@ -1105,6 +1124,7 @@ const startBatch = async (forceFull = false): Promise<void> => {
         return;
       }
       applyBatch(response.data.batch);
+      if (response.data.noChanges) { showNotice('变更已抵消，无需更新素材'); return; }
       showNotice(renderCount + newPromptCount ? `${renderCount + newPromptCount} 个素材进入渲染队列，其余同步已完成；完成后请保存修改` : '素材信息同步/移除已完成，请保存修改');
       return;
     }
@@ -1138,6 +1158,19 @@ const startBatch = async (forceFull = false): Promise<void> => {
   }
 };
 
+const importedRenderDescription = (task: EffectSegmentRenderTask): string => {
+  const settings = resolveEffectImportedRenderSettings(renderSettings.value, {
+    durationSeconds: task.durationSeconds,
+    ...(task.mediaShortSidePixels !== undefined
+      ? { shortSidePixels: task.mediaShortSidePixels }
+      : {}),
+  });
+  const label =
+    capabilityOptions.find((item) => item.value === settings.capabilityKey)?.label ??
+    settings.capabilityKey;
+  return `本次使用 ${label} · ${settings.resolution.toUpperCase()}，不改变全局渲染设置`;
+};
+
 const retryTask = async (taskId: string): Promise<void> => {
   const taskNeedsRefresh = workspace.value?.tasks.find((task) => task.id === taskId)?.needsUpdate;
   if (!canEditMaterials.value && !taskNeedsRefresh) {
@@ -1155,7 +1188,9 @@ const retryTask = async (taskId: string): Promise<void> => {
     !(await requestActionConfirmation({
       eyebrow: taskNeedsUpdate ? '按最新 Prompt 更新素材' : '重新生成片段',
       title: task.updateKind === 'METADATA' ? '同步这条素材的 Prompt 信息？' : taskNeedsUpdate ? '按修改后的 Prompt 更新这个素材？' : '重新生成这个视频片段？',
-      description: task.updateKind === 'METADATA'
+      description: task.independentImport
+        ? `使用这条素材已确认的反推提示词重新生成，原视频仍会保留；${importedRenderDescription(task)}。`
+        : task.updateKind === 'METADATA'
           ? '仅同步创意方向、六维与用途，原视频保持不变，不产生视频生成费用；保存修改后生效。'
         : taskNeedsUpdate
           ? '这条素材会使用当前已确认的 Prompt 和原批次渲染设置重新生成；旧版本视频仍会保留。'
@@ -1174,6 +1209,7 @@ const retryTask = async (taskId: string): Promise<void> => {
     const response = taskNeedsUpdate ? await refreshEffectSegmentRenderBatch(
       props.projectId, current.batchId,
       { taskIds: [taskId], expectedBatchRevision: current.batchRevision,
+        ...(task.refreshSignature ? { expectedDifferenceSignature: task.refreshSignature } : {}),
         expectedPromptArtifactRevision: current.promptArtifactRevision!, idempotencyKey: crypto.randomUUID() },
       controller.signal,
     ) : await regenerateEffectSegmentRenderTasks(
@@ -1192,6 +1228,7 @@ const retryTask = async (taskId: string): Promise<void> => {
       return;
     }
     applyBatch(response.data.batch);
+    if ('noChanges' in response.data && response.data.noChanges) { showNotice('变更已抵消，无需更新素材'); return; }
     showNotice(task.updateKind === 'METADATA' ? '素材信息已同步，请保存修改' : '视频素材片段已进入渲染队列');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '片段重生成失败'), 'error');
@@ -1254,7 +1291,7 @@ const openPreview = (
 };
 
 const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
-  if (!task.output || task.repair || task.durationSeconds > 15) return;
+  if (effectSegmentRepairUnavailableReason(task)) return;
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   repairTask.value = task;
   repairStartSeconds.value = 0;
@@ -1552,43 +1589,55 @@ const selectAllFiltered = (): void => {
 };
 
 const deleteSelectedMaterials = async (): Promise<void> => {
-  if (!canEditMaterials.value) {
-    showNotice('请先进入编辑状态，再删除素材', 'warning');
-    return;
-  }
   const current = workspace.value;
   if (
+    !showDeleteMaterials.value ||
     operation.value ||
+    editTransitioning.value ||
+    batchActive.value ||
     !selectedTasks.value.length ||
     !current?.batchId ||
     typeof current.batchRevision !== 'number'
   )
     return;
-  if (
-    !(await requestActionConfirmation({
-      eyebrow: '删除素材',
-      title: `删除已选择的 ${selectedTasks.value.length} 个视频素材？`,
-      description: '删除后对应 Prompt 槽位会标记为异常，可重新生成或导入替代素材。',
-      confirmLabel: '确认删除',
-      tone: 'danger',
-    }))
-  )
-    return;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const taskIds = selectedTasks.value.map(({ id }) => id);
+  const controller = new AbortController();
+  operationController = controller;
+  const isCurrent = (): boolean =>
+    nodeActive && !controller.signal.aborted &&
+    props.projectId === projectId && props.workflowRunId === workflowRunId;
   operation.value = 'delete';
   try {
-    const response = await deleteEffectSegmentRenderMaterials(props.projectId, current.batchId, {
-      taskIds: selectedTasks.value.map(({ id }) => id),
+    if (!(await requestActionConfirmation({
+      eyebrow: '删除素材',
+      title: `删除已选择的 ${taskIds.length} 个视频素材？`,
+      description: '删除仅写入编辑草稿，保存修改后才影响混剪素材池；取消编辑保留原素材和历史文件。',
+      confirmLabel: '确认删除',
+      tone: 'danger',
+    })) || !isCurrent()) return;
+    if (workspace.value?.batchId !== current.batchId ||
+      workspace.value?.batchRevision !== current.batchRevision)
+      throw new Error('素材状态已变化，请重新选择后删除');
+    if (!showDeleteMaterials.value || !selectedTasks.value.length) return;
+    const response = await deleteEffectSegmentRenderMaterials(projectId, current.batchId, {
+      taskIds,
       expectedBatchRevision: current.batchRevision,
       idempotencyKey: crypto.randomUUID(),
-    });
+    }, controller.signal);
+    if (!isCurrent()) return;
     applyBatch(response.data.batch);
     selectedTaskIds.value = new Set();
     selectionMode.value = false;
-    showNotice('所选素材已删除，对应 Prompt 槽位可重新生成');
+    showNotice('所选素材已从编辑草稿移除，请保存修改；取消编辑可保留原素材');
   } catch (error) {
-    showNotice(safeMessage(error, '视频素材删除失败'), 'error');
+    if (isCurrent()) showNotice(safeMessage(error, '视频素材删除失败'), 'error');
   } finally {
-    operation.value = null;
+    if (operationController === controller) {
+      operationController = null;
+      operation.value = null;
+    }
   }
 };
 
@@ -1732,6 +1781,9 @@ const stopNodeRequests = (): void => {
   requestedTaskVideoKeys.value = new Set();
 };
 
+const refreshOnFocus = (): void => { if (nodeActive) void pollBatch(); };
+onMounted(() => window.addEventListener('focus', refreshOnFocus));
+
 onActivated(() => {
   nodeActive = true;
   if (!activatedOnce) {
@@ -1750,6 +1802,7 @@ onDeactivated(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', refreshOnFocus);
   nodeActive = false;
   operation.value = null;
   closeTransferPanel(false);
@@ -1857,14 +1910,6 @@ onBeforeUnmount(() => {
             @click="openTransferPanel('import', $event)"
           >
             <FolderInput :size="14" />导入素材
-          </button>
-          <button
-            class="secondary-button"
-            type="button"
-            :disabled="!tasks.length || operation !== null"
-            @click="openTransferPanel('export', $event)"
-          >
-            <Download :size="14" />导出素材
           </button>
           <button
             v-if="workspace?.stale && workspace.refreshScope === 'SELECTIVE'"
@@ -2039,9 +2084,10 @@ onBeforeUnmount(() => {
               {{ allFilteredSelected ? '取消全选' : '全选筛选结果' }}
             </button>
             <button
+              v-if="showDeleteMaterials"
               class="delete-selection-button"
               type="button"
-              :disabled="!canEditMaterials || !selectedTasks.length || operation !== null"
+              :disabled="!selectedTasks.length || operation !== null || editTransitioning || batchActive"
               @click="deleteSelectedMaterials"
             >
               <Trash2 :size="13" />删除
@@ -2129,7 +2175,9 @@ onBeforeUnmount(() => {
                   :size="25"
                 />
                 <Play v-else :size="27" />
-                <small>{{ task.durationSeconds }}s · {{ task.progress }}%</small>
+                <small
+                  >{{ importVideoDuration(task.durationSeconds) }}s · {{ task.progress }}%</small
+                >
               </button>
               <div class="material-card-body">
                 <div class="material-card-title">
@@ -2218,9 +2266,9 @@ onBeforeUnmount(() => {
                   :disabled="
                     !canEditMaterials ||
                     operation !== null ||
-                    !task.output ||
-                    task.durationSeconds > 15
+                    !!effectSegmentRepairUnavailableReason(task)
                   "
+                  :title="effectSegmentRepairUnavailableReason(task) || '画面返修'"
                   @click="openRepair(task, $event)"
                 >
                   画面返修
@@ -2279,46 +2327,9 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <WorkflowNodeDraftBar
-        :detail="
-          hasBatch
-            ? `${currentProduct.name} · ${summary.total} 个真实视频任务 · 批次 revision ${workspace?.batchRevision ?? '-'}${workspace?.stale ? ' · 上游已更新' : ''}`
-            : workspace?.promptReady
-              ? `${currentProduct.name} · 已就绪 ${promptCount} 条 Prompt · 尚未创建渲染批次`
-              : `${currentProduct.name} · 等待上游 Prompt 可用版本`
-        "
-        :state="operation || batchActive ? 'saving' : validated ? 'saved' : 'dirty'"
-        :state-label="
-          operation || batchActive
-            ? '正在生成…'
-            : validated
-              ? '真实工作副本已提交'
-              : hasBatch
-                ? '真实批次已更新'
-                : workspace?.promptReady
-                  ? '等待开始'
-                  : '上游未确认'
-        "
-        title="AI 视频片段批次"
-      />
 
       <WorkflowNodeFooter
-        back-label="上一步"
-        :complete="validated"
-        :status-title="
-          validated
-            ? '视频素材修改已保存'
-            : !hasBatch
-              ? workspace?.promptReady
-                ? '等待开始批量渲染'
-                : '请先完成上游 Prompt 校验'
-              : batchActive
-                ? `正在渲染，已完成 ${summary.completed}/${summary.total}`
-                : currentProductReady
-                  ? '全部片段已完成，可保存修改'
-                  : '等待处理异常或缺失片段'
-        "
-        :status-detail="`步骤 4 / 6 · ${currentProduct.name} · ${validated ? '真实工作副本已提交' : hasBatch ? '渲染结果待自动提交或编辑保存' : workspace?.promptReady ? `已就绪 ${promptCount} 条 Prompt` : '等待上游确认'}`"
+        back-label="上一步：Prompt 生成"
         :show-validate="false"
         :next-disabled="!validated || operation !== null"
         next-label="下一步：模板混剪"
@@ -2370,7 +2381,7 @@ onBeforeUnmount(() => {
             />
             <template v-else>
               <Play :size="34" />
-              <small>{{ previewTask.durationSeconds }}s</small>
+              <small>{{ importVideoDuration(previewTask.durationSeconds) }}s</small>
             </template>
             <LoaderCircle
               v-if="previewUrl && !previewVideoReady"
@@ -2419,7 +2430,10 @@ onBeforeUnmount(() => {
           <header>
             <div>
               <h2 id="segment-repair-title">返修指定画面</h2>
-              <small>{{ repairTask.renderCode }} · 完整参考视频最长 15 秒</small>
+              <small>{{ repairTask.renderCode }} · 完整参考视频 4～30 秒</small>
+              <small v-if="repairTask.independentImport">{{
+                importedRenderDescription(repairTask)
+              }}</small>
             </div>
             <button
               ref="repairCloseButton"
@@ -2457,7 +2471,7 @@ onBeforeUnmount(() => {
               />
               <template v-else>
                 <Play :size="34" />
-                <small>{{ repairTask.durationSeconds }}s</small>
+                <small>{{ importVideoDuration(repairTask.durationSeconds) }}s</small>
               </template>
               <LoaderCircle
                 v-if="previewUrl && !previewVideoReady"

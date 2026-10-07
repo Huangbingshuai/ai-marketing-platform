@@ -69,6 +69,32 @@ const renderSettings = (
 ): EffectSegmentRenderSettings => ({ ratio: '9:16', resolution, capabilityKey });
 
 describe('effect Seedance request compiler', () => {
+  it('preserves fractional edit duration while keeping generation validation strict', () => {
+    const snapshot = compileEffectSeedanceRequest(
+      batch('SEEDANCE_2_0'),
+      item.id,
+      'model',
+      renderSettings(),
+    );
+    const edit = {
+      ...snapshot,
+      operation: 'REPAIR' as const,
+      request: { ...snapshot.request, duration: 15.041667 },
+    };
+    expect(validateEffectSeedanceTaskResult(edit, { duration: 14.8 })).toEqual([]);
+    expect(validateEffectSeedanceTaskResult(edit, { duration: 14.6 })).toContain(
+      'DURATION_MISMATCH',
+    );
+    expect(validateEffectSeedanceTaskResult(edit, { duration: 15.1 })).toContain(
+      'DURATION_MISMATCH',
+    );
+    expect(validateEffectSeedanceTaskResult(snapshot, { duration: 4.8 })).toContain(
+      'DURATION_MISMATCH',
+    );
+    expect(validateEffectSeedanceTaskResult(edit, { duration: NaN })).toContain(
+      'DURATION_MISMATCH',
+    );
+  });
   it('keeps technical settings outside the visible prompt and appends shared constraints once', () => {
     const compiled = compileEffectSeedanceRequest(
       batch('SEEDANCE_2_0'),

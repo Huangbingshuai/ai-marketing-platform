@@ -5,10 +5,11 @@ import { PrismaService } from '../../../database/prisma.service';
 import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import { EffectPromptRepository } from './effect-prompt.repository';
 import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
+import { confirmedEffectRenderSourceRun } from '../../../platform/workflow/effect-render-source-context';
 
-it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
-  'saves one manually edited Prompt into the parent branch without publishing the edit child',
-  async () => {
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1').each([false, true])(
+  'saves manually edited Prompt without publishing its edit child (frozen render in progress=%s)',
+  async (frozenRender) => {
     const db = new PrismaService(new ConfigService({
       DATABASE_URL: process.env.DATABASE_URL ??
         'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
@@ -19,7 +20,7 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         const source = await tx.workingArtifact.findFirstOrThrow({ where: {
           nodeId: 'PROMPT_GENERATION', availability: 'AVAILABLE',
           workflowRun: { workflow: 'EFFECT', workflowSpace: 'EFFECT',
-            OR: [{ parentWorkflowRunId: null }, { branchPublishedAt: { not: null } }],
+            parentWorkflowRunId: null,
             workingArtifacts: { some: { nodeId: 'SEGMENT_RENDER',
               artifactKey: { startsWith: 'render-clip:' } } } },
         } });
@@ -34,8 +35,28 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         }, select: { id: true, revision: true, freshness: true } });
         expect(clipsBefore.length).toBeGreaterThan(0);
         const working = new WorkflowWorkingRepository(db);
+        let navigationRunId = source.workflowRunId;
+        let confirmedPrompt = source;
+        if (frozenRender) {
+          const renderEdit = await working.beginEffectNodeEditInTransaction(
+            tx, source.projectId, source.workflowRunId, 'SEGMENT_RENDER');
+          navigationRunId = renderEdit!.runId;
+          const renderRun = await tx.workflowRun.findUniqueOrThrow({ where: { id: navigationRunId } });
+          const ownerId = await confirmedEffectRenderSourceRun(tx, source.projectId, source.workflowRunId);
+          const aliases = Object.keys((renderRun.editIdMap as { productIdMap?: Record<string, string> }).productIdMap ?? {});
+          confirmedPrompt = await tx.workingArtifact.findFirstOrThrow({ where: {
+            projectId: source.projectId, workflowRunId: ownerId, nodeId: 'PROMPT_GENERATION',
+            artifactKey: { in: aliases.map(id => `prompt-batch:${id}`) },
+          } });
+          await tx.workflowRun.update({ where: { id: navigationRunId }, data: {
+            editIdMap: { ...(renderRun.editIdMap as Prisma.JsonObject), frozenPromptRefresh: true },
+          } });
+        }
+        const draftTasksBefore = frozenRender ? await tx.effectSegmentRenderTask.findMany({
+          where: { projectId: source.projectId, workflowRunId: navigationRunId }, orderBy: { id: 'asc' },
+        }) : [];
         const begun = await working.beginEffectNodeEditInTransaction(
-          tx, source.projectId, source.workflowRunId, 'PROMPT_GENERATION');
+          tx, source.projectId, navigationRunId, 'PROMPT_GENERATION');
         expect(begun?.runId).not.toBe(source.workflowRunId);
         const childId = begun!.runId;
         const childArtifact = await tx.workingArtifact.findFirstOrThrow({ where: {
@@ -81,11 +102,23 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         }).commitValidatedResultInTransaction(tx, source.projectId,
           childResult.id, childResult.revision, input);
         expect(saved.kind).toBe('COMMITTED');
-        expect(saved.workflowRunId).toBe(source.workflowRunId);
+        expect(saved.workflowRunId).toBe(navigationRunId);
         expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: childId } })).branchPublishedAt)
           .toBeNull();
-        expect((await tx.workingArtifact.findUniqueOrThrow({ where: { id: source.id } })).revision)
-          .toBe(source.revision + 1);
+        expect((await tx.workingArtifact.findUniqueOrThrow({ where: { id: confirmedPrompt.id } })).revision)
+          .toBe(confirmedPrompt.revision + 1);
+        if (frozenRender) {
+          expect(await tx.effectSegmentRenderTask.findMany({
+            where: { projectId: source.projectId, workflowRunId: navigationRunId }, orderBy: { id: 'asc' },
+          })).toEqual(draftTasksBefore);
+          const mirrored = await tx.workingArtifact.findFirstOrThrow({ where: {
+            workflowRunId: navigationRunId, nodeId: 'PROMPT_GENERATION',
+          } });
+          expect((mirrored.payload as Record<string, unknown>).items).toEqual(items);
+          expect(await tx.workingArtifactRevisionSnapshot.count({ where: {
+            workingArtifactId: mirrored.id, revision: mirrored.revision - 1,
+          } })).toBeGreaterThan(0);
+        }
         expect(await tx.workingArtifact.findMany({ where: {
           projectId: source.projectId, workflowRunId: source.workflowRunId,
           artifactKey: { startsWith: 'render-clip:' },

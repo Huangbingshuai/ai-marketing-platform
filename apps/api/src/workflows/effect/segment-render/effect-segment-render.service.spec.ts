@@ -8,6 +8,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { EffectSegmentRenderService } from './effect-segment-render.service';
+import { workingArtifactContentHash, type WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
 import {
   compileEffectPromptSharedPrompt,
   defaultEffectPromptRenderProfile,
@@ -42,7 +43,7 @@ const item: EffectPromptItem = {
 
 const promptBatch = (): EffectPromptBatchResult =>
   recomputePromptQuality(
-    [item],
+    [structuredClone(item)],
     DEFAULT_EFFECT_PROMPT_SETTINGS,
     undefined,
     { ...defaultEffectPromptRenderProfile(), resolution: '1080p' },
@@ -107,6 +108,7 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     }),
     sourcePackageArtifact: vi.fn().mockResolvedValue(sourcePackageArtifact),
     latestBatch: vi.fn().mockResolvedValue(null),
+    workspaceBatch: vi.fn().mockImplementation((...args) => repository.latestBatch(...args)),
     renderArtifact: vi.fn().mockResolvedValue(null),
     batch: vi.fn().mockResolvedValue(null),
     task: vi.fn().mockResolvedValue(null),
@@ -220,6 +222,160 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe('EffectSegmentRenderService', () => {
+  const completedPool = async () => {
+    const fixture = serviceWith();
+    await fixture.service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'net-initial' });
+    const record = (await fixture.repository.createBatch.mock.results[0]!.value).batch;
+    record.status = 'COMPLETED'; record.committedAt = new Date();
+    Object.assign(record.tasks[0], { status: 'COMPLETED', repairStatus: null,
+      outputFileObjectId: 'old-file', outputStorageKey: 'old.mp4', outputFileName: 'old.mp4',
+      outputMimeType: 'video/mp4', outputSizeBytes: 100, outputContentHash: 'd'.repeat(64) });
+    fixture.repository.batch.mockResolvedValue(record);
+    return { ...fixture, record };
+  };
+  it.each(['body', 'metadata', 'addition'] as const)('returns a no-op when an unconsumed %s edit is reverted, before opening a draft', async (kind) => {
+    const { service, repository, workflowWorkingService, record } = await completedPool();
+    const edited = promptBatch();
+    if (kind === 'body') edited.items[0]!.content += ' 修改';
+    if (kind === 'metadata') edited.items[0]!.creativeCore += ' 修改';
+    if (kind === 'addition') edited.items.push({ ...edited.items[0]!, id: 'added', code: 'P002' });
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(edited), revision: 4 });
+    const before = (await service.batch('project-a', record.id)).batch;
+    expect(before.stale).toBe(true);
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(), revision: 5 });
+    const calls = workflowWorkingService.beginEffectNodeEdit.mock.calls.length;
+    const result = await service.refresh('project-a', record.id, { expectedBatchRevision: record.revision,
+      expectedPromptArtifactRevision: 4, expectedDifferenceSignature: before.refreshSignature!, idempotencyKey: 'net-noop' });
+    expect(result).toMatchObject({ noChanges: true, batch: { stale: false, refreshScope: 'NONE' } });
+    expect(workflowWorkingService.beginEffectNodeEdit).toHaveBeenCalledTimes(calls);
+    expect(repository.regenerateTasks).not.toHaveBeenCalled();
+  });
+  it('reconfirms changed fee/scope, but ignores revision-only changes with the same confirmed difference', async () => {
+    const { service, repository, record, workflowWorkingService } = await completedPool();
+    const edited = promptBatch(); edited.items[0]!.content += ' 最新正文';
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(edited), revision: 4 });
+    const before = (await service.batch('project-a', record.id)).batch;
+    const request = { expectedBatchRevision: record.revision, expectedPromptArtifactRevision: 4,
+      expectedDifferenceSignature: before.refreshSignature!, idempotencyKey: 'net-signature' };
+    const metadata = promptBatch(); metadata.items[0]!.creativeCore += ' 修改';
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(metadata), revision: 5 });
+    const calls = workflowWorkingService.beginEffectNodeEdit.mock.calls.length;
+    await expect(service.refresh('project-a', record.id, request)).rejects.toThrow('费用范围已变化');
+    expect(workflowWorkingService.beginEffectNodeEdit).toHaveBeenCalledTimes(calls);
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(edited), revision: 6 });
+    await service.refresh('project-a', record.id, request);
+    const inputs = repository.regenerateTasks.mock.calls[0]![5];
+    expect(inputs.sourcePrompt.revision).toBe(6);
+    expect(inputs.taskSnapshots[record.tasks[0].id].promptText).toBe(edited.items[0]!.content);
+    expect(inputs.taskSnapshots[record.tasks[0].id].refreshContext.sourcePrompt.revision).toBe(6);
+  });
+  it('saves a successful frozen result with residual Prompt changes using its consumed source, not the latest revision', async () => {
+    const { service, repository, record } = await completedPool();
+    record.committedAt = null;
+    const snapshot = record.tasks[0].requestSnapshot;
+    snapshot.refreshContext = { schemaVersion: 1, confirmationSignature: 'frozen', sourcePrompt: snapshot.sourcePrompt };
+    const edited = promptBatch(); edited.items[0]!.content += ' 再次修改';
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(edited), revision: 5 });
+    const view = (await service.batch('project-a', record.id)).batch;
+    expect(view).toMatchObject({ stale: true, canSaveFrozenResults: true });
+    expect((await service.validate('project-a', record.id, record.revision)).valid).toBe(true);
+    const commit = repository.commitValidatedBatch.mock.calls[0]!;
+    expect(commit[3].revision).toBe(3);
+    const clip = commit[5].find((input: { artifactKey: string }) => input.artifactKey.startsWith('render-clip:'));
+    expect(clip.input.dependencies[0].sourceRevision).toBe(3);
+    expect(clip.input.payload.adoptedPrompt.sourcePrompt.revision).toBe(3);
+    expect(clip.input.payload.promptText).toBe(item.content);
+  });
+  it.each(['protocol', 'manual'] as const)('never auto-publishes a finished local update (%s)', async (kind) => {
+    const { service, repository, record } = await completedPool();
+    record.committedAt = null;
+    if (kind === 'protocol') record.tasks[0].requestSnapshot.refreshContext = {
+      schemaVersion: 1, confirmationSignature: 'frozen', sourcePrompt: record.tasks[0].requestSnapshot.sourcePrompt,
+    };
+    else repository.workflowRun.mockResolvedValue({ id: record.workflowRunId,
+      editSessionNodeId: 'SEGMENT_RENDER', editSessionPurpose: 'MANUAL' });
+    await (service as unknown as { autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void> })
+      .autoCommitCompletedBatch('project-a', record.id);
+    expect(repository.commitValidatedBatch).not.toHaveBeenCalled();
+  });
+  it.each([
+    [false, false], [true, false], [false, true], [true, true],
+  ])('keeps confirmed pools navigable (explicit deletion list=%s, legacy import metadata=%s)', async (explicitEmpty, legacyImport) => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'legacy-next' });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    record.status = 'COMPLETED';
+    record.committedAt = new Date();
+    if (legacyImport) {
+      record.tasks[0].requestSnapshot.importedMaterial = { schemaVersion: 1 };
+      record.tasks[0].generationRequestSnapshot = structuredClone(record.tasks[0].requestSnapshot);
+      repository.promptArtifact.mockResolvedValue(promptArtifact({ ...promptBatch(), items: [] }));
+    }
+    Object.assign(record.tasks[0], { status: 'COMPLETED', repairStatus: null,
+      outputFileObjectId: 'clip-file', outputStorageKey: 'staging/clip.mp4',
+      outputFileName: 'P001.mp4', outputMimeType: 'video/mp4', outputSizeBytes: 100,
+      outputContentHash: 'd'.repeat(64) });
+    const inputs = (service as unknown as {
+      artifactInputs: (record: unknown) => Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>;
+    }).artifactInputs(record);
+    const pool = inputs.find(({ artifactKey }) => artifactKey.startsWith('render-batch:'))!;
+    const payload = { ...(pool.input.payload as Record<string, unknown>) };
+    if (legacyImport) {
+      payload.clips = (payload.clips as Array<Record<string, unknown>>).map((clip) => {
+        const legacyClip = { ...clip };
+        delete legacyClip.creativeCore;
+        delete legacyClip.dimensions;
+        return legacyClip;
+      });
+    }
+    if (explicitEmpty) payload.removedSources = [];
+    else delete payload.removedSources;
+    const confirmed = { artifactKey: pool.artifactKey, revision: 3, freshness: 'CURRENT',
+      availability: 'AVAILABLE', payload,
+      contentHash: workingArtifactContentHash({ ...pool.input, payload }) };
+    repository.renderArtifact.mockResolvedValue(confirmed);
+    repository.batch.mockResolvedValue(record);
+
+    expect((await service.batch('project-a', record.id)).batch).toMatchObject({
+      stale: false, commitStatus: 'COMMITTED', workingArtifactRevision: 3,
+    });
+    expect(repository.commitValidatedBatch).not.toHaveBeenCalled();
+
+    if (legacyImport) {
+      const originalCreativeCore = record.tasks[0].requestSnapshot.creativeCore;
+      record.tasks[0].requestSnapshot.creativeCore = '实际编辑过的创意主线';
+      expect((await service.batch('project-a', record.id)).batch.commitStatus).toBe('DRAFT_CHANGED');
+      record.tasks[0].requestSnapshot.creativeCore = originalCreativeCore;
+      record.committedAt = null;
+      expect((await service.batch('project-a', record.id)).batch.commitStatus).toBe('DRAFT_CHANGED');
+      record.committedAt = new Date();
+    }
+
+    // The compatibility path must still detect genuine media edits and deletions.
+    record.tasks[0].outputContentHash = 'e'.repeat(64);
+    expect((await service.batch('project-a', record.id)).batch.commitStatus).toBe('DRAFT_CHANGED');
+    record.tasks[0].outputContentHash = 'd'.repeat(64);
+    Object.assign(record.tasks[0], { status: 'FAILED', errorCode: 'MATERIAL_DELETED' });
+    expect((await service.batch('project-a', record.id)).batch.commitStatus).toBe('DRAFT_CHANGED');
+    expect(repository.commitValidatedBatch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('fills legacy creative metadata only from the consumed Prompt version (changed=%s)', async (changed) => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'legacy-creative' });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    delete record.tasks[0].requestSnapshot.creativeCore;
+    delete record.tasks[0].requestSnapshot.dimensions;
+    repository.batch.mockResolvedValue(record);
+    if (changed) repository.promptArtifact.mockResolvedValue({ ...promptArtifact(), revision: 4 });
+    const view = (await service.batch('project-a', record.id)).batch.tasks[0]!;
+    expect(view.creativeCore).toBe(changed ? undefined : item.creativeCore);
+    expect(view.dimensions).toEqual(changed ? undefined : item.dimensions);
+  });
+
   it.each([4, 15, 16, 30])('routes manual %s-second Prompt items without changing the batch slot limit', async (duration) => {
     const next = promptBatch();
     next.items[0] = { ...next.items[0]!, origin: 'MANUAL', targetDurationSeconds: duration };
@@ -298,6 +454,130 @@ describe('EffectSegmentRenderService', () => {
     expect(view.pendingRemovedTaskIds).toEqual([]);
     expect(view.refreshScope).toBe('NONE');
   });
+  it.each([
+    [6.04, 496, 'doubao-seedance-2-0-fast-260128', '720p'],
+    [15, 496, 'doubao-seedance-2-0-fast-260128', '720p'],
+    [15.041667, 496, 'doubao-seedance-2-5-260628', '720p'],
+    [20, 496, 'doubao-seedance-2-5-260628', '720p'],
+    [30, 496, 'doubao-seedance-2-5-260628', '720p'],
+    [6, 1080, 'doubao-seedance-2-5-260628', '1080p'],
+    [15, 2160, 'doubao-seedance-2-0-260128', '4k'],
+    [30, 2160, 'doubao-seedance-2-5-260628', '1080p'],
+  ] as const)(
+    'regenerates imported %s-second clips from their confirmed prompt with duration-based model routing',
+    async (duration, shortSide, expectedModel, expectedResolution) => {
+      const { service, repository } = serviceWith({
+        configValues: { SEEDANCE_MODEL_2_0: 'doubao-seedance-2-0-260128' },
+        settingsNode: {
+          revision: 1,
+          state: { ratio: '9:16', resolution: '720p', capabilityKey: 'SEEDANCE_2_0_FAST' },
+        },
+      });
+      await service.start('project-a', 'product-a', {
+        workflowRunId: 'run-a',
+        expectedPromptArtifactRevision: 3,
+        expectedSettingsRevision: 1,
+        idempotencyKey: 'start-import-source',
+      });
+      const created = await repository.createBatch.mock.results[0]!.value;
+      const task = created.batch.tasks[0];
+      const snapshot = {
+        ...task.requestSnapshot,
+        promptId: 'independent-draft-id',
+        promptCode: 'I-21',
+        promptText:
+          '【视频概览】紫苏梅子酱拌意面。\n【逐秒镜头】展现挂酱效果。\n【结束画面】意面挂酱近景。',
+        importedMaterial: {
+          schemaVersion: 1,
+          width: shortSide,
+          height: (shortSide * 16) / 9,
+          promptDurationMaxSeconds: 10,
+        },
+        request: { ...task.requestSnapshot.request, duration },
+      };
+      Object.assign(task, {
+        promptId: snapshot.promptId,
+        status: 'COMPLETED',
+        operationKind: 'GENERATE',
+        repairStatus: null,
+        providerTaskId: null,
+        requestSnapshot: snapshot,
+        generationRequestSnapshot: snapshot,
+      });
+      repository.batch.mockResolvedValue(created.batch);
+      await service.regenerate('project-a', created.batch.id, [task.id], 1, 'retry-import');
+      const result = repository.regenerateTasks.mock.calls[0]![5].taskSnapshots[task.id];
+      expect(result.promptId).toBe('independent-draft-id');
+      expect(result.promptText).toBe(snapshot.promptText);
+      expect(result.request.content[0].text).toContain(snapshot.promptText);
+      expect(result.importedMaterial).toEqual(snapshot.importedMaterial);
+      expect(result.inputImages).toHaveLength(1);
+      expect(result.request.duration).toBe(Math.round(duration));
+      expect(result.request.model).toBe(expectedModel);
+      expect(result.request.resolution).toBe(expectedResolution);
+    },
+  );
+
+  it.each([6.04, 15, 15.041667, 30])(
+    'repairs imported %s-second clips via TOS without obsolete public proxy configuration',
+    async (duration) => {
+      const { service, repository } = serviceWith({
+        configValues: {
+          STORAGE_DRIVER: 'tos',
+          SEEDANCE_MODEL_2_0: 'doubao-seedance-2-0-260128',
+          SEEDANCE_REFERENCE_PUBLIC_BASE_URL: undefined,
+          SEEDANCE_REFERENCE_SIGNING_SECRET: undefined,
+        },
+        settingsNode: {
+          revision: 1,
+          state: { ratio: '9:16', resolution: '720p', capabilityKey: 'SEEDANCE_2_0' },
+        },
+      });
+      await service.start('project-a', 'product-a', {
+        workflowRunId: 'run-a',
+        expectedPromptArtifactRevision: 3,
+        expectedSettingsRevision: 1,
+        idempotencyKey: 'start-import-source',
+      });
+      const created = await repository.createBatch.mock.results[0]!.value;
+      const task = created.batch.tasks[0];
+      const snapshot = {
+        ...task.requestSnapshot,
+        importedMaterial: { schemaVersion: 1, width: 496, height: 864 },
+        request: { ...task.requestSnapshot.request, duration },
+      };
+      Object.assign(task, {
+        status: 'COMPLETED',
+        operationKind: 'GENERATE',
+        activeOutputVersion: 1,
+        repairStatus: null,
+        requestSnapshot: snapshot,
+        generationRequestSnapshot: snapshot,
+        providerTaskId: null,
+        outputFileObjectId: 'file-import',
+        outputFileName: 'import.mp4',
+        outputMimeType: 'video/mp4',
+        outputSizeBytes: 1024,
+        outputContentHash: 'e'.repeat(64),
+      });
+      repository.batch.mockResolvedValue(created.batch);
+      await service.startRepair('project-a', created.batch.id, task.id, {
+        expectedBatchRevision: 1,
+        expectedSourceVersion: 1,
+        startMs: 0,
+        endMs: Math.floor(duration * 1000),
+        instruction: '修改画面瑕疵',
+        idempotencyKey: 'repair-import',
+      });
+      const result = repository.startRepair.mock.calls[0]![8];
+      expect(result.inputVideo.durationSeconds).toBe(duration);
+      expect(result.request.model).toBe(
+        duration > 15 ? 'doubao-seedance-2-5-260628' : 'doubao-seedance-2-0-260128',
+      );
+      expect(result.repair.providerMode).toBe(duration > 15 ? 'VIDEO_EDIT' : 'VIDEO_REFERENCE');
+      expect(result.request.duration).toBe(duration > 15 ? duration : Math.round(duration));
+    },
+  );
   it('commits an independent import with its own description without staling the upstream Prompt', async () => {
     const { service, repository } = serviceWith();
     await service.start('project-a', 'product-a', {
@@ -929,7 +1209,32 @@ describe('EffectSegmentRenderService', () => {
 
     expect(result.batch.stale).toBe(false);
     expect(result.batch.refreshScope).toBe('NONE');
-    expect(result.batch.commitStatus).toBe('STALE');
+    expect(result.batch.commitStatus).toBe('DRAFT_CHANGED');
+  });
+
+  it('saves explicit AI and import deletions including an empty pool, without treating supplier failure as deletion', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'delete-save' });
+    const { batch } = await repository.createBatch.mock.results[0]!.value;
+    Object.assign(batch.tasks[0], { status: 'FAILED', errorCode: 'MATERIAL_DELETED', repairStatus: null });
+    batch.tasks.push({ ...batch.tasks[0], id: 'deleted-import', promptId: 'import-prompt',
+      requestSnapshot: { ...batch.tasks[0].requestSnapshot, importedMaterial: { schemaVersion: 1 } } });
+    repository.batch.mockResolvedValue(batch);
+    const presented = await service.batch('project-a', batch.id);
+    expect(presented.batch.tasks).toEqual([]);
+    expect(presented.batch.pendingPromptIds).toEqual([]);
+    expect(presented.batch.summary).toEqual({ total: 0, completed: 0, running: 0, failed: 0 });
+    expect((await service.validate('project-a', batch.id, batch.revision)).valid).toBe(true);
+    const inputs = repository.commitValidatedBatch.mock.calls.at(-1)![5];
+    const pool = inputs.find((row: { artifactKey: string }) => row.artifactKey.startsWith('render-batch:'));
+    expect(pool.input.payload.clips).toEqual([]);
+    expect(pool.input.payload.removedSources).toEqual([
+      { taskId: batch.tasks[0].id, promptId: batch.tasks[0].promptId },
+      { taskId: 'deleted-import', promptId: 'import-prompt' },
+    ]);
+    batch.tasks[0].errorCode = 'PROVIDER_FAILURE';
+    expect((await service.validate('project-a', batch.id, batch.revision)).valid).toBe(false);
   });
 
   it('reports a commit clash as a retryable conflict instead of an internal error', async () => {

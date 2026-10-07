@@ -36,6 +36,7 @@ import {
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { publishedRenderSource, hasAdoptedRenderPrompt } from '../../../platform/workflow/effect-published-render-source';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
 import {
@@ -389,13 +390,13 @@ const materialFrom = (
   if (!primaryPurpose) return null;
   const promptId = typeof data.promptId === 'string' ? data.promptId : '';
   const prompt =
-    data.origin === 'EXTERNAL_IMPORT' &&
-    object(data.importedMaterial)?.schemaVersion === 1 &&
+    ((data.origin === 'EXTERNAL_IMPORT' && object(data.importedMaterial)?.schemaVersion === 1) || object(data.adoptedPrompt)) &&
     typeof data.promptText === 'string' &&
     data.promptText.trim()
       ? {
           code: typeof data.promptCode === 'string' ? data.promptCode : '',
           content: data.promptText.trim(),
+          ...(typeof data.creativeCore === 'string' ? { creativeCore: data.creativeCore } : {}),
         }
       : promptId
         ? promptSources.get(promptId)
@@ -496,7 +497,7 @@ const distinctRenderFiles = <T extends { id: string; artifactKey: string; payloa
 type DurationSource = Pick<
   WorkingArtifact,
   'id' | 'nodeId' | 'artifactKey' | 'freshness' | 'availability'
-> & { payload: unknown };
+> & { payload: unknown; metadata?: unknown };
 /** Product/task ids are reminted on a fork. Prompt identity survives that fork. */
 const activeRenderKeysForRun = (
   artifacts: readonly (DurationSource & {
@@ -637,10 +638,11 @@ const oneMaterialPerFile = (
 };
 
 const materialsFromArtifacts = (
-  artifacts: readonly WorkingArtifact[],
+  inputArtifacts: readonly WorkingArtifact[],
   workflowRunId: string,
   keepIds: ReadonlySet<string> = new Set(),
 ): EffectTemplateMixMaterial[] => {
+  const artifacts = inputArtifacts.map(publishedRenderSource);
   // Prompt sources live on `prompt-batch:*`, so they have to be read from the full list before the
   // pool is narrowed down to render clips.
   const promptSources = promptSourcesFromArtifacts(artifacts);
@@ -713,7 +715,8 @@ const materialsFromArtifacts = (
   });
 };
 
-const slotDurationLimitFromArtifacts = (artifacts: readonly DurationSource[]): number | null => {
+const slotDurationLimitFromArtifacts = (inputArtifacts: readonly DurationSource[]): number | null => {
+  const artifacts = inputArtifacts.map(publishedRenderSource);
   const batches = artifacts.filter(
     (artifact) =>
       artifact.nodeId === 'SEGMENT_RENDER' &&
@@ -1385,7 +1388,7 @@ export class EffectTemplateMixService {
         ? this.working.listArtifacts(projectId, { workflowRunId })
         : Promise.resolve({ items: [] as WorkingArtifact[] }),
     ]);
-    const artifacts = artifactData.items;
+    const artifacts = artifactData.items.map(publishedRenderSource);
     const draft = state ? structuredClone(draftOf(state.state)) : emptyDraft();
     const materials = materialsFromArtifacts(artifacts, workflowRunId,
       boundMaterialIds(draft.templates.flatMap((entry) => entry.workspace.variants)));
@@ -1404,7 +1407,7 @@ export class EffectTemplateMixService {
     artifacts: WorkingArtifact[],
   ): Promise<boolean> {
     if (
-      artifacts.some(
+      artifacts.map(publishedRenderSource).some(
         (artifact) =>
           artifact.nodeId === 'SEGMENT_RENDER' &&
           artifact.artifactKey.startsWith('render-clip:') &&
@@ -1899,11 +1902,11 @@ export class EffectTemplateMixService {
       const data = object(artifact.payload);
       const promptId = typeof data?.promptId === 'string' ? data.promptId : '';
       const prompt =
-        data?.origin === 'EXTERNAL_IMPORT' &&
-        object(data.importedMaterial)?.schemaVersion === 1 &&
-        typeof data.promptText === 'string' &&
+        ((data?.origin === 'EXTERNAL_IMPORT' && object(data.importedMaterial)?.schemaVersion === 1) || hasAdoptedRenderPrompt(data)) &&
+        typeof data?.promptText === 'string' &&
         data.promptText.trim()
-          ? { prompt: data.promptText.trim(), artifact }
+          ? { prompt: data!.promptText as string, artifact,
+              ...(typeof data!.creativeCore === 'string' ? { promptSummary: data!.creativeCore } : {}) }
           : promptById.get(promptId);
       const duration = Number(data?.durationSeconds);
       if (
@@ -2066,12 +2069,18 @@ export class EffectTemplateMixService {
     }
     // AI inputs contain only live heads. Keep scoped historical identities solely to carry
     // manual purposes/resets across an adopted repair or reminted clone, not to feed old footage.
-    const roleArtifacts = !sourceOperation && Object.keys(entry!.materialRoleOverrides ?? {}).some((id) => !canonicalIdById.has(id))
+    const roleArtifacts = Object.keys(entry!.materialRoleOverrides ?? {}).some((id) => !canonicalIdById.has(id))
       ? (await this.working.listArtifacts(projectId, { workflowRunId })).items
       : artifacts as unknown as WorkingArtifact[];
-    const effectiveSourceMaterials = sourceOperation?.materials ?? materialsFromArtifacts(
+    const historicalRoleSources = materialsFromArtifacts(
       roleArtifacts, workflowRunId, new Set(Object.keys(entry!.materialRoleOverrides ?? {})),
     );
+    // Frozen live footage remains authoritative. Scoped deletion identities are not footage:
+    // retain them only to retire old manual roles, including operations confirmed before this fix.
+    const effectiveSourceMaterials = sourceOperation
+      ? [...sourceOperation.materials, ...historicalRoleSources.filter((source) => source.sourceRemoved &&
+          !sourceOperation.materials.some((frozen) => frozen.id === source.id))]
+      : historicalRoleSources;
     const effectiveRoles = resolveEffectTemplateMixMaterialRoles(
       freshFullFill ? [] : sourceOperation ? priorItems :
       this.toWorkspaceData(

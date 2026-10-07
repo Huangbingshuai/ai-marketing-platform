@@ -11,6 +11,36 @@ const defaultExecutionInputHash =
   '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72';
 
 describe('WorkflowWorkingRepository', () => {
+  it('permits historical Prompt revisions only with exact private frozen context and proven lineage history', async () => {
+    const frozen = { artifactId: 'prompt', artifactKey: 'prompt-batch:p', revision: 2, contentHash: 'h2' };
+    const input = { dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'prompt',
+      sourceKey: 'prompt-batch:p', sourceRevision: 2, sourceHash: 'h2' }] };
+    const current = { id: 'prompt', workflowRunId: 'w', nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:p', revision: 3, contentHash: 'h3', metadata: {
+        branchSource: { artifactId: 'explicit-parent', ancestorArtifactIds: ['explicit-root'] },
+      } };
+    const tx = { workflowRun: { findFirst: vi.fn().mockResolvedValue(null) }, workingArtifact: {
+      findFirst: vi.fn().mockResolvedValue(current), findMany: vi.fn().mockResolvedValue([current]),
+    }, workingArtifactRevisionSnapshot: { findFirst: vi.fn().mockResolvedValue({ id: 'history' }) } };
+    const repository = new WorkflowWorkingRepository({} as PrismaService) as unknown as {
+      validateArtifactInputsInTransaction(...args: unknown[]): Promise<void> };
+    await expect(repository.validateArtifactInputsInTransaction(tx, 'p', 'w', input, 'SEGMENT_RENDER',
+      { frozenPromptSources: [frozen] })).resolves.toBeUndefined();
+    expect(tx.workingArtifactRevisionSnapshot.findFirst).toHaveBeenCalledWith({ where: {
+      projectId: 'p', workflowRunId: { in: ['w'] }, nodeId: 'PROMPT_GENERATION',
+      workingArtifactId: { in: ['prompt', 'explicit-parent', 'explicit-root'] }, revision: 2, contentHash: 'h2',
+    } });
+    for (const nodeId of ['SEGMENT_RENDER', 'TEMPLATE_MIX']) await expect(
+      repository.validateArtifactInputsInTransaction(tx, 'p', 'w', input, nodeId,
+        nodeId === 'TEMPLATE_MIX' ? { frozenPromptSources: [frozen] } : {}),
+    ).rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+    tx.workingArtifactRevisionSnapshot.findFirst.mockResolvedValue(null);
+    await expect(repository.validateArtifactInputsInTransaction(tx, 'p', 'w', input, 'SEGMENT_RENDER',
+      { frozenPromptSources: [frozen] })).rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+    tx.workingArtifact.findFirst.mockResolvedValue(null);
+    await expect(repository.validateArtifactInputsInTransaction(tx, 'p', 'w', input, 'SEGMENT_RENDER',
+      { frozenPromptSources: [frozen] })).rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+  });
   it('authorizes exact frozen render dependencies only through the private mix commit context', async () => {
     const source = { artifactId: 'clip', artifactKey: 'render-clip:c', artifactRevision: 2,
       artifactContentHash: 'business-2', fileObjectId: 'file-2', contentHash: 'sha-2' };

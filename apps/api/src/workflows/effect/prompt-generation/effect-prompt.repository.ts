@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { confirmedEffectRenderSourceRun } from '../../../platform/workflow/effect-render-source-context';
 
 import type {
   EffectPromptBatchResult,
@@ -2510,11 +2511,29 @@ export class EffectPromptRepository {
     await transaction.$queryRaw<Array<{ id: string }>>`
       SELECT "id" FROM "projects" WHERE "id" = ${projectId}::uuid FOR UPDATE
     `;
-    const parentRunId = editRun.parentWorkflowRunId;
+    const navigationParent = await transaction.workflowRun.findFirst({ where: {
+      projectId, id: editRun.parentWorkflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+    } });
+    const renderEdit = navigationParent?.editSessionNodeId === 'SEGMENT_RENDER' &&
+      navigationParent.editSessionPurpose === 'MANUAL' && !navigationParent.branchPublishedAt &&
+      (navigationParent.editIdMap as { frozenPromptRefresh?: boolean } | null)?.frozenPromptRefresh === true
+      ? navigationParent : null;
+    const parentRunId = renderEdit?.parentWorkflowRunId
+      ? await confirmedEffectRenderSourceRun(transaction, projectId, renderEdit.parentWorkflowRunId)
+      : editRun.parentWorkflowRunId;
     const map = (editRun.editIdMap ?? {}) as { productIdMap?: Record<string, string> };
-    const parentProductId = Object.entries(map.productIdMap ?? {})
+    const navigationProductId = Object.entries(map.productIdMap ?? {})
       .find(([, childId]) => childId === result.productId)?.[0];
-    if (!parentProductId) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
+    if (!navigationProductId) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
+    const aliases = renderEdit ? Object.entries((renderEdit.editIdMap as {
+      productIdMap?: Record<string, string> } | null)?.productIdMap ?? {})
+      .filter(([, id]) => id === navigationProductId).map(([id]) => id) : [navigationProductId];
+    const mappedParents = await transaction.workingArtifact.findMany({ where: {
+      projectId, workflowRunId: parentRunId, nodeId: 'PROMPT_GENERATION',
+      artifactKey: { in: aliases.map((id) => `prompt-batch:${id}`) },
+    } });
+    if (mappedParents.length !== 1) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
+    const parentProductId = mappedParents[0]!.artifactKey.slice('prompt-batch:'.length);
     const parentArtifact = await transaction.workingArtifact.findUnique({ where: {
       projectId_workflowRunId_nodeId_artifactKey: {
         projectId, workflowRunId: parentRunId, nodeId: 'PROMPT_GENERATION',
@@ -2612,20 +2631,61 @@ export class EffectPromptRepository {
       if (affected.length) await this.workingRepository.markArtifactIdsAndDependentsStaleInTransaction(
         transaction, projectId, parentRunId, affected,
       );
-      await transaction.effectSegmentRenderBatch.updateMany({ where: {
-        projectId, workflowRunId: parentRunId, productId: parentProductId,
-        activeKey: 'ACTIVE', archivedAt: null,
-      }, data: { sourcePromptArtifactId: committed.record.id,
-        sourcePromptRevision: committed.record.revision,
-        sourcePromptHash: committed.record.contentHash } });
+      // A Prompt save changes the upstream head, never a video's adopted provenance.
+    }
+    let responseArtifact = committed.record;
+    if (renderEdit) {
+      const draftInsight = await transaction.workingArtifact.findUniqueOrThrow({ where: {
+        projectId_workflowRunId_nodeId_artifactKey: { projectId, workflowRunId: renderEdit.id,
+          nodeId: 'INFORMATION_EXTRACTION', artifactKey: `marketing-insight:${navigationProductId}` },
+      } });
+      const draftPrompt = await transaction.workingArtifact.findUniqueOrThrow({ where: {
+        projectId_workflowRunId_nodeId_artifactKey: { projectId, workflowRunId: renderEdit.id,
+          nodeId: 'PROMPT_GENERATION', artifactKey: `prompt-batch:${navigationProductId}` },
+      } });
+      const draftIds = { [parentRunId]: renderEdit.id, [parentProductId]: navigationProductId,
+        [parentInsight.id]: draftInsight.id, [parentInsight.contentHash]: draftInsight.contentHash };
+      const toDraft = <T>(value: T): T => {
+        let serialized = JSON.stringify(value);
+        for (const [before, after] of Object.entries(draftIds)) serialized = serialized.replaceAll(before, after);
+        return JSON.parse(serialized) as T;
+      };
+      const [copy] = await this.workingRepository.commitValidatedArtifactsInTransaction(transaction,
+        projectId, renderEdit.id, 'PROMPT_GENERATION', [{ artifactKey: draftPrompt.artifactKey,
+          invalidateDependents: false, input: { ...input, expectedRevision: draftPrompt.revision,
+            payload: toDraft(input.payload), metadata: toDraft(input.metadata),
+            dependencies: toDraft(input.dependencies ?? []),
+          } }]);
+      if (!copy) throw new Error('PROMPT_EDIT_RENDER_COPY_FAILED');
+      responseArtifact = copy.record;
+      // Keep the existing draft workspace, including every in-flight/unsaved render result.
+      const draftResult = await transaction.effectPromptResult.findFirst({ where: {
+        projectId, workflowRunId: renderEdit.id, productId: navigationProductId,
+      }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      if (!draftResult) throw new Error('PROMPT_EDIT_RENDER_RESULT_MISSING');
+      await transaction.effectPromptResult.update({ where: { id: draftResult.id }, data: {
+        generatedResult: json(toDraft(remap(result.generatedResult))),
+        draftResult: json(toDraft(remap(currentDraft))),
+        manualOverrides: json(toDraft(remap(result.manualOverrides))),
+        savedAt: new Date(), revision: { increment: 1 },
+      } });
+      const draftSettings = await transaction.workflowNodeState.findUniqueOrThrow({ where: {
+        projectId_workflowRunId_nodeId: { projectId, workflowRunId: renderEdit.id,
+          nodeId: `PROMPT_GENERATION:${navigationProductId}` },
+      } });
+      const nextState = toDraft(settingsState);
+      if (workflowStateHash(nextState) !== draftSettings.contentHash) await transaction.workflowNodeState.update({
+        where: { id: draftSettings.id }, data: { state: json(nextState), contentHash: workflowStateHash(nextState),
+          revision: { increment: 1 }, savedAt: new Date() },
+      });
     }
     const exited = await exitEffectEditInTransaction(transaction, projectId,
       editRun.id, 'PROMPT_GENERATION', false);
-    if (!exited || exited.runId !== parentRunId) throw new Error('PROMPT_EDIT_EXIT_FAILED');
-    return { kind: 'COMMITTED' as const, workflowRunId: parentRunId,
-      productId: parentProductId,
-      artifact: { artifactId: committed.record.id,
-        artifactKey: committed.record.artifactKey, revision: committed.record.revision,
+    if (!exited || exited.runId !== editRun.parentWorkflowRunId) throw new Error('PROMPT_EDIT_EXIT_FAILED');
+    return { kind: 'COMMITTED' as const, workflowRunId: renderEdit?.id ?? parentRunId,
+      productId: renderEdit ? navigationProductId : parentProductId,
+      artifact: { artifactId: responseArtifact.id,
+        artifactKey: responseArtifact.artifactKey, revision: responseArtifact.revision,
         unchanged: committed.unchanged },
     };
   }

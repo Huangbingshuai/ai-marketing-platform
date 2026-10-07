@@ -64,6 +64,13 @@ describe('effect segment render state', () => {
     const legacyBatch = { ...batch };
     delete legacyBatch.pendingPromptIds;
     expect(effectSegmentRenderWorkspaceWithBatch(current, legacyBatch).pendingPromptIds).toEqual([]);
+    const refreshed = effectSegmentRenderWorkspaceWithBatch(current, { ...batch, latestPromptRevision: 7,
+      latestPromptCount: 3, refreshSignature: 'net-difference', canSaveFrozenResults: true });
+    expect(refreshed.promptArtifactRevision).toBe(7);
+    expect(refreshed.sourcePromptRevision).toBe(2);
+    expect(refreshed.promptCount).toBe(3);
+    expect(refreshed.refreshSignature).toBe('net-difference');
+    expect(refreshed.canSaveFrozenResults).toBe(true);
   });
   it('preserves whether a completed slot came from AI generation or external import', () => {
     const current = {

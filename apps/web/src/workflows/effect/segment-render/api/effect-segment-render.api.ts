@@ -92,7 +92,7 @@ export const refreshEffectSegmentRenderBatch = (
   batchId: string,
   input: RefreshEffectSegmentRenderBatchRequest,
   signal?: AbortSignal,
-): Promise<ApiResponse<{ batch: EffectSegmentRenderBatch; replayed: boolean }>> =>
+): Promise<ApiResponse<StartEffectSegmentRenderBatchData>> =>
   requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/refresh`, {
     method: 'POST',
     body: input,

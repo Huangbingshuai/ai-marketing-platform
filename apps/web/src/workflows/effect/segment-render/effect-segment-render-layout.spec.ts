@@ -8,6 +8,15 @@ import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
 
 describe('effect segment render material gallery layout', () => {
+  it('uses signed confirmations, no-op responses and frozen draft saves with late-response protection', () => {
+    expect(pageSource).toContain('expectedDifferenceSignature: current.refreshSignature');
+    expect(pageSource).toContain('response.data.noChanges');
+    expect(pageSource).toContain('canSaveFrozenResults');
+    expect(pageSource).toContain('epoch !== pollEpoch');
+    expect(pageSource).toContain('batch.revision < (current.batchRevision ?? 0)');
+    expect(pageSource).toContain("window.addEventListener('focus', refreshOnFocus)");
+    expect(pageSource).toContain('needsPolling(nextWorkspace) ? 3000 : 10000');
+  });
   it('offers revision-guarded selective refresh for changed and newly added Prompts', () => {
     expect(pageSource).toContain(
       'tasksNeedingUpdate.value.length + (workspace.value?.pendingPromptIds?.length ?? 0)',
@@ -174,7 +183,6 @@ describe('effect segment render material gallery layout', () => {
   it('uses the prompt-node search and purpose filter pattern with toggleable selection actions', () => {
     for (const marker of [
       '导入素材',
-      '导出素材',
       "openTransferPanel('import', $event)",
       "openTransferPanel('export', $event)",
       'class="segment-transfer-drawer"',
@@ -403,9 +411,10 @@ describe('effect segment render material gallery layout', () => {
   });
 
   it('uses common workflow controls and only replaces step four', () => {
-    expect(pageSource).toContain('<WorkflowNodeDraftBar');
+    expect(pageSource).not.toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
-    expect(pageSource).toContain('真实工作副本已提交');
+    expect(pageSource).not.toContain(':status-title=');
+    expect(pageSource).toContain('back-label="上一步：Prompt 生成"');
     expect(pageSource).not.toContain('保存到项目资产库');
     expect(pageSource).not.toContain('localStorage');
     expect(parentSource).toContain(

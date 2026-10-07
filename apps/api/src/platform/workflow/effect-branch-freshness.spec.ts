@@ -19,6 +19,39 @@ const project = (id: string, workflowRunId: string, source: string, revision = 1
     sourceArtifactId: source, sourceRevision: revision }],
 });
 describe('branch dependency freshness projection', () => {
+  it('reconciles body, shared constraints and membership by net content without staling saved video consumers', () => {
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    const baseline = { promptContentHash: hash('正文'), sharedPromptHash: hash('约束'),
+      targetDurationSeconds: 5, primaryPurpose: 'PRODUCT_DISPLAY', compatiblePurposes: ['PRODUCT_DISPLAY'],
+      creativeCore: '创意', dimensions: {} };
+    const adoptedClip = { taskId: 'a', promptId: 'prompt', promptText: '正文',
+      promptContentHash: baseline.promptContentHash, primaryPurpose: 'PRODUCT_DISPLAY',
+      compatiblePurposes: ['PRODUCT_DISPLAY'], adoptedPrompt: baseline, fileObjectId: 'file' };
+    const prompt = { id: 'prompts', workflowRunId: 'render', nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:p', revision: 7, contentHash: 'latest', freshness: 'CURRENT', availability: 'AVAILABLE',
+      payload: { items: [{ id: 'prompt', content: '正文', targetDurationSeconds: 5,
+        primaryPurpose: 'PRODUCT_DISPLAY', compatiblePurposes: ['PRODUCT_DISPLAY'], creativeCore: '创意', dimensions: {} }],
+        sharedPrompt: { contentHash: baseline.sharedPromptHash } } };
+    const dependency = [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'prompts', sourceRevision: 1, sourceHash: 'old' }];
+    const rendered = { ...clip('a', 'render'), availability: 'AVAILABLE', freshness: 'STALE',
+      payload: adoptedClip, dependencies: dependency };
+    const batch = { ...rendered, id: 'pool', artifactKey: 'render-batch:p', payload: { clips: [adoptedClip], removedSources: [] } };
+    const unchanged = projectEffectBranchFreshness(branches, [prompt, rendered, batch, project('film', 'fill-a', 'a')]);
+    expect(unchanged.slice(1).map(row => row.freshness)).toEqual(['CURRENT', 'CURRENT', 'CURRENT']);
+    for (const updated of [
+      { ...prompt.payload, items: [{ ...prompt.payload.items[0]!, content: '修改正文' }] },
+      { ...prompt.payload, sharedPrompt: { contentHash: hash('新约束') } },
+      { ...prompt.payload, items: [...prompt.payload.items, { ...prompt.payload.items[0]!, id: 'new' }] },
+      { ...prompt.payload, items: [] },
+    ]) {
+      const output = projectEffectBranchFreshness(branches, [{ ...prompt, payload: updated }, rendered, batch,
+        project('film', 'fill-a', 'a')]);
+      expect(output[2]?.freshness).toBe('STALE');
+      expect(output[3]?.freshness).toBe('CURRENT'); // No published render change yet.
+    }
+    const unavailable = projectEffectBranchFreshness(branches, [{ ...prompt, availability: 'UNAVAILABLE' }, rendered]);
+    expect(unavailable[1]?.freshness).toBe('STALE');
+  });
   const adopted = { id: 'a', artifactId: 'a', artifactKey: 'render-clip:a', artifactRevision: 1,
     fileObjectId: 'old', contentHash: 'old-hash', sourcePromptId: 'prompt', duration: 10 } as EffectTemplateMixMaterial;
   const frozenFilm = (id: string, file = 'old', revision = 1) => ({ ...project(id, 'fill-a', 'a', revision),

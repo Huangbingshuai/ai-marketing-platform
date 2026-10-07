@@ -8,7 +8,24 @@ import type {
   GetEffectSegmentRenderWorkspaceData,
   WorkingArtifactCommitStatus,
 } from '@ai-marketing/contracts';
-import { EFFECT_PROMPT_DIMENSIONS } from '@ai-marketing/contracts';
+import { EFFECT_PROMPT_DIMENSIONS, EFFECT_SEGMENT_RENDER_LIMITS } from '@ai-marketing/contracts';
+
+export const effectSegmentRepairUnavailableReason = (
+  task: Pick<EffectSegmentRenderTask, 'status' | 'output' | 'repair' | 'durationSeconds'>,
+): string => {
+  if (task.status !== 'COMPLETED' || !task.output) return '素材尚未完成';
+  if (task.repair) return '请先处理当前返修任务';
+  if (
+    task.durationSeconds < EFFECT_SEGMENT_RENDER_LIMITS.minReferenceVideoSeconds ||
+    task.durationSeconds > EFFECT_SEGMENT_RENDER_LIMITS.maxReferenceVideoSeconds
+  )
+    return '画面返修支持 4～30 秒的视频';
+  if (!['video/mp4', 'video/quicktime'].includes(task.output.mimeType.toLowerCase()))
+    return '画面返修支持 MP4、MOV 视频';
+  if (task.output.sizeBytes > EFFECT_SEGMENT_RENDER_LIMITS.maxReferenceVideoBytes)
+    return '参考视频不能超过 200 MB';
+  return '';
+};
 
 export const EFFECT_SEGMENT_RENDER_PAGE_SIZE = 20;
 
@@ -53,6 +70,7 @@ export type EffectSegmentRenderTask = {
   source: EffectSegmentRenderSource;
   origin: EffectSegmentRenderOrigin;
   independentImport?: boolean;
+  mediaShortSidePixels?: number;
   sourceName: string;
   status: EffectSegmentRenderStatus;
   progress: number;
@@ -61,6 +79,7 @@ export type EffectSegmentRenderTask = {
   abnormal: boolean;
   needsUpdate: boolean;
   updateKind?: EffectSegmentRenderUpdateKind;
+  refreshSignature?: string | undefined;
   errorCode?: string | null;
   errorMessage: string | null;
   providerTaskId?: string | null;
@@ -86,6 +105,8 @@ export type EffectSegmentRenderWorkspace = {
   refreshScope?: 'NONE' | 'SELECTIVE' | 'FULL';
   pendingPromptIds?: string[];
   pendingRemovedTaskIds?: string[];
+  refreshSignature?: string | undefined;
+  canSaveFrozenResults?: boolean | undefined;
   commitStatus?: WorkingArtifactCommitStatus | null;
   workingArtifactRevision?: number | null;
   batchStatus: EffectSegmentRenderBatchStatus;
@@ -135,6 +156,8 @@ export const effectSegmentRenderWorkspaceFromApi = (
   refreshScope: data.batch?.refreshScope ?? 'NONE',
   pendingPromptIds: data.batch?.pendingPromptIds ?? [],
   pendingRemovedTaskIds: data.batch?.pendingRemovedTaskIds ?? [],
+  refreshSignature: data.batch?.refreshSignature,
+  canSaveFrozenResults: data.batch?.canSaveFrozenResults,
   commitStatus: data.batch?.commitStatus ?? null,
   workingArtifactRevision: data.batch?.workingArtifactRevision ?? null,
   batchStatus: data.batch?.status ?? 'NOT_STARTED',
@@ -150,6 +173,8 @@ export const effectSegmentRenderWorkspaceWithBatch = (
 ): EffectSegmentRenderWorkspace => ({
   ...current,
   productId: batch.productId,
+  promptArtifactRevision: batch.latestPromptRevision === undefined ? current.promptArtifactRevision ?? null : batch.latestPromptRevision,
+  promptCount: batch.latestPromptCount ?? current.promptCount,
   sourcePromptArtifactId: batch.sourcePrompt.artifactId,
   sourcePromptRevision: batch.sourcePrompt.revision,
   batchId: batch.id,
@@ -158,6 +183,8 @@ export const effectSegmentRenderWorkspaceWithBatch = (
   refreshScope: batch.refreshScope,
   pendingPromptIds: batch.pendingPromptIds ?? [],
   pendingRemovedTaskIds: batch.pendingRemovedTaskIds ?? [],
+  refreshSignature: batch.refreshSignature,
+  canSaveFrozenResults: batch.canSaveFrozenResults,
   commitStatus: batch.commitStatus,
   workingArtifactRevision: batch.workingArtifactRevision,
   batchStatus: batch.status,

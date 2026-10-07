@@ -18,6 +18,7 @@ import type {
 } from '@ai-marketing/contracts';
 import { BadRequestException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { publishedRenderSource, hasAdoptedRenderPrompt } from '../../../platform/workflow/effect-published-render-source';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { validSpeechRanges } from './effect-packaging-audio';
 
@@ -88,7 +89,7 @@ export function matchesVisualHash(variant: EffectTemplateMixVariant, hash: strin
  * the detached-audio check after it.
  */
 export function artifactVisitor(artifacts: WorkingArtifact[]) {
-  const byId = new Map(artifacts.map((a) => [a.id, a]));
+  const byId = new Map(artifacts.map(publishedRenderSource).map((a) => [a.id, a]));
   const used = new Map<string, WorkingArtifact>();
   const visit = (id: string) => {
     if (used.has(id)) return;
@@ -99,6 +100,8 @@ export function artifactVisitor(artifacts: WorkingArtifact[]) {
     for (const d of a.dependencies)
       if (d.sourceType === 'WORKING_ARTIFACT' && d.sourceArtifactId) {
         const source = byId.get(d.sourceArtifactId);
+        if (a.nodeId === 'SEGMENT_RENDER' && a.artifactKey.startsWith('render-clip:') &&
+          hasAdoptedRenderPrompt(a.payload) && source?.nodeId === 'PROMPT_GENERATION') continue;
         if (!source || source.revision !== d.sourceRevision)
           throw new BadRequestException('包装来源 revision 已改变');
         visit(source.id);

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { EffectSegmentRenderRepository } from './effect-segment-render.repository';
+import * as promptQuality from '../prompt-generation/effect-prompt.quality';
+import * as promptUpdate from './effect-segment-render-prompt-update';
 
 const runningTask = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -19,6 +21,175 @@ const runningTask = {
 };
 
 describe('EffectSegmentRenderRepository', () => {
+  it('merges a restored old video as completed after a failed refresh has fully cancelled out', async () => {
+    const sourcePrompt = { artifactId: 'prompt', revision: 1, contentHash: 'a'.repeat(64) };
+    const snapshot = {
+      sourcePrompt,
+      adoptedInput: { sourcePrompt, promptId: 'prompt-item' },
+      refreshContext: { schemaVersion: 1, confirmationSignature: 'signed', sourcePrompt },
+    };
+    const batch = {
+      ...runningTask,
+      id: runningTask.batchId,
+      revision: 4,
+      status: 'PARTIAL',
+      sourcePromptArtifactId: sourcePrompt.artifactId,
+      sourcePromptRevision: 1,
+      sourcePromptHash: sourcePrompt.contentHash,
+      tasks: [{ ...runningTask, status: 'FAILED', errorCode: 'PROVIDER_FAILURE',
+        outputFileObjectId: 'old-file', requestSnapshot: snapshot, generationRequestSnapshot: snapshot }],
+    };
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      effectSegmentRenderBatch: { findFirst: vi.fn().mockResolvedValue(batch), update: vi.fn() },
+      effectSegmentRenderTask: { update: vi.fn() },
+      workingArtifact: { findFirst: vi.fn().mockResolvedValue({ payload: {} }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ parentWorkflowRunId: 'parent',
+        branchPublishedAt: null, editSessionNodeId: 'SEGMENT_RENDER', editSessionPurpose: 'MANUAL', editIdMap: {} }) },
+    };
+    const repository = new EffectSegmentRenderRepository({
+      $transaction: (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction),
+    } as never, { commitValidatedArtifactsInTransaction: vi.fn().mockResolvedValue([]) } as never);
+    const merge = vi.fn().mockResolvedValue({ activeWorkflowRunId: 'parent', createdBranch: false });
+    const internal = repository as unknown as { applyManualRenderEditInTransaction: typeof merge };
+    const mergeSpy = vi.spyOn(internal, 'applyManualRenderEditInTransaction').mockImplementation(merge);
+    // Difference and payload parsing are covered separately; this test isolates commit/merge state.
+    const parseSpy = vi.spyOn(promptQuality, 'parseEffectPromptBatchResult').mockReturnValueOnce({} as never);
+    const differenceSpy = vi.spyOn(promptUpdate, 'renderPromptUpdateKind').mockReturnValueOnce(undefined);
+    try {
+      expect(await repository.commitValidatedBatch(runningTask.projectId, runningTask.batchId, 4,
+        sourcePrompt, { artifactId: 'source', revision: 1, contentHash: 'b'.repeat(64) }, []))
+        .toMatchObject({ kind: 'COMMITTED' });
+      expect(merge.mock.calls[0]![2]).toMatchObject({ status: 'COMPLETED', activeKey: null });
+      expect(transaction.effectSegmentRenderTask.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: 'COMPLETED' }),
+      }));
+    } finally {
+      parseSpy.mockRestore();
+      differenceSpy.mockRestore();
+      mergeSpy.mockRestore();
+    }
+  });
+
+  it.each(['ACCEPT', 'DISCARD'] as const)(
+    'only adopts fractional candidate duration on %s',
+    async (decision) => {
+      const generationRequestSnapshot = {
+        request: { duration: 15.041667 },
+        importedMaterial: { schemaVersion: 1, width: 496, height: 864 },
+      };
+      const task = {
+        ...runningTask,
+        operationKind: 'REPAIR',
+        status: 'COMPLETED',
+        renderVersion: 2,
+        activeOutputVersion: 1,
+        repairSourceVersion: 1,
+        repairStatus: 'READY',
+        requestSnapshot: { ...generationRequestSnapshot, outputDurationSeconds: 14.9 },
+        generationRequestSnapshot,
+        repairCandidateFileObjectId: 'candidate',
+        repairCandidateStorageKey: 'candidate-key',
+        repairCandidateFileName: 'candidate.mp4',
+        repairCandidateMimeType: 'video/mp4',
+        repairCandidateSizeBytes: 1024,
+        repairCandidateContentHash: 'c'.repeat(64),
+        repairCandidateVersion: 2,
+      };
+      const batch = {
+        id: runningTask.batchId,
+        workflowRunId: runningTask.workflowRunId,
+        productId: runningTask.productId,
+        revision: 4,
+      };
+      const transaction = {
+        $queryRaw: vi.fn().mockResolvedValue([]),
+        effectSegmentRenderOperationReceipt: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn(),
+        },
+        effectSegmentRenderBatch: {
+          findFirst: vi.fn().mockResolvedValue(batch),
+          update: vi.fn(),
+          updateMany: vi.fn(),
+        },
+        effectSegmentRenderTask: {
+          findFirst: vi.fn().mockResolvedValue(task),
+          update: vi.fn(),
+          groupBy: vi.fn().mockResolvedValue([]),
+        },
+      };
+      const repository = new EffectSegmentRenderRepository({
+        $transaction: (callback: (value: typeof transaction) => Promise<unknown>) =>
+          callback(transaction),
+      } as never);
+      expect(
+        await repository.decideRepair(
+          runningTask.projectId,
+          runningTask.batchId,
+          runningTask.id,
+          4,
+          2,
+          decision,
+          'decide-import',
+        ),
+      ).toEqual({ kind: 'UPDATED' });
+      const update = transaction.effectSegmentRenderTask.update.mock.calls[0]![0].data;
+      expect(update.generationRequestSnapshot.request.duration).toBe(15.041667);
+      expect(update.generationRequestSnapshot.outputDurationSeconds).toBe(
+        decision === 'ACCEPT' ? 14.9 : undefined,
+      );
+      expect(update.requestSnapshot).toEqual(update.generationRequestSnapshot);
+      if (decision === 'DISCARD') expect(update.outputFileObjectId).toBeUndefined();
+    },
+  );
+
+  it('persists fractional repair output metadata on the candidate without changing the active snapshot', async () => {
+    const task = {
+      ...runningTask,
+      operationKind: 'REPAIR',
+      requestSnapshot: { request: { duration: 15.041667 } },
+      generationRequestSnapshot: { request: { duration: 15.041667 } },
+    };
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      effectSegmentRenderTask: {
+        findFirst: vi.fn().mockResolvedValue(task),
+        update: vi.fn().mockImplementation(({ data }) => ({ ...task, ...data })),
+        groupBy: vi.fn().mockResolvedValue([]),
+      },
+      effectSegmentRenderBatch: { update: vi.fn(), updateMany: vi.fn() },
+    };
+    const repository = new EffectSegmentRenderRepository(
+      {
+        $transaction: (callback: (value: typeof transaction) => Promise<unknown>) =>
+          callback(transaction),
+      } as never,
+      { upsertFileObjectInTransaction: vi.fn().mockResolvedValue({ id: 'candidate' }) } as never,
+    );
+    await repository.complete(
+      runningTask.projectId,
+      runningTask.id,
+      runningTask.attemptToken,
+      1,
+      'provider',
+      {
+        id: 'candidate',
+        originalFileName: 'repair.mp4',
+        mimeType: 'video/mp4',
+        sizeBytes: 1024,
+        storageKey: 'candidate-key',
+        sha256: 'a'.repeat(64),
+      },
+      undefined,
+      new Date('2026-09-03T00:01:00.000Z'),
+      14.9,
+    );
+    const data = transaction.effectSegmentRenderTask.update.mock.calls[0]![0].data;
+    expect(data.requestSnapshot.outputDurationSeconds).toBe(14.9);
+    expect(data.generationRequestSnapshot).toBeUndefined();
+    expect(data.outputFileObjectId).toBeUndefined();
+  });
   it('does not expose archived render batches or their tasks in the current branch', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const taskFindFirst = vi.fn().mockResolvedValue(null);
@@ -31,12 +202,23 @@ describe('EffectSegmentRenderRepository', () => {
     await repository.batch('project', 'batch');
     await repository.task('project', 'task');
 
-    expect(findFirst).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      where: { projectId: 'project', workflowRunId: 'child', productId: 'product', archivedAt: null },
-    }));
-    expect(findFirst).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      where: { projectId: 'project', id: 'batch', archivedAt: null },
-    }));
+    expect(findFirst).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: {
+          projectId: 'project',
+          workflowRunId: 'child',
+          productId: 'product',
+          archivedAt: null,
+        },
+      }),
+    );
+    expect(findFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { projectId: 'project', id: 'batch', archivedAt: null },
+      }),
+    );
     expect(taskFindFirst).toHaveBeenCalledWith({
       where: { projectId: 'project', id: 'task', batch: { archivedAt: null } },
     });
@@ -47,10 +229,11 @@ describe('EffectSegmentRenderRepository', () => {
       findFirst: vi.fn().mockResolvedValue({ id: 'file', workflowRunId: 'root' }),
     };
     const workflowRun = {
-      findFirst: vi.fn().mockImplementation(async ({ where }: { where: { id: string } }) =>
-        where.id === 'child' ? { parentWorkflowRunId: 'root' }
-          : { parentWorkflowRunId: null },
-      ),
+      findFirst: vi
+        .fn()
+        .mockImplementation(async ({ where }: { where: { id: string } }) =>
+          where.id === 'child' ? { parentWorkflowRunId: 'root' } : { parentWorkflowRunId: null },
+        ),
     };
     const repository = new EffectSegmentRenderRepository({ fileObject, workflowRun } as never);
     expect(await repository.fileObject('project-a', 'child', 'file')).toMatchObject({ id: 'file' });
@@ -101,6 +284,7 @@ describe('EffectSegmentRenderRepository', () => {
       },
       effectSegmentRenderTask: {
         findMany: vi.fn().mockResolvedValue([completedTask]),
+        update: vi.fn().mockResolvedValue({}),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         groupBy: vi.fn().mockResolvedValue([{ status: 'FAILED', _count: { _all: 1 } }]),
       },
@@ -241,9 +425,9 @@ describe('EffectSegmentRenderRepository', () => {
 
   it('reports a branch-publication conflict without treating an artifact commit as successful', async () => {
     const prisma = {
-      $transaction: vi.fn().mockRejectedValue(
-        new Error('EFFECT_RENDER_BRANCH_PUBLICATION_CONFLICT'),
-      ),
+      $transaction: vi
+        .fn()
+        .mockRejectedValue(new Error('EFFECT_RENDER_BRANCH_PUBLICATION_CONFLICT')),
     };
     const repository = new EffectSegmentRenderRepository(prisma as never);
 

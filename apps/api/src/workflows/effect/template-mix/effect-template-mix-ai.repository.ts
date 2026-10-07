@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { publishedRenderSource } from '../../../platform/workflow/effect-published-render-source';
 
 import { Inject, Injectable } from '@nestjs/common';
 import type {
@@ -346,7 +347,7 @@ export class EffectTemplateMixAiRepository {
     // an obsolete snapshot; never freeze it as a source for a newly filled template.
     const working = transaction
       ? new WorkflowWorkingRepository(transaction as unknown as PrismaService) : this.working;
-    return (await working.listArtifacts(projectId, { workflowRunId })).filter((artifact) =>
+    return (await working.listArtifacts(projectId, { workflowRunId })).map(publishedRenderSource).filter((artifact) =>
       ['PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(artifact.nodeId) &&
       artifact.freshness === 'CURRENT' && artifact.availability === 'AVAILABLE' &&
       (artifact.metadata as { branchSourceOwner?: boolean } | null)?.branchSourceOwner !== false);

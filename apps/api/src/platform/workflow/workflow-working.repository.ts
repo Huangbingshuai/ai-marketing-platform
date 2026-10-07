@@ -23,6 +23,7 @@ import {
 } from './effect-edit-session';
 import { createEffectManualBranchInTransaction } from './effect-manual-branch';
 import { selectedEffectTemplatePaths } from './effect-template-current-path';
+import { recoverPublishedRenderPrompt } from './effect-published-render-source';
 
 export type WorkingArtifactUpsertInput = {
   kind: WorkingArtifactKind;
@@ -85,7 +86,11 @@ type EffectForkScope = { forkNodeId: string | null; forkTemplateId: string | nul
 // This is owned by a single batch transaction, never by the repository or a Run cache.
 // Only mix/output batches can reuse it: they do not modify their render source heads.
 type ArtifactValidationReadCache = { sharedRenderSources?: Promise<WorkingArtifactRecord[]>;
-  frozenRenderSources?: readonly EffectTemplateMixMaterial[] };
+  frozenRenderSources?: readonly EffectTemplateMixMaterial[];
+  frozenPromptSources?: readonly FrozenRenderPromptSource[] };
+
+/** Private commit authority, built from persisted render task inputs, never from an HTTP DTO. */
+export type FrozenRenderPromptSource = { artifactId: string; revision: number; contentHash: string; artifactKey: string };
 
 /** An ancestor is readable only before the child fork (or outside its template scope). */
 export const inheritedEffectArtifactVisible = (
@@ -793,7 +798,22 @@ export class WorkflowWorkingRepository {
         }
         frontier = ids.flatMap((id) => loaded.has(id) && !traversed.has(id) ? [loaded.get(id)!] : []);
       }
-      const result = projectEffectBranchFreshness(branches, unique, [...unique, ...renderIdentities]);
+      const legacyTaskIds = [...new Set(unique.filter(row => row.nodeId === 'SEGMENT_RENDER').flatMap(row => {
+        const payload = row.payload as { clips?: unknown[]; taskId?: unknown; promptContentHash?: unknown; adoptedPrompt?: unknown } | null;
+        const clips = payload?.clips ?? [payload];
+        return clips.flatMap(value => {
+          const clip = value as typeof payload;
+          return clip && !clip.adoptedPrompt && typeof clip.promptContentHash === 'string' && typeof clip.taskId === 'string'
+            ? [clip.taskId] : [];
+        });
+      }))];
+      const snapshots = legacyTaskIds.length && this.prisma.effectSegmentRenderTask?.findMany
+        ? await this.prisma.effectSegmentRenderTask.findMany({ where: { projectId,
+            workflowRunId: { in: unique.filter(row => row.nodeId === 'SEGMENT_RENDER').map(row => row.workflowRunId) },
+            id: { in: legacyTaskIds } }, select: { id: true, workflowRunId: true, promptId: true,
+            outputFileObjectId: true, requestSnapshot: true, generationRequestSnapshot: true } }) : [];
+      const recovered = snapshots.length ? unique.map(row => recoverPublishedRenderPrompt(row, snapshots)) : unique;
+      const result = projectEffectBranchFreshness(branches, recovered, [...recovered, ...renderIdentities]);
       for (const artifact of result) if (artifact.nodeId === 'SEGMENT_RENDER')
         artifact.metadata = { ...(artifact.metadata && typeof artifact.metadata === 'object' &&
           !Array.isArray(artifact.metadata) ? artifact.metadata : {}),
@@ -1229,11 +1249,13 @@ export class WorkflowWorkingRepository {
       invalidateDependents?: boolean;
     }>,
     frozenRenderSources?: readonly EffectTemplateMixMaterial[],
+    frozenPromptSources?: readonly FrozenRenderPromptSource[],
   ) {
     const results = [];
     const validationReads: ArtifactValidationReadCache | undefined =
-      ['TEMPLATE_MIX', 'FINAL_OUTPUT'].includes(nodeId)
-        ? { ...(frozenRenderSources ? { frozenRenderSources } : {}) } : undefined;
+      ['TEMPLATE_MIX', 'FINAL_OUTPUT', 'SEGMENT_RENDER'].includes(nodeId)
+        ? { ...(frozenRenderSources ? { frozenRenderSources } : {}),
+          ...(nodeId === 'SEGMENT_RENDER' && frozenPromptSources ? { frozenPromptSources } : {}) } : undefined;
     for (const artifact of artifacts) {
       const result = await this.upsertArtifactInTransaction(
         transaction,
@@ -1310,6 +1332,27 @@ export class WorkflowWorkingRepository {
     }
     for (const dependency of input.dependencies ?? []) {
       if (dependency.sourceType === 'WORKING_ARTIFACT') {
+        const frozenPrompt = nodeId === 'SEGMENT_RENDER' && validationReads.frozenPromptSources?.find((source) =>
+          source.artifactId === dependency.sourceArtifactId && source.artifactKey === dependency.sourceKey &&
+          source.revision === dependency.sourceRevision && source.contentHash === dependency.sourceHash);
+        if (frozenPrompt && frozenPrompt.artifactKey.startsWith('prompt-batch:')) {
+          const source = await transaction.workingArtifact.findFirst({ where: { projectId,
+            workflowRunId: { in: allowedRunIds }, id: frozenPrompt.artifactId,
+            nodeId: 'PROMPT_GENERATION', artifactKey: frozenPrompt.artifactKey, availability: 'AVAILABLE' } });
+          if (!source) throw new Error('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+          if (source.revision === frozenPrompt.revision && source.contentHash === frozenPrompt.contentHash) continue;
+          // Edit copies remap artifact IDs. Recover history only through explicit clone provenance,
+          // never by matching prompt text, product name or a sibling Run.
+          const provenance = source.metadata as { branchSource?: { artifactId?: string; ancestorArtifactIds?: string[] } } | null;
+          const history = await transaction.workingArtifactRevisionSnapshot.findFirst({ where: {
+            projectId, workflowRunId: { in: allowedRunIds }, nodeId: 'PROMPT_GENERATION',
+            workingArtifactId: { in: [source.id, ...(provenance?.branchSource?.artifactId ? [provenance.branchSource.artifactId] : []),
+              ...(provenance?.branchSource?.ancestorArtifactIds ?? [])] },
+            revision: frozenPrompt.revision, contentHash: frozenPrompt.contentHash,
+          } });
+          if (!history) throw new Error('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+          continue;
+        }
         const frozen = nodeId === 'TEMPLATE_MIX' && validationReads.frozenRenderSources?.find((source) =>
           source.artifactId === dependency.sourceArtifactId && source.artifactKey === dependency.sourceKey &&
           source.artifactRevision === dependency.sourceRevision && source.artifactContentHash === dependency.sourceHash);

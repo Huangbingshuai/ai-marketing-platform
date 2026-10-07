@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { beginEffectEditInTransaction } from './effect-edit-session';
 
 describe('output template scoped branch guard', () => {
+  it.each([true, false])('allows nested manual Prompt edits only for the frozen render protocol (%s)', async (frozen) => {
+    const parent = { id: 'render-draft', parentWorkflowRunId: 'published', branchPublishedAt: null,
+      editSessionNodeId: 'SEGMENT_RENDER', editSessionPurpose: 'MANUAL', editIdMap: { frozenPromptRefresh: frozen } };
+    const tx = { $queryRaw: vi.fn(), workflowRun: { findFirst: vi.fn().mockResolvedValue(parent) },
+      workingArtifact: { count: vi.fn().mockRejectedValue(new Error('NESTED_EDIT_ALLOWED')) } };
+    const promise = beginEffectEditInTransaction(tx as never, 'p', parent.id, 'PROMPT_GENERATION', 'MANUAL');
+    if (frozen) await expect(promise).rejects.toThrow('NESTED_EDIT_ALLOWED');
+    else await expect(promise).resolves.toBeNull();
+  });
   const setup = () => {
     const active = { id: 'global' };
     const parent = { id: 'template', parentWorkflowRunId: 'root', branchPublishedAt: new Date() };

@@ -17,12 +17,15 @@ import { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import {
   type WorkingArtifactUpsertInput,
+  type FrozenRenderPromptSource,
   WorkflowWorkingRepository,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { exitEffectEditInTransaction } from '../../../platform/workflow/effect-edit-session';
 import { findDuplicateSegmentImport } from './effect-segment-import-duplicate';
-import { renderPromptBaseline } from './effect-segment-render-prompt-update';
+import { renderPromptBaseline, renderPromptUpdateKind } from './effect-segment-render-prompt-update';
+import { parseEffectPromptBatchResult } from '../prompt-generation/effect-prompt.quality';
+import { confirmedEffectRenderSourceRun } from '../../../platform/workflow/effect-render-source-context';
 import type {
   EffectSegmentRenderImportedFile,
   EffectSegmentRenderStoredFile,
@@ -30,6 +33,17 @@ import type {
 } from './effect-segment-render.types';
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
+const frozenPromptSourcesForBatch = (batch: {
+  productId: string; sourcePromptArtifactId: string; sourcePromptRevision: number; sourcePromptHash: string;
+  tasks: readonly { requestSnapshot: Prisma.JsonValue; generationRequestSnapshot?: Prisma.JsonValue | null }[];
+}): FrozenRenderPromptSource[] | undefined => {
+  const snapshots = batch.tasks.map((task) => (task.generationRequestSnapshot ?? task.requestSnapshot) as unknown as EffectSegmentRenderRequestSnapshot);
+  if (!snapshots.some((snapshot) => snapshot.refreshContext?.schemaVersion === 1)) return undefined;
+  const sources = [{ artifactId: batch.sourcePromptArtifactId, revision: batch.sourcePromptRevision, contentHash: batch.sourcePromptHash },
+    ...snapshots.flatMap((snapshot) => [snapshot.adoptedPrompt?.sourcePrompt ?? snapshot.sourcePrompt, snapshot.refreshContext?.sourcePrompt]
+      .filter((source): source is NonNullable<typeof source> => Boolean(source)))];
+  return sources.map((source) => ({ ...source, artifactKey: `prompt-batch:${batch.productId}` }));
+};
 const posterFileObjectId = (value: Prisma.JsonValue | null): string | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const fileObjectId = (value as Prisma.JsonObject).fileObjectId;
@@ -220,6 +234,20 @@ export class EffectSegmentRenderRepository {
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: effectSegmentRenderBatchInclude,
     });
+  }
+
+  async workspaceBatch(projectId: string, workflowRunId: string, productId: string) {
+    const sourceRunId = await confirmedEffectRenderSourceRun(this.prisma, projectId, workflowRunId);
+    if (sourceRunId === workflowRunId) return this.latestBatch(projectId, workflowRunId, productId);
+    const product = await this.product(projectId, workflowRunId, productId);
+    if (!product) return null;
+    // Same identity rule used by branch cloning; names and counts are not source identities.
+    const counterparts = await this.prisma.effectImportProduct.findMany({ where: {
+      projectId, workflowRunId: sourceRunId, sortOrder: product.sortOrder,
+      normalizedSku: product.normalizedSku,
+    }, select: { id: true } });
+    if (counterparts.length !== 1) throw new Error('EFFECT_RENDER_SOURCE_PRODUCT_AMBIGUOUS');
+    return this.latestBatch(projectId, sourceRunId, counterparts[0]!.id);
   }
 
   batch(projectId: string, batchId: string) {
@@ -429,6 +457,7 @@ export class EffectSegmentRenderRepository {
       removedTaskIds?: string[];
       sourcePackage?: EffectSegmentRenderRequestSnapshot['sourcePackage'];
       refreshRequestHash?: string;
+      refreshContext?: EffectSegmentRenderRequestSnapshot['refreshContext'];
     },
   ) {
     const requestHash =
@@ -559,6 +588,14 @@ export class EffectSegmentRenderRepository {
           },
         });
         if (otherActive) return { kind: 'ACTIVE_CONFLICT' as const };
+        if (input.refreshContext) {
+          const run = await transaction.workflowRun.findFirst({ where: { projectId, id: batch.workflowRunId } });
+          if (!run || run.editSessionNodeId !== 'SEGMENT_RENDER' || run.editSessionPurpose !== 'MANUAL')
+            return { kind: 'REVISION_CONFLICT' as const };
+          await transaction.workflowRun.update({ where: { id: run.id }, data: {
+            editIdMap: json({ ...(run.editIdMap as object ?? {}), frozenPromptRefresh: true }),
+          } });
+        }
         await transaction.effectSegmentRenderOperationReceipt.create({
           data: { projectId, batchId, idempotencyKey, requestHash },
         });
@@ -592,10 +629,13 @@ export class EffectSegmentRenderRepository {
         }
         for (const task of tasks.filter((task) => uniqueIds.includes(task.id))) {
           const oldSnapshot = (task.generationRequestSnapshot ?? task.requestSnapshot) as unknown as EffectSegmentRenderRequestSnapshot;
+          const oldInput = { ...oldSnapshot };
+          delete oldInput.adoptedInput;
           const snapshot: EffectSegmentRenderRequestSnapshot = {
             ...input.taskSnapshots[task.id]!,
             ...(task.outputFileObjectId ? {
               adoptedPrompt: oldSnapshot.adoptedPrompt ?? renderPromptBaseline(oldSnapshot),
+              adoptedInput: oldSnapshot.adoptedInput ?? oldInput,
               ...(oldSnapshot.outputDurationSeconds !== undefined ? { outputDurationSeconds: oldSnapshot.outputDurationSeconds } : {}),
               ...(oldSnapshot.outputRatio ? { outputRatio: oldSnapshot.outputRatio } : {}),
             } : {}),
@@ -665,6 +705,14 @@ export class EffectSegmentRenderRepository {
             data: { requestSnapshot: json(snapshot), generationRequestSnapshot: json(snapshot) },
           });
         }
+        for (const task of tasks.filter((task) => removedIds.includes(task.id))) await transaction.effectSegmentRenderTask.update({
+          where: { projectId_id: { projectId, id: task.id } },
+          data: { requestSnapshot: json({ ...(task.requestSnapshot as object), removedBy: 'PROMPT',
+            ...(input.refreshContext ? { refreshContext: input.refreshContext } : {}) }),
+            generationRequestSnapshot: json({ ...((task.generationRequestSnapshot ?? task.requestSnapshot) as object), removedBy: 'PROMPT',
+              ...(input.refreshContext ? { refreshContext: input.refreshContext } : {}) }),
+          },
+        });
         if (removedIds.length) await transaction.effectSegmentRenderTask.updateMany({
           where: { projectId, batchId, id: { in: removedIds } },
           data: {
@@ -1102,26 +1150,17 @@ export class EffectSegmentRenderRepository {
       });
       // Deleting a clip from this draft must not revoke media referenced by a
       // published parent or sibling branch.
-      const independentIds = tasks
-        .filter(
-          (task) =>
-            (
-              (task.generationRequestSnapshot ??
-                task.requestSnapshot) as unknown as EffectSegmentRenderRequestSnapshot
-            )?.importedMaterial,
-        )
-        .map((task) => task.id);
-      // Independent imports have no Prompt task to regenerate. Remove only their draft rows,
-      // while preserving FileObjects and confirmed parent/sibling media references.
-      if (independentIds.length)
-        await transaction.effectSegmentRenderTask.deleteMany({
-          where: { projectId, batchId, id: { in: independentIds } },
-        });
+      // Keep a hidden tombstone for imports as well as AI clips. Its stable source identity
+      // publishes explicit deletion on save, survives edit-id remapping, and retains provenance.
+      for (const task of tasks) await transaction.effectSegmentRenderTask.update({ where: { id: task.id }, data: {
+        requestSnapshot: json({ ...(task.requestSnapshot as object), removedBy: 'USER' }),
+        generationRequestSnapshot: json({ ...((task.generationRequestSnapshot ?? task.requestSnapshot) as object), removedBy: 'USER' }),
+      } });
       await transaction.effectSegmentRenderTask.updateMany({
         where: {
           projectId,
           batchId,
-          id: { in: uniqueTaskIds.filter((id) => !independentIds.includes(id)) },
+          id: { in: uniqueTaskIds },
         },
         data: {
           status: 'FAILED',
@@ -1399,8 +1438,29 @@ export class EffectSegmentRenderRepository {
         data: { projectId, batchId, idempotencyKey, requestHash },
       });
       const repairSnapshot = task.requestSnapshot as unknown as {
-        inputVideo?: { providerTaskId?: unknown };
+        request?: EffectSegmentRenderRequestSnapshot['request'];
+        outputDurationSeconds?: number;
+        outputRatio?: string;
+        inputVideo?: { providerTaskId?: unknown; ratio?: string };
       };
+      const generationSnapshot =
+        task.generationRequestSnapshot as unknown as EffectSegmentRenderRequestSnapshot;
+      const adoptedSnapshot =
+        decision === 'ACCEPT' && repairSnapshot.outputDurationSeconds !== undefined
+          ? {
+              ...generationSnapshot,
+              outputDurationSeconds: repairSnapshot.outputDurationSeconds,
+              request: {
+                ...generationSnapshot.request,
+                resolution:
+                  repairSnapshot.request?.resolution ?? generationSnapshot.request.resolution,
+              },
+              outputRatio:
+                repairSnapshot.outputRatio ??
+                repairSnapshot.inputVideo?.ratio ??
+                generationSnapshot.request.ratio,
+            }
+          : generationSnapshot;
       const sourceProviderTaskId =
         typeof repairSnapshot.inputVideo?.providerTaskId === 'string' &&
         repairSnapshot.inputVideo.providerTaskId.trim()
@@ -1413,8 +1473,9 @@ export class EffectSegmentRenderRepository {
           operationKind: 'GENERATE',
           status: 'COMPLETED',
           progress: 100,
-          requestSnapshot: json(task.generationRequestSnapshot),
-          sourceFingerprint: workflowStateHash(task.generationRequestSnapshot),
+          requestSnapshot: json(adoptedSnapshot),
+          generationRequestSnapshot: json(adoptedSnapshot),
+          sourceFingerprint: workflowStateHash(adoptedSnapshot),
           ...(decision === 'ACCEPT'
             ? {
                 outputFileObjectId: task.repairCandidateFileObjectId!,
@@ -1619,6 +1680,15 @@ export class EffectSegmentRenderRepository {
             progress: 100,
             providerTaskId,
             repairStatus: 'READY',
+            ...(outputDurationSeconds !== undefined
+              ? {
+                  requestSnapshot: json({
+                    ...(task.requestSnapshot as object),
+                    outputDurationSeconds,
+                    ...(outputRatio ? { outputRatio } : {}),
+                  }),
+                }
+              : {}),
             repairCandidateFileObjectId: fileObject.id,
             repairCandidateStorageKey: file.storageKey,
             repairCandidateFileName: file.originalFileName,
@@ -1649,7 +1719,8 @@ export class EffectSegmentRenderRepository {
       // A regenerated output can replace the draft's active version without
       // invalidating the old file object used by an earlier branch.
       const adoptedSnapshot = (value: Prisma.JsonValue): EffectSegmentRenderRequestSnapshot => {
-        const snapshot = value as unknown as EffectSegmentRenderRequestSnapshot;
+        const snapshot = { ...(value as unknown as EffectSegmentRenderRequestSnapshot) };
+        delete snapshot.adoptedInput;
         return {
           ...snapshot, adoptedPrompt: renderPromptBaseline(snapshot),
           ...(outputDurationSeconds !== undefined ? { outputDurationSeconds } : {}),
@@ -1972,6 +2043,7 @@ export class EffectSegmentRenderRepository {
     if (batch.revision !== expectedRevision) return { kind: 'REVISION_CONFLICT' as const };
     if (batch.tasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
       return { kind: 'NOT_READY' as const };
+    const frozenPromptSources = frozenPromptSourcesForBatch(batch);
     const prompt = await transaction.workingArtifact.findFirst({
       where: {
         projectId,
@@ -1979,13 +2051,20 @@ export class EffectSegmentRenderRepository {
         id: sourcePrompt.artifactId,
         nodeId: 'PROMPT_GENERATION',
         artifactKey: 'prompt-batch:' + batch.productId,
-        revision: sourcePrompt.revision,
-        contentHash: sourcePrompt.contentHash,
-        freshness: 'CURRENT',
+        ...(!frozenPromptSources ? { revision: sourcePrompt.revision,
+          contentHash: sourcePrompt.contentHash, freshness: 'CURRENT' as const } : {}),
         availability: 'AVAILABLE',
       },
     });
     if (!prompt) return { kind: 'PROMPT_CONFLICT' as const };
+    const latestPrompt = parseEffectPromptBatchResult(prompt.payload);
+    const cancelledFailures = frozenPromptSources ? batch.tasks.filter((task) =>
+      task.status === 'FAILED' && task.errorCode !== 'MATERIAL_DELETED') : [];
+    for (const task of cancelledFailures) {
+      const snapshot = task.requestSnapshot as unknown as EffectSegmentRenderRequestSnapshot;
+      if (!task.outputFileObjectId || !snapshot.adoptedInput || !latestPrompt || renderPromptUpdateKind(snapshot, latestPrompt))
+        return { kind: 'NOT_READY' as const };
+    }
     const source = await transaction.workingArtifact.findFirst({
       where: {
         projectId,
@@ -2001,6 +2080,17 @@ export class EffectSegmentRenderRepository {
     });
     if (!source) return { kind: 'SOURCE_CONFLICT' as const };
     if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+    for (const task of cancelledFailures) {
+      const snapshot = task.requestSnapshot as unknown as EffectSegmentRenderRequestSnapshot;
+      const restored = { ...snapshot.adoptedInput, refreshContext: snapshot.refreshContext };
+      await transaction.effectSegmentRenderTask.update({ where: { projectId_id: { projectId, id: task.id } }, data: {
+        status: 'COMPLETED', progress: 100, providerTaskId: null,
+        requestSnapshot: json(restored), generationRequestSnapshot: json(restored),
+      } });
+      Object.assign(task, { status: 'COMPLETED', requestSnapshot: restored, generationRequestSnapshot: restored });
+    }
+    // The manual merge consumes this in-memory batch after the database write.
+    if (cancelledFailures.length) Object.assign(batch, { status: 'COMPLETED', activeKey: null });
     await transaction.effectSegmentRenderBatch.update({
       where: { projectId_id: { projectId, id: batchId } },
       data: {
@@ -2015,10 +2105,14 @@ export class EffectSegmentRenderRepository {
       batch.workflowRunId,
       'SEGMENT_RENDER',
       artifacts,
+      undefined,
+      frozenPromptSources,
     );
     await transaction.effectSegmentRenderBatch.update({
       where: { projectId_id: { projectId, id: batchId } },
-      data: { committedAt: new Date() },
+      data: { committedAt: new Date(),
+        ...(cancelledFailures.length ? { status: 'COMPLETED', activeKey: null } : {}),
+      },
     });
     const run = await transaction.workflowRun.findFirst({
       where: { projectId, id: batch.workflowRunId },
@@ -2093,30 +2187,39 @@ export class EffectSegmentRenderRepository {
     const map = (editIdMap ?? {}) as {
       productIdMap?: Record<string, string>;
       taskIdMap?: Record<string, string>;
+      renderBatchRevisions?: Record<string, number>;
     };
-    const parentProductId = Object.entries(map.productIdMap ?? {}).find(
-      ([, id]) => id === childBatch.productId,
-    )?.[0];
-    if (!parentProductId) throw new Error('RENDER_EDIT_PRODUCT_MAPPING_MISSING');
-    // Mirror the edit session's source-batch pick (newest committed, non-archived batch of the
-    // product). `activeKey` only marks an in-flight batch, so a completed parent never carries it.
+    const sourceProductIds = Object.entries(map.productIdMap ?? {})
+      .filter(([, id]) => id === childBatch.productId)
+      .map(([id]) => id);
+    if (!sourceProductIds.length) throw new Error(BRANCH_PUBLICATION_CONFLICT);
+    // The navigation parent can carry an old render copy. Match the same confirmed pool owner
+    // used when opening this edit, not the first inverse product alias in a JSON object.
+    const sourceRunId = await confirmedEffectRenderSourceRun(transaction, projectId, parentRunId);
     const parentBatch = await transaction.effectSegmentRenderBatch.findFirst({
       where: {
         projectId,
-        workflowRunId: parentRunId,
-        productId: parentProductId,
+        workflowRunId: sourceRunId,
+        productId: { in: sourceProductIds },
         archivedAt: null,
         committedAt: { not: null },
       },
       include: { tasks: true },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
-    if (!parentBatch) throw new Error('RENDER_EDIT_PARENT_BATCH_MISSING');
+    if (!parentBatch || childBatch.idempotencyKey !==
+      `edit:${childBatch.workflowRunId}:batch:${parentBatch.id}`)
+      throw new Error(BRANCH_PUBLICATION_CONFLICT);
+    if (map.renderBatchRevisions?.[parentBatch.id] !== undefined &&
+        map.renderBatchRevisions[parentBatch.id] !== parentBatch.revision)
+      throw new Error(BRANCH_PUBLICATION_CONFLICT);
+    const frozenPromptSources = frozenPromptSourcesForBatch(childBatch);
+    const parentProductId = parentBatch.productId;
     const parentPrompt = await transaction.workingArtifact.findUnique({
       where: {
         projectId_workflowRunId_nodeId_artifactKey: {
           projectId,
-          workflowRunId: parentRunId,
+          workflowRunId: sourceRunId,
           nodeId: 'PROMPT_GENERATION',
           artifactKey: `prompt-batch:${parentProductId}`,
         },
@@ -2136,7 +2239,7 @@ export class EffectSegmentRenderRepository {
       where: {
         projectId_workflowRunId_nodeId_artifactKey: {
           projectId,
-          workflowRunId: parentRunId,
+          workflowRunId: sourceRunId,
           nodeId: 'SOURCE_IMPORT',
           artifactKey: `source-package:${parentProductId}`,
         },
@@ -2157,19 +2260,29 @@ export class EffectSegmentRenderRepository {
       !childPrompt ||
       !parentSource ||
       !childSource ||
-      parentPrompt.revision !== childPrompt.revision ||
+      (!frozenPromptSources && parentPrompt.revision !== childPrompt.revision) ||
       parentSource.revision !== childSource.revision
     )
-      throw new Error('RENDER_EDIT_PARENT_CHANGED');
+      throw new Error(BRANCH_PUBLICATION_CONFLICT);
     const ids: Record<string, string> = {
-      [childBatch.workflowRunId]: parentRunId,
+      [childBatch.workflowRunId]: sourceRunId,
       [childBatch.productId]: parentProductId,
       [childBatch.id]: parentBatch.id,
       [childPrompt.id]: parentPrompt.id,
-      [childPrompt.contentHash]: parentPrompt.contentHash,
+      ...(!frozenPromptSources || parentPrompt.revision === childPrompt.revision
+        ? { [childPrompt.contentHash]: parentPrompt.contentHash } : {}),
       [childSource.id]: parentSource.id,
       [childSource.contentHash]: parentSource.contentHash,
     };
+    for (const source of frozenPromptSources ?? []) {
+      if (source.artifactId !== childPrompt.id) continue;
+      const original = source.revision === parentPrompt.revision ? parentPrompt :
+        await transaction.workingArtifactRevisionSnapshot.findFirst({ where: { projectId,
+          workflowRunId: sourceRunId, workingArtifactId: parentPrompt.id,
+          nodeId: 'PROMPT_GENERATION', revision: source.revision } });
+      if (!original) throw new Error(BRANCH_PUBLICATION_CONFLICT);
+      ids[source.contentHash] = original.contentHash;
+    }
     for (const [parentTaskId, childTaskId] of Object.entries(map.taskIdMap ?? {}))
       ids[childTaskId] = parentTaskId;
     const remap = <T>(value: T): T => {
@@ -2201,7 +2314,7 @@ export class EffectSegmentRenderRepository {
           workflowRunId: childBatch.workflowRunId,
           id: { in: [...new Set(newFileIds)] },
         },
-        data: { workflowRunId: parentRunId },
+        data: { workflowRunId: sourceRunId },
       });
     for (const task of childBatch.tasks) {
       const parentTask =
@@ -2266,7 +2379,7 @@ export class EffectSegmentRenderRepository {
         const created = await transaction.effectSegmentRenderTask.create({
           data: {
             projectId,
-            workflowRunId: parentRunId,
+            workflowRunId: sourceRunId,
             productId: parentProductId,
             batchId: parentBatch.id,
             ...fields,
@@ -2279,8 +2392,8 @@ export class EffectSegmentRenderRepository {
       where: { id: parentBatch.id },
       data: {
         sourcePromptArtifactId: parentPrompt.id,
-        sourcePromptRevision: parentPrompt.revision,
-        sourcePromptHash: parentPrompt.contentHash,
+        sourcePromptRevision: frozenPromptSources ? childBatch.sourcePromptRevision : parentPrompt.revision,
+        sourcePromptHash: frozenPromptSources ? remap(childBatch.sourcePromptHash) : parentPrompt.contentHash,
         sourceFingerprint: childBatch.sourceFingerprint,
         status: childBatch.status,
         committedAt: new Date(),
@@ -2311,9 +2424,11 @@ export class EffectSegmentRenderRepository {
     const committed = await this.workingRepository.commitValidatedArtifactsInTransaction(
       transaction,
       projectId,
-      parentRunId,
+      sourceRunId,
       'SEGMENT_RENDER',
       remappedInputs,
+      undefined,
+      frozenPromptSources ? remap(frozenPromptSources) : undefined,
     );
     if (committed.some((item) => !item.unchanged))
       await transaction.effectSegmentRenderBatch.update({
@@ -2336,7 +2451,7 @@ export class EffectSegmentRenderRepository {
         await this.workingRepository.markArtifactIdsAndDependentsStaleInTransaction(
           transaction,
           projectId,
-          parentRunId,
+          sourceRunId,
           dependents.map((item) => item.dependentArtifactId),
         );
     }

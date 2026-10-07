@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { EFFECT_WORKFLOW_BRANCH_NODES, effectTemplateMixSourceChanges, effectTemplateMixPendingAddedMaterials } from '@ai-marketing/contracts';
+import { EFFECT_WORKFLOW_BRANCH_NODES, effectTemplateMixSourceChanges, effectTemplateMixPendingAddedMaterials, effectSegmentRenderPromptDifference } from '@ai-marketing/contracts';
+import type { EffectSegmentRenderPromptBaseline } from '@ai-marketing/contracts';
 import type { EffectTemplateMixMaterial, EffectTemplateMixVariant, EffectTemplateMixTemplate, EffectTemplateMixAiSnapshot } from '@ai-marketing/contracts';
 import { workflowStateHash } from './workflow-state-hash';
 
@@ -14,14 +15,14 @@ type Artifact = {
   metadata?: unknown;
   updatedAt?: Date | string;
   dependencies?: readonly { sourceType: string; sourceArtifactId?: string | null;
+    sourceNodeId?: string | null;
     sourceRevision?: number | null; sourceHash?: string | null }[];
 };
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
 
-/** A batch revision alone is not a changed clip. Explicit STALE markers (including shared
- * constraints) still win; compare only recorded fields, never invent legacy metadata. */
+/** Revision-only edits may cancel. A reliable adopted baseline owns Prompt freshness. */
 const matchesConfirmedPrompt = (clip: Artifact, prompt: Artifact): boolean => {
   if (clip.nodeId !== 'SEGMENT_RENDER' || !clip.artifactKey.startsWith('render-clip:') ||
       prompt.nodeId !== 'PROMPT_GENERATION' || !prompt.artifactKey.startsWith('prompt-batch:'))
@@ -33,6 +34,21 @@ const matchesConfirmedPrompt = (clip: Artifact, prompt: Artifact): boolean => {
   if (!item || typeof item.content !== 'string' ||
       createHash('sha256').update(item.content.trim()).digest('hex') !== payload.promptContentHash)
     return false;
+  const adopted = record(payload.adoptedPrompt);
+  if (adopted) {
+    const shared = record(record(prompt.payload)?.sharedPrompt)?.contentHash ??
+      record(record(record(prompt.payload)?.renderProfile)?.sharedConstraints)?.contentHash;
+    if (typeof shared !== 'string' || typeof item.targetDurationSeconds !== 'number' ||
+        !Array.isArray(item.compatiblePurposes)) return false;
+    return !effectSegmentRenderPromptDifference(adopted as EffectSegmentRenderPromptBaseline, {
+      promptContentHash: createHash('sha256').update(item.content.trim()).digest('hex'),
+      sharedPromptHash: shared, targetDurationSeconds: item.targetDurationSeconds,
+      primaryPurpose: item.primaryPurpose as EffectSegmentRenderPromptBaseline['primaryPurpose'],
+      compatiblePurposes: item.compatiblePurposes as EffectSegmentRenderPromptBaseline['compatiblePurposes'],
+      ...(typeof item.creativeCore === 'string' ? { creativeCore: item.creativeCore } : {}),
+      ...(record(item.dimensions) ? { dimensions: item.dimensions as NonNullable<EffectSegmentRenderPromptBaseline['dimensions']> } : {}),
+    });
+  }
   if (payload.primaryPurpose !== undefined && payload.primaryPurpose !== item.primaryPurpose) return false;
   if (Array.isArray(payload.compatiblePurposes) &&
       JSON.stringify([...payload.compatiblePurposes].sort()) !==
@@ -250,6 +266,33 @@ export function projectEffectBranchFreshness<T extends Artifact>(
     return resolve(artifact);
   };
   const states = new Map<string, boolean>();
+  const promptOnlyPending = new Set<string>();
+  const promptDifference = (artifact: T): boolean | null => {
+    if (artifact.nodeId !== 'SEGMENT_RENDER' || artifact.availability === 'UNAVAILABLE') return null;
+    const promptDependency = artifact.dependencies?.find((dep) => dep.sourceNodeId === 'PROMPT_GENERATION' ||
+      (dep.sourceType === 'WORKING_ARTIFACT' && dep.sourceArtifactId && byId.get(dep.sourceArtifactId)?.nodeId === 'PROMPT_GENERATION'));
+    const source = promptDependency?.sourceArtifactId ? byId.get(promptDependency.sourceArtifactId) : undefined;
+    const prompt = source ? canonical(source) : undefined;
+    if (!prompt || prompt.availability === 'UNAVAILABLE' || prompt.freshness !== 'CURRENT' ||
+      !Array.isArray(record(prompt.payload)?.items)) return null;
+    const payload = record(artifact.payload);
+    if (!payload) return null;
+    if (artifact.artifactKey.startsWith('render-clip:')) {
+      if (payload.importedMaterial) return false;
+      if (typeof payload.promptContentHash !== 'string' || !record(payload.adoptedPrompt)) return null;
+      return !matchesConfirmedPrompt(artifact, prompt);
+    }
+    if (!artifact.artifactKey.startsWith('render-batch:') || !Array.isArray(payload.clips)) return null;
+    const clips = payload.clips.map(record).filter((row): row is Record<string, unknown> => Boolean(row));
+    if (clips.some((clip) => !clip.importedMaterial && !record(clip.adoptedPrompt))) return null;
+    if (clips.some((clip) => !clip.importedMaterial && !matchesConfirmedPrompt({
+      ...artifact, artifactKey: `render-clip:${clip.taskId}`, payload: clip,
+    }, prompt))) return true;
+    const represented = new Set([...clips.map((clip) => clip.promptId),
+      ...(Array.isArray(payload.removedSources) ? payload.removedSources.map(record)
+        .filter((row) => row?.removedBy !== 'PROMPT').map((row) => row?.promptId) : [])]);
+    return (record(prompt.payload)!.items as unknown[]).some((item) => !represented.has(record(item)?.id));
+  };
   const adoptedDifference = (artifact: T): boolean | null => {
     if (artifact.nodeId !== 'TEMPLATE_MIX') return null;
     const direct = record(artifact.payload)?.variant as EffectTemplateMixVariant | undefined;
@@ -288,7 +331,7 @@ export function projectEffectBranchFreshness<T extends Artifact>(
       sourcePromptId: String(record(row.payload)?.promptId ?? ''),
       fileObjectId: String(record(row.payload)?.fileObjectId ?? ''), contentHash: String(record(row.payload)?.contentHash ?? ''),
       duration: Number(record(row.payload)?.durationSeconds ?? 0),
-      available: (byId.get(row.id)?.freshness ?? (row as Partial<Artifact>).freshness ?? 'CURRENT') === 'CURRENT' &&
+      available: (!byId.get(row.id) || !stale(byId.get(row.id)!) || promptOnlyPending.has(row.id)) &&
         !['MISSING', 'UNAVAILABLE'].includes(byId.get(row.id)?.availability ?? (row as Partial<Artifact>).availability ?? 'AVAILABLE'),
       activeSource: true, contentUrl: '', code: '', name: '', ratio: '', resolution: '',
       purpose: 'PRODUCT_DISPLAY', compatiblePurposes: [],
@@ -339,13 +382,15 @@ export function projectEffectBranchFreshness<T extends Artifact>(
     const sourceFile = record(source.payload)?.fileObjectId;
     const changed = source !== artifact && (source.revision !== artifact.revision ||
       (typeof file === 'string' && sourceFile !== file) || stale(source, next));
-    const difference = adoptedDifference(artifact);
+    const promptDelta = promptDifference(artifact);
+    const difference = promptDelta ?? adoptedDifference(artifact);
     const outdated = (artifact.freshness === 'STALE' && !hasIndependentVisualSource(artifact) && difference === null) || changed ||
       difference === true ||
       (artifact.dependencies ?? []).some((dependency) => {
         if (independentVisualDependency(artifact, dependency)) return false;
         if (dependency.sourceType !== 'WORKING_ARTIFACT' || !dependency.sourceArtifactId) return false;
         const input = byId.get(dependency.sourceArtifactId);
+        if (promptDelta !== null && input?.nodeId === 'PROMPT_GENERATION') return false;
         if (difference !== null && input?.nodeId === 'SEGMENT_RENDER') return false;
         // A saved pool deletion invalidates consumers, not the old media file itself.
         // Read only this branch's authoritative render owner; absent membership alone is no proof.
@@ -367,14 +412,26 @@ export function projectEffectBranchFreshness<T extends Artifact>(
           const confirmed = canonical(input);
           if (matchesConfirmedPrompt(artifact, confirmed) && !stale(confirmed, next)) return false;
         }
-        return Boolean(input && (stale(input, next) ||
+        return Boolean(input && ((stale(input, next) && !promptOnlyPending.has(input.id)) ||
           (dependency.sourceRevision != null && input.revision !== dependency.sourceRevision) ||
           (dependency.sourceHash && input.contentHash && dependency.sourceHash !== input.contentHash)));
       });
+    if (promptDelta === true && !changed && (artifact.dependencies ?? []).every((dependency) => {
+      if (dependency.sourceType !== 'WORKING_ARTIFACT' || !dependency.sourceArtifactId) return true;
+      const input = byId.get(dependency.sourceArtifactId);
+      if (input?.nodeId === 'PROMPT_GENERATION') return true;
+      return Boolean(input && !stale(input, next) &&
+        (dependency.sourceRevision == null || input.revision === dependency.sourceRevision) &&
+        (!dependency.sourceHash || !input.contentHash || input.contentHash === dependency.sourceHash));
+    })) promptOnlyPending.add(artifact.id);
     states.set(artifact.id, outdated);
     return outdated;
   };
-  return artifacts.map((artifact) => !artifact.id || !artifact.workflowRunId ? artifact :
-    ({ ...artifact, freshness: stale(artifact) ? 'STALE' :
-      hasIndependentVisualSource(artifact) || adoptedDifference(artifact) !== null ? 'CURRENT' : artifact.freshness }));
+  return artifacts.map((artifact) => {
+    if (!artifact.id || !artifact.workflowRunId) return artifact;
+    const freshness = stale(artifact) ? 'STALE' : hasIndependentVisualSource(artifact) ||
+      promptDifference(artifact) !== null || adoptedDifference(artifact) !== null ? 'CURRENT' : artifact.freshness;
+    return { ...artifact, freshness, ...(promptOnlyPending.has(artifact.id) || record(artifact.metadata)?.promptSourcePending
+      ? { metadata: { ...record(artifact.metadata), promptSourcePending: promptOnlyPending.has(artifact.id) } } : {}) };
+  });
 }

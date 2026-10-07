@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 
 import {
+  effectSegmentRenderPromptDifference,
+  type EffectSegmentRenderPromptBaseline,
   effectSegmentImportDescriptionValid,
+  resolveEffectImportedRenderSettings,
   EFFECT_SEGMENT_IMPORT_FAILURE_CODES,
   EFFECT_SEGMENT_IMPORT_FAILURE_MESSAGES,
   EFFECT_SEGMENT_RENDER_BATCH_STATUSES,
@@ -18,6 +21,50 @@ import {
 } from './effect-segment-render';
 
 describe('effect segment render contract', () => {
+  it('compares consumed Prompt content, not revision churn, and separates paid/free/deleted changes', () => {
+    const baseline: EffectSegmentRenderPromptBaseline = { promptContentHash: 'body', sharedPromptHash: 'shared',
+      targetDurationSeconds: 5, primaryPurpose: 'PRODUCT_DISPLAY', compatiblePurposes: ['PRODUCT_DISPLAY', 'HOOK'],
+      creativeCore: '主线', sourcePrompt: { artifactId: 'source', revision: 1, contentHash: 'old-batch' } };
+    const restored = { ...baseline, sourcePrompt: { ...baseline.sourcePrompt!, revision: 7, contentHash: 'latest-batch' },
+      compatiblePurposes: ['HOOK', 'PRODUCT_DISPLAY'] as EffectSegmentRenderPromptBaseline['compatiblePurposes'] };
+    expect(effectSegmentRenderPromptDifference(baseline, restored)).toBeUndefined();
+    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, promptContentHash: 'new' })).toBe('RENDER');
+    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, sharedPromptHash: 'new' })).toBe('RENDER');
+    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, targetDurationSeconds: 8 })).toBe('RENDER');
+    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, creativeCore: '新主线' })).toBe('METADATA');
+    expect(effectSegmentRenderPromptDifference(baseline, null)).toBe('REMOVE');
+  });
+  it.each([
+    ['SEEDANCE_2_0', 6, 720, 'SEEDANCE_2_0', '720p'],
+    ['SEEDANCE_2_0', 15, 1080, 'SEEDANCE_2_0', '1080p'],
+    ['SEEDANCE_2_0_FAST', 6, 1080, 'SEEDANCE_1_5_PRO', '1080p'],
+    ['SEEDANCE_1_0', 15, 1080, 'SEEDANCE_1_5_PRO', '1080p'],
+    ['SEEDANCE_1_5_PRO', 15, 2160, 'SEEDANCE_2_0', '4k'],
+    ['SEEDANCE_2_0_FAST', 15, 3000, 'SEEDANCE_2_0', '4k'],
+    ['SEEDANCE_2_0', 15.041667, 496, 'SEEDANCE_1_5_PRO', '720p'],
+    ['SEEDANCE_2_0', 30, 2160, 'SEEDANCE_1_5_PRO', '1080p'],
+  ] as const)(
+    'routes %s / %ss / %sp without mutating global settings',
+    (capabilityKey, durationSeconds, shortSidePixels, model, resolution) => {
+      const settings = { capabilityKey, ratio: '9:16' as const, resolution: '720p' as const };
+      expect(
+        resolveEffectImportedRenderSettings(settings, { durationSeconds, shortSidePixels }),
+      ).toEqual({ ...settings, capabilityKey: model, resolution });
+      expect(settings.resolution).toBe('720p');
+      expect(settings.capabilityKey).toBe(capabilityKey);
+    },
+  );
+  it('preserves configured higher quality and supports legacy imports without dimensions', () => {
+    const settings = {
+      capabilityKey: 'SEEDANCE_2_0' as const,
+      ratio: '16:9' as const,
+      resolution: '4k' as const,
+    };
+    expect(resolveEffectImportedRenderSettings(settings, { durationSeconds: 6 })).toEqual(settings);
+    expect(resolveEffectImportedRenderSettings(settings, { durationSeconds: 30 }).resolution).toBe(
+      '1080p',
+    );
+  });
   it('shares a fixed safe failure-code contract with the Worker schema', () => {
     const schema = JSON.parse(
       readFileSync(

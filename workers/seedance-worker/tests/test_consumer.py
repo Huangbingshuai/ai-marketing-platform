@@ -48,6 +48,21 @@ def render_snapshot() -> RenderSnapshot:
     )
 
 
+def test_frozen_refresh_metadata_never_replaces_the_compiled_generation_input() -> None:
+    original = render_snapshot().model_dump(by_alias=True)
+    snapshot = RenderSnapshot.model_validate({
+        **original,
+        "refreshContext": {"schemaVersion": 1, "confirmationSignature": "confirmed",
+                           "sourcePrompt": {"artifactId": "old-source", "revision": 3}},
+        "adoptedInput": {"promptText": "旧视频正文", "request": {"duration": 10}},
+        "adoptedPrompt": {"sourcePrompt": {"revision": 1}},
+    })
+    assert snapshot.prompt_text == original["promptText"]
+    assert snapshot.request.duration == original["request"]["duration"]
+    assert snapshot.request.content == render_snapshot().request.content
+    assert snapshot.input_images == render_snapshot().input_images
+
+
 class Message:
     def __init__(self, payload: bytes) -> None:
         self.body = payload

@@ -238,7 +238,7 @@ describe('full-template regeneration entry through successful completion', () =>
     expect(h.snapshot().manualMaterialRoles?.['old-end']).toBeUndefined();
     expect(entry.materialRoleOverrides).toEqual({ 'old-end': 'END', ...(reset ? { 'END-0': null } : {}) });
   });
-  it('append ignores a confirmed deleted clip manual purpose without restoring old footage or changing old films', async () => {
+  it.each([false, true])('append ignores a confirmed deleted clip manual purpose without restoring old footage or changing old films (frozen operation: %s)', async (frozen) => {
     const h = harness();
     const entry = h.child().templates[0]!;
     entry.materialRoleOverrides = { 'END-0': 'END' };
@@ -258,7 +258,26 @@ describe('full-template regeneration entry through successful completion', () =>
       inputSnapshot: { materials: live.filter(({ id }) => !['HOOK-4', 'TRANSFORMATION-2'].includes(id))
         .map((clip) => ({ id: clip.id, promptId: clip.payload.promptId })) } }] as never);
     Object.assign(h.repo, { successfulPackagingTemplateIds: vi.fn().mockResolvedValue(['t']) });
-    await h.service.createAiRun('p', 'child', 't', 7, 'append-after-delete', undefined, false, true);
+    if (frozen) Object.assign(h.repo, {
+      findOperationRun: vi.fn().mockResolvedValue(null),
+      sourceOperation: vi.fn().mockResolvedValue({
+        protocol: 'FROZEN_RENDER_V1', id: 'delete-and-add',
+        templateHash: workflowStateHash(entry.workspace.template),
+        addedMaterialIds: ['HOOK-4', 'TRANSFORMATION-2'], packageNewVariants: true, facts: [],
+        promptArtifacts: [{ id: h.prompt.id, artifactKey: h.prompt.artifactKey,
+          revision: h.prompt.revision, contentHash: h.prompt.contentHash }],
+        materials: live.map((clip) => ({ id: clip.id, artifactId: clip.id,
+          artifactKey: clip.artifactKey, artifactRevision: clip.revision,
+          artifactContentHash: clip.contentHash, fileObjectId: clip.payload.fileObjectId,
+          contentHash: clip.payload.contentHash, sourcePromptId: clip.payload.promptId,
+          promptText: `画面描述 ${h.clips.indexOf(clip)}`, code: clip.name, name: clip.name,
+          duration: clip.payload.durationSeconds, ratio: '9:16', resolution: '720p',
+          purpose: 'PRODUCT_DISPLAY', compatiblePurposes: [], available: true, activeSource: true,
+          contentUrl: `/api/projects/p/file-objects/${clip.payload.fileObjectId}/content` })),
+      }),
+    });
+    await h.service.createAiRun('p', 'child', 't', 7, 'append-after-delete', undefined, false, true,
+      frozen ? 'delete-and-add' : undefined);
     expect(h.snapshot().materials.some(({ id }) => id === 'END-0')).toBe(false);
     expect(h.snapshot().manualMaterialRoles?.['END-0']).toBeUndefined();
     expect(new Set(h.snapshot().incremental?.materialIds)).toEqual(new Set(['HOOK-4', 'TRANSFORMATION-2']));

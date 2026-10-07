@@ -17,6 +17,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from './workflow-working.repository';
 import { visualHash } from '../../workflows/effect/template-mix/effect-packaging.domain';
+import { confirmedEffectRenderSourceRun } from './effect-render-source-context';
 
 type Tx = Prisma.TransactionClient;
 type IdMap = Record<string, string>;
@@ -154,8 +155,15 @@ export async function beginEffectEditInTransaction(
     editSessionNodeId: string | null;
     editSessionPurpose: string | null;
   }) => run.editSessionNodeId === nodeId && run.editSessionPurpose === purpose;
+  // A frozen render draft can host a nested Prompt manual edit. Saving/cancelling that
+  // child returns to the still-running render draft; its tasks are never cloned or cancelled.
+  const nestedPromptEdit = nodeId === 'PROMPT_GENERATION' && purpose === 'MANUAL' &&
+    !options.always && parent.editSessionNodeId === 'SEGMENT_RENDER' &&
+    parent.editSessionPurpose === 'MANUAL' && active?.id === parent.id &&
+    (parent.editIdMap as { frozenPromptRefresh?: boolean } | null)?.frozenPromptRefresh === true;
   if (parent.parentWorkflowRunId && !parent.branchPublishedAt) {
-    if (!isOwnSession(parent) && !isOwnAutoBranch(parent)) return null;
+    if (!isOwnSession(parent) && !isOwnAutoBranch(parent) && !nestedPromptEdit) return null;
+    if (!nestedPromptEdit) {
     const map = (parent.editIdMap ?? {}) as { productIdMap?: IdMap; taskIdMap?: IdMap };
     return {
       runId: parent.id,
@@ -164,6 +172,7 @@ export async function beginEffectEditInTransaction(
       taskIdMap: map.taskIdMap ?? {},
       created: false,
     };
+    }
   }
   if (
     active?.parentWorkflowRunId === parent.id &&
@@ -232,6 +241,25 @@ export async function beginEffectEditInTransaction(
       cursor = ancestor;
     }
   }
+  if (nodeId === 'SEGMENT_RENDER') {
+    const sourceRunId = await confirmedEffectRenderSourceRun(tx, projectId, parent.id);
+    if (sourceRunId !== parent.id) {
+      stageSources.set('SEGMENT_RENDER', sourceRunId);
+      // Use a coherent upstream snapshot for the adopted tasks. Equivalent copied stages have
+      // reminted IDs/hashes; mixing them would falsely mark every old video as needing rendering.
+      // A genuinely newer upstream revision must remain selected so its real change is visible.
+      for (const stage of stageOrder.slice(0, 3)) {
+        const currentRunId = stageSources.get(stage) ?? parent.id;
+        const rows = await tx.workingArtifact.findMany({ where: { projectId, nodeId: stage,
+          workflowRunId: { in: [currentRunId, sourceRunId] }, availability: 'AVAILABLE',
+          ...artifactKeyWhere(stage) }, select: { workflowRunId: true, revision: true } });
+        const fromSource = rows.filter((row) => row.workflowRunId === sourceRunId);
+        const current = rows.filter((row) => row.workflowRunId === currentRunId);
+        if (fromSource.length && Math.max(0, ...current.map((row) => row.revision)) <=
+          Math.max(...fromSource.map((row) => row.revision))) stageSources.set(stage, sourceRunId);
+      }
+    }
+  }
   const confirmed = stageSources.has(nodeId);
   // The initial version is committed in the existing Run. There is no parent version to protect.
   // A caller that treats every regeneration as a version of its own opts out of that rule.
@@ -268,6 +296,12 @@ export async function beginEffectEditInTransaction(
   const ids: IdMap = { [parent.id]: child.id };
   const productIdMap: IdMap = {};
   const taskIdMap: IdMap = {};
+  const renderBatchRevisions: Record<string, number> = {};
+  const renderEditSnapshot = (value: Prisma.JsonValue | null) => {
+    const copy = remap(value, ids) as Record<string, unknown> | null;
+    if (nodeId === 'SEGMENT_RENDER' && purpose === 'MANUAL' && copy) delete copy.refreshContext;
+    return json(copy);
+  };
   const clonedWorkspace = await tx.effectImportWorkspace.create({
     data: {
       projectId,
@@ -359,6 +393,7 @@ export async function beginEffectEditInTransaction(
         );
         if (!parentProduct) throw new Error('EFFECT_EDIT_ANCESTOR_PRODUCT_MISMATCH');
         ids[sourceProduct.id] = ids[parentProduct.id]!;
+        productIdMap[sourceProduct.id] = ids[parentProduct.id]!;
       }
     }
   }
@@ -552,6 +587,7 @@ export async function beginEffectEditInTransaction(
       return true;
     });
     for (const source of batches) {
+      renderBatchRevisions[source.id] = source.revision;
       const batch = await tx.effectSegmentRenderBatch.create({
         data: {
           projectId,
@@ -581,8 +617,8 @@ export async function beginEffectEditInTransaction(
             promptCode: sourceTask.promptCode,
             renderCode: sourceTask.renderCode,
             sourceFingerprint: sourceTask.sourceFingerprint,
-            requestSnapshot: json(remap(sourceTask.requestSnapshot, ids)),
-            generationRequestSnapshot: json(remap(sourceTask.generationRequestSnapshot, ids)),
+            requestSnapshot: renderEditSnapshot(sourceTask.requestSnapshot),
+            generationRequestSnapshot: renderEditSnapshot(sourceTask.generationRequestSnapshot),
             operationKind: sourceTask.operationKind,
             status: sourceTask.status,
             progress: sourceTask.progress,
@@ -956,7 +992,7 @@ export async function beginEffectEditInTransaction(
       where: { id: child.id },
       data: {
         editBaselineHash: await stageDigest(tx, projectId, child.id, nodeId),
-        editIdMap: json({ productIdMap, taskIdMap }),
+        editIdMap: json({ productIdMap, taskIdMap, renderBatchRevisions }),
       },
     });
   if (!options.keepParentActive) {

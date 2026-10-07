@@ -60,6 +60,7 @@ export class RegenerateSegmentRenderTasksDto {
 }
 
 export class RefreshSegmentRenderBatchDto {
+  @IsOptional() @IsString() @MaxLength(64) expectedDifferenceSignature?: string;
   @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
@@ -172,7 +173,18 @@ export class SegmentRenderWorkerHeartbeatDto extends SegmentRenderWorkerProjectD
 export class SegmentRenderWorkerCompleteDto extends SegmentRenderWorkerProjectDto {
   @Type(() => Number) @IsInt() @Min(1) taskVersion!: number;
   @IsString() @IsNotEmpty() @MaxLength(255) providerTaskId!: string;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(30) duration?: number;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(1)
+  @Max(30)
+  duration?: number;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(1)
+  @Max(31)
+  actualDuration?: number;
   @IsOptional() @IsString() @MaxLength(20) ratio?: string;
   @IsOptional() @IsString() @MaxLength(20) resolution?: string;
 }

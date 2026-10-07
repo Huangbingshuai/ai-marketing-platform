@@ -81,7 +81,9 @@ export const EFFECT_SEGMENT_RENDER_LIMITS = {
   maxAttempts: 3,
   maxUploadBytes: 512 * 1024 * 1024,
   maxPosterBytes: 2 * 1024 * 1024,
-  maxReferenceVideoBytes: 50 * 1024 * 1024,
+  maxReferenceVideoBytes: 200 * 1024 * 1024,
+  minReferenceVideoSeconds: 4,
+  maxReferenceVideoSeconds: 30,
   maxRepairInstructionLength: 1000,
   minRepairDurationMs: 100,
   minImportDurationSeconds: 4,
@@ -248,6 +250,8 @@ export type EffectSegmentRenderInputVideo = {
   sizeBytes: number;
   contentHash: string;
   durationSeconds: number;
+  /** Actual source aspect ratio for adaptive video editing. */
+  ratio?: string;
 };
 
 export type EffectSegmentRenderRepairRegion = {
@@ -258,6 +262,8 @@ export type EffectSegmentRenderRepairRegion = {
 };
 
 export type EffectSegmentRenderRepairInput = {
+  /** Absent in legacy snapshots: VIDEO_EDIT (Seedance 2.5). */
+  providerMode?: 'VIDEO_EDIT' | 'VIDEO_REFERENCE';
   sourceVersion: number;
   startMs: number;
   endMs: number;
@@ -276,6 +282,8 @@ export type EffectSegmentRenderInputImage = {
 
 /** Adopted business input. Queuing a replacement must not advance this baseline. */
 export type EffectSegmentRenderPromptBaseline = EffectSegmentImportCreativeMetadata & {
+  /** Actual confirmed source, never the batch's latest pointer. */
+  sourcePrompt?: EffectSegmentRenderSourcePrompt;
   promptContentHash: string;
   sharedPromptHash: string;
   targetDurationSeconds: number;
@@ -285,8 +293,39 @@ export type EffectSegmentRenderPromptBaseline = EffectSegmentImportCreativeMetad
 
 export type EffectSegmentRenderUpdateKind = 'RENDER' | 'METADATA' | 'REMOVE';
 
+/** Content comparison shared by workspace and branch projections. Revision is provenance only. */
+export function effectSegmentRenderPromptDifference(
+  adopted: EffectSegmentRenderPromptBaseline,
+  latest: EffectSegmentRenderPromptBaseline | null,
+): EffectSegmentRenderUpdateKind | undefined {
+  if (!latest) return 'REMOVE';
+  if (adopted.promptContentHash !== latest.promptContentHash ||
+      adopted.sharedPromptHash !== latest.sharedPromptHash ||
+      adopted.targetDurationSeconds !== latest.targetDurationSeconds) return 'RENDER';
+  if (adopted.primaryPurpose !== latest.primaryPurpose ||
+      JSON.stringify([...adopted.compatiblePurposes].sort()) !==
+        JSON.stringify([...latest.compatiblePurposes].sort()) ||
+      (adopted.creativeCore !== undefined && adopted.creativeCore !== latest.creativeCore) ||
+      (adopted.dimensions !== undefined && Object.entries(adopted.dimensions).some(
+        ([key, value]) => latest.dimensions?.[key as keyof EffectPromptDimensions] !== value)))
+    return 'METADATA';
+  return undefined;
+}
+
+/** Server-created protocol marker. Every task retains its own immutable generation input. */
+export type EffectSegmentRenderRefreshContext = {
+  schemaVersion: 1;
+  confirmationSignature: string;
+  sourcePrompt: EffectSegmentRenderSourcePrompt;
+};
+
 export type EffectSegmentRenderRequestSnapshot = EffectSegmentImportCreativeMetadata & {
+  /** Previous active video's complete input while a replacement is pending/failed. */
+  adoptedInput?: Omit<EffectSegmentRenderRequestSnapshot, 'adoptedInput'>;
   adoptedPrompt?: EffectSegmentRenderPromptBaseline;
+  refreshContext?: EffectSegmentRenderRefreshContext;
+  /** Distinguishes a confirmed Prompt removal from a user's explicit material deletion. */
+  removedBy?: 'PROMPT' | 'USER';
   /** Original unified Prompt-batch duration; manual additions never raise slot limits. */
   promptDurationMaxSeconds?: number;
   /** An independent, user-confirmed clip description, owned by the render artifact. */
@@ -362,6 +401,8 @@ export type EffectSegmentRenderTask = EffectSegmentImportCreativeMetadata & {
   source: 'PROMPT';
   origin: EffectSegmentRenderOrigin;
   independentImport?: boolean;
+  /** Short-side pixels of the active media, not the originally imported file after regeneration. */
+  mediaShortSidePixels?: number;
   sourceName: string;
   status: EffectSegmentRenderStatus;
   progress: number;
@@ -371,6 +412,7 @@ export type EffectSegmentRenderTask = EffectSegmentImportCreativeMetadata & {
   /** Current Prompt content no longer matches this task's frozen render input. */
   needsUpdate: boolean;
   updateKind?: EffectSegmentRenderUpdateKind;
+  refreshSignature?: string;
   errorCode: string | null;
   errorMessage: string | null;
   providerTaskId: string | null;
@@ -399,6 +441,12 @@ export type EffectSegmentRenderBatch = {
   /** Confirmed Prompt items not yet represented by a task in this batch. */
   pendingPromptIds?: string[];
   pendingRemovedTaskIds?: string[];
+  refreshSignature?: string;
+  /** New frozen local updates may be saved even if newer Prompt differences remain. */
+  canSaveFrozenResults?: boolean;
+  /** Current confirmed upstream head, separate from the actual consumed sourcePrompt. */
+  latestPromptRevision?: number | null;
+  latestPromptCount?: number;
   revision: number;
   commitStatus: WorkingArtifactCommitStatus;
   workingArtifactRevision: number | null;
@@ -444,6 +492,7 @@ export type StartEffectSegmentRenderBatchRequest = {
 export type StartEffectSegmentRenderBatchData = {
   batch: EffectSegmentRenderBatch;
   replayed: boolean;
+  noChanges?: boolean;
 };
 
 export type RefreshEffectSegmentRenderBatchRequest = {
@@ -451,6 +500,7 @@ export type RefreshEffectSegmentRenderBatchRequest = {
   taskIds?: string[];
   expectedBatchRevision: number;
   expectedPromptArtifactRevision: number;
+  expectedDifferenceSignature?: string;
   idempotencyKey: string;
 };
 
@@ -566,6 +616,8 @@ export type EffectSegmentRenderWorkerCompleteRequest = {
   taskVersion: number;
   providerTaskId: string;
   duration?: number | undefined;
+  /** Actual decoded video-stream duration; provider duration may be rounded down. */
+  actualDuration?: number | undefined;
   ratio?: string | undefined;
   resolution?: string | undefined;
 };
