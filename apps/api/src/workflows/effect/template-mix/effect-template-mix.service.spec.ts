@@ -212,6 +212,142 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('copies the server-owned adopted source into another film instead of trusting client history or using the live revision', async () => {
+    const h = harness();
+    const previous = draft();
+    const owner = previous.templates[0]!.workspace.variants[0]!;
+    owner.bindingSources = { [slotId]: {
+      id: sourceId, artifactId: sourceId, artifactKey: source.artifactKey,
+      artifactRevision: 2, artifactContentHash: 'business-old', fileObjectId: 'file-1',
+      contentHash: 'sha', contentUrl: '/old', code: 'R-001', name: '旧素材', duration: 4,
+      ratio: '9:16', resolution: '720p', purpose: 'HOOK', compatiblePurposes: [], available: true,
+    } };
+    h.working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
+    h.working.listArtifacts.mockResolvedValue({ items: [{ ...source, revision: 3,
+      payload: { ...(source.payload as object), fileObjectId: 'latest-file' } }], total: 1 });
+    const value = structuredClone(previous);
+    const copied = { ...structuredClone(owner), id: 'copied-film', name: '复制成片' };
+    copied.bindingSources![slotId]!.contentHash = 'client-forged-hash';
+    value.templates[0]!.workspace.variants.push(copied);
+    await h.service.saveDraft('project', 'run', 7, value, true);
+    expect(h.working.putNodeState.mock.calls[0]![3].state.templates[0].workspace.variants[1].bindingSources[slotId])
+      .toMatchObject({ artifactRevision: 2, fileObjectId: 'file-1', contentHash: 'sha' });
+    expect(owner.bindingSources[slotId]!.contentHash).toBe('sha');
+  });
+  it('recovers a legacy adopted file from its successful task snapshot without using the new live revision', async () => {
+    const h = harness();
+    const saved = draft();
+    h.working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: saved });
+    h.working.listArtifacts.mockResolvedValue({ items: [{ ...source, revision: 3,
+      payload: { ...(source.payload as object), fileObjectId: 'new-file', contentHash: 'new-sha' } }], total: 1 });
+    const repository = {
+      sourceArtifacts: vi.fn().mockResolvedValue([]),
+      listRecent: vi.fn().mockResolvedValue([{ templateId, status: 'COMPLETED',
+        createdAt: new Date('2026-10-07T00:00:00Z'), updatedAt: new Date('2026-10-07T00:00:00Z'), inputSnapshot: {
+        materials: [{ id: sourceId, artifactId: sourceId, artifactKey: source.artifactKey,
+          artifactRevision: 2, contentHash: 'old-business-hash', fileObjectId: 'file-1',
+          promptId: 'p1', prompt: '原画面描述', code: 'R-001', name: '原片段', duration: 4 }],
+      } }]),
+      mediaFingerprints: vi.fn().mockResolvedValue([{ id: 'file-1', sha256: 'sha' }]),
+    };
+    const service = new EffectTemplateMixService(h.working as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository);
+    const result = await service.workspace('project', 'run');
+    expect(result.draft.templates[0]!.workspace.variants[0]!.bindingSources?.[slotId]).toMatchObject({
+      artifactRevision: 2, fileObjectId: 'file-1', contentHash: 'sha',
+      artifactContentHash: 'old-business-hash', promptText: '原画面描述',
+      contentUrl: '/api/projects/project/file-objects/file-1/content',
+    });
+    expect(saved.templates[0]!.workspace.variants[0]!.bindingSources).toBeUndefined();
+    expect(h.working.putNodeState).not.toHaveBeenCalled();
+  });
+  it('hides a saved deletion including bound copies without resurrecting a same-file different source', async () => {
+    const h = harness();
+    const original = { ...source, metadata: { branchSourceOwner: true },
+      payload: { ...(source.payload as object), promptId: 'deleted-prompt' } };
+    const live = { ...source, id: 'live', artifactKey: 'render-clip:live',
+      metadata: { branchSourceOwner: true }, payload: { ...(source.payload as object), promptId: 'live-prompt' } };
+    const pool = { ...source, id: 'pool', artifactKey: 'render-batch:p', metadata: { branchSourceOwner: true },
+      payload: { clips: [{ taskId: 'live', promptId: 'live-prompt' }],
+        removedSources: [{ taskId: 'task-1', promptId: 'deleted-prompt' }] } };
+    h.working.listArtifacts.mockResolvedValue({ items: [original, live, pool], total: 3 });
+    const result = await h.service.workspace('project', 'run');
+    expect(result.materials.find((row) => row.id === source.id)).toMatchObject({ activeSource: false, sourceRemoved: true });
+    expect(result.materials.filter((row) => row.activeSource && row.available).map((row) => row.id)).toEqual(['live']);
+    expect(effectTemplateMixSourceChanges(result.draft.templates[0]!.workspace.variants[0]!, result.materials))
+      .toEqual([{ slotId, kind: 'REMOVED' }]);
+  });
+  const obsoleteSources = (sameFile = false) => {
+    const current = { ...source, metadata: { branchSourceOwner: true },
+      payload: { ...(source.payload as object), promptId: 'shared-prompt', version: 2 } };
+    const old = { ...source, id: 'old-copy', revision: 1, artifactKey: 'render-clip:old-copy',
+      metadata: { branchSourceOwner: false },
+      payload: { ...(source.payload as object), promptId: 'shared-prompt', version: 1,
+        fileObjectId: sameFile ? 'file-1' : 'old-file' } };
+    const batch = { ...source, id: 'current-batch', artifactKey: 'render-batch:current',
+      metadata: { branchSourceOwner: true }, payload: { clips: [{ taskId: 'task-1' }] } };
+    return [current, old, batch] as WorkingArtifact[];
+  };
+
+  it('rejects a draft switching an updated slot back to another branch CURRENT old file', async () => {
+    const { service, working } = harness();
+    working.listArtifacts.mockResolvedValue({ items: obsoleteSources(), total: 3 });
+    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    variant.bindings[slotId] = 'old-copy';
+    variant.bindingRevisions[slotId] = 1;
+    await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow('不能使用其他分支的旧素材覆盖');
+    expect(working.putNodeState).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('rejects confirming an obsolete CURRENT copy even when its local revision matches', async () => {
+    const { service, working } = harness();
+    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    variant.bindings[slotId] = 'old-copy';
+    variant.bindingRevisions[slotId] = 1;
+    working.getNodeState.mockResolvedValue({ revision: 7, state: value });
+    working.listArtifacts.mockResolvedValue({ items: obsoleteSources(), total: 3 });
+    await expect(service.validate('project', 'run', 7, templateId)).rejects.toThrow('不能使用其他分支的旧素材覆盖');
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('allows an unchanged stale binding to autosave other fields without confirming it', async () => {
+    const { service, working } = harness();
+    const previous = draft(), variant = previous.templates[0]!.workspace.variants[0]!;
+    variant.bindings[slotId] = 'old-copy';
+    variant.bindingRevisions[slotId] = 1;
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
+    working.listArtifacts.mockResolvedValue({ items: obsoleteSources(), total: 3 });
+    const value = structuredClone(previous);
+    value.templates[0]!.workspace.variants[0]!.originalVolume = 0.5;
+    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({ draftRevision: 8 });
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('accepts a reminted binding to the exact same current video file', async () => {
+    const { service, working } = harness();
+    working.listArtifacts.mockResolvedValue({ items: obsoleteSources(true), total: 3 });
+    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    variant.bindings[slotId] = 'old-copy';
+    variant.bindingRevisions[slotId] = 1;
+    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({ draftRevision: 8 });
+    working.getNodeState.mockResolvedValue({ revision: 7, state: value });
+    await expect(service.validate('project', 'run', 7, templateId)).resolves.toBeDefined();
+  });
+
+  it('allows choosing a current material with a different Prompt identity', async () => {
+    const { service, working } = harness();
+    const items = obsoleteSources();
+    items[1]!.metadata = { branchSourceOwner: true };
+    items[1]!.payload = { ...(items[1]!.payload as object), promptId: 'another-prompt' };
+    (items[2]!.payload as { clips: unknown[] }).clips.push({ taskId: 'old-copy' });
+    working.listArtifacts.mockResolvedValue({ items, total: 3 });
+    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    variant.bindings[slotId] = 'old-copy';
+    variant.bindingRevisions[slotId] = 1;
+    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({ draftRevision: 8 });
+  });
+
   it('keeps the frozen Prompt slot maximum when an independent import is longer', async () => {
     const { service, working } = harness();
     const imported = {
@@ -371,7 +507,10 @@ describe('EffectTemplateMixService', () => {
   it('projects output sources through the existing artifact reader without loading workbench history', async () => {
     const { service, working } = harness();
     const result = await service.outputSourceWorkspace('project', 'run');
-    expect(result.draft).toEqual(draft());
+    expect(result.draft).toMatchObject(draft());
+    expect(result.draft.templates[0]!.workspace.variants[0]!.bindingSources?.[slotId]).toMatchObject({
+      fileObjectId: 'file-1', artifactRevision: 2, contentUrl: '/api/projects/project/file-objects/file-1/content',
+    });
     expect(result.materials).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -434,7 +573,7 @@ describe('EffectTemplateMixService', () => {
     const result = await service.saveDraft('project', 'run', 7, value);
     expect(result.draft.templates[0]!.materialRoleOverrides).toEqual({ [sourceId]: 'HOOK' });
     expect(result.draft.templates[0]!.materialRoleEditVersion).toBe(1);
-    expect(result.draft.templates[0]!.workspace).toEqual(draft().templates[0]!.workspace);
+    expect(result.draft.templates[0]!.workspace).toMatchObject(draft().templates[0]!.workspace);
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
   });
@@ -2119,6 +2258,59 @@ describe('EffectTemplateMixService', () => {
     expect(fromScratch.workflowRunId).toBe('child-run');
     expect(fromScratch.initialSelections).toBeUndefined();
     expect(fromScratch.initialClassifications).toBeUndefined();
+
+    // Even pure additions (including new clips edited before their first fill) trigger a full
+    // classification for a new batch. Existing manual roles, selections and trims cannot leak in.
+    Object.assign(promptArtifact, { freshness: 'CURRENT', availability: 'AVAILABLE' });
+    const baseline = { status: 'COMPLETED', templateId, inputSnapshot: snapshot,
+      classificationResult: snapshot.materials.map((clip: { id: string }) => ({ materialId: clip.id, scores, reasons: {} })) };
+    listRecent.mockResolvedValue([baseline]);
+    const newClip = { ...clips[0]!, id: 'new-material', artifactKey: 'render-clip:new', revision: 9,
+      payload: { ...clips[0]!.payload, promptId: 'new-prompt', renderCode: 'VNEW', fileObjectId: 'new-file', durationSeconds: 6 } };
+    promptArtifact.payload.items.push({ id: 'new-prompt', content: '新增后又编辑的画面' });
+    Object.assign(state.templates[0]!, { materialRoleOverrides: { 'material-0': 'HOOK', 'new-material': 'PRODUCT' } });
+    aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, ...clips, newClip]);
+    await service.createAiRun('project', 'run', templateId, 8, 'pure-add-refill');
+    const additions = create.mock.calls[3]![0];
+    expect(additions.initialClassifications).toBeUndefined();
+    expect(additions.initialSelections).toBeUndefined();
+    expect(additions.initialTrims).toBeUndefined();
+    expect(additions.snapshot).toMatchObject({ replaceExistingVariants: true, requireAllMaterials: true });
+    expect(additions.snapshot.materials).toHaveLength(7);
+    expect(additions.snapshot.materialRoleAssignments).toEqual({});
+    expect(additions.snapshot.manualMaterialRoles).toEqual({});
+    expect(additions.snapshot.incremental).toBeUndefined();
+
+    // Locally adopting a source into the timeline must not turn the next full fill into a reuse.
+    const changedOld = { ...clips[0]!, revision: 4,
+      payload: { ...clips[0]!.payload, fileObjectId: 'edited-old-file' } };
+    state.templates[0]!.workspace.variants[0]!.bindingRevisions['slot-0'] = 4;
+    aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, changedOld, ...clips.slice(1), newClip]);
+    await service.createAiRun('project', 'run', templateId, 8, 'mixed-refill');
+    const mixed = create.mock.calls[4]![0];
+    expect(mixed.initialClassifications).toBeUndefined();
+    expect(mixed.snapshot.materialRoleAssignments).toEqual({});
+    expect(mixed.snapshot.materials[0].fileObjectId).toBe('edited-old-file');
+
+    Object.assign(state.templates[0]!, { materialRoleOverrides: {} });
+
+    aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, ...clips.slice(1), newClip,
+      { ...newClip, id: 'second-added', artifactKey: 'render-clip:second-added',
+        payload: { ...newClip.payload, fileObjectId: 'second-added-file' } }]);
+    await service.createAiRun('project', 'run', templateId, 8, 'deleted-and-added-refill');
+    const deletion = create.mock.calls[5]![0];
+    expect(deletion.initialClassifications).toBeUndefined();
+    expect(deletion.snapshot.materialRoleAssignments).toEqual({});
+    expect(deletion.snapshot.materials.some((m: { fileObjectId: string }) => m.fileObjectId === 'file-0')).toBe(false);
+
+    aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, changedOld, ...clips.slice(1)]);
+    await service.createAiRun('project', 'run', templateId, 8, 'edited-only-refill');
+    expect(create.mock.calls[6]![0].initialClassifications).toBeUndefined();
+    expect(create.mock.calls[6]![0].snapshot.materials).toHaveLength(6);
+    aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, ...clips.slice(1)]);
+    await expect(service.createAiRun('project', 'run', templateId, 8, 'deleted-only-refill'))
+      .rejects.toThrow('不足以再生成一条完整成片');
+    expect(create).toHaveBeenCalledTimes(7);
   });
 
   it('confirms the filled timeline as this Run’s mix version so the tree stops showing a draft', async () => {

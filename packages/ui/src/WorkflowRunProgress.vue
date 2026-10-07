@@ -7,11 +7,13 @@ const props = withDefaults(
     attemptLabel?: string;
     progress: number;
     summary: string;
+    tone?: 'default' | 'update';
     warning?: string;
   }>(),
   {
     actionLabel: '查看节点进度',
     attemptLabel: '',
+    tone: 'default',
     warning: '',
   },
 );
@@ -24,7 +26,11 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 </script>
 
 <template>
-  <section class="workflow-run-progress" :class="{ 'without-action': !actionLabel }" aria-live="polite">
+  <section
+    class="workflow-run-progress"
+    :class="{ 'without-action': !actionLabel, 'is-update': tone === 'update' }"
+    aria-live="polite"
+  >
     <div
       class="workflow-run-progress__track"
       role="progressbar"
@@ -43,12 +49,21 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
       <small v-if="attemptLabel">{{ attemptLabel }}</small>
       <em v-if="warning">{{ warning }}</em>
     </p>
-    <button v-if="actionLabel" type="button" @click="emit('showDetails', $event)">{{ actionLabel }}</button>
+    <button v-if="actionLabel" type="button" @click="emit('showDetails', $event)">
+      {{ actionLabel }}
+    </button>
   </section>
 </template>
 
 <style scoped>
 .workflow-run-progress {
+  --progress-accent: #2563eb;
+  --progress-fill: #2563eb;
+  --progress-track: #dbe7fa;
+  --progress-surface: #f4f8ff;
+  --progress-border: #d8e5ff;
+  --progress-hover: #1d4ed8;
+  --progress-focus: #93b4ff;
   display: grid;
   margin: -7px 0 18px;
   padding: 11px 14px;
@@ -56,15 +71,25 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
   align-items: center;
   gap: 12px;
   color: #53647b;
-  background: #f4f8ff;
-  border: 1px solid #d8e5ff;
+  background: var(--progress-surface);
+  border: 1px solid var(--progress-border);
   border-radius: 12px;
   font-size: 11px;
+}
+.workflow-run-progress.is-update {
+  --progress-accent: #a65f00;
+  --progress-fill: #f59e0b;
+  --progress-track: #fde7b0;
+  --progress-surface: #fff9ed;
+  --progress-border: #f6d18a;
+  --progress-hover: #854d0e;
+  --progress-focus: #fbbf24;
+  color: var(--progress-accent);
 }
 .workflow-run-progress__track {
   height: 6px;
   overflow: hidden;
-  background: #dbe7fa;
+  background: var(--progress-track);
   border-radius: 99px;
 }
 .workflow-run-progress.without-action {
@@ -73,7 +98,7 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 .workflow-run-progress__track span {
   display: block;
   height: 100%;
-  background: #2563eb;
+  background: var(--progress-fill);
   border-radius: inherit;
   transition: width 0.25s;
 }
@@ -88,13 +113,13 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
   gap: 8px;
 }
 .workflow-run-progress__summary strong {
-  color: #2563eb;
+  color: var(--progress-accent);
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
 }
 .workflow-run-progress p small {
-  color: #2563eb;
+  color: var(--progress-accent);
   font-weight: 800;
 }
 .workflow-run-progress p em {
@@ -104,7 +129,7 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 }
 .workflow-run-progress button {
   padding: 3px 0;
-  color: #2563eb;
+  color: var(--progress-accent);
   background: transparent;
   border: 0;
   font: inherit;
@@ -112,10 +137,10 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
   white-space: nowrap;
 }
 .workflow-run-progress button:hover {
-  color: #1d4ed8;
+  color: var(--progress-hover);
 }
 .workflow-run-progress button:focus-visible {
-  outline: 2px solid #93b4ff;
+  outline: 2px solid var(--progress-focus);
   outline-offset: 3px;
   border-radius: 4px;
 }

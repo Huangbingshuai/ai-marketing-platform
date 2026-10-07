@@ -9,6 +9,10 @@ export interface EffectBranchNavigation {
   mixStage: 'TEMPLATE' | 'FILL' | 'PACKAGING' | null;
 }
 
+/** Acknowledgement consumes this command only, never a newer navigation in flight. */
+export const consumeEffectNavigation = <T>(current: T | null, consumed: T): T | null =>
+  current === consumed ? null : current;
+
 export const effectBranchDestination = (node: {
   workflowRunId: string;
   nodeId: EffectWorkflowBranchNodeId;
@@ -34,6 +38,20 @@ export const effectBranchNavigationMatches = (
   workflowRunId: string,
 ): target is EffectBranchNavigation =>
   Boolean(target && target.projectId === projectId && target.workflowRunId === workflowRunId);
+
+/** A history destination scopes the editor only, never the current template directory. */
+export const effectMixHistoryTemplateId = (
+  target: EffectBranchNavigation | null | undefined,
+  projectId: string,
+  workflowRunId: string,
+  view: 'CONFIG' | 'EDITOR',
+  pendingNavigation: boolean,
+): string | null =>
+  effectBranchNavigationMatches(target, projectId, workflowRunId) &&
+  target.nodeId === 'TEMPLATE_MIX' &&
+  (target.mixStage === 'FILL' || target.mixStage === 'PACKAGING') &&
+  (view === 'EDITOR' || pendingNavigation)
+    ? target.templateId : null;
 
 /** Keep the selected template on the exact branch when moving from mix to output. */
 export const effectTemplateStepNavigation = (

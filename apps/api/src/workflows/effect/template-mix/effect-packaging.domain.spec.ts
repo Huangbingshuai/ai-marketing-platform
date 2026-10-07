@@ -101,6 +101,28 @@ const checkpoint = (): PackagingCheckpoint => ({
 });
 
 describe('slot-bound narration layout', () => {
+  it('freezes the confirmed reverse-description owned by an imported render clip', () => {
+    const imported = artifact('clip', 'render-clip:c', {
+      origin: 'EXTERNAL_IMPORT', promptId: 'not-a-generated-prompt',
+      promptText: ' 导入视频已确认描述 ', importedMaterial: { schemaVersion: 1 },
+    }, 'facts');
+    imported.nodeId = 'SEGMENT_RENDER';
+    const frozen = packagingSnapshot(variant(), materials, [imported, sources()[2]!]);
+    expect(frozen.clips[0]!.prompt).toBe('导入视频已确认描述');
+    expect(frozen.dependencies.map(d=>d.artifactId)).toContain('clip');
+  });
+
+  it.each([
+    { origin: 'AI_GENERATED', promptText: '不可作草稿兜底', importedMaterial: { schemaVersion: 1 } },
+    { origin: 'EXTERNAL_IMPORT', promptText: '未验证结构', importedMaterial: { schemaVersion: 2 } },
+    { origin: 'EXTERNAL_IMPORT', promptText: ' ', importedMaterial: { schemaVersion: 1 } },
+  ])('still rejects unconfirmed imported description provenance (%o)', (payload) => {
+    const imported = artifact('clip', 'render-clip:c', payload, 'facts');
+    imported.nodeId = 'SEGMENT_RENDER';
+    expect(()=>packagingSnapshot(variant(), materials, [imported, sources()[2]!]))
+      .toThrow('缺少素材对应的已确认原始 Prompt');
+  });
+
   it('freezes imported music assets as independent audio-track sources', () => {
     const v = variant();
     v.detachedAudios = [

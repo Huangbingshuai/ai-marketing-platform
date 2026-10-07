@@ -4,6 +4,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type {
   EffectTemplateMixDraft,
   EffectTemplateMixSampledMaterial,
+  EffectTemplateMixFrozenSourceContext,
 } from '@ai-marketing/contracts';
 import type { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
@@ -33,10 +34,50 @@ export class EffectTemplateMixAiRepository {
     });
   }
 
+  /** Successful consumption is a durable baseline, not a page of recent task activity. */
+  async listHistory(projectId: string, workflowRunId: string) {
+    const [recent, completed] = await Promise.all([
+      this.listRecent(projectId, workflowRunId),
+      this.prisma.effectTemplateMixAiRun.findMany({
+        where: { projectId, workflowRunId, status: 'COMPLETED' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+    ]);
+    return [...new Map([...recent, ...completed].map((run) => [run.id, run])).values()]
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id));
+  }
+
   findByIdempotencyKey(projectId: string, idempotencyKey: string) {
     return this.prisma.effectTemplateMixAiRun.findUnique({
       where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
       include: { workflowRun: { select: { parentWorkflowRunId: true } } },
+    });
+  }
+  async cancelAppend(projectId: string, runId: string, now = new Date()) {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_template_mix_ai_runs"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${runId}::uuid FOR UPDATE
+      `;
+      const run = await transaction.effectTemplateMixAiRun.findFirst({
+        where: { projectId, id: runId },
+      });
+      if (!run) return { kind: 'NOT_FOUND' as const };
+      if (!(run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot).incremental)
+        return { kind: 'NOT_APPEND' as const };
+      if (!['QUEUED', 'RUNNING'].includes(run.status))
+        return { kind: 'TERMINAL' as const, run };
+      // Completion/checkpoint writes lock the same task row and require RUNNING + the lease token.
+      // Do not rewrite the draft or any existing timeline/packaging artifact on cancellation.
+      const cancelled = await transaction.effectTemplateMixAiRun.update({
+        where: { projectId_id: { projectId, id: runId } },
+        data: {
+          status: 'CANCELLED', attemptToken: null, leaseExpiresAt: null,
+          errorCode: 'USER_CANCELLED', errorMessage: '已取消局部更新，已有成片保持不变',
+          completedAt: now,
+        },
+      });
+      return { kind: 'CANCELLED' as const, run: cancelled };
     });
   }
   recordAppendContinuation(projectId: string, runId: string, failed: boolean) {
@@ -77,7 +118,7 @@ export class EffectTemplateMixAiRepository {
   }
 
   /**
-   * The fills this Run looks at but never ran: the nearest ancestor's, one per template.
+   * All successful fills frozen into this Run at each fork's creation boundary.
    *
    * A fork copies the clips it branches from, and a fill that runs in the child is the child's own
    * row. Packaging and exporting do neither — they branch without filling — and neither did any
@@ -95,10 +136,12 @@ export class EffectTemplateMixAiRepository {
     const visited = new Set([workflowRunId]);
     let cursor = await this.prisma.workflowRun.findFirst({
       where: { id: workflowRunId, projectId },
-      select: { parentWorkflowRunId: true },
+      select: { parentWorkflowRunId: true, createdAt: true },
     });
+    if (!cursor) return [];
+    let inheritedAt = cursor.createdAt;
     while (cursor?.parentWorkflowRunId && !visited.has(cursor.parentWorkflowRunId)) {
-      const parentId = cursor.parentWorkflowRunId;
+      const parentId: string = cursor.parentWorkflowRunId;
       visited.add(parentId);
       const fills = await this.prisma.effectTemplateMixAiRun.findMany({
         where: {
@@ -106,17 +149,21 @@ export class EffectTemplateMixAiRepository {
           workflowRunId: parentId,
           status: 'COMPLETED',
           outputVariantId: { not: null },
+          // A fork inherits its creation snapshot, not later in-place updates of its parent.
+          // Otherwise a parent APPEND consumes additions the child never incorporated.
+          completedAt: { lte: inheritedAt },
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        take: 20,
       });
-      // Nearest ancestor wins, so the branch keeps showing the newest classification it inherited.
+      // Keep every consumed addition. A newer trim-only task must not erase an earlier APPEND.
+      // Nearest/newest tasks still come first for classification precedence.
       for (const fill of fills)
-        if (!collected.has(fill.templateId)) collected.set(fill.templateId, fill);
+        if (!collected.has(fill.id)) collected.set(fill.id, fill);
       cursor = await this.prisma.workflowRun.findFirst({
         where: { id: parentId, projectId },
-        select: { parentWorkflowRunId: true },
+        select: { parentWorkflowRunId: true, createdAt: true },
       });
+      if (cursor && cursor.createdAt < inheritedAt) inheritedAt = cursor.createdAt;
     }
     return [...collected.values()];
   }
@@ -275,6 +322,24 @@ export class EffectTemplateMixAiRepository {
   find(projectId: string, runId: string) {
     return this.prisma.effectTemplateMixAiRun.findFirst({ where: { projectId, id: runId } });
   }
+  async sourceOperation(projectId: string, workflowRunId: string, templateId: string, id: string) {
+    const item = await this.prisma.effectFinalOutputItem.findFirst({ where: { projectId,
+      run: { workflowRunId, templateId }, snapshot: { path: ['sourceOperation', 'id'], equals: id } },
+      include: { run: { include: { items: true } } } });
+    if (!item || item.run.items.some((row) =>
+      Boolean((row.snapshot as unknown as { sourceRefresh?: unknown }).sourceRefresh))) return null;
+    return (item.snapshot as unknown as { sourceOperation: EffectTemplateMixFrozenSourceContext }).sourceOperation;
+  }
+  findOperationRun(projectId: string, workflowRunId: string, templateId: string, id: string) {
+    return this.prisma.effectTemplateMixAiRun.findFirst({ where: { projectId, workflowRunId, templateId,
+      inputSnapshot: { path: ['sourceOperation', 'id'], equals: id } }, orderBy: { createdAt: 'desc' } });
+  }
+  async frozenFilesAvailable(projectId: string, materials: EffectTemplateMixAiSnapshot['materials']) {
+    const files = await this.prisma.fileObject.findMany({ where: { projectId,
+      id: { in: materials.map((material) => material.fileObjectId) }, status: 'AVAILABLE' } });
+    return materials.every((material) => material.adoptedSource && files.some((file) =>
+      file.id === material.fileObjectId && file.sha256 === material.adoptedSource!.contentHash));
+  }
 
   async sourceArtifacts(projectId: string, workflowRunId: string, transaction?: Prisma.TransactionClient) {
     // Use the same authoritative lineage as the library. A CURRENT database clone can still be
@@ -285,6 +350,16 @@ export class EffectTemplateMixAiRepository {
       ['PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(artifact.nodeId) &&
       artifact.freshness === 'CURRENT' && artifact.availability === 'AVAILABLE' &&
       (artifact.metadata as { branchSourceOwner?: boolean } | null)?.branchSourceOwner !== false);
+  }
+
+  async historicalRenderArtifacts(projectId: string, ids: string[]) {
+    return this.prisma.workingArtifact.findMany({ where: { projectId, id: { in: ids }, nodeId: 'SEGMENT_RENDER' },
+      include: { dependencies: true } });
+  }
+
+  async mediaFingerprints(projectId: string, ids: string[]) {
+    return this.prisma.fileObject.findMany({ where: { projectId, id: { in: ids }, status: 'AVAILABLE' },
+      select: { id: true, sha256: true } });
   }
 
   async selectedFile(projectId: string, runId: string, materialId: string, attemptToken: string) {
@@ -306,6 +381,15 @@ export class EffectTemplateMixAiRepository {
     const frozen = (run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot)?.materials
       ?.find((material) => material.artifactId === materialId);
     if (!frozen) return null;
+    if ((run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot).sourceOperation?.protocol === 'FROZEN_RENDER_V1') {
+      const file = await this.prisma.fileObject.findFirst({ where: { projectId,
+        id: frozen.fileObjectId, status: 'AVAILABLE', sha256: frozen.adoptedSource?.contentHash ?? '' } });
+      if (!file) return null;
+      return { run, artifact: { id: frozen.artifactId }, file: {
+        storageKey: file.storageKey, originalFileName: file.originalFileName,
+        mimeType: file.mimeType, sizeBytes: Number(file.sizeBytes),
+      } };
+    }
     const artifact = (await this.sourceArtifacts(projectId, run.workflowRunId))
       .find((source) => source.id === materialId && source.nodeId === 'SEGMENT_RENDER');
     if (
@@ -415,13 +499,14 @@ export class EffectTemplateMixAiRepository {
       ];
       const currentSources = await this.sourceArtifacts(input.projectId, input.workflowRunId, transaction);
       const currentById = new Map(currentSources.map((item) => [item.id, item]));
-      if (
+      if (input.snapshot.sourceOperation?.protocol === 'FROZEN_RENDER_V1'
+        ? !(await this.frozenFilesAvailable(input.projectId, input.snapshot.materials)) : (
         frozenSources.some((source) => {
           const current = currentById.get(source.id);
           return (
             current?.revision !== source.revision || current.contentHash !== source.contentHash
           );
-        })
+        }))
       )
         return { kind: 'STALE_INPUT' as const };
       const lockedDraft: EffectTemplateMixDraft = {
@@ -740,6 +825,10 @@ export class EffectTemplateMixAiRepository {
     now = new Date(),
   ) {
     return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_template_mix_ai_runs"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${runId}::uuid FOR UPDATE
+      `;
       const run = await transaction.effectTemplateMixAiRun.findFirst({
         where: {
           projectId,
@@ -856,6 +945,10 @@ export class EffectTemplateMixAiRepository {
     now = new Date(),
   ) {
     return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_template_mix_ai_runs"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${runId}::uuid FOR UPDATE
+      `;
       const run = await transaction.effectTemplateMixAiRun.findFirst({
         where: { projectId, id: runId },
       });
@@ -942,6 +1035,7 @@ export class EffectTemplateMixAiRepository {
   }
 
   async recoverExpired(now = new Date()): Promise<void> {
+    await this.recoverUnclaimed(now);
     const runs = await this.prisma.effectTemplateMixAiRun.findMany({
       where: { status: 'RUNNING', leaseExpiresAt: { lte: now } },
       orderBy: { leaseExpiresAt: 'asc' },
@@ -987,6 +1081,44 @@ export class EffectTemplateMixAiRepository {
           publishedAt: null,
           lastError: null,
         },
+      });
+    }
+  }
+
+  /** A published message can disappear before claim (e.g. a Worker rejects the delivery).
+   * Lease recovery only sees RUNNING; keep QUEUED tasks from remaining at zero forever.
+   */
+  async recoverUnclaimed(now = new Date()): Promise<void> {
+    const deadline = new Date(now.getTime() - 15 * 60 * 1000);
+    const runs = await this.prisma.effectTemplateMixAiRun.findMany({
+      where: { status: 'QUEUED', queuedAt: { lte: deadline } },
+      orderBy: { queuedAt: 'asc' }, take: 50,
+    });
+    for (const run of runs) {
+      await this.prisma.$transaction(async (transaction) => {
+        const retry = run.unclaimedRecoveryCount < 2;
+        const updated = await transaction.effectTemplateMixAiRun.updateMany({
+          where: { projectId: run.projectId, id: run.id, status: 'QUEUED',
+            queuedAt: { lte: deadline }, unclaimedRecoveryCount: run.unclaimedRecoveryCount },
+          data: {
+            status: retry ? 'QUEUED' : 'FAILED',
+            queuedAt: now,
+            unclaimedRecoveryCount: { increment: 1 },
+            attemptToken: null, leaseExpiresAt: null,
+            errorCode: 'WORKER_NOT_CLAIMED',
+            errorMessage: retry ? '任务尚未被执行服务领取，已重新投递' : '执行服务长时间未领取任务，请检查服务后重试',
+            completedAt: retry ? null : now,
+          },
+        });
+        if (updated.count !== 1) return;
+        if (retry)
+          await transaction.jobOutbox.updateMany({
+            where: { projectId: run.projectId, jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE, aggregateId: run.id },
+            data: { status: 'PENDING', dispatchToken: null, nextAttemptAt: now,
+              publishedAt: null, lastError: null },
+          });
+        else
+          await this.clearFillLock(transaction, run.projectId, run.workflowRunId, run.templateId, now);
       });
     }
   }

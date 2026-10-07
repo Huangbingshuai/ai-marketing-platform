@@ -2,6 +2,24 @@ import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
 
 type DraftTemplate = EffectTemplateMixDraft['templates'][number];
 
+/** A Run's draft revision can only advance, including after a successful save or deletion.
+ * Keep this fence across navigation: cached responses are not writable snapshots.
+ */
+export class MixWorkspaceRevisionFence {
+  private revisions = new Map<string, number>();
+  acknowledge(scope: string, revision: number | null): void {
+    this.revisions.set(scope, Math.max(this.revisions.get(scope) ?? 0, revision ?? 0));
+  }
+  isCurrent(scope: string, revision: number | null): boolean {
+    return (revision ?? 0) >= (this.revisions.get(scope) ?? 0);
+  }
+  accept(scope: string, currentScope: string, revision: number | null): boolean {
+    if (scope !== currentScope || !this.isCurrent(scope, revision)) return false;
+    this.acknowledge(scope, revision);
+    return true;
+  }
+}
+
 /** Request epochs, not business revisions: a read may never undo a local edit or save. */
 export class MixDraftRaceGuard {
   private epoch = 0;

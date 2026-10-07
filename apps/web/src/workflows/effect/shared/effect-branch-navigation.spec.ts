@@ -1,7 +1,7 @@
 import { EFFECT_WORKFLOW_BRANCH_NODES, type EffectWorkflowBranch } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 import { buildEffectBranchLayout } from '../source-import/components/effect-workflow-branch-layout';
-import { effectBranchDestination, effectBranchNavigationMatches, effectTemplateStepNavigation } from './effect-branch-navigation';
+import { consumeEffectNavigation, effectBranchDestination, effectBranchNavigationMatches, effectMixHistoryTemplateId, effectTemplateStepNavigation } from './effect-branch-navigation';
 
 const makeBranch = (id: string): EffectWorkflowBranch => ({
   workflowRunId: id,
@@ -37,6 +37,30 @@ const makeBranch = (id: string): EffectWorkflowBranch => ({
 });
 
 describe('effect branch navigation', () => {
+  it('consumes a completed command at the parent so remounting cannot replay history', () => {
+    const historical = { workflowRunId: 'old', templateId: 'a' };
+    expect(consumeEffectNavigation(historical, historical)).toBeNull();
+    expect(consumeEffectNavigation(null, historical)).toBeNull();
+    const newer = { workflowRunId: 'current', templateId: 'a' };
+    expect(consumeEffectNavigation(newer, historical)).toBe(newer);
+    expect(consumeEffectNavigation({ ...historical }, historical)).not.toBeNull();
+  });
+  it.each(['TEMPLATE', null] as const)('does not pin the current list for a %s destination', (mixStage) => {
+    const target = { projectId: 'project', workflowRunId: 'old', nodeId: 'TEMPLATE_MIX' as const,
+      templateId: 'a', mixStage };
+    for (const view of ['CONFIG', 'EDITOR'] as const)
+      expect(effectMixHistoryTemplateId(target, 'project', 'old', view, true)).toBeNull();
+  });
+  it.each(['FILL', 'PACKAGING'] as const)('releases the %s history when returning to config', (mixStage) => {
+    const target = { projectId: 'project', workflowRunId: 'old', nodeId: 'TEMPLATE_MIX' as const,
+      templateId: 'a', mixStage };
+    expect(effectMixHistoryTemplateId(target, 'project', 'old', 'CONFIG', true)).toBe('a');
+    expect(effectMixHistoryTemplateId(target, 'project', 'old', 'EDITOR', false)).toBe('a');
+    expect(effectMixHistoryTemplateId(target, 'project', 'old', 'CONFIG', false)).toBeNull();
+    expect(effectMixHistoryTemplateId(target, 'other', 'old', 'EDITOR', true)).toBeNull();
+    expect(effectMixHistoryTemplateId(target, 'project', 'other', 'EDITOR', true)).toBeNull();
+    expect(effectMixHistoryTemplateId({ ...target, nodeId: 'FINAL_OUTPUT' }, 'project', 'old', 'EDITOR', true)).toBeNull();
+  });
   it.each(['current', 'historical'])('carries the selected template to output on the exact %s branch', (workflowRunId) => {
     expect(effectTemplateStepNavigation('project', workflowRunId, 4, 5, 'template-8')).toEqual({
       projectId: 'project', workflowRunId, templateId: 'template-8',

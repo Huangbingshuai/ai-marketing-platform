@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
+import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import type {
   EffectTemplateMixVariant,
   FinalOutputSnapshot,
@@ -11,7 +12,7 @@ import type {
 } from '@ai-marketing/contracts';
 import type { PrismaService } from '../../../database/prisma.service';
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
-import type { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
+import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { EffectTemplateMixService } from '../template-mix/effect-template-mix.service';
 import { visualHash } from '../template-mix/effect-packaging.domain';
@@ -125,6 +126,7 @@ function harness(count = 1) {
     },
     assetVersion: { create: vi.fn().mockResolvedValue({ id: 'version' }), deleteMany: vi.fn() },
     effectPackagingRun: { count: vi.fn().mockResolvedValue(0) },
+    effectTemplateMixAiRun: { findFirst: vi.fn().mockResolvedValue(null) },
     effectPackagingItem: { findMany: vi.fn().mockResolvedValue(rows) },
     effectFinalOutputRun: {
       count: vi.fn().mockResolvedValue(0),
@@ -354,6 +356,158 @@ describe('final output preview covers', () => {
   });
 });
 
+describe('atomic workbench source update preparation', () => {
+  const body = { workflowRunId: 'w', templateId: 't', expectedDraftRevision: 1, variantIds: ['v0'] };
+  function preparation(freshness: 'CURRENT' | 'STALE' = 'STALE') {
+    const h = harness();
+    const variant = (h.state.state.templates[0]!.workspace.variants[0]!);
+    (h.state.state.templates[0]!.workspace as unknown as { template: unknown }).template = {
+      name: '测试模板', editVersion: 1, slots: variant.slots,
+    };
+    h.mix.workspace.mockResolvedValue({ draft: h.state.state,
+      materials: [{ id: 'clip', artifactId: 'source', fileObjectId: 'video', duration: 12,
+        available: true, artifactRevision: 2, contentHash: 'new', ratio: '3:4' }] } as never);
+    h.db.workingArtifact.findMany.mockResolvedValue([...h.sources, {
+      id: 'visual', nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:t:v0',
+      revision: 1, freshness, availability: 'AVAILABLE', contentHash: 'confirmed',
+      payload: { variant }, dependencies: [],
+    }] as never);
+    h.db.effectFinalOutputRun.findFirst.mockResolvedValue(null);
+    h.db.effectFinalOutputRun.create.mockImplementation(({ data }) => {
+      Object.assign(h.outputRun, { ...data, id: 'repaired', items: data.items.create.map((item: Record<string, unknown>, i: number) =>
+        ({ ...item, id: `new-${i}` })) });
+      return Promise.resolve(h.outputRun);
+    });
+    const internals = h.service as unknown as { queueLocalUpdate: (...args: unknown[]) => Promise<void> };
+    const queue = vi.spyOn(internals, 'queueLocalUpdate').mockResolvedValue();
+    vi.spyOn(h.service, 'get').mockResolvedValue({ id: 'repaired' } as never);
+    return { ...h, queue };
+  }
+  it.each(['CURRENT', 'STALE'] as const)('recovers confirmed %s projects without validating obsolete bindings', async (freshness) => {
+    const h = preparation(freshness);
+    await h.service.updateSourceProjects('p', body);
+    expect(h.mix.prepareValidation).not.toHaveBeenCalled();
+    expect(h.db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
+    expect(h.queue).toHaveBeenCalledWith(expect.anything(), 'p', 'repaired', { itemIds: ['new-0'] }, false, true,
+      expect.objectContaining({ workspace: expect.objectContaining({ draft: h.state.state }), artifacts: h.sources }));
+    expect(h.working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+  });
+  it('rejects a changed confirmation signature before creating a task', async () => {
+    const h = preparation();
+    await expect(h.service.updateSourceProjects('p', { ...body, expectedSourceSignature: 'old-difference' }))
+      .rejects.toThrow('待更新范围已变化');
+    expect(h.queue).not.toHaveBeenCalled();
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+  });
+  it.each([null, 'FAILED'])('does not overlap an unfinished frozen APPEND continuation (%s)', async (status) => {
+    const h = preparation();
+    Object.assign(h.outputRun, { status: 'PENDING_RENDER', items: [{ id: 'old', variantId: 'v0',
+      snapshot: { sourceOperation: { id: 'previous-operation', addedMaterialIds: ['clip'] } } }] });
+    h.db.effectFinalOutputRun.findFirst.mockResolvedValue(h.outputRun);
+    h.db.effectTemplateMixAiRun.findFirst.mockImplementation(async ({ where }) =>
+      where.inputSnapshot ? (status ? { status } : null) : null);
+    await expect(h.service.updateSourceProjects('p', body)).rejects.toThrow('上一轮局部更新');
+    expect(h.queue).not.toHaveBeenCalled();
+  });
+  it('keeps the packaging fence while allowing upstream saves to occur independently', async () => {
+    const h = preparation();
+    h.db.effectPackagingRun.count.mockResolvedValue(1);
+    await expect(h.service.updateSourceProjects('p', body)).rejects.toThrow('包装新增成片');
+    expect(h.queue).not.toHaveBeenCalled();
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+  });
+  it('requires reconfirmation when newly added films now require automatic packaging', async () => {
+    const h = preparation();
+    const workspace = await h.mix.workspace('p', 'w');
+    h.mix.workspace.mockResolvedValue({ ...workspace, pendingAddedMaterialIds: { t: ['clip'] } } as never);
+    Object.assign(h.mix, { hasSuccessfulPackaging: vi.fn().mockResolvedValue(true) });
+    await expect(h.service.updateSourceProjects('p', { ...body, appendNewMaterials: true,
+      expectedPackageNewVariants: false })).rejects.toThrow('费用类型已变化');
+    expect(h.queue).not.toHaveBeenCalled();
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+  });
+  it('replays the same operation before checking a newer draft and refuses a different confirmation', async () => {
+    const h = preparation();
+    const request = { ...body, operationId: 'operation-1' };
+    h.db.effectFinalOutputItem.findFirst.mockResolvedValue({ runId: 'repaired', snapshot: {
+      sourceOperation: { id: request.operationId, confirmationHash: workflowStateHash(request) },
+    } } as never);
+    h.state.revision = 3;
+    await expect(h.service.updateSourceProjects('p', request)).resolves.toEqual({ id: 'repaired' });
+    expect(h.queue).not.toHaveBeenCalled();
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    await expect(h.service.updateSourceProjects('p', { ...request, expectedDraftRevision: 2 }))
+      .rejects.toThrow('不同确认');
+  });
+  it('allows a template current path to refresh while a sibling template owns the global active Run', async () => {
+    const h = preparation();
+    h.db.workflowRun.findFirst.mockResolvedValue({ id: 'other-template-run' } as never);
+    vi.mocked(h.service.branches.getEffectBranchTree).mockResolvedValue({
+      projectId: 'p', activeWorkflowRunId: 'other-template-run', branches: [
+        { workflowRunId: 'root', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null,
+          createdAt: '0', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+        { workflowRunId: 'w', parentWorkflowRunId: 'root', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+          createdAt: '1', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+        { workflowRunId: 'other-template-run', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX',
+          forkTemplateId: 'other', createdAt: '2', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+      ],
+    } as never);
+
+    await expect(h.service.updateSourceProjects('p', body)).resolves.toEqual({ id: 'repaired' });
+    expect(h.db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
+    expect(h.queue).toHaveBeenCalledWith(expect.anything(), 'p', 'repaired', { itemIds: ['new-0'] }, false, true,
+      expect.objectContaining({ workspace: expect.objectContaining({ draft: h.state.state }), artifacts: h.sources }));
+  });
+  it('prepares a template refresh when no global active Run is visible', async () => {
+    const h = preparation();
+    h.db.workflowRun.findFirst.mockResolvedValue(null as never);
+
+    await expect(h.service.updateSourceProjects('p', body)).resolves.toEqual({ id: 'repaired' });
+    expect(h.db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
+    expect(h.queue).toHaveBeenCalledWith(expect.anything(), 'p', 'repaired', { itemIds: ['new-0'] }, false, true,
+      expect.objectContaining({ workspace: expect.objectContaining({ draft: h.state.state }), artifacts: h.sources }));
+  });
+  it('reuses the current branch batch rather than reconciling or overwriting its baseline', async () => {
+    const h = preparation();
+    h.outputRun.items = [{ id: 'old', variantId: 'v0', snapshot: { userEdited: true } }];
+    h.db.effectFinalOutputRun.findFirst.mockResolvedValue(h.outputRun);
+    await h.service.updateSourceProjects('p', body);
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(h.mix.workspace).toHaveBeenCalledTimes(2); // Freeze and recheck the confirmation's net delta.
+    expect(h.queue).toHaveBeenCalledWith(expect.anything(), 'p', 'out', { itemIds: ['old'] }, false, true,
+      expect.objectContaining({ workspace: expect.objectContaining({ draft: h.state.state }), artifacts: h.sources }));
+    expect(h.outputRun.items[0]).toHaveProperty('snapshot.userEdited', true);
+  });
+  it.each(['revision', 'unconfirmed', 'missing-member'] as const)('blocks %s before creating a task', async (failure) => {
+    const h = preparation();
+    if (failure === 'revision') h.state.revision = 2;
+    if (failure === 'unconfirmed') h.db.workingArtifact.findMany.mockResolvedValue(h.sources as never);
+    if (failure === 'missing-member') {
+      h.outputRun.items = [{ id: 'other', variantId: 'other' }];
+      h.db.effectFinalOutputRun.findFirst.mockResolvedValue(h.outputRun);
+    }
+    await expect(h.service.updateSourceProjects('p', body)).rejects.toThrow();
+    expect(h.queue).not.toHaveBeenCalled();
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+  });
+  it('rolls back a newly repaired baseline when current-source validation fails', async () => {
+    const h = preparation();
+    h.queue.mockRejectedValue(new ConflictException('最新画面素材不可用'));
+    await expect(h.service.updateSourceProjects('p', body)).rejects.toThrow('最新画面素材不可用');
+    expect(h.outputRun.id).toBe('out');
+    expect(h.outputRun.items).toEqual([]);
+    expect(h.service.get).not.toHaveBeenCalled();
+  });
+  it('never downgrades a delivered branch with a missing output batch to picture-only projects', async () => {
+    const h = preparation();
+    h.db.workingArtifact.findMany.mockResolvedValue([{ artifactKey: 'final-delivery:t',
+      nodeId: 'FINAL_OUTPUT', availability: 'AVAILABLE', freshness: 'CURRENT' }] as never);
+    await expect(h.service.updateSourceProjects('p', body)).rejects.toThrow('原交付文件已保留');
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(h.queue).not.toHaveBeenCalled();
+  });
+});
+
 describe('smart-fill pending output', () => {
   const confirmedVisual = (variantId: string) => ({
     id: `timeline-project:t:${variantId}`,
@@ -364,6 +518,29 @@ describe('smart-fill pending output', () => {
     freshness: 'CURRENT',
     availability: 'AVAILABLE',
     dependencies: [],
+  });
+
+  it('resolves inherited source heads in the transaction instead of rejecting stale branch copies', async () => {
+    const { service, db, sources, outputRun } = harness(2);
+    const old = { id: 'old-item', variantId: 'v0', status: 'COMPLETED', snapshot: { preserve: true } };
+    const frozen = structuredClone(old);
+    outputRun.status = 'COMPLETED';
+    outputRun.items = [old];
+    db.workingArtifact.findMany.mockResolvedValue([
+      ...sources.map((source) => ({ ...source, freshness: 'STALE' })), confirmedVisual('v1'),
+    ]);
+    const projection = vi.spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
+      .mockResolvedValue([...sources, confirmedVisual('v1')] as never);
+    try {
+      await service.upsertFromSmartFill('p', 'w', 't', ['v1'], true);
+      expect(projection).toHaveBeenCalledWith('p', { workflowRunId: 'w' });
+      expect(old).toEqual(frozen);
+      expect(db.effectFinalOutputItem.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ variantId: 'v1' }),
+      }));
+    } finally {
+      projection.mockRestore();
+    }
   });
 
   it('appends to a delivered batch without modifying old IDs, snapshots, assets or files', async () => {
@@ -1497,6 +1674,22 @@ describe('saved mix drafts re-sync only the unexported output queue', () => {
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
   });
+  it('exports from the same current confirmation path used by the list, not an older global pointer', async () => {
+    const { service, db, working } = harness();
+    await service.upsertFromPackaging('p', 'w', 't');
+    vi.mocked(service.branches.getEffectBranchTree).mockResolvedValue({ projectId: 'p',
+      activeWorkflowRunId: 'old', branches: [
+        { workflowRunId: 'w', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null,
+          createdAt: '2026-10-04T00:00:00Z', templates: [{ templateId: 't', currentConfirmedAt: '2026-10-07T00:00:00Z' }] },
+        { workflowRunId: 'old', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+          createdAt: '2026-10-06T00:00:00Z', templates: [{ templateId: 't', currentConfirmedAt: '2026-10-06T00:00:00Z' }] },
+      ] } as never);
+    db.workflowRun.findFirst.mockResolvedValue({ id: 'old' });
+    await service.start('p', 'out', { resolution: '720p', frameRate: 30 });
+    expect(working.beginEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'FINAL_OUTPUT', 'BATCH', {
+      always: true, keepParentActive: true, templateId: 't', templateScopeActiveRunId: 'old',
+    });
+  });
   it('rejects activity that changes after template-tip resolution', async () => {
     const { service, db, working } = harness();
     db.workflowRun.findFirst.mockResolvedValue({ id: 'changed' });
@@ -1511,6 +1704,22 @@ describe('saved mix drafts re-sync only the unexported output queue', () => {
     expect(result.map((batch) => batch.id)).toEqual(['out']);
     expect(path).toHaveBeenCalledWith('p', 'w', new Set(['t']));
     expect(await service.list('p', 'unknown')).toEqual([]);
+  });
+  it('lists the latest confirmed template path even while the global pointer is an older packaging branch', async () => {
+    const { service, db } = harness();
+    vi.mocked(service.branches.getEffectBranchTree).mockResolvedValue({ projectId: 'p',
+      activeWorkflowRunId: 'old', branches: [
+        { workflowRunId: 'w', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null,
+          createdAt: '2026-10-04T00:00:00Z', templates: [{ templateId: 't', currentConfirmedAt: '2026-10-04T00:00:00Z' }] },
+        { workflowRunId: 'old', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+          createdAt: '2026-10-05T00:00:00Z', templates: [{ templateId: 't', currentConfirmedAt: '2026-10-05T00:00:00Z' }] },
+        { workflowRunId: 'latest', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+          createdAt: '2026-10-06T00:00:00Z', templates: [{ templateId: 't', currentConfirmedAt: '2026-10-07T00:00:00Z' }] },
+      ] } as never);
+    db.workflowRun.findMany.mockResolvedValue([]);
+    const path = vi.spyOn(service, 'listPath').mockResolvedValue([{ id: 'current-output', templateId: 't' }] as never);
+    expect((await service.list('p', 'old')).map(batch => batch.id)).toEqual(['current-output']);
+    expect(path).toHaveBeenCalledExactlyOnceWith('p', 'latest', new Set(['t']));
   });
   it('shares one scoped catalog read across template paths without leaking sibling batches', async () => {
     const { service, db, outputRun } = harness();
@@ -1704,9 +1913,66 @@ describe('saved mix drafts re-sync only the unexported output queue', () => {
       data: expect.objectContaining({ status: 'PENDING_RENDER' }),
     }));
   });
+  it('synchronizes a non-global template engineer without a render, branch, or stale output', async () => {
+    const { service, db, mix, working, run, items, workspace, variant } = await localUpdateHarness(false);
+    run.status = 'PENDING_RENDER';
+    items.forEach(item => { item.status = 'PENDING_RENDER'; item.fileObjectId = null; item.assetId = null; });
+    variant.offsets.s = 1;
+    // A valid template source need not own the project-wide ACTIVE pointer.
+    db.workflowRun.findFirst.mockImplementation(async ({ where }) => where.activeKey ? null : { id: 'w' });
+    db.workflowNodeState.findUnique.mockResolvedValue({ revision: 2 });
+    db.effectFinalOutputItem.findFirst.mockResolvedValue({ id: 'item-0' });
+    mix.workspace.mockResolvedValue({ ...workspace, draftRevision: 2 });
+    expect(await service.syncFromDraft('p', 'w', { templateId: 't', expectedDraftRevision: 2 }))
+      .toEqual({ refreshed: [{ templateId: 't', itemCount: 1 }] });
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledOnce();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    const listed = await service.listPath('p', 'w');
+    expect(listed[0]!.counts.stale).toBe(0);
+    expect(listed[0]!.items[0]!.stale).toBe(false);
+  });
 });
 
 describe('local update', () => {
+  it('returns a net no-op without queuing, modifying films or calling paid work', async () => {
+    const h = await localUpdateHarness(false);
+    h.db.workflowNodeState.findUnique.mockResolvedValue({ revision: 2 });
+    const result = await h.service.updateSourceProjects('p', { workflowRunId: 'w', templateId: 't',
+      expectedDraftRevision: 2, variantIds: [], appendNewMaterials: true });
+    expect(result).toEqual({ noChanges: true });
+    expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
+    expect(h.db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+  });
+  it('keeps a new-protocol operation on its frozen file after later render edits, without relaxing engineering/file fences', async () => {
+    const h = await localUpdateHarness(false);
+    h.run.status = 'PENDING_RENDER'; h.items[0]!.fileObjectId = null; h.items[0]!.assetId = null;
+    h.workspace.materials[0]!.artifactRevision = 2;
+    h.artifacts[0]!.id = 'clip'; h.artifacts[0]!.revision = 2;
+    Object.assign(h.artifacts[0]!, { payload: { ...(h.artifacts[0] as unknown as { payload: object }).payload, fileObjectId: 'video', contentHash: 'clip-hash' } });
+    h.workspace.materials[0]!.artifactId = 'clip';
+    h.db.fileObject.count.mockImplementation(({ where }) => Promise.resolve(where.id.in.length));
+    h.db.fileObject.findMany.mockResolvedValue([{ id: 'video', sha256: 'clip-hash' }] as never);
+    h.db.effectPackagingItem.findMany.mockResolvedValue([]);
+    Object.assign(h.db.effectPackagingItem, { findFirst: vi.fn().mockResolvedValue(null) });
+    h.db.workflowNodeState.findUnique.mockResolvedValue({ state: h.workspace.draft });
+    h.db.workingArtifact.findFirst.mockResolvedValue(h.artifacts[0]!);
+    (h.items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot.unpackaged = true;
+    await h.service.localUpdate('p', 'out', { itemIds: ['item-0'] });
+    const snapshot = (h.items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot;
+    expect(snapshot.sourceRefresh?.protocol).toBe('FROZEN_RENDER_V1');
+    const internals = h.service as unknown as { assertRefreshCurrent(tx: unknown, project: string, snapshot: FinalOutputSnapshot): Promise<void> };
+    h.artifacts[0]!.revision = 3;
+    Object.assign(h.artifacts[0]!, { payload: { fileObjectId: 'new-video', contentHash: 'new-hash' } });
+    await expect(internals.assertRefreshCurrent(h.db, 'p', snapshot)).resolves.toBeUndefined();
+    const legacy = structuredClone(snapshot); delete legacy.sourceRefresh!.protocol;
+    await expect(internals.assertRefreshCurrent(h.db, 'p', legacy)).rejects.toThrow('素材再次发生变化');
+    h.db.fileObject.findMany.mockResolvedValue([]);
+    await expect(internals.assertRefreshCurrent(h.db, 'p', snapshot)).rejects.toThrow('冻结的素材文件');
+    h.db.fileObject.findMany.mockResolvedValue([{ id: 'video', sha256: 'clip-hash' }] as never);
+    h.variant.offsets.s = 1;
+    await expect(internals.assertRefreshCurrent(h.db, 'p', snapshot)).rejects.toThrow('工程已被编辑');
+  });
   it('re-renders only the moved films in place, without opening a branch', async () => {
     const { service, db, working, run, items, variant } = await localUpdateHarness();
     variant.offsets.s = 1;
@@ -1723,6 +1989,48 @@ describe('local update', () => {
     expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
     expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
+  it('updates the selected template tip without requiring it to own the global active pointer', async () => {
+    const { service, db, run, variant } = await localUpdateHarness();
+    const branches = [
+      { workflowRunId: 'root', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null,
+        createdAt: '0', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+      { workflowRunId: 'w', parentWorkflowRunId: 'root', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+        createdAt: '1', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+      { workflowRunId: 'other-template-run', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: 'other', createdAt: '2', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+    ];
+    db.workflowRun.findFirst.mockResolvedValue({ id: 'other-template-run' } as never);
+    vi.mocked(service.branches.getEffectBranchTree).mockResolvedValue({ projectId: 'p',
+      activeWorkflowRunId: 'other-template-run', branches } as never);
+    variant.offsets.s = 1;
+
+    await expect(service.localUpdate('p', run.id, { itemIds: ['item-0'] })).resolves.toBeDefined();
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'item-0' }, data: expect.objectContaining({ status: 'QUEUED' }),
+    }));
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+  });
+  it('updates a selected template tip even when the global active Run is hidden or unavailable', async () => {
+    const { service, db, run, variant } = await localUpdateHarness();
+    const branches = [
+      { workflowRunId: 'root', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null,
+        createdAt: '0', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+      { workflowRunId: 'w', parentWorkflowRunId: 'root', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+        createdAt: '1', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+      { workflowRunId: 'other-template-run', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: 'other', createdAt: '2', templates: [{ templateId: 't' }, { templateId: 'other' }] },
+    ];
+    db.workflowRun.findFirst.mockResolvedValue(null as never);
+    vi.mocked(service.branches.getEffectBranchTree).mockResolvedValue({ projectId: 'p',
+      activeWorkflowRunId: 'root', branches } as never);
+    variant.offsets.s = 1;
+
+    await expect(service.localUpdate('p', run.id, { itemIds: ['item-0'] })).resolves.toBeDefined();
+    expect(db.effectFinalOutputItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'item-0' }, data: expect.objectContaining({ status: 'QUEUED' }),
+    }));
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
   });
   it('refuses a running batch and unchanged unexported projects', async () => {
     const queued = await localUpdateHarness();
@@ -1752,6 +2060,7 @@ describe('local update', () => {
       artifacts[0]!.id = 'replacement';
     }
     db.fileObject.count.mockImplementation(({ where }) => Promise.resolve(where.id.in.length));
+    db.fileObject.findMany.mockResolvedValue([{ id: 'video', sha256: 'clip-hash' }] as never);
     db.effectPackagingItem.findMany.mockResolvedValue([]);
     (items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot.unpackaged = true;
     Object.assign(db.effectPackagingItem, { findFirst: vi.fn().mockResolvedValue(null) });
@@ -1774,16 +2083,25 @@ describe('local update', () => {
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
     expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
   });
-  it('refuses unchanged films and a non-active branch without creating a paid task', async () => {
+  it('refuses unchanged films and a historical template path without creating a paid task', async () => {
     const unchanged = await localUpdateHarness();
     await expect(unchanged.service.localUpdate('p', 'out', { itemIds: ['item-0'] }))
       .rejects.toThrow('无需局部更新');
     expect(unchanged.db.jobOutbox.upsert).not.toHaveBeenCalled();
     const oldBranch = await localUpdateHarness();
     oldBranch.variant.offsets.s = 1;
-    oldBranch.db.workflowRun.findFirst.mockResolvedValue(null);
+    const branches = [
+      { workflowRunId: 'root', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null,
+        createdAt: '0', templates: [{ templateId: 't' }] },
+      { workflowRunId: 'w', parentWorkflowRunId: 'root', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+        createdAt: '1', templates: [{ templateId: 't' }] },
+      { workflowRunId: 'new-template-tip', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: 't', createdAt: '2', templates: [{ templateId: 't' }] },
+    ];
+    vi.mocked(oldBranch.service.branches.getEffectBranchTree).mockResolvedValue({ projectId: 'p',
+      activeWorkflowRunId: 'new-template-tip', branches } as never);
     await expect(oldBranch.service.localUpdate('p', 'out', { itemIds: ['item-0'] }))
-      .rejects.toThrow('当前活动成片分支');
+      .rejects.toThrow('该模板的当前成片分支');
     expect(oldBranch.db.jobOutbox.upsert).not.toHaveBeenCalled();
   });
   it('marks a changed soundtrack and re-renders it in the same output branch', async () => {
@@ -1956,9 +2274,17 @@ describe('local update', () => {
     const { service, db, working } = await membershipUpdateHarness();
     await expect(service.localUpdate('p', 'out', { itemIds: [] })).rejects.toThrow('请先选择');
     working.beginEffectNodeEdit.mockClear();
-    db.workflowRun.findFirst.mockResolvedValue(null);
+    vi.mocked(service.branches.getEffectBranchTree).mockResolvedValue({ projectId: 'p',
+      activeWorkflowRunId: 'new-template-tip', branches: [
+        { workflowRunId: 'root', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null,
+          createdAt: '0', templates: [{ templateId: 't' }] },
+        { workflowRunId: 'w', parentWorkflowRunId: 'root', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't',
+          createdAt: '1', templates: [{ templateId: 't' }] },
+        { workflowRunId: 'new-template-tip', parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX',
+          forkTemplateId: 't', createdAt: '2', templates: [{ templateId: 't' }] },
+      ] } as never);
     await expect(service.localUpdate('p', 'out', { itemIds: [], syncProjects: true }))
-      .rejects.toThrow('当前活动成片分支');
+      .rejects.toThrow('该模板的当前成片分支');
     expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
   });

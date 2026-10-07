@@ -35,6 +35,37 @@ describe('effect mix version scopes', () => {
     return (await service.getEffectBranchTree('project-a')).branches;
   };
 
+  it('projects only explicit choices stored in their actual branch, not inherited copies', async () => {
+    const selected = { ...run('chosen', 'root', 1, 'FILL'), nodeStates: [{
+      nodeId: 'TEMPLATE_MIX:current-paths', state: { schemaVersion: 1, workflowRunId: 'chosen',
+        selectedTemplates: { a: at(30).toISOString() } },
+    }] };
+    const copied = { ...run('copied', 'chosen', 2, 'PACKAGING'), nodeStates: selected.nodeStates };
+    const result = await treeOf([run('root', null, 0, 'TEMPLATE'), selected, copied]);
+    expect(result.find(b => b.workflowRunId === 'chosen')?.templates[0]?.currentSelectedAt).toBe(at(30).toISOString());
+    expect(result.find(b => b.workflowRunId === 'copied')?.templates[0]?.currentSelectedAt).toBeNull();
+  });
+
+  it('exposes only the current locally owned revision immutable confirmation, not draft or stale timestamps', async () => {
+    const local = { ...run('fill', 'root', 1, 'FILL'), updatedAt: at(59),
+      workingArtifacts: [{ ...artifact('timeline-project:a:v', 1), id: 'local',
+        workflowRunId: 'fill', revision: 2, updatedAt: at(59) }],
+      workingArtifactRevisions: [
+        { workingArtifactId: 'local', revision: 1, confirmedAt: at(58) },
+        { workingArtifactId: 'local', revision: 2, confirmedAt: at(30) },
+      ],
+    };
+    const inherited = { ...run('copy', 'fill', 2, 'PACKAGING'),
+      workingArtifacts: [{ ...local.workingArtifacts[0]!, id: 'copied', workflowRunId: 'copy',
+        metadata: { branchSource: { artifactId: 'local' } } }],
+      workingArtifactRevisions: [{ workingArtifactId: 'copied', revision: 2, confirmedAt: at(50) }],
+    };
+    const result = await treeOf([run('root', null, 0, 'TEMPLATE'), local, inherited]);
+    expect(result.find(b => b.workflowRunId === 'fill')?.templates[0]?.currentConfirmedAt).toBe(at(30).toISOString());
+    expect(result.find(b => b.workflowRunId === 'copy')?.templates[0]?.currentConfirmedAt).toBeNull();
+    expect(result.find(b => b.workflowRunId === 'root')?.templates[0]?.currentConfirmedAt).toBeNull();
+  });
+
   it('numbers sibling packages together but restarts for a sibling fill', async () => {
     const branches = await treeOf([
       run('root', null, 0, 'TEMPLATE'), run('fill-1', 'root', 1, 'FILL'),
@@ -45,6 +76,38 @@ describe('effect mix version scopes', () => {
     expect(branches.map((b) => b.templates[0]?.fillRevision)).toEqual([null, 1, 1, 1, 2, 2]);
     expect(branches.map((b) => b.templates[0]?.packagingRevision)).toEqual([null, null, 1, 2, null, 1]);
     expect(branches[3]?.templates[0]?.packagingRevisions).toEqual([1]);
+  });
+
+  it('counts each fill branch once, regardless of local-update artifact revisions or film count', async () => {
+    const first = run('fill-1', 'root', 1, 'FILL');
+    const second = run('fill-2', 'fill-1', 2, 'FILL');
+    const third = run('fill-3', 'fill-2', 3, 'FILL');
+    for (const fill of [first, second, third]) {
+      fill.workingArtifacts[0]!.revision = 3;
+      fill.workingArtifacts.push({ ...artifact('timeline-project:a:another-film', 4), revision: 2 });
+    }
+    const rows = [run('root', null, 0, 'TEMPLATE'), first, second, third];
+    const versions = async () => (await treeOf(rows)).map(branch => branch.templates[0]?.fillRevision);
+    expect(await versions()).toEqual([null, 1, 2, 3]);
+    expect((await treeOf(rows))[1]?.templates[0]?.fillRevisions).toEqual([2, 3]);
+    first.workingArtifacts[0]!.revision = 9;
+    second.workingArtifacts[1]!.revision = 12;
+    expect(await versions()).toEqual([null, 1, 2, 3]);
+    expect(first.workingArtifacts[0]!.revision).toBe(9);
+    expect(second.workingArtifacts[1]!.revision).toBe(12);
+    // Repository order and repeated reads cannot reserve extra version numbers.
+    expect((await treeOf([third, rows[0]!, second, first]))
+      .filter(branch => branch.workflowRunId !== 'root')
+      .map(branch => branch.templates[0]?.fillRevision).sort()).toEqual([1, 2, 3]);
+  });
+
+  it('counts a root delivery head once after in-place updates, without gaps in sibling exports', async () => {
+    const root = run('root', null, 0, 'FILL');
+    root.workingArtifacts.push({ ...artifact('final-delivery:a', 1), revision: 7 });
+    const rows = [root, run('output', 'root', 2, 'DELIVERY')];
+    expect((await treeOf(rows)).map(branch => branch.templates[0]?.deliveryRevision)).toEqual([1, 2]);
+    root.workingArtifacts.at(-1)!.revision = 11;
+    expect((await treeOf(rows)).map(branch => branch.templates[0]?.deliveryRevision)).toEqual([1, 2]);
   });
 
   it('keeps the first package at 01 after local updates and numbers subsequent branches without gaps', async () => {
@@ -58,6 +121,54 @@ describe('effect mix version scopes', () => {
     first.workingArtifacts.find((item) => item.artifactKey.startsWith('timeline-package:'))!.revision = 5;
     expect((await treeOf(rows)).map((item) => item.templates[0]?.packagingRevision))
       .toEqual([null, null, 1, 2]);
+  });
+
+  it('does not move an old package behind its siblings when newly appended films finish packaging later', async () => {
+    const first = run('package-1', 'fill', 2, 'PACKAGING');
+    first.effectPackagingRuns.push({ templateId: 'a', status: 'COMPLETED',
+      idempotencyKey: 'package-new-films', completedAt: at(59) });
+    const branches = await treeOf([run('root', null, 0, 'TEMPLATE'),
+      run('fill', 'root', 1, 'FILL'), first,
+      run('package-2', 'package-1', 3, 'PACKAGING'),
+      run('package-3', 'package-2', 4, 'PACKAGING')]);
+    expect(branches.map(branch => branch.templates[0]?.packagingRevision))
+      .toEqual([null, null, 1, 2, 3]);
+  });
+
+  it.each([{ incremental: { materialIds: ['new-material'] } }, { trimOnly: true }])('does not create a fill head or renumber package paths for local repair %j', async (inputSnapshot) => {
+    const second = run('package-2', 'package-1', 3, 'PACKAGING');
+    const rows = [run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'),
+      run('package-1', 'fill', 2, 'PACKAGING'), second, run('package-3', 'package-2', 4, 'PACKAGING')];
+    const before = await treeOf(rows);
+    second.effectTemplateMixAiRuns.push({ templateId: 'a', outputVariantId: 'v',
+      idempotencyKey: 'local-update', inputSnapshot } as never);
+    second.effectPackagingRuns.push({ templateId: 'a', status: 'COMPLETED',
+      idempotencyKey: 'package-new-films', completedAt: at(59) });
+    const after = await treeOf(rows);
+    const identities = (branches: typeof before) => branches.map(b => ({ run: b.workflowRunId,
+      fill: b.templates[0]?.fillRevision, packaging: b.templates[0]?.packagingRevision }));
+    expect(identities(after)).toEqual(identities(before));
+    expect(after.map(b => b.templates[0]?.packagingRevision)).toEqual([null, null, 1, 2, 3]);
+    expect(after.map(b => b.templates[0]?.fillRevision)).toEqual([null, 1, 1, 1, 1]);
+  });
+
+  it('uses the named mix draft rather than navigation row order when counting appended films', async () => {
+    const second = run('package-2', 'package-1', 3, 'PACKAGING');
+    second.workingArtifacts.push(artifact('timeline-project:a:new', 59), artifact('timeline-package:a:new', 59));
+    const selected = { ...second, nodeStates: [
+      { nodeId: 'TEMPLATE_MIX:current-paths', state: { schemaVersion: 1, workflowRunId: second.id,
+        selectedTemplates: { a: at(59).toISOString() } } },
+      { nodeId: 'TEMPLATE_MIX', state: { schemaVersion: 1, templates: [{ id: 'a', workspace: {
+        template: { name: 'a' }, variants: [{ id: 'v' }, { id: 'new' }],
+      } }] } },
+    ] };
+    const rows = [run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'),
+      run('package-1', 'fill', 2, 'PACKAGING'), selected];
+    const project = async () => (await treeOf(rows)).find(b => b.workflowRunId === second.id)?.templates[0];
+    expect(await project()).toMatchObject({ timelineVariantCount: 2, packagingVariantCount: 2,
+      packagingRevision: 2, currentSelectedAt: at(59).toISOString() });
+    selected.nodeStates.reverse();
+    expect(await project()).toMatchObject({ timelineVariantCount: 2, packagingVariantCount: 2, packagingRevision: 2 });
   });
 
   it('scopes picture-only exports to fill heads and packaged exports to package heads', async () => {
@@ -165,8 +276,9 @@ describe('WorkflowWorkingService effect branch tree', () => {
   it.each(['old-sibling', 'new-fill'])(
     'keeps a new template and its results visible when the active catalog is %s', async (activeId) => {
       const at = (minute: number) => new Date(Date.UTC(2026, 9, 6, 5, minute));
-      const catalog = (ids: string[]) => [{ state: { schemaVersion: 1,
-        templates: ids.map((id) => ({ id, workspace: { template: { name: id }, variants: [] } })),
+      const catalog = (ids: string[], filled = false) => [{ state: { schemaVersion: 1,
+        templates: ids.map((id) => ({ id, workspace: { template: { name: id },
+          variants: filled && id === '测试2' ? [{ id: 'v' }] : [] } })),
       } }];
       const artifact = (key: string, minute: number) => ({
         nodeId: key.startsWith('render-') ? 'SEGMENT_RENDER' : 'TEMPLATE_MIX',
@@ -185,8 +297,10 @@ describe('WorkflowWorkingService effect branch tree', () => {
       const origin = run('origin', 'root', 1, ['测试1', '测试2']);
       const old = run('old-sibling', 'root', 2, ['测试1']);
       const filled = run('new-fill', 'origin', 3, ['测试1', '测试2']);
+      filled.nodeStates = catalog(['测试1', '测试2'], true);
       filled.workingArtifacts = [artifact('mix-template:测试2', 3), artifact('timeline-project:测试2:v', 3)];
       const packaged = run('new-package', 'new-fill', 4, ['测试1', '测试2']);
+      packaged.nodeStates = catalog(['测试1', '测试2'], true);
       packaged.workingArtifacts = [artifact('timeline-package:测试2:v', 4)];
       const repository = { listEffectRunBranches: vi.fn().mockResolvedValue([root, origin, old, filled, packaged]) };
       const service = new WorkflowWorkingService(repository as never,
@@ -269,6 +383,67 @@ describe('WorkflowWorkingService effect branch tree', () => {
     expect(tree.branches.map(({ templates }) => templates.map(({ templateId }) => templateId)))
       .toEqual([['template-current'], ['template-current']]);
   });
+
+  it.each(['remaining', 'empty', 'legacy'])(
+    'projects %s mix projects without counting deleted artifacts or changing historical deliveries',
+    async (mode) => {
+      const createdAt = new Date('2026-10-06T01:00:00.000Z');
+      const draft = (ids: string[] | null) => [{ state: { schemaVersion: 1, templates: [{
+        id: 'template-a', workspace: { template: { name: '测试2' },
+          ...(ids === null ? {} : { variants: ids.map((id) => ({ id })) }) },
+      }] } }];
+      const artifact = (key: string, runId: string, stale = false) => ({
+        id: `${runId}:${key}`, workflowRunId: runId, artifactKey: key,
+        nodeId: key.startsWith('final-') ? 'FINAL_OUTPUT' : 'TEMPLATE_MIX',
+        name: key, createdAt, revision: 1, freshness: stale ? 'STALE' : 'CURRENT',
+      });
+      const mixArtifacts = (runId: string) => [
+        artifact('mix-template:template-a', runId),
+        ...['v1', 'v2', 'v3', 'v4'].flatMap((id) => [
+          artifact(`timeline-project:template-a:${id}`, runId, id === 'v2'),
+          artifact(`timeline-package:template-a:${id}`, runId, id === 'v2'),
+        ]),
+      ];
+      const base = { projectId: 'project-a', forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: 'template-a', branchLabel: null, currentNodeId: 'TEMPLATE_MIX',
+        createdAt, updatedAt: createdAt, branchPublishedAt: createdAt, activeKey: null,
+        effectPackagingRuns: [{ templateId: 'template-a', status: 'COMPLETED',
+          idempotencyKey: 'own-package', completedAt: createdAt }] };
+      const rows = [
+        { ...base, id: 'parent', parentWorkflowRunId: null, forkNodeId: null,
+          nodeStates: draft(['v1', 'v2', 'v3', 'v4']), workingArtifacts: mixArtifacts('parent') },
+        { ...base, id: 'current', parentWorkflowRunId: 'parent', activeKey: 'ACTIVE',
+          nodeStates: draft(mode === 'empty' ? [] : mode === 'legacy' ? null : ['v1', 'v3', 'v4']),
+          workingArtifacts: mixArtifacts('current') },
+        { ...base, id: 'sibling', parentWorkflowRunId: 'parent',
+          nodeStates: draft(['v1', 'v2', 'v3', 'v4']), workingArtifacts: mixArtifacts('sibling') },
+        { ...base, id: 'delivery', parentWorkflowRunId: 'current', forkNodeId: 'FINAL_OUTPUT',
+          nodeStates: [], workingArtifacts: [artifact('final-delivery:template-a', 'delivery'),
+            artifact('final-video:template-a:v2', 'delivery', true)] },
+      ];
+      const before = JSON.stringify(rows);
+      const service = new WorkflowWorkingService(
+        { listEffectRunBranches: vi.fn().mockResolvedValue(rows) } as never,
+        { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never, {} as never,
+      );
+      const tree = await service.getEffectBranchTree('project-a');
+      const expectedCount = mode === 'empty' ? 0 : mode === 'legacy' ? 4 : 3;
+      const expectedStatus = mode === 'empty' ? 'PENDING' : mode === 'legacy' ? 'STALE' : 'CONFIRMED';
+      for (const id of ['current', 'delivery']) {
+        expect(tree.branches.find((branch) => branch.workflowRunId === id)?.templates[0])
+          .toMatchObject({ timelineVariantCount: expectedCount, packagingVariantCount: expectedCount,
+            fillStatus: expectedStatus, packagingStatus: expectedStatus });
+      }
+      for (const id of ['parent', 'sibling']) {
+        expect(tree.branches.find((branch) => branch.workflowRunId === id)?.templates[0])
+          .toMatchObject({ timelineVariantCount: 4, packagingVariantCount: 4,
+            fillStatus: 'STALE', packagingStatus: 'STALE' });
+      }
+      expect(tree.branches.find((branch) => branch.workflowRunId === 'delivery')?.templates[0])
+        .toMatchObject({ deliveryCount: 1, deliveryStatus: 'STALE' });
+      expect(JSON.stringify(rows)).toBe(before);
+    },
+  );
 
   it('includes unconfirmed mix templates from the active run draft without creating a version', async () => {
     const createdAt = new Date('2026-09-28T01:00:00.000Z');
@@ -527,7 +702,7 @@ describe('WorkflowWorkingService effect branch tree', () => {
     expect(tree.branches[0]?.templates[0]).toMatchObject({
       templateRevision: 5,
       templateRevisions: [5],
-      fillRevision: 2,
+      fillRevision: 1,
       fillRevisions: [2],
       packagingRevision: 1,
       packagingRevisions: [4],
@@ -612,9 +787,11 @@ describe('WorkflowWorkingService effect branch tree', () => {
     });
     expect(tree.branches[1]?.templates[1]).toMatchObject({
       templateRevision: 2,
-      fillRevision: 2,
+      fillRevision: 1,
+      fillRevisions: [2],
       packagingRevision: 1,
-      deliveryRevision: 2,
+      packagingRevisions: [2],
+      deliveryRevision: 1,
       deliveryCount: 1,
       deliveryCreatedAt: createdAt.toISOString(),
     });

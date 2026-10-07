@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { effectArtifactSourceOwner, projectEffectBranchFreshness } from './effect-branch-freshness';
+import { effectArtifactSourceOwner, effectRenderClipHeads, projectEffectBranchFreshness } from './effect-branch-freshness';
+import type { EffectTemplateMixMaterial, EffectTemplateMixVariant } from '@ai-marketing/contracts';
 
 const branches = [
   { id: 'render', parentWorkflowRunId: null, forkNodeId: null },
@@ -18,6 +19,60 @@ const project = (id: string, workflowRunId: string, source: string, revision = 1
     sourceArtifactId: source, sourceRevision: revision }],
 });
 describe('branch dependency freshness projection', () => {
+  const adopted = { id: 'a', artifactId: 'a', artifactKey: 'render-clip:a', artifactRevision: 1,
+    fileObjectId: 'old', contentHash: 'old-hash', sourcePromptId: 'prompt', duration: 10 } as EffectTemplateMixMaterial;
+  const frozenFilm = (id: string, file = 'old', revision = 1) => ({ ...project(id, 'fill-a', 'a', revision),
+    freshness: 'STALE', payload: { variant: { id, slots: [{ id: 's', duration: 4 }], bindings: { s: 'a' },
+      bindingRevisions: { s: revision }, bindingSources: { s: { ...adopted, fileObjectId: file,
+        contentHash: `${file}-hash`, artifactRevision: revision } } } as unknown as EffectTemplateMixVariant } });
+  const pool = (extra = false) => ({ ...clip('pool', 'render'), artifactKey: 'render-batch:p', payload: {
+    clips: [{ taskId: 'a', promptId: 'prompt' }, ...(extra ? [{ taskId: 'b', promptId: 'new-prompt' }] : [])],
+    removedSources: extra ? [] : [{ taskId: 'b', promptId: 'new-prompt' }],
+  } });
+  it('clears sticky render warnings when the net adopted difference disappears and advances films independently', () => {
+    const latest = { ...clip('a', 'render', 3, 'latest'), payload: { promptId: 'prompt', fileObjectId: 'latest',
+      contentHash: 'latest-hash', durationSeconds: 10 } };
+    const result = projectEffectBranchFreshness(branches, [latest, pool(), frozenFilm('finished', 'latest', 3), frozenFilm('remaining')]);
+    expect(result.find((row) => row.id === 'finished')?.freshness).toBe('CURRENT');
+    expect(result.find((row) => row.id === 'remaining')?.freshness).toBe('STALE');
+    expect(projectEffectBranchFreshness(branches, [{ ...latest, revision: 1,
+      payload: { ...latest.payload, fileObjectId: 'old', contentHash: 'old-hash' } }, pool(), frozenFilm('film')])
+      .find((row) => row.id === 'film')?.freshness).toBe('CURRENT');
+  });
+  it('reconciles saved additions and their cancellation with the same template baseline', () => {
+    const withHistory = branches.map((branch) => branch.id === 'fill-a' ? { ...branch, effectTemplateMixAiRuns: [{
+      templateId: 't', status: 'COMPLETED', inputSnapshot: { materials: [{ id: 'a', promptId: 'prompt' }] },
+    }] } : branch);
+    const a = { ...clip('a', 'render'), payload: { promptId: 'prompt', fileObjectId: 'old', contentHash: 'old-hash', durationSeconds: 10 } };
+    const b = { ...clip('b', 'render', 1, 'new', 'new-prompt'), payload: { promptId: 'new-prompt', fileObjectId: 'new', durationSeconds: 10 } };
+    const template = { ...project('template', 'fill-a', 'a'), artifactKey: 'mix-template:t', freshness: 'STALE' };
+    expect(projectEffectBranchFreshness(withHistory, [a, b, pool(true), frozenFilm('film'), template]).at(-1)?.freshness).toBe('STALE');
+    expect(projectEffectBranchFreshness(withHistory, [a, b, pool(false), frozenFilm('film'), template]).at(-1)?.freshness).toBe('CURRENT');
+  });
+  const audioPackage = () => ({
+    ...project('audio', 'fill-a', 'film'), artifactKey: 'timeline-package:t:film',
+    freshness: 'STALE', payload: { schemaVersion: 1, voices: {}, captions: [] },
+  });
+  it('keeps confirmed independent audio current after a visual local update without hiding picture staleness', () => {
+    const picture = { ...project('film', 'fill-a', 'source'), revision: 2 };
+    const original = [clip('source', 'render', 2), picture, audioPackage()];
+    const result = projectEffectBranchFreshness(branches, original);
+    expect(result.find(row => row.id === 'film')?.freshness).toBe('STALE');
+    expect(result.find(row => row.id === 'audio')?.freshness).toBe('CURRENT');
+    expect(original[2]?.freshness).toBe('STALE'); // Projection does not rewrite a stored artifact.
+  });
+  it('does not clear real non-visual dependency changes or an unproven legacy package', () => {
+    const picture = { ...project('film', 'fill-a', 'source'), revision: 2 };
+    const fact = { ...clip('facts', 'render', 2), nodeId: 'INFORMATION_EXTRACTION',
+      artifactKey: 'marketing-insight:product' };
+    const dependent = { ...audioPackage(), dependencies: [...audioPackage().dependencies,
+      { sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'facts', sourceRevision: 1 }] };
+    expect(projectEffectBranchFreshness(branches, [picture, fact, dependent])[2]?.freshness).toBe('STALE');
+    expect(projectEffectBranchFreshness(branches, [picture, { ...audioPackage(), payload: undefined }])[1]?.freshness)
+      .toBe('STALE');
+    expect(projectEffectBranchFreshness(branches, [{ ...picture, artifactKey: 'timeline-project:t:other' },
+      audioPackage()])[1]?.freshness).toBe('STALE');
+  });
   it('does not stale unrelated material consumers when a confirmed Prompt batch revision changes', () => {
     const prompt = { id: 'prompts', workflowRunId: 'render', nodeId: 'PROMPT_GENERATION',
       artifactKey: 'prompt-batch:p', revision: 2, contentHash: 'new-batch', freshness: 'CURRENT',
@@ -51,6 +106,65 @@ describe('branch dependency freshness projection', () => {
     const cleared = projectEffectBranchFreshness(branches, inputs.map((row) => row.id === 'affected'
       ? { ...row, dependencies: [] } : row));
     expect(cleared.find((row) => row.id === 'affected')?.freshness).toBe('CURRENT');
+  });
+  it('an addition preserves independently confirmed repairs without making their consumers stale', () => {
+    const rows = [clip('original', 'render'), clip('old-copy', 'fill-a'),
+      { ...clip('repair', 'fill-b', 2, 'repaired'), updatedAt: '2026-10-06' },
+      clip('added', 'fill-a', 1, 'new-file', 'new-prompt'),
+      { ...clip('root-pool', 'render'), artifactKey: 'render-batch:root', payload: { clips: [{ taskId: 'original' }] }, updatedAt: '2026-10-01' },
+      { ...clip('new-pool', 'fill-a', 3), artifactKey: 'render-batch:added', payload: { clips: [{ taskId: 'old-copy' }, { taskId: 'added' }] }, updatedAt: '2026-10-07' },
+      project('repaired-film', 'fill-a', 'repair', 2), project('old-film', 'fill-a', 'old-copy')];
+    expect(effectRenderClipHeads(branches, 'fill-a', rows).get('prompt')?.id).toBe('repair');
+    const result = projectEffectBranchFreshness(branches, rows);
+    expect(result.find((row) => row.id === 'repaired-film')?.freshness).toBe('CURRENT');
+    expect(result.find((row) => row.id === 'old-film')?.freshness).toBe('STALE');
+    expect(result.find((row) => row.id === 'repair')?.freshness).toBe('CURRENT');
+  });
+  it('clip merging cannot resurrect removed members or adopt copies, drafts or independent render heads', () => {
+    const runs = [...branches, { id: 'draft', parentWorkflowRunId: 'fill-a', forkNodeId: 'TEMPLATE_MIX', branchPublishedAt: null },
+      { id: 'independent', parentWorkflowRunId: 'render', forkNodeId: 'SEGMENT_RENDER' },
+      { id: 'manual', parentWorkflowRunId: 'render', forkNodeId: 'MANUAL_COPY' }];
+    const rows = [clip('original', 'render'), clip('removed', 'render', 1, 'removed', 'deleted-prompt'),
+      { ...clip('root-pool', 'render'), artifactKey: 'render-batch:root', payload: { clips: [] }, updatedAt: '2026-10-01' },
+      { ...clip('new-pool', 'fill-a', 2), artifactKey: 'render-batch:new', payload: { clips: [{ taskId: 'original' }] }, updatedAt: '2026-10-07' },
+      { ...clip('original', 'fill-a'), id: 'baseline-copy', metadata: { branchSource: { artifactId: 'original' } } },
+      { ...clip('fake-copy', 'fill-b', 100, 'fake'), metadata: { branchSource: { artifactId: 'original' } } },
+      clip('unsaved', 'draft', 100), clip('other', 'independent', 100), clip('manual', 'manual', 100)];
+    const heads = effectRenderClipHeads(runs, 'fill-a', rows);
+    expect([...heads.keys()]).toEqual(['prompt']);
+    expect(heads.get('prompt')?.payload).toMatchObject({ fileObjectId: 'old' });
+  });
+  const batch = (workflowRunId: string, revision: number, updatedAt: string) => ({
+    ...clip(`batch-${workflowRunId}`, workflowRunId, revision),
+    artifactKey: `render-batch:${workflowRunId}`, payload: { clips: [] }, updatedAt,
+  });
+  it('a confirmed pool addition wins over an older repair even though new clips start at revision 1', () => {
+    const inputs = [batch('render', 1, '2026-10-01'),
+      batch('fill-a', 2, '2026-10-07'), batch('fill-b', 2, '2026-10-06'),
+      clip('old', 'render'),
+      { ...clip('repair', 'fill-b', 2), updatedAt: '2026-10-06' },
+      clip('imported', 'fill-a', 1, 'imported-file', 'imported-prompt')];
+    for (const run of ['render', 'fill-a', 'fill-b', 'package-a'])
+      expect(effectArtifactSourceOwner(branches, run, 'SEGMENT_RENDER', inputs)).toBe('fill-a');
+  });
+  it('recognizes a confirmed pool deletion without requiring a changed clip', () => {
+    const inputs = [batch('render', 1, '2026-10-01'), batch('fill-a', 2, '2026-10-07')];
+    expect(effectArtifactSourceOwner(branches, 'fill-b', 'SEGMENT_RENDER', inputs)).toBe('fill-a');
+  });
+  it('a later save at the root render head wins over an old sibling edit', () => {
+    const inputs = [batch('render', 3, '2026-10-08'), batch('fill-a', 2, '2026-10-07'),
+      clip('original', 'render'), { ...clip('repair', 'fill-a', 2), updatedAt: '2026-10-07' }];
+    expect(effectArtifactSourceOwner(branches, 'fill-a', 'SEGMENT_RENDER', inputs)).toBe('render');
+  });
+  it('ignores copied pools and unpublished edits, and does not cross independent render heads', () => {
+    const runs = [...branches,
+      { id: 'draft', parentWorkflowRunId: 'fill-a', forkNodeId: 'TEMPLATE_MIX', branchPublishedAt: null },
+      { id: 'independent', parentWorkflowRunId: 'render', forkNodeId: 'SEGMENT_RENDER' }];
+    const inputs = [batch('render', 1, '2026-10-01'), batch('fill-a', 2, '2026-10-07'),
+      { ...batch('fill-b', 8, '2026-10-09'), metadata: { branchSource: { artifactId: 'batch-render' } } },
+      batch('draft', 9, '2026-10-10'), batch('independent', 10, '2026-10-11')];
+    expect(effectArtifactSourceOwner(runs, 'fill-b', 'SEGMENT_RENDER', inputs)).toBe('fill-a');
+    expect(effectArtifactSourceOwner(runs, 'independent', 'SEGMENT_RENDER', inputs)).toBe('independent');
   });
   it('regeneration in the newest fill warns older and sibling consumers, but not independent render heads', () => {
     const runs = [...branches, { id: 'fill-c', parentWorkflowRunId: 'fill-b', forkNodeId: 'TEMPLATE_MIX',

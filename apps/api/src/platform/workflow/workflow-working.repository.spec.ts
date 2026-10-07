@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../database/prisma.service';
 import { workflowStateHash } from './workflow-state-hash';
+import { artifactVisitor } from '../../workflows/effect/template-mix/effect-packaging.domain';
 import {
   inheritedEffectArtifactVisible,
   WorkflowWorkingRepository,
@@ -10,6 +11,82 @@ const defaultExecutionInputHash =
   '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72';
 
 describe('WorkflowWorkingRepository', () => {
+  it('authorizes exact frozen render dependencies only through the private mix commit context', async () => {
+    const source = { artifactId: 'clip', artifactKey: 'render-clip:c', artifactRevision: 2,
+      artifactContentHash: 'business-2', fileObjectId: 'file-2', contentHash: 'sha-2' };
+    const input = { dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'clip',
+      sourceKey: 'render-clip:c', sourceRevision: 2, sourceHash: 'business-2' }] };
+    const transaction = {
+      workflowRun: { findFirst: vi.fn().mockResolvedValue(null) },
+      workingArtifact: { findFirst: vi.fn().mockResolvedValue({ id: 'clip' }),
+        findMany: vi.fn().mockResolvedValue([{ id: 'clip', workflowRunId: 'w', nodeId: 'SEGMENT_RENDER',
+          artifactKey: 'render-clip:c', revision: 3, contentHash: 'business-3' }]) },
+      fileObject: { findFirst: vi.fn().mockResolvedValue({ id: 'file-2', sha256: 'sha-2' }) },
+    };
+    const repository = new WorkflowWorkingRepository({} as PrismaService);
+    const validate = repository as unknown as { validateArtifactInputsInTransaction(...args: unknown[]): Promise<void> };
+    await expect(validate.validateArtifactInputsInTransaction(transaction, 'p', 'w', input, 'TEMPLATE_MIX',
+      { frozenRenderSources: [source] })).resolves.toBeUndefined();
+    expect(transaction.fileObject.findFirst).toHaveBeenCalledWith({ where: {
+      projectId: 'p', id: 'file-2', sha256: 'sha-2', status: 'AVAILABLE' } });
+    for (const node of ['TEMPLATE_MIX', 'FINAL_OUTPUT'])
+      await expect(validate.validateArtifactInputsInTransaction(transaction, 'p', 'w', input, node,
+        node === 'FINAL_OUTPUT' ? { frozenRenderSources: [source] } : {}))
+        .rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+    transaction.fileObject.findFirst.mockResolvedValue(null);
+    await expect(validate.validateArtifactInputsInTransaction(transaction, 'p', 'w', input, 'TEMPLATE_MIX',
+      { frozenRenderSources: [source] })).rejects.toThrow('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
+  });
+  function sharedRenderFixture(invalid?: 'foreign-project' | 'independent-run' | 'revision', preloaded = false) {
+    const branches = ['root', 'owner', 'independent'].map((id) => ({ id, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+      parentWorkflowRunId: id === 'root' ? null : 'root', forkNodeId: id === 'root' ? null :
+        id === 'independent' ? 'MANUAL_COPY' : 'TEMPLATE_MIX', branchPublishedAt: new Date() }));
+    const row = (id: string, workflowRunId: string, nodeId: string, artifactKey: string,
+      source?: string, revision = 1) => ({ id, projectId: 'p', workflowRunId, nodeId, artifactKey, revision,
+      freshness: 'CURRENT', availability: 'AVAILABLE', contentHash: 'h', files: [],
+      payload: nodeId === 'SEGMENT_RENDER' ? { promptId: 'pr' } : {}, metadata: null,
+      updatedAt: new Date('2026-10-06'), dependencies: source ? [{ sourceType: 'WORKING_ARTIFACT',
+        sourceArtifactId: source, sourceKey: source, sourceRevision: 1 }] : [] });
+    const rows = [row('old', 'root', 'SEGMENT_RENDER', 'render-clip:old'),
+      row('new', 'owner', 'SEGMENT_RENDER', 'render-clip:new', 'prompt', 2),
+      row('prompt', 'owner', 'PROMPT_GENERATION', 'prompt-batch:copy', 'facts', invalid === 'revision' ? 2 : 1),
+      row('facts', 'owner', 'INFORMATION_EXTRACTION', 'marketing-insight:copy', 'source'),
+      row('source', invalid === 'independent-run' ? 'independent' : 'owner', 'SOURCE_IMPORT', 'source-package:copy')];
+    if (invalid === 'foreign-project') rows[4]!.projectId = 'other';
+    const findMany = vi.fn().mockImplementation(({ where }) => Promise.resolve(rows.filter((item) =>
+      item.projectId === where.projectId && (!where.id || where.id.in.includes(item.id)) &&
+      (!where.workflowRunId || (typeof where.workflowRunId === 'string' ?
+        item.workflowRunId === where.workflowRunId || (preloaded && item.id === 'prompt' &&
+          where.workflowRunId === 'root' && !where.nodeId && !where.id) : where.workflowRunId.in.includes(item.workflowRunId))) &&
+      (!where.nodeId || (typeof where.nodeId === 'string' ? item.nodeId === where.nodeId : where.nodeId.in.includes(item.nodeId))))));
+    return { findMany, repository: new WorkflowWorkingRepository({ workflowRun: {
+      findMany: vi.fn().mockResolvedValue(branches) }, workingArtifact: { findMany } } as unknown as PrismaService) };
+  }
+  it.each([undefined, 'SEGMENT_RENDER'])('hydrates the adopted sibling source closure without leaking filtered nodes: %s', async (nodeId) => {
+    const { repository, findMany } = sharedRenderFixture();
+    const result = await repository.listArtifacts('p', { workflowRunId: 'root', ...(nodeId ? { nodeId } : {}) });
+    expect(result.find((row) => row.id === 'new')?.freshness).toBe('CURRENT');
+    if (nodeId) expect(result.every((row) => row.nodeId === nodeId)).toBe(true);
+    else {
+      expect(result.map((row) => row.id)).toEqual(expect.arrayContaining(['new', 'prompt', 'facts', 'source']));
+      expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).not.toThrow();
+    }
+    const reads = findMany.mock.calls.filter(([query]) => query.where.nodeId?.in);
+    expect(reads).toHaveLength(3);
+    for (const [query] of reads) expect(query.where).toMatchObject({ projectId: 'p', workflowRunId: { in: ['owner', 'root'] } });
+  });
+  it('follows an already-loaded Prompt into its missing fact and source dependencies', async () => {
+    const { repository, findMany } = sharedRenderFixture(undefined, true);
+    const result = await repository.listArtifacts('p', { workflowRunId: 'root' });
+    expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).not.toThrow();
+    expect(findMany.mock.calls.filter(([query]) => query.where.nodeId?.in)).toHaveLength(2);
+  });
+  it.each(['foreign-project', 'independent-run', 'revision'] as const)('keeps source isolation and exact revision checks: %s', async (invalid) => {
+    const { repository } = sharedRenderFixture(invalid);
+    const result = await repository.listArtifacts('p', { workflowRunId: 'root' });
+    expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).toThrow();
+    if (invalid !== 'revision') expect(result.some((row) => row.id === 'source')).toBe(false);
+  });
   it('inherits only artifacts before the fork and isolates a template-scoped fork', () => {
     const artifact = (nodeId: string, artifactKey: string) => ({ nodeId, artifactKey });
     expect(
@@ -229,13 +306,14 @@ describe('WorkflowWorkingRepository', () => {
         where: { projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT' },
         include: expect.objectContaining({
           nodeStates: {
-            where: { nodeId: 'TEMPLATE_MIX' },
-            select: { state: true },
+            where: { nodeId: { in: ['TEMPLATE_MIX', 'TEMPLATE_MIX:current-paths'] } },
+            select: { nodeId: true, state: true },
           },
           effectTemplateMixAiRuns: {
             where: { status: 'COMPLETED', outputVariantId: { not: null } },
             // The key says whether the row is a fill this Run ran or a copy a fork carried in.
-            select: { templateId: true, outputVariantId: true, idempotencyKey: true },
+            select: { templateId: true, outputVariantId: true, idempotencyKey: true,
+              status: true, inputSnapshot: true, selectionResult: true, completedAt: true },
           },
           effectPackagingRuns: {
             select: { templateId: true, status: true, idempotencyKey: true, completedAt: true },

@@ -209,6 +209,17 @@ function completedRun() {
   return { id: 'run', workflowRunId: 'w', templateId: 't', items: [completedItem()] };
 }
 describe('packaging service output boundary', () => {
+  it('requires local update for added materials before attempting to fork or create packaging', async () => {
+    const { service, mix, repo, working } = harness();
+    const workspace = await mix.workspace();
+    Object.assign(workspace, { pendingAddedMaterialIds: { t: ['added-video'], other: ['other-video'] } });
+    await expect(service.create('p', 't', {
+      workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'pending-addition',
+    })).rejects.toThrow('请先完成局部更新，再进行智能成片包装');
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(repo.create).not.toHaveBeenCalled();
+    expect(repo.db.workflowRun.findFirst).not.toHaveBeenCalled();
+  });
   it('locks the source during first packaging without starting another paid task', async () => {
     const { service, mix, repo, working } = harness();
     const workspace = await mix.workspace();
@@ -280,7 +291,7 @@ describe('packaging service output boundary', () => {
     }]);
     await expect(service.workerItem('p', 'run', 'attempt', 'item')).rejects.toThrow('输入工程发生变化');
   });
-  it('fully repackages fresh sources in a child branch without changing the parent cuts', async () => {
+  it('refuses sources changed while forking instead of silently replacing parent cuts', async () => {
     const { service, mix, working, repo } = harness();
     const parent = await mix.workspace();
     const variant = { ...v, appliedTemplateVersion: 1,
@@ -300,19 +311,30 @@ describe('packaging service output boundary', () => {
       ...completedItem().snapshot, variant: fresh, dependencies: [], sourceTimelineHash: visualHash(fresh),
     } as PackagingSnapshot));
     try {
-      await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, component: 'ALL',
-        idempotencyKey: 'fresh-full-package' });
-      const input = repo.create.mock.calls[0]![0];
-      expect(input.workflowRunId).toBe('child');
-      expect(input.snapshots[0].captionTimingPolicy).toBe('SYNTHESIS_WORDS_V1');
-      expect(input.snapshots[0].variant).toMatchObject({ bindingRevisions: { a: 2 }, offsets: { a: 0 } });
-      expect(input.snapshots[0].sourceTrimMaterials).toEqual([{ slotId: 'a', material: child.materials[0] }]);
-      expect(input.snapshots[0].dependencies).toContainEqual({ artifactId: 'batch', artifactKey: 'render-batch:active',
-        nodeId: 'SEGMENT_RENDER', revision: 3, contentHash: 'batch-hash' });
+      await expect(service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, component: 'ALL',
+        idempotencyKey: 'fresh-full-package' })).rejects.toThrow('请先完成局部更新');
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(snapshot).not.toHaveBeenCalled();
       expect(parent.draft.templates[0]!.workspace.variants[0]).toEqual(variant);
       expect(variant.offsets.a).toBe(7); expect(variant.bindingRevisions.a).toBe(1);
       expect(working.beginEffectNodeEdit.mock.calls[0]?.[4]).toMatchObject({ always: true, keepParentActive: true });
     } finally { snapshot.mockRestore(); }
+  });
+  it.each([false, true])('requires local update for edited/deleted sources before first or repeat packaging (%s)', async (removed) => {
+    const { service, mix, working, repo } = harness();
+    const workspace = await mix.workspace();
+    workspace.draft.templates[0]!.workspace.variants = [{ ...v,
+      slots: [{ id: 'a', role: 'PRODUCT', purpose: 'PRODUCT_DISPLAY', label: '产品', duration: 4, transition: '硬切' }],
+      bindings: { a: 'clip' }, bindingRevisions: { a: 1 }, offsets: { a: 0 },
+    } as EffectTemplateMixVariant];
+    Object.assign(workspace.draft.templates[0]!, { packagingLocked: true });
+    Object.assign(workspace.materials[0]!, removed
+      ? { available: false, activeSource: false, sourceRemoved: true }
+      : { artifactRevision: 2 });
+    await expect(service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1,
+      idempotencyKey: 'repeat-package', component: 'ALL' })).rejects.toThrow('请先完成局部更新');
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(repo.create).not.toHaveBeenCalled();
   });
   it('checks all distinct audio files in one project- and source-scoped query', async () => {
     const { service, repo } = harness();
@@ -542,9 +564,11 @@ describe('packaging service output boundary', () => {
       id,
       slots: [{ id: 'a', duration: 4 }],
       bindings: { a: 'clip' },
+      bindingRevisions: { a: 1 },
     })) as unknown as EffectTemplateMixVariant[];
     mix.workspace.mockResolvedValue({
       draftRevision: 1,
+      materials: [{ id: 'clip', artifactRevision: 1, available: true, duration: 10 }],
       draft: {
         templates: [
           {
@@ -610,6 +634,7 @@ describe('packaging service output boundary', () => {
         { id: 'b', duration: 3 },
       ],
       bindings: { a: '1', b: '2' },
+      bindingRevisions: { a: 1, b: 1 },
     } as unknown as EffectTemplateMixVariant;
     const hash = visualHash(variant);
     const frozen = {
@@ -637,6 +662,7 @@ describe('packaging service output boundary', () => {
     };
     mix.workspace.mockResolvedValue({
       draftRevision: 1,
+      materials: ['1', '2'].map((id) => ({ id, artifactRevision: 1, available: true, duration: 10 })),
       draft: {
         templates: [
           {
@@ -686,6 +712,7 @@ describe('packaging service output boundary', () => {
         ...v,
         slots: [{ id: 'a', duration: 3 }],
         bindings: { a: '1' },
+        bindingRevisions: { a: 1 },
       } as unknown as EffectTemplateMixVariant;
       const sourceTimelineHash = visualHash(variant);
       const oldVoice = {
@@ -706,6 +733,7 @@ describe('packaging service output boundary', () => {
       };
       mix.workspace.mockResolvedValue({
         draftRevision: 1,
+        materials: [{ id: '1', artifactRevision: 1, available: true, duration: 10 }],
         draft: {
           templates: [
             {

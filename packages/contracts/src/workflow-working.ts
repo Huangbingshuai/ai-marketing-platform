@@ -133,6 +133,10 @@ export type EffectWorkflowBranchTemplate = {
   templateId: string;
   name: string;
   templateCreatedAt?: string | null;
+  /** Last local confirmed mix/output write, not a draft save or inherited copy timestamp. */
+  currentConfirmedAt?: string | null;
+  /** Explicit user choice of this template's workflow, independent of content confirmation. */
+  currentSelectedAt?: string | null;
   templateRevision?: number | null;
   templateRevisions?: number[];
   templateStatus?: EffectWorkflowBranchNodeStatus;
@@ -180,6 +184,7 @@ export type EffectWorkflowBranchTreeData = {
 export function effectTemplateBranchTips(
   branches: readonly EffectWorkflowBranch[],
   contextRunId: string | null,
+  options: { current?: boolean; selectedTemplateId?: string | null } = {},
 ): Map<string, EffectWorkflowBranch> {
   const byId = new Map(branches.map((branch) => [branch.workflowRunId, branch]));
   const context = contextRunId ? byId.get(contextRunId) : undefined;
@@ -198,17 +203,43 @@ export function effectTemplateBranchTips(
   const scoped = context ? branches.filter((branch) => renderOwner(branch) === renderOwner(context)) : [];
   const tips = new Map<string, EffectWorkflowBranch>();
   for (const templateId of new Set(scoped.flatMap((branch) => branch.templates.map((t) => t.templateId)))) {
-    const latest = scoped.filter((branch) => branch.forkTemplateId === templateId &&
-      (branch.forkNodeId === 'TEMPLATE_MIX' || branch.forkNodeId === 'FINAL_OUTPUT'))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.workflowRunId.localeCompare(a.workflowRunId))[0];
-    const selected = context?.forkTemplateId === templateId ? context : undefined;
+    const confirmedAt = (branch: EffectWorkflowBranch) =>
+      branch.templates.find((item) => item.templateId === templateId)?.currentConfirmedAt;
+    // Older APIs cannot distinguish a local overwrite from branch creation. Retain their
+    // explicit context instead of guessing a different history from missing timestamps.
+    const current = options.current && scoped.some((branch) => Boolean(confirmedAt(branch)));
+    const latest = scoped.filter((branch) =>
+      (branch.forkTemplateId === templateId &&
+        (branch.forkNodeId === 'TEMPLATE_MIX' || branch.forkNodeId === 'FINAL_OUTPUT')) ||
+      (current && Boolean(confirmedAt(branch))))
+      .sort((a, b) => (current ? confirmedAt(b) ?? b.createdAt : b.createdAt)
+        .localeCompare(current ? confirmedAt(a) ?? a.createdAt : a.createdAt) ||
+        b.createdAt.localeCompare(a.createdAt) || b.workflowRunId.localeCompare(a.workflowRunId))[0];
+    const chosen = scoped.filter(branch => Boolean(branch.templates.find(t =>
+      t.templateId === templateId)?.currentSelectedAt)).sort((a, b) =>
+      b.templates.find(t => t.templateId === templateId)!.currentSelectedAt!.localeCompare(
+        a.templates.find(t => t.templateId === templateId)!.currentSelectedAt!) ||
+      b.workflowRunId.localeCompare(a.workflowRunId))[0];
+    const selected = ((!options.current || (!current && !chosen)) && context?.forkTemplateId === templateId) ||
+      options.selectedTemplateId === templateId ? context : undefined;
     const fallback = context?.templates.some((t) => t.templateId === templateId) ? context :
       scoped.find((branch) => branch.templates.some((t) => t.templateId === templateId));
-    if (selected ?? latest ?? fallback) tips.set(templateId, (selected ?? latest ?? fallback)!);
+    if (selected ?? chosen ?? latest ?? fallback) tips.set(templateId, (selected ?? chosen ?? latest ?? fallback)!);
   }
   return tips;
 }
 export type ActivateEffectWorkflowBranchData = { run: WorkflowRun };
+export type ActivateEffectWorkflowBranchRequest = {
+  /** null means configuration navigation only; omitted keeps task-completion compatibility. */
+  templateId?: string | null;
+};
+/** UI-only selection state, never an execution input or confirmed artifact. */
+export const EFFECT_TEMPLATE_CURRENT_PATH_NODE_ID = 'TEMPLATE_MIX:current-paths';
+export type EffectTemplateCurrentPathState = {
+  schemaVersion: 1;
+  workflowRunId: string;
+  selectedTemplates: Record<string, string>;
+};
 export type CreateEffectWorkflowBranchRequest = { idempotencyKey: string };
 export type CreateEffectWorkflowBranchData = {
   run: WorkflowRun;

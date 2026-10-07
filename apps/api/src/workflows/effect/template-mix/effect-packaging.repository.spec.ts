@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../../database/prisma.service';
 import type { PackagingSnapshot } from '@ai-marketing/contracts';
 import { EffectPackagingRepository } from './effect-packaging.repository';
+import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import { templateConfigurationHash } from './template-mix-lifecycle';
 
 const testTemplate = { name: '模板', editVersion: 1, slots: [] };
@@ -31,6 +32,7 @@ function harness() {
       updateMany: vi.fn(),
     },
     workingArtifact: { findMany: vi.fn().mockResolvedValue([]) },
+    workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'w' }) },
     effectTemplateMixAiRun: { count: vi.fn().mockResolvedValue(0) },
     effectFinalOutputItem: { findMany: vi.fn().mockResolvedValue([]) },
     workflowNodeState: {
@@ -56,16 +58,26 @@ describe('packaging lease and durable task repository', () => {
     });
     expect(db.effectPackagingRun.findFirst).not.toHaveBeenCalled();
   });
-  it('reads only required source revisions from the same active workflow run', async () => {
+  it('reads required revisions from the active run source graph, including inherited sources', async () => {
     const { db, repo } = harness();
-    await repo.sourceArtifacts('p', 'w', ['a', 'b']);
-    expect(db.workingArtifact.findMany).toHaveBeenCalledWith({
-      where: { projectId: 'p', workflowRunId: 'w', id: { in: ['a', 'b'] },
-        workflowRun: { status: { in: ['ACTIVE', 'PAUSED'] } } },
-      select: { id: true, revision: true, freshness: true, availability: true },
-    });
-    await repo.sourceArtifacts('p', 'w', []);
-    expect(db.workingArtifact.findMany).toHaveBeenCalledTimes(1);
+    const source = { id: 'a', revision: 3, freshness: 'CURRENT', availability: 'AVAILABLE' };
+    const projection = vi.spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
+      .mockResolvedValue([source, { ...source, id: 'unconsumed' }] as never);
+    try {
+      expect(await repo.sourceArtifacts('p', 'w', ['a', 'b'])).toEqual([source]);
+      expect(db.workflowRun.findFirst).toHaveBeenCalledWith({
+        where: { projectId: 'p', id: 'w', status: { in: ['ACTIVE', 'PAUSED'] } }, select: { id: true },
+      });
+      expect(projection).toHaveBeenCalledWith('p', { workflowRunId: 'w' });
+      expect(await repo.sourceArtifacts('p', 'w', [])).toEqual([]);
+      expect(projection).toHaveBeenCalledOnce();
+      db.workflowRun.findFirst.mockResolvedValue(null);
+      expect(await repo.sourceArtifacts('other-project', 'w', ['a'])).toEqual([]);
+      expect(projection).toHaveBeenCalledOnce();
+      expect(db.workingArtifact.findMany).not.toHaveBeenCalled();
+    } finally {
+      projection.mockRestore();
+    }
   });
   it('inherits composite run/project relation fields for nested items', async () => {
     const { db, repo } = harness();

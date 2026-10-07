@@ -7,6 +7,10 @@ export type EffectTemplateMixWorkbenchHandoff = {
   workflowRunId: string;
   templateId: string;
   variantId: string;
+  /** Template-list navigation stays on configuration; task publication still opens the editor. */
+  view?: 'CONFIG' | 'EDITOR';
+  /** Resume the user's click only after loading the actual branch, before its confirmation dialog. */
+  action?: 'SOURCE_UPDATE';
 };
 
 let handoff: EffectTemplateMixWorkbenchHandoff | null = null;

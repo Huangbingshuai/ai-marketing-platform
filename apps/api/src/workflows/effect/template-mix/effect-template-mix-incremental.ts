@@ -6,7 +6,7 @@ import type {
   EffectTemplateMixMaterial,
 } from '@ai-marketing/contracts';
 import {
-  effectTemplateMixMaterialFitsTemplate,
+  effectTemplateMixPendingAddedMaterials,
   type EffectTemplateMixSlot,
 } from '@ai-marketing/contracts';
 import { buildAssignedPools, enumerateAssignedVariants } from './effect-template-mix.domain';
@@ -30,38 +30,7 @@ export function pendingAddedMaterials(
   history: readonly History[],
   slots?: readonly Pick<EffectTemplateMixSlot, 'duration'>[],
 ): string[] {
-  const knownPrompts = new Set<string>();
-  let hasBaseline = false;
-  for (const run of history) {
-    if (run.templateId !== templateId || run.status !== 'COMPLETED') continue;
-    const snapshot = run.inputSnapshot as Partial<EffectTemplateMixAiSnapshot> | null;
-    if (!Array.isArray(snapshot?.materials)) continue;
-    hasBaseline = true;
-    const selected = new Set(
-      Array.isArray(run.selectionResult)
-        ? (run.selectionResult as EffectTemplateMixAiSelection[]).map((item) => item.materialId)
-        : [],
-    );
-    for (const material of snapshot.materials) {
-      if (
-        !snapshot.incremental ||
-        !snapshot.incremental.materialIds.includes(material.id) ||
-        selected.has(material.id)
-      )
-        knownPrompts.add(material.promptId);
-    }
-  }
-  if (!hasBaseline) return [];
-  return materials
-    .filter(
-      (material) =>
-        material.available &&
-        material.activeSource !== false &&
-        (!slots || effectTemplateMixMaterialFitsTemplate(material.duration ?? NaN, slots)) &&
-        Boolean(material.sourcePromptId) &&
-        !knownPrompts.has(material.sourcePromptId!),
-    )
-    .map(({ id }) => id);
+  return effectTemplateMixPendingAddedMaterials(templateId, materials, history, slots);
 }
 
 /** New runs share the full-fill combination policy; old snapshots keep their AI plan. */

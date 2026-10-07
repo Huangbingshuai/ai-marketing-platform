@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { rememberWorkbench, takeWorkbench } from './effect-template-mix-workbench-handoff';
 
 describe('mix workbench handoff across the forked Run', () => {
+  it('preserves the configuration view when selecting an existing template branch', () => {
+    rememberWorkbench({ workflowRunId: 'template2', templateId: 't2', variantId: 'v1', view: 'CONFIG' });
+    expect(takeWorkbench('template2')?.view).toBe('CONFIG');
+  });
   it('reopens the workbench on the Run the fork announced', () => {
     rememberWorkbench({ workflowRunId: 'child', templateId: 'template-a', variantId: 'variant-1' });
     expect(takeWorkbench('child')).toEqual({

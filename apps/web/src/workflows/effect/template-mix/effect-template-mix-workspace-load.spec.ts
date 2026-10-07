@@ -92,9 +92,8 @@ describe('mix workspace branch loading', () => {
     expect(page).toContain(
       'if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return false;',
     );
-    const style = page.split('.mix-run-switch {')[1]!.split('}')[0]!;
-    expect(style).not.toContain('inset: 0');
-    expect(style).not.toContain('position: absolute');
-    expect(style).toContain('pointer-events: none');
+    // Normal template selection no longer renders the removed branch-sync banner.
+    expect(page).not.toContain('class="mix-run-switch"');
+    expect(page).not.toContain('正在同步新分支');
   });
 });

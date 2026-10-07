@@ -59,6 +59,7 @@ export class CreateEffectTemplateMixAiRunDto extends EffectTemplateMixRevisionDt
   @IsOptional() @IsUUID('4') targetVariantId?: string;
   @IsOptional() @IsBoolean() refreshAffectedSlots?: boolean;
   @IsOptional() @IsBoolean() appendNewMaterials?: boolean;
+  @IsOptional() @IsUUID('4') sourceOperationId?: string;
 }
 
 export class EffectTemplateMixWorkerProjectDto {

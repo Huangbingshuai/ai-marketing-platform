@@ -40,6 +40,7 @@ import { GetWorkflowRunOverviewQueryDto } from './dto/get-workflow-run-overview-
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { PutWorkflowNodeStateDto } from './dto/put-workflow-node-state.dto';
 import { CreateEffectWorkflowBranchDto } from './dto/create-effect-workflow-branch.dto';
+import { ActivateEffectWorkflowBranchDto } from './dto/activate-effect-workflow-branch.dto';
 import { WorkflowWorkingService } from './workflow-working.service';
 
 @Controller('projects/:projectId')
@@ -93,8 +94,9 @@ export class WorkflowWorkingController {
   activateEffectBranch(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
     @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+    @Body() body: ActivateEffectWorkflowBranchDto,
   ): Promise<ActivateEffectWorkflowBranchData> {
-    return this.service.activateEffectBranch(projectId, workflowRunId);
+    return this.service.activateEffectBranch(projectId, workflowRunId, body?.templateId);
   }
 
   @Get('workflow-runs/active/overview')

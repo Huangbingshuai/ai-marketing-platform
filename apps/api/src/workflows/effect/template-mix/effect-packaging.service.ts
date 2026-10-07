@@ -159,6 +159,11 @@ export class EffectPackagingService {
       sourceEntry?.packagingSourceLocked
     )
       throw new ConflictException('智能成片包装正在进行，暂时不能再次包装');
+    // Packaging never acts as a local source update, including full repackaging.
+    if (!append && (sourceWorkspace.pendingAddedMaterialIds?.[templateId]?.length ||
+        sourceEntry?.workspace.variants.some((variant) =>
+          effectTemplateMixSourceChanges(variant, sourceWorkspace.materials).length > 0)))
+      throw new ConflictException('当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。');
     if (await this.repo.activeUnpublishedChild?.(projectId, body.workflowRunId, templateId))
       throw new ConflictException('此模板已有新分支正在智能成片包装，请等待任务完成');
     // A picture-only delivery already owns a published output branch. Its first package fills
@@ -196,15 +201,19 @@ export class EffectPackagingService {
           },
         )).run.id;
     const workspace = await this.mix.workspace(projectId, workflowRunId);
+    const frozenAppendSource = append ? await this.mix.frozenAppendSources(projectId, append.fillRunId) : undefined;
     if (workspace.draftRevision !== body.expectedRevision)
       throw new ConflictException('草稿已改变，请刷新后重试');
     const entry = workspace.draft.templates.find((t) => t.id === templateId);
     if (!entry) throw new NotFoundException('模板不存在');
-    const fullRedo = !body.component || body.component === 'ALL';
-    const hasChangedSource = fullRedo && entry.workspace.variants.some((variant) =>
-      effectTemplateMixSourceChanges(variant, workspace.materials).length > 0);
-    if (!append && entry.needsAiFill && !(fullRedo && hasChangedSource &&
-        entry.filledTemplateHash === templateConfigurationHash(entry.workspace.template)))
+    if (frozenAppendSource && workflowStateHash(entry.workspace.template) !== frozenAppendSource.templateHash)
+      throw new ConflictException('模板已变化，不能继续原局部更新包装');
+    // Recheck after forking: a source edit racing the initial read must not silently enter packaging.
+    if (!append && (workspace.pendingAddedMaterialIds?.[templateId]?.length ||
+        entry.workspace.variants.some((variant) =>
+          effectTemplateMixSourceChanges(variant, workspace.materials).length > 0)))
+      throw new ConflictException('当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。');
+    if (!append && entry.needsAiFill)
       throw new ConflictException(
         '模板已改动，或仍有成片未按当前模板重新智能填充；请完成需要更新的成片后再包装',
       );
@@ -213,24 +222,6 @@ export class EffectPackagingService {
         (append ? append.variantIds.includes(v.id) : (!body.variantId || v.id === body.variantId)) &&
         v.slots.some((s) => v.bindings[s.id]),
     ).map((variant) => structuredClone(variant));
-    const replacements = new Map<string, NonNullable<PackagingSnapshot['sourceTrimMaterials']>>();
-    if (fullRedo) for (const variant of variants) {
-      const changes = effectTemplateMixSourceChanges(variant, workspace.materials);
-      const blocked = changes.find((row) => row.blockedReason);
-      if (blocked) throw new ConflictException(`${variant.name}：${blocked.blockedReason}`);
-      if (!changes.length) continue;
-      replacements.set(variant.id, changes.map((row) => ({ slotId: row.slotId, material: row.material! })));
-      for (const { slotId, material } of changes) {
-        variant.bindings[slotId] = material!.id;
-        variant.bindingRevisions[slotId] = material!.artifactRevision;
-        variant.offsets[slotId] = 0;
-        for (const audio of variant.detachedAudios ?? []) if (audio.sourceSlotId === slotId) {
-          audio.fileObjectId = material!.fileObjectId;
-          audio.sourceDuration = material!.duration;
-          audio.offset = 0;
-        }
-      }
-    }
     if (!variants.length) throw new BadRequestException('没有可包装的视频成片');
     if (append && variants.length !== append.variantIds.length)
       throw new ConflictException('新增成片工程已变化，不能包装旧目标');
@@ -305,22 +296,8 @@ export class EffectPackagingService {
       musicSources.set(asset.id, { fileObjectId: file.id, sourceDuration: audio.sourceDuration! });
     }
     const snapshots = variants.map((v) => {
-      const snapshot = packagingSnapshot(v, workspace.materials, artifacts, musicSources);
+      const snapshot = packagingSnapshot(v, workspace.materials, artifacts, musicSources, frozenAppendSource);
       if (append) snapshot.incrementalFillRunId = append.fillRunId;
-      const changed = replacements.get(v.id);
-      if (changed) {
-        snapshot.sourceTrimMaterials = changed;
-        // Membership changes can replace a task ID while the retired clip stays CURRENT for
-        // playback. Freeze the authoritative batch revisions as well as the new clip revisions.
-        for (const batch of artifacts.filter((artifact) => artifact.nodeId === 'SEGMENT_RENDER' &&
-          artifact.artifactKey.startsWith('render-batch:') && artifact.freshness === 'CURRENT' &&
-          artifact.availability === 'AVAILABLE')) {
-          if (!batch.contentHash) throw new ConflictException('素材批次版本信息不完整，请刷新后重试');
-          if (!snapshot.dependencies.some((dependency) => dependency.artifactId === batch.id))
-            snapshot.dependencies.push({ artifactId: batch.id, artifactKey: batch.artifactKey,
-              nodeId: batch.nodeId, revision: batch.revision, contentHash: batch.contentHash });
-        }
-      }
       return snapshot;
     });
     if (!body.component || body.component === 'ALL' || body.component === 'VOICE') {
@@ -943,6 +920,17 @@ export class EffectPackagingService {
         ...new Set(snapshot.dependencies.map((dependency) => dependency.artifactId)),
       ]),
     ]);
+    if (snapshot.sourceOperation?.protocol === 'FROZEN_RENDER_V1') {
+      const workspace = await this.mix.workspace(projectId, run.workflowRunId);
+      const template = workspace.draft.templates.find((entry) => entry.id === run.templateId)?.workspace.template;
+      const files = await this.repo.db.fileObject.findMany({ where: { projectId,
+        id: { in: snapshot.clips.map((clip) => clip.fileObjectId) }, status: 'AVAILABLE' } });
+      if (!variant || !template || workflowStateHash(template) !== snapshot.sourceOperation.templateHash ||
+        workflowStateHash(variant) !== workflowStateHash(snapshot.variant) ||
+        snapshot.clips.some((clip) => !files.some((file) => file.id === clip.fileObjectId && file.sha256 === clip.contentHash)))
+        throw new ConflictException('包装执行期间该成片工程被编辑或冻结文件不可用');
+      return { run, item, snapshot };
+    }
     if (
       !variant ||
       (snapshot.sourceTrimMaterials?.length && workflowStateHash(variant) !== workflowStateHash(snapshot.variant)) ||

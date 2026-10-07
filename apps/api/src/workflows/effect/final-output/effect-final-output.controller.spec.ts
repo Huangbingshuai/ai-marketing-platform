@@ -2,7 +2,27 @@ import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { describe, expect, it } from 'vitest';
-import { LocalUpdateFinalOutputDto } from './effect-final-output.controller';
+import { LocalUpdateFinalOutputDto, SourceUpdateFinalOutputDto } from './effect-final-output.controller';
+
+describe('mix local update frozen-operation DTO', () => {
+  const request = {
+    operationId: '01795c3c-4726-405b-bbc9-28137f768fff',
+    workflowRunId: '01795c3c-4726-405b-bbc9-28137f768fff',
+    templateId: '01795c3c-4726-405b-bbc9-28137f768fff',
+    expectedDraftRevision: 34, variantIds: [], appendNewMaterials: true,
+    expectedSourceSignature: 'confirmed-source-signature', expectedPackageNewVariants: true,
+  };
+  it('accepts and preserves the complete confirmed local-update payload under production whitelist rules', async () => {
+    const value = plainToInstance(SourceUpdateFinalOutputDto, request);
+    expect(await validate(value, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
+    expect(value).toMatchObject(request);
+  });
+  it('still rejects foreign protocol fields instead of weakening whitelist validation', async () => {
+    const value = plainToInstance(SourceUpdateFinalOutputDto, { ...request, materials: [] });
+    expect(await validate(value, { whitelist: true, forbidNonWhitelisted: true }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ property: 'materials' })]));
+  });
+});
 
 describe('final output project synchronization DTO', () => {
   it('allows empty selected IDs for explicit membership sync without stripping the flag', async () => {

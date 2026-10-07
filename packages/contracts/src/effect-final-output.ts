@@ -3,7 +3,7 @@ import type {
   PackagingCheckpoint,
   PackagingSnapshot,
 } from './effect-template-mix-packaging';
-import type { EffectTemplateMixMaterial, EffectTemplateMixVariant } from './effect-template-mix';
+import type { EffectTemplateMixMaterial, EffectTemplateMixVariant, EffectTemplateMixFrozenSourceContext } from './effect-template-mix';
 export const FINAL_OUTPUT_RESOLUTIONS = ['480p', '720p', '1080p', '2K', '4K'] as const;
 export type FinalOutputResolution = (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
 
@@ -38,6 +38,18 @@ export type LocalUpdateFinalOutputRequest = {
   /** Saved mix draft used by the confirmation dialog. */
   expectedDraftRevision?: number;
 };
+/** Refresh changed source media in the selected, confirmed mix branch, even if its output queue is missing. */
+export type SourceUpdateFinalOutputRequest = {
+  operationId?: string;
+  workflowRunId: string;
+  templateId: string;
+  expectedDraftRevision: number;
+  variantIds: string[];
+  appendNewMaterials?: boolean;
+  expectedSourceSignature?: string;
+  expectedPackageNewVariants?: boolean;
+};
+export type SourceUpdateFinalOutputData = FinalOutputRun | { noChanges: true };
 export type FinalOutputSourceTrim = { slotId: string; offset: number };
 export type StartFinalOutputRequest = {
   resolution: FinalOutputResolution;
@@ -53,6 +65,8 @@ export type FinalOutputDependency = {
 export type FinalOutputSnapshot = {
   /** Fence a locally appended/manual output against later draft edits or deletion. */
   sourceDraft?: { workflowRunId: string; templateId: string; variantId: string; contentHash: string };
+  /** Durable continuation for the same authorized local update, even after refresh commits. */
+  sourceOperation?: EffectTemplateMixFrozenSourceContext;
   /** Source repair of unexported projects reuses the refresh worker without encoding a final video. */
   projectRefreshOnly?: boolean;
   /** Explicit export of newly appended films keeps completed films and the current branch. */
@@ -61,6 +75,8 @@ export type FinalOutputSnapshot = {
   appendPackagingRequired?: boolean;
   /** Durable preparation for an explicit same-branch source refresh; committed with the video. */
   sourceRefresh?: {
+    /** Only this protocol allows newer saved render sources while this operation is running. */
+    protocol?: 'FROZEN_RENDER_V1';
     workflowRunId: string;
     templateId: string;
     templateHash?: string;
@@ -70,6 +86,10 @@ export type FinalOutputSnapshot = {
     /** Freeze the confirmed batch membership as well as the individual clip revisions. */
     sourceBatches?: FinalOutputDependency[];
     slots: { slotId: string; material: EffectTemplateMixMaterial }[];
+    /** Removed occurrences need no model trim/narration; committed with the same frozen refresh. */
+    removedSlotIds?: string[];
+    /** Mix-only refresh retains the delivered file's original snapshot until explicit export. */
+    previousOutputSnapshot?: Omit<FinalOutputSnapshot, 'sourceRefresh'>;
     trimsReady?: boolean;
     ready?: boolean;
     stage?: string;
@@ -110,6 +130,9 @@ export type FinalOutputItem = {
 };
 export type FinalOutputRun = {
   id: string;
+  sourceOperationId?: string;
+  sourceOperationHasAdditions?: boolean;
+  sourceOperationAppendStarted?: boolean;
   workflowRunId: string;
   /** Independent full export; keep the source branch's films and local-update controls visible. */
   backgroundExportSourceRunId?: string;

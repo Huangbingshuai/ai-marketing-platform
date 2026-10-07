@@ -27,6 +27,7 @@ import {
   packagingTimelineClips,
   packagingTimelineDuration,
   effectTemplateMixSourceChanges,
+  effectTemplateMixSourceUpdateSignature,
   effectTemplateMixSlotDurationLimit,
   effectTemplateMixMaterialFitsTemplate,
   effectTemplateMixSlotDurationMessage,
@@ -77,6 +78,7 @@ import {
   ZoomOut,
 } from '@lucide/vue';
 import { createScopedTimelineHistory } from './effect-template-mix-history';
+import { mixAppendProgress } from './effect-template-mix-operation-progress';
 import {
   computed,
   nextTick,
@@ -86,6 +88,7 @@ import {
   onMounted,
   reactive,
   ref,
+  toRefs,
   watch,
 } from 'vue';
 
@@ -110,6 +113,7 @@ import {
 import { ApiClientError, apiUrl } from '../../../api/http-client';
 import {
   MixDraftRaceGuard,
+  MixWorkspaceRevisionFence,
   rebaseMixDraft,
   saveLatestMixDraft,
 } from './effect-template-mix-draft-race';
@@ -121,6 +125,7 @@ import {
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
   effectBranchNavigationMatches,
+  effectMixHistoryTemplateId,
   type EffectBranchNavigation,
 } from '../shared/effect-branch-navigation';
 import { stepTemplateMixDuration } from './effect-template-mix-duration-input';
@@ -171,10 +176,13 @@ import {
   readMixWorkspaceWithDeadline,
 } from './effect-template-mix-workspace-load';
 
-const props = defineProps<{
+import { currentMixTemplateWorkspace, mixTemplateCatalogEntries, mixTemplateCatalogPendingAdded, readMixTemplateCatalog, type MixTemplateCatalog } from './effect-template-mix-template-catalog';
+
+const pageProps = defineProps<{
   products: EffectImportProduct[];
   projectId: string;
   workflowRunId: string;
+  publishedWorkflowRunId?: string | null;
   branchTemplateId?: string | null;
   branchNavigation?: EffectBranchNavigation | null;
   previewTarget?: {
@@ -184,6 +192,19 @@ const props = defineProps<{
     variantId: string;
   } | null;
 }>();
+// Selecting a template changes only this editor's request scope, not the project's active Run.
+const selectedTemplateWorkflowRunId = ref<string | null>(null);
+// An upstream isolation draft has no mix results. Browse its published origin without activating it.
+const templateContextWorkflowRunId = computed(() =>
+  pageProps.publishedWorkflowRunId ?? pageProps.workflowRunId);
+const props = reactive({
+  ...toRefs(pageProps),
+  workflowRunId: computed(() => selectedTemplateWorkflowRunId.value ?? templateContextWorkflowRunId.value),
+});
+watch(() => [pageProps.projectId, templateContextWorkflowRunId.value], () => {
+  selectedTemplateWorkflowRunId.value = null;
+  templateDirectory.value = { entries: [], workflowRunIds: {}, pendingAddedMaterialIds: {}, workspaces: {} };
+});
 const emit = defineEmits<{
   back: [];
   next: [];
@@ -196,6 +217,9 @@ const emit = defineEmits<{
     },
   ];
   notice: [text: string, kind: Notice['kind']];
+  mixFreshness: [state: { projectId: string; workflowRunId: string; pendingProjectCount: number }];
+  navigationConsumed: [target: EffectBranchNavigation];
+  previewConsumed: [target: NonNullable<typeof pageProps.previewTarget>];
 }>();
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type TemplateUi = { selectedSlotId: string; selectedVariantId: string };
@@ -204,8 +228,11 @@ const pageState = ref<'ERROR' | 'LOADING' | 'READY'>('LOADING');
 const installedWorkspaceScope = ref('');
 const requestedWorkspaceScope = ref<string | null>(null);
 const currentWorkspaceScope = computed(() => `${props.projectId}:${props.workflowRunId}`);
+const templateNavigationPending = ref(false);
+const templateNavigationTarget = ref<string | null>(null);
 const runSwitching = computed(
   () =>
+    templateNavigationPending.value ||
     pageState.value === 'READY' &&
     isMixWorkspaceSwitching(
       requestedWorkspaceScope.value,
@@ -229,9 +256,21 @@ let deferredFillCompletion: {
 } | null = null;
 const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
+const templateDirectory = ref<MixTemplateCatalog>({ entries: [], workflowRunIds: {}, pendingAddedMaterialIds: {}, workspaces: {} });
+const installedWorkspaceRunId = computed(() =>
+  installedWorkspaceScope.value.slice(props.projectId.length + 1) || props.workflowRunId);
+const templateListCatalog = computed(() => mixTemplateCatalogEntries(
+  templateDirectory.value,
+  installedWorkspaceRunId.value,
+  catalog.value,
+));
+const templateAddedMaterialIds = (id: string): string[] =>
+  mixTemplateCatalogPendingAdded(templateDirectory.value, installedWorkspaceRunId.value, id,
+    pendingAddedMaterialIds.value);
 // Keep the confirmed clip pool available while the initial template draft is bootstrapped.
 const sourceMaterials = ref<EffectTemplateMixMaterial[]>([]);
 const pendingAddedMaterialIds = ref<Record<string, string[]>>({});
+const autoPackagingTemplateIds = ref<string[]>([]);
 const pendingAddedCount = computed(
   () => pendingAddedMaterialIds.value[activeTemplateId.value]?.length ?? 0,
 );
@@ -258,12 +297,13 @@ const packagingActionLabel = computed(() =>
   packagingActionText(packagingReady.value, packagingRunStatus.value),
 );
 const packagingActionBlockReason = computed(() => {
-  if (runSwitching.value) return '正在同步新分支，请稍后再包装。';
+  if (runSwitching.value) return '正在加载成片工程，请稍后再包装。';
   const entry = activeEntry.value;
   if (!entry) return null;
   if (entry.packagingSourceLocked) return '智能成片包装正在进行，暂时不能再次包装。';
   if (entry.needsAiFill) return '模板槽位配置已修改，请重新智能填充以应用新配置。';
-  if (templatePendingUpdateCount(entry)) return '成片引用的素材已更新，请先局部更新成片。';
+  if (pendingAddedCount.value || templatePendingUpdateCount(entry))
+    return '当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。';
   return null;
 });
 const committedVersions = reactive<Record<string, number>>({});
@@ -294,6 +334,10 @@ const displayedBackgroundAi = computed(
 const displayedAiRun = computed(() =>
   displayedBackgroundAi.value ? backgroundAiRun.value : activeAiRun.value,
 );
+const activeAppendRun = computed(() => activeAiRun.value?.operation === 'APPEND' ? activeAiRun.value : null);
+const appendProgress = computed(() => mixAppendProgress(activeAppendRun.value));
+const activeFillRun = computed(() => activeAiRun.value?.operation !== 'APPEND' ? activeAiRun.value : null);
+const displayedFillRun = computed(() => displayedAiRun.value?.operation !== 'APPEND' ? displayedAiRun.value : null);
 const failedAiRun = computed(() => {
   const latest = aiRuns.value.find((run) => run.templateId === activeTemplateId.value);
   return latest?.status === 'FAILED' ? latest : null;
@@ -410,7 +454,7 @@ const hasTemplateNameConflict = (name: string, exceptId?: string): boolean => {
   const key = templateNameKey(name);
   return Boolean(
     key &&
-    catalog.value.some(
+    templateListCatalog.value.some(
       (entry) => entry.id !== exceptId && templateNameKey(entry.workspace.template.name) === key,
     ),
   );
@@ -487,6 +531,17 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSave: Promise<boolean> | undefined;
 const draftRace = new MixDraftRaceGuard();
+const workspaceRevisionFence = new MixWorkspaceRevisionFence();
+// Only a new, explicit history/preview action pins a Run. Ordinary node/template entry
+// always follows the current directory; stale navigation props cannot replay that pin.
+let explicitWorkspaceTarget: { projectId: string; workflowRunId: string; templateId: string } | null = null;
+const releaseExplicitWorkspaceTarget = (): void => {
+  explicitWorkspaceTarget = null;
+  lastBranchNavigation = pageProps.branchNavigation ?? null;
+  lastPreviewTarget = pageProps.previewTarget ?? null;
+  if (lastBranchNavigation?.nodeId === 'TEMPLATE_MIX') emit('navigationConsumed', lastBranchNavigation);
+  if (lastPreviewTarget) emit('previewConsumed', lastPreviewTarget);
+};
 let savedDraftBaseline: EffectTemplateMixDraft | null = null;
 let draftSaveBlocked = false;
 let queuedOutputSync: {
@@ -541,6 +596,7 @@ const packagingInFlight = computed(() =>
 const sourceUpdateRun = ref<FinalOutputRun | null>(null);
 const sourceUpdateItemIds = ref<string[]>([]);
 const sourceUpdateStarting = ref(false);
+const localUpdateStarting = ref(false);
 const sourceUpdatePendingVariantIds = ref<string[]>([]);
 const sourceUpdateBusy = computed(
   () =>
@@ -559,6 +615,28 @@ const sourceUpdateProgress = computed(() => {
   return items.length
     ? Math.round(items.reduce((sum, item) => sum + item.progress, 0) / items.length)
     : 0;
+});
+const localUpdateBusy = computed(() => localUpdateStarting.value || sourceUpdateBusy.value || Boolean(activeAppendRun.value));
+const localUpdateProgress = computed(() => {
+  if (sourceUpdateBusy.value) {
+    const items =
+      sourceUpdateRun.value?.items.filter((item) => sourceUpdateItemIds.value.includes(item.id)) ?? [];
+    const completed = items.filter((item) =>
+      ['PENDING_RENDER', 'COMPLETED'].includes(item.status),
+    ).length;
+    return {
+      progress: sourceUpdateProgress.value,
+      detail: sourceUpdateStarting.value
+        ? '正在创建工程更新任务'
+        : sourceUpdateRun.value?.status === 'QUEUED'
+          ? '排队等待执行'
+          : `正在更新成片工程${items.length ? ` · 已完成 ${completed}/${items.length}` : ''}`,
+    };
+  }
+  if (appendProgress.value) return appendProgress.value;
+  return localUpdateStarting.value && mutating.value
+    ? { progress: 0, detail: '正在准备更新任务' }
+    : null;
 });
 const workspaceTaskLocked = computed(() =>
   Boolean(
@@ -642,7 +720,14 @@ const mutedAudioClip = (clipId: string): boolean =>
 const variantSourceChanges = (variant: EffectTemplateMixVariant) =>
   effectTemplateMixSourceChanges(variant, sourceMaterials.value);
 const templatePendingUpdateCount = (entry: EffectTemplateMixTemplateEntry) =>
-  entry.workspace.variants.filter((variant) => variantSourceChanges(variant).length > 0).length;
+  entry.workspace.variants.filter((variant) =>
+    effectTemplateMixSourceChanges(variant, entry.workspace.materials).length > 0).length;
+watch(() => [pageState.value, pageProps.projectId, pageProps.workflowRunId,
+  templateListCatalog.value.reduce((sum, entry) => sum + templatePendingUpdateCount(entry) +
+    (templateAddedMaterialIds(entry.id).length ? 1 : 0), 0)] as const,
+([state, projectId, workflowRunId, pendingProjectCount]) => {
+  if (state === 'READY') emit('mixFreshness', { projectId, workflowRunId, pendingProjectCount });
+});
 const canUndoTimeline = computed(() => timelineUndoStack.value.length > 0);
 const canRedoTimeline = computed(() => timelineRedoStack.value.length > 0);
 let sourceUpdateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -651,11 +736,18 @@ function stopSourceUpdatePolling() {
   sourceUpdateGeneration += 1;
   clearTimeout(sourceUpdateTimer);
 }
-async function pollSourceUpdate(run: FinalOutputRun, generation: number) {
+async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSuccess?: (run: FinalOutputRun) => Promise<void>) {
   const project = props.projectId;
   const workflow = props.workflowRunId;
+  const template = activeTemplateId.value;
+  const ownsUpdate = (): boolean => generation === sourceUpdateGeneration &&
+    project === props.projectId && workflow === props.workflowRunId &&
+    template === activeTemplateId.value && run.workflowRunId === workflow && run.templateId === template;
+  if (!ownsUpdate()) return;
   try {
     const response = await getMixSourceUpdateRun(project, run.id);
+    if (!ownsUpdate() || response.data.id !== run.id ||
+      response.data.workflowRunId !== workflow || response.data.templateId !== template) return;
     if (
       generation !== sourceUpdateGeneration ||
       project !== props.projectId ||
@@ -664,24 +756,35 @@ async function pollSourceUpdate(run: FinalOutputRun, generation: number) {
       return;
     sourceUpdateRun.value = response.data;
     if (['QUEUED', 'RUNNING'].includes(response.data.status)) {
-      sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(response.data, generation), 1200);
+      sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(response.data, generation, afterSuccess), 1200);
       return;
     }
     if (response.data.status === 'PENDING_RENDER' || response.data.status === 'COMPLETED') {
       // Unaffected films remain editable during this task; save them before installing its result.
-      if (!(await flushPendingEdits())) return;
+      if (!(await flushPendingEdits()) || !ownsUpdate()) return;
+      const readToken = draftRace.readToken();
       const saved = await loadEffectTemplateMixWorkspace(project, workflow);
       if (
-        generation !== sourceUpdateGeneration ||
+        !ownsUpdate() ||
         project !== props.projectId ||
         workflow !== props.workflowRunId
       )
         return;
-      installWorkspaceData(saved.data);
+      if (!draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')) {
+        sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(response.data, generation, afterSuccess), 1200);
+        return;
+      }
+      if (!installWorkspaceData(saved.data, `${project}:${workflow}`)) {
+        sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(response.data, generation, afterSuccess), 1200);
+        return;
+      }
       notifyOutputChange(project, workflow, true);
       await packagingPanel.value?.refresh();
+      if (!ownsUpdate())
+        return;
       sourceUpdateRun.value = null;
-      showNotice('局部更新已完成');
+      if (!afterSuccess || !pendingAddedCount.value) showNotice('局部更新已完成');
+      await afterSuccess?.(response.data);
     } else {
       sourceUpdateRun.value = null;
       showNotice(
@@ -691,14 +794,17 @@ async function pollSourceUpdate(run: FinalOutputRun, generation: number) {
       );
     }
   } catch (error) {
-    if (generation !== sourceUpdateGeneration) return;
+    if (!ownsUpdate()) return;
     showNotice(error instanceof Error ? error.message : '读取局部更新进度失败', 'error');
-    sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(run, generation), 3000);
+    sourceUpdateTimer = setTimeout(() => void pollSourceUpdate(run, generation, afterSuccess), 3000);
   }
 }
-async function updateSourceProjects() {
+async function updateSourceProjects(afterSuccess?: (run: FinalOutputRun) => Promise<void>) {
   if (sourceUpdateBusy.value || projectEditLocked.value || mutating.value || !activeEntry.value)
     return;
+  // Local updates overwrite the workspace already opened by the user. Never resolve the
+  // directory again here: a cached current path may point to a different historical Run.
+  if (installedWorkspaceScope.value !== currentWorkspaceScope.value || !workbenchActive) return;
   const context = {
     project: props.projectId,
     workflow: props.workflowRunId,
@@ -713,12 +819,18 @@ async function updateSourceProjects() {
     return;
   }
   const count = templatePendingUpdateCount(activeEntry.value);
-  if (!count) return;
+  if (!count && !pendingAddedCount.value) return;
+  const expectedSourceSignature = effectTemplateMixSourceUpdateSignature(activeEntry.value.workspace.variants,
+    sourceMaterials.value, pendingAddedMaterialIds.value[context.template] ?? []);
+  const expectedPackageNewVariants = autoPackagingTemplateIds.value.includes(context.template);
   const confirmed = await requestActionConfirmation({
     eyebrow: '局部更新',
-    title: `更新 ${count} 条成片工程？`,
+    title: pendingAddedCount.value ? '更新已有工程并追加新成片？' : `更新 ${count} 条成片工程？`,
     description:
-      '将更新当前模板全部受影响的素材片段，仅重新选择这些片段的截取区间，并更新相关口播和字幕。已导出的成片同步重新渲染，其他片段和当前分支保持不变。此操作可能产生生成或渲染费用。',
+      '更新当前模板受影响的工程。已删除素材及其关联口播、字幕会被清除，原位置和时长保留为空位；替换素材会重新选区并更新相关口播、字幕。其他内容和音乐不变。旧成片保留，需在成片输出中主动局部更新才重新渲染。' +
+      (pendingAddedCount.value
+        ? '随后归槽新增素材并追加新成片，按该模板已有包装设置自动包装；素材替换、归槽和包装可能产生生成费用。'
+        : '仅素材替换可能产生生成费用。'),
     confirmLabel: '确认局部更新',
     tone: 'warning',
   });
@@ -741,45 +853,19 @@ async function updateSourceProjects() {
       .filter((variant) => variantSourceChanges(variant).length)
       .map((variant) => variant.id);
     sourceUpdateStarting.value = true;
-    let response = await loadMixFinalOutputRuns(context.project, context.workflow);
-    // Existing snapshots are the baseline for source refresh, not ordinary draft sync inputs.
-    // Reconciling them first validates obsolete binding revisions before local-update can replace them.
-    if (
-      !response.data.some(
-        (run) => run.templateId === context.template && run.workflowRunId === context.workflow,
-      )
-    ) {
-      if (
-        context.project !== props.projectId ||
-        context.workflow !== props.workflowRunId ||
-        context.template !== activeTemplateId.value
-      )
-        return;
-      await syncEffectFinalOutput(context.project, context.workflow, {
-        templateId: context.template,
-        ...(draftRevision.value !== null ? { expectedDraftRevision: draftRevision.value } : {}),
-      });
-      response = await loadMixFinalOutputRuns(context.project, context.workflow);
-    }
-    if (
-      context.project !== props.projectId ||
-      context.workflow !== props.workflowRunId ||
-      context.template !== activeTemplateId.value
-    )
-      return;
-    const run = response.data.find(
-      (run) => run.templateId === context.template && run.workflowRunId === context.workflow,
-    );
-    if (!run) throw new Error('当前模板的成片工程尚未确认，请先完成智能填充');
+    if (draftRevision.value === null) throw new Error('请等待成片工程保存完成后重试');
     const affected = new Set(
       (activeEntry.value?.workspace.variants ?? [])
         .filter((variant) => variantSourceChanges(variant).length)
         .map((variant) => variant.id),
     );
-    const ids = run.items.filter((item) => affected.has(item.variantId)).map((item) => item.id);
-    if (ids.length !== affected.size) throw new Error('成片工程正在同步，请稍后重试');
     sourceUpdatePendingVariantIds.value = [...affected];
-    const started = await updateMixSourceProjects(context.project, run.id, ids);
+    const started = await updateMixSourceProjects(context.project, {
+      operationId: crypto.randomUUID(),
+      workflowRunId: context.workflow, templateId: context.template,
+      expectedDraftRevision: draftRevision.value, variantIds: [...affected],
+      appendNewMaterials: true, expectedSourceSignature, expectedPackageNewVariants,
+    });
     if (
       context.project !== props.projectId ||
       context.workflow !== props.workflowRunId ||
@@ -787,9 +873,16 @@ async function updateSourceProjects() {
     )
       return;
     stopSourceUpdatePolling();
-    sourceUpdateItemIds.value = ids;
+    if ('noChanges' in started.data) {
+      sourceUpdatePendingVariantIds.value = [];
+      await load();
+      showNotice('待更新差异已抵消，无需更新');
+      return;
+    }
+    sourceUpdateItemIds.value = started.data.items.filter((item) => affected.has(item.variantId))
+      .map((item) => item.id);
     sourceUpdateRun.value = started.data;
-    void pollSourceUpdate(started.data, sourceUpdateGeneration);
+    void pollSourceUpdate(started.data, sourceUpdateGeneration, afterSuccess);
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '局部更新失败', 'error');
   } finally {
@@ -803,25 +896,41 @@ async function resumeSourceUpdate() {
   sourceUpdateItemIds.value = [];
   const generation = sourceUpdateGeneration;
   if (!props.projectId || !props.workflowRunId || !activeTemplateId.value) return;
+  const project = props.projectId;
+  const workflow = props.workflowRunId;
+  const template = activeTemplateId.value;
   try {
-    const response = await loadMixFinalOutputRuns(props.projectId, props.workflowRunId);
-    if (generation !== sourceUpdateGeneration) return;
+    const response = await loadMixFinalOutputRuns(project, workflow);
+    if (generation !== sourceUpdateGeneration || project !== props.projectId ||
+      workflow !== props.workflowRunId || template !== activeTemplateId.value) return;
     const run = response.data.find(
       (run) =>
-        run.templateId === activeTemplateId.value &&
-        run.workflowRunId === props.workflowRunId &&
-        ['QUEUED', 'RUNNING'].includes(run.status),
+        run.templateId === template &&
+        run.workflowRunId === workflow &&
+        (['QUEUED', 'RUNNING'].includes(run.status) ||
+          (run.sourceOperationId && run.sourceOperationHasAdditions && ['PENDING_RENDER', 'COMPLETED'].includes(run.status))),
     );
     if (run) {
       sourceUpdateItemIds.value = run.items
         .filter((item) => ['QUEUED', 'RUNNING'].includes(item.status))
         .map((item) => item.id);
       sourceUpdateRun.value = run;
-      void pollSourceUpdate(run, generation);
+      if (!['QUEUED', 'RUNNING'].includes(run.status)) {
+        const saved = (await getMixSourceUpdateRun(project, run.id)).data;
+        if (generation !== sourceUpdateGeneration || project !== props.projectId ||
+          workflow !== props.workflowRunId || template !== activeTemplateId.value) return;
+        if (saved.sourceOperationAppendStarted) { sourceUpdateRun.value = null; return; }
+      }
+      void pollSourceUpdate(run, generation, continueFrozenAppend);
     }
   } catch {
     /* Workspace errors remain on the normal load path. */
   }
+}
+async function continueFrozenAppend(run: FinalOutputRun) {
+  if (run.workflowRunId !== props.workflowRunId || run.templateId !== activeTemplateId.value ||
+    !run.sourceOperationHasAdditions || !run.sourceOperationId || run.sourceOperationAppendStarted) return;
+  await startAiFill(null, false, true, run.sourceOperationId);
 }
 watch(() => [props.projectId, props.workflowRunId, activeTemplateId.value], resumeSourceUpdate);
 let groupedTimelineMove = false;
@@ -940,11 +1049,16 @@ const currentTiming = computed(() => {
     slots,
   };
 });
+const cloneMaterial = (material: EffectTemplateMixMaterial): EffectTemplateMixMaterial =>
+  ({ ...JSON.parse(JSON.stringify(material)) as EffectTemplateMixMaterial,
+    contentUrl: `/api/projects/${props.projectId}/file-objects/${material.fileObjectId}/content` });
 const materialForSlot = (
   slotId: string,
   variant: EffectTemplateMixVariant | null = selectedVariant.value,
 ): EffectTemplateMixMaterial | null =>
-  workspace.value?.materials.find(({ id }) => id === variant?.bindings[slotId]) ?? null;
+  variant?.bindingSources?.[slotId] ??
+  workspace.value?.materials.find(({ id, artifactRevision }) => id === variant?.bindings[slotId] &&
+    (variant.bindingRevisions?.[slotId] === undefined || variant.bindingRevisions[slotId] === artifactRevision)) ?? null;
 const variantDuration = (variant: EffectTemplateMixVariant): number => {
   return packagingTimelineDuration(variant);
 };
@@ -1753,10 +1867,13 @@ const initializeUi = (): void => {
 };
 const installWorkspaceData = (
   data: Awaited<ReturnType<typeof loadEffectTemplateMixWorkspace>>['data'],
-): void => {
+  scope: string,
+): boolean => {
+  if (!workspaceRevisionFence.accept(scope, currentWorkspaceScope.value, data.draftRevision)) return false;
   resetTimelinePlayerState();
   sourceMaterials.value = data.materials;
   pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
+  autoPackagingTemplateIds.value = data.autoPackagingTemplateIds ?? [];
   renderSlotDurationLimit.value =
     data.slotDurationMaxSeconds !== undefined
       ? data.slotDurationMaxSeconds
@@ -1794,6 +1911,7 @@ const installWorkspaceData = (
   if (detachedTransitionChanged) scheduleSave();
   aiRuns.value = data.aiRuns ?? [];
   classificationPools.value = data.classificationPools ?? [];
+  return true;
 };
 const stopPolling = (runId?: string): void => {
   const ids = runId ? [runId] : [...new Set([...pollTimers.keys(), ...pollControllers.keys()])];
@@ -1805,20 +1923,27 @@ const stopPolling = (runId?: string): void => {
   }
 };
 const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const scope = currentWorkspaceScope.value;
+  const ownsCompletion = (): boolean => run.workflowRunId === workflowRunId &&
+    projectId === props.projectId && workflowRunId === props.workflowRunId &&
+    scope === currentWorkspaceScope.value && !runSwitching.value;
+  if (!ownsCompletion()) return;
   stopPolling(run.id);
   mutating.value = false;
   if (run.status === 'FAILED' || run.status === 'CANCELLED') {
     await load();
-    showNotice(run.errorMessage || '智能填充失败，请重试', 'error');
+    if (!ownsCompletion()) return;
+    showNotice(run.errorMessage || '智能填充失败，请重试', run.status === 'CANCELLED' ? 'success' : 'error');
     return;
   }
   const previousVariantCount =
     catalog.value.find(({ id }) => id === run.templateId)?.workspace.variants.length ?? 0;
-  if (!(await flushPendingEdits())) return;
+  if (!(await flushPendingEdits()) || !ownsCompletion()) return;
   const readToken = draftRace.readToken();
-  const scope = currentWorkspaceScope.value;
-  const response = await loadEffectTemplateMixWorkspace(props.projectId, props.workflowRunId);
-  if (scope !== currentWorkspaceScope.value) return;
+  const response = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
+  if (!ownsCompletion()) return;
   if (
     !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')
   ) {
@@ -1829,7 +1954,10 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
     );
     return;
   }
-  installWorkspaceData(response.data);
+  if (!installWorkspaceData(response.data, scope)) {
+    pollTimers.set(run.id, setTimeout(() => void finishAiRun(run), 1200));
+    return;
+  }
   const variantId = run.outputVariantId;
   const ui = uiByTemplate[run.templateId];
   if (variantId && ui) {
@@ -1838,9 +1966,10 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
     ui.selectedSlotId =
       entry?.workspace.variants.find(({ id }) => id === variantId)?.slots[0]?.id ?? '';
   }
-  activeTemplateId.value = run.templateId;
-  resetWorkbenchDefaults();
-  view.value = 'EDITOR';
+  if (activeTemplateId.value === run.templateId) {
+    resetWorkbenchDefaults();
+    view.value = 'EDITOR';
+  }
   saveState.value = 'saved';
   const entry = catalog.value.find(({ id }) => id === run.templateId);
   const affectedVariants = run.targetVariantId
@@ -1868,29 +1997,50 @@ const pollAiRun = async (runId: string): Promise<void> => {
   stopPolling(runId);
   const pollController = new AbortController();
   pollControllers.set(runId, pollController);
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
   try {
-    const response = await getEffectTemplateMixAiRun(props.projectId, runId, pollController.signal);
+    const response = await getEffectTemplateMixAiRun(projectId, runId, pollController.signal);
+    if (
+      pollController.signal.aborted || projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId
+    )
+      return;
     const run = response.data;
+    if (run.id !== runId || run.workflowRunId !== workflowRunId) return;
     aiRuns.value = [run, ...aiRuns.value.filter(({ id }) => id !== run.id)];
     if (run.status === 'COMPLETED' || run.status === 'FAILED' || run.status === 'CANCELLED') {
       await finishAiRun(run);
       return;
     }
     mutating.value = run.operation !== 'APPEND';
+    // Read persisted classification shards through the existing lightweight source projection.
+    // This updates only library roles, never replaces the editable timeline with a task draft.
+    if (run.operation === 'APPEND') await refreshMaterialSources();
+    if (
+      pollController.signal.aborted || projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId
+    )
+      return;
     pollTimers.set(
       runId,
       setTimeout(() => void pollAiRun(runId), 1200),
     );
   } catch (error) {
+    if (
+      pollController.signal.aborted || projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId
+    )
+      return;
     if (error instanceof DOMException && error.name === 'AbortError') return;
     mutating.value = false;
     showNotice(error instanceof Error ? error.message : '智能填充进度读取失败', 'error');
   }
 };
 let loadedWorkspaceRunId = '';
-let requestedWorkspaceRunId = '';
 let focusedBranchTemplate: { workflowRunId: string; templateId: string } | null = null;
 const load = async (): Promise<void> => {
+  if (!workbenchActive) return;
   stopPolling();
   controller?.abort();
   controller = new AbortController();
@@ -1898,7 +2048,6 @@ const load = async (): Promise<void> => {
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
   requestedWorkspaceScope.value = `${projectId}:${workflowRunId}`;
-  requestedWorkspaceRunId = workflowRunId;
   const wasReady = pageState.value === 'READY';
   if (!wasReady) pageState.value = 'LOADING';
   try {
@@ -1943,9 +2092,53 @@ const load = async (): Promise<void> => {
       switchedRun || focusedBranchTemplate?.workflowRunId === workflowRunId
         ? props.branchTemplateId
         : null;
-    installWorkspaceData(response.data);
+    const tree = await getEffectWorkflowBranchTree(projectId, requestController.signal);
+    const historyTemplateId = explicitWorkspaceTarget?.projectId === projectId &&
+      explicitWorkspaceTarget.workflowRunId === workflowRunId ? explicitWorkspaceTarget.templateId :
+      effectMixHistoryTemplateId(pageProps.branchNavigation, projectId,
+        templateContextWorkflowRunId.value, 'CONFIG', pageProps.branchNavigation !== lastBranchNavigation);
+    const directory = await readMixTemplateCatalog(tree.data, workflowRunId, response.data,
+      async (id) => (await loadEffectTemplateMixWorkspace(projectId, id, requestController.signal)).data,
+      templateContextWorkflowRunId.value);
+    if (!workbenchActive || requestController.signal.aborted || requestController !== controller ||
+      projectId !== props.projectId || workflowRunId !== props.workflowRunId)
+      return;
+    if (wasReady && installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
+      !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving'))
+      return;
+    const previewTemplateId = pageProps.previewTarget?.projectId === projectId &&
+      pageProps.previewTarget.workflowRunId === workflowRunId &&
+      pageProps.previewTarget !== lastPreviewTarget ? pageProps.previewTarget.templateId : null;
+    const initialTemplateId = previewTemplateId ?? historyTemplateId ?? branchTemplateId ??
+      (wasReady && !switchedRun ? activeTemplateId.value : response.data.draft.activeTemplateId);
+    const runningOnTemplate = response.data.aiRuns?.some(run => run.templateId === initialTemplateId &&
+      (run.status === 'QUEUED' || run.status === 'RUNNING')) || response.data.draft.templates.some(entry =>
+        entry.id === initialTemplateId && (entry.aiFillLocked || entry.packagingLocked));
+    const currentTarget = currentMixTemplateWorkspace(directory, initialTemplateId, workflowRunId, {
+      explicit: historyTemplateId === initialTemplateId || previewTemplateId === initialTemplateId,
+      running: runningOnTemplate,
+    });
+    const configNavigation = effectBranchNavigationMatches(pageProps.branchNavigation, projectId,
+      templateContextWorkflowRunId.value) && pageProps.branchNavigation.nodeId === 'TEMPLATE_MIX' &&
+      pageProps.branchNavigation.mixStage === 'TEMPLATE';
+    if (currentTarget) {
+      // Reloading an obsolete global pointer must not install its old editor beneath the current list.
+      // Route to the normal scoped loader; no global branch activation or cached draft install.
+      const targetRunId = currentTarget.workflowRunId;
+      templateDirectory.value = directory;
+      templateNavigationTarget.value = `${projectId}:${targetRunId}`;
+      rememberWorkbench({ workflowRunId: targetRunId, templateId: initialTemplateId,
+        variantId: uiByTemplate[initialTemplateId]?.selectedVariantId ?? '', view: view.value });
+      selectedTemplateWorkflowRunId.value = targetRunId;
+      if (configNavigation) view.value = 'CONFIG';
+      // The scoped loader installs only its own fresh response, never this directory cache.
+      return;
+    }
+    // Install the writable workspace and its complete directory together, never a temporary empty tail.
+    if (!installWorkspaceData(response.data, `${projectId}:${workflowRunId}`)) return;
     installedWorkspaceScope.value = `${projectId}:${workflowRunId}`;
     loadedWorkspaceRunId = workflowRunId;
+    templateDirectory.value = directory;
     if (branchTemplateId && catalog.value.some(({ id }) => id === branchTemplateId)) {
       activeTemplateId.value = branchTemplateId;
       focusedBranchTemplate = { workflowRunId, templateId: branchTemplateId };
@@ -1970,7 +2163,8 @@ const load = async (): Promise<void> => {
         (!targetVariantId || entry.workspace.variants.some(({ id }) => id === targetVariantId)),
       );
     });
-    const handoff = !wasReady || switchedRun ? takeWorkbench(workflowRunId) : null;
+    const handoff = !wasReady || switchedRun || templateNavigationTarget.value === `${projectId}:${workflowRunId}`
+      ? takeWorkbench(workflowRunId) : null;
     if (resumedRun) {
       activeTemplateId.value = resumedRun.templateId;
       const ui = uiByTemplate[resumedRun.templateId];
@@ -2001,11 +2195,24 @@ const load = async (): Promise<void> => {
             '';
         }
         if (view.value !== 'EDITOR') resetWorkbenchDefaults();
-        view.value = 'EDITOR';
+        view.value = handoff.view ?? 'EDITOR';
       }
     }
+    if (templateNavigationTarget.value === `${projectId}:${workflowRunId}`) {
+      templateNavigationTarget.value = null;
+      templateNavigationPending.value = false;
+    }
+    if (handoff && activeTemplateId.value === handoff.templateId) scheduleSave();
     await applyBranchNavigation();
     applyPreviewTarget();
+    if (handoff?.action === 'SOURCE_UPDATE' && activeTemplateId.value === handoff.templateId &&
+      props.projectId === projectId && props.workflowRunId === workflowRunId) {
+      queueMicrotask(() => {
+        if (props.projectId === projectId && props.workflowRunId === workflowRunId &&
+          activeTemplateId.value === handoff.templateId && view.value === 'EDITOR')
+          void updateCurrentTemplate();
+      });
+    }
     for (const run of running ?? []) void pollAiRun(run.id);
     void refreshBackgroundAiRun();
     queueMicrotask(resumeDeferredFill);
@@ -2020,6 +2227,11 @@ const load = async (): Promise<void> => {
     pageState.value = 'ERROR';
   } finally {
     if (requestController === controller) requestedWorkspaceScope.value = null;
+    if (requestController === controller &&
+      templateNavigationTarget.value === `${projectId}:${workflowRunId}`) {
+      templateNavigationTarget.value = null;
+      templateNavigationPending.value = false;
+    }
   }
 };
 /** Read authoritative freshness as soon as a saved change becomes visible to the server. */
@@ -2073,7 +2285,7 @@ const drainOutputSync = async (): Promise<void> => {
           }
         } catch {
           if (!outputSyncErrorShown) {
-            showNotice('成片待渲染区暂未同步；返回成片输出前会重试', 'warning');
+            showNotice('成片待渲染区暂未同步；进入成片输出后会自动重试', 'warning');
             outputSyncErrorShown = true;
           }
         }
@@ -2108,7 +2320,10 @@ const persist = (keepalive = false): Promise<boolean> => {
     );
     return saved && scope === currentWorkspaceScope.value;
   };
-  const next = previous.then(save, save);
+  const next = previous.then(save, save).finally(() => {
+    // A settled save is not an in-flight write. Only release this queue's current tail.
+    if (pendingSave === next) pendingSave = undefined;
+  });
   pendingSave = next;
   return next;
 };
@@ -2159,6 +2374,7 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
         );
       }
       draftRevision.value = latest.data.draftRevision;
+      workspaceRevisionFence.acknowledge(`${projectId}:${workflowRunId}`, latest.data.draftRevision);
       savedDraftBaseline = cloneMix(remote);
       catalog.value = merged.templates.map((entry) => hydrate(entry, latest.data.materials));
       activeTemplateId.value = merged.activeTemplateId;
@@ -2168,6 +2384,7 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
     }
     if (projectId !== props.projectId || workflowRunId !== props.workflowRunId) return false;
     draftRevision.value = result.data.draftRevision;
+    workspaceRevisionFence.acknowledge(`${projectId}:${workflowRunId}`, result.data.draftRevision);
     savedDraftBaseline = snapshot;
     saveState.value =
       JSON.stringify(snapshot) ===
@@ -3390,6 +3607,12 @@ const addTemplate = (): void => {
 };
 const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<void> => {
   if (deletingTemplateId.value) return;
+  const scope = currentWorkspaceScope.value;
+  if (templateDirectory.value.workflowRunIds[entry.id] &&
+    templateDirectory.value.workflowRunIds[entry.id] !== props.workflowRunId) {
+    await openTemplateWorkspace(entry.id, 'CONFIG');
+    return;
+  }
   if (
     entry.aiFillLocked ||
     Boolean(entry.filledTemplateHash) ||
@@ -3425,7 +3648,7 @@ const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<vo
       draftRevision.value,
       serializeEffectTemplateMixDraft(remaining, nextActiveId),
     );
-    installWorkspaceData(result.data);
+    if (!installWorkspaceData(result.data, scope)) return;
     delete uiByTemplate[entry.id];
     view.value = 'CONFIG';
     saveState.value = 'saved';
@@ -3710,6 +3933,52 @@ const enterEditor = (): void => {
   activateTimelineHistoryScope();
   view.value = 'EDITOR';
 };
+/** Load the template's current workspace without activating a global project branch. */
+async function openTemplateWorkspace(templateId: string, targetView: 'CONFIG' | 'EDITOR', action?: 'SOURCE_UPDATE'): Promise<boolean> {
+  if (runSwitching.value || mutating.value || projectEditLocked.value ||
+    pageState.value !== 'READY' || installedWorkspaceScope.value !== currentWorkspaceScope.value)
+    return false;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const scope = `${projectId}:${workflowRunId}`;
+  const isCurrent = () => props.projectId === projectId && props.workflowRunId === workflowRunId &&
+    installedWorkspaceScope.value === scope && workbenchActive;
+  let activated = false;
+  templateNavigationPending.value = true;
+  try {
+    if (!(await flushPendingEdits()) || !isCurrent()) return false;
+    releaseExplicitWorkspaceTarget();
+    const targetRunId = templateDirectory.value.workflowRunIds[templateId] ??
+      (catalog.value.some(({ id }) => id === templateId) ? workflowRunId : null);
+    if (!targetRunId) throw new Error('所选模板已不在当前素材分支中，请刷新后重试');
+    if (targetRunId === workflowRunId) {
+      templateNavigationPending.value = false;
+      if (activeTemplateId.value !== templateId) selectTemplate(templateId);
+      if (!action) {
+        if (targetView === 'EDITOR') enterEditor();
+        else view.value = 'CONFIG';
+      }
+      return true;
+    }
+    const variantId = uiByTemplate[templateId]?.selectedVariantId ?? '';
+    if (!isCurrent()) return false;
+    // A directory is for display and routing, not a writable draft. Its cached snapshot
+    // may predate a successful local update; only load() may install the destination.
+    templateNavigationTarget.value = `${projectId}:${targetRunId}`;
+    rememberWorkbench({ workflowRunId: targetRunId, templateId, variantId, view: targetView,
+      ...(action ? { action } : {}) });
+    activated = true;
+    selectedTemplateWorkflowRunId.value = targetRunId;
+  } catch (error) {
+    if (isCurrent()) showNotice(error instanceof Error ? error.message : '读取模板失败', 'error');
+  } finally {
+    if (!activated) {
+      templateNavigationTarget.value = null;
+      templateNavigationPending.value = false;
+    }
+  }
+  return false;
+}
 const selectVariant = (id: string): void => {
   if (!activeUi.value || !workspace.value) return;
   transitionFrame.value = captureDisplayedFrame();
@@ -3730,9 +3999,10 @@ const selectVariant = (id: string): void => {
 let lastBranchNavigation: EffectBranchNavigation | null = null;
 let branchNavigationReloading = false;
 const applyBranchNavigation = async (): Promise<void> => {
-  const target = props.branchNavigation;
+  // Keep navigation consumption and load() on the same page-level destination identity.
+  const target = pageProps.branchNavigation;
   if (
-    !effectBranchNavigationMatches(target, props.projectId, props.workflowRunId) ||
+    !effectBranchNavigationMatches(target, props.projectId, templateContextWorkflowRunId.value) ||
     target.nodeId !== 'TEMPLATE_MIX' ||
     target === lastBranchNavigation ||
     branchNavigationReloading ||
@@ -3741,27 +4011,44 @@ const applyBranchNavigation = async (): Promise<void> => {
     installedWorkspaceScope.value !== currentWorkspaceScope.value
   )
     return;
+  explicitWorkspaceTarget = target.templateId &&
+    (target.mixStage === 'FILL' || target.mixStage === 'PACKAGING')
+    ? { projectId: target.projectId, workflowRunId: target.workflowRunId, templateId: target.templateId }
+    : null;
+  if ((target.mixStage === 'FILL' || target.mixStage === 'PACKAGING') &&
+    target.workflowRunId !== props.workflowRunId) {
+    // Reopening history may keep the same global Run after config browsed a different
+    // template's current workspace. Only the explicit editor destination restores this scope.
+    selectedTemplateWorkflowRunId.value = null;
+    return;
+  }
   lastBranchNavigation = target;
   workflowDialogOpen.value = false;
+  if (target.mixStage === 'TEMPLATE') {
+    // A template node is the current configuration entry, not its creation-time snapshot.
+    view.value = 'CONFIG';
+    if (target.templateId) activeTemplateId.value = target.templateId;
+    emit('navigationConsumed', target);
+    await load();
+    return;
+  }
   if (!target.templateId || !catalog.value.some(({ id }) => id === target.templateId)) {
+    emit('navigationConsumed', target);
     view.value = 'CONFIG';
     showNotice('所选模板不在此分支中，请从模板列表重新选择', 'warning');
     return;
   }
   focusBranchTemplate(target.templateId);
-  if (target.mixStage === 'TEMPLATE') {
-    view.value = 'CONFIG';
-    return;
-  }
   enterEditor();
   await nextTick();
   if (
-    props.branchNavigation !== target ||
+    pageProps.branchNavigation !== target ||
     !effectBranchNavigationMatches(target, props.projectId, props.workflowRunId)
   )
     return;
   if (target.mixStage === 'PACKAGING') openPackaging('WORKFLOW');
   else if (target.mixStage === 'FILL') await openWorkflowDialog();
+  emit('navigationConsumed', target);
 };
 let lastPreviewTarget: typeof props.previewTarget = null;
 const applyPreviewTarget = (): void => {
@@ -3770,11 +4057,18 @@ const applyPreviewTarget = (): void => {
     !target ||
     target === lastPreviewTarget ||
     pageState.value !== 'READY' ||
-    target.projectId !== props.projectId ||
-    target.workflowRunId !== props.workflowRunId
+    target.projectId !== props.projectId
   )
     return;
+  explicitWorkspaceTarget = { projectId: target.projectId, workflowRunId: target.workflowRunId,
+    templateId: target.templateId };
+  if (target.workflowRunId !== props.workflowRunId) {
+    selectedTemplateWorkflowRunId.value = target.workflowRunId;
+    return;
+  }
+  if (installedWorkspaceScope.value !== currentWorkspaceScope.value) return;
   lastPreviewTarget = target;
+  emit('previewConsumed', target);
   const entry = catalog.value.find(({ id }) => id === target.templateId);
   if (!entry || !entry.workspace.variants.some(({ id }) => id === target.variantId)) {
     showNotice('这条成片工程已不在当前混剪草稿中，无法预览', 'warning');
@@ -3787,24 +4081,20 @@ const applyPreviewTarget = (): void => {
   if (committedVersions[target.templateId] !== entry.workspace.editVersion)
     showNotice('当前混剪草稿已变化，播放器展示的是最新草稿画面', 'warning');
 };
-const returnToFinalOutput = async (): Promise<void> => {
-  playing.value = false;
-  pauseTimelinePlayers();
-  stopPlaybackClock();
-  packagingPanel.value?.stopPlaybackAudio();
-  // Saves already synchronize in the background; flush the last edit before navigation.
-  if (!(await syncOutputOnExit())) return;
-  emit('next');
-};
-const leaveEditor = (): void => {
+const leaveEditor = async (): Promise<void> => {
   playing.value = false;
   pauseTimelinePlayers();
   resetTimelinePlayerState();
   closeMaterialPreview();
   stopPlaybackClock();
   transitionFrame.value = '';
+  // Save in the editor's own Run before restoring current configuration. Pending-output
+  // synchronization is already queued by saves; it must not block this local view change.
+  // Only navigation to final output drains that background queue.
+  if (!(await flushPendingEdits())) return;
+  releaseExplicitWorkspaceTarget();
   view.value = 'CONFIG';
-  void syncOutputOnExit();
+  await load();
 };
 const selectSlot = (id: string): void => {
   if (!activeUi.value) return;
@@ -3839,6 +4129,7 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
     if (
       !slot ||
       !material?.available ||
+      material.activeSource === false ||
       item.duration < 4 ||
       item.duration > 15 ||
       item.offset < 0 ||
@@ -3878,6 +4169,7 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
     if (!item) continue;
     variant.bindings[item.slot.id] = item.material.id;
     variant.bindingRevisions[item.slot.id] = item.material.artifactRevision;
+    (variant.bindingSources ??= {})[item.slot.id] = cloneMaterial(item.material);
     variant.offsets[item.slot.id] = item.offset;
     item.slot.duration = item.duration;
     variant.bindingMetadata ??= {};
@@ -3985,6 +4277,7 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
   clearDetachedAudioForSlots(variant, [slot.id]);
   variant.bindings[slot.id] = material.id;
   variant.bindingRevisions[slot.id] = material.artifactRevision;
+  (variant.bindingSources ??= {})[slot.id] = cloneMaterial(material);
   variant.offsets[slot.id] = 0;
   variant.bindingMetadata ??= {};
   variant.bindingMetadata[slot.id] = {
@@ -4006,6 +4299,7 @@ const removeMaterialFromSlot = (slotId: string): void => {
   clearDetachedAudioForSlots(variant, [slot.id]);
   delete variant.bindings[slot.id];
   delete variant.bindingRevisions[slot.id];
+  delete variant.bindingSources?.[slot.id];
   delete variant.offsets[slot.id];
   if (variant.bindingMetadata) delete variant.bindingMetadata[slot.id];
   variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== slot.id);
@@ -4218,6 +4512,7 @@ const splitTimelineMaterial = (
     variant.bindings[right.id] = material.id;
     variant.bindingRevisions[right.id] =
       variant.bindingRevisions[target.id] ?? material.artifactRevision;
+    (variant.bindingSources ??= {})[right.id] = cloneMaterial(variant.bindingSources[target.id] ?? material);
     variant.offsets[right.id] = sourceOffset + cut.leftDuration;
     variant.bindingMetadata ??= {};
     variant.bindingMetadata[right.id] = {
@@ -4245,9 +4540,12 @@ const splitTimelineMaterial = (
       : null;
     if (!caption || !cut) return;
     rememberTimelineEdit();
+    const sourceSlotId = caption.sourceSlotId ?? selectedPackaging.value?.checkpoint.script?.find((line) =>
+      line.id === (caption.voiceLineId ?? caption.id))?.slotId;
     const right: EffectTemplateMixCaption = {
       ...caption,
       id: crypto.randomUUID(),
+      ...(sourceSlotId ? { sourceSlotId } : {}),
       manual: true,
       start: at,
       end: caption.end,
@@ -4303,8 +4601,16 @@ const splitTimelineMaterial = (
     : packageTarget?.kind === 'MUSIC'
       ? 'MUSIC'
       : 'VOICE';
+  const sourceCaption = packageTarget?.kind === 'CAPTION_VOICE'
+    ? selectedPackaging.value?.checkpoint.captions?.find((caption) => caption.id === packageTarget.key)
+    : undefined;
+  const sourceSlotId = detached?.sourceSlotId ?? sourceCaption?.sourceSlotId ??
+    selectedPackaging.value?.checkpoint.script?.find((line) =>
+      (packageTarget?.kind === 'VOICE' && line.id === packageTarget.key) ||
+      (sourceCaption && line.id === (sourceCaption.voiceLineId ?? sourceCaption.id)))?.slotId;
   const right: EffectTemplateMixDetachedAudio = {
     id: crypto.randomUUID(),
+    ...(sourceSlotId ? { sourceSlotId } : {}),
     ...(detached?.sourceAssetId
       ? { sourceAssetId: detached.sourceAssetId }
       : { sourceType: 'FILE' as const }),
@@ -4771,6 +5077,7 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
   variant.videoLanes[slot.id] = insertLane;
   variant.bindings[slot.id] = material.id;
   variant.bindingRevisions[slot.id] = material.artifactRevision;
+  (variant.bindingSources ??= {})[slot.id] = cloneMaterial(material);
   variant.offsets[slot.id] = 0;
   variant.bindingMetadata ??= {};
   variant.bindingMetadata[slot.id] = {
@@ -5298,6 +5605,7 @@ const createEmptyVariant = async (): Promise<void> => {
     return;
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
   const templateId = activeTemplateId.value;
+  const scope = currentWorkspaceScope.value;
   const previousIds = new Set(workspace.value.variants.map(({ id }) => id));
   mutating.value = true;
   try {
@@ -5307,7 +5615,7 @@ const createEmptyVariant = async (): Promise<void> => {
       draftRevision.value,
       templateId,
     );
-    installWorkspaceData(response.data);
+    if (!installWorkspaceData(response.data, scope)) return;
     activeTemplateId.value = templateId;
     const entry = catalog.value.find(({ id }) => id === templateId);
     const created = entry?.workspace.variants.find(({ id }) => !previousIds.has(id));
@@ -5373,7 +5681,7 @@ const deleteVariant = async (variantId: string): Promise<void> => {
     );
     if (props.projectId !== projectId || props.workflowRunId !== workflowRunId) return;
     const selectedId = selectedVariant.value?.id;
-    installWorkspaceData(response.data);
+    if (!installWorkspaceData(response.data, `${projectId}:${workflowRunId}`)) return;
     activeTemplateId.value = templateId;
     const entry = catalog.value.find((item) => item.id === templateId);
     const next =
@@ -5441,6 +5749,7 @@ const handleBackgroundPackagingFinished = async (
     projectId === props.projectId &&
     sourceWorkflowRunId === props.workflowRunId &&
     templateId === activeTemplateId.value &&
+    !templateNavigationPending.value &&
     workbenchActive &&
     pageState.value === 'READY';
   if (run.status !== 'COMPLETED' || run.templateId !== templateId || !isCurrentWorkbench()) {
@@ -5556,6 +5865,7 @@ const handleBackgroundFillFinished = async (
     projectId === props.projectId &&
     sourceWorkflowRunId === props.workflowRunId &&
     run.templateId === activeTemplateId.value &&
+    !templateNavigationPending.value &&
     workbenchActive &&
     pageState.value === 'READY';
   if (!isCurrentWorkbench() || openingFillRunId) return;
@@ -5692,14 +6002,37 @@ const refreshBackgroundAiRun = async (): Promise<void> => {
     // The source workbench remains usable even when background progress cannot be read.
   }
 };
+async function updateCurrentTemplate(): Promise<void> {
+  if (localUpdateBusy.value || projectEditLocked.value || mutating.value || activeAiRun.value ||
+      packagingInFlight.value || backgroundAiBusy.value) return;
+  localUpdateStarting.value = true;
+  try {
+    if (installedWorkspaceScope.value !== currentWorkspaceScope.value || !workbenchActive || !activeEntry.value)
+      return;
+    if (view.value !== 'EDITOR') enterEditor();
+    const context = { project: props.projectId, workflow: props.workflowRunId, template: activeTemplateId.value };
+    const appendRemaining = async (run: FinalOutputRun) => {
+      if (context.project !== props.projectId || context.workflow !== props.workflowRunId ||
+          context.template !== activeTemplateId.value || !run.sourceOperationHasAdditions || !run.sourceOperationId) return;
+      await startAiFill(null, false, true, run.sourceOperationId);
+    };
+    await updateSourceProjects(appendRemaining);
+  } finally {
+    localUpdateStarting.value = false;
+  }
+}
 const preparePackaging = async (): Promise<number | null> => {
-  if (runSwitching.value) return null;
+  if (packagingActionBlockReason.value) {
+    showNotice(packagingActionBlockReason.value, 'warning');
+    return null;
+  }
   return (await flushPendingEdits()) ? draftRevision.value : null;
 };
 const startAiFill = async (
   target: EffectTemplateMixVariant | null,
   refreshAffectedSlots = false,
   appendNewMaterials = false,
+  sourceOperationId?: string,
 ): Promise<void> => {
   if (runSwitching.value) return;
   // Packaging that is still running holds the Run the fill would read, so the fill has to wait. A
@@ -5719,24 +6052,34 @@ const startAiFill = async (
     showNotice(aiFillBlockReason.value, 'warning');
     return;
   }
-  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
   const templateId = activeTemplateId.value;
   const variantId = target?.id;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const scope = currentWorkspaceScope.value;
+  const ownsRequest = (): boolean => projectId === props.projectId &&
+    workflowRunId === props.workflowRunId && scope === currentWorkspaceScope.value &&
+    templateId === activeTemplateId.value && !runSwitching.value;
+  if (!(await flushPendingEdits()) || !ownsRequest() || draftRevision.value === null) return;
   const keepCurrentWorkbench = workspace.value.variants.some((variant) =>
-    variant.slots.some((slot) => Boolean(variant.bindings[slot.id])),
+    variant.slots.some((slot) => Boolean(variant.bindings[slot.id])) ||
+    Boolean(variant.intentionallyEmptySlotIds?.length),
   );
   mutating.value = true;
-  fillStartPending.value = true;
+  fillStartPending.value = !appendNewMaterials;
   try {
     const result = await createEffectTemplateMixAiRun(
-      props.projectId,
-      props.workflowRunId,
+      projectId,
+      workflowRunId,
       draftRevision.value,
       templateId,
       variantId,
       refreshAffectedSlots,
       appendNewMaterials,
+      sourceOperationId,
     );
+    if (!ownsRequest()) return;
+    if (result.data.templateId !== templateId) return;
     // The task owns a frozen child. Keep editing the current published branch while it runs.
     if (result.data.workflowRunId !== props.workflowRunId) {
       if (!keepCurrentWorkbench) {
@@ -5760,10 +6103,11 @@ const startAiFill = async (
       return;
     }
     const workspaceResponse = await loadEffectTemplateMixWorkspace(
-      props.projectId,
-      props.workflowRunId,
+      projectId,
+      workflowRunId,
     );
-    installWorkspaceData(workspaceResponse.data);
+    if (!ownsRequest()) return;
+    if (!installWorkspaceData(workspaceResponse.data, `${projectId}:${workflowRunId}`)) return;
     activeTemplateId.value = templateId;
     aiRuns.value = [result.data, ...aiRuns.value.filter(({ id }) => id !== result.data.id)];
     showNotice(
@@ -5779,16 +6123,19 @@ const startAiFill = async (
     );
     void pollAiRun(result.data.id);
   } catch (error) {
+    if (!ownsRequest()) return;
     await load();
-    showNotice(error instanceof Error ? error.message : '重新填充失败', 'error');
+    if (!ownsRequest()) return;
+    showNotice(error instanceof Error ? error.message : appendNewMaterials ? '局部更新失败' : '重新填充失败', 'error');
   } finally {
-    fillStartPending.value = false;
-    mutating.value = false;
+    if (ownsRequest()) {
+      fillStartPending.value = false;
+      mutating.value = false;
+    }
   }
 };
 // The top-level action regenerates a complete batch in a child Run, never just the selected film.
 const refill = (): void => void startAiFill(null);
-const appendNewMaterials = (): void => void startAiFill(null, false, true);
 const resumeAppend = async (): Promise<void> => {
   const run = appendContinuationRun.value;
   if (!run || mutating.value || !(await flushPendingEdits())) return;
@@ -6284,17 +6631,11 @@ const toggleFullscreen = async (): Promise<void> => {
 const onFullscreenChange = (): void => {
   playerFullscreen.value = document.fullscreenElement === playerPanel.value;
 };
-/** Drain the last debounced edit before leaving; synchronization itself is silent. */
-const syncOutputOnExit = async (): Promise<boolean> => {
-  if (!(await flushPendingEdits())) return false;
-  if (typeof draftRevision.value === 'number')
-    queueOutputSync(draftRevision.value, activeTemplateId.value);
-  while (outputSyncTask) await outputSyncTask;
-  return true;
-};
 const flushPendingEdits = async (): Promise<boolean> => {
   clearTimeout(saveTimer);
-  if (saveState.value === 'dirty') pendingSave = persist(true);
+  // The page is still alive during awaited navigation. Full timeline drafts can exceed
+  // the browser keepalive payload limit; only actual teardown uses keepalive.
+  if (saveState.value === 'dirty') pendingSave = persist();
   return (await pendingSave) ?? true;
 };
 const onEscape = (event: KeyboardEvent): void => {
@@ -6314,6 +6655,12 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
   )
     return;
   const target = event.target as HTMLElement | null;
+  // Focused horizontal control strips own navigation keys, not the playhead.
+  if (
+    target?.closest('.resource-tabs, .material-role-filters, .project-actions') &&
+    ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)
+  )
+    return;
   // The player scrubber keeps focus after seeking. It is a range input, but
   // Space is still the editor's play/pause shortcut there (unlike text inputs).
   if (event.code === 'Space' && target === playerScrubber.value) {
@@ -6461,7 +6808,7 @@ watch(
     // The parent keeps this component alive across a fork. Continue showing the workbench until
     // the child Run's draft arrives, while blocking edits against the previous Run.
     clearTimeout(saveTimer);
-    void load();
+    if (workbenchActive) void load();
   },
 );
 watch(activeTemplateId, () => {
@@ -6489,6 +6836,7 @@ const refreshMaterialSources = async (): Promise<void> => {
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
   const request = new AbortController();
+  const readToken = draftRace.readToken();
   sourcePollController = request;
   try {
     const { data } = await loadEffectTemplateMixSources(projectId, workflowRunId, request.signal);
@@ -6499,9 +6847,12 @@ const refreshMaterialSources = async (): Promise<void> => {
       workflowRunId !== props.workflowRunId
     )
       return;
+    if (!workspaceRevisionFence.isCurrent(`${projectId}:${workflowRunId}`, data.draftRevision) ||
+      !draftRace.canInstall(readToken, false)) return;
     sourceMaterials.value = data.materials;
     if (data.classificationPools) classificationPools.value = data.classificationPools;
     pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
+    autoPackagingTemplateIds.value = data.autoPackagingTemplateIds ?? [];
     for (const entry of catalog.value) entry.workspace.materials = data.materials;
     // Never overwrite dirty user edits when a local output refresh saves a new engineering revision.
     if (data.draftRevision !== draftRevision.value && saveState.value === 'saved' && !pendingSave)
@@ -6536,7 +6887,7 @@ onActivated(() => {
       if (loadedWorkspaceRunId !== props.workflowRunId) {
         // The parent already flushed the old Run before activation. Never save its still mounted
         // catalog through the new Run's props while the isolated draft is being loaded.
-        if (requestedWorkspaceRunId !== props.workflowRunId) await load();
+        if (requestedWorkspaceScope.value !== currentWorkspaceScope.value) await load();
         return;
       }
       if (!(await flushPendingEdits())) return;
@@ -6557,8 +6908,10 @@ onActivated(() => {
   })();
 });
 onDeactivated(() => {
+  releaseExplicitWorkspaceTarget();
   stopSourceUpdatePolling();
   workbenchActive = false;
+  controller?.abort();
   clearInterval(sourcePollTimer);
   sourcePollTimer = undefined;
   sourcePollController?.abort();
@@ -6604,10 +6957,13 @@ onBeforeUnmount(() => {
 });
 const getBranchTreeTemplateId = (): string | null =>
   view.value === 'EDITOR' ? activeTemplateId.value || null : null;
+const getBranchTreeWorkflowRunId = (): string | null =>
+  view.value === 'EDITOR' ? props.workflowRunId || null : null;
 const getCurrentTemplateId = (): string | null => activeTemplateId.value || null;
 defineExpose({
   flushPendingEdits,
   getBranchTreeTemplateId,
+  getBranchTreeWorkflowRunId,
   getCurrentTemplateId,
   focusBranchTemplate,
 });
@@ -6615,9 +6971,6 @@ defineExpose({
 
 <template>
   <section class="mix-node" :aria-busy="pageState === 'LOADING' || runSwitching">
-    <div v-if="runSwitching" class="mix-run-switch" role="status" aria-live="polite">
-      <LoaderCircle class="spin" :size="17" /> 正在同步新分支，当前工作台保持可见
-    </div>
     <Transition name="notice"
       ><div v-if="notice" class="notice" :class="notice.kind" role="status">
         <CheckCircle2 v-if="notice.kind === 'success'" :size="17" />
@@ -6655,18 +7008,19 @@ defineExpose({
       >
         <aside class="panel template-list">
           <h2>
-            模板列表 <small class="template-list__count">共 {{ catalog.length }} 个</small>
+            模板列表 <small class="template-list__count">共 {{ templateListCatalog.length }} 个</small>
           </h2>
           <div
-            v-for="entry in catalog"
+            v-for="entry in templateListCatalog"
             :key="entry.id"
             class="template-list__row"
             :class="{
               active: entry.id === activeTemplateId,
-              'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(pendingAddedMaterialIds[entry.id]?.length),
+              'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(templateAddedMaterialIds(entry.id).length),
             }"
           >
-            <button type="button" class="template-list__select" @click="selectTemplate(entry.id)">
+            <button type="button" class="template-list__select" :disabled="runSwitching || mutating"
+              @click="openTemplateWorkspace(entry.id, 'CONFIG')">
               <span
                 ><b>{{ entry.workspace.template.name }}</b
                 ><small
@@ -6676,8 +7030,8 @@ defineExpose({
                 <small v-if="templatePendingUpdateCount(entry)" class="source-update-badge"
                   >{{ templatePendingUpdateCount(entry) }} 个成片待更新</small
                 >
-                <small v-if="pendingAddedMaterialIds[entry.id]?.length" class="source-update-badge"
-                  >新增素材待更新 · {{ pendingAddedMaterialIds[entry.id]?.length }}</small
+                <small v-if="templateAddedMaterialIds(entry.id).length" class="source-update-badge"
+                  >新增素材待更新 · {{ templateAddedMaterialIds(entry.id).length }}</small
                 >
               </span>
             </button>
@@ -6795,44 +7149,11 @@ defineExpose({
               <span v-else class="slot-transition-empty">—</span>
             </div>
           </div>
-          <footer>
-            <div>
-              <p v-if="availableMaterials.length">
-                已载入 {{ availableMaterials.length }} 个已确认视频片段。
-              </p>
-              <p v-else-if="expiredMaterialCount" class="warning">
-                {{ expiredMaterialCount }}
-                条旧素材已过期；请先在视频渲染节点更新素材并完成校验，再重新智能填充。
-              </p>
-              <p v-else class="warning">上一步没有已确认视频片段，可配置模板，但无法完成填充。</p>
-              <small v-if="workspace.variants.length"
-                >已有 {{ workspace.variants.length }} 个工程，进入后继续编辑。</small
-              >
-            </div>
-            <button
-              v-if="(activeEntry && templatePendingUpdateCount(activeEntry)) || sourceUpdateBusy"
-              class="button source-update-button"
-              type="button"
-              :disabled="templateEditLocked || mutating || sourceUpdateBusy"
-              @click="updateSourceProjects"
-            >
-              <LoaderCircle v-if="sourceUpdateBusy" class="spin" :size="15" />
-              <RefreshCw v-else :size="15" />{{ sourceUpdateBusy ? '局部更新中…'
-                : `局部更新（${activeEntry ? templatePendingUpdateCount(activeEntry) : 0}）` }}
-            </button>
-            <button
-              v-if="pendingAddedCount"
-              class="button"
-              type="button"
-              :disabled="mutating || Boolean(activeAiRun) || packagingInFlight || backgroundAiBusy"
-              @click="appendNewMaterials"
-            >
-              局部更新 · {{ pendingAddedCount }} 个新增素材
-            </button>
+          <footer class="template-config-actions">
             <button
               class="button primary"
               :disabled="!workspace.template.name.trim() || mutating"
-              @click="enterEditor"
+              @click="openTemplateWorkspace(activeTemplateId, 'EDITOR')"
             >
               <WandSparkles :size="15" />进入精修工作台
             </button>
@@ -6881,27 +7202,14 @@ defineExpose({
           </div>
           <div class="workbench-actions">
             <button
-              v-if="pendingAddedCount"
-              class="button"
-              type="button"
-              :disabled="mutating || Boolean(activeAiRun) || packagingInFlight || backgroundAiBusy"
-              @click="appendNewMaterials"
-            >
-              <RefreshCw :size="15" />局部更新 · {{ pendingAddedCount }} 个新增素材
-            </button>
-            <button
-              v-if="(activeEntry && templatePendingUpdateCount(activeEntry)) || sourceUpdateBusy"
+              v-if="pendingAddedCount || (activeEntry && templatePendingUpdateCount(activeEntry)) || localUpdateBusy"
               class="button source-update-button"
               type="button"
-              :disabled="projectEditLocked || mutating || sourceUpdateBusy"
-              @click="updateSourceProjects"
+              :disabled="localUpdateBusy || projectEditLocked || mutating || Boolean(activeAiRun) || packagingInFlight || backgroundAiBusy"
+              @click="updateCurrentTemplate"
             >
-              <LoaderCircle v-if="sourceUpdateBusy" class="spin" :size="15" />
-              <RefreshCw v-else :size="15" />{{
-                sourceUpdateBusy
-                  ? '局部更新中…'
-                  : `局部更新（${activeEntry ? templatePendingUpdateCount(activeEntry) : 0}）`
-              }}
+              <LoaderCircle v-if="localUpdateBusy" class="spin" :size="15" />
+              <RefreshCw v-else :size="15" />局部更新
             </button>
             <button
               class="button primary"
@@ -6916,9 +7224,9 @@ defineExpose({
               :title="aiFillBlockReason ?? '按模板规则整批生成成片；原分支保留，完成后查看新批次'"
               @click="refill"
             >
-              <LoaderCircle v-if="activeAiRun" class="spin" :size="15" />
+              <LoaderCircle v-if="activeFillRun" class="spin" :size="15" />
               <RefreshCw v-else-if="selectedVariant" :size="15" />
-              {{ activeAiRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : '智能填充' }}
+              {{ activeFillRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : '智能填充' }}
             </button>
             <button
               ref="workflowTrigger"
@@ -6928,17 +7236,6 @@ defineExpose({
               @click="openWorkflowDialog"
             >
               <Workflow :size="14" />查看工作流
-            </button>
-            <button
-              v-if="
-                previewTarget?.projectId === projectId &&
-                previewTarget?.workflowRunId === workflowRunId
-              "
-              class="button"
-              type="button"
-              @click="returnToFinalOutput"
-            >
-              返回成片输出
             </button>
             <button class="button" @click="leaveEditor">返回模板配置</button>
           </div>
@@ -7012,7 +7309,7 @@ defineExpose({
           :style="workbenchGridStyle"
         >
           <aside class="resources">
-            <nav class="resource-tabs">
+            <nav class="resource-tabs" aria-label="素材库分类" tabindex="0">
               <button
                 :class="{ active: resourceTab === 'MATERIAL' }"
                 @click="selectResourceTab('MATERIAL')"
@@ -7046,7 +7343,7 @@ defineExpose({
               <label class="search"
                 ><Search :size="13" /><input v-model="keyword" placeholder="搜索素材或标签"
               /></label>
-              <div class="material-role-filters" aria-label="素材归槽筛选">
+              <div class="material-role-filters" aria-label="素材归槽筛选" tabindex="0">
                 <button
                   :class="{ active: materialRoleFilter === 'UNASSIGNED' }"
                   @click="selectMaterialRole('UNASSIGNED')"
@@ -7561,9 +7858,19 @@ defineExpose({
               <div class="projects-title">
                 <strong>成片项目</strong>
                 <span class="project-count">{{ workspace.variants.length }} 个</span>
+                <button
+                  class="button project-add"
+                  type="button"
+                  aria-label="新建成片"
+                  title="新建空成片工程"
+                  :disabled="runSwitching || mutating || Boolean(activeAiRun) || packagingSourceAutoLocked"
+                  @click="createEmptyVariant"
+                >
+                  <Plus :size="15" />
+                </button>
               </div>
               <small class="projects-subtitle">{{ variantTemplateLabel }} · 可精修成片</small>
-              <div class="project-actions">
+              <div class="project-actions" aria-label="成片项目操作" tabindex="0">
                 <button
                   class="button compact"
                   type="button"
@@ -7572,8 +7879,7 @@ defineExpose({
                     packagingPanel?.busy ||
                     packagingPanel?.active ||
                     packagingPanel?.backgroundActive ||
-                    packagingPanel?.loading ||
-                    Boolean(packagingActionBlockReason)
+                    packagingPanel?.loading
                   "
                   :title="
                     packagingActionBlockReason ??
@@ -7590,6 +7896,8 @@ defineExpose({
                     class="spin"
                     :size="13"
                   />
+                  <RefreshCw v-else-if="packagingActionLabel === '重新成片包装'" :size="14" />
+                  <WandSparkles v-else :size="14" />
                   {{
                     packagingPanel?.busy ||
                     packagingPanel?.active ||
@@ -7599,23 +7907,12 @@ defineExpose({
                   }}
                 </button>
                 <button
-                  class="button compact"
+                  class="button compact project-workflow-action"
                   type="button"
                   title="查看智能成片包装真实任务进度"
                   @click="openPackaging('WORKFLOW')"
                 >
-                  <Workflow :size="13" />查看工作流
-                </button>
-                <button
-                  class="button compact primary"
-                  type="button"
-                  :disabled="
-                    runSwitching || mutating || Boolean(activeAiRun) || packagingSourceAutoLocked
-                  "
-                  title="新建一个不包含任何素材的空成片工程"
-                  @click="createEmptyVariant"
-                >
-                  <Plus :size="13" />新建成片
+                  <Workflow :size="14" />查看工作流
                 </button>
               </div>
             </header>
@@ -7804,17 +8101,19 @@ defineExpose({
         </div>
         <div class="editor-workflow-progress">
           <WorkflowRunProgress
-            v-if="sourceUpdateBusy && sourceUpdateRun"
+            v-if="localUpdateProgress"
             class="mix-run-progress"
-            :progress="sourceUpdateProgress"
-            summary="局部更新成片工程"
+            :progress="localUpdateProgress.progress"
+            summary="局部更新"
+            tone="update"
+            :attempt-label="localUpdateProgress.detail"
             action-label=""
           />
           <WorkflowRunProgress
-            v-if="displayedAiRun"
+            v-if="displayedFillRun"
             class="mix-run-progress"
-            :progress="displayedAiRun.progress"
-            :summary="aiStageLabels[displayedAiRun.stage]"
+            :progress="displayedFillRun.progress"
+            :summary="aiStageLabels[displayedFillRun.stage]"
             :attempt-label="
               displayedBackgroundAi
                 ? '完成后可在版本分支树中打开'
@@ -8324,20 +8623,6 @@ defineExpose({
   border: 1px solid #dbe4f2;
   border-radius: 18px;
 }
-.mix-run-switch {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  margin-bottom: 8px;
-  color: #193565;
-  background: #edf4ff;
-  border: 1px solid #dce5f0;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 700;
-  pointer-events: none;
-}
 .panel {
   min-width: 0;
   background: #fff;
@@ -8757,6 +9042,9 @@ button:disabled {
   margin-top: 11px;
   padding-top: 2px;
 }
+.config-panel > .template-config-actions {
+  justify-content: flex-end;
+}
 .warning {
   color: #b45309 !important;
 }
@@ -8857,6 +9145,7 @@ button:disabled {
 }
 .resource-tabs {
   display: flex;
+  flex: 0 0 auto;
   align-items: stretch;
   justify-content: flex-start;
   overflow-x: auto;
@@ -8864,8 +9153,9 @@ button:disabled {
   border-bottom: 1px solid #e2e8f0;
 }
 .resource-tabs button {
-  flex: 0 1 86px;
-  min-width: 54px;
+  flex: 0 0 86px;
+  width: 86px;
+  white-space: nowrap;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -8882,6 +9172,9 @@ button:disabled {
 .resource-tabs button:disabled {
   color: #a8b3c4;
   cursor: not-allowed;
+}
+.resource-tabs button svg {
+  flex: 0 0 auto;
 }
 .resources > header {
   display: flex;
@@ -8909,8 +9202,10 @@ button:disabled {
   outline: 0;
 }
 .material-role-filters {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
   flex: none;
   min-width: 0;
   gap: 5px;
@@ -8918,6 +9213,9 @@ button:disabled {
 }
 .material-role-filters button {
   display: flex;
+  box-sizing: border-box;
+  flex: 0 0 68px;
+  width: 68px;
   align-items: center;
   justify-content: center;
   min-width: 0;
@@ -8929,9 +9227,7 @@ button:disabled {
   color: #52647e;
   background: #fff;
   font-size: 9px;
-  overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
 .material-role-filters button.active {
@@ -10046,6 +10342,16 @@ button:disabled {
   justify-content: space-between;
   gap: 8px;
 }
+.projects-title strong {
+  flex: 1;
+  min-width: 0;
+}
+.project-add {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
 .project-count {
   flex: 0 0 auto;
   padding: 2px 7px;
@@ -10065,18 +10371,54 @@ button:disabled {
 }
 .project-actions {
   min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr));
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: flex-start;
   gap: 5px;
+}
+.resource-tabs,
+.material-role-filters,
+.project-actions {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+  overscroll-behavior-x: contain;
+}
+.resource-tabs::-webkit-scrollbar,
+.material-role-filters::-webkit-scrollbar,
+.project-actions::-webkit-scrollbar {
+  height: 6px;
+}
+.resource-tabs::-webkit-scrollbar-thumb,
+.material-role-filters::-webkit-scrollbar-thumb,
+.project-actions::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+.resource-tabs:focus-visible,
+.material-role-filters:focus-visible,
+.project-actions:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: -2px;
 }
 .project-actions .button {
   display: inline-flex;
   align-items: center;
-  width: 100%;
+  box-sizing: border-box;
+  flex: 0 0 136px;
+  width: 136px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 14px;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   line-height: 1;
   white-space: nowrap;
+}
+.project-actions .project-workflow-action {
+  flex-basis: 120px;
+  width: 120px;
 }
 .project-actions .button svg {
   flex: 0 0 auto;
@@ -10086,9 +10428,6 @@ button:disabled {
   background: #fff;
   border-color: #dbe3ef;
   opacity: 1;
-}
-.project-actions .primary {
-  grid-column: 1 / -1;
 }
 .projects > div {
   min-height: 0;

@@ -22,6 +22,7 @@ const props = defineProps<{
   switching: boolean;
   forkDisabled: boolean;
   activeTemplateId: string | null;
+  viewedWorkflowRunId?: string | null;
 }>();
 const emit = defineEmits<{
   close: [];
@@ -35,7 +36,7 @@ const graphElement = ref<HTMLElement | null>(null);
 let returnFocus: HTMLElement | null = null;
 let previousBodyOverflow = '';
 const layout = computed(() =>
-  buildEffectBranchLayout(props.tree?.branches ?? [], props.activeTemplateId),
+  buildEffectBranchLayout(props.tree?.branches ?? [], props.activeTemplateId, props.viewedWorkflowRunId),
 );
 const mixStartIndex = BRANCH_TREE_STAGES.findIndex((stage) => stage.nodeId === 'TEMPLATE_MIX');
 const mixStages = BRANCH_TREE_STAGES.filter((stage) => stage.nodeId === 'TEMPLATE_MIX');
@@ -73,8 +74,12 @@ const statusText = (status: string, count: number) =>
       : count > 0
         ? '待校验'
         : '待处理';
-const nodeStatusText = (stageKey: string, status: string, count: number) =>
-  stageKey === 'MIX_TEMPLATE' && status === 'PENDING' ? '模板已创建' : statusText(status, count);
+const nodeStatusText = (node: BranchTreeNode) =>
+  node.stageKey === 'MIX_TEMPLATE' && node.status === 'PENDING'
+    ? '模板已创建'
+    : node.stageKey === 'MIX_FILL' && node.status === 'STALE' && !node.showStaleWarning
+      ? `已填充 · ${node.artifactCount} 项`
+      : statusText(node.status, node.artifactCount);
 
 const selectNode = (node: BranchTreeNode) => {
   if (!props.switching && !props.loading && !props.error)
@@ -306,12 +311,12 @@ onBeforeUnmount(() => {
                   :class="{
                     'branch-node--active': node.onActivePath,
                     'branch-node--current': node.isCurrentStage,
-                    'branch-node--stale': node.status === 'STALE',
+                    'branch-node--stale': node.showStaleWarning,
                   }"
                   :disabled="switching || loading || Boolean(error)"
                   :style="{ left: `${node.x}px`, top: `${node.y}px` }"
-                  :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node.stageKey, node.status, node.artifactCount)}${node.onActivePath ? '，当前工作流路径' : ''}`"
-                  :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node.stageKey, node.status, node.artifactCount)}`"
+                  :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node)}${node.onActivePath ? '，当前工作流路径' : ''}`"
+                  :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node)}`"
                   @click="selectNode(node)"
                 >
                   <strong>{{
@@ -332,7 +337,7 @@ onBeforeUnmount(() => {
                     "
                   >{{ artifactCreatedAtText(node.createdAt) }}</span
                   >
-                  <span v-if="node.status === 'STALE'" class="branch-node__stale">待更新</span>
+                  <span v-if="node.showStaleWarning" class="branch-node__stale">待更新</span>
                 </button>
               </div>
             </div>

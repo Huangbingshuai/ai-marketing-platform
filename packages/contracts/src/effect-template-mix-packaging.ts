@@ -256,6 +256,8 @@ export type PackagingCheckpoint = {
   captionVoices?: Record<string, PackagingAudio>;
 };
 export type PackagingSnapshot = {
+  /** Only server-created local APPEND packaging may keep consuming a frozen render pool. */
+  sourceOperation?: import('./effect-template-mix').EffectTemplateMixFrozenSourceContext;
   /** Server-authorized current-branch append; never supplied by the browser. */
   incrementalFillRunId?: string;
   /** Optional only for pre-library tasks. New jobs freeze the server-selected profile. */
@@ -471,6 +473,11 @@ export function packagingVisualTimeline(variant: EffectTemplateMixVariant) {
     bindingRevisions: keep(variant.bindingRevisions),
     offsets: keep(variant.offsets),
     timelineStarts,
+    ...(variant.intentionallyEmptySlotIds?.length
+      ? { intentionallyEmptySlotIds: variant.intentionallyEmptySlotIds.filter((id) => narrated.has(id)) }
+      : {}),
+    ...(variant.preservedTimelineEnd !== undefined
+      ? { preservedTimelineEnd: variant.preservedTimelineEnd } : {}),
     // Missing lane and explicit lane 0 render identically. Editor normalization
     // must not invalidate already-paid packaging or confirmed visual sources.
     videoLanes: Object.fromEntries(
@@ -548,7 +555,7 @@ export function packagingTimelineClips(variant: EffectTemplateMixVariant) {
     const start = variant.timelineStarts?.[slot.id] ?? cursor;
     const end = start + slot.duration;
     // An unbound template marker is not a clip and cannot push real media to the right.
-    if (!variant.bindings || variant.bindings[slot.id]) cursor = end;
+    if (!variant.bindings || variant.bindings[slot.id] || variant.intentionallyEmptySlotIds?.includes(slot.id)) cursor = end;
     return { slot, start, end, lane: variant.videoLanes?.[slot.id] ?? 0 };
   });
 }
@@ -560,8 +567,9 @@ export function packagingTimelineClips(variant: EffectTemplateMixVariant) {
 export function packagingTimelineDuration(variant: EffectTemplateMixVariant): number {
   return Math.max(
     0,
+    variant.preservedTimelineEnd ?? 0,
     ...packagingTimelineClips(variant)
-      .filter((row) => variant.bindings[row.slot.id])
+      .filter((row) => variant.bindings[row.slot.id] || variant.intentionallyEmptySlotIds?.includes(row.slot.id))
       .map((row) => row.end),
   );
 }

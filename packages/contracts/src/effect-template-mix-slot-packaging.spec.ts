@@ -4,10 +4,17 @@ import { packagingSlotBoundaryError } from './effect-template-mix-packaging';
 
 const variant = (durations: number[]) => ({
   slots: durations.map((duration, index) => ({ id: String(index), duration })),
-  bindings: {},
+  bindings: Object.fromEntries(durations.map((_, index) => [String(index), `material-${index}`])),
 }) as unknown as EffectTemplateMixVariant;
 
 describe('slot packaging boundaries', () => {
+  it('does not treat a preserved deletion hole as a narrated clip to validate', () => {
+    const v = variant([4, 15]);
+    delete v.bindings['1'];
+    v.intentionallyEmptySlotIds = ['1'];
+    v.timelineStarts = { '1': 2 };
+    expect(packagingSlotBoundaryError(v)).toBeNull();
+  });
   it.each([4, 15])('accepts inclusive %s-second bound', (duration) => {
     expect(packagingSlotBoundaryError(variant([duration]))).toBeNull();
   });

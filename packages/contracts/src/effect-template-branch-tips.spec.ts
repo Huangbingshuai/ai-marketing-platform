@@ -18,6 +18,51 @@ const branch = (
   }) as EffectWorkflowBranch;
 
 describe('template current branch tips', () => {
+  it('keeps each template user-selected path across context changes and newer confirmations', () => {
+    const root = branch('root', null, null, null);
+    const a1 = branch('a1', 'root', 'TEMPLATE_MIX', 'a', '1');
+    const a2 = branch('a2', 'a1', 'TEMPLATE_MIX', 'a', '2');
+    const b1 = branch('b1', 'root', 'TEMPLATE_MIX', 'b', '3');
+    const b2 = branch('b2', 'b1', 'TEMPLATE_MIX', 'b', '4');
+    a1.templates[0]!.currentSelectedAt = '2026-10-07T01:00:00.000Z';
+    a2.templates[0]!.currentConfirmedAt = '2026-10-08T01:00:00.000Z';
+    b1.templates[1]!.currentSelectedAt = '2026-10-06T01:00:00.000Z';
+    b2.templates[1]!.currentSelectedAt = '2026-10-07T01:00:00.000Z';
+    for (const context of ['root', 'a1', 'a2', 'b1', 'b2']) {
+      const tips = effectTemplateBranchTips([root, a1, a2, b1, b2], context, { current: true });
+      expect(tips.get('a')?.workflowRunId).toBe('a1');
+      expect(tips.get('b')?.workflowRunId).toBe('b2');
+    }
+    const foreign = { ...branch('foreign', 'root', 'SEGMENT_RENDER', 'a', '5'),
+      templates: [{ ...a2.templates[0]!, currentSelectedAt: '2026-10-09T01:00:00.000Z' }] };
+    expect(effectTemplateBranchTips([root, a1, a2, foreign], 'root', { current: true }).get('a')?.workflowRunId).toBe('a1');
+    expect(effectTemplateBranchTips([root, a1, a2, foreign], 'foreign', { current: true }).get('a')?.workflowRunId).toBe('foreign');
+  });
+  it('uses an in-place confirmation instead of reviving a later-created obsolete fork', () => {
+    const root = branch('root', null, null, null, '2026-10-01');
+    const updated = branch('updated', 'root', 'TEMPLATE_MIX', 'a', '2026-10-02');
+    updated.templates[0]!.currentConfirmedAt = '2026-10-07';
+    const obsolete = branch('obsolete', 'updated', 'TEMPLATE_MIX', 'a', '2026-10-03');
+    obsolete.templates[0]!.currentConfirmedAt = '2026-10-04';
+    const rows = [root, updated, obsolete];
+    for (const context of ['root', 'updated', 'obsolete'])
+      expect(effectTemplateBranchTips(rows, context, { current: true }).get('a')?.workflowRunId)
+        .toBe('updated');
+    expect(effectTemplateBranchTips(rows, 'obsolete', { current: true, selectedTemplateId: 'a' })
+      .get('a')?.workflowRunId).toBe('obsolete');
+    expect(effectTemplateBranchTips(rows, 'obsolete').get('a')?.workflowRunId).toBe('obsolete');
+    expect(updated.createdAt).toBe('2026-10-02');
+  });
+  it('does not adopt a later copied template while choosing another template current path', () => {
+    const root = branch('root', null, null, null, '2026-10-01');
+    const a = branch('a', 'root', 'TEMPLATE_MIX', 'a', '2026-10-02');
+    a.templates[0]!.currentConfirmedAt = '2026-10-07';
+    const b = branch('b', 'a', 'TEMPLATE_MIX', 'b', '2026-10-08');
+    b.templates[1]!.currentConfirmedAt = '2026-10-08';
+    const tips = effectTemplateBranchTips([root, a, b], 'b', { current: true });
+    expect(tips.get('a')?.workflowRunId).toBe('a');
+    expect(tips.get('b')?.workflowRunId).toBe('b');
+  });
   it('uses each template path instead of assigning every template to the global pointer', () => {
     const root = branch('root', null, null, null);
     const a = branch('a1', 'root', 'TEMPLATE_MIX', 'a', '1');

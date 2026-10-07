@@ -1,11 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ScriptTarget, transpileModule } from 'typescript';
 import { computed, ref } from 'vue';
-import { resolveEffectTemplateMixMaterialRoles } from '@ai-marketing/contracts';
+import { resolveEffectTemplateMixMaterialRoles, packagingTimelineDuration } from '@ai-marketing/contracts';
+import { effectTemplateMixTiming } from './effect-template-mix-state';
 import page from './EffectTemplateMixNodePage.vue?raw';
 import timeline from './EffectTemplateMixTimeline.vue?raw';
 
 describe('current material library after repair or regeneration', () => {
+  it('keeps deletion holes complete with their original extent, but not an unavailable bound source', () => {
+    const variant = { slots: [{ id: 'first', duration: 4, transition: '硬切' },
+      { id: 'last', duration: 4, transition: '硬切' }], bindings: {}, bindingRevisions: {},
+      offsets: {}, conflictSlotIds: [], intentionallyEmptySlotIds: ['first', 'last'],
+      preservedTimelineEnd: 11, timelineStarts: { last: 7 } };
+    const workspace = ref({ variants: [variant] });
+    const materialForSlot = () => null;
+    const completeSource = page.split('const complete =')[1]!.split('const validated =')[0]!;
+    const durationSource = page.split('const variantDuration =')[1]!.split('/**')[0]!;
+    const script = transpileModule(`const complete =${completeSource}\nconst variantDuration =${durationSource}`, {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText;
+    const checks = new Function('computed', 'workspace', 'materialForSlot', 'effectTemplateMixTiming', 'packagingTimelineDuration', 'variantConflictCount',
+      `${script}\nreturn { complete, variantDuration };`)(computed, workspace, materialForSlot, effectTemplateMixTiming, packagingTimelineDuration,
+        (value: { conflictSlotIds: string[] }) => value.conflictSlotIds.length);
+    expect(checks.complete.value).toBe(true);
+    expect(checks.variantDuration(variant)).toBe(11);
+    workspace.value.variants[0]!.intentionallyEmptySlotIds = [];
+    Object.assign(workspace.value.variants[0]!.bindings, { first: 'unavailable-source' });
+    expect(checks.complete.value).toBe(false);
+  });
   it('replaces the old file with the current file once and inherits the old purpose', () => {
     const workspace = ref({ materials: [
       { id: 'old', fileObjectId: 'old-file', available: true, activeSource: false },
@@ -41,7 +63,7 @@ describe('current material library after repair or regeneration', () => {
 });
 
 // Execute the page's actual orchestration with scoped API doubles, without mounting media players.
-const action = page.split('async function updateSourceProjects() {')[1]!
+const action = page.split('async function updateSourceProjects(afterSuccess?: (run: FinalOutputRun) => Promise<void>) {')[1]!
   .split('\nasync function resumeSourceUpdate()')[0]!;
 function harness() {
   const entry = { workspace: { variants: [{ id: 'v2' }, { id: 'v4' }, { id: 'v5' }] } };
@@ -53,6 +75,9 @@ function harness() {
     props: { projectId: 'project', workflowRunId: 'workflow' },
     variantSourceChanges: vi.fn(() => [{ slotId: 'changed' }]), templatePendingUpdateCount: vi.fn(() => 3),
     requestActionConfirmation: vi.fn().mockResolvedValue(true), flushPendingEdits: vi.fn().mockResolvedValue(true),
+    openTemplateWorkspace: vi.fn().mockResolvedValue(true),
+    installedWorkspaceScope: ref('project:workflow'),
+    currentWorkspaceScope: ref('project:workflow'), workbenchActive: true,
     sourceUpdateStarting: { value: false }, draftRevision: { value: 9 },
     sourceUpdatePendingVariantIds: { value: [] as string[] },
     syncEffectFinalOutput: vi.fn().mockResolvedValue({ data: { refreshed: [] } }),
@@ -61,85 +86,219 @@ function harness() {
     stopSourceUpdatePolling: vi.fn(), sourceUpdateItemIds: { value: [] as string[] },
     sourceUpdateRun: { value: null as unknown }, pollSourceUpdate: vi.fn(), sourceUpdateGeneration: 1,
     showNotice: vi.fn(),
+    afterSuccess: undefined,
+    pendingAddedCount: ref(0),
+    sourceMaterials: ref([]), pendingAddedMaterialIds: ref({ template: [] }),
+    autoPackagingTemplateIds: ref([]),
+    effectTemplateMixSourceUpdateSignature: vi.fn(() => 'confirmed-source-difference'),
+    crypto: { randomUUID: () => 'confirmed-operation' }, load: vi.fn().mockResolvedValue(undefined),
   };
-  const executable = transpileModule(`async function execute() {${action}`, {}).outputText;
+  const executable = transpileModule(`async function execute() {${action}`, {
+    compilerOptions: { target: ScriptTarget.ES2022 },
+  }).outputText;
   const execute = new Function(...Object.keys(context), `${executable}\nreturn execute;`)
     (...Object.values(context)) as () => Promise<void>;
   return { context, execute };
 }
 
 describe('workbench source update orchestration', () => {
+  it('clears cancelled net differences without polling, appending or invoking paid work', async () => {
+    const { context, execute } = harness();
+    context.updateMixSourceProjects.mockResolvedValue({ data: { noChanges: true } });
+    await execute();
+    expect(context.load).toHaveBeenCalledOnce();
+    expect(context.sourceUpdatePendingVariantIds.value).toEqual([]);
+    expect(context.pollSourceUpdate).not.toHaveBeenCalled();
+    expect(context.showNotice).toHaveBeenCalledWith('待更新差异已抵消，无需更新');
+  });
+  it('continues only the confirmed frozen APPEND context, never a different template or duplicate', async () => {
+    const source = page.split('async function continueFrozenAppend(run: FinalOutputRun) {')[1]!
+      .split('\nwatch(')[0]!;
+    const script = transpileModule(`async function execute(run) {${source}`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
+    const startAiFill = vi.fn();
+    const execute = new Function('props', 'activeTemplateId', 'startAiFill', `${script}\nreturn execute;`)(
+      { workflowRunId: 'w' }, ref('t'), startAiFill);
+    const run = { workflowRunId: 'w', templateId: 't', sourceOperationHasAdditions: true, sourceOperationId: 'frozen-confirmation' };
+    await execute(run);
+    expect(startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true, 'frozen-confirmation');
+    await execute({ ...run, workflowRunId: 'other' });
+    await execute({ ...run, templateId: 'other' });
+    await execute({ ...run, sourceOperationAppendStarted: true });
+    expect(startAiFill).toHaveBeenCalledOnce();
+  });
+  it('stops before confirmation and API write while a different workspace is installed', async () => {
+    const { context: c, execute } = harness();
+    c.installedWorkspaceScope.value = 'project:other';
+    await execute();
+    expect(c.openTemplateWorkspace).not.toHaveBeenCalled();
+    expect(c.requestActionConfirmation).not.toHaveBeenCalled();
+    expect(c.updateMixSourceProjects).not.toHaveBeenCalled();
+  });
   it.each(['PENDING_RENDER', 'COMPLETED'])('refreshes canvas artifacts immediately after local update succeeds (%s)', async (status) => {
-    const source = page.split('async function pollSourceUpdate(run: FinalOutputRun, generation: number) {')[1]!
-      .split('\nasync function updateSourceProjects()')[0]!;
+    const source = page.split('async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSuccess?: (run: FinalOutputRun) => Promise<void>) {')[1]!
+      .split('\nasync function updateSourceProjects(')[0]!;
     const context = {
       props: { projectId: 'project', workflowRunId: 'workflow' }, sourceUpdateGeneration: 1,
-      getMixSourceUpdateRun: vi.fn().mockResolvedValue({ data: { status, items: [] } }),
+      activeTemplateId: ref('template'),
+      getMixSourceUpdateRun: vi.fn().mockResolvedValue({ data: {
+        id: 'local-update', workflowRunId: 'workflow', templateId: 'template', status, items: [],
+      } }),
       sourceUpdateRun: { value: {} as unknown }, sourceUpdateTimer: undefined,
+      setTimeout: vi.fn(() => 1),
       flushPendingEdits: vi.fn().mockResolvedValue(true),
       loadEffectTemplateMixWorkspace: vi.fn().mockResolvedValue({ data: { draft: 'confirmed' } }),
-      installWorkspaceData: vi.fn(), packagingPanel: { value: { refresh: vi.fn() } },
+      draftRace: { readToken: vi.fn(() => 1), canInstall: vi.fn(() => true) },
+      saveState: ref('saved'),
+      installWorkspaceData: vi.fn(() => true), packagingPanel: { value: { refresh: vi.fn() } },
       notifyOutputChange: vi.fn(), showNotice: vi.fn(),
+      afterSuccess: vi.fn().mockResolvedValue(undefined),
+      pendingAddedCount: ref(0),
     };
     const script = transpileModule(`async function execute(run, generation) {${source}`, {}).outputText;
     const execute = new Function(...Object.keys(context), `${script}\nreturn execute;`)(...Object.values(context));
-    await execute({ id: 'local-update' }, 1);
-    expect(context.installWorkspaceData).toHaveBeenCalledWith({ draft: 'confirmed' });
+    await execute({ id: 'local-update', workflowRunId: 'workflow', templateId: 'template' }, 1);
+    expect(context.installWorkspaceData).toHaveBeenCalledWith({ draft: 'confirmed' }, 'project:workflow');
     expect(context.notifyOutputChange).toHaveBeenCalledExactlyOnceWith('project', 'workflow', true);
     expect(context.notifyOutputChange.mock.invocationCallOrder[0]).toBeLessThan(
       context.packagingPanel.value.refresh.mock.invocationCallOrder[0]!);
     expect(context.sourceUpdateRun.value).toBeNull();
+    expect(context.afterSuccess).toHaveBeenCalledOnce();
     context.notifyOutputChange.mockClear();
     await execute({ id: 'late-task' }, 0);
     expect(context.notifyOutputChange).not.toHaveBeenCalled();
+    context.installWorkspaceData.mockClear();
+    context.draftRace.canInstall.mockReturnValue(false);
+    await execute({ id: 'local-update', workflowRunId: 'workflow', templateId: 'template' }, 1);
+    expect(context.installWorkspaceData).not.toHaveBeenCalled();
+    expect(context.notifyOutputChange).not.toHaveBeenCalled();
+    expect(context.setTimeout).toHaveBeenCalledWith(expect.any(Function), 1200);
+    context.draftRace.canInstall.mockReturnValue(true);
+    context.installWorkspaceData.mockReturnValue(false);
+    await execute({ id: 'local-update', workflowRunId: 'workflow', templateId: 'template' }, 1);
+    expect(context.notifyOutputChange).not.toHaveBeenCalled();
+    expect(context.setTimeout).toHaveBeenCalledTimes(2);
   });
-  it('offers the same scoped local-update action in configuration and editor without forcing a refill for repairs', () => {
+  it('offers scoped local update only in the editor without forcing a refill for repairs', () => {
     const config = page.split('<footer>')[1]!.split('</footer>')[0]!;
-    expect(config).toContain('@click="updateSourceProjects"');
-    expect(config).toContain('templatePendingUpdateCount(activeEntry)');
+    expect(config).not.toContain('@click="updateSourceProjects"');
+    expect(page).toContain('@click="updateCurrentTemplate"');
     expect(page).not.toContain('当前模板配置或已绑定素材与确认版本不一致');
     const script = transpileModule(`const packagingActionBlockReason =${page
       .split('const packagingActionBlockReason =')[1]!.split('const committedVersions')[0]!}`, {}).outputText;
     const entry = ref({ needsAiFill: false, packagingSourceLocked: false });
     let count = 1;
-    const reason = new Function('computed', 'runSwitching', 'activeEntry', 'templatePendingUpdateCount',
-      `${script}\nreturn packagingActionBlockReason;`)(computed, ref(false), entry, () => count) as { value: string | null };
-    expect(reason.value).toBe('成片引用的素材已更新，请先局部更新成片。');
+    const pendingAddedCount = ref(0);
+    const reason = new Function('computed', 'runSwitching', 'activeEntry', 'pendingAddedCount', 'templatePendingUpdateCount',
+      `${script}\nreturn packagingActionBlockReason;`)(computed, ref(false), entry, pendingAddedCount, () => count) as { value: string | null };
+    expect(reason.value).toBe('当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。');
     count = 0; entry.value = { ...entry.value }; // Invalidate the computed like an installed workspace.
+    expect(reason.value).toBeNull();
+    pendingAddedCount.value = 2;
+    expect(reason.value).toContain('请先完成局部更新');
+    pendingAddedCount.value = 0;
     expect(reason.value).toBeNull();
     entry.value.needsAiFill = true;
     expect(reason.value).toContain('模板槽位配置已修改');
+  });
+  it('checks packaging prerequisites before saving or starting an editing branch', async () => {
+    const source = page.split('const preparePackaging =')[1]!.split('const startAiFill =')[0]!;
+    const script = transpileModule(`const execute =${source}`, {}).outputText;
+    const reason = ref<string | null>('请先完成局部更新');
+    const showNotice = vi.fn(), flush = vi.fn().mockResolvedValue(true);
+    const execute = new Function('packagingActionBlockReason', 'showNotice', 'flushPendingEdits', 'draftRevision',
+      `${script}\nreturn execute;`)(reason, showNotice, flush, ref(9));
+    expect(await execute()).toBeNull();
+    expect(showNotice).toHaveBeenCalledWith('请先完成局部更新', 'warning');
+    expect(flush).not.toHaveBeenCalled();
+    reason.value = null;
+    expect(await execute()).toBe(9);
+    expect(flush).toHaveBeenCalledOnce();
+  });
+  it('keeps first packaging and repackaging icons and lets a blocked click explain the prerequisite', () => {
+    const action = page.split('<div class="project-actions"')[1]!.split('project-workflow-action')[0]!;
+    expect(action).toContain('<RefreshCw v-else-if="packagingActionLabel === \'重新成片包装\'" :size="14" />');
+    expect(action).toContain('<WandSparkles v-else :size="14" />');
+    expect(action).toContain('<LoaderCircle');
+    expect(action).not.toContain('Boolean(packagingActionBlockReason)');
+    expect(action).toContain('@click="openPackaging(\'ACTION\')"');
+  });
+  it('does not require local update before a full refill and does not route it to APPEND', () => {
+    const source = page.split('const startAiFill =')[1]!.split('const refill =')[0]!;
+    expect(source).not.toContain('packagingActionBlockReason');
+    expect(page).toContain('const refill = (): void => void startAiFill(null);');
+    expect(page).toContain('await startAiFill(null, false, true, run.sourceOperationId);');
+    expect(source).toContain('createEffectTemplateMixAiRun(');
   });
   it('starts all three affected films directly without pre-validating obsolete source revisions', async () => {
     const { context, execute } = harness();
     context.syncEffectFinalOutput.mockRejectedValue(new Error('测试1 · 5 的当前画面素材不可用'));
     await execute();
     expect(context.syncEffectFinalOutput).not.toHaveBeenCalled();
-    expect(context.updateMixSourceProjects).toHaveBeenCalledExactlyOnceWith('project', 'output', ['item-v2', 'item-v4', 'item-v5']);
+    expect(context.updateMixSourceProjects).toHaveBeenCalledExactlyOnceWith('project', {
+      workflowRunId: 'workflow', templateId: 'template', expectedDraftRevision: 9,
+      variantIds: ['v2', 'v4', 'v5'],
+      appendNewMaterials: true, expectedSourceSignature: 'confirmed-source-difference', operationId: 'confirmed-operation',
+      expectedPackageNewVariants: false,
+    });
+    expect(context.loadMixFinalOutputRuns).not.toHaveBeenCalled();
     expect(context.sourceUpdateRun.value).toMatchObject({ status: 'QUEUED' });
     expect(context.sourceUpdateStarting.value).toBe(false);
     expect(context.showNotice).not.toHaveBeenCalled();
     expect(context.pollSourceUpdate).toHaveBeenCalledOnce();
   });
-  it('reconciles a missing confirmed batch only, then starts the scoped update', async () => {
+  it('does not create source or append tasks after cancelling the combined confirmation', async () => {
+    const { context, execute } = harness();
+    context.pendingAddedCount.value = 2;
+    context.requestActionConfirmation.mockResolvedValue(false);
+    await execute();
+    expect(context.requestActionConfirmation).toHaveBeenCalledWith(expect.objectContaining({
+      title: '更新已有工程并追加新成片？', description: expect.stringContaining('随后归槽新增素材'),
+    }));
+    expect(context.updateMixSourceProjects).not.toHaveBeenCalled();
+    expect(context.pollSourceUpdate).not.toHaveBeenCalled();
+  });
+  it.each(['FAILED', 'PARTIAL', 'CANCELLED'])('does not append after an unsuccessful source update (%s)', async (status) => {
+    const source = page.split('async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSuccess?: (run: FinalOutputRun) => Promise<void>) {')[1]!
+      .split('\nasync function updateSourceProjects(')[0]!;
+    const context = { props: { projectId: 'project', workflowRunId: 'workflow' }, sourceUpdateGeneration: 1,
+      activeTemplateId: ref('template'),
+      getMixSourceUpdateRun: vi.fn().mockResolvedValue({ data: {
+        id: 'failed', workflowRunId: 'workflow', templateId: 'template', status, items: [],
+      } }),
+      sourceUpdateRun: ref<unknown>({}), showNotice: vi.fn(), afterSuccess: vi.fn(),
+    };
+    const script = transpileModule(`async function execute(run, generation) {${source}`, {}).outputText;
+    const execute = new Function(...Object.keys(context), `${script}\nreturn execute;`)(...Object.values(context));
+    await execute({ id: 'failed', workflowRunId: 'workflow', templateId: 'template' }, 1);
+    expect(context.afterSuccess).not.toHaveBeenCalled();
+    expect(context.showNotice).toHaveBeenCalledWith('局部更新未完成，请重试', 'error');
+    expect(context.sourceUpdateRun.value).toBeNull();
+  });
+  it('does not infer confirmation from a missing output list or ordinary sync', async () => {
     const { context, execute } = harness();
     context.loadMixFinalOutputRuns.mockResolvedValueOnce({ data: [] });
     await execute();
-    expect(context.syncEffectFinalOutput).toHaveBeenCalledExactlyOnceWith('project', 'workflow', {
-      templateId: 'template', expectedDraftRevision: 9,
-    });
+    expect(context.syncEffectFinalOutput).not.toHaveBeenCalled();
     expect(context.updateMixSourceProjects).toHaveBeenCalledOnce();
   });
   it('does not reconcile or start a task after the user changes template', async () => {
     const { context, execute } = harness();
-    context.loadMixFinalOutputRuns.mockImplementationOnce(async () => {
+    context.flushPendingEdits.mockImplementationOnce(async () => {
       context.activeTemplateId.value = 'other';
-      return { data: [] };
+      return true;
     });
     await execute();
     expect(context.syncEffectFinalOutput).not.toHaveBeenCalled();
     expect(context.updateMixSourceProjects).not.toHaveBeenCalled();
     expect(context.sourceUpdateStarting.value).toBe(false);
+  });
+  it('propagates an actual server error without pretending confirmed projects are missing', async () => {
+    const { context, execute } = harness();
+    context.updateMixSourceProjects.mockRejectedValue(new Error('成片工程已变化，请刷新后重试'));
+    await execute();
+    expect(context.showNotice).toHaveBeenCalledWith('成片工程已变化，请刷新后重试', 'error');
+    expect(context.sourceUpdateStarting.value).toBe(false);
+    expect(context.pollSourceUpdate).not.toHaveBeenCalled();
   });
 });
 
@@ -218,7 +377,7 @@ describe('source update project locks', () => {
     expect(trackIsLocked('VIDEO')).toBe(false);
     expect(trackIsLocked('CAPTION')).toBe(true);
     expect(page).toContain(':source-update-lock="selectedSourceUpdateLocked"');
-    const progress = page.split('v-if="sourceUpdateBusy && sourceUpdateRun"')[1]!.split('/>')[0]!;
+    const progress = page.split('v-if="localUpdateProgress"')[1]!.split('/>')[0]!;
     expect(progress).toContain('action-label=""');
     expect(progress).not.toContain('show-details');
   });

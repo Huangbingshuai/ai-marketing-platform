@@ -96,12 +96,11 @@ describe('packaging workflow progress', () => {
     expect(packagingActionText(false, 'QUEUED')).toBe('智能成片包装');
     expect(packagingActionText(false, null)).toBe('智能成片包装');
   });
-  it('names the real validate blocker instead of telling the user to wait', () => {
-    expect(page).toContain('const validateStatusTitle = computed(');
-    expect(page).toContain(':status-title="validateStatusTitle"');
+  it('omits the redundant footer status while retaining packaging task feedback', () => {
+    expect(page).not.toContain('const validateStatusTitle = computed(');
+    expect(page).not.toContain(':status-title=');
     expect(page).not.toContain('请等待全部成片包装成功且未过期');
-    expect(page).toContain('成片包装未全部就绪，请在包装面板中恢复未完成项');
-    expect(page).toContain('成片包装进行中，请等待完成');
+    expect(page).toContain('<WorkflowRunProgress');
   });
   it('submits a film whose packaging failed instead of blocking the whole batch', () => {
     // A run that ends PARTIAL used to leave the validate button disabled with nothing left to wait
@@ -117,7 +116,6 @@ describe('packaging workflow progress', () => {
     expect(page).toContain('@failures="packagingFailures = $event"');
     expect(page).toContain('data-testid="packaging-failure-banner"');
     expect(page).toContain('这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐');
-    expect(page).toContain('条失败将按无包装成片提交（仅画面）');
     // 完成校验 was removed from this node: the batch has to say the partial run is not a version yet
     // instead of pointing at a button that no longer exists.
     expect(page).not.toContain('仍可完成校验');

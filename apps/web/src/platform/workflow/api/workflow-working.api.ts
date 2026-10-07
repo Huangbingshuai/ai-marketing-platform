@@ -162,10 +162,11 @@ export const activateEffectWorkflowBranch = (
   projectId: string,
   workflowRunId: string,
   signal?: AbortSignal,
+  selection?: import('@ai-marketing/contracts').ActivateEffectWorkflowBranchRequest,
 ): Promise<ApiResponse<ActivateEffectWorkflowBranchData>> =>
   requestJson(
     `${projectPath(projectId)}/workflow-runs/effect/branches/${encodeURIComponent(workflowRunId)}/activate`,
-    { method: 'POST', operation: '切换效果类版本分支', signal },
+    { method: 'POST', operation: '切换效果类版本分支', signal, ...(selection ? { body: selection } : {}) },
   );
 
 export const createEffectWorkflowBranch = (

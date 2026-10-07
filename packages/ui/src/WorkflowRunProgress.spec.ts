@@ -23,4 +23,13 @@ describe('WorkflowRunProgress', () => {
     expect(componentSource).toContain("'without-action': !actionLabel");
     expect(componentSource).toContain('grid-template-columns: minmax(120px, 1fr) auto;');
   });
+  it('shares a yellow update tone without changing default generation progress', () => {
+    expect(componentSource).toContain("tone?: 'default' | 'update'");
+    expect(componentSource).toContain("tone: 'default'");
+    expect(componentSource).toContain("'is-update': tone === 'update'");
+    expect(componentSource).toContain('--progress-fill: #2563eb;');
+    expect(componentSource).toContain('--progress-fill: #f59e0b;');
+    expect(componentSource).toContain('background: var(--progress-fill)');
+    expect(componentSource).toContain('color: var(--progress-accent)');
+  });
 });

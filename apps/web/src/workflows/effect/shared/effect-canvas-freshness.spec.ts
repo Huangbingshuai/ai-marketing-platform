@@ -1,20 +1,44 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRenderer, defineComponent, nextTick, reactive } from 'vue';
-import type { FinalOutputRun, WorkingArtifact } from '@ai-marketing/contracts';
-import { artifactStaleCounts, outputStaleCount, useEffectCanvasFreshness } from './effect-canvas-freshness';
+import type { EffectWorkflowBranchTreeData, FinalOutputRun, WorkingArtifact } from '@ai-marketing/contracts';
+import { artifactStaleCounts, branchStaleCounts, outputStaleCount, useEffectCanvasFreshness } from './effect-canvas-freshness';
 import canvas from '../source-import/components/EffectWorkflowCanvas.vue?raw';
 import parent from '../source-import/EffectImportNodePage.vue?raw';
 
-const mocks = vi.hoisted(() => ({ artifacts: vi.fn(), output: vi.fn(), sources: vi.fn() }));
-vi.mock('../../../platform/workflow/api/workflow-working.api', () => ({ listWorkingArtifacts: mocks.artifacts }));
+const mocks = vi.hoisted(() => ({ artifacts: vi.fn(), output: vi.fn(), sources: vi.fn(), tree: vi.fn() }));
+vi.mock('../../../platform/workflow/api/workflow-working.api', () => ({ listWorkingArtifacts: mocks.artifacts,
+  getEffectWorkflowBranchTree: mocks.tree }));
 vi.mock('../../../api/http-client', () => ({ requestJson: mocks.output }));
 vi.mock('../template-mix/api/effect-template-mix.api', () => ({ loadEffectTemplateMixSources: mocks.sources }));
 const artifact = (id: string, nodeId: string, freshness = 'STALE') => ({ id, nodeId, freshness }) as WorkingArtifact;
-const output = (templateId: string, stale: number) => ({ templateId, counts: { stale } }) as FinalOutputRun;
-beforeEach(() => mocks.sources.mockResolvedValue({ data: { pendingProjectCount: 0 } }));
+const output = (templateId: string, stale: number) => ({ id: `output-${templateId}`, templateId,
+  status: 'COMPLETED', counts: { stale }, items: [] }) as unknown as FinalOutputRun;
+beforeEach(() => {
+  mocks.sources.mockResolvedValue({ data: { pendingProjectCount: 0 } });
+  mocks.tree.mockImplementation((projectId) => Promise.resolve({ data: { projectId, activeWorkflowRunId: null, branches: [] } }));
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe('effect canvas update projection', () => {
+  it('ignores obsolete active results but still aggregates real warnings from another current template', () => {
+    const template = (templateId: string, fillStatus: string, currentConfirmedAt: string) => ({
+      templateId, fillStatus, currentConfirmedAt, timelineVariantCount: 13,
+      packagingVariantCount: 0, packagingStatus: 'PENDING', deliveryCount: 0,
+    });
+    const tree = { projectId: 'p', activeWorkflowRunId: 'old', branches: [
+      { workflowRunId: 'current', parentWorkflowRunId: null, nodes: [], createdAt: '2026-10-01',
+        templates: [template('a', 'CONFIRMED', '2026-10-07')] },
+      { workflowRunId: 'old', parentWorkflowRunId: 'current', forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: 'a', createdAt: '2026-10-02', nodes: [],
+        templates: [template('a', 'STALE', '2026-10-03')] },
+      { workflowRunId: 'other', parentWorkflowRunId: 'current', forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: 'b', createdAt: '2026-10-04', nodes: [],
+        templates: [template('b', 'STALE', '2026-10-05')] },
+    ] } as unknown as EffectWorkflowBranchTreeData;
+    expect(branchStaleCounts(tree, 'old')?.[4]).toBe(1);
+    tree.branches[2]!.templates[0]!.fillStatus = 'CONFIRMED';
+    expect(branchStaleCounts(tree, 'old')?.[4]).toBe(0);
+  });
   it('does not keep completed films stale because the template classified an older material pool', () => {
     expect(artifactStaleCounts([
       { ...artifact('pool', 'TEMPLATE_MIX'), artifactKey: 'mix-template:t', dependencies: [{
@@ -66,6 +90,7 @@ describe('effect canvas update projection', () => {
     expect(canvas).toContain("emit('select', index)");
     expect(parent).toContain(':stale-counts="canvasStaleCounts"');
     expect(parent).toContain('@freshness="canvasFreshness.acceptOutputs"');
+    expect(parent).toContain('@mix-freshness="canvasFreshness.acceptMix"');
   });
   it('rejects late reads from another run, resets warnings, reuses visible output polling and cleans up', async () => {
     vi.useFakeTimers();
@@ -98,7 +123,11 @@ describe('effect canvas update projection', () => {
     app.mount({});
     state.acceptOutputs({ projectId: 'p', workflowRunId: 'old', runs: [output('a', 3)] });
     expect(state.staleCounts.value[5]).toBe(3);
+    scope.activeStep = 4;
+    state.acceptMix({ projectId: 'p', workflowRunId: 'old', pendingProjectCount: 2 });
+    expect(state.staleCounts.value[4]).toBe(2);
     scope.workflowRunId = 'new';
+    scope.activeStep = 5;
     await nextTick();
     resolveOld({ data: { items: [artifact('old', 'FINAL_OUTPUT')] } });
     resolveOldSources({ data: { pendingProjectCount: 9 } });
@@ -108,6 +137,14 @@ describe('effect canvas update projection', () => {
     state.acceptOutputs({ projectId: 'other', workflowRunId: 'new', runs: [output('a', 8)] });
     state.acceptOutputs({ projectId: 'p', workflowRunId: 'old', runs: [output('a', 8)] });
     expect(state.staleCounts.value[5]).toBe(0);
+    scope.activeStep = 4;
+    state.acceptMix({ projectId: 'other', workflowRunId: 'new', pendingProjectCount: 8 });
+    state.acceptMix({ projectId: 'p', workflowRunId: 'old', pendingProjectCount: 8 });
+    expect(state.staleCounts.value[4]).toBe(0);
+    state.acceptMix({ projectId: 'p', workflowRunId: 'new', pendingProjectCount: 4 });
+    expect(state.staleCounts.value[4]).toBe(4);
+    scope.activeStep = 5;
+    expect(state.staleCounts.value[4]).toBe(4); // Leaving the mix page cannot clear its known warning.
     state.acceptOutputs({ projectId: 'p', workflowRunId: 'new', runs: [output('a', 1)] });
     expect(state.staleCounts.value[5]).toBe(1);
     expect(mocks.output).not.toHaveBeenCalled();
@@ -116,6 +153,9 @@ describe('effect canvas update projection', () => {
     expect(vi.getTimerCount()).toBe(0);
     state.acceptOutputs({ projectId: 'p', workflowRunId: 'new', runs: [output('a', 9)] });
     expect(state.staleCounts.value[5]).toBe(1);
+    scope.activeStep = 4;
+    state.acceptMix({ projectId: 'p', workflowRunId: 'new', pendingProjectCount: 9 });
+    expect(state.staleCounts.value[4]).toBe(4);
   });
   it('refreshes immediately on saved changes in this or another tab, isolates scope and releases subscriptions', async () => {
     vi.useFakeTimers();
@@ -163,13 +203,56 @@ describe('effect canvas update projection', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.artifacts).toHaveBeenCalledTimes(3);
     expect(state.staleCounts.value[4]).toBe(0);
+    state.acceptMix({ projectId: 'p', workflowRunId: 'w', pendingProjectCount: 6 });
+    listeners.get('effect-final-output-sync')!({ detail: { projectId: 'p', workflowRunId: 'w' } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.staleCounts.value[4]).toBe(6); // Single-run polling cannot erase the all-template directory warning.
+    state.acceptMix({ projectId: 'p', workflowRunId: 'w', pendingProjectCount: 0 });
+    expect(state.staleCounts.value[4]).toBe(0);
     channel.onmessage!({ data: { projectId: 'p', workflowRunId: 'w' } });
     await vi.advanceTimersByTimeAsync(0);
-    expect(mocks.output).toHaveBeenCalledTimes(5);
-    expect(mocks.artifacts).toHaveBeenCalledTimes(3);
+    expect(mocks.output).toHaveBeenCalledTimes(7);
+    expect(mocks.artifacts).toHaveBeenCalledTimes(4); // Directory completion immediately reconciles confirmations.
     app.unmount();
     expect(channel.close).toHaveBeenCalledOnce();
     expect(listeners.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+  it('rechecks branch freshness as soon as the last locally updated film completes', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    vi.stubGlobal('document', { visibilityState: 'visible' });
+    const branch = (fillStatus: 'STALE' | 'CONFIRMED') => ({ data: {
+      projectId: 'p', activeWorkflowRunId: 'w', branches: [{ workflowRunId: 'w', nodes: [], templates: [{
+        templateId: 't', timelineVariantCount: 1, fillStatus, packagingVariantCount: 0,
+        packagingStatus: 'PENDING', deliveryCount: 0, deliveryStatus: 'PENDING',
+      }] }],
+    } });
+    mocks.tree.mockResolvedValueOnce(branch('STALE') as never).mockResolvedValue(branch('CONFIRMED') as never);
+    mocks.sources.mockResolvedValue({ data: { pendingProjectCount: 0 } });
+    mocks.artifacts.mockResolvedValue({ data: { items: [] } });
+    mocks.output.mockResolvedValue({ data: [] });
+    let state!: ReturnType<typeof useEffectCanvasFreshness>;
+    const renderer = createRenderer({
+      patchProp: () => {}, insert: () => {}, remove: () => {},
+      createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
+      setText: () => {}, setElementText: () => {}, parentNode: () => null, nextSibling: () => null,
+    });
+    const app = renderer.createApp(defineComponent({ setup() {
+      state = useEffectCanvasFreshness(() => ({ projectId: 'p', workflowRunId: 'w', activeStep: 4, enabled: true }));
+      return () => null;
+    } }));
+    app.mount({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.staleCounts.value[4]).toBe(1);
+    const queued = { ...output('t', 1), status: 'QUEUED', items: [{ id: 'film', status: 'QUEUED', stale: true }] } as unknown as FinalOutputRun;
+    state.acceptOutputs({ projectId: 'p', workflowRunId: 'w', runs: [queued] });
+    const completed = { ...output('t', 0), items: [{ id: 'film', status: 'COMPLETED', stale: false }] } as unknown as FinalOutputRun;
+    state.acceptOutputs({ projectId: 'p', workflowRunId: 'w', runs: [completed] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.tree).toHaveBeenCalledTimes(2);
+    expect(state.staleCounts.value[4]).toBe(0);
+    expect(state.branchTree.value?.branches[0]?.templates[0]?.fillStatus).toBe('CONFIRMED');
+    app.unmount();
   });
 });

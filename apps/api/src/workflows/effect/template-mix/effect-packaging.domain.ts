@@ -119,12 +119,15 @@ export function packagingClips(
   variant: EffectTemplateMixVariant,
   materials: EffectTemplateMixMaterial[],
   { byId, used, visit }: ReturnType<typeof artifactVisitor>,
+  adoptedFiles = false,
   allowUnboundSlots = false,
 ): PackagingSnapshot['clips'] {
   return packagingTimelineClips(variant)
-    .filter(({ slot }) => variant.bindings[slot.id] || !allowUnboundSlots)
+    .filter(({ slot }) => variant.bindings[slot.id] ||
+      (!allowUnboundSlots && !variant.intentionallyEmptySlotIds?.includes(slot.id)))
     .map(({ slot, start, lane }) => {
-    const m = materials.find((m) => m.id === variant.bindings[slot.id]);
+    const adopted = adoptedFiles ? variant.bindingSources?.[slot.id] : undefined;
+    const m = adopted ?? materials.find((m) => m.id === variant.bindings[slot.id]);
     const offset = variant.offsets[slot.id] ?? 0;
     if (
       !m?.available ||
@@ -141,11 +144,20 @@ export function packagingClips(
       offset + slot.duration > m.duration + 0.05
     )
       throw new BadRequestException('成片存在空槽、失效素材或越界截取');
-    visit(m.artifactId);
-    const promptId = record(byId.get(m.artifactId)?.payload).promptId;
-    let prompt = '';
+    if (!adopted?.promptText) visit(m.artifactId);
+    const source = byId.get(m.artifactId)!;
+    const payload = record(source?.payload);
+    const promptId = payload.promptId;
+    // Imported clips own their confirmed reverse-description, just as the fill
+    // snapshot does. Read only the visited render artifact, never a UI draft.
+    let prompt = adopted?.promptText || (source?.nodeId === 'SEGMENT_RENDER' &&
+      source.artifactKey.startsWith('render-clip:') &&
+      payload.origin === 'EXTERNAL_IMPORT' &&
+      record(payload.importedMaterial).schemaVersion === 1 &&
+      typeof payload.promptText === 'string'
+        ? payload.promptText.trim() : '');
     for (const a of used.values())
-      if (a.artifactKey.startsWith('prompt-batch:')) {
+      if (!prompt && a.artifactKey.startsWith('prompt-batch:')) {
         const items = record(a.payload).items;
         if (Array.isArray(items))
           for (const item of items)
@@ -182,6 +194,7 @@ export function packagingSnapshot(
   materials: EffectTemplateMixMaterial[],
   artifacts: WorkingArtifact[],
   musicSources: ReadonlyMap<string, { fileObjectId: string; sourceDuration: number }> = new Map(),
+  sourceOperation?: import('@ai-marketing/contracts').EffectTemplateMixFrozenSourceContext,
 ): PackagingSnapshot {
   const boundaryError = packagingSlotBoundaryError(variant);
   if (boundaryError) throw new BadRequestException(boundaryError);
@@ -193,7 +206,7 @@ export function packagingSnapshot(
     throw new BadRequestException('包装时间轴超过容量上限');
   const visitor = artifactVisitor(artifacts);
   const { used, visit } = visitor;
-  const clips = packagingClips(variant, materials, visitor, true);
+  const clips = packagingClips(variant, materials, visitor, Boolean(sourceOperation), true);
   const timelineDuration = packagingTimelineDuration(variant);
   // A detached track is part of the film's content, so the film is at least as long as it is: the
   // only bound left is the capacity cap. (`timelineDuration` stays video-only — it is the frozen
@@ -280,18 +293,26 @@ export function packagingSnapshot(
       throw new BadRequestException('分离音频必须对应其原视频素材');
     visit(material.artifactId);
   }
-  const facts = packagingFacts(used.values());
+  const facts = sourceOperation?.facts ?? packagingFacts(used.values());
   if (!facts.length)
     throw new BadRequestException('缺少素材所消费的已确认商品信息，不能生成商品口播');
   return {
     narrationLayoutVersion: 'SLOT_V1',
+    ...(sourceOperation ? { sourceOperation } : {}),
     sourceTimelineHash: visualHash(variant),
     duration: timelineDuration,
     variant,
     clips,
     ...(detachedAudios.length ? { detachedAudios } : {}),
     facts,
-    dependencies: [...used.values()].map((a) => ({
+    dependencies: sourceOperation ? [
+      ...sourceOperation.promptArtifacts.map((source) => ({ artifactId: source.id,
+        artifactKey: source.artifactKey, revision: source.revision, contentHash: source.contentHash,
+        nodeId: 'PROMPT_GENERATION' })),
+      ...Object.values(variant.bindingSources ?? {}).map((source) => ({ artifactId: source.artifactId,
+        artifactKey: source.artifactKey, revision: source.artifactRevision, contentHash: source.artifactContentHash ?? '',
+        nodeId: 'SEGMENT_RENDER' })),
+    ] : [...used.values()].map((a) => ({
       artifactId: a.id,
       artifactKey: a.artifactKey,
       revision: a.revision,

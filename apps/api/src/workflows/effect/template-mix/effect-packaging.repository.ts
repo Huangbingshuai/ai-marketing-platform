@@ -1,6 +1,7 @@
 import { Injectable, Inject, ConflictException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../../database/prisma.service';
+import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import type { Prisma } from '../../../generated/prisma/client';
 import type {
   PackagingCaptionVoiceQueueMessage,
@@ -40,17 +41,21 @@ export class EffectPackagingRepository {
       include: { run: { select: { workflowRunId: true, templateId: true } } },
     });
   }
-  sourceArtifacts(projectId: string, workflowRunId: string, artifactIds: string[]) {
-    if (!artifactIds.length) return Promise.resolve([]);
-    return this.db.workingArtifact.findMany({
-      where: {
-        projectId,
-        workflowRunId,
-        id: { in: artifactIds },
-        workflowRun: { status: { in: ['ACTIVE', 'PAUSED'] } },
-      },
-      select: { id: true, revision: true, freshness: true, availability: true },
-    });
+  async sourceArtifacts(projectId: string, workflowRunId: string, artifactIds: string[]) {
+    if (!artifactIds.length) return [];
+    const run = await this.db.workflowRun.findFirst({ where: {
+      projectId, id: workflowRunId, status: { in: ['ACTIVE', 'PAUSED'] },
+    }, select: { id: true } });
+    if (!run) return [];
+    // Snapshot creation and execution must resolve the same project/branch source graph, including
+    // shared render heads and their original dependencies, rather than only local copied rows.
+    const wanted = new Set(artifactIds);
+    const artifacts = await new WorkflowWorkingRepository(this.db)
+      .listArtifacts(projectId, { workflowRunId });
+    return artifacts.filter((artifact) => wanted.has(artifact.id)).map((artifact) => ({
+      id: artifact.id, revision: artifact.revision,
+      freshness: artifact.freshness, availability: artifact.availability,
+    }));
   }
   async list(projectId: string, workflowRunId: string, templateId: string) {
     const latest = await this.db.effectPackagingItem.findMany({

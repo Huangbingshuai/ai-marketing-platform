@@ -23,9 +23,12 @@ describe('smart-fill completion coordination', () => {
     expect(mix.recordAppendContinuation).toHaveBeenCalledWith('p', 'fill', false);
   });
   it('retains picture-only behavior for templates never successfully packaged', async () => {
-    const { packaging, service } = appendHarness(false);
+    const { packaging, service, output, mix } = appendHarness(false);
     await service.resumeAppend('p', 'fill');
     expect(packaging.createIncremental).not.toHaveBeenCalled();
+    expect(output.upsertFromSmartFill).toHaveBeenCalledWith('p', 'run', 't', ['new-film'], false);
+    expect(output.upsertFromPackaging).not.toHaveBeenCalled();
+    expect(mix.recordAppendContinuation).toHaveBeenCalledWith('p', 'fill', false);
   });
   it('exposes failed continuation and repairs output sync from an already finished package', async () => {
     const { mix, output, packaging, service } = appendHarness();

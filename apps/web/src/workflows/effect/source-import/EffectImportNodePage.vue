@@ -64,6 +64,7 @@ import { useEffectCanvasFreshness } from '../shared/effect-canvas-freshness';
 import {
   effectBranchNavigationMatches,
   effectTemplateStepNavigation,
+  consumeEffectNavigation,
   type EffectBranchNavigation,
 } from '../shared/effect-branch-navigation';
 import { confirmDiscardEffectEdit } from '../shared/effect-edit-session';
@@ -130,6 +131,7 @@ const transitioning = ref(false);
 const pendingStep = ref<number | null>(null);
 const branchTreeOpen = ref(false);
 const branchTreeTemplateId = ref<string | null>(null);
+const branchTreeViewedRunId = ref<string | null>(null);
 const branchTree = ref<EffectWorkflowBranchTreeData | null>(null);
 const branchNavigation = ref<EffectBranchNavigation | null>(null);
 const branchTreeLoading = ref(false);
@@ -147,16 +149,24 @@ const activeStep = ref(0);
 const canvasFreshness = useEffectCanvasFreshness(() => ({
   projectId: projectContext.currentProject.value?.id ?? '',
   workflowRunId: workspace.value?.workflowRunId ?? '',
+  publishedWorkflowRunId: activeWorkflowRun.value?.isTemporaryBranch
+    ? activeWorkflowRun.value.parentWorkflowRunId : null,
   activeStep: activeStep.value,
   enabled: pageStatus.value === 'success',
 }));
 const canvasStaleCounts = canvasFreshness.staleCounts;
+watch(canvasFreshness.branchTree, (tree) => {
+  // The open version tree and canvas must use the same completed-update projection.
+  if (branchTreeOpen.value && !branchSwitching.value &&
+    tree?.projectId === projectContext.currentProject.value?.id) branchTree.value = tree;
+});
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const promptGenerationNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const segmentRenderNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const templateMixNode = ref<{
   flushPendingEdits: () => Promise<boolean>;
   getBranchTreeTemplateId: () => string | null;
+  getBranchTreeWorkflowRunId: () => string | null;
   getCurrentTemplateId: () => string | null;
   focusBranchTemplate: (templateId: string) => void;
 } | null>(null);
@@ -1714,6 +1724,8 @@ const loadBranchTree = async (): Promise<void> => {
 const openBranchTree = (): void => {
   branchTreeTemplateId.value =
     activeStep.value === 4 ? (templateMixNode.value?.getBranchTreeTemplateId() ?? null) : null;
+  branchTreeViewedRunId.value =
+    activeStep.value === 4 ? (templateMixNode.value?.getBranchTreeWorkflowRunId() ?? null) : null;
   branchTreeOpen.value = true;
   void loadBranchTree();
 };
@@ -1740,7 +1752,10 @@ const selectBranch = async (
     await activationQueue.catch(() => undefined);
     if (currentProjectId.value !== projectId) return;
     const switchedRun = workspace.value?.workflowRunId !== target.workflowRunId;
-    if (switchedRun) await activateEffectWorkflowBranch(projectId, target.workflowRunId);
+    const selectingTemplatePath = Boolean(target.templateId &&
+      (target.nodeId === 'FINAL_OUTPUT' || target.mixStage === 'FILL' || target.mixStage === 'PACKAGING'));
+    if (switchedRun || selectingTemplatePath) await activateEffectWorkflowBranch(projectId,
+      target.workflowRunId, undefined, { templateId: selectingTemplatePath ? target.templateId : null });
     if (currentProjectId.value !== projectId) return;
     branchNavigation.value = target;
     mixPreviewTarget.value = null;
@@ -1799,10 +1814,8 @@ const previewFinalOutputItem = async (selection: {
 }): Promise<void> => {
   const workflowRunId = workspace.value?.workflowRunId;
   if (!currentProjectId.value || !workflowRunId) return;
-  if (selection.workflowRunId !== workflowRunId) {
-    await activateEffectWorkflowBranch(currentProjectId.value, selection.workflowRunId);
-    await refreshActiveRunInPlace(currentProjectId.value);
-  }
+  // Opening a pending film is editor navigation, never a project/history branch switch.
+  // The workbench scopes its own reads and saves to this exact source Run.
   mixPreviewTarget.value = {
     projectId: currentProjectId.value,
     ...selection,
@@ -2001,6 +2014,7 @@ onBeforeUnmount(() => {
         :switching="branchSwitching"
         :fork-disabled="Boolean(activeWorkflowRun?.isTemporaryBranch)"
         :active-template-id="branchTreeTemplateId"
+        :viewed-workflow-run-id="branchTreeViewedRunId"
         @close="closeBranchTree"
         @retry="loadBranchTree"
         @select="selectBranch"
@@ -2076,12 +2090,17 @@ onBeforeUnmount(() => {
           ref="templateMixNode"
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :published-workflow-run-id="activeWorkflowRun?.isTemporaryBranch
+            ? activeWorkflowRun.parentWorkflowRunId : null"
           :products="products"
           :branch-navigation="branchNavigation"
           :preview-target="mixPreviewTarget"
           @back="selectWorkflowStep(3)"
           @next="selectWorkflowStep(5)"
           @workflow-run-change="handleTemplateMixWorkflowRunChange"
+          @mix-freshness="canvasFreshness.acceptMix"
+          @navigation-consumed="branchNavigation = consumeEffectNavigation(branchNavigation, $event)"
+          @preview-consumed="mixPreviewTarget = consumeEffectNavigation(mixPreviewTarget, $event)"
           @notice="showNotice"
         />
         <EffectFinalOutputNodePage

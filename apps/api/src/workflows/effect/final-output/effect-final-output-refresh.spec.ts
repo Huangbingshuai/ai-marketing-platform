@@ -4,6 +4,8 @@ import {
   assertRefreshPreservesContent,
   validateRefreshCheckpoint,
   withoutChangedSlots,
+  withoutRemovedSlots,
+  clearRemovedSourceSlots,
 } from './effect-final-output-refresh';
 
 const baseline = (): PackagingCheckpoint => ({
@@ -95,6 +97,62 @@ function refreshed(cp: PackagingCheckpoint): PackagingCheckpoint {
   return result;
 }
 describe('same-branch source-refresh content boundaries', () => {
+  it('removes edited but lineage-linked captions, not independent titles or music', () => {
+    const cp = baseline();
+    cp.captions![0]!.manual = true;
+    cp.captions![0]!.start = 7;
+    const result = withoutRemovedSlots(cp, ['a']);
+    expect(result.script!.map((line) => line.id)).toEqual(['b']);
+    expect(result.captions!.map((caption) => caption.id)).toEqual(['manual']);
+    expect(result.captionBoxes).toEqual({ manual: cp.captionBoxes!.manual });
+    expect(result.captionVoices).toEqual(cp.captionVoices);
+    expect(result.music).toEqual(cp.music);
+    const input = snapshot(cp);
+    input.sourceRefresh!.slots = [];
+    input.sourceRefresh!.removedSlotIds = ['a'];
+    expect(() => assertRefreshPreservesContent(input, result)).not.toThrow();
+    expect(() => assertRefreshPreservesContent(input, cp)).toThrow('不能重新写回');
+  });
+  it('retains holes and extent when deleting the last and every occurrence, including detached original audio', () => {
+    const v = { id: 'v', slots: [{ id: 'a', duration: 4 }, { id: 'b', duration: 4 }],
+      bindings: { a: 'file', b: 'file' }, bindingRevisions: { a: 1, b: 1 }, offsets: { a: 2, b: 3 },
+      bindingMetadata: { a: { matchScore: .9 } }, timelineStarts: { a: 1, b: 9 }, videoLanes: { b: 2 },
+      manualSlotIds: ['a'], conflictSlotIds: ['a'], captions: [],
+      detachedAudios: [{ id: 'original', sourceSlotId: 'b', start: 9, duration: 4 }],
+      audioLanes: { 'detached:original': 4, 'voice:a': 3, music: 2 },
+    } as unknown as import('@ai-marketing/contracts').EffectTemplateMixVariant;
+    const cleared = clearRemovedSourceSlots(v, baseline(), ['a', 'b']);
+    expect(cleared.bindings).toEqual({});
+    expect(cleared.offsets).toEqual({});
+    expect(cleared.bindingMetadata).toEqual({});
+    expect(cleared.intentionallyEmptySlotIds).toEqual(['a', 'b']);
+    expect(cleared.preservedTimelineEnd).toBe(13);
+    expect(cleared.timelineStarts).toEqual(v.timelineStarts);
+    expect(cleared.slots).toEqual(v.slots);
+    expect(cleared.detachedAudios).toEqual([]);
+    expect(cleared.audioLanes).toEqual({ music: 2 });
+    expect(v.bindings.a).toBe('file');
+  });
+  it('starts a new source refresh with a fresh retry budget without mutating old packaging', () => {
+    const cp = { ...baseline(), automaticRetries: 2 };
+    expect(withoutChangedSlots(cp, ['a']).automaticRetries).toBeUndefined();
+    expect(cp.automaticRetries).toBe(2);
+  });
+  it('clears edited split-caption lineage and uniquely linked historical split voices, never independent audio', () => {
+    const cp = baseline();
+    cp.captions!.push({ id: 'split-caption', sourceSlotId: 'a', manual: true, text: '剪开并修改', start: 7, end: 8 });
+    const v = { ...snapshot(cp).timeline.variant, bindings: { a: 'picture' }, bindingRevisions: { a: 1 },
+      offsets: { a: 0 }, captions: [], manualSlotIds: [], conflictSlotIds: [],
+      detachedAudios: [
+        { id: 'split-voice', audioKind: 'VOICE', fileObjectId: 'old-voice', start: 8, duration: 1 },
+        { id: 'independent', fileObjectId: 'old-voice', start: 9, duration: 1 },
+      ], audioLanes: { 'detached:split-voice': 2, 'detached:independent': 3 },
+    } as unknown as import('@ai-marketing/contracts').EffectTemplateMixVariant;
+    expect(withoutRemovedSlots(cp, ['a']).captions!.map((caption) => caption.id)).toEqual(['manual']);
+    const result = clearRemovedSourceSlots(v, cp, ['a']);
+    expect(result.detachedAudios!.map((audio) => audio.id)).toEqual(['independent']);
+    expect(result.audioLanes).toEqual({ 'detached:independent': 3 });
+  });
   it('removes affected generated content and retains manual title/audio/geometry and bed', () => {
     const original = baseline();
     const result = withoutChangedSlots(original, ['a']);

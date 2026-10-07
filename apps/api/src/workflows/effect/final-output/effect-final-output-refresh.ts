@@ -1,5 +1,6 @@
 import { ConflictException } from '@nestjs/common';
-import type { FinalOutputSnapshot, PackagingCheckpoint } from '@ai-marketing/contracts';
+import type { EffectTemplateMixVariant, FinalOutputSnapshot, PackagingCheckpoint } from '@ai-marketing/contracts';
+import { effectTemplateMixContentDuration } from '@ai-marketing/contracts';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { validatePackagingCheckpoint } from '../template-mix/effect-packaging.domain';
 
@@ -51,10 +52,61 @@ export function withoutChangedSlots(
   }
   delete result.musicTaskId;
   delete result.musicSubmissionPending;
+  // A newly frozen source refresh owns its own recovery budget. Older packaging
+  // retries must not exhaust it; persisted retries in the current snapshot survive.
+  delete result.automaticRetries;
   return result;
 }
 
 /** A worker cannot rewrite unrelated audio/captions or replace a frozen music bed. */
+export function withoutRemovedSlots(cp: PackagingCheckpoint, slotIds: readonly string[]): PackagingCheckpoint {
+  const lines = new Set((cp.script ?? []).filter((line) => slotIds.includes(line.slotId ?? '')).map((line) => line.id));
+  const captions = new Set((cp.captions ?? []).filter((caption) =>
+    slotIds.includes(caption.sourceSlotId ?? '') ||
+    lines.has(caption.voiceLineId ?? caption.id)).map((caption) => caption.id));
+  const result = withoutChangedSlots(cp, slotIds);
+  result.captions = (result.captions ?? []).filter((caption) => !captions.has(caption.id));
+  for (const field of ['captionBoxes', 'captionVoices'] as const)
+    result[field] = Object.fromEntries(Object.entries(result[field] ?? {})
+      .filter(([id]) => !lines.has(id) && !captions.has(id))) as never;
+  return result;
+}
+
+/** Retain explicit holes, absolute positions and the old end even if all media is removed. */
+export function clearRemovedSourceSlots(variant: EffectTemplateMixVariant, cp: PackagingCheckpoint,
+  slotIds: readonly string[]): EffectTemplateMixVariant {
+  const result = structuredClone(variant);
+  result.preservedTimelineEnd = effectTemplateMixContentDuration(variant, cp);
+  result.intentionallyEmptySlotIds = [...new Set([...(result.intentionallyEmptySlotIds ?? []), ...slotIds])];
+  const lines = (cp.script ?? []).filter((line) => slotIds.includes(line.slotId ?? ''));
+  const detached = (result.detachedAudios ?? []).filter((audio) => {
+    if (audio.sourceSlotId) return slotIds.includes(audio.sourceSlotId);
+    if (audio.audioKind !== 'VOICE') return false;
+    // Historical split voices can be linked only by an exact, unique saved voice identity.
+    const owners = (cp.script ?? []).filter((line) => cp.voices?.[line.id]?.fileObjectId === audio.fileObjectId);
+    return owners.length === 1 && lines.some((line) => line.id === owners[0]!.id);
+  });
+  for (const slotId of slotIds) {
+    delete result.bindings[slotId];
+    delete result.bindingRevisions[slotId];
+    delete result.bindingSources?.[slotId];
+    delete result.offsets[slotId];
+    delete result.bindingMetadata?.[slotId];
+  }
+  for (const id of [...detached.map((audio) => `detached:${audio.id}`), ...lines.map((line) => `voice:${line.id}`)])
+    delete result.audioLanes?.[id];
+  result.manualSlotIds = result.manualSlotIds.filter((id) => !slotIds.includes(id));
+  result.conflictSlotIds = result.conflictSlotIds.filter((id) => !slotIds.includes(id));
+  result.detachedAudios = (result.detachedAudios ?? []).filter((audio) => !detached.some((removed) => removed.id === audio.id));
+  const removedCaptionIds = new Set((cp.captions ?? []).filter((caption) =>
+    slotIds.includes(caption.sourceSlotId ?? '') ||
+    lines.some((line) => line.id === (caption.voiceLineId ?? caption.id))).map((caption) => caption.id));
+  result.captions = result.captions.filter((caption) => !removedCaptionIds.has(caption.id) &&
+    !slotIds.includes(caption.sourceSlotId ?? ''));
+  for (const id of removedCaptionIds) delete result.audioLanes?.[`capvoice:${id}`];
+  return result;
+}
+
 export function assertRefreshPreservesContent(
   snapshot: FinalOutputSnapshot,
   cp: PackagingCheckpoint,
@@ -62,8 +114,16 @@ export function assertRefreshPreservesContent(
   const refresh = snapshot.sourceRefresh;
   if (!refresh) throw new ConflictException('当前任务不是素材局部更新');
   const slotIds = refresh.slots.map((row) => row.slotId);
-  const before = withoutChangedSlots(refresh.baselinePackaging, slotIds);
+  const removed = refresh.removedSlotIds ?? [];
+  const before = withoutChangedSlots(withoutRemovedSlots(refresh.baselinePackaging, removed), slotIds);
   const after = withoutChangedSlots(cp, slotIds);
+  const removedLines = new Set((refresh.baselinePackaging.script ?? [])
+    .filter((line) => removed.includes(line.slotId ?? '')).map((line) => line.id));
+  if ((cp.script ?? []).some((line) => removed.includes(line.slotId ?? '')) ||
+    Object.keys(cp.voices ?? {}).some((id) => removedLines.has(id)) ||
+    (cp.captions ?? []).some((caption) => removed.includes(caption.sourceSlotId ?? '') ||
+      removedLines.has(caption.voiceLineId ?? caption.id)))
+    throw new ConflictException('已删除素材的口播和字幕不能重新写回');
   const ordered = (value: unknown) =>
     Array.isArray(value)
       ? [...value].sort((a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id))

@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cancelEffectTemplateMixAppend } from './effect-template-mix.api';
 
 import { createEffectTemplateMixAiRun, createEmptyEffectTemplateMixVariant, deleteEffectTemplateMixVariant, resumeEffectTemplateMixAppend, saveEffectTemplateMixDraft, loadMixFinalOutputRuns, updateMixSourceProjects, getMixSourceUpdateRun } from './effect-template-mix.api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('effect template mix API', () => {
+  it('cancels only the requested task in the requested project', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({data:{status:'CANCELLED'}})));
+    vi.stubGlobal('fetch', fetchMock);
+    await cancelEffectTemplateMixAppend('project/1','task/1');
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/projects/project%2F1/workflows/effect/template-mix/ai-fill-runs/task%2F1/cancel');
+    expect(fetchMock.mock.calls[0]![1].method).toBe('POST');
+  });
   it('sends a full-batch request without the currently selected film or append mode', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: {} })));
     vi.stubGlobal('fetch', fetchMock);
@@ -22,9 +30,11 @@ describe('effect template mix API', () => {
     vi.stubGlobal('fetch', fetchMock);
     await loadMixFinalOutputRuns('project/1', 'run/1');
     expect(fetchMock.mock.calls[0]![0]).toContain('/projects/project%2F1/workflows/effect/final-output?workflowRunId=run%2F1');
-    await updateMixSourceProjects('project/1', 'output/1', ['film-2', 'film-4', 'film-5']);
-    expect(fetchMock.mock.calls[1]![0]).toContain('/final-output/output%2F1/local-update');
-    expect(JSON.parse(String(fetchMock.mock.calls[1]![1].body))).toEqual({ itemIds: ['film-2', 'film-4', 'film-5'] });
+    const body = { workflowRunId: 'run/1', templateId: 'template/1', expectedDraftRevision: 9,
+      variantIds: ['film-2', 'film-4', 'film-5'] };
+    await updateMixSourceProjects('project/1', body);
+    expect(fetchMock.mock.calls[1]![0]).toContain('/final-output/source-update');
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1].body))).toEqual(body);
     await getMixSourceUpdateRun('project/1', 'output/1');
     expect(fetchMock.mock.calls[2]![0]).toContain('/projects/project%2F1/workflows/effect/final-output/output%2F1');
   });

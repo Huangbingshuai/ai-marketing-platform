@@ -5,6 +5,35 @@ import type { PrismaService } from '../../../database/prisma.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import type { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
+import { pendingAddedMaterials } from './effect-template-mix-incremental';
+
+describe('durable incremental consumption history', () => {
+  it('does not make old additions pending again after more than twenty later trim tasks', async () => {
+    const baseline = { id: 'baseline', templateId: 't', workflowRunId: 'r', status: 'COMPLETED',
+      createdAt: new Date(1), inputSnapshot: { materials: [{ id: 'old', promptId: 'old' }] } };
+    const append = { ...baseline, id: 'append', createdAt: new Date(2),
+      inputSnapshot: { materials: [{ id: 'old', promptId: 'old' }, { id: 'added', promptId: 'added' }],
+        incremental: { materialIds: ['added'] } }, selectionResult: [{ materialId: 'added' }] };
+    const trims = Array.from({ length: 25 }, (_, i) => ({ ...baseline, id: `trim-${i}`,
+      createdAt: new Date(100 - i), inputSnapshot: { trimOnly: true,
+        materials: [{ id: 'old', promptId: 'old' }] }, selectionResult: [{ materialId: 'old' }] }));
+    const findMany = vi.fn().mockImplementation(async ({ where, take }) => {
+      const all = [...trims, append, baseline];
+      return where.status === 'COMPLETED' ? all : all.slice(0, take);
+    });
+    const repo = new EffectTemplateMixAiRepository({ effectTemplateMixAiRun: { findMany } } as unknown as PrismaService);
+    const history = await repo.listHistory('p', 'r');
+    expect(history).toHaveLength(27);
+    expect(await repo.listRecent('p', 'r')).toHaveLength(20);
+    expect(pendingAddedMaterials('t', [
+      { id: 'old', sourcePromptId: 'old', available: true },
+      { id: 'replacement-of-added', sourcePromptId: 'added', available: true },
+      { id: 'second-addition', sourcePromptId: 'second-addition', available: true },
+    ], history)).toEqual(['second-addition']);
+    expect(findMany).toHaveBeenCalledWith({ where: { projectId: 'p', workflowRunId: 'r', status: 'COMPLETED' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+  });
+});
 
 const entry = (id: string, editVersion: number) => ({
   id,
@@ -367,9 +396,11 @@ describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
   const chain = (
     parents: Record<string, string | null>,
     fills: Record<string, Array<{ id: string; templateId: string }>>,
+    createdAt: Record<string, Date> = {},
   ) => {
     const findRun = vi.fn(async ({ where }: { where: { id: string } }) =>
-      where.id in parents ? { parentWorkflowRunId: parents[where.id]! } : null,
+      where.id in parents ? { parentWorkflowRunId: parents[where.id]!,
+        createdAt: createdAt[where.id] ?? new Date('2026-10-06T00:00:00Z') } : null,
     );
     const findFills = vi.fn(
       async ({ where }: { where: { workflowRunId: string } }) => fills[where.workflowRunId] ?? [],
@@ -403,13 +434,13 @@ describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
         workflowRunId: 'packager',
         status: 'COMPLETED',
         outputVariantId: { not: null },
+        completedAt: { lte: new Date('2026-10-06T00:00:00Z') },
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: 20,
     });
   });
 
-  it('keeps the nearest fill for a template a further ancestor also filled', async () => {
+  it('keeps all inherited consumption records, with nearest classification taking precedence', async () => {
     const { prisma } = chain(
       { child: 'packager', packager: 'filler', filler: null },
       {
@@ -421,6 +452,7 @@ describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
 
     await expect(repository.inheritedMixAiRuns('project', 'child')).resolves.toEqual([
       { id: 'fill-near', templateId: 'template' },
+      { id: 'fill-far', templateId: 'template' },
     ]);
   });
 
@@ -446,6 +478,25 @@ describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
 
     await expect(repository.inheritedMixAiRuns('project', 'root')).resolves.toEqual([]);
     expect(findFills).not.toHaveBeenCalled();
+  });
+
+  it('freezes each ancestor at the fork boundary, never inheriting its later APPEND', async () => {
+    const parentFork = new Date('2026-10-06T00:00:00Z');
+    const childFork = new Date('2026-10-06T01:00:00Z');
+    const { prisma, findFills } = chain(
+      { child: 'parent', parent: 'root', root: null }, {},
+      { child: childFork, parent: parentFork },
+    );
+    const old = { id: 'original', templateId: 't', completedAt: new Date('2026-10-05T00:00:00Z') };
+    const later = { id: 'parent-append', templateId: 't', completedAt: new Date('2026-10-07T00:00:00Z') };
+    findFills.mockImplementation(async ({ where }) =>
+      [later, old].filter(run => run.completedAt <=
+        (where as typeof where & { completedAt: { lte: Date } }).completedAt.lte));
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+    await expect(repository.inheritedMixAiRuns('project', 'child')).resolves.toEqual([old]);
+    expect(findFills.mock.calls.map(([call]) =>
+      (call.where as typeof call.where & { completedAt: { lte: Date } }).completedAt.lte))
+      .toEqual([childFork, parentFork]);
   });
 });
 

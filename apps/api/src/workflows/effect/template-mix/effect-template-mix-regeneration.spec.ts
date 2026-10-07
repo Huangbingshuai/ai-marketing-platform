@@ -155,6 +155,8 @@ function harness(oldCount = 3) {
     repo,
     working,
     rows,
+    clips,
+    prompt,
     parent,
     child: () => child,
     snapshot: () => run.inputSnapshot as EffectTemplateMixAiSnapshot,
@@ -162,6 +164,152 @@ function harness(oldCount = 3) {
 }
 
 describe('full-template regeneration entry through successful completion', () => {
+  it('keeps APPEND sources and manual roles frozen even when all live clips are subsequently removed', async () => {
+    const h = harness();
+    const entry = h.child().templates[0]!;
+    entry.materialRoleOverrides = { 'END-0': 'END' };
+    const operation = {
+      protocol: 'FROZEN_RENDER_V1', id: 'operation-1',
+      templateHash: workflowStateHash(entry.workspace.template),
+      addedMaterialIds: ['HOOK-4'], packageNewVariants: true, facts: [],
+      promptArtifacts: [{ id: h.prompt.id, artifactKey: h.prompt.artifactKey,
+        revision: h.prompt.revision, contentHash: h.prompt.contentHash }],
+      materials: h.clips.map((clip) => ({ id: clip.id, artifactId: clip.id,
+        artifactKey: clip.artifactKey, artifactRevision: clip.revision,
+        artifactContentHash: clip.contentHash, fileObjectId: clip.payload.fileObjectId,
+        contentHash: clip.payload.contentHash, sourcePromptId: clip.payload.promptId,
+        promptText: `画面描述 ${h.clips.indexOf(clip)}`, code: clip.name, name: clip.name,
+        duration: clip.payload.durationSeconds, ratio: '9:16', resolution: '720p',
+        purpose: 'PRODUCT_DISPLAY', compatiblePurposes: [], available: true, activeSource: true,
+        contentUrl: `/api/projects/p/file-objects/${clip.payload.fileObjectId}/content` })),
+    };
+    Object.assign(h.repo, { findOperationRun: vi.fn().mockResolvedValue(null),
+      sourceOperation: vi.fn().mockResolvedValue(operation) });
+    h.repo.sourceArtifacts.mockResolvedValue([h.prompt] as never);
+    h.working.listArtifacts.mockResolvedValue({ items: [h.prompt] } as never);
+    await h.service.createAiRun('p', 'child', 't', 7, 'append-frozen', undefined, false, true, operation.id);
+    expect(h.snapshot().materials.map(({ fileObjectId }) => fileObjectId))
+      .toEqual(operation.materials.map(({ fileObjectId }) => fileObjectId));
+    expect(h.snapshot().manualMaterialRoles).toEqual({ 'END-0': 'END' });
+    expect(h.snapshot().incremental?.materialIds).toEqual(['HOOK-4']);
+    expect(h.snapshot().sourceOperation).toEqual(operation);
+    expect(h.snapshot().materials.every(({ adoptedSource }) =>
+      !('purpose' in adoptedSource!) && !('compatiblePurposes' in adoptedSource!))).toBe(true);
+    expect(h.working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+  it('reclassifies every current source and resets manual roles only in the successful new batch', async () => {
+    const h = harness();
+    const entry = h.child().templates[0]!;
+    entry.materialRoleOverrides = { 'HOOK-0': 'END', 'HOOK-1': null, obsolete: 'PRODUCT' };
+    const original = structuredClone(h.parent);
+    h.repo.listRecent.mockResolvedValue([{ templateId: 't', status: 'COMPLETED',
+      classificationResult: h.rows, inputSnapshot: { materials: h.clips } }] as never);
+    await h.service.createAiRun('p', 'parent', 't', 7, 'reset-all');
+    expect(h.snapshot().materialRoleAssignments).toEqual({});
+    expect(h.snapshot().manualMaterialRoles).toEqual({});
+    expect(h.repo.create.mock.calls[0]![0].initialClassifications ?? []).toEqual([]);
+    expect(Object.values(h.snapshot().reuseCounts ?? {}).every((count) => count === 0)).toBe(true);
+    expect(entry.materialRoleOverrides).toEqual({ 'HOOK-0': 'END', 'HOOK-1': null, obsolete: 'PRODUCT' });
+    const result = await h.service.classifyAiRun('p', 'fill-run', 'lease', h.rows);
+    await h.service.completeAiRun('p', 'fill-run', 'lease', result.selections.map((selection) => ({
+      materialId: selection.materialId, slotId: selection.slotId, trimStartSeconds: 0, trimReason: '重新选区',
+    })));
+    expect(h.child().templates[0]!.materialRoleOverrides).toEqual({});
+    expect(h.parent).toEqual(original);
+  });
+  it.each([false, true])('append carries historical manual purpose without old footage (explicit reset: %s)', async (reset) => {
+    const h = harness();
+    const entry = h.child().templates[0]!;
+    entry.materialRoleOverrides = { 'old-end': 'END', ...(reset ? { 'END-0': null } : {}) };
+    const end = h.clips.find(({ id }) => id === 'END-0')!;
+    const hydrated = h.clips.map((clip) => ({ ...clip, kind: 'FILE', contentUrl: '/video',
+      payload: { ...clip.payload, primaryPurpose: 'PRODUCT_DISPLAY' } }));
+    h.working.listArtifacts.mockResolvedValue({ items: [h.prompt, ...hydrated,
+      { ...end, id: 'old-end', kind: 'FILE', freshness: 'STALE', contentUrl: '/old-video',
+        artifactKey: 'render-clip:old-end', payload: { ...end.payload, fileObjectId: 'old-file', primaryPurpose: 'PRODUCT_DISPLAY' } },
+    ] } as never);
+    h.repo.listRecent.mockResolvedValue([{ templateId: 't', status: 'COMPLETED',
+      inputSnapshot: { materials: h.clips.filter(({ id }) => id !== 'HOOK-4')
+        .map((clip) => ({ id: clip.id, promptId: clip.payload.promptId })) } }] as never);
+    Object.assign(h.repo, { successfulPackagingTemplateIds: vi.fn().mockResolvedValue(['t']) });
+    await h.service.createAiRun('p', 'child', 't', 7, 'append-role', undefined, false, true);
+    expect(h.snapshot().materials.some(({ id }) => id === 'old-end')).toBe(false);
+    expect(h.snapshot().manualMaterialRoles?.['END-0']).toBe(reset ? undefined : 'END');
+    expect(h.snapshot().manualMaterialRoles?.['old-end']).toBeUndefined();
+    expect(entry.materialRoleOverrides).toEqual({ 'old-end': 'END', ...(reset ? { 'END-0': null } : {}) });
+  });
+  it('append ignores a confirmed deleted clip manual purpose without restoring old footage or changing old films', async () => {
+    const h = harness();
+    const entry = h.child().templates[0]!;
+    entry.materialRoleOverrides = { 'END-0': 'END' };
+    const before = structuredClone(entry);
+    const live = h.clips.filter(({ id }) => id !== 'END-0');
+    const batch = { id: 'batch', nodeId: 'SEGMENT_RENDER', artifactKey: 'render-batch:b',
+      freshness: 'CURRENT', availability: 'AVAILABLE', metadata: {}, payload: {
+        clips: live.map((clip) => ({ taskId: clip.artifactKey.slice('render-clip:'.length) })),
+        removedSources: [{ taskId: '19', promptId: 'p19' }],
+      } };
+    h.repo.sourceArtifacts.mockResolvedValue([h.prompt, batch, ...live] as never);
+    h.working.listArtifacts.mockResolvedValue({ items: [h.prompt, batch, ...h.clips.map((clip) => ({
+      ...clip, kind: 'FILE', contentUrl: '/video',
+      payload: { ...clip.payload, primaryPurpose: 'PRODUCT_DISPLAY' },
+    }))] } as never);
+    h.repo.listRecent.mockResolvedValue([{ templateId: 't', status: 'COMPLETED',
+      inputSnapshot: { materials: live.filter(({ id }) => !['HOOK-4', 'TRANSFORMATION-2'].includes(id))
+        .map((clip) => ({ id: clip.id, promptId: clip.payload.promptId })) } }] as never);
+    Object.assign(h.repo, { successfulPackagingTemplateIds: vi.fn().mockResolvedValue(['t']) });
+    await h.service.createAiRun('p', 'child', 't', 7, 'append-after-delete', undefined, false, true);
+    expect(h.snapshot().materials.some(({ id }) => id === 'END-0')).toBe(false);
+    expect(h.snapshot().manualMaterialRoles?.['END-0']).toBeUndefined();
+    expect(new Set(h.snapshot().incremental?.materialIds)).toEqual(new Set(['HOOK-4', 'TRANSFORMATION-2']));
+    expect(entry).toEqual(before);
+    expect(h.working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+  it.each(['foreign', 'too-short'])('append still rejects a %s manual purpose instead of masking it as deletion', async (invalid) => {
+    const h = harness();
+    h.child().templates[0]!.materialRoleOverrides = invalid === 'foreign'
+      ? { foreign: 'END' } : { 'HOOK-0': 'END' };
+    if (invalid === 'too-short') h.clips.find(({ id }) => id === 'HOOK-0')!.payload.durationSeconds = 6;
+    h.repo.listRecent.mockResolvedValue([{ templateId: 't', status: 'COMPLETED',
+      inputSnapshot: { materials: h.clips.filter(({ id }) => id !== 'HOOK-4')
+        .map((clip) => ({ id: clip.id, promptId: clip.payload.promptId })) } }] as never);
+    await expect(h.service.createAiRun('p', 'child', 't', 7, `reject-${invalid}`, undefined, false, true))
+      .rejects.toThrow('不满足');
+    expect(h.repo.create).not.toHaveBeenCalled();
+  });
+  it('append adds only films using new footage, preserves every old slot and commits only new projects', async () => {
+    const h = harness();
+    const old = structuredClone(h.child());
+    const newlyAdded = h.clips.find(({ id }) => id === 'HOOK-4')!;
+    h.repo.listRecent.mockResolvedValue([{ templateId: 't', status: 'COMPLETED',
+      inputSnapshot: { materials: h.clips.filter(({ id }) => id !== newlyAdded.id)
+        .map((clip) => ({ id: clip.id, promptId: clip.payload.promptId })) } }] as never);
+    Object.assign(h.repo, { successfulPackagingTemplateIds: vi.fn().mockResolvedValue(['t']) });
+    await h.service.createAiRun('p', 'child', 't', 7, 'append', undefined, false, true);
+    expect(h.working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(h.snapshot().replaceExistingVariants).not.toBe(true);
+    expect(h.snapshot()).toMatchObject({
+      incremental: { materialIds: [newlyAdded.id], oldVariantIds: old.templates[0]!.workspace.variants.map(({ id }) => id),
+        packageNewVariants: true } });
+    const result = await h.service.classifyAiRun('p', 'fill-run', 'lease', h.rows);
+    await h.service.completeAiRun('p', 'fill-run', 'lease', result.selections.map((selection) => ({
+      materialId: selection.materialId, slotId: selection.slotId, variantIndex: selection.variantIndex ?? 0,
+      trimStartSeconds: 0, trimReason: '新增素材保留完整动作',
+    })));
+    const variants = h.child().templates[0]!.workspace.variants;
+    expect(variants.filter(({ id }) => id.startsWith('old-'))).toEqual(old.templates[0]!.workspace.variants);
+    const added = variants.filter(({ id }) => !id.startsWith('old-'));
+    expect(added.length).toBeGreaterThan(0);
+    expect(added.every((variant) => Object.values(variant.bindings).includes(newlyAdded.id) &&
+      variant.slots.length === 6 && Object.keys(variant.bindings).length === 6)).toBe(true);
+    expect(h.child().templates[1]).toEqual(old.templates[1]);
+    const committed = h.working.commitValidatedArtifacts.mock.calls[0]![3];
+    expect(committed.filter((item: { artifactKey: string }) => item.artifactKey.startsWith('timeline-project:'))
+      .map((item: { artifactKey: string }) => item.artifactKey)).toEqual(
+        expect.arrayContaining(added.map(({ id }) => `timeline-project:t:${id}`)));
+    expect(committed.some((item: { artifactKey: string }) => item.artifactKey.includes(':old-'))).toBe(false);
+    expect(h.working.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
   it('regenerates 13 fresh projects covering 20 clips, rather than refilling one or appending to three', async () => {
     const h = harness();
     const original = structuredClone(h.parent);

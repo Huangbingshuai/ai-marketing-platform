@@ -71,6 +71,24 @@ describe('same-branch incremental material provenance', () => {
     expect(pendingAddedMaterials('another', pool, [baseline])).toEqual([]);
     expect(pendingAddedMaterials('t', pool, [{ ...baseline, status: 'FAILED' }])).toEqual([]);
   });
+  it('collects two unprocessed addition batches together and acknowledges only successful consumption', () => {
+    const added = ['batch-1-a', 'batch-1-b', 'batch-2-a', 'batch-2-b'].map((id) => ({
+      id, sourcePromptId: id, available: true,
+    }));
+    const materials = [pool[0]!, ...added];
+    const inputSnapshot = {
+      materials: added.map(({ id }) => ({ id, promptId: id })),
+      incremental: { materialIds: added.map(({ id }) => id) },
+    };
+    const completed = { templateId: 't', status: 'COMPLETED', inputSnapshot,
+      selectionResult: added.map(({ id }) => ({ materialId: id })) };
+    expect(pendingAddedMaterials('t', materials, [baseline])).toEqual(added.map(({ id }) => id));
+    expect(pendingAddedMaterials('t', materials, [baseline, { ...completed, status: 'RUNNING' }]))
+      .toEqual(added.map(({ id }) => id));
+    expect(pendingAddedMaterials('t', materials, [completed, baseline])).toEqual([]);
+    const next = { id: 'batch-3', sourcePromptId: 'batch-3', available: true };
+    expect(pendingAddedMaterials('t', [...materials, next], [completed, baseline])).toEqual(['batch-3']);
+  });
   it('does not consume omitted additions just because an append run completed', () => {
     const append = {
       templateId: 't',
@@ -88,6 +106,13 @@ describe('same-branch incremental material provenance', () => {
         { ...append, selectionResult: [{ materialId: 'new' }] },
       ]),
     ).toEqual([]);
+  });
+  it('does not acknowledge new materials present only in a source-replacement trim snapshot', () => {
+    const trim = { templateId: 't', status: 'COMPLETED', inputSnapshot: {
+      trimOnly: true,
+      materials: [{ id: 'replacement', promptId: 'old-prompt' }, { id: 'new', promptId: 'new-prompt' }],
+    }, selectionResult: [{ materialId: 'replacement' }] };
+    expect(pendingAddedMaterials('t', pool, [trim, baseline])).toEqual(['new']);
   });
   it('only flags additions that fit at least one slot, including equality', () => {
     const timed = pool.map((item) => ({ ...item, duration: 4 }));

@@ -5,6 +5,8 @@ import type {
   EffectTemplateMixWorkspaceData,
   EffectTemplateMixSourcesData,
   FinalOutputRun,
+  SourceUpdateFinalOutputRequest,
+  SourceUpdateFinalOutputData,
   SaveEffectTemplateMixData,
   SaveEffectTemplateMixRequest,
   PackagingItem,
@@ -24,9 +26,9 @@ const outputPath = (projectId: string): string =>
 export const loadMixFinalOutputRuns = (projectId: string, workflowRunId: string, signal?: AbortSignal)
   : Promise<ApiResponse<FinalOutputRun[]>> => requestJson(outputPath(projectId) +
     '?workflowRunId=' + encodeURIComponent(workflowRunId), { operation: '读取成片工程更新任务', signal });
-export const updateMixSourceProjects = (projectId: string, runId: string, itemIds: string[])
-  : Promise<ApiResponse<FinalOutputRun>> => requestJson(outputPath(projectId) + '/' +
-    encodeURIComponent(runId) + '/local-update', { method: 'POST', operation: '局部更新成片工程', body: { itemIds } });
+export const updateMixSourceProjects = (projectId: string, body: SourceUpdateFinalOutputRequest)
+  : Promise<ApiResponse<SourceUpdateFinalOutputData>> => requestJson(outputPath(projectId) + '/source-update',
+    { method: 'POST', operation: '局部更新成片工程', body });
 export const getMixSourceUpdateRun = (projectId: string, runId: string, signal?: AbortSignal)
   : Promise<ApiResponse<FinalOutputRun>> => requestJson(outputPath(projectId) + '/' + encodeURIComponent(runId),
     { operation: '读取局部更新进度', signal });
@@ -140,6 +142,7 @@ export const createEffectTemplateMixAiRun = (
   targetVariantId?: string,
   refreshAffectedSlots = false,
   appendNewMaterials = false,
+  sourceOperationId?: string,
 ): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
   requestJson(
     basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/ai-fill-runs',
@@ -153,6 +156,7 @@ export const createEffectTemplateMixAiRun = (
         ...(targetVariantId ? { targetVariantId } : {}),
         ...(refreshAffectedSlots ? { refreshAffectedSlots: true } : {}),
         ...(appendNewMaterials ? { appendNewMaterials: true } : {}),
+        ...(sourceOperationId ? { sourceOperationId } : {}),
       },
     },
   );
@@ -170,6 +174,11 @@ export const getEffectTemplateMixAiRun = (
 export const resumeEffectTemplateMixAppend = (projectId: string, runId: string): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
   requestJson(basePath(projectId) + '/ai-fill-runs/' + encodeURIComponent(runId) + '/resume-append', {
     method: 'POST', operation: '继续新增成片更新',
+  });
+
+export const cancelEffectTemplateMixAppend = (projectId: string, runId: string): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
+  requestJson(basePath(projectId) + '/ai-fill-runs/' + encodeURIComponent(runId) + '/cancel', {
+    method: 'POST', operation: '取消局部更新',
   });
 
 export const getBackgroundEffectTemplateMixAiRun = (

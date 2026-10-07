@@ -52,6 +52,73 @@ const branch = (
 });
 
 describe('effect workflow branch tree layout', () => {
+  it('highlights current confirmations rather than the obsolete active child on the template overview', () => {
+    const root = branch('root', null, null);
+    const current = branch('current', 'root', 'TEMPLATE_MIX');
+    current.forkTemplateId = 'template-a';
+    current.forkMixStage = 'FILL';
+    current.templates[0]!.currentConfirmedAt = '2026-10-07';
+    const old = branch('old', 'current', 'TEMPLATE_MIX', true);
+    old.forkTemplateId = 'template-a';
+    old.forkMixStage = 'PACKAGING';
+    old.templates[0]!.currentConfirmedAt = '2026-10-06';
+    const overview = buildEffectBranchLayout([root, current, old]);
+    expect(overview.nodes.find(node => node.key === 'current:MIX_FILL:template-a')?.onActivePath).toBe(true);
+    expect(overview.nodes.find(node => node.key === 'old:MIX_PACKAGING:template-a')?.onActivePath).not.toBe(true);
+  });
+  it('appends a newly created template on an older Run to the right of existing sibling templates', () => {
+    const main = branch('main', null, null, true);
+    const template = (id: string, date: string) => ({
+      ...main.templates[0]!, templateId: id, name: id, templateCreatedAt: date,
+    });
+    const second = branch('second', 'main', 'TEMPLATE_MIX');
+    second.forkMixStage = 'TEMPLATE';
+    second.forkTemplateId = 'template-b';
+    second.templates.push(template('template-b', '2026-09-27T00:00:00.000Z'));
+    const third = branch('third', 'main', 'TEMPLATE_MIX');
+    third.forkMixStage = 'TEMPLATE';
+    third.forkTemplateId = 'template-c';
+    third.templates.push(template('template-c', '2026-09-28T00:00:00.000Z'));
+    const newest = {
+      ...template('template-d', '2026-10-07T00:14:00.000Z'),
+      templateRevision: null, fillRevision: null, packagingRevision: null,
+      timelineVariantCount: 0, packagingVariantCount: 0, deliveryCount: 0,
+    };
+    main.templates.push(newest);
+
+    const positions = (branches: EffectWorkflowBranch[]) => {
+      const layout = buildEffectBranchLayout(branches);
+      const templates = layout.nodes.filter((node) => node.stageKey === 'MIX_TEMPLATE')
+        .sort((left, right) => left.x - right.x);
+      expect(templates.map((node) => node.templateId))
+        .toEqual(['template-a', 'template-b', 'template-c', 'template-d']);
+      expect(layout.edges.some((edge) => edge.key ===
+        'main:SEGMENT_RENDER:-->main:MIX_TEMPLATE:template-d')).toBe(true);
+      expect(layout.nodes.filter((node) => node.templateId === 'template-d'))
+        .toHaveLength(1);
+      return new Map(templates.map((node) => [node.templateId, node.x]));
+    };
+    const expected = positions([main, second, third]);
+    expect(positions([third, main, second])).toEqual(expected);
+    // Editing names or selecting another template must not change creation ordering.
+    newest.name = 'AAA renamed';
+    expect(positions([main, third, second])).toEqual(expected);
+  });
+
+  it('uses Run creation time for historical nodes without their own timestamp', () => {
+    const main = branch('main', null, null);
+    main.templates[0]!.templateCreatedAt = null;
+    const created = branch('created', 'main', 'TEMPLATE_MIX', true);
+    created.createdAt = '2026-10-07T00:14:00.000Z';
+    created.forkMixStage = 'TEMPLATE';
+    created.forkTemplateId = 'template-new';
+    created.templates.push({ ...main.templates[0]!, templateId: 'template-new' });
+    const layout = buildEffectBranchLayout([created, main]);
+    const templates = layout.nodes.filter((node) => node.stageKey === 'MIX_TEMPLATE');
+    expect(templates.find((node) => node.templateId === 'template-new')!.x)
+      .toBeGreaterThan(templates.find((node) => node.templateId === 'template-a')!.x);
+  });
+
   it('marks only the affected template layer, including inactive sibling branches', () => {
     const main = branch('main', null, null, true);
     main.templates[0]!.templateStatus = 'CONFIRMED';
@@ -64,13 +131,138 @@ describe('effect workflow branch tree layout', () => {
     sibling.forkMixStage = 'FILL';
     sibling.forkTemplateId = 'template-a';
     sibling.templates[0]!.fillStatus = 'STALE';
+    sibling.templates[0]!.packagingVariantCount = 0;
     const layout = buildEffectBranchLayout([main, sibling]);
     expect(layout.nodes.filter((node) => node.status === 'STALE').map((node) => node.key))
       .toEqual(['main:MIX_FILL:template-a', 'main:MIX_PACKAGING:template-a',
         'main:FINAL_OUTPUT:template-a', 'sibling:MIX_FILL:template-a']);
-    expect(treeSource).toContain("'branch-node--stale': node.status === 'STALE'");
-    expect(treeSource).toContain('border-color: #f59e0b');
+    expect(layout.nodes.filter((node) => node.showStaleWarning).map((node) => node.key))
+      .toEqual(['main:MIX_PACKAGING:template-a', 'main:FINAL_OUTPUT:template-a',
+        'sibling:MIX_FILL:template-a']);
+    expect(treeSource).toContain("'branch-node--stale': node.showStaleWarning");
+    expect(treeSource).toContain('border-color: #e0c200');
     expect(layout.nodes.find((node) => node.key === 'sibling:MIX_FILL:template-a')?.onActivePath).toBe(true);
+  });
+  it('shows source warnings on packaging descendants instead of their shared fill head', () => {
+    const main = branch('main', null, null, true);
+    main.templates[0]!.packagingVariantCount = 0;
+    main.templates[0]!.fillStatus = 'STALE';
+    const packed = branch('packed', 'main', 'TEMPLATE_MIX');
+    packed.forkMixStage = 'PACKAGING';
+    packed.forkTemplateId = 'template-a';
+    packed.templates[0]!.packagingStatus = 'STALE';
+    const independentFill = branch('independent-fill', 'main', 'TEMPLATE_MIX');
+    independentFill.forkMixStage = 'FILL';
+    independentFill.forkTemplateId = 'template-a';
+    independentFill.templates[0]!.packagingVariantCount = 0;
+    independentFill.templates[0]!.fillStatus = 'STALE';
+    const layout = buildEffectBranchLayout([main, packed, independentFill]);
+    expect(layout.nodes.find((node) => node.key === 'main:MIX_FILL:template-a'))
+      .toMatchObject({ status: 'STALE', showStaleWarning: false });
+    expect(layout.nodes.find((node) => node.key === 'packed:MIX_PACKAGING:template-a'))
+      .toMatchObject({ status: 'STALE', showStaleWarning: true });
+    expect(layout.nodes.find((node) => node.key === 'independent-fill:MIX_FILL:template-a'))
+      .toMatchObject({ status: 'STALE', showStaleWarning: true });
+    expect(main.templates[0]!.fillStatus).toBe('STALE');
+  });
+  it('highlights version 03 in configuration while refinement keeps the selected old branch', () => {
+    const main = branch('main', null, null);
+    main.templates[0]!.packagingVariantCount = 0;
+    const old = branch('package-02', 'main', 'TEMPLATE_MIX', true);
+    old.currentNodeId = 'TEMPLATE_MIX';
+    old.forkMixStage = 'PACKAGING';
+    old.forkTemplateId = 'template-a';
+    old.templates[0]!.packagingRevision = 2;
+    old.templates[0]!.packagingStatus = 'STALE';
+    const latest = branch('package-03', 'old', 'TEMPLATE_MIX');
+    latest.parentWorkflowRunId = old.workflowRunId;
+    latest.forkMixStage = 'PACKAGING';
+    latest.forkTemplateId = 'template-a';
+    latest.createdAt = '2026-09-29T00:00:00.000Z';
+    latest.templates[0]!.packagingRevision = 3;
+    const config = buildEffectBranchLayout([main, old, latest]);
+    expect(config.nodes.find((node) => node.key === 'package-03:MIX_PACKAGING:template-a'))
+      .toMatchObject({ revision: 3, onActivePath: true, showStaleWarning: false });
+    expect(config.nodes.find((node) => node.key === 'package-02:MIX_PACKAGING:template-a'))
+      .toMatchObject({ onActivePath: false, showStaleWarning: true });
+    const editor = buildEffectBranchLayout([main, old, latest], 'template-a');
+    expect(editor.nodes.find((node) => node.key === 'package-02:MIX_PACKAGING:template-a'))
+      .toMatchObject({ onActivePath: true, isCurrentStage: true, showStaleWarning: true });
+    expect(editor.nodes.find((node) => node.key === 'package-03:MIX_PACKAGING:template-a')?.onActivePath)
+      .toBe(false);
+  });
+  it('colors the viewed editor branch and its edges instead of an unrelated global active sibling', () => {
+    const root = branch('root', null, null);
+    const old = branch('package-02', 'root', 'TEMPLATE_MIX');
+    const latest = branch('package-03', 'root', 'TEMPLATE_MIX', true);
+    for (const run of [old, latest]) {
+      run.forkTemplateId = 'template-a';
+      run.forkMixStage = 'PACKAGING';
+      run.templates[0]!.packagingStatus = 'STALE';
+      run.currentNodeId = 'TEMPLATE_MIX';
+    }
+    old.templates[0]!.currentSelectedAt = '2026-10-07T09:36:25Z';
+    const layout = buildEffectBranchLayout([root, old, latest], 'template-a', 'package-02');
+    expect(layout.nodes.find(node => node.key === 'package-02:MIX_PACKAGING:template-a'))
+      .toMatchObject({ onActivePath: true, isCurrentStage: true, showStaleWarning: true });
+    expect(layout.nodes.find(node => node.key === 'package-03:MIX_PACKAGING:template-a'))
+      .toMatchObject({ onActivePath: false, isCurrentStage: false, showStaleWarning: true });
+    expect(layout.edges.find(edge => edge.key.endsWith('->package-02:MIX_PACKAGING:template-a'))?.onActivePath).toBe(true);
+    expect(layout.edges.find(edge => edge.key.endsWith('->package-03:MIX_PACKAGING:template-a'))?.onActivePath).toBe(false);
+    expect(latest.isActive).toBe(true);
+  });
+  it('warns on each packaged project own stale fill while hiding template and shared fill warnings', () => {
+    const origin = branch('origin', null, null);
+    Object.assign(origin.templates[0]!, { templateStatus: 'STALE',
+      timelineVariantCount: 0, packagingVariantCount: 0, deliveryCount: 0 });
+    const filled = branch('filled', 'origin', 'TEMPLATE_MIX');
+    filled.forkTemplateId = 'template-a';
+    filled.forkMixStage = 'TEMPLATE';
+    Object.assign(filled.templates[0]!, { templateStatus: 'STALE', fillStatus: 'STALE',
+      packagingVariantCount: 0, currentConfirmedAt: '2026-10-06T00:00:00Z' });
+    const packaged = branch('packaged', 'filled', 'TEMPLATE_MIX', true);
+    packaged.forkTemplateId = 'template-a';
+    packaged.forkMixStage = 'PACKAGING';
+    Object.assign(packaged.templates[0]!, { templateStatus: 'STALE', fillStatus: 'STALE',
+      packagingStatus: 'CONFIRMED', currentConfirmedAt: '2026-10-07T00:00:00Z' });
+    for (const branches of [[origin, filled, packaged], [packaged, origin, filled]]) {
+      const layout = buildEffectBranchLayout(branches, 'template-a');
+      expect(layout.nodes.find(node => node.key === 'origin:MIX_TEMPLATE:template-a'))
+        .toMatchObject({ status: 'STALE', showStaleWarning: false, revision: 2 });
+      expect(layout.nodes.find(node => node.key === 'filled:MIX_FILL:template-a'))
+        .toMatchObject({ status: 'STALE', showStaleWarning: false });
+      expect(layout.nodes.find(node => node.key === 'packaged:MIX_PACKAGING:template-a'))
+        .toMatchObject({ status: 'STALE', showStaleWarning: true });
+      expect(packaged.templates[0]!.packagingStatus).toBe('CONFIRMED');
+      // Refreshing this project's visual timeline clears its warning despite its old fill head.
+      packaged.templates[0]!.fillStatus = 'CONFIRMED';
+      expect(buildEffectBranchLayout(branches).nodes.find(node =>
+        node.key === 'packaged:MIX_PACKAGING:template-a'))
+        .toMatchObject({ status: 'CONFIRMED', showStaleWarning: false });
+      packaged.templates[0]!.fillStatus = 'STALE';
+    }
+  });
+  it('does not let a refreshed packaging sibling clear another stale packaged project', () => {
+    const filled = branch('filled', null, null);
+    filled.templates[0]!.packagingVariantCount = 0;
+    filled.templates[0]!.fillStatus = 'STALE';
+    const old = branch('old', 'filled', 'TEMPLATE_MIX');
+    old.forkTemplateId = 'template-a';
+    old.forkMixStage = 'PACKAGING';
+    Object.assign(old.templates[0]!, { fillStatus: 'STALE', packagingStatus: 'CONFIRMED' });
+    const current = branch('current', 'filled', 'TEMPLATE_MIX', true);
+    current.forkTemplateId = 'template-a';
+    current.forkMixStage = 'PACKAGING';
+    Object.assign(current.templates[0]!, { fillStatus: 'CONFIRMED', packagingStatus: 'CONFIRMED' });
+    for (const rows of [[filled, old, current], [current, old, filled]]) {
+      const layout = buildEffectBranchLayout(rows);
+      expect(layout.nodes.find(node => node.key === 'old:MIX_PACKAGING:template-a'))
+        .toMatchObject({ status: 'STALE', showStaleWarning: true });
+      expect(layout.nodes.find(node => node.key === 'current:MIX_PACKAGING:template-a'))
+        .toMatchObject({ status: 'CONFIRMED', showStaleWarning: false });
+      expect(layout.nodes.find(node => node.key === 'filled:MIX_FILL:template-a'))
+        .toMatchObject({ status: 'STALE', showStaleWarning: false });
+    }
   });
   it('highlights all template paths in configuration and only the opened template in its editor', () => {
     const main = branch('main', null, null, true);

@@ -2,13 +2,51 @@ import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 import page from './EffectTemplateMixNodePage.vue?raw';
 import { createEffectTemplateMixEntry } from './effect-template-mix-state';
-import { MixDraftRaceGuard, rebaseMixDraft, saveLatestMixDraft } from './effect-template-mix-draft-race';
+import { MixDraftRaceGuard, MixWorkspaceRevisionFence, rebaseMixDraft, saveLatestMixDraft } from './effect-template-mix-draft-race';
 
 const draft = (): EffectTemplateMixDraft => ({
   schemaVersion: 1, activeTemplateId: 'a',
   templates: ['a', 'b'].map((id) => ({ ...createEffectTemplateMixEntry(id), id })),
 });
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+describe('monotonic scoped workspace installation', () => {
+  it('cannot reinstall an old five-film response after the thirteen-film revision', () => {
+    const fence = new MixWorkspaceRevisionFence();
+    expect(fence.accept('p:run', 'p:run', 43)).toBe(true);
+    expect(fence.accept('p:run', 'p:run', 27)).toBe(false);
+    expect(fence.accept('p:run', 'p:run', null)).toBe(false);
+  });
+  it('also fences old reads after an acknowledged autosave, not only after a reload', () => {
+    const fence = new MixWorkspaceRevisionFence();
+    fence.acknowledge('p:run', 43);
+    fence.acknowledge('p:run', 27);
+    expect(fence.accept('p:run', 'p:run', 42)).toBe(false);
+    expect(fence.accept('p:run', 'p:run', 43)).toBe(true);
+  });
+  it('keeps revisions independent for historical Runs and other projects', () => {
+    const fence = new MixWorkspaceRevisionFence();
+    fence.accept('p:current', 'p:current', 43);
+    expect(fence.accept('p:history', 'p:history', 27)).toBe(true);
+    expect(fence.accept('other:current', 'other:current', 1)).toBe(true);
+    expect(fence.accept('p:current', 'p:history', 44)).toBe(false);
+    expect(fence.accept('p:current', 'p:current', 43)).toBe(true);
+  });
+  it('accepts a newer deletion without treating a lower film count as a rollback', () => {
+    const fence = new MixWorkspaceRevisionFence();
+    fence.accept('p:run', 'p:run', 43);
+    expect(fence.accept('p:run', 'p:run', 44)).toBe(true);
+    expect(fence.accept('p:run', 'p:run', 43)).toBe(false);
+  });
+  it('uses one installation gate for all API callbacks and fences source polling and save receipts', () => {
+    expect(page).toContain('workspaceRevisionFence.accept(scope, currentWorkspaceScope.value, data.draftRevision)');
+    expect(page).toContain('workspaceRevisionFence.acknowledge(`${projectId}:${workflowRunId}`, result.data.draftRevision)');
+    expect(page).toContain('workspaceRevisionFence.isCurrent(`${projectId}:${workflowRunId}`, data.draftRevision)');
+    // No caller can accidentally install a response under whichever Run the page switched to.
+    for (const call of page.matchAll(/installWorkspaceData\(([^;]+)\);/g))
+      expect(call[1]).toMatch(/, (scope|`\$\{project(Id)?\}:\$\{workflow(RunId)?\}`)/);
+  });
+});
 
 describe('mix draft save races', () => {
   it('rejects a read started before a write, even when the write has already finished', () => {

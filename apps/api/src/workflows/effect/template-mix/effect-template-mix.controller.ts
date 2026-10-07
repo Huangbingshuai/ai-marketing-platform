@@ -87,6 +87,7 @@ export class EffectTemplateMixController {
       body.targetVariantId,
       body.refreshAffectedSlots ?? false,
       body.appendNewMaterials ?? false,
+      body.sourceOperationId,
     );
   }
 
@@ -102,6 +103,12 @@ export class EffectTemplateMixController {
   resumeAppend(@Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string) {
     return this.completion.resumeAppend(projectId, runId);
+  }
+
+  @Post('ai-fill-runs/:runId/cancel')
+  cancelAppend(@Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string) {
+    return this.service.cancelAppend(projectId, runId);
   }
 
   @Get('templates/:templateId/background-ai-run')

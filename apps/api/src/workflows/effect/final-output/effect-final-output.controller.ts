@@ -54,6 +54,16 @@ export class LocalUpdateFinalOutputDto {
   @IsOptional() @IsBoolean() syncProjects?: boolean;
   @IsOptional() @IsInt() @Min(0) expectedDraftRevision?: number;
 }
+export class SourceUpdateFinalOutputDto {
+  @IsOptional() @IsUUID('4') operationId?: string;
+  @IsUUID('4') workflowRunId!: string;
+  @IsUUID('4') templateId!: string;
+  @IsInt() @Min(0) expectedDraftRevision!: number;
+  @IsArray() @ArrayUnique() @IsUUID('4', { each: true }) variantIds!: string[];
+  @IsOptional() @IsBoolean() appendNewMaterials?: boolean;
+  @IsOptional() @IsString() @MaxLength(100000) expectedSourceSignature?: string;
+  @IsOptional() @IsBoolean() expectedPackageNewVariants?: boolean;
+}
 export class StartFinalOutputDto {
   @IsIn(FINAL_OUTPUT_RESOLUTIONS) resolution!: (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
   @IsIn([24, 25, 30, 50, 60]) frameRate!: 24 | 25 | 30 | 50 | 60;
@@ -105,6 +115,10 @@ export class EffectFinalOutputController {
     @Body() body: LocalUpdateFinalOutputDto,
   ) {
     return this.service.localUpdate(projectId, runId, body);
+  }
+  @Post('final-output/source-update')
+  sourceUpdate(@Param('projectId', uuid) projectId: string, @Body() body: SourceUpdateFinalOutputDto) {
+    return this.service.updateSourceProjects(projectId, body);
   }
   @Post('final-output/:runId/items/:itemId/render')
   renderItem(

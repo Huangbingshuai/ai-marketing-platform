@@ -10,7 +10,7 @@ import { EffectFinalOutputService } from '../../workflows/effect/final-output/ef
 import type { StoragePort } from '../file/storage.port';
 
 // All fixtures, output tasks and Outbox entries roll back; no paid jobs are dispatched.
-it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1').each(['render-head', 'packaging-run', 'newest-fill-run'])(
+it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1').each(['render-head', 'packaging-run', 'newest-fill-run', 'sibling-source-dependencies'])(
   '%s repair keeps historical branches independent after the selected local refresh',
   async (sourceScope) => {
     const db = new PrismaService(new ConfigService({ DATABASE_URL: process.env.DATABASE_URL ??
@@ -33,7 +33,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1').each(['render-head', 
           nodeId: 'SEGMENT_RENDER', originalFileName: 'old.mp4', mimeType: 'video/mp4',
           sizeBytes: 64, storageKey: `test/${projectId}/old.mp4`, sha256: 'a'.repeat(64) } });
         const newFile = await tx.fileObject.create({ data: { projectId,
-          workflowRunId: sourceScope === 'newest-fill-run' ? cId : rootId,
+          workflowRunId: ['newest-fill-run', 'sibling-source-dependencies'].includes(sourceScope) ? cId : rootId,
           nodeId: 'SEGMENT_RENDER', originalFileName: 'new.mp4', mimeType: 'video/mp4',
           sizeBytes: 64, storageKey: `test/${projectId}/new.mp4`, sha256: 'b'.repeat(64) } });
         const prompt = await tx.workingArtifact.create({ data: { projectId, workflowRunId: rootId,
@@ -72,7 +72,7 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1').each(['render-head', 
             ...clipData(runId, copiedTask), metadata: { branchSource: { artifactId: rootClip.id, revision: 1 } },
           } });
           if ((sourceScope === 'packaging-run' && runId === aId) ||
-              (sourceScope === 'newest-fill-run' && runId === cId)) {
+              (['newest-fill-run', 'sibling-source-dependencies'].includes(sourceScope) && runId === cId)) {
             // A real confirmed repair in an existing packaging Run, not a new render fork.
             await tx.workingArtifact.update({ where: { id: copied.id }, data: {
               revision: 2, payload: clipData(runId, copiedTask, newFile).payload,
@@ -83,6 +83,25 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1').each(['render-head', 
               kind: 'STRUCTURED', directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT',
               contentHash: '2'.repeat(64), revision: 2, payload: { clips: [{ taskId: copiedTask, promptId }] } } });
             repairedId = copied.id;
+            if (sourceScope === 'sibling-source-dependencies') {
+              // Real Run copies remint Prompt/fact artifact ids. These dependencies are absent
+              // from the selected older sibling's ancestor path, but are valid frozen sources.
+              const facts = await tx.workingArtifact.create({ data: { projectId, workflowRunId: runId,
+                nodeId: 'INFORMATION_EXTRACTION', artifactKey: `marketing-insight:${randomUUID()}`,
+                kind: 'STRUCTURED', directory: 'INSIGHTS', type: 'INSIGHT_RESULT', name: '来源事实',
+                contentHash: '7'.repeat(64), payload: { productName: '确认商品' } } });
+              const copiedPrompt = await tx.workingArtifact.create({ data: { projectId, workflowRunId: runId,
+                nodeId: 'PROMPT_GENERATION', artifactKey: `prompt-batch:${randomUUID()}`,
+                kind: 'STRUCTURED', directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT', name: '来源Prompt',
+                contentHash: prompt.contentHash, payload: prompt.payload!,
+                metadata: { branchSource: { artifactId: prompt.id, revision: prompt.revision } },
+                dependencies: { create: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: facts.id,
+                  sourceKey: facts.artifactKey, sourceRevision: 1, sourceHash: facts.contentHash }] } } });
+              await tx.workingArtifactDependency.deleteMany({ where: { projectId, dependentArtifactId: copied.id } });
+              await tx.workingArtifactDependency.create({ data: { projectId, workflowRunId: runId, dependentArtifactId: copied.id,
+                sourceType: 'WORKING_ARTIFACT', sourceArtifactId: copiedPrompt.id,
+                sourceKey: copiedPrompt.artifactKey, sourceRevision: 1, sourceHash: copiedPrompt.contentHash } });
+            }
             await tx.workingArtifactFile.create({ data: { projectId, workflowRunId: runId,
               workingArtifactId: copied.id, fileObjectId: newFile.id, role: 'PRIMARY', sortOrder: 0 } });
           }

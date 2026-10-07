@@ -68,6 +68,8 @@ export type EffectTemplateMixMaterial = {
   artifactId: string;
   artifactKey: string;
   artifactRevision: number;
+  /** Business payload fingerprint; contentHash below identifies the media bytes. */
+  artifactContentHash?: string;
   fileObjectId: string;
   contentHash: string;
   contentUrl: string;
@@ -78,6 +80,8 @@ export type EffectTemplateMixMaterial = {
   sourcePromptId?: string;
   /** False for an archived binding retained solely to keep the old timeline playable. */
   activeSource?: boolean;
+  /** Explicit deletion published by the authoritative render batch, not temporary unavailability. */
+  sourceRemoved?: boolean;
   /** Confirmed replacements/clones of the same source, scoped by the server to this Run. */
   replacesMaterialIds?: string[];
   /** Original Prompt metadata is revealed only from the explicit material action. */
@@ -88,10 +92,40 @@ export type EffectTemplateMixMaterial = {
 
 export type EffectTemplateMixSourceChange = {
   slotId: string;
+  kind?: 'REPLACED' | 'REMOVED';
   material?: EffectTemplateMixMaterial;
   blockedReason?: string;
 };
+/** One user confirmation freezes replacements and APPEND against the same saved pool. */
+export type EffectTemplateMixFrozenSourceContext = {
+  confirmationHash?: string;
+  protocol: 'FROZEN_RENDER_V1';
+  id: string;
+  templateHash: string;
+  materials: EffectTemplateMixMaterial[];
+  promptArtifacts: EffectTemplateMixAiSnapshot['promptArtifacts'];
+  addedMaterialIds: string[];
+  packageNewVariants: boolean;
+  facts: import('./effect-template-mix-packaging').PackagingFact[];
+};
+/** Mechanical signature shared by the confirmation UI and API; no semantic heuristics. */
+export function effectTemplateMixSourceUpdateSignature(
+  variants: readonly EffectTemplateMixVariant[], materials: readonly EffectTemplateMixMaterial[],
+  addedIds: readonly string[] = [],
+): string {
+  return JSON.stringify({
+    projects: variants.flatMap((variant) => effectTemplateMixSourceChanges(variant, materials).map((change) =>
+      [variant.id, change.slotId, change.kind ?? 'REPLACED', change.blockedReason ?? '',
+        change.material?.artifactId ?? '', change.material?.artifactRevision ?? 0,
+        change.material?.fileObjectId ?? '', change.material?.contentHash ?? ''])).sort((a, b) =>
+          JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    added: materials.filter((material) => addedIds.includes(material.id)).map((material) =>
+      [material.artifactId, material.artifactRevision, material.fileObjectId, material.contentHash])
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  });
+}
 export type EffectTemplateMixSourcesData = {
+  autoPackagingTemplateIds?: string[];
   materials: EffectTemplateMixMaterial[];
   draftRevision: number | null;
   /** Exact draft source dependencies, including new-id replacements not caught by old edges. */
@@ -110,10 +144,12 @@ export function effectTemplateMixSourceChanges(
   return variant.slots.flatMap((slot): EffectTemplateMixSourceChange[] => {
     const boundId = variant.bindings[slot.id];
     if (!boundId) return [];
-    const previous = materials.find((material) => material.id === boundId);
+    const currentBinding = materials.find((material) => material.id === boundId);
+    const adopted = variant.bindingSources?.[slot.id];
+    const previous = adopted?.id === boundId ? adopted : currentBinding;
     if (!previous)
       return [{ slotId: slot.id, blockedReason: '原素材来源无法确认，请手动替换素材' }];
-    if (previous.available && previous.activeSource !== false) {
+    if (!adopted && previous.available && previous.activeSource !== false && !previous.sourceRemoved) {
       const revision = variant.bindingRevisions[slot.id];
       if (typeof revision === 'number' && previous.artifactRevision === revision) return [];
       return previous.duration + 0.001 < slot.duration
@@ -124,10 +160,16 @@ export function effectTemplateMixSourceChanges(
       (material) =>
         material.available &&
         material.activeSource !== false &&
+        !material.sourceRemoved &&
         (material.artifactKey === previous.artifactKey ||
-          (previous.sourcePromptId && material.sourcePromptId === previous.sourcePromptId)),
+          (previous.sourcePromptId && material.sourcePromptId === previous.sourcePromptId) ||
+          material.replacesMaterialIds?.includes(boundId)),
     );
     const files = new Map(candidates.map((material) => [material.fileObjectId, material]));
+    if (!files.size && (currentBinding?.sourceRemoved || materials.some((material) =>
+      material.sourceRemoved && (material.artifactKey === previous.artifactKey ||
+        (previous.sourcePromptId && material.sourcePromptId === previous.sourcePromptId)))))
+      return [{ slotId: slot.id, kind: 'REMOVED' }];
     if (files.size !== 1)
       return [
         {
@@ -138,6 +180,10 @@ export function effectTemplateMixSourceChanges(
         },
       ];
     const material = [...files.values()][0]!;
+    if (adopted && material.fileObjectId === adopted.fileObjectId &&
+      (!adopted.contentHash || material.contentHash === adopted.contentHash) &&
+      (material.artifactId !== adopted.artifactId || material.artifactRevision === adopted.artifactRevision))
+      return [];
     if (material.duration + 0.001 < slot.duration)
       return [{ slotId: slot.id, blockedReason: '新素材时长不足以保留当前片段长度' }];
     return [{ slotId: slot.id, material }];
@@ -203,6 +249,8 @@ export type EffectTemplateMixCaption = {
   trackId?: string;
   /** New segmented captions share one saved narration clip; absent in historical packages. */
   voiceLineId?: string;
+  /** Retains explicit picture-slot lineage when an editor splits a generated caption. */
+  sourceSlotId?: string;
   /** Stable order and expected count make a missing subtitle detectable after editor rewording. */
   segmentIndex?: number;
   segmentCount?: number;
@@ -262,7 +310,13 @@ export type EffectTemplateMixVariant = {
   slots: EffectTemplateMixSlot[];
   bindings: Record<string, string>;
   bindingRevisions: Record<string, number>;
+  /** Server-authorized media actually consumed by each occurrence, never the live pool. */
+  bindingSources?: Record<string, EffectTemplateMixMaterial>;
   offsets: Record<string, number>;
+  /** Source-delete holes are intentional and remain renderable, unlike unfinished fill slots. */
+  intentionallyEmptySlotIds?: string[];
+  /** Seconds; explicit source removal must not shrink the film's original extent. */
+  preservedTimelineEnd?: number;
   /** Optional editor layout; absent values use the template's sequential layout. */
   timelineStarts?: Record<string, number>;
   videoLanes?: Record<string, number>;
@@ -305,6 +359,32 @@ export const syncEffectTemplateMixVariantSlots = (
 };
 export type EffectTemplateMixAiRunStatus =
   'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+/** Saved additions are measured against successfully adopted source identities, not edit events. */
+export function effectTemplateMixPendingAddedMaterials(
+  templateId: string,
+  materials: readonly (Pick<EffectTemplateMixMaterial, 'id' | 'available' | 'activeSource' | 'sourcePromptId'> &
+    Partial<Pick<EffectTemplateMixMaterial, 'duration'>>)[],
+  history: readonly { templateId: string; status: string; inputSnapshot: unknown; selectionResult?: unknown }[],
+  slots?: readonly Pick<EffectTemplateMixSlot, 'duration'>[],
+): string[] {
+  const known = new Set<string>();
+  let baseline = false;
+  for (const run of history) {
+    if (run.templateId !== templateId || run.status !== 'COMPLETED') continue;
+    const snapshot = run.inputSnapshot as Partial<EffectTemplateMixAiSnapshot> | null;
+    if (!Array.isArray(snapshot?.materials)) continue;
+    baseline = true;
+    const selected = new Set(Array.isArray(run.selectionResult)
+      ? (run.selectionResult as EffectTemplateMixAiSelection[]).map((row) => row.materialId) : []);
+    for (const material of snapshot.materials)
+      if (snapshot.trimOnly ? selected.has(material.id) : !snapshot.incremental ||
+          !snapshot.incremental.materialIds.includes(material.id) || selected.has(material.id)) known.add(material.promptId);
+  }
+  return baseline ? materials.filter((material) => material.available && material.activeSource !== false &&
+    (!slots || effectTemplateMixMaterialFitsTemplate(material.duration ?? NaN, slots)) &&
+    Boolean(material.sourcePromptId) && !known.has(material.sourcePromptId!)).map((material) => material.id) : [];
+}
 export type EffectTemplateMixAiRunStage =
   'CLASSIFYING' | 'MATCHING' | 'SAMPLING' | 'TRIMMING' | 'COMPLETED';
 export type EffectTemplateMixAiStageDetail = {
@@ -445,6 +525,8 @@ export type EffectTemplateMixDraft = {
   activeTemplateId: string;
 };
 export type EffectTemplateMixWorkspaceData = {
+  /** Templates with successful packaging history; used by local-update cost confirmation. */
+  autoPackagingTemplateIds?: string[];
   pendingAddedMaterialIds?: Record<string, string[]>;
   draft: EffectTemplateMixDraft;
   draftRevision: number | null;
@@ -490,6 +572,8 @@ export type CreateEffectTemplateMixAiRunRequest = EffectTemplateMixRevisionReque
   refreshAffectedSlots?: boolean;
   /** Same-branch append only; every new film must use newly confirmed material. */
   appendNewMaterials?: boolean;
+  /** Server-owned frozen operation, not a client-supplied source pool. */
+  sourceOperationId?: string;
   idempotencyKey: string;
 };
 export type EffectTemplateMixAiClassification = {
@@ -524,6 +608,7 @@ export type EffectTemplateMixAiTrim = {
 /** Internal API/Worker input, frozen when the smart-fill task starts. */
 export type EffectTemplateMixAiSnapshot = {
   schemaVersion: 1;
+  sourceOperation?: EffectTemplateMixFrozenSourceContext;
   template: {
     id: string;
     name: string;
@@ -586,6 +671,8 @@ export type EffectTemplateMixAiSnapshot = {
     artifactRevision: number;
     contentHash: string;
     fileObjectId: string;
+    /** Exact adopted media metadata; older AI snapshots recover from their saved files. */
+    adoptedSource?: Omit<EffectTemplateMixMaterial, 'purpose' | 'compatiblePurposes'>;
   }>;
 };
 
