@@ -60,6 +60,12 @@ export class RegenerateSegmentRenderTasksDto {
 }
 
 export class RefreshSegmentRenderBatchDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation)
+  @IsUUID('4', { each: true })
+  taskIds?: string[];
   @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
   @Type(() => Number) @IsInt() @Min(1) expectedPromptArtifactRevision!: number;
   @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;

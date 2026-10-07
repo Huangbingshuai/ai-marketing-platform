@@ -111,7 +111,7 @@ export class PromptItemDto {
   @Type(() => Number)
   @IsInt()
   @Min(EFFECT_PROMPT_LIMITS.minDurationSeconds)
-  @Max(EFFECT_PROMPT_LIMITS.maxDurationSeconds)
+  @Max(EFFECT_PROMPT_LIMITS.maxManualDurationSeconds)
   targetDurationSeconds!: number;
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
   @IsOptional() @IsBoolean() evaluateAfterSave?: boolean;

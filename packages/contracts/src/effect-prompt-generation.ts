@@ -16,6 +16,7 @@ export const EFFECT_PROMPT_LIMITS = {
   minFragmentCount: 1,
   minDurationSeconds: 4,
   maxDurationSeconds: 15,
+  maxManualDurationSeconds: 30,
   defaultDurationSeconds: 5,
   minSemanticDuplicateRate: 5,
   maxSemanticDuplicateRate: 15,
@@ -103,7 +104,7 @@ export type EffectPromptRenderCapabilityKey = (typeof EFFECT_PROMPT_RENDER_CAPAB
 
 export const SEEDANCE_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'] as const;
 export type SeedanceRatio = (typeof SEEDANCE_RATIOS)[number];
-export const SEEDANCE_RESOLUTIONS = ['480p', '720p', '1080p'] as const;
+export const SEEDANCE_RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
 export type SeedanceResolution = (typeof SEEDANCE_RESOLUTIONS)[number];
 
 export type EffectPromptRenderCapability = {
@@ -137,14 +138,14 @@ export const EFFECT_PROMPT_RENDER_CAPABILITIES: Record<
     minDurationSeconds: 4,
     maxDurationSeconds: 15,
     ratios: SEEDANCE_RATIOS,
-    resolutions: SEEDANCE_RESOLUTIONS,
+    resolutions: ['480p', '720p', '1080p'],
   },
   SEEDANCE_1_0: {
     key: 'SEEDANCE_1_0',
     minDurationSeconds: 4,
     maxDurationSeconds: 15,
     ratios: SEEDANCE_RATIOS,
-    resolutions: SEEDANCE_RESOLUTIONS,
+    resolutions: ['480p', '720p'],
   },
 };
 

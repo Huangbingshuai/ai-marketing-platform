@@ -67,7 +67,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('系统共用内容');
     expect(pageSource).not.toContain('最终共用提示词');
     expect(pageSource).not.toContain('sharedPromptDraft');
-    expect(pageSource).toContain('await writeClipboardText(item.content)');
+    expect(pageSource).not.toContain('writeClipboardText');
   });
 
   it('shows recommendation and compatible purposes with primary matching as the default', () => {
@@ -132,7 +132,7 @@ describe('effect prompt generation current layout', () => {
 
   it('places Prompt first and lets the user explicitly request AI creative-structure autofill', () => {
     expect(pageSource).toContain('创意方向与六维信息');
-    expect(pageSource).toContain('这些内容会和 Prompt 正文一起约束视频生成，请保持表达一致');
+    expect(pageSource).toContain('用于创意评估、展示与追溯，请与 Prompt 正文保持一致');
     expect(pageSource).toContain('v-model="editorDraft.primaryPurpose"');
     expect(pageSource).toContain('v-model="editorDraft.creativeCore"');
     expect(pageSource).toContain('v-model="editorDraft.dimensions[dimension.key]"');
@@ -157,32 +157,23 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('<Pencil :size="13" />编辑');
   });
 
-  it('keeps list actions safe while evaluation or regeneration is active', () => {
+  it('keeps editing and deletion safe without single-item generation or copying', () => {
     for (const handler of [
       'openEditor(undefined, $event)',
       'exportBatch',
       'openEditor(item, $event)',
-      'copyItem(item)',
       'requestDeleteItem(item)',
-      'openRegenerationDialog(item, $event)',
     ])
       expect(pageSource).toContain(handler);
     expect(pageSource).toContain('requestActionConfirmation');
-    expect(pageSource).not.toContain('prompt-delete-dialog');
-    expect(pageSource).not.toContain("regenerationMode: 'AUTO_DIVERSE'");
-    expect(pageSource).toContain('v-model.number="regenerationDurationSeconds"');
-    expect(pageSource).toContain('targetDurationSeconds: regenerationDurationSeconds.value');
-    expect(pageSource).toContain('时长作为渲染参数，不会写入 Prompt 正文');
-    expect(pageSource).toContain('查看创意方向与六维变化');
-    expect(pageSource).not.toContain('希望怎么重做？');
-    expect(pageSource).not.toContain('保留内容（高级设置）');
-    expect(pageSource).not.toContain('保留产品关联，换种表现');
-    expect(pageSource).not.toContain('彻底换一个创意');
-    expect(pageSource).not.toContain('按修改意见重做');
-    expect(pageSource).not.toContain('系统会自动生成 3 个不同方向');
-    expect(pageSource).toContain('生成 3 个备选');
-    expect(pageSource).toContain('采用这个方案');
-    expect(pageSource).toContain('撤销本次替换');
+    for (const removed of [
+      'copyItem',
+      'openRegenerationDialog',
+      'regeneration-dialog',
+      '采用这个方案',
+      '撤销本次替换',
+    ])
+      expect(pageSource).not.toContain(removed);
   });
 
   it('restores the latest completed regeneration preview after a page refresh', () => {
@@ -193,14 +184,16 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('void resumeRuns();');
   });
 
-  it('keeps the single-item regeneration dialog compact and responsive', () => {
-    expect(pageSource).toContain('class="regeneration-heading__icon"');
-    expect(pageSource).toContain('class="regeneration-dialog-body"');
-    expect(pageSource).toContain('class="regeneration-form"');
-    expect(pageSource).toContain('{{ regenerationReasons.length }} 项已选');
-    expect(pageSource).toContain('width: min(920px, 100%);');
-    expect(pageSource).toContain('@media (max-width: 520px)');
+  it('keeps exactly two equal-width 34px card actions on one responsive row', () => {
+    expect(pageSource).toMatch(
+      /\.prompt-actions\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*68px\)/u,
+    );
+    expect(pageSource).toMatch(/\.prompt-actions button\s*\{[^}]*height:\s*34px/u);
     expect(pageSource).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+    expect(pageSource).toContain('grid-column: 2;');
+    expect(pageSource).toContain('v-if="editorMode === \'add\'"');
+    expect(pageSource).toContain('class="editor-duration-readonly"');
+    expect(pageSource).toContain('EFFECT_PROMPT_LIMITS.maxManualDurationSeconds');
   });
 
   it('keeps manual editing concise without a batch-import entry', () => {
@@ -214,7 +207,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('v-model="editorDraft.primaryPurpose"');
     expect(pageSource).not.toContain('role="switch"');
     expect(pageSource).toContain("editorMode === 'add' ? '添加提示词' : '保存编辑'");
-    expect(pageSource).toContain('短片只安排一个连续动作');
+    expect(pageSource).toContain('已有 Prompt 的时长不可修改');
     expect(pageSource).toContain('currentCountStats.actualCount} 条 Prompt');
   });
 
@@ -309,7 +302,7 @@ describe('effect prompt generation current layout', () => {
 
   it('acknowledges generation immediately and does not auto-open the graph', () => {
     const start = pageSource.indexOf('const generateCurrentBatch');
-    const end = pageSource.indexOf('const openRegenerationDialog', start);
+    const end = pageSource.indexOf('async function handleMutationError', start);
     const generation = pageSource.slice(start, end);
     expect(generation.indexOf('batchStartPending.value = true')).toBeLessThan(
       generation.indexOf('await flushSettings(productId)'),
@@ -319,10 +312,10 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain("? '正在提交…'");
   });
 
-  it('keeps failed candidates as a copy-only temporary preview', () => {
+  it('keeps failed candidates as a read-only temporary preview', () => {
     expect(pageSource).toContain('class="partial-preview-banner"');
     expect(pageSource).toContain('本次任务未完成，已保留');
-    expect(pageSource).toContain('当前仅支持查看和复制');
+    expect(pageSource).toContain('当前仅支持查看');
     expect(pageSource).toMatch(
       /:disabled="\s*partialPreview \|\|\s*currentRunning \|\|\s*validating/,
     );

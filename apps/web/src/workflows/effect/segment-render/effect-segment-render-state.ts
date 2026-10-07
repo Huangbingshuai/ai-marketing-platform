@@ -1,6 +1,7 @@
 import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectSegmentRenderUpdateKind,
   EffectSegmentRenderBatch,
   EffectSegmentRenderOutput,
   EffectSegmentRenderTask as ApiEffectSegmentRenderTask,
@@ -59,6 +60,7 @@ export type EffectSegmentRenderTask = {
   maxAutoRetries: number;
   abnormal: boolean;
   needsUpdate: boolean;
+  updateKind?: EffectSegmentRenderUpdateKind;
   errorCode?: string | null;
   errorMessage: string | null;
   providerTaskId?: string | null;
@@ -83,6 +85,7 @@ export type EffectSegmentRenderWorkspace = {
   stale?: boolean;
   refreshScope?: 'NONE' | 'SELECTIVE' | 'FULL';
   pendingPromptIds?: string[];
+  pendingRemovedTaskIds?: string[];
   commitStatus?: WorkingArtifactCommitStatus | null;
   workingArtifactRevision?: number | null;
   batchStatus: EffectSegmentRenderBatchStatus;
@@ -131,6 +134,7 @@ export const effectSegmentRenderWorkspaceFromApi = (
   stale: data.batch?.stale ?? false,
   refreshScope: data.batch?.refreshScope ?? 'NONE',
   pendingPromptIds: data.batch?.pendingPromptIds ?? [],
+  pendingRemovedTaskIds: data.batch?.pendingRemovedTaskIds ?? [],
   commitStatus: data.batch?.commitStatus ?? null,
   workingArtifactRevision: data.batch?.workingArtifactRevision ?? null,
   batchStatus: data.batch?.status ?? 'NOT_STARTED',
@@ -153,6 +157,7 @@ export const effectSegmentRenderWorkspaceWithBatch = (
   stale: batch.stale,
   refreshScope: batch.refreshScope,
   pendingPromptIds: batch.pendingPromptIds ?? [],
+  pendingRemovedTaskIds: batch.pendingRemovedTaskIds ?? [],
   commitStatus: batch.commitStatus,
   workingArtifactRevision: batch.workingArtifactRevision,
   batchStatus: batch.status,

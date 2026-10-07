@@ -91,7 +91,9 @@ describe('effect prompt generation contract', () => {
     ]);
     expect(batchSchema.properties.settings.properties.targetCount.maximum).toBe(100);
     expect(batchSchema.properties.settings.properties.defaultDurationSeconds.maximum).toBe(15);
-    expect(batchSchema.$defs.item.properties.targetDurationSeconds.maximum).toBe(15);
+    expect(batchSchema.$defs.item.properties.targetDurationSeconds.maximum).toBe(30);
+    expect(EFFECT_PROMPT_LIMITS.maxManualDurationSeconds).toBe(30);
+    expect(batchSchema.$defs.item.allOf[1].then.properties.targetDurationSeconds.maximum).toBe(15);
     expect(batchSchema.properties.items.maxItems).toBe(100);
   });
 

@@ -9,7 +9,7 @@ import { EffectSegmentRenderRepository } from './effect-segment-render.repositor
 // Self-contained and rollback-only: no existing user project is selected or restored, no Outbox
 // message is committed, and no storage/model call can escape this transaction.
 it.skipIf(process.env.EFFECT_INCREMENTAL_DATABASE_TEST !== '1')(
-  'atomically appends render tasks with idempotent Outbox and rolls all fixture data back',
+  'atomically syncs metadata, removes material and appends paid tasks with idempotent Outbox, then rolls back',
   async () => {
     const db = new PrismaService(
       new ConfigService({
@@ -136,18 +136,44 @@ it.skipIf(process.env.EFFECT_INCREMENTAL_DATABASE_TEST !== '1')(
                 },
               ],
             };
+            const metadataTask = await tx.effectSegmentRenderTask.create({ data: {
+              projectId, workflowRunId: run.id, productId: product.id, batchId: batch.id,
+              promptId: randomUUID(), promptCode: 'P003', renderCode: 'R-003',
+              sourceFingerprint: 'c'.repeat(64), requestSnapshot: {}, generationRequestSnapshot: {},
+              status: 'COMPLETED', progress: 100, outputStorageKey: 'fixture/metadata.mp4',
+            } });
+            const removedTask = await tx.effectSegmentRenderTask.create({ data: {
+              projectId, workflowRunId: run.id, productId: product.id, batchId: batch.id,
+              promptId: randomUUID(), promptCode: 'P004', renderCode: 'R-004',
+              sourceFingerprint: 'd'.repeat(64), requestSnapshot: {}, generationRequestSnapshot: {},
+              status: 'COMPLETED', progress: 100, outputStorageKey: 'fixture/deleted.mp4',
+            } });
+            const freeInput = { sourcePrompt: input.sourcePrompt, sourcePackage: snapshot.sourcePackage,
+              taskSnapshots: {}, metadataSnapshots: { [metadataTask.id]: {
+                ...snapshot, promptId: metadataTask.promptId, creativeCore: '更新创意信息',
+              } }, removedTaskIds: [removedTask.id] };
+            expect(await repo.regenerateTasks(projectId, batch.id, [], 1, 'free-refresh', freeInput))
+              .toEqual({ kind: 'UPDATED' });
+            expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(0);
+            const metadataAfter = await tx.effectSegmentRenderTask.findUniqueOrThrow({ where: { id: metadataTask.id } });
+            expect(metadataAfter.renderVersion).toBe(metadataTask.renderVersion);
+            expect(metadataAfter.outputStorageKey).toBe(metadataTask.outputStorageKey);
+            expect(await tx.effectSegmentRenderTask.findUniqueOrThrow({ where: { id: removedTask.id } }))
+              .toMatchObject({ errorCode: 'MATERIAL_DELETED', outputStorageKey: null });
+            expect(await tx.effectSegmentRenderBatch.findUniqueOrThrow({ where: { id: batch.id } }))
+              .toMatchObject({ status: 'COMPLETED', revision: 2, activeKey: null });
             expect(
-              (await repo.regenerateTasks(projectId, batch.id, [], 1, 'incremental', input)).kind,
+              (await repo.regenerateTasks(projectId, batch.id, [], 2, 'incremental', input)).kind,
             ).toBe('UPDATED');
             expect(
-              (await repo.regenerateTasks(projectId, batch.id, [], 1, 'incremental', input)).kind,
+              (await repo.regenerateTasks(projectId, batch.id, [], 2, 'incremental', input)).kind,
             ).toBe('REPLAYED');
             expect(await tx.effectSegmentRenderTask.findUnique({ where: { id: old.id } })).toEqual(
               old,
             );
             expect(
               await tx.effectSegmentRenderTask.count({ where: { projectId, batchId: batch.id } }),
-            ).toBe(2);
+            ).toBe(4);
             expect(await tx.jobOutbox.count({ where: { projectId, aggregateId: newTaskId } })).toBe(
               1,
             );

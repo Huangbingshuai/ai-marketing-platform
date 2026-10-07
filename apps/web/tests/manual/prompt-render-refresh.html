@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>渲染局部更新隔离验收</title>
+  </head>
+  <body>
+    <nav style="padding: 16px; background: #fff">
+      隔离验收：无项目写入、无生成调用。 <a href="?state=mixed">混合更新</a> ·
+      <a href="?state=free">免费更新</a> · <a href="?state=completed">完成</a> ·
+      <a href="?state=running">生成中</a> · <a href="?state=failed">部分失败</a> ·
+      <a href="?state=empty">空状态</a> · <a href="?state=error">加载失败</a> ·
+      <a href="?state=loading">加载中</a>
+    </nav>
+    <div id="app" style="margin: 20px"></div>
+    <script type="module">
+      import { createApp, h } from 'vue';
+      import Page from '/src/workflows/effect/segment-render/EffectSegmentRenderNodePage.vue';
+      import Confirmation from '/src/shared/components/ActionConfirmationDialog.vue';
+      import '/src/styles/global.css';
+      const state = new URLSearchParams(location.search).get('state') ?? 'mixed';
+      const now = new Date().toISOString();
+      const product = {
+        id: 'qa-product',
+        name: '隔离测试商品',
+        status: 'ACTIVE',
+        configOverride: {},
+        materials: [],
+      };
+      const kinds =
+        state === 'mixed'
+          ? ['RENDER', 'METADATA', 'REMOVE']
+          : state === 'free'
+            ? ['METADATA', 'REMOVE']
+            : ['running', 'failed'].includes(state)
+              ? ['RENDER']
+              : [undefined];
+      const tasks = kinds.map((updateKind, index) => ({
+        id: 'qa-task-' + index,
+        projectId: 'qa-project',
+        workflowRunId: 'qa-run',
+        productId: product.id,
+        productName: product.name,
+        batchId: 'qa-batch',
+        promptId: 'qa-prompt-' + index,
+        promptCode: 'P00' + (index + 1),
+        renderCode: 'R-00' + (index + 1),
+        promptText: '隔离测试 Prompt',
+        creativeCore: '隔离验收素材',
+        source: 'PROMPT',
+        origin: 'AI_GENERATED',
+        sourceName: '隔离测试',
+        primaryPurpose: 'PRODUCT_DISPLAY',
+        fragmentType: 'PRODUCT_DISPLAY',
+        compatiblePurposes: ['PRODUCT_DISPLAY'],
+        durationSeconds: 5,
+        status: state === 'failed' ? 'FAILED' : state === 'running' ? 'QUEUED' : 'COMPLETED',
+        progress: state === 'running' ? 0 : 100,
+        retryCount: 0,
+        maxAutoRetries: 2,
+        abnormal: state === 'failed',
+        needsUpdate: Boolean(updateKind),
+        updateKind,
+        repair: null,
+        output: null,
+        errorMessage: state === 'failed' ? '模拟生成失败，旧结果未覆盖' : null,
+        errorCode: state === 'failed' ? 'QA_PROVIDER_FAILURE' : null,
+        updatedAt: now,
+      }));
+      const batch = {
+        id: 'qa-batch',
+        projectId: 'qa-project',
+        workflowRunId: 'qa-run',
+        productId: product.id,
+        sourcePrompt: { artifactId: 'qa-prompts', revision: 1, contentHash: 'test' },
+        revision: 1,
+        status: state === 'failed' ? 'PARTIAL' : state === 'running' ? 'RUNNING' : 'COMPLETED',
+        stale: kinds.some(Boolean),
+        refreshScope: kinds.some(Boolean) ? 'SELECTIVE' : 'NONE',
+        pendingPromptIds: state === 'mixed' ? ['qa-added'] : [],
+        pendingRemovedTaskIds: tasks.filter((t) => t.updateKind === 'REMOVE').map((t) => t.id),
+        commitStatus: 'COMMITTED',
+        workingArtifactRevision: 1,
+        tasks,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const data = {
+        projectId: 'qa-project',
+        workflowRunId: 'qa-run',
+        productId: product.id,
+        settings: { capabilityKey: 'SEEDANCE_2_0', ratio: '9:16', resolution: '720p' },
+        settingsRevision: 1,
+        promptReady: true,
+        promptArtifactRevision: 2,
+        promptCount: tasks.length + 1,
+        batch: state === 'empty' ? null : batch,
+      };
+      // Deny every network request: this fixture must never contact a live API/model/storage.
+      window.fetch = async (_url, options = {}) => {
+        if (options.method && options.method !== 'GET')
+          return new Response(JSON.stringify({ message: '隔离验收禁止提交实际任务' }), {
+            status: 403,
+          });
+        if (state === 'loading') return new Promise(() => {});
+        if (state === 'error')
+          return new Response(JSON.stringify({ message: '模拟工作区加载失败' }), { status: 503 });
+        const url = String(_url);
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: url.includes('/batches/')
+              ? { batch }
+              : url.includes('segment-render')
+                ? data
+                : { items: [] },
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      };
+      createApp({
+        render: () =>
+          h('main', [
+            h(Page, { projectId: 'qa-project', workflowRunId: 'qa-run', products: [product] }),
+            h(Confirmation),
+          ]),
+      }).mount('#app');
+    </script>
+  </body>
+</html>

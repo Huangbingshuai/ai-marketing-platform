@@ -6,7 +6,11 @@ import type {
   SeedanceResolution,
 } from './effect-prompt-generation';
 import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
-import { EFFECT_PROMPT_FRAGMENT_TYPES, EFFECT_PROMPT_DIMENSIONS } from './effect-prompt-generation';
+import {
+  EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
+} from './effect-prompt-generation';
 
 export const EFFECT_SEGMENT_RENDER_API_BASE =
   '/api/projects/:projectId/workflows/effect/segment-render' as const;
@@ -26,6 +30,41 @@ export const DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS: EffectSegmentRenderSettings
   resolution: '720p',
   capabilityKey: 'SEEDANCE_2_0',
 };
+
+export const SEEDANCE_RESOLUTION_SHORT_SIDES: Record<SeedanceResolution, number> = {
+  '480p': 480,
+  '720p': 720,
+  '1080p': 1080,
+  '4k': 2160,
+};
+
+/** Per-import routing only: never mutates the user's global render settings. */
+export function resolveEffectImportedRenderSettings(
+  configured: EffectSegmentRenderSettings,
+  source: { durationSeconds: number; shortSidePixels?: number },
+): EffectSegmentRenderSettings {
+  const resolutions: SeedanceResolution[] = ['480p', '720p', '1080p', '4k'];
+  const pixels = Math.max(
+    source.shortSidePixels ?? 0,
+    SEEDANCE_RESOLUTION_SHORT_SIDES[configured.resolution],
+  );
+  const resolution =
+    resolutions.find((value) => SEEDANCE_RESOLUTION_SHORT_SIDES[value] >= pixels) ?? '4k';
+  if (source.durationSeconds > 15) {
+    return {
+      ...configured,
+      capabilityKey: 'SEEDANCE_1_5_PRO',
+      resolution: resolution === '4k' ? '1080p' : resolution,
+    };
+  }
+  if (EFFECT_PROMPT_RENDER_CAPABILITIES[configured.capabilityKey].resolutions.includes(resolution))
+    return { ...configured, resolution };
+  return {
+    ...configured,
+    capabilityKey: resolution === '4k' ? 'SEEDANCE_2_0' : 'SEEDANCE_1_5_PRO',
+    resolution,
+  };
+}
 
 export const effectSegmentRenderSettingsNodeId = (productId: string): string =>
   `SEGMENT_RENDER_SETTINGS:${productId}`;
@@ -235,7 +274,21 @@ export type EffectSegmentRenderInputImage = {
   sortOrder: number;
 };
 
+/** Adopted business input. Queuing a replacement must not advance this baseline. */
+export type EffectSegmentRenderPromptBaseline = EffectSegmentImportCreativeMetadata & {
+  promptContentHash: string;
+  sharedPromptHash: string;
+  targetDurationSeconds: number;
+  primaryPurpose: EffectPromptFragmentType;
+  compatiblePurposes: EffectPromptFragmentType[];
+};
+
+export type EffectSegmentRenderUpdateKind = 'RENDER' | 'METADATA' | 'REMOVE';
+
 export type EffectSegmentRenderRequestSnapshot = EffectSegmentImportCreativeMetadata & {
+  adoptedPrompt?: EffectSegmentRenderPromptBaseline;
+  /** Original unified Prompt-batch duration; manual additions never raise slot limits. */
+  promptDurationMaxSeconds?: number;
   /** An independent, user-confirmed clip description, owned by the render artifact. */
   importedMaterial?: {
     schemaVersion: 1;
@@ -244,6 +297,9 @@ export type EffectSegmentRenderRequestSnapshot = EffectSegmentImportCreativeMeta
     promptDurationMaxSeconds?: number;
   };
   operation?: 'GENERATE' | 'REPAIR';
+  /** Actual completed output duration, independent of the integer generation target. */
+  outputDurationSeconds?: number;
+  outputRatio?: string;
   promptId: string;
   promptCode: string;
   promptText: string;
@@ -314,6 +370,7 @@ export type EffectSegmentRenderTask = EffectSegmentImportCreativeMetadata & {
   abnormal: boolean;
   /** Current Prompt content no longer matches this task's frozen render input. */
   needsUpdate: boolean;
+  updateKind?: EffectSegmentRenderUpdateKind;
   errorCode: string | null;
   errorMessage: string | null;
   providerTaskId: string | null;
@@ -341,6 +398,7 @@ export type EffectSegmentRenderBatch = {
   refreshScope: 'NONE' | 'SELECTIVE' | 'FULL';
   /** Confirmed Prompt items not yet represented by a task in this batch. */
   pendingPromptIds?: string[];
+  pendingRemovedTaskIds?: string[];
   revision: number;
   commitStatus: WorkingArtifactCommitStatus;
   workingArtifactRevision: number | null;
@@ -389,6 +447,8 @@ export type StartEffectSegmentRenderBatchData = {
 };
 
 export type RefreshEffectSegmentRenderBatchRequest = {
+  /** Omit for all differences; selected tasks never append unrelated Prompt items. */
+  taskIds?: string[];
   expectedBatchRevision: number;
   expectedPromptArtifactRevision: number;
   idempotencyKey: string;

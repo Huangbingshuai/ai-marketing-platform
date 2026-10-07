@@ -34,7 +34,6 @@ import {
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
-  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_SHARD_PHASES,
   effectPromptSettingsNodeId,
@@ -481,13 +480,16 @@ export class EffectPromptService {
     @Inject(WorkflowWorkingRepository)
     private readonly workingRepository: WorkflowWorkingRepository,
     @Optional() @Inject(STORAGE_PORT) private readonly storage?: StoragePort,
-    @Optional() @Inject(WorkflowWorkingService)
+    @Optional()
+    @Inject(WorkflowWorkingService)
     private readonly workingService?: WorkflowWorkingService,
   ) {}
 
   private async assertPromptWritable(projectId: string, workflowRunId: string): Promise<void> {
     await this.workingService?.assertEffectNodeWritable(
-      projectId, workflowRunId, 'PROMPT_GENERATION',
+      projectId,
+      workflowRunId,
+      'PROMPT_GENERATION',
     );
   }
 
@@ -731,6 +733,8 @@ export class EffectPromptService {
     },
   ): Promise<StartEffectPromptRunData> {
     await this.requireWorkflow(projectId, input.workflowRunId);
+    if (input.operation === 'ITEM_REGENERATE')
+      throw badRequest('单条 Prompt 重新生成已移除，请使用编辑或整批重新生成');
     if (input.operation === 'ITEM_EVALUATE')
       await this.assertPromptWritable(projectId, input.workflowRunId);
     const idempotencyKey = input.idempotencyKey.trim();
@@ -749,64 +753,17 @@ export class EffectPromptService {
           ? '批量生成不能携带单条重生成设置'
           : 'AI 自动补齐不能携带内容重生成设置',
       );
-    if (
-      (input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
-      !input.targetItemId
-    )
-      throw badRequest(
-        input.operation === 'ITEM_EVALUATE'
-          ? 'AI 自动补齐必须指定 Prompt'
-          : '单条重新生成必须指定 Prompt',
-      );
-    if ((input.regenerationInstruction?.trim().length ?? 0) > 500)
-      throw badRequest('修改意见不能超过 500 字');
-    if (
-      input.targetDurationSeconds !== undefined &&
-      (!Number.isInteger(input.targetDurationSeconds) ||
-        input.targetDurationSeconds < EFFECT_PROMPT_LIMITS.minDurationSeconds ||
-        input.targetDurationSeconds > EFFECT_PROMPT_LIMITS.maxDurationSeconds)
-    )
-      throw badRequest(
-        `片段时长需在 ${EFFECT_PROMPT_LIMITS.minDurationSeconds}～${EFFECT_PROMPT_LIMITS.maxDurationSeconds} 秒之间`,
-      );
-    if (
-      input.operation === 'ITEM_REGENERATE' &&
-      input.regenerationMode === 'CUSTOM' &&
-      !input.regenerationInstruction?.trim()
-    )
-      throw badRequest('按修改意见重做时必须填写修改意见');
-    if (input.replacementDimensions && !validateDimensions(input.replacementDimensions))
-      throw badRequest('六维设置必须完整填写且不能超过长度限制');
-    const replacementDimensions = input.replacementDimensions
-      ? (Object.fromEntries(
-          EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [
-            key,
-            input.replacementDimensions![key].trim(),
-          ]),
-        ) as EffectPromptDimensions)
-      : null;
-    const regenerationInstruction = input.regenerationInstruction?.trim() || null;
+    if (input.operation === 'ITEM_EVALUATE' && !input.targetItemId)
+      throw badRequest('AI 自动补齐必须指定 Prompt');
     const result = await this.repository.startRun(projectId, input.workflowRunId, productId, {
       operation: input.operation,
       targetItemId: input.targetItemId ?? null,
-      targetDurationSeconds: input.targetDurationSeconds ?? null,
-      regenerationInstruction,
-      replacementDimensions,
-      regenerationMode:
-        input.operation === 'ITEM_REGENERATE'
-          ? (input.regenerationMode ?? 'FULL_REGENERATE')
-          : null,
-      regenerationReasons: [...new Set(input.regenerationReasons ?? [])],
-      preservedDimensions: [
-        ...new Set(
-          input.preservedDimensions ??
-            (input.operation === 'ITEM_REGENERATE' &&
-            input.regenerationMode &&
-            !['FULL_REGENERATE', 'AUTO_DIVERSE', 'NEW_CREATIVE'].includes(input.regenerationMode)
-              ? ['productRelation' as const]
-              : []),
-        ),
-      ],
+      targetDurationSeconds: null,
+      regenerationInstruction: null,
+      replacementDimensions: null,
+      regenerationMode: null,
+      regenerationReasons: [],
+      preservedDimensions: [],
       expectedSettingsRevision: input.expectedSettingsRevision,
       expectedResultRevision: input.expectedResultRevision ?? null,
       idempotencyKey,
@@ -969,7 +926,7 @@ export class EffectPromptService {
         (input.creativeCore!.trim().length > 0 && input.creativeCore!.length <= 160)) &&
       Number.isInteger(input.targetDurationSeconds) &&
       input.targetDurationSeconds >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-      input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+      input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxManualDurationSeconds &&
       (!hasDimensions || validateDimensions(input.dimensions!))
     );
   }
@@ -978,24 +935,10 @@ export class EffectPromptService {
     if (
       !Number.isInteger(targetDurationSeconds) ||
       targetDurationSeconds < EFFECT_PROMPT_LIMITS.minDurationSeconds ||
-      targetDurationSeconds > EFFECT_PROMPT_LIMITS.maxDurationSeconds
+      targetDurationSeconds > EFFECT_PROMPT_LIMITS.maxManualDurationSeconds
     )
       throw badRequest(
-        `片段时长需在 ${EFFECT_PROMPT_LIMITS.minDurationSeconds}～${EFFECT_PROMPT_LIMITS.maxDurationSeconds} 秒之间`,
-      );
-  }
-
-  private validateItemDuration(
-    result: EffectPromptBatchResult,
-    targetDurationSeconds: number,
-  ): void {
-    const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[result.renderProfile.capabilityKey];
-    if (
-      targetDurationSeconds < capability.minDurationSeconds ||
-      targetDurationSeconds > capability.maxDurationSeconds
-    )
-      throw badRequest(
-        `当前视频模型支持 ${capability.minDurationSeconds}～${capability.maxDurationSeconds} 秒的片段时长`,
+        `片段时长需在 ${EFFECT_PROMPT_LIMITS.minDurationSeconds}～${EFFECT_PROMPT_LIMITS.maxManualDurationSeconds} 秒之间`,
       );
   }
 
@@ -1149,7 +1092,6 @@ export class EffectPromptService {
       throw badRequest(`Prompt 数量已达到 ${EFFECT_PROMPT_LIMITS.maxCount} 条上限`);
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
-    this.validateItemDuration(parsed, input.targetDurationSeconds);
     const maxCode = parsed.items.reduce((maximum, item) => {
       const number = Number(item.code.replace(/\D+/gu, ''));
       return Number.isFinite(number) ? Math.max(maximum, number) : maximum;
@@ -1215,9 +1157,10 @@ export class EffectPromptService {
     await this.assertPromptWritable(projectId, current.workflowRunId);
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
-    this.validateItemDuration(parsed, input.targetDurationSeconds);
     const currentItem = parsed.items.find((item) => item.id === itemId);
     if (!currentItem) throw notFound('Prompt 不存在');
+    if (input.targetDurationSeconds !== currentItem.targetDurationSeconds)
+      throw badRequest('已有 Prompt 的片段时长不可修改');
     const primaryPurpose = input.primaryPurpose ?? currentItem.primaryPurpose;
     const compatiblePurposes = [
       primaryPurpose,
@@ -1351,7 +1294,9 @@ export class EffectPromptService {
     );
     const issues: Array<{ code: string; message: string }> = [];
     const warnings: Array<{ code: string; message: string }> = [];
-    if (verified.items.length !== verified.settings.targetCount)
+    const overrides = record.manualOverrides as { added?: unknown[]; deleted?: unknown[] } | null;
+    const manualCountChanged = Boolean(overrides?.added?.length || overrides?.deleted?.length);
+    if (!manualCountChanged && verified.items.length !== verified.settings.targetCount)
       issues.push({ code: 'COUNT_MISMATCH', message: 'Prompt 数量尚未达到目标数量' });
     if (effectPromptExactDuplicatePairs(verified.items) > 0)
       issues.push({ code: 'EXACT_DUPLICATE', message: '存在正文完全重复的 Prompt' });
@@ -1374,7 +1319,9 @@ export class EffectPromptService {
       });
     if (
       verified.items.some(
-        (item) => item.targetDurationSeconds !== verified.settings.defaultDurationSeconds,
+        (item) =>
+          item.origin !== 'MANUAL' &&
+          item.targetDurationSeconds !== verified.settings.defaultDurationSeconds,
       )
     )
       issues.push({ code: 'DURATION_MISMATCH', message: '存在未使用当前统一时长的 Prompt' });

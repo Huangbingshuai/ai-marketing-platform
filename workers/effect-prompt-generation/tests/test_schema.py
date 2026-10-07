@@ -8,6 +8,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
+
 from effect_prompt_generation.models import (
     CreativeAverageScores,
     CreativeDirection,
@@ -31,6 +32,36 @@ from effect_prompt_generation.models import (
     SharedPromptSection,
     SharedRenderConstraints,
 )
+
+
+@pytest.mark.parametrize("duration", [4, 15, 16, 30])
+def test_manual_prompt_duration_is_independent_of_batch_default(prompt_item: PromptItem, duration: int) -> None:
+    data = prompt_item.model_dump(mode="json", by_alias=True)
+    data.update(origin="MANUAL", targetDurationSeconds=duration)
+    assert PromptItem.model_validate(data).target_duration_seconds == duration
+    if duration > 15:
+        with pytest.raises(ValidationError):
+            PromptItem.model_validate({**data, "origin": "AI"})
+
+
+@pytest.mark.parametrize("duration", [3, 31, 4.5])
+def test_manual_prompt_duration_rejects_invalid_values(prompt_item: PromptItem, duration: float) -> None:
+    data = prompt_item.model_dump(mode="json", by_alias=True)
+    with pytest.raises(ValidationError):
+        PromptItem.model_validate({**data, "origin": "MANUAL", "targetDurationSeconds": duration})
+
+
+def test_render_resolution_contract_accepts_4k() -> None:
+    profile = RenderProfile.model_validate({
+        "ratio": "9:16",
+        "resolution": "4k",
+        "capabilityKey": "SEEDANCE_2_0",
+        "sharedConstraints": {
+            "disabledElements": [],
+            "contentHash": hashlib.sha256(b"[]").hexdigest(),
+        },
+    })
+    assert profile.resolution == "4k"
 
 
 def test_creative_direction_trims_extra_avoidance_hints_without_semantic_rewrite() -> None:
@@ -369,7 +400,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
     ]["maximum"] == 15
     assert schema["$defs"]["item"]["properties"]["targetDurationSeconds"][
         "maximum"
-    ] == 15
+    ] == 30
 
     Draft202012Validator(
         schema, format_checker=Draft202012Validator.FORMAT_CHECKER

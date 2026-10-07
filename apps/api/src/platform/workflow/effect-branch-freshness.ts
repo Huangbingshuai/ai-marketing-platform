@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { EFFECT_WORKFLOW_BRANCH_NODES } from '@ai-marketing/contracts';
 
 type Branch = { id: string; parentWorkflowRunId: string | null; forkNodeId: string | null;
@@ -13,6 +14,28 @@ type Artifact = {
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
+
+/** A batch revision alone is not a changed clip. Explicit STALE markers (including shared
+ * constraints) still win; compare only recorded fields, never invent legacy metadata. */
+const matchesConfirmedPrompt = (clip: Artifact, prompt: Artifact): boolean => {
+  if (clip.nodeId !== 'SEGMENT_RENDER' || !clip.artifactKey.startsWith('render-clip:') ||
+      prompt.nodeId !== 'PROMPT_GENERATION' || !prompt.artifactKey.startsWith('prompt-batch:'))
+    return false;
+  const payload = record(clip.payload);
+  const items = record(prompt.payload)?.items;
+  if (!payload || !Array.isArray(items) || typeof payload.promptContentHash !== 'string') return false;
+  const item = items.map(record).find((row) => row?.id === payload.promptId);
+  if (!item || typeof item.content !== 'string' ||
+      createHash('sha256').update(item.content.trim()).digest('hex') !== payload.promptContentHash)
+    return false;
+  if (payload.primaryPurpose !== undefined && payload.primaryPurpose !== item.primaryPurpose) return false;
+  if (Array.isArray(payload.compatiblePurposes) &&
+      JSON.stringify([...payload.compatiblePurposes].sort()) !==
+        JSON.stringify(Array.isArray(item.compatiblePurposes) ? [...item.compatiblePurposes].sort() : [])) return false;
+  if (payload.creativeCore !== undefined && payload.creativeCore !== item.creativeCore) return false;
+  const dimensions = record(payload.dimensions);
+  return !dimensions || Object.entries(dimensions).every(([key, value]) => record(item.dimensions)?.[key] === value);
+};
 
 /** Render copies under mix/output Runs share one render head, including confirmed edits there. */
 export function effectRenderSourceOwner(
@@ -160,6 +183,26 @@ export function projectEffectBranchFreshness<T extends Artifact>(
       (artifact.dependencies ?? []).some((dependency) => {
         if (dependency.sourceType !== 'WORKING_ARTIFACT' || !dependency.sourceArtifactId) return false;
         const input = byId.get(dependency.sourceArtifactId);
+        // A saved pool deletion invalidates consumers, not the old media file itself.
+        // Read only this branch's authoritative render owner; absent membership alone is no proof.
+        if (input?.nodeId === 'SEGMENT_RENDER' && input.artifactKey.startsWith('render-clip:')) {
+          const owner = effectRenderSourceOwner(branches, artifact.workflowRunId, sourceIdentities);
+          const prompt = record(input.payload)?.promptId;
+          const pools = sourceIdentities.filter((row) => row.workflowRunId === owner &&
+            row.nodeId === 'SEGMENT_RENDER' && row.artifactKey.startsWith('render-batch:'));
+          const active = pools.some((pool) => Array.isArray(record(pool.payload)?.clips) &&
+            (record(pool.payload)!.clips as unknown[]).some((clip) =>
+              record(clip)?.promptId === prompt || `render-clip:${record(clip)?.taskId}` === input.artifactKey));
+          const removed = pools.some((pool) => Array.isArray(record(pool.payload)?.removedSources) &&
+            (record(pool.payload)!.removedSources as unknown[]).some((row) =>
+              (typeof prompt === 'string' && record(row)?.promptId === prompt) ||
+              `render-clip:${record(row)?.taskId}` === input.artifactKey));
+          if (removed && !active) return true;
+        }
+        if (input) {
+          const confirmed = canonical(input);
+          if (matchesConfirmedPrompt(artifact, confirmed) && !stale(confirmed, next)) return false;
+        }
         return Boolean(input && (stale(input, next) ||
           (dependency.sourceRevision != null && input.revision !== dependency.sourceRevision) ||
           (dependency.sourceHash && input.contentHash && dependency.sourceHash !== input.contentHash)));

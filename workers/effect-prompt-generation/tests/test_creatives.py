@@ -1538,7 +1538,8 @@ async def test_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_evaluate_preserves_user_authored_content_and_structure() -> None:
+@pytest.mark.parametrize("duration", [4, 15, 16, 30])
+async def test_item_evaluate_preserves_user_authored_content_and_structure(duration: int) -> None:
     snapshot = _snapshot()
     now = "2026-08-27T10:00:00Z"
     target = PromptItem(
@@ -1550,7 +1551,7 @@ async def test_item_evaluate_preserves_user_authored_content_and_structure() -> 
         compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
         classification_status="PENDING",
         product_relevance=0,
-        target_duration_seconds=5,
+        target_duration_seconds=duration,
         creative_core="从成品摆盘推进到切面细节",
         dimensions=CreativeDimensions(
             narrative="从成品摆盘推进到切面细节",
@@ -1592,6 +1593,7 @@ async def test_item_evaluate_preserves_user_authored_content_and_structure() -> 
     assert api.result is not None
     assert len(api.result.items) == 1
     assert api.result.items[0].content == target.content
+    assert api.result.items[0].target_duration_seconds == duration
     assert api.result.items[0].creative_core == target.creative_core
     assert api.result.items[0].dimensions == target.dimensions
     assert api.result.items[0].classification_status == "VERIFIED"

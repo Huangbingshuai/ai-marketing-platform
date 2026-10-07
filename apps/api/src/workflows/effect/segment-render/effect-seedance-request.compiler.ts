@@ -22,7 +22,8 @@ export type EffectSeedanceCreateTaskRequest = {
   resolution: SeedanceResolution;
 };
 
-export type EffectSeedanceRequestSnapshot = {
+export type EffectSeedanceRequestSnapshot = Pick<EffectSegmentRenderRequestSnapshot,
+  'creativeCore' | 'dimensions' | 'promptDurationMaxSeconds'> & {
   promptId: string;
   primaryPurpose: EffectPromptFragmentType;
   compatiblePurposes: EffectPromptFragmentType[];
@@ -142,13 +143,15 @@ export const compileEffectSeedanceRequest = (
     );
   if (!model.trim()) throw new EffectSeedanceCompileError('EMPTY_MODEL', 'Seedance 模型配置为空');
   const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[renderSettings.capabilityKey];
+  const maxDuration = item.origin === 'MANUAL' && renderSettings.capabilityKey === 'SEEDANCE_1_5_PRO'
+    ? 30 : capability.maxDurationSeconds;
   if (
     item.targetDurationSeconds < capability.minDurationSeconds ||
-    item.targetDurationSeconds > capability.maxDurationSeconds
+    item.targetDurationSeconds > maxDuration
   )
     throw new EffectSeedanceCompileError(
       'DURATION_UNSUPPORTED',
-      `当前模型仅支持 ${capability.minDurationSeconds}～${capability.maxDurationSeconds} 秒`,
+      `当前模型仅支持 ${capability.minDurationSeconds}～${maxDuration} 秒`,
     );
   if (!capability.ratios.includes(renderSettings.ratio))
     throw new EffectSeedanceCompileError('RATIO_UNSUPPORTED', '当前模型不支持所选画幅');
@@ -162,6 +165,9 @@ export const compileEffectSeedanceRequest = (
   const text = compileText(item, sharedPromptContent);
   return {
     promptId: item.id,
+    creativeCore: item.creativeCore,
+    dimensions: { ...item.dimensions },
+    promptDurationMaxSeconds: batch.settings.defaultDurationSeconds,
     primaryPurpose: item.primaryPurpose,
     compatiblePurposes: [...item.compatiblePurposes],
     promptContentHash: promptContentHash(item),

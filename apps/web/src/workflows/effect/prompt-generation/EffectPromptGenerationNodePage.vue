@@ -12,7 +12,6 @@ import type {
   EffectPromptProductState,
   EffectPromptPurposeMatchMode,
   EffectPromptRun,
-  EffectPromptRegenerationReason,
   EffectPromptStageStatus,
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
@@ -24,7 +23,6 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
-  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODE_IDS,
@@ -41,7 +39,6 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Copy,
   Download,
   LoaderCircle,
   Pencil,
@@ -82,7 +79,6 @@ import {
 import {
   autoFillEffectPromptCreativeStructure,
   beginEffectPromptRun,
-  applyPromptRegeneration,
   commitEffectPromptResult,
   downloadEffectPromptBatch,
   loadEffectPromptNodeDetail,
@@ -93,7 +89,6 @@ import {
   removeEffectPromptItem,
   saveEffectPromptItem,
   savePromptSettings,
-  undoPromptRegeneration,
   type EffectPromptContext,
   type EffectPromptViewResultData,
   type PromptItemDraft,
@@ -168,24 +163,6 @@ const editorTrigger = ref<HTMLElement | null>(null);
 const editorCloseButton = ref<HTMLButtonElement | null>(null);
 const promptSearchInput = ref<HTMLInputElement | null>(null);
 
-const regenerationDialogOpen = ref(false);
-const regenerationCandidate = ref<EffectPromptItem | null>(null);
-const regenerationReasons = ref<EffectPromptRegenerationReason[]>([]);
-const regenerationInstruction = ref('');
-const regenerationDurationSeconds = ref(DEFAULT_EFFECT_PROMPT_SETTINGS.defaultDurationSeconds);
-const regenerationSaving = ref(false);
-const regenerationApplying = ref(false);
-const regenerationRunId = ref<string | null>(null);
-const selectedRegenerationCandidateId = ref<string | null>(null);
-const regenerationUndo = ref<{
-  runId: string;
-  resultId: string;
-  revision: number;
-  code: string;
-} | null>(null);
-const regenerationTrigger = ref<HTMLElement | null>(null);
-const regenerationCloseButton = ref<HTMLButtonElement | null>(null);
-
 let disposed = false;
 let nodeActive = true;
 let activatedOnce = false;
@@ -235,10 +212,10 @@ const currentDisabledElementsText = computed(
   () => disabledElementsTextDrafts.value[currentProductId.value] ?? '',
 );
 const currentTargetCount = computed(() => currentSettings.value.targetCount);
-const editorDurationRange = computed(() => {
-  const capabilityKey = resultData.value?.result.renderProfile.capabilityKey ?? 'SEEDANCE_2_0';
-  return EFFECT_PROMPT_RENDER_CAPABILITIES[capabilityKey];
-});
+const editorDurationRange = {
+  minDurationSeconds: EFFECT_PROMPT_LIMITS.minDurationSeconds,
+  maxDurationSeconds: EFFECT_PROMPT_LIMITS.maxManualDurationSeconds,
+};
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
 const displayedGraphRun = computed(() => currentRun.value);
 const graphDialogDescription = '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
@@ -407,11 +384,6 @@ const currentSettingsPendingSave = computed(() => {
   const draft = settingsDrafts.value[currentProductId.value];
   return Boolean(state && draft && JSON.stringify(state.settings) !== JSON.stringify(draft));
 });
-const regeneratingItemId = computed(() =>
-  currentRunning.value && currentRun.value?.operation === 'ITEM_REGENERATE'
-    ? currentRun.value.targetItemId
-    : null,
-);
 const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
   currentGraphNodeIds.value.map(
     (id) =>
@@ -428,32 +400,6 @@ const graphRows = computed<EffectPromptNodeId[][]>(() =>
   buildEffectPromptGraphRows(currentGraphNodeIds.value, currentGraphEdges.value),
 );
 
-const regenerationReasonOptions: Array<{
-  value: EffectPromptRegenerationReason;
-  label: string;
-}> = [
-  { value: 'PRODUCT_RELATION_WEAK', label: '与产品关联不够' },
-  { value: 'CREATIVE_ORDINARY', label: '创意太普通' },
-  { value: 'TOO_SIMILAR', label: '和其他 Prompt 太相似' },
-  { value: 'SCENE_UNSUITABLE', label: '场景不合适' },
-  { value: 'ACTION_UNREASONABLE', label: '动作不合理' },
-  { value: 'CAMERA_TOO_COMPLEX', label: '镜头太复杂' },
-  { value: 'CUSTOM', label: '其他原因' },
-];
-const regenerationPreview = computed(() => {
-  const run = currentRun.value;
-  return run?.id === regenerationRunId.value ? run.regenerationPreview : null;
-});
-const regenerationRunning = computed(
-  () =>
-    currentRun.value?.id === regenerationRunId.value &&
-    (currentRun.value.status === 'QUEUED' || currentRun.value.status === 'RUNNING'),
-);
-const selectedRegenerationCandidate = computed(() =>
-  regenerationPreview.value?.candidates.find(
-    ({ candidateId }) => candidateId === selectedRegenerationCandidateId.value,
-  ),
-);
 const fragmentTypeLabel = (fragmentType: EffectPromptFragmentType): string =>
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[fragmentType];
 
@@ -629,37 +575,24 @@ const startPolling = (productId: string, run: EffectPromptRun): void => {
       // run only when this product still points at the same task, so a newer run
       // created in another tab is never overwritten.
       if (productStates.value[productId]?.runId === finalRun.id) updateRun(productId, finalRun);
-      if (
-        finalRun.status === 'COMPLETED' &&
-        finalRun.operation === 'ITEM_REGENERATE' &&
-        finalRun.regenerationPreview &&
-        regenerationCandidate.value?.id === finalRun.targetItemId
-      ) {
-        regenerationRunId.value = finalRun.id;
-        selectedRegenerationCandidateId.value =
-          finalRun.regenerationPreview.candidates.find(({ recommended }) => recommended)
-            ?.candidateId ??
-          finalRun.regenerationPreview.candidates[0]?.candidateId ??
-          null;
-      }
       const successMessage =
         run.operation === 'ITEM_EVALUATE'
           ? '创意方向与六维信息已补齐'
           : run.operation === 'ITEM_REGENERATE'
-            ? '已生成 3 个 Prompt 备选，请选择采用'
+            ? '历史单条任务已完成'
             : 'Prompt 批次处理完成';
       showNotice(
         finalRun.status === 'COMPLETED' &&
-        finalRun.operation === 'BATCH_GENERATE' &&
-        productStates.value[productId]?.commitStatus !== 'COMMITTED'
+          finalRun.operation === 'BATCH_GENERATE' &&
+          productStates.value[productId]?.commitStatus !== 'COMMITTED'
           ? '批次已生成，但自动提交尚未完成；请检查草稿状态'
           : finalRun.status === 'COMPLETED'
-          ? successMessage
-          : finalRun.errorMessage ||
+            ? successMessage
+            : finalRun.errorMessage ||
               (run.operation === 'ITEM_EVALUATE' ? 'AI 自动补齐失败' : 'Prompt 生成失败'),
         finalRun.status === 'COMPLETED' &&
-        (finalRun.operation !== 'BATCH_GENERATE' ||
-          productStates.value[productId]?.commitStatus === 'COMMITTED')
+          (finalRun.operation !== 'BATCH_GENERATE' ||
+            productStates.value[productId]?.commitStatus === 'COMMITTED')
           ? 'success'
           : 'error',
       );
@@ -718,7 +651,10 @@ async function reloadWorkspace(showLoading = true): Promise<void> {
     try {
       applyWorkspace(workspace.products);
       const overview = await getActiveWorkflowRunOverview(
-        props.projectId, 'EFFECT', 'EFFECT', controller.signal,
+        props.projectId,
+        'EFFECT',
+        'EFFECT',
+        controller.signal,
       );
       if (generation !== workspaceGeneration || controller.signal.aborted) return;
       const activeRun = overview.data.run;
@@ -771,13 +707,6 @@ watch(
     editorOpen.value = false;
     editorSaving.value = false;
     editorTrigger.value = null;
-    regenerationDialogOpen.value = false;
-    regenerationCandidate.value = null;
-    regenerationSaving.value = false;
-    regenerationApplying.value = false;
-    regenerationRunId.value = null;
-    regenerationUndo.value = null;
-    regenerationTrigger.value = null;
     graphDetailController?.abort();
     graphDetailController = null;
     graphDetailLoading.value = false;
@@ -802,15 +731,6 @@ watch(currentProductId, (next, previous) => {
   editorOpen.value = false;
   editorSaving.value = false;
   editorTrigger.value = null;
-  regenerationDialogOpen.value = false;
-  regenerationCandidate.value = null;
-  regenerationSaving.value = false;
-  regenerationApplying.value = false;
-  regenerationRunId.value = null;
-  regenerationUndo.value = null;
-  regenerationTrigger.value = null;
-  regenerationDialogOpen.value = false;
-  regenerationCandidate.value = null;
   graphDetailController?.abort();
   graphDetailController = null;
   graphDetailLoading.value = false;
@@ -947,10 +867,7 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
   draft.disabledElements = parsedDisabledElements(
     disabledElementsTextDrafts.value[productId] ?? '',
   );
-  if (
-    state.settingsRevision !== null &&
-    JSON.stringify(draft) === JSON.stringify(state.settings)
-  )
+  if (state.settingsRevision !== null && JSON.stringify(draft) === JSON.stringify(state.settings))
     return true;
   const normalized = normalizePromptSettings(draft);
   const disabledElementsChanged =
@@ -1069,172 +986,6 @@ const generateCurrentBatch = async (): Promise<void> => {
   }
 };
 
-const openRegenerationDialog = async (item: EffectPromptItem, event?: Event): Promise<void> => {
-  if (!canEditPrompt.value || currentRunning.value || itemOperation.value) return;
-  regenerationTrigger.value =
-    event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  regenerationCandidate.value = item;
-  regenerationReasons.value = [];
-  regenerationInstruction.value = '';
-  const previousRun = currentRun.value;
-  const previousPreview =
-    previousRun?.operation === 'ITEM_REGENERATE' && previousRun.targetItemId === item.id
-      ? previousRun.regenerationPreview
-      : null;
-  regenerationDurationSeconds.value =
-    previousPreview?.candidates[0]?.item.targetDurationSeconds ?? item.targetDurationSeconds;
-  regenerationRunId.value =
-    previousRun?.operation === 'ITEM_REGENERATE' && previousRun.targetItemId === item.id
-      ? previousRun.id
-      : null;
-  selectedRegenerationCandidateId.value =
-    previousRun?.regenerationPreview?.candidates.find(({ recommended }) => recommended)
-      ?.candidateId ?? null;
-  regenerationDialogOpen.value = true;
-  await nextTick();
-  regenerationCloseButton.value?.focus();
-};
-
-const closeRegenerationDialog = (): void => {
-  if (regenerationSaving.value) return;
-  regenerationDialogOpen.value = false;
-  regenerationCandidate.value = null;
-  regenerationReasons.value = [];
-  regenerationInstruction.value = '';
-  regenerationDurationSeconds.value = DEFAULT_EFFECT_PROMPT_SETTINGS.defaultDurationSeconds;
-  regenerationRunId.value = null;
-  selectedRegenerationCandidateId.value = null;
-  const trigger = regenerationTrigger.value;
-  regenerationTrigger.value = null;
-  nextTick(() => trigger?.focus());
-};
-
-const toggleRegenerationReason = (reason: EffectPromptRegenerationReason): void => {
-  regenerationReasons.value = regenerationReasons.value.includes(reason)
-    ? regenerationReasons.value.filter((value) => value !== reason)
-    : [...regenerationReasons.value, reason];
-};
-
-const regenerateItem = async (): Promise<void> => {
-  const state = currentState.value;
-  const item = regenerationCandidate.value;
-  if (
-    !state ||
-    !item ||
-    currentRunning.value ||
-    itemOperation.value ||
-    state.settingsRevision === null ||
-    regenerationSaving.value
-  )
-    return;
-  if (
-    !Number.isInteger(regenerationDurationSeconds.value) ||
-    regenerationDurationSeconds.value < editorDurationRange.value.minDurationSeconds ||
-    regenerationDurationSeconds.value > editorDurationRange.value.maxDurationSeconds
-  ) {
-    showNotice(
-      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
-      'warning',
-    );
-    return;
-  }
-  operationController?.abort();
-  const controller = new AbortController();
-  operationController = controller;
-  regenerationSaving.value = true;
-  try {
-    const run = await beginEffectPromptRun(
-      props.projectId,
-      state.productId,
-      {
-        workflowRunId: props.workflowRunId,
-        operation: 'ITEM_REGENERATE',
-        targetItemId: item.id,
-        targetDurationSeconds: regenerationDurationSeconds.value,
-        regenerationReasons: regenerationReasons.value,
-        ...(regenerationInstruction.value.trim()
-          ? { regenerationInstruction: regenerationInstruction.value.trim() }
-          : {}),
-        expectedSettingsRevision: state.settingsRevision,
-        ...(state.resultRevision === null ? {} : { expectedResultRevision: state.resultRevision }),
-      },
-      controller.signal,
-    );
-    updateRun(state.productId, run);
-    regenerationRunId.value = run.id;
-    selectedRegenerationCandidateId.value = null;
-    regenerationSaving.value = false;
-    startPolling(state.productId, run);
-  } catch (error) {
-    if (!isAbortError(error)) await handleMutationError(error, '单条 Prompt 重新生成失败');
-  } finally {
-    regenerationSaving.value = false;
-  }
-};
-
-const applyRegeneration = async (candidateId: string): Promise<void> => {
-  if (!canEditPrompt.value) return;
-  const state = currentState.value;
-  const result = resultData.value;
-  const runId = regenerationRunId.value;
-  const item = regenerationCandidate.value;
-  if (
-    !state?.resultId ||
-    !result ||
-    result.revision === null ||
-    !runId ||
-    !item ||
-    regenerationApplying.value
-  )
-    return;
-  regenerationApplying.value = true;
-  try {
-    const saved = await applyPromptRegeneration(
-      props.projectId,
-      state.resultId,
-      runId,
-      candidateId,
-      result.revision,
-    );
-    regenerationUndo.value = {
-      runId,
-      resultId: saved.resultId,
-      revision: saved.revision,
-      code: item.code,
-    };
-    closeRegenerationDialog();
-    await reloadWorkspace(false);
-    showNotice(`${item.code} 已替换，可在页面上方撤销`, 'success');
-  } catch (error) {
-    if (!isAbortError(error)) await handleMutationError(error, '采用重新生成方案失败');
-  } finally {
-    regenerationApplying.value = false;
-  }
-};
-
-const undoRegeneration = async (): Promise<void> => {
-  const undo = regenerationUndo.value;
-  if (!undo || regenerationApplying.value) return;
-  regenerationApplying.value = true;
-  try {
-    const saved = await undoPromptRegeneration(
-      props.projectId,
-      undo.resultId,
-      undo.runId,
-      undo.revision,
-    );
-    regenerationUndo.value = null;
-    await reloadWorkspace(false);
-    showNotice(`${undo.code} 已恢复为替换前内容`, 'success');
-    if (resultData.value) resultData.value.revision = saved.revision;
-  } catch (error) {
-    regenerationUndo.value = null;
-    if (!isAbortError(error)) await handleMutationError(error, '撤销 Prompt 替换失败');
-  } finally {
-    regenerationApplying.value = false;
-  }
-};
-
 async function handleMutationError(error: unknown, fallback: string): Promise<void> {
   if (error instanceof ApiClientError && error.status === 409) {
     showNotice('结果已在其他窗口更新，已重新载入最新版本', 'warning');
@@ -1261,9 +1012,9 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
     targetDurationSeconds: item?.targetDurationSeconds
       ? item.targetDurationSeconds
       : Math.min(
-          editorDurationRange.value.maxDurationSeconds,
+          editorDurationRange.maxDurationSeconds,
           Math.max(
-            editorDurationRange.value.minDurationSeconds,
+            editorDurationRange.minDurationSeconds,
             currentSettings.value.defaultDurationSeconds,
           ),
         ),
@@ -1302,11 +1053,11 @@ const commitEditor = async (): Promise<void> => {
   }
   if (
     !Number.isInteger(draft.targetDurationSeconds) ||
-    draft.targetDurationSeconds < editorDurationRange.value.minDurationSeconds ||
-    draft.targetDurationSeconds > editorDurationRange.value.maxDurationSeconds
+    draft.targetDurationSeconds < editorDurationRange.minDurationSeconds ||
+    draft.targetDurationSeconds > editorDurationRange.maxDurationSeconds
   ) {
     showNotice(
-      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
+      `片段时长需在 ${editorDurationRange.minDurationSeconds}～${editorDurationRange.maxDurationSeconds} 秒之间`,
       'warning',
     );
     return;
@@ -1374,11 +1125,11 @@ const autoFillEditorCreativeStructure = async (): Promise<void> => {
   }
   if (
     !Number.isInteger(draft.targetDurationSeconds) ||
-    draft.targetDurationSeconds < editorDurationRange.value.minDurationSeconds ||
-    draft.targetDurationSeconds > editorDurationRange.value.maxDurationSeconds
+    draft.targetDurationSeconds < editorDurationRange.minDurationSeconds ||
+    draft.targetDurationSeconds > editorDurationRange.maxDurationSeconds
   ) {
     showNotice(
-      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
+      `片段时长需在 ${editorDurationRange.minDurationSeconds}～${editorDurationRange.maxDurationSeconds} 秒之间`,
       'warning',
     );
     return;
@@ -1495,40 +1246,6 @@ const requestDeleteItem = async (item: EffectPromptItem): Promise<void> => {
   }
 };
 
-const writeClipboardText = async (value: string): Promise<void> => {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return;
-    }
-  } catch {
-    // Continue to the local selection fallback when clipboard permission is unavailable.
-  }
-  const activeElement =
-    document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const textarea = document.createElement('textarea');
-  textarea.value = value;
-  textarea.readOnly = true;
-  textarea.style.position = 'fixed';
-  textarea.style.opacity = '0';
-  textarea.style.pointerEvents = 'none';
-  document.body.append(textarea);
-  textarea.select();
-  const copied = document.execCommand('copy');
-  textarea.remove();
-  activeElement?.focus();
-  if (!copied) throw new Error('CLIPBOARD_UNAVAILABLE');
-};
-
-const copyItem = async (item: EffectPromptItem): Promise<void> => {
-  try {
-    await writeClipboardText(item.content);
-    showNotice(`${item.code} 已复制`);
-  } catch {
-    showNotice('浏览器未允许复制，请在编辑窗口手动复制', 'warning');
-  }
-};
-
 const exportBatch = async (): Promise<void> => {
   const state = currentState.value;
   if (
@@ -1618,7 +1335,9 @@ const beginPromptEdit = async (): Promise<void> => {
   editPending.value = true;
   try {
     const session = await beginEffectWorkflowNodeEdit(
-      props.projectId, props.workflowRunId, 'PROMPT_GENERATION',
+      props.projectId,
+      props.workflowRunId,
+      'PROMPT_GENERATION',
     );
     editing.value = true;
     if (session.data.run.id !== props.workflowRunId) emit('branchActivated');
@@ -1636,7 +1355,9 @@ const cancelPromptEdit = async (): Promise<void> => {
   editPending.value = true;
   try {
     const result = await cancelEffectWorkflowNodeEdit(
-      props.projectId, props.workflowRunId, 'PROMPT_GENERATION',
+      props.projectId,
+      props.workflowRunId,
+      'PROMPT_GENERATION',
     );
     editing.value = false;
     if (result.data.activeWorkflowRunId !== props.workflowRunId) emit('branchActivated');
@@ -2147,15 +1868,18 @@ onBeforeUnmount(() => {
             type="button"
             :aria-busy="validating"
             :disabled="
-              partialPreview || currentRunning || validating || editPending ||
-              !currentState.resultId || !resultData || resultData.revision === null
+              partialPreview ||
+              currentRunning ||
+              validating ||
+              editPending ||
+              !currentState.resultId ||
+              !resultData ||
+              resultData.revision === null
             "
             @click="validatePromptBatch"
           >
             <LoaderCircle v-if="validating" class="spin" :size="14" />
-            <CheckCircle2 v-else :size="14" />{{
-              validating ? '正在校验…' : '保存修改'
-            }}
+            <CheckCircle2 v-else :size="14" />{{ validating ? '正在校验…' : '保存修改' }}
           </button>
           <button
             ref="graphTrigger"
@@ -2217,14 +1941,6 @@ onBeforeUnmount(() => {
         <button type="button" @click="openGraph($event)">查看节点</button>
       </section>
 
-      <section v-if="regenerationUndo" class="regeneration-undo-banner" role="status">
-        <CheckCircle2 :size="16" />
-        <span>{{ regenerationUndo.code }} 已采用新的 Prompt，当前仍是节点草稿。</span>
-        <button type="button" :disabled="regenerationApplying" @click="undoRegeneration">
-          撤销本次替换
-        </button>
-      </section>
-
       <section class="effect-prompt-settings" aria-label="批次设置">
         <div class="settings-heading">
           <h3>批次设置</h3>
@@ -2263,7 +1979,8 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="`降低${setting.label}`"
                 :disabled="
-                  currentRunning || !canEditPrompt ||
+                  currentRunning ||
+                  !canEditPrompt ||
                   currentSettings[setting.key] <= settingRange(setting.key).minimum
                 "
                 @click="adjustSetting(setting.key, -1)"
@@ -2285,7 +2002,8 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="`提高${setting.label}`"
                 :disabled="
-                  currentRunning || !canEditPrompt ||
+                  currentRunning ||
+                  !canEditPrompt ||
                   currentSettings[setting.key] >= settingRange(setting.key).maximum
                 "
                 @click="adjustSetting(setting.key, 1)"
@@ -2336,7 +2054,7 @@ onBeforeUnmount(() => {
           <strong>本次任务未完成，已保留 {{ resultData?.total ?? 0 }} 条临时预览</strong>
           <span
             >以下 Prompt
-            已生成并通过基础结构检查，不会覆盖上一份有效结果。当前仅支持查看和复制；重新批量生成完整成功后才会自动提交版本。</span
+            已生成并通过基础结构检查，不会覆盖上一份有效结果。当前仅支持查看；重新批量生成完整成功后才会自动提交版本。</span
           >
         </div>
       </section>
@@ -2537,7 +2255,6 @@ onBeforeUnmount(() => {
             >
               <Pencil :size="13" />编辑
             </button>
-            <button type="button" @click="copyItem(item)"><Copy :size="13" />复制</button>
             <button
               v-if="!partialPreview"
               class="danger"
@@ -2550,18 +2267,6 @@ onBeforeUnmount(() => {
                 class="spin"
                 :size="13"
               /><Trash2 v-else :size="13" />删除
-            </button>
-            <button
-              v-if="!partialPreview && item.classificationStatus === 'VERIFIED'"
-              type="button"
-              :disabled="currentRunning || itemOperation !== null || !canEditPrompt"
-              @click="openRegenerationDialog(item, $event)"
-            >
-              <LoaderCircle
-                v-if="regeneratingItemId === item.id"
-                class="spin"
-                :size="13"
-              /><RefreshCw v-else :size="13" />重新生成
             </button>
           </div>
         </article>
@@ -2625,7 +2330,11 @@ onBeforeUnmount(() => {
         :complete="allProductsCommitted"
         :show-validate="false"
         :status-title="
-          allProductsCommitted ? '全部产品 Prompt 已保存' : currentRunning ? '生成成功后自动保存版本' : '请逐个保存未确认的 Prompt 草稿'
+          allProductsCommitted
+            ? '全部产品 Prompt 已保存'
+            : currentRunning
+              ? '生成成功后自动保存版本'
+              : '请逐个保存未确认的 Prompt 草稿'
         "
         :status-detail="`步骤 3 / 6 · ${currentProduct.name} · ${currentState.commitStatus === 'COMMITTED' ? '当前工作副本' : '尚未提交工作副本'}`"
         :next-disabled="!allProductsCommitted || currentRunning"
@@ -2673,16 +2382,21 @@ onBeforeUnmount(() => {
             <label>
               <span>片段时长</span>
               <input
+                v-if="editorMode === 'add'"
                 v-model.number="editorDraft.targetDurationSeconds"
                 type="number"
                 :min="editorDurationRange.minDurationSeconds"
                 :max="editorDurationRange.maxDurationSeconds"
                 :disabled="editorAutoFilling"
               />
-              <small
-                >短片只安排一个连续动作；较长时长才适合更完整的动作过程。时长作为渲染参数，不写入
-                Prompt 正文。</small
-              >
+              <div v-else class="editor-duration-readonly">
+                {{ editorDraft.targetDurationSeconds }} 秒
+              </div>
+              <small>{{
+                editorMode === 'edit'
+                  ? '已有 Prompt 的时长不可修改。'
+                  : '支持 4～30 秒；时长作为渲染参数，不写入 Prompt 正文。'
+              }}</small>
             </label>
           </div>
           <label class="editor-content"
@@ -2698,7 +2412,7 @@ onBeforeUnmount(() => {
             <header>
               <div>
                 <h3>创意方向与六维信息</h3>
-                <p>这些内容会和 Prompt 正文一起约束视频生成，请保持表达一致。</p>
+                <p>用于创意评估、展示与追溯，请与 Prompt 正文保持一致。</p>
               </div>
               <button
                 class="editor-ai-fill-button"
@@ -2755,212 +2469,6 @@ onBeforeUnmount(() => {
                 editorMode === 'add' ? '添加提示词' : '保存编辑'
               }}
             </button>
-          </footer>
-        </section>
-      </div>
-
-      <div
-        v-if="regenerationDialogOpen && regenerationCandidate"
-        class="prompt-dialog-backdrop"
-        @mousedown.self="closeRegenerationDialog"
-      >
-        <section
-          class="prompt-regeneration-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="prompt-regeneration-title"
-          @keydown.esc="closeRegenerationDialog"
-        >
-          <header>
-            <div class="regeneration-heading">
-              <div class="regeneration-heading__icon" aria-hidden="true">
-                <Sparkles :size="20" />
-              </div>
-              <div>
-                <span>单条重新生成</span>
-                <div class="regeneration-heading__title">
-                  <h2 id="prompt-regeneration-title">重新生成 {{ regenerationCandidate.code }}</h2>
-                  <strong>{{ fragmentTypeLabel(regenerationCandidate.primaryPurpose) }}</strong>
-                </div>
-                <p>指出当前内容的问题，系统会生成 3 个不同方向供你选择。</p>
-              </div>
-            </div>
-            <button
-              ref="regenerationCloseButton"
-              type="button"
-              aria-label="关闭单条重新生成窗口"
-              @click="closeRegenerationDialog"
-            >
-              <X :size="18" />
-            </button>
-          </header>
-
-          <div class="regeneration-dialog-body">
-            <details class="regeneration-prompt-preview">
-              <summary>
-                <span>当前 Prompt</span>
-                <em>展开查看原文</em>
-              </summary>
-              <p>{{ regenerationCandidate.content }}</p>
-            </details>
-
-            <template v-if="!regenerationPreview">
-              <div class="regeneration-form">
-                <label class="regeneration-duration">
-                  <span>
-                    <strong>片段时长</strong>
-                    <small>系统会按时长控制动作量；时长作为渲染参数，不会写入 Prompt 正文。</small>
-                  </span>
-                  <div>
-                    <input
-                      v-model.number="regenerationDurationSeconds"
-                      type="number"
-                      :min="editorDurationRange.minDurationSeconds"
-                      :max="editorDurationRange.maxDurationSeconds"
-                      :disabled="regenerationRunning || regenerationSaving"
-                    />
-                    <em>秒</em>
-                  </div>
-                </label>
-
-                <section class="regeneration-section">
-                  <header>
-                    <div>
-                      <strong>哪里需要改善？</strong>
-                      <span>可多选，帮助模型理解你的真实意图。</span>
-                    </div>
-                    <em>{{ regenerationReasons.length }} 项已选</em>
-                  </header>
-                  <div class="regeneration-chip-list">
-                    <button
-                      v-for="reason in regenerationReasonOptions"
-                      :key="reason.value"
-                      type="button"
-                      :class="{ active: regenerationReasons.includes(reason.value) }"
-                      :disabled="regenerationRunning || regenerationSaving"
-                      @click="toggleRegenerationReason(reason.value)"
-                    >
-                      {{ reason.label }}
-                    </button>
-                  </div>
-                </section>
-
-                <label class="regeneration-instruction">
-                  <span>
-                    <strong>补充具体要求</strong>
-                    <em>可选</em>
-                  </span>
-                  <textarea
-                    v-model="regenerationInstruction"
-                    maxlength="500"
-                    :disabled="regenerationRunning || regenerationSaving"
-                    placeholder="例如：让产品更早出现，不要切片，改为家庭送礼场景"
-                  />
-                  <small>{{ regenerationInstruction.length }}/500</small>
-                </label>
-              </div>
-
-              <div v-if="regenerationRunning" class="regeneration-running" role="status">
-                <LoaderCircle class="spin" :size="18" />
-                <div>
-                  <strong>正在生成并评估 3 个备选</strong>
-                  <span>当前 Prompt 保持不变，你也可以关闭窗口稍后再查看。</span>
-                </div>
-              </div>
-            </template>
-
-            <section v-else class="regeneration-results">
-              <header>
-                <strong>选择一个备选方案</strong>
-                <span>推荐方案已预选，你仍可以按自己的判断选择。</span>
-              </header>
-              <div class="regeneration-candidate-tabs" role="tablist" aria-label="Prompt 备选方案">
-                <button
-                  v-for="(candidate, index) in regenerationPreview.candidates"
-                  :key="candidate.candidateId"
-                  type="button"
-                  role="tab"
-                  :aria-selected="selectedRegenerationCandidateId === candidate.candidateId"
-                  :class="{ active: selectedRegenerationCandidateId === candidate.candidateId }"
-                  @click="selectedRegenerationCandidateId = candidate.candidateId"
-                >
-                  方案 {{ index + 1 }}<em v-if="candidate.recommended">推荐</em>
-                </button>
-              </div>
-              <article v-if="selectedRegenerationCandidate" class="regeneration-candidate-card">
-                <div class="regeneration-candidate-tags">
-                  <span>{{ selectedRegenerationCandidate.item.targetDurationSeconds }} 秒</span>
-                  <span v-for="tag in selectedRegenerationCandidate.highlights" :key="tag">{{
-                    tag
-                  }}</span>
-                  <em v-for="warning in selectedRegenerationCandidate.warnings" :key="warning">{{
-                    warning
-                  }}</em>
-                </div>
-                <p>{{ selectedRegenerationCandidate.item.content }}</p>
-                <details>
-                  <summary>查看创意方向与六维变化</summary>
-                  <dl>
-                    <dt>创意方向</dt>
-                    <dd>
-                      <small>{{ regenerationCandidate.creativeCore }}</small>
-                      <ChevronRight :size="12" />
-                      <strong>{{ selectedRegenerationCandidate.item.creativeCore }}</strong>
-                    </dd>
-                    <template v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                      <dt>{{ dimension.label }}</dt>
-                      <dd>
-                        <small>{{ regenerationCandidate.dimensions[dimension.key] }}</small>
-                        <ChevronRight :size="12" />
-                        <strong>{{
-                          selectedRegenerationCandidate.item.dimensions[dimension.key]
-                        }}</strong>
-                      </dd>
-                    </template>
-                  </dl>
-                </details>
-              </article>
-            </section>
-          </div>
-
-          <footer>
-            <p>只有点击“采用这个方案”才会替换；编号和列表位置保持不变。</p>
-            <div>
-              <button
-                type="button"
-                :disabled="regenerationSaving || regenerationApplying"
-                @click="closeRegenerationDialog"
-              >
-                保留原文
-              </button>
-              <button
-                v-if="!regenerationPreview"
-                class="primary-button"
-                type="button"
-                :disabled="regenerationSaving || regenerationRunning"
-                @click="regenerateItem"
-              >
-                <LoaderCircle v-if="regenerationSaving" class="spin" :size="14" />
-                {{ regenerationRunning ? '正在生成 3 个备选' : '生成 3 个备选' }}
-              </button>
-              <button
-                v-else
-                class="primary-button"
-                type="button"
-                :disabled="
-                  regenerationApplying ||
-                  !selectedRegenerationCandidateId ||
-                  !regenerationPreview.canApply
-                "
-                @click="
-                  selectedRegenerationCandidateId &&
-                  applyRegeneration(selectedRegenerationCandidateId)
-                "
-              >
-                <LoaderCircle v-if="regenerationApplying" class="spin" :size="14" />
-                采用这个方案
-              </button>
-            </div>
           </footer>
         </section>
       </div>
@@ -4258,7 +3766,7 @@ button:disabled {
   display: grid;
   min-width: 0;
   padding: 15px;
-  grid-template-columns: 38px minmax(0, 1fr) 138px;
+  grid-template-columns: 38px minmax(0, 1fr) 142px;
   column-gap: 8px;
   row-gap: 10px;
   background: #fff;
@@ -4517,16 +4025,26 @@ button:disabled {
 .prompt-main > textarea::-webkit-scrollbar-thumb:hover {
   background: #8ea5c6;
 }
+.editor-duration-readonly {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  background: #f5f8fc;
+  border: 1px solid #dfe5ed;
+  border-radius: 8px;
+  font-weight: 600;
+}
 .prompt-actions {
   display: grid;
-  grid-template-columns: 56px 76px;
+  grid-template-columns: repeat(2, 68px);
   align-content: center;
   gap: 6px;
 }
 .prompt-actions button {
   display: inline-flex;
   min-width: 0;
-  height: 31px;
+  height: 34px;
   padding: 0 8px;
   align-items: center;
   justify-content: center;
@@ -4535,7 +4053,7 @@ button:disabled {
   background: #fff;
   border: 1px solid #dfe5ed;
   border-radius: 8px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -4607,7 +4125,6 @@ button:disabled {
   backdrop-filter: blur(3px);
 }
 .prompt-editor-dialog,
-.prompt-regeneration-dialog,
 .workflow-graph-dialog {
   width: min(920px, 100%);
   max-height: calc(100vh - 40px);
@@ -4620,626 +4137,12 @@ button:disabled {
 .prompt-editor-dialog {
   padding: 22px;
 }
-.prompt-regeneration-dialog {
-  display: flex;
-  width: min(920px, 100%);
-  max-height: calc(100vh - 40px);
-  padding: 0;
-  overflow: hidden;
-  flex-direction: column;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 20px;
-  box-shadow: 0 24px 70px #0f172a38;
-}
-.prompt-regeneration-dialog > header {
-  display: flex;
-  padding: 22px 26px 18px;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  background: linear-gradient(135deg, #fff 0%, #f7faff 100%);
-  border-bottom: 1px solid #e4ebf7;
-}
-.regeneration-heading {
-  display: flex;
-  min-width: 0;
-  align-items: flex-start;
-  gap: 13px;
-}
-.regeneration-heading__icon {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 auto;
-  place-items: center;
-  color: #2563eb;
-  background: #eaf2ff;
-  border: 1px solid #d8e6ff;
-  border-radius: 12px;
-}
-.regeneration-heading > div:last-child {
-  min-width: 0;
-}
-.regeneration-heading > div > span {
-  color: #2563eb;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.1em;
-}
-.regeneration-heading__title {
-  display: flex;
-  margin: 3px 0 5px;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 9px;
-}
-.prompt-regeneration-dialog > header h2 {
-  margin: 0;
-  color: #17233a;
-  font-size: 21px;
-  line-height: 1.25;
-}
-.regeneration-heading__title > strong {
-  padding: 4px 8px;
-  color: #1d4ed8;
-  background: #eef4ff;
-  border: 1px solid #d7e5ff;
-  border-radius: 999px;
-  font-size: 10px;
-  white-space: nowrap;
-}
-.prompt-regeneration-dialog > header p {
-  margin: 0;
-  color: #738198;
-  font-size: 11px;
-  line-height: 1.5;
-}
-.prompt-regeneration-dialog > header > button {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 auto;
-  place-items: center;
-  color: #64748b;
-  background: #f7f9fc;
-  border: 1px solid #dfe6f0;
-  border-radius: 10px;
-}
-.regeneration-dialog-body {
-  min-height: 0;
-  padding: 18px 26px 22px;
-  overflow: auto;
-}
-.regeneration-prompt-preview {
-  margin: 0 0 14px;
-  padding: 11px 14px;
-  color: #526078;
-  background: #f8faff;
-  border: 1px solid #e1e9f7;
-  border-radius: 12px;
-}
-.regeneration-prompt-preview summary {
-  display: flex;
-  cursor: pointer;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 800;
-}
-.regeneration-prompt-preview summary::marker {
-  color: #7d8ba5;
-}
-.regeneration-prompt-preview summary em {
-  color: #8a97ab;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 500;
-}
-.regeneration-prompt-preview p {
-  margin: 10px 0 0;
-  padding-top: 10px;
-  border-top: 1px dashed #dbe4f2;
-  font-size: 12px;
-  line-height: 1.75;
-  white-space: pre-wrap;
-}
-.regeneration-toolbar {
-  display: flex;
-  margin-bottom: 10px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.regeneration-toolbar > div {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.regeneration-toolbar span {
-  color: #26354d;
-  font-size: 14px;
-  font-weight: 900;
-}
-.regeneration-toolbar strong {
-  padding: 4px 8px;
-  color: #2563eb;
-  background: #eff6ff;
-  border-radius: 999px;
-  font-size: 10px;
-}
-.regeneration-toolbar button,
-.prompt-regeneration-dialog > footer button {
-  display: inline-flex;
-  height: 38px;
-  padding: 0 14px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: #536178;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 9px;
-  font-size: 11px;
-  font-weight: 800;
-}
-.regeneration-toolbar button:disabled,
-.prompt-regeneration-dialog > footer button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.regeneration-dimension-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 11px;
-}
-.regeneration-dimension-card {
-  min-width: 0;
-  padding: 13px;
-  background: #fbfcff;
-  border: 1px solid #e0e7f2;
-  border-radius: 14px;
-  transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease;
-}
-.regeneration-dimension-card.changed {
-  background: #f8fbff;
-  border-color: #6b9cff;
-  box-shadow: 0 0 0 3px #2563eb12;
-}
-.regeneration-dimension-card > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.regeneration-dimension-card > header span {
-  color: #26354d;
-  font-size: 12px;
-  font-weight: 900;
-}
-.regeneration-dimension-card > header em {
-  padding: 3px 6px;
-  color: #1d4ed8;
-  background: #eaf2ff;
-  border-radius: 999px;
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 800;
-}
-.regeneration-original-value {
-  min-height: 39px;
-  margin: 9px 0;
-  color: #7b879a;
-  font-size: 10px;
-  line-height: 1.45;
-}
-.regeneration-original-value small {
-  display: block;
-  margin-bottom: 2px;
-  color: #a0a9b7;
-  font-size: 8px;
-  font-weight: 800;
-}
-.regeneration-dimension-card label > span,
-.regeneration-instruction > span {
-  display: block;
-  margin-bottom: 5px;
-  color: #536178;
-  font-size: 10px;
-  font-weight: 800;
-}
-.regeneration-dimension-card input,
-.regeneration-dimension-card select,
-.regeneration-instruction textarea {
-  width: 100%;
-  color: #344157;
-  background: #fff;
-  border: 1px solid #d8e2f0;
-  border-radius: 9px;
-  outline: none;
-  font-family: inherit;
-  font-size: 11px;
-}
-.regeneration-dimension-card input,
-.regeneration-dimension-card select {
-  height: 38px;
-  padding: 0 10px;
-}
-.regeneration-dimension-card input:focus,
-.regeneration-dimension-card select:focus,
-.regeneration-instruction textarea:focus {
-  border-color: #6b9cff;
-  box-shadow: 0 0 0 3px #2563eb12;
-}
-.regeneration-suggestion-list {
-  display: flex;
-  margin-top: 8px;
-  overflow: hidden;
-  gap: 5px;
-}
-.regeneration-suggestion-list button {
-  min-width: 0;
-  padding: 4px 7px;
-  overflow: hidden;
-  color: #68768b;
-  background: #fff;
-  border: 1px solid #e0e7f2;
-  border-radius: 999px;
-  font-size: 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.regeneration-suggestion-list button.active {
-  color: #1d4ed8;
-  background: #eff6ff;
-  border-color: #93b4ff;
-}
-.regeneration-change {
-  display: flex;
-  margin: 8px 0 0;
-  align-items: center;
-  gap: 4px;
-  color: #94a0b1;
-  font-size: 9px;
-}
-.regeneration-change strong {
-  min-width: 0;
-  overflow: hidden;
-  color: #1d4ed8;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .selling-point-note {
   display: block;
   margin-top: 8px;
   color: #7b879a;
   font-size: 9px;
   line-height: 1.45;
-}
-.regeneration-instruction {
-  position: relative;
-  display: block;
-  margin: 0;
-  padding: 15px 16px;
-  background: #fbfcff;
-  border: 1px solid #e1e9f6;
-  border-radius: 13px;
-}
-.regeneration-instruction > span {
-  display: flex;
-  margin-bottom: 8px;
-  align-items: center;
-  gap: 7px;
-}
-.regeneration-instruction > span strong {
-  color: #33415c;
-  font-size: 13px;
-}
-.regeneration-instruction > span em {
-  padding: 2px 6px;
-  color: #8b97aa;
-  background: #f0f3f8;
-  border-radius: 999px;
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 500;
-}
-.regeneration-instruction textarea {
-  min-height: 86px;
-  padding: 10px 12px 26px;
-  resize: vertical;
-  line-height: 1.65;
-}
-.regeneration-instruction > small {
-  position: absolute;
-  right: 11px;
-  bottom: 8px;
-  color: #8b97aa;
-  font-size: 9px;
-}
-.prompt-regeneration-dialog > footer {
-  display: flex;
-  margin: 0;
-  padding: 15px 26px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  background: #fbfcff;
-  border-top: 1px solid #e4ebf7;
-}
-.prompt-regeneration-dialog > footer p {
-  margin: 0;
-  color: #77859a;
-  font-size: 10px;
-}
-.prompt-regeneration-dialog > footer > div {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-}
-.prompt-regeneration-dialog > footer .primary-button {
-  min-width: 168px;
-  color: #fff;
-  background: var(--effect-blue);
-  border-color: var(--effect-blue);
-}
-
-.regeneration-section,
-.regeneration-results,
-.regeneration-running {
-  margin: 0;
-}
-
-.regeneration-form {
-  display: grid;
-  gap: 14px;
-}
-
-.regeneration-duration {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 112px;
-  align-items: center;
-  gap: 16px;
-  margin: 0;
-  padding: 14px 16px;
-  background: #fbfcff;
-  border: 1px solid #e1e9f6;
-  border-radius: 13px;
-}
-
-.regeneration-duration > span {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.regeneration-duration > span strong {
-  color: #33415c;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.regeneration-duration > span small {
-  color: #7d8ba5;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1.45;
-}
-
-.regeneration-duration > div {
-  display: flex;
-  align-items: center;
-  height: 38px;
-  overflow: hidden;
-  border: 1px solid #dbe5f6;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.regeneration-duration input {
-  width: 100%;
-  min-width: 0;
-  height: 100%;
-  padding: 0 10px;
-  border: 0;
-  outline: none;
-  color: #263650;
-  font: inherit;
-  font-weight: 700;
-  text-align: center;
-}
-
-.regeneration-duration em {
-  padding-right: 11px;
-  color: #7d8ba5;
-  font-size: 12px;
-  font-style: normal;
-}
-
-.regeneration-section > header,
-.regeneration-results > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 10px;
-}
-
-.regeneration-section {
-  padding: 15px 16px;
-  background: #fbfcff;
-  border: 1px solid #e1e9f6;
-  border-radius: 13px;
-}
-
-.regeneration-section > header > div {
-  display: grid;
-  gap: 2px;
-}
-
-.regeneration-section > header strong,
-.regeneration-results > header strong {
-  color: #33415c;
-  font-size: 13px;
-}
-
-.regeneration-section > header span,
-.regeneration-results > header span,
-.regeneration-running span {
-  color: #7d8ba5;
-  font-size: 12px;
-}
-
-.regeneration-section > header > em {
-  padding: 4px 8px;
-  color: #65738b;
-  background: #eef2f8;
-  border-radius: 999px;
-  font-size: 10px;
-  font-style: normal;
-  white-space: nowrap;
-}
-
-.regeneration-candidate-tabs button {
-  border: 1px solid #dbe5f6;
-  border-radius: 12px;
-  background: #fff;
-  color: #33415c;
-  text-align: left;
-}
-
-.regeneration-candidate-tabs button.active {
-  border-color: #2f67ed;
-  background: #f3f7ff;
-  box-shadow: 0 0 0 2px rgb(47 103 237 / 10%);
-}
-
-.regeneration-chip-list,
-.regeneration-candidate-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.regeneration-chip-list button,
-.regeneration-candidate-tags span,
-.regeneration-candidate-tags em {
-  border: 1px solid #dce6f7;
-  border-radius: 999px;
-  background: #f7f9fd;
-  color: #60708e;
-  padding: 7px 11px;
-  font-size: 12px;
-  font-style: normal;
-  transition:
-    color 150ms ease,
-    background-color 150ms ease,
-    border-color 150ms ease;
-}
-
-.regeneration-chip-list button.active {
-  border-color: #9ab8ff;
-  background: #eaf1ff;
-  color: #2458c8;
-}
-
-.regeneration-running,
-.regeneration-undo-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid #cfe0ff;
-  border-radius: 12px;
-  background: #f4f8ff;
-  color: #315aaf;
-  padding: 12px 14px;
-}
-
-.regeneration-running div,
-.regeneration-running strong,
-.regeneration-running span {
-  display: block;
-}
-
-.regeneration-undo-banner {
-  margin: 14px 0 0;
-}
-
-.regeneration-undo-banner span {
-  flex: 1;
-}
-
-.regeneration-undo-banner button {
-  border: 0;
-  background: transparent;
-  color: #245bd5;
-  font-weight: 700;
-}
-
-.regeneration-candidate-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.regeneration-candidate-tabs button {
-  padding: 10px 12px;
-  text-align: center;
-  font-weight: 700;
-}
-
-.regeneration-candidate-tabs em {
-  margin-left: 6px;
-  color: #16a178;
-  font-size: 11px;
-  font-style: normal;
-}
-
-.regeneration-candidate-card {
-  border: 1px solid #dce6f7;
-  border-radius: 12px;
-  background: #fff;
-  padding: 14px;
-}
-
-.regeneration-candidate-card > p {
-  margin: 12px 0;
-  color: #263650;
-  line-height: 1.75;
-  white-space: pre-wrap;
-}
-
-.regeneration-candidate-card dl {
-  display: grid;
-  grid-template-columns: 100px minmax(0, 1fr);
-  gap: 8px 12px;
-}
-
-.regeneration-candidate-card dt {
-  color: #73809a;
-  font-size: 12px;
-}
-
-.regeneration-candidate-card dd {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  min-width: 0;
-}
-
-.regeneration-candidate-card dd small {
-  color: #9aa5b8;
-  text-decoration: line-through;
-}
-
-.regeneration-candidate-card dd strong {
-  color: #314665;
 }
 .prompt-editor-dialog > header,
 .workflow-graph-dialog > header {
@@ -6592,9 +5495,6 @@ button:disabled {
   .node-detail-empty {
     min-height: 220px;
   }
-  .regeneration-dimension-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 @media (max-width: 760px) {
   .effect-prompt-node {
@@ -6639,43 +5539,12 @@ button:disabled {
   }
   .editor-grid,
   .editor-dimension-grid,
-  .regeneration-dimension-grid,
   .graph-row.parallel {
     grid-template-columns: 1fr;
   }
   .prompt-editor-dialog .editor-creative-core textarea,
   .prompt-editor-dialog .editor-dimension-grid textarea {
     min-height: 88px;
-  }
-  .prompt-regeneration-dialog {
-    max-height: calc(100vh - 20px);
-    padding: 0;
-    border-radius: 16px;
-  }
-  .prompt-regeneration-dialog > header {
-    padding: 18px;
-  }
-  .regeneration-dialog-body {
-    padding: 14px 18px 18px;
-  }
-  .regeneration-heading__icon {
-    width: 36px;
-    height: 36px;
-  }
-  .regeneration-duration {
-    grid-template-columns: minmax(0, 1fr) 100px;
-  }
-  .prompt-regeneration-dialog > footer {
-    padding: 14px 18px;
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .prompt-regeneration-dialog > footer p {
-    text-align: center;
-  }
-  .prompt-regeneration-dialog > footer > div,
-  .prompt-regeneration-dialog > footer button {
-    width: 100%;
   }
   .prompt-editor-dialog > footer {
     align-items: stretch;
@@ -6689,17 +5558,6 @@ button:disabled {
   }
   .prompt-dialog-backdrop {
     padding: 10px;
-  }
-  .regeneration-candidate-tabs {
-    grid-template-columns: 1fr;
-  }
-  .regeneration-section > header,
-  .regeneration-results > header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .regeneration-candidate-card dl {
-    grid-template-columns: 1fr;
   }
   .workflow-graph-dialog > header {
     gap: 14px;
@@ -6718,33 +5576,6 @@ button:disabled {
   }
   .workflow-graph-dialog > footer .edge-count {
     margin-left: 0;
-  }
-}
-@media (max-width: 520px) {
-  .regeneration-heading__icon {
-    display: none;
-  }
-  .prompt-regeneration-dialog > header h2 {
-    font-size: 18px;
-  }
-  .regeneration-duration {
-    grid-template-columns: 1fr;
-  }
-  .regeneration-duration > div {
-    width: 100%;
-  }
-  .regeneration-section > header {
-    align-items: flex-start;
-  }
-  .regeneration-section > header > em {
-    display: none;
-  }
-  .regeneration-chip-list {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .regeneration-chip-list button {
-    min-width: 0;
   }
 }
 </style>

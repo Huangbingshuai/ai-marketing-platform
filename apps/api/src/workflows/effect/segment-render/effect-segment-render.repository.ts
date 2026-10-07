@@ -22,6 +22,7 @@ import {
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { exitEffectEditInTransaction } from '../../../platform/workflow/effect-edit-session';
 import { findDuplicateSegmentImport } from './effect-segment-import-duplicate';
+import { renderPromptBaseline } from './effect-segment-render-prompt-update';
 import type {
   EffectSegmentRenderImportedFile,
   EffectSegmentRenderStoredFile,
@@ -424,6 +425,9 @@ export class EffectSegmentRenderRepository {
       sourcePrompt: { artifactId: string; revision: number; contentHash: string };
       taskSnapshots: Record<string, EffectSegmentRenderRequestSnapshot>;
       addedTasks?: EffectSegmentRenderTaskCreateInput[];
+      metadataSnapshots?: Record<string, EffectSegmentRenderRequestSnapshot>;
+      removedTaskIds?: string[];
+      sourcePackage?: EffectSegmentRenderRequestSnapshot['sourcePackage'];
       refreshRequestHash?: string;
     },
   ) {
@@ -437,6 +441,9 @@ export class EffectSegmentRenderRepository {
           Object.entries(input.taskSnapshots).sort(([left], [right]) => left.localeCompare(right)),
         ),
         ...(input.addedTasks?.length ? { addedTasks: input.addedTasks } : {}),
+        metadataSnapshots: input.metadataSnapshots ?? {},
+        removedTaskIds: [...(input.removedTaskIds ?? [])].sort(),
+        sourcePackage: input.sourcePackage,
       });
     try {
       return await this.prisma.$transaction(async (transaction) => {
@@ -478,17 +485,25 @@ export class EffectSegmentRenderRepository {
         });
         if (!prompt) return { kind: 'PROMPT_CONFLICT' as const };
         const uniqueIds = [...new Set(taskIds)];
+        const metadataSnapshots = input.metadataSnapshots ?? {};
+        const removedIds = [...new Set(input.removedTaskIds ?? [])];
+        const allIds = [...uniqueIds, ...Object.keys(metadataSnapshots), ...removedIds];
+        if (new Set(allIds).size !== allIds.length || allIds.length > EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation)
+          return { kind: 'PROMPT_CONFLICT' as const };
         const tasks = await transaction.effectSegmentRenderTask.findMany({
-          where: { projectId, batchId, id: { in: uniqueIds } },
+          where: { projectId, batchId, id: { in: allIds } },
         });
-        if (tasks.length !== uniqueIds.length) return { kind: 'TASK_NOT_FOUND' as const };
+        if (tasks.length !== allIds.length) return { kind: 'TASK_NOT_FOUND' as const };
         if (
           Object.keys(input.taskSnapshots).length !== uniqueIds.length ||
-          tasks.some((task) => {
+          tasks.filter((task) => uniqueIds.includes(task.id)).some((task) => {
             const snapshot = input.taskSnapshots[task.id];
             return !snapshot || snapshot.promptId !== task.promptId;
           })
         )
+          return { kind: 'PROMPT_CONFLICT' as const };
+        if (tasks.some((task) => metadataSnapshots[task.id] &&
+          metadataSnapshots[task.id]!.promptId !== task.promptId))
           return { kind: 'PROMPT_CONFLICT' as const };
         const addedTasks = input.addedTasks ?? [];
         const existingTasks = await transaction.effectSegmentRenderTask.findMany({
@@ -497,7 +512,7 @@ export class EffectSegmentRenderRepository {
         if (existingTasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
           return { kind: 'TASK_ACTIVE' as const };
         if (
-          existingTasks.length + addedTasks.length >
+          existingTasks.filter((task) => task.errorCode !== 'MATERIAL_DELETED' && !removedIds.includes(task.id)).length + addedTasks.length >
           EFFECT_SEGMENT_RENDER_LIMITS.maxTasksPerBatch
         )
           return { kind: 'PROMPT_CONFLICT' as const };
@@ -507,10 +522,10 @@ export class EffectSegmentRenderRepository {
             return { kind: 'PROMPT_CONFLICT' as const };
           promptIds.add(task.promptId);
         }
-        const sourceSnapshot = tasks[0]
-          ? input.taskSnapshots[tasks[0].id]
+        const sourceSnapshot = uniqueIds[0]
+          ? input.taskSnapshots[uniqueIds[0]]
           : addedTasks[0]?.requestSnapshot;
-        const sourcePackage = sourceSnapshot?.sourcePackage;
+        const sourcePackage = input.sourcePackage ?? sourceSnapshot?.sourcePackage;
         if (
           !sourcePackage?.artifactId ||
           !sourcePackage.revision ||
@@ -575,8 +590,16 @@ export class EffectSegmentRenderRepository {
             })),
           });
         }
-        for (const task of tasks) {
-          const snapshot = input.taskSnapshots[task.id]!;
+        for (const task of tasks.filter((task) => uniqueIds.includes(task.id))) {
+          const oldSnapshot = (task.generationRequestSnapshot ?? task.requestSnapshot) as unknown as EffectSegmentRenderRequestSnapshot;
+          const snapshot: EffectSegmentRenderRequestSnapshot = {
+            ...input.taskSnapshots[task.id]!,
+            ...(task.outputFileObjectId ? {
+              adoptedPrompt: oldSnapshot.adoptedPrompt ?? renderPromptBaseline(oldSnapshot),
+              ...(oldSnapshot.outputDurationSeconds !== undefined ? { outputDurationSeconds: oldSnapshot.outputDurationSeconds } : {}),
+              ...(oldSnapshot.outputRatio ? { outputRatio: oldSnapshot.outputRatio } : {}),
+            } : {}),
+          };
           await transaction.effectSegmentRenderTask.update({
             where: { projectId_id: { projectId, id: task.id } },
             data: {
@@ -635,17 +658,36 @@ export class EffectSegmentRenderRepository {
             },
           });
         }
+        for (const task of tasks.filter((task) => Boolean(metadataSnapshots[task.id]))) {
+          const snapshot = metadataSnapshots[task.id]!;
+          await transaction.effectSegmentRenderTask.update({
+            where: { projectId_id: { projectId, id: task.id } },
+            data: { requestSnapshot: json(snapshot), generationRequestSnapshot: json(snapshot) },
+          });
+        }
+        if (removedIds.length) await transaction.effectSegmentRenderTask.updateMany({
+          where: { projectId, batchId, id: { in: removedIds } },
+          data: {
+            status: 'FAILED', progress: 0, providerTaskId: null,
+            outputFileObjectId: null, outputStorageKey: null, outputFileName: null,
+            outputMimeType: null, outputSizeBytes: null, outputContentHash: null,
+            outputPoster: Prisma.DbNull, activeOutputVersion: null,
+            errorCode: 'MATERIAL_DELETED', errorMessage: '对应 Prompt 已删除，素材已从当前素材池移除',
+          },
+        });
         await transaction.effectSegmentRenderBatch.update({
           where: { projectId_id: { projectId, id: batchId } },
           data: {
-            status: 'RUNNING',
-            activeKey: 'ACTIVE',
+            ...(uniqueIds.length + addedTasks.length ? { status: 'RUNNING' as const, activeKey: 'ACTIVE' } : {}),
+            committedAt: null,
             sourcePromptArtifactId: input.sourcePrompt.artifactId,
             sourcePromptRevision: input.sourcePrompt.revision,
             sourcePromptHash: input.sourcePrompt.contentHash,
             revision: { increment: 1 },
           },
         });
+        if (!uniqueIds.length && !addedTasks.length)
+          await this.settleBatchInTransaction(transaction, projectId, batchId, new Date());
         return { kind: 'UPDATED' as const };
       });
     } catch (error) {
@@ -889,9 +931,9 @@ export class EffectSegmentRenderRepository {
         ...batch.tasks.map((task) => {
           const snapshot =
             task.generationRequestSnapshot as unknown as EffectSegmentRenderRequestSnapshot;
-          return snapshot.importedMaterial
+          return snapshot.promptDurationMaxSeconds ?? (snapshot.importedMaterial
             ? (snapshot.importedMaterial.promptDurationMaxSeconds ?? 4)
-            : snapshot.request.duration;
+            : snapshot.request.duration);
         }),
       );
       let codeIndex = Math.max(
@@ -1530,6 +1572,8 @@ export class EffectSegmentRenderRepository {
     file: EffectSegmentRenderStoredFile,
     poster?: EffectSegmentRenderStoredFile,
     now = new Date(),
+    outputDurationSeconds?: number,
+    outputRatio?: string,
   ) {
     return this.prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw<Array<{ id: string }>>`
@@ -1604,6 +1648,14 @@ export class EffectSegmentRenderRepository {
       }
       // A regenerated output can replace the draft's active version without
       // invalidating the old file object used by an earlier branch.
+      const adoptedSnapshot = (value: Prisma.JsonValue): EffectSegmentRenderRequestSnapshot => {
+        const snapshot = value as unknown as EffectSegmentRenderRequestSnapshot;
+        return {
+          ...snapshot, adoptedPrompt: renderPromptBaseline(snapshot),
+          ...(outputDurationSeconds !== undefined ? { outputDurationSeconds } : {}),
+          ...(outputRatio ? { outputRatio } : {}),
+        };
+      };
       const completed = await transaction.effectSegmentRenderTask.update({
         where: { projectId_id: { projectId, id: taskId } },
         data: {
@@ -1621,6 +1673,8 @@ export class EffectSegmentRenderRepository {
               ? posterMetadata({ ...poster, id: posterFileObject.id }, taskVersion)
               : Prisma.DbNull,
           activeOutputVersion: taskVersion,
+          requestSnapshot: json(adoptedSnapshot(task.requestSnapshot)),
+          generationRequestSnapshot: json(adoptedSnapshot(task.generationRequestSnapshot)),
           operationKind: 'GENERATE',
           attemptToken: null,
           leaseExpiresAt: null,
@@ -1837,7 +1891,7 @@ export class EffectSegmentRenderRepository {
   ): Promise<void> {
     const grouped = await transaction.effectSegmentRenderTask.groupBy({
       by: ['status'],
-      where: { projectId, batchId },
+      where: { projectId, batchId, OR: [{ errorCode: null }, { errorCode: { not: 'MATERIAL_DELETED' } }] },
       _count: { _all: true },
     });
     const count = (status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'): number =>

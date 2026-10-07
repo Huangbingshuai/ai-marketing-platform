@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { effectArtifactSourceOwner, projectEffectBranchFreshness } from './effect-branch-freshness';
 
@@ -17,6 +18,40 @@ const project = (id: string, workflowRunId: string, source: string, revision = 1
     sourceArtifactId: source, sourceRevision: revision }],
 });
 describe('branch dependency freshness projection', () => {
+  it('does not stale unrelated material consumers when a confirmed Prompt batch revision changes', () => {
+    const prompt = { id: 'prompts', workflowRunId: 'render', nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:p', revision: 2, contentHash: 'new-batch', freshness: 'CURRENT',
+      payload: { items: [{ id: 'prompt', content: '未变化正文', primaryPurpose: 'PRODUCT_DISPLAY',
+        compatiblePurposes: ['PRODUCT_DISPLAY'] }] } };
+    const unchanged = { ...clip('a', 'render'), payload: { ...clip('a', 'render').payload,
+      promptContentHash: createHash('sha256').update('未变化正文').digest('hex'),
+      primaryPurpose: 'PRODUCT_DISPLAY', compatiblePurposes: ['PRODUCT_DISPLAY'] },
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: prompt.id,
+        sourceRevision: 1, sourceHash: 'old-batch' }] };
+    const result = projectEffectBranchFreshness(branches, [prompt, unchanged, project('film', 'fill-a', 'a')]);
+    expect(result.find((row) => row.id === 'a')?.freshness).toBe('CURRENT');
+    expect(result.find((row) => row.id === 'film')?.freshness).toBe('CURRENT');
+    const explicit = projectEffectBranchFreshness(branches, [prompt, { ...unchanged, freshness: 'STALE' },
+      project('film', 'fill-a', 'a')]);
+    expect(explicit.find((row) => row.id === 'film')?.freshness).toBe('STALE');
+    const changed = projectEffectBranchFreshness(branches, [{ ...prompt,
+      payload: { items: [{ ...prompt.payload.items[0], content: '修改正文' }] } }, unchanged,
+      project('film', 'fill-a', 'a')]);
+    expect(changed.find((row) => row.id === 'film')?.freshness).toBe('STALE');
+  });
+  it('saved removal warns only actual consumers and clears when the empty project drops that dependency', () => {
+    const inputs = [clip('a', 'render'), clip('b', 'render', 1, 'b', 'other'),
+      { ...clip('pool', 'render'), artifactKey: 'render-batch:p', payload: {
+        clips: [{ taskId: 'b', promptId: 'other' }], removedSources: [{ taskId: 'a', promptId: 'prompt' }],
+      } }, project('affected', 'fill-a', 'a'), project('unaffected', 'fill-a', 'b')];
+    const projected = projectEffectBranchFreshness(branches, inputs);
+    expect(projected.find((row) => row.id === 'affected')?.freshness).toBe('STALE');
+    expect(projected.find((row) => row.id === 'unaffected')?.freshness).toBe('CURRENT');
+    expect(projected.find((row) => row.id === 'a')?.freshness).toBe('CURRENT');
+    const cleared = projectEffectBranchFreshness(branches, inputs.map((row) => row.id === 'affected'
+      ? { ...row, dependencies: [] } : row));
+    expect(cleared.find((row) => row.id === 'affected')?.freshness).toBe('CURRENT');
+  });
   it('regeneration in the newest fill warns older and sibling consumers, but not independent render heads', () => {
     const runs = [...branches, { id: 'fill-c', parentWorkflowRunId: 'fill-b', forkNodeId: 'TEMPLATE_MIX',
       branchPublishedAt: new Date('2026-10-06') },

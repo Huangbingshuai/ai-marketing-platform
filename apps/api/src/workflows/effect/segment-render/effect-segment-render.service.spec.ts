@@ -220,6 +220,84 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe('EffectSegmentRenderService', () => {
+  it.each([4, 15, 16, 30])('routes manual %s-second Prompt items without changing the batch slot limit', async (duration) => {
+    const next = promptBatch();
+    next.items[0] = { ...next.items[0]!, origin: 'MANUAL', targetDurationSeconds: duration };
+    const { service, repository } = serviceWith({ promptArtifact: vi.fn().mockResolvedValue(promptArtifact(next)) });
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'manual-duration' });
+    const snapshot = repository.createBatch.mock.calls[0]![3].tasks[0].requestSnapshot;
+    expect(snapshot.request.duration).toBe(duration);
+    expect(snapshot.promptDurationMaxSeconds).toBe(next.settings.defaultDurationSeconds);
+    expect(snapshot.renderSettings.capabilityKey).toBe(duration > 15 ? 'SEEDANCE_1_5_PRO' : next.renderProfile.capabilityKey);
+  });
+
+  it.each(['METADATA', 'REMOVE'] as const)('refreshes %s without paid task snapshots, including deletion of the last Prompt', async (kind) => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'free-initial' });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    record.tasks[0].status = 'COMPLETED';
+    record.status = 'COMPLETED';
+    repository.batch.mockResolvedValue(record);
+    const next = promptBatch();
+    if (kind === 'REMOVE') next.items = [];
+    else next.items[0]!.creativeCore = '更新创意';
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(next), revision: 4 });
+    const view = (await service.batch('project-a', record.id)).batch;
+    expect(view.refreshScope).toBe('SELECTIVE');
+    expect(view.tasks[0]!.updateKind).toBe(kind);
+    await service.refresh('project-a', record.id, { expectedBatchRevision: 1,
+      expectedPromptArtifactRevision: 4, idempotencyKey: 'free-refresh' });
+    const call = repository.regenerateTasks.mock.calls[0]!;
+    expect(call[2]).toEqual([]);
+    expect(call[5].taskSnapshots).toEqual({});
+    expect(call[5].addedTasks).toEqual([]);
+    if (kind === 'REMOVE') expect(call[5].removedTaskIds).toEqual([record.tasks[0].id]);
+    else expect(Object.keys(call[5].metadataSnapshots)).toEqual([record.tasks[0].id]);
+  });
+
+  it('single-card refresh excludes unrelated additions and removals, while top refresh processes all differences', async () => {
+    const initial = promptBatch();
+    initial.items.push({ ...structuredClone(initial.items[0]!), id: '22222222-2222-4222-8222-222222222222', code: 'P002' });
+    const { service, repository } = serviceWith({ promptArtifact: vi.fn().mockResolvedValue(promptArtifact(initial)) });
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'mixed-initial' });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    record.status = 'COMPLETED';
+    record.tasks.forEach((task: { status: string }) => { task.status = 'COMPLETED'; });
+    repository.batch.mockResolvedValue(record);
+    const next = promptBatch();
+    next.items[0]!.content += ' 新正文';
+    next.items.push({ ...structuredClone(next.items[0]!), id: '33333333-3333-4333-8333-333333333333', code: 'P003' });
+    repository.promptArtifact.mockResolvedValue({ ...promptArtifact(next), revision: 4 });
+    await service.refresh('project-a', record.id, { expectedBatchRevision: 1,
+      expectedPromptArtifactRevision: 4, taskIds: [record.tasks[0].id], idempotencyKey: 'single-refresh' });
+    const selected = repository.regenerateTasks.mock.calls[0]!;
+    expect(selected[2]).toEqual([record.tasks[0].id]);
+    expect(selected[5].addedTasks).toEqual([]);
+    expect(selected[5].removedTaskIds).toEqual([]);
+    await service.refresh('project-a', record.id, { expectedBatchRevision: 1,
+      expectedPromptArtifactRevision: 4, idempotencyKey: 'all-refresh' });
+    const all = repository.regenerateTasks.mock.calls[1]!;
+    expect(all[2]).toEqual([record.tasks[0].id]);
+    expect(all[5].addedTasks).toHaveLength(1);
+    expect(all[5].removedTaskIds).toEqual([record.tasks[1].id]);
+  });
+
+  it('does not re-add manually deleted material or force a full refresh', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'deleted-initial' });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    record.tasks[0].status = 'FAILED';
+    record.tasks[0].errorCode = 'MATERIAL_DELETED';
+    repository.batch.mockResolvedValue(record);
+    const view = (await service.batch('project-a', record.id)).batch;
+    expect(view.pendingPromptIds).toEqual([]);
+    expect(view.pendingRemovedTaskIds).toEqual([]);
+    expect(view.refreshScope).toBe('NONE');
+  });
   it('commits an independent import with its own description without staling the upstream Prompt', async () => {
     const { service, repository } = serviceWith();
     await service.start('project-a', 'product-a', {
@@ -814,7 +892,9 @@ describe('EffectSegmentRenderService', () => {
     next.items[0]!.creativeCore = '修改创意说明';
     next.items[0]!.dimensions.camera = '修改镜头说明';
     repository.promptArtifact.mockResolvedValue({ ...promptArtifact(next), revision: 4 });
-    expect((await service.batch('project-a', record.id)).batch.refreshScope).toBe('NONE');
+    const view = (await service.batch('project-a', record.id)).batch;
+    expect(view.refreshScope).toBe('SELECTIVE');
+    expect(view.tasks[0]).toMatchObject({ needsUpdate: true, updateKind: 'METADATA' });
     const callsBefore = workflowWorkingService.beginEffectNodeEdit.mock.calls.length;
     await expect(
       service.refresh('project-a', record.id, {

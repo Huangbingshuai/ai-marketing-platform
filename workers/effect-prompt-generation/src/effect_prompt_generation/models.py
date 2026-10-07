@@ -16,6 +16,7 @@ MAX_PROMPT_COUNT = 100
 MAX_CANDIDATE_COUNT = 240
 MIN_PROMPT_DURATION_SECONDS = 4
 MAX_PROMPT_DURATION_SECONDS = 15
+MAX_MANUAL_PROMPT_DURATION_SECONDS = 30
 
 
 def to_camel(value: str) -> str:
@@ -324,7 +325,7 @@ class PromptItem(ApiModel):
     product_relevance: int = Field(ge=0, le=100)
     target_duration_seconds: int = Field(
         ge=MIN_PROMPT_DURATION_SECONDS,
-        le=MAX_PROMPT_DURATION_SECONDS,
+        le=MAX_MANUAL_PROMPT_DURATION_SECONDS,
     )
     creative_core: str = Field(min_length=1, max_length=160)
     dimensions: CreativeDimensions
@@ -337,6 +338,8 @@ class PromptItem(ApiModel):
 
     @model_validator(mode="after")
     def validate_purposes(self) -> PromptItem:
+        if self.origin == 'AI' and self.target_duration_seconds > MAX_PROMPT_DURATION_SECONDS:
+            raise ValueError("AI Prompt duration must not exceed batch duration limit")
         purposes = list(dict.fromkeys(self.compatible_purposes))
         if self.primary_purpose not in purposes:
             raise ValueError("compatiblePurposes must include primaryPurpose")
@@ -464,7 +467,7 @@ class SharedRenderConstraints(ApiModel):
 
 class RenderProfile(ApiModel):
     ratio: Literal["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"]
-    resolution: Literal["480p", "720p", "1080p"]
+    resolution: Literal["480p", "720p", "1080p", "4k"]
     capability_key: Literal[
         "SEEDANCE_2_0", "SEEDANCE_2_0_FAST", "SEEDANCE_1_5_PRO", "SEEDANCE_1_0"
     ] = "SEEDANCE_2_0"
@@ -569,7 +572,7 @@ class PromptGenerationSnapshot(ApiModel):
     regeneration_target_duration_seconds: int | None = Field(
         default=None,
         ge=MIN_PROMPT_DURATION_SECONDS,
-        le=MAX_PROMPT_DURATION_SECONDS,
+        le=MAX_MANUAL_PROMPT_DURATION_SECONDS,
     )
     replacement_dimensions: CreativeDimensions | None = None
     regeneration_instruction: str | None = Field(default=None, max_length=500)

@@ -461,7 +461,10 @@ const isEffectPromptItemWithinDuration = (
   const compatiblePurposes = item?.compatiblePurposes;
   return Boolean(
     item &&
-    validBaseItem(item, maxDurationSeconds) &&
+    validBaseItem(
+      item,
+      item.origin === 'MANUAL' ? EFFECT_PROMPT_LIMITS.maxManualDurationSeconds : maxDurationSeconds,
+    ) &&
     validDimensions(item.dimensions) &&
     EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.primaryPurpose as EffectPromptFragmentType) &&
     item.fragmentType === item.primaryPurpose &&
@@ -1056,7 +1059,10 @@ export const recomputePromptQuality = (
         'ITEM_NEEDS_REVISION',
         (hardIssueCounts.get('ITEM_NEEDS_REVISION') ?? 0) + 1,
       );
-    if (prompt.targetDurationSeconds !== settings.defaultDurationSeconds)
+    if (
+      prompt.origin !== 'MANUAL' &&
+      prompt.targetDurationSeconds !== settings.defaultDurationSeconds
+    )
       hardIssueCounts.set('DURATION_MISMATCH', (hardIssueCounts.get('DURATION_MISMATCH') ?? 0) + 1);
   }
   if (exactDuplicatePairs > 0) hardIssueCounts.set('EXACT_DUPLICATE', exactDuplicatePairs);
