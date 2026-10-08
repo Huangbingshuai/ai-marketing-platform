@@ -136,6 +136,83 @@ describe('AssetService', () => {
     await rm(temporaryRoot, { recursive: true, force: true });
   });
 
+  it('deduplicates identical customized file content without storing a new file or version', async () => {
+    const path = join(temporaryRoot, 'brief.txt');
+    await writeFile(path, 'brief');
+    repository.findByIdempotency.mockResolvedValue(record);
+    repository.find.mockResolvedValue(record);
+    repository.findVersion.mockResolvedValue({ ...record, assetId: record.id, version: 1 });
+    const [asset] = await service.importMany(
+      record.projectId,
+      {
+        workflow: 'CUSTOMIZED',
+        space: 'CUSTOMIZED_PROJECT',
+        type: 'SOURCE_MATERIAL',
+        contentIdentity: 'brief',
+      },
+      [{ path, originalname: 'brief.txt', mimetype: 'text/plain', size: 5 }],
+    );
+    expect(asset?.currentVersion).toBe(1);
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(repository.createFileVersion).not.toHaveBeenCalled();
+    expect(repository.findByIdempotency.mock.calls[0]?.[3]).toMatch(/brief:[a-f0-9]{64}$/);
+  });
+
+  it('stores same-name same-size files with different bytes as independent immutable assets', async () => {
+    storage.put.mockResolvedValue({ key: 'new', sizeBytes: 5 });
+    repository.create.mockResolvedValue(record);
+    for (const text of ['first', 'other']) {
+      const path = join(temporaryRoot, 'brief.txt');
+      await writeFile(path, text);
+      await service.importMany(
+        record.projectId,
+        {
+          workflow: 'CUSTOMIZED',
+          space: 'CUSTOMIZED_PROJECT',
+          type: 'SOURCE_MATERIAL',
+          contentIdentity: 'brief',
+          editableCustomizedRunId: 'run',
+        },
+        [{ path, originalname: 'brief.txt', mimetype: 'text/plain', size: 5 }],
+      );
+    }
+    expect(repository.findByIdempotency.mock.calls[0]?.[3]).toMatch(/brief:[a-f0-9]{64}$/);
+    expect(repository.findByIdempotency.mock.calls[1]?.[3]).toMatch(/brief:[a-f0-9]{64}$/);
+    expect(repository.findByIdempotency.mock.calls[0]?.[3]).not.toBe(
+      repository.findByIdempotency.mock.calls[1]?.[3],
+    );
+    expect(repository.create).toHaveBeenCalledTimes(2);
+    expect(repository.create.mock.calls[0]?.[4]).toBe('run');
+    expect(repository.createFileVersion).not.toHaveBeenCalled();
+  });
+
+  it('reads a pinned asset snapshot and its content instead of the latest storage key', async () => {
+    repository.find.mockResolvedValue({ ...record, currentVersion: 3, storageKey: 'latest' });
+    repository.findVersion.mockResolvedValue({
+      ...record,
+      assetId: record.id,
+      version: 1,
+      storageKey: 'original',
+      originalFileName: 'old.txt',
+      mimeType: 'text/plain',
+    });
+    storage.open.mockResolvedValue({
+      stream: Readable.from('data'),
+      sizeBytes: 4,
+      contentLength: 4,
+    });
+    const asset = await service.getVersion(record.projectId, record.id, 1);
+    expect(asset).toMatchObject({ originalFileName: 'old.txt', currentVersion: 1 });
+    expect(asset.contentUrl).toContain('/versions/1/content');
+    expect(asset).not.toHaveProperty('storageKey');
+    const content = await service.content(record.projectId, record.id, undefined, 1);
+    content.stream.destroy();
+    expect(storage.open).toHaveBeenCalledWith('original', undefined);
+    expect(repository.findVersion).toHaveBeenCalledWith(record.projectId, record.id, 1);
+    repository.findVersion.mockResolvedValue(null);
+    await expect(service.getVersion('another-project', record.id, 1)).rejects.toThrow();
+  });
+
   it('returns filtered items with workflow-space facets and never exposes storageKey', async () => {
     repository.list.mockResolvedValue([record]);
     repository.listForFacets.mockResolvedValue([

@@ -15,6 +15,7 @@ import { EffectPromptModule } from './workflows/effect/prompt-generation/effect-
 import { EffectSegmentRenderModule } from './workflows/effect/segment-render/effect-segment-render.module';
 import { EffectSourceImportModule } from './workflows/effect/source-import/effect-source-import.module';
 import { EffectTemplateMixModule } from './workflows/effect/template-mix/effect-template-mix.module';
+import { CustomizedSourceImportModule } from './workflows/customized/source-import/customized-source-import.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { EffectTemplateMixModule } from './workflows/effect/template-mix/effect-
     AssetModule,
     WorkflowModule,
     EffectSourceImportModule,
+    CustomizedSourceImportModule,
     EffectExtractionModule,
     EffectPromptModule,
     EffectSegmentRenderModule,

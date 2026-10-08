@@ -1,11 +1,30 @@
 <script setup lang="ts">
-import { type EffectWorkflowBranchTreeData } from '@ai-marketing/contracts';
 import {
-  AudioLines, Clapperboard, Clock3, FileText, Film, FolderInput, FolderOpen,
-  GitBranch, LayoutTemplate, LocateFixed, Maximize, Minus, Plus, Sparkles, X,
+  EFFECT_WORKFLOW_BRANCH_NODES,
+  type EffectWorkflowBranchTreeData,
+} from '@ai-marketing/contracts';
+import {
+  AudioLines,
+  Clapperboard,
+  Clock3,
+  FileText,
+  Film,
+  FolderInput,
+  FolderOpen,
+  GitBranch,
+  LayoutTemplate,
+  LocateFixed,
+  Maximize,
+  Minus,
+  Plus,
+  Sparkles,
+  X,
 } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { effectBranchDestination, type EffectBranchNavigation } from '../../shared/effect-branch-navigation';
+import {
+  effectBranchDestination,
+  type EffectBranchNavigation,
+} from '../../shared/effect-branch-navigation';
 
 import {
   BRANCH_TREE_AXIS_WIDTH,
@@ -16,14 +35,24 @@ import {
   BRANCH_TREE_ROW_GAP,
   BRANCH_TREE_TOP,
   buildEffectBranchLayout,
-  type BranchTreeNode,
+  type WorkflowBranchDisplayNode,
+  type WorkflowBranchDisplayLayout,
 } from './effect-workflow-branch-layout';
 import {
-  BRANCH_MAX_ZOOM, BRANCH_MIN_ZOOM, branchZoomScroll, clampBranchZoom, fitBranchZoom,
+  BRANCH_MAX_ZOOM,
+  BRANCH_MIN_ZOOM,
+  branchZoomScroll,
+  clampBranchZoom,
+  fitBranchZoom,
 } from './effect-workflow-branch-viewport';
 
 const props = defineProps<{
   projectName: string;
+  // Optional display adapters keep all tree interactions shared across workflows.
+  alternateLayout?: WorkflowBranchDisplayLayout | undefined;
+  alternateStages?: readonly { key: string; nodeId: string; name: string }[];
+  workflowLabel?: string;
+  activeWorkflowRunId?: string | null | undefined;
   tree: EffectWorkflowBranchTreeData | null;
   loading: boolean;
   error: string;
@@ -40,6 +69,7 @@ const emit = defineEmits<{
   retry: [];
   select: [destination: Omit<EffectBranchNavigation, 'projectId'>];
   fork: [];
+  selectWorkflow: [destination: { workflowRunId: string; nodeId: string }];
 }>();
 const dialog = ref<HTMLElement | null>(null);
 const scrollContainer = ref<HTMLElement | null>(null);
@@ -48,25 +78,46 @@ const treeZoom = ref(1);
 let initialViewReady = false;
 let returnFocus: HTMLElement | null = null;
 let previousBodyOverflow = '';
-const layout = computed(() =>
-  buildEffectBranchLayout(props.tree?.branches ?? [], props.activeTemplateId, props.viewedWorkflowRunId),
+const layout = computed(
+  () =>
+    props.alternateLayout ??
+    buildEffectBranchLayout(
+      props.tree?.branches ?? [],
+      props.activeTemplateId,
+      props.viewedWorkflowRunId,
+    ),
 );
-const stageIcons = {
-  SOURCE_IMPORT: FolderInput, INFORMATION_EXTRACTION: Sparkles,
-  PROMPT_GENERATION: FileText, SEGMENT_RENDER: Film,
-  MIX_TEMPLATE: LayoutTemplate, MIX_FILL: Clapperboard,
-  MIX_PACKAGING: AudioLines, FINAL_OUTPUT: Film,
+const stages = computed(() => props.alternateStages ?? BRANCH_TREE_STAGES);
+const workflowLabel = computed(() => props.workflowLabel ?? '效果类');
+const stageIcons: Record<string, typeof FolderInput> = {
+  SOURCE_IMPORT: FolderInput,
+  INFORMATION_EXTRACTION: Sparkles,
+  PROMPT_GENERATION: FileText,
+  SEGMENT_RENDER: Film,
+  MIX_TEMPLATE: LayoutTemplate,
+  MIX_FILL: Clapperboard,
+  MIX_PACKAGING: AudioLines,
+  FINAL_OUTPUT: Film,
+  STORYBOARD: Clapperboard,
+  SHOT_PROMPT: FileText,
+  VISUAL_ASSETS: FolderOpen,
+  SHOT_RENDER: Film,
+  DELIVERY: Film,
 };
-const currentViewNode = computed(() =>
-  (props.assetBrowse ? layout.value.nodes.find(node => node.key === props.browsedNodeKey) : undefined) ??
-  [...layout.value.nodes].filter(node => node.isCurrentStage)
-    .sort((left, right) => right.stageIndex - left.stageIndex)[0] ??
-  [...layout.value.nodes].reverse().find(node => node.onActivePath),
+const currentViewNode = computed(
+  () =>
+    (props.assetBrowse
+      ? layout.value.nodes.find((node) => node.key === props.browsedNodeKey)
+      : undefined) ??
+    [...layout.value.nodes]
+      .filter((node) => node.isCurrentStage)
+      .sort((left, right) => right.stageIndex - left.stageIndex)[0] ??
+    [...layout.value.nodes].reverse().find((node) => node.onActivePath),
 );
-const mixStartIndex = BRANCH_TREE_STAGES.findIndex((stage) => stage.nodeId === 'TEMPLATE_MIX');
-const mixStages = BRANCH_TREE_STAGES.filter((stage) => stage.nodeId === 'TEMPLATE_MIX');
-const stageName = (stageKey: (typeof BRANCH_TREE_STAGES)[number]['key']) =>
-  BRANCH_TREE_STAGES.find((stage) => stage.key === stageKey)?.name ?? stageKey;
+const mixStartIndex = stages.value.findIndex((stage) => stage.nodeId === 'TEMPLATE_MIX');
+const mixStages = stages.value.filter((stage) => stage.nodeId === 'TEMPLATE_MIX');
+const stageName = (stageKey: string) =>
+  stages.value.find((stage) => stage.key === stageKey)?.name ?? stageKey;
 const versionText = (
   revision: number | null,
   revisions: number[] | undefined,
@@ -101,17 +152,27 @@ const statusText = (status: string, count: number) =>
       : count > 0
         ? '待校验'
         : '待处理';
-const nodeStatusText = (node: BranchTreeNode) =>
+const nodeStatusText = (node: WorkflowBranchDisplayNode) =>
   node.stageKey === 'MIX_TEMPLATE' && node.status === 'PENDING'
     ? '模板已创建'
     : node.stageKey === 'MIX_FILL' && node.status === 'STALE' && !node.showStaleWarning
       ? `已填充 · ${node.artifactCount} 项`
       : statusText(node.status, node.artifactCount);
 
-const selectNode = (node: BranchTreeNode) => {
-  if (!props.switching && !props.loading && !props.error &&
-    (!props.assetBrowse || props.selectableNodeKeys?.includes(node.key)))
-    emit('select', effectBranchDestination(node));
+const selectNode = (node: WorkflowBranchDisplayNode) => {
+  if (
+    props.switching ||
+    props.loading ||
+    props.error ||
+    (props.assetBrowse && !props.selectableNodeKeys?.includes(node.key))
+  )
+    return;
+  if (props.alternateStages) {
+    emit('selectWorkflow', { workflowRunId: node.workflowRunId, nodeId: node.nodeId });
+    return;
+  }
+  const nodeId = EFFECT_WORKFLOW_BRANCH_NODES.find((id) => id === node.nodeId);
+  if (nodeId) emit('select', effectBranchDestination({ ...node, nodeId }));
 };
 const centerTree = async () => {
   await nextTick();
@@ -158,13 +219,17 @@ const locateCurrent = async () => {
   treeZoom.value = 1;
   await nextTick();
   const scroll = scrollContainer.value;
-  const card = Array.from(graphElement.value?.querySelectorAll<HTMLElement>('[data-branch-key]') ?? [])
-    .find(element => element.dataset.branchKey === current.key);
+  const card = Array.from(
+    graphElement.value?.querySelectorAll<HTMLElement>('[data-branch-key]') ?? [],
+  ).find((element) => element.dataset.branchKey === current.key);
   if (!scroll || !card) return;
   const bounds = card.getBoundingClientRect();
   const viewport = scroll.getBoundingClientRect();
   const axisWidth = scroll.querySelector('.branch-axis-rail')?.getBoundingClientRect().width ?? 0;
-  scroll.scrollLeft += bounds.left + bounds.width / 2 - viewport.left -
+  scroll.scrollLeft +=
+    bounds.left +
+    bounds.width / 2 -
+    viewport.left -
     (axisWidth + (scroll.clientWidth - axisWidth) / 2);
   scroll.scrollTop += bounds.top + bounds.height / 2 - viewport.top - scroll.clientHeight / 2;
   card.focus({ preventScroll: true });
@@ -176,10 +241,13 @@ const initializeView = async () => {
     const scroll = scrollContainer.value;
     // Start readable. A full-tree overview can be requested explicitly rather
     // than making every version label tiny on a short or narrow screen.
-    treeZoom.value = Math.max(0.8, fitBranchZoom(
-      { width: scroll.clientWidth, height: Math.max(0, scroll.clientHeight - 56) },
-      { width: layout.value.width + BRANCH_TREE_AXIS_WIDTH, height: layout.value.height },
-    ));
+    treeZoom.value = Math.max(
+      0.8,
+      fitBranchZoom(
+        { width: scroll.clientWidth, height: Math.max(0, scroll.clientHeight - 56) },
+        { width: layout.value.width + BRANCH_TREE_AXIS_WIDTH, height: layout.value.height },
+      ),
+    );
     await centerTree();
   }
 };
@@ -188,7 +256,7 @@ const onViewportResize = () => {
   if (initialViewReady) void centerTree();
 };
 watch(
-  () => props.tree,
+  () => props.alternateLayout ?? props.tree,
   () => void initializeView(),
   { flush: 'post' },
 );
@@ -247,11 +315,17 @@ onBeforeUnmount(() => {
           <div class="branch-header__intro">
             <div class="branch-header__icon"><GitBranch :size="22" /></div>
             <div>
-            <span class="branch-eyebrow">EFFECT WORKFLOW</span>
-            <h2 id="branch-title">版本分支树</h2>
-            <p>
-              {{ assetBrowse ? '点击版本查看对应资产，不切换正在编辑的工作流。' : '以项目为中心，分支向两侧展开。点击版本切换工作流。' }}
-            </p>
+              <span class="branch-eyebrow">{{
+                alternateStages ? 'CUSTOMIZED WORKFLOW' : 'EFFECT WORKFLOW'
+              }}</span>
+              <h2 id="branch-title">版本分支树</h2>
+              <p v-if="layout.nodes.length">
+                {{
+                  assetBrowse
+                    ? '点击版本查看对应资产，不切换正在编辑的工作流。'
+                    : '以项目为中心，分支向两侧展开。点击版本切换工作流。'
+                }}
+              </p>
             </div>
           </div>
           <button
@@ -264,193 +338,256 @@ onBeforeUnmount(() => {
             <X :size="20" />
           </button>
         </header>
-        <div v-if="loading && !tree" class="branch-message" role="status">正在加载版本分支…</div>
-        <div v-else-if="error && !tree" class="branch-message branch-message--error" role="alert">
+        <div v-if="loading && !tree && !alternateLayout" class="branch-message" role="status">
+          正在加载版本分支…
+        </div>
+        <div
+          v-else-if="error && !tree && !alternateLayout"
+          class="branch-message branch-message--error"
+          role="alert"
+        >
           <span>{{ error }}</span
           ><button type="button" @click="emit('retry')">重试</button>
         </div>
-        <div v-else-if="!layout.nodes.length" class="branch-message">
-          当前项目还没有已建立的效果类工作流分支。
-        </div>
         <template v-else>
-          <div class="branch-toolbar">
-            <div class="branch-toolbar__legend">
+          <div v-if="layout.nodes.length || switching || loading || error" class="branch-toolbar">
+            <div v-if="layout.nodes.length" class="branch-toolbar__legend">
               <span><i class="legend-current" />当前工作流路径</span>
               <span><i class="legend-other" />其他版本</span>
               <span><i class="legend-stale" />待更新</span>
             </div>
             <span v-if="switching" class="branch-switching" role="status">正在切换分支…</span>
-            <span v-else-if="loading" class="branch-switching" role="status">正在同步最新分支…</span>
+            <span v-else-if="loading" class="branch-switching" role="status"
+              >正在同步最新分支…</span
+            >
             <span v-else-if="error" class="branch-switching branch-switching--error" role="alert">
               更新失败，当前显示上次结果
               <button type="button" @click="emit('retry')">重试</button>
             </span>
           </div>
           <div class="branch-workspace">
-          <div
-            ref="scrollContainer"
-            class="branch-scroll"
-            aria-label="效果类工作流版本树"
-            :aria-busy="switching || loading"
-          >
             <div
-              class="branch-canvas"
-              :style="{
-                minWidth: `${layout.width + BRANCH_TREE_AXIS_WIDTH}px`,
-                height: `${layout.height}px`,
-                zoom: treeZoom,
-              }"
+              ref="scrollContainer"
+              class="branch-scroll"
+              :aria-label="`${workflowLabel}工作流版本树`"
+              :aria-busy="switching || loading"
             >
               <div
-                v-for="(stage, index) in BRANCH_TREE_STAGES"
-                :key="`band:${stage.key}`"
-                class="branch-stage-band"
-                :class="{ 'branch-stage-band--alternate': index % 2 === 1 }"
+                class="branch-canvas"
                 :style="{
-                  top: `${BRANCH_TREE_TOP + index * BRANCH_TREE_ROW_GAP - BRANCH_TREE_ROW_GAP / 2}px`,
-                  height: `${BRANCH_TREE_ROW_GAP}px`,
+                  minWidth: `${layout.width + BRANCH_TREE_AXIS_WIDTH}px`,
+                  height: `${layout.height}px`,
+                  zoom: treeZoom,
                 }"
-                aria-hidden="true"
-              />
-              <div class="branch-axis-rail">
+              >
                 <div
-                  class="branch-axis branch-axis--root"
+                  v-for="(stage, index) in stages"
+                  :key="`band:${stage.key}`"
+                  class="branch-stage-band"
+                  :class="{ 'branch-stage-band--alternate': index % 2 === 1 }"
                   :style="{
-                    top: `${BRANCH_TREE_ROOT_TOP}px`,
+                    top: `${BRANCH_TREE_TOP + index * BRANCH_TREE_ROW_GAP - BRANCH_TREE_ROW_GAP / 2}px`,
                     height: `${BRANCH_TREE_ROW_GAP}px`,
                   }"
-                >
-                  <span class="branch-axis__number">00</span>
-                  <span>项目</span>
-                </div>
-                <template v-for="(stage, index) in BRANCH_TREE_STAGES" :key="`axis:${stage.key}`">
+                  aria-hidden="true"
+                />
+                <div class="branch-axis-rail">
                   <div
-                    v-if="stage.nodeId !== 'TEMPLATE_MIX'"
-                    class="branch-axis"
-                    :class="{ 'branch-axis--alternate': index % 2 === 1 }"
+                    class="branch-axis branch-axis--root"
                     :style="{
-                      top: `${BRANCH_TREE_TOP + index * BRANCH_TREE_ROW_GAP}px`,
+                      top: `${BRANCH_TREE_ROOT_TOP}px`,
                       height: `${BRANCH_TREE_ROW_GAP}px`,
                     }"
                   >
-                    <span class="branch-axis__number">{{
-                      String(index < mixStartIndex ? index + 1 : 6).padStart(2, '0')
-                    }}</span>
-                    <span>{{ stage.name }}</span>
+                    <span class="branch-axis__number">00</span>
+                    <span>项目</span>
                   </div>
-                </template>
-                <div
-                  class="branch-axis-mix-group"
-                  role="group"
-                  aria-label="混剪：混剪模板、智能填充、智能成片包装"
-                  :style="{
-                    top: `${BRANCH_TREE_TOP + mixStartIndex * BRANCH_TREE_ROW_GAP - BRANCH_TREE_ROW_GAP / 2}px`,
-                    height: `${mixStages.length * BRANCH_TREE_ROW_GAP}px`,
-                  }"
-                >
-                  <div class="branch-axis-mix-group__parent">
-                    <span class="branch-axis__number">05</span>
-                    <span>混剪</span>
-                  </div>
-                  <div class="branch-axis-mix-group__rows">
+                  <template v-for="(stage, index) in stages" :key="`axis:${stage.key}`">
                     <div
-                      v-for="stage in mixStages"
-                      :key="stage.key"
-                      class="branch-axis-mix-group__row"
-                      :style="{ height: `${BRANCH_TREE_ROW_GAP}px` }"
+                      v-if="stage.nodeId !== 'TEMPLATE_MIX'"
+                      class="branch-axis"
+                      :class="{ 'branch-axis--alternate': index % 2 === 1 }"
+                      :style="{
+                        top: `${BRANCH_TREE_TOP + index * BRANCH_TREE_ROW_GAP}px`,
+                        height: `${BRANCH_TREE_ROW_GAP}px`,
+                      }"
                     >
+                      <span class="branch-axis__number">{{
+                        String(mixStartIndex < 0 || index < mixStartIndex ? index + 1 : 6).padStart(
+                          2,
+                          '0',
+                        )
+                      }}</span>
                       <span>{{ stage.name }}</span>
+                    </div>
+                  </template>
+                  <div
+                    v-if="mixStages.length"
+                    class="branch-axis-mix-group"
+                    role="group"
+                    :aria-label="`${'模板混剪'}：混剪模板、智能填充、智能成片包装`"
+                    :style="{
+                      top: `${BRANCH_TREE_TOP + mixStartIndex * BRANCH_TREE_ROW_GAP - BRANCH_TREE_ROW_GAP / 2}px`,
+                      height: `${mixStages.length * BRANCH_TREE_ROW_GAP}px`,
+                    }"
+                  >
+                    <div class="branch-axis-mix-group__parent">
+                      <span class="branch-axis__number">05</span>
+                      <span>混剪</span>
+                    </div>
+                    <div class="branch-axis-mix-group__rows">
+                      <div
+                        v-for="stage in mixStages"
+                        :key="stage.key"
+                        class="branch-axis-mix-group__row"
+                        :style="{ height: `${BRANCH_TREE_ROW_GAP}px` }"
+                      >
+                        <span>{{ stage.name }}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-              <div
-                ref="graphElement"
-                class="branch-graph"
-                :style="{ width: `${layout.width}px`, height: `${layout.height}px` }"
-              >
-                <svg
-                  class="branch-lines"
-                  :width="layout.width"
-                  :height="layout.height"
-                  aria-hidden="true"
-                >
-                  <g v-for="edge in layout.edges" :key="edge.key">
-                    <path :d="edge.path" :class="{ 'branch-line--active': edge.onActivePath }" />
-                    <path :d="edge.arrowPath" class="branch-arrow"
-                      :class="{ 'branch-arrow--active': edge.onActivePath }" />
-                  </g>
-                </svg>
                 <div
-                  class="branch-project-root"
-                  :class="{ 'branch-project-root--active': tree?.activeWorkflowRunId }"
-                  :style="{ left: `${layout.root.x}px`, top: `${layout.root.y}px` }"
-                  :aria-label="`项目：${projectName}`"
+                  ref="graphElement"
+                  class="branch-graph"
+                  :style="{ width: `${layout.width}px`, height: `${layout.height}px` }"
                 >
-                  <span class="branch-project-root__icon" aria-hidden="true"><FolderOpen :size="22" /></span>
-                  <span class="branch-project-root__content"><small>效果类项目</small><strong>{{ projectName }}</strong></span>
-                </div>
-                <button
-                  v-for="node in layout.nodes"
-                  :key="node.key"
-                  :data-branch-key="node.key"
-                  :data-stage="node.stageKey"
-                  type="button"
-                  class="branch-node"
-                  :class="{
-                    'branch-node--active': node.onActivePath,
-                    'branch-node--current': currentViewNode?.key === node.key,
-                    'branch-node--stale': node.showStaleWarning,
-                  }"
-                  :disabled="switching || loading || Boolean(error) || (assetBrowse && !selectableNodeKeys?.includes(node.key))"
-                  :style="{ left: `${node.x}px`, top: `${node.y}px`, width: `${BRANCH_TREE_NODE_WIDTH}px`, height: `${BRANCH_TREE_NODE_HEIGHT}px` }"
-                  :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node)}${node.onActivePath ? '，当前工作流路径' : ''}`"
-                  :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node)}`"
-                  @click="selectNode(node)"
-                >
-                  <span class="branch-node__heading">
-                    <span class="branch-node__icon" aria-hidden="true"><component :is="stageIcons[node.stageKey]" :size="19" /></span>
-                    <span class="branch-node__identity">
-                      <small>{{ stageName(node.stageKey) }}</small>
-                  <strong>{{
-                    node.stageKey === 'MIX_TEMPLATE'
-                      ? (node.templateName ?? '模板')
-                      : versionText(node.revision, node.revisions, node.artifactCount, node.status)
-                  }}</strong>
-                    </span>
-                  </span>
-                  <span class="branch-node__footer">
-                  <span
-                    v-if="
-                      node.stageKey === 'MIX_TEMPLATE' ||
-                      (node.artifactCount > 0 && node.status !== 'PENDING')
-                    "
-                    class="branch-node__created-at"
-                    :title="
-                      node.stageKey === 'MIX_TEMPLATE'
-                        ? `${artifactCreatedAtText(node.createdAt)} · 模板创建时间；旧草稿可能未记录`
-                        : `${artifactCreatedAtText(node.createdAt)} · 已确认工作副本创建时间`
-                    "
-                  ><Clock3 :size="10" aria-hidden="true" />{{ compactCreatedAtText(node.createdAt) }}</span
+                  <svg
+                    class="branch-lines"
+                    :width="layout.width"
+                    :height="layout.height"
+                    aria-hidden="true"
                   >
-                  <span v-if="node.showStaleWarning" class="branch-node__stale">待更新</span>
-                  <span v-else-if="currentViewNode?.key === node.key" class="branch-node__current">当前查看</span>
-                  </span>
-                </button>
+                    <g v-for="edge in layout.edges" :key="edge.key">
+                      <path :d="edge.path" :class="{ 'branch-line--active': edge.onActivePath }" />
+                      <path
+                        :d="edge.arrowPath"
+                        class="branch-arrow"
+                        :class="{ 'branch-arrow--active': edge.onActivePath }"
+                      />
+                    </g>
+                  </svg>
+                  <div
+                    class="branch-project-root"
+                    :class="{
+                      'branch-project-root--active':
+                        activeWorkflowRunId ?? tree?.activeWorkflowRunId,
+                    }"
+                    :style="{ left: `${layout.root.x}px`, top: `${layout.root.y}px` }"
+                    :aria-label="`项目：${projectName}`"
+                  >
+                    <span class="branch-project-root__icon" aria-hidden="true"
+                      ><FolderOpen :size="22"
+                    /></span>
+                    <span class="branch-project-root__content"
+                      ><small>{{ workflowLabel }}项目</small
+                      ><strong>{{ projectName }}</strong></span
+                    >
+                  </div>
+                  <button
+                    v-for="node in layout.nodes"
+                    :key="node.key"
+                    :data-branch-key="node.key"
+                    :data-stage="node.stageKey"
+                    type="button"
+                    class="branch-node"
+                    :class="{
+                      'branch-node--active': node.onActivePath,
+                      'branch-node--current': currentViewNode?.key === node.key,
+                      'branch-node--stale': node.showStaleWarning,
+                    }"
+                    :disabled="
+                      switching ||
+                      loading ||
+                      Boolean(error) ||
+                      (assetBrowse && !selectableNodeKeys?.includes(node.key))
+                    "
+                    :style="{
+                      left: `${node.x}px`,
+                      top: `${node.y}px`,
+                      width: `${BRANCH_TREE_NODE_WIDTH}px`,
+                      height: `${BRANCH_TREE_NODE_HEIGHT}px`,
+                    }"
+                    :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node)}${node.onActivePath ? '，当前工作流路径' : ''}`"
+                    :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node)}`"
+                    @click="selectNode(node)"
+                  >
+                    <span class="branch-node__heading">
+                      <span class="branch-node__icon" aria-hidden="true"
+                        ><component :is="stageIcons[node.stageKey]" :size="19"
+                      /></span>
+                      <span class="branch-node__identity">
+                        <small>{{ stageName(node.stageKey) }}</small>
+                        <strong>{{
+                          node.stageKey === 'MIX_TEMPLATE'
+                            ? (node.templateName ?? '模板')
+                            : versionText(
+                                node.revision,
+                                node.revisions,
+                                node.artifactCount,
+                                node.status,
+                              )
+                        }}</strong>
+                      </span>
+                    </span>
+                    <span class="branch-node__footer">
+                      <span
+                        v-if="
+                          node.stageKey === 'MIX_TEMPLATE' ||
+                          (node.artifactCount > 0 && node.status !== 'PENDING')
+                        "
+                        class="branch-node__created-at"
+                        :title="
+                          node.stageKey === 'MIX_TEMPLATE'
+                            ? `${artifactCreatedAtText(node.createdAt)} · 模板创建时间；旧草稿可能未记录`
+                            : `${artifactCreatedAtText(node.createdAt)} · 已确认工作副本创建时间`
+                        "
+                        ><Clock3 :size="10" aria-hidden="true" />{{
+                          compactCreatedAtText(node.createdAt)
+                        }}</span
+                      >
+                      <span v-if="node.showStaleWarning" class="branch-node__stale">待更新</span>
+                      <span
+                        v-else-if="currentViewNode?.key === node.key"
+                        class="branch-node__current"
+                        >当前查看</span
+                      >
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-          <div class="branch-view-controls" role="group" aria-label="版本树视图">
-            <button type="button" @click="fitTree"><Maximize :size="15" />查看全图</button>
-            <button type="button" @click="locateCurrent"><LocateFixed :size="15" />定位当前</button>
-            <span class="branch-view-controls__separator" aria-hidden="true" />
-            <button type="button" aria-label="缩小版本树" :disabled="treeZoom <= BRANCH_MIN_ZOOM"
-              @click="changeZoom(treeZoom - 0.1)"><Minus :size="16" /></button>
-            <button type="button" class="branch-zoom-value" aria-label="恢复版本树原始大小"
-              @click="changeZoom(1)">{{ Math.round(treeZoom * 100) }}%</button>
-            <button type="button" aria-label="放大版本树" :disabled="treeZoom >= BRANCH_MAX_ZOOM"
-              @click="changeZoom(treeZoom + 0.1)"><Plus :size="16" /></button>
-          </div>
+            <div class="branch-view-controls" role="group" aria-label="版本树视图">
+              <button type="button" @click="fitTree"><Maximize :size="15" />查看全图</button>
+              <button v-if="currentViewNode" type="button" @click="locateCurrent">
+                <LocateFixed :size="15" />定位当前
+              </button>
+              <span class="branch-view-controls__separator" aria-hidden="true" />
+              <button
+                type="button"
+                aria-label="缩小版本树"
+                :disabled="treeZoom <= BRANCH_MIN_ZOOM"
+                @click="changeZoom(treeZoom - 0.1)"
+              >
+                <Minus :size="16" />
+              </button>
+              <button
+                type="button"
+                class="branch-zoom-value"
+                aria-label="恢复版本树原始大小"
+                @click="changeZoom(1)"
+              >
+                {{ Math.round(treeZoom * 100) }}%
+              </button>
+              <button
+                type="button"
+                aria-label="放大版本树"
+                :disabled="treeZoom >= BRANCH_MAX_ZOOM"
+                @click="changeZoom(treeZoom + 0.1)"
+              >
+                <Plus :size="16" />
+              </button>
+            </div>
           </div>
         </template>
       </section>
@@ -483,10 +620,21 @@ onBeforeUnmount(() => {
   background: #fff;
   border-bottom: 1px solid #dfe7f4;
 }
-.branch-header__intro { display: flex; align-items: center; gap: 14px; }
+.branch-header__intro {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
 .branch-header__icon {
-  display: grid; width: 44px; height: 44px; flex: none; place-items: center;
-  color: #2563eb; background: #edf4ff; border: 1px solid #dce8fc; border-radius: 12px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  place-items: center;
+  color: #2563eb;
+  background: #edf4ff;
+  border: 1px solid #dce8fc;
+  border-radius: 12px;
 }
 .branch-eyebrow {
   color: #2563eb;
@@ -545,21 +693,55 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #e1e7f2;
 }
 .branch-view-controls {
-  position: absolute; bottom: 18px; left: 50%; z-index: 8; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 2px; padding: 3px;
-  background: rgba(255, 255, 255, 0.94); border: 1px solid #dce4ef; border-radius: 12px;
-  backdrop-filter: blur(12px); box-shadow: 0 6px 24px rgba(35, 55, 85, 0.12);
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  z-index: 8;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #dce4ef;
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 6px 24px rgba(35, 55, 85, 0.12);
   white-space: nowrap;
 }
 .branch-view-controls button {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  height: 34px; padding: 0 8px; color: #52647e; background: transparent;
-  border: 0; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px;
+  color: #52647e;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
-.branch-view-controls button:hover { color: #1d4ed8; background: #fff; }
-.branch-view-controls button:disabled { color: #bcc6d5; cursor: not-allowed; }
-.branch-view-controls .branch-zoom-value { min-width: 46px; font-variant-numeric: tabular-nums; }
-.branch-view-controls__separator { width: 1px; height: 16px; margin: 0 4px; background: #dce4ef; }
+.branch-view-controls button:hover {
+  color: #1d4ed8;
+  background: #fff;
+}
+.branch-view-controls button:disabled {
+  color: #bcc6d5;
+  cursor: not-allowed;
+}
+.branch-view-controls .branch-zoom-value {
+  min-width: 46px;
+  font-variant-numeric: tabular-nums;
+}
+.branch-view-controls__separator {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: #dce4ef;
+}
 .branch-toolbar__legend {
   display: flex;
   flex-wrap: wrap;
@@ -584,8 +766,15 @@ onBeforeUnmount(() => {
 .legend-other {
   background: #a2b3cd;
 }
-.legend-stale { background: #e0c200; }
-.branch-workspace { position: relative; display: flex; flex: 1; min-height: 0; }
+.legend-stale {
+  background: #e0c200;
+}
+.branch-workspace {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
 .branch-scroll {
   flex: 1;
   min-height: 0;
@@ -642,14 +831,36 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   text-align: left;
 }
-.branch-project-root__icon { display: grid; place-items: center; width: 42px; height: 42px; flex: none; border-radius: 11px; background: #3b4b65; color: #dfe9fc; }
-.branch-project-root__content { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
-.branch-project-root__content small { font-size: 10px; font-weight: 500; color: #b5c4da; letter-spacing: 1px; }
-.branch-project-root__content strong { font-size: 16px; line-height: 1.3; }
+.branch-project-root__icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: #dfe9fc;
+}
+.branch-project-root__content {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.branch-project-root__content small {
+  font-size: 10px;
+  font-weight: 500;
+  color: #b5c4da;
+  letter-spacing: 1px;
+}
+.branch-project-root__content strong {
+  font-size: 16px;
+  line-height: 1.3;
+}
 .branch-project-root--active {
   border-color: #df3547;
 }
-.branch-project-root--active .branch-project-root__icon { color: #ffd5dd; background: #514053; }
+.branch-project-root--active .branch-project-root__icon {
+  color: #ffd5dd;
+}
 .branch-lines {
   position: absolute;
   inset: 0;
@@ -776,16 +987,61 @@ onBeforeUnmount(() => {
 .branch-node:hover:not(:disabled) {
   box-shadow: 0 4px 12px rgba(35, 67, 105, 0.12);
 }
-.branch-node__heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.branch-node__icon { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 10px; color: #4378c8; background: #edf4ff; }
-.branch-node[data-stage='INFORMATION_EXTRACTION'] .branch-node__icon { color: #9363cf; background: #f3edfc; }
-.branch-node[data-stage='PROMPT_GENERATION'] .branch-node__icon { color: #6b69c6; background: #f0effc; }
-.branch-node[data-stage='SEGMENT_RENDER'] .branch-node__icon { color: #278e9a; background: #e9f7f8; }
-.branch-node[data-stage='MIX_PACKAGING'] .branch-node__icon { color: #9465b9; background: #f5edf9; }
-.branch-node[data-stage='FINAL_OUTPUT'] .branch-node__icon { color: #278c76; background: #e8f7f1; }
-.branch-node__identity { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.branch-node__identity small { font-size: 10px; font-weight: 500; color: #8391a5; white-space: nowrap; }
-.branch-node__footer { display: flex; align-items: center; justify-content: space-between; gap: 3px; min-height: 12px; }
+.branch-node__heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.branch-node__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: #4378c8;
+  background: #edf4ff;
+}
+.branch-node[data-stage='INFORMATION_EXTRACTION'] .branch-node__icon {
+  color: #9363cf;
+  background: #f3edfc;
+}
+.branch-node[data-stage='PROMPT_GENERATION'] .branch-node__icon {
+  color: #6b69c6;
+  background: #f0effc;
+}
+.branch-node[data-stage='SEGMENT_RENDER'] .branch-node__icon {
+  color: #278e9a;
+  background: #e9f7f8;
+}
+.branch-node[data-stage='MIX_PACKAGING'] .branch-node__icon {
+  color: #9465b9;
+  background: #f5edf9;
+}
+.branch-node[data-stage='FINAL_OUTPUT'] .branch-node__icon {
+  color: #278c76;
+  background: #e8f7f1;
+}
+.branch-node__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.branch-node__identity small {
+  font-size: 10px;
+  font-weight: 500;
+  color: #8391a5;
+  white-space: nowrap;
+}
+.branch-node__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3px;
+  min-height: 12px;
+}
 .branch-node strong {
   max-width: 100%;
   font-size: 15px;
@@ -832,8 +1088,13 @@ onBeforeUnmount(() => {
   box-shadow: 0 2px 6px rgba(185, 28, 28, 0.08);
 }
 .branch-node__current {
-  padding: 1px 6px; color: #bd3344; background: #ffecef; border-radius: 4px;
-  font-size: 9px; font-weight: 600; line-height: 1.2;
+  padding: 1px 6px;
+  color: #bd3344;
+  background: #ffecef;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
 }
 .branch-node__stale {
   color: #8a7600;
@@ -872,8 +1133,13 @@ onBeforeUnmount(() => {
   outline-offset: 2px;
 }
 @media (max-width: 1080px) {
-  .branch-toolbar { flex-wrap: wrap; gap: 8px 12px; }
-  .branch-toolbar__legend { gap: 10px; }
+  .branch-toolbar {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+  .branch-toolbar__legend {
+    gap: 10px;
+  }
 }
 @media (max-width: 760px) {
   .branch-header {
@@ -886,8 +1152,12 @@ onBeforeUnmount(() => {
     align-items: center;
     padding: 9px 14px;
   }
-  .branch-header__icon { display: none; }
-  .branch-header p { font-size: 11px; }
+  .branch-header__icon {
+    display: none;
+  }
+  .branch-header p {
+    font-size: 11px;
+  }
   .branch-scroll {
     padding: 0;
   }
@@ -913,9 +1183,20 @@ onBeforeUnmount(() => {
   }
 }
 @media (max-width: 420px) {
-  .branch-toolbar { gap: 10px; }
-  .branch-toolbar__legend { font-size: 10px; gap: 9px; }
-  .branch-view-controls { bottom: 12px; }
-  .branch-view-controls button { padding: 0 6px; font-size: 11px; gap: 4px; }
+  .branch-toolbar {
+    gap: 10px;
+  }
+  .branch-toolbar__legend {
+    font-size: 10px;
+    gap: 9px;
+  }
+  .branch-view-controls {
+    bottom: 12px;
+  }
+  .branch-view-controls button {
+    padding: 0 6px;
+    font-size: 11px;
+    gap: 4px;
+  }
 }
 </style>

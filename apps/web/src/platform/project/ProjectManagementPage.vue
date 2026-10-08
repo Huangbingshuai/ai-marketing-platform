@@ -26,17 +26,19 @@ import {
 import AssetDrawer from '../asset/AssetDrawer.vue';
 import richiLogoColor from '../../assets/richi-logo-color.png';
 import EffectImportNodePage from '../../workflows/effect/source-import/EffectImportNodePage.vue';
+import CustomizedImportNodePage from '../../workflows/customized/source-import/CustomizedImportNodePage.vue';
 import { createProject, listProjects } from './api/project.api';
 import {
   presentProjectBinding,
   projectContextKey,
   projectCreationScope,
   resolveBoundProjectId,
+  workflowProjectStorageKey,
 } from './project-context';
 import { pauseWorkflowRun } from '../workflow/api/workflow-working.api';
 import { loadProjectListWithRetry } from './project-load-retry';
 import { enterLibraryProject } from './enter-library-project';
-import { projectMatchesSpace, WORKFLOW_SPACES } from '../asset/asset-v4';
+import { projectMatchesSpace, projectMatchesWorkflow, WORKFLOW_SPACES } from '../asset/asset-v4';
 import type { AssetWorkflowSpace } from '@ai-marketing/contracts';
 
 const assetDrawerOpen = ref(false);
@@ -57,6 +59,17 @@ const effectNode = ref<{
   resumeWorkflowNode: (nodeId: string) => Promise<boolean>;
   workflowRunId: string;
 } | null>(null);
+const customizedNode = ref<{
+  flushPendingEdits: () => Promise<boolean>;
+  resumeWorkflowNode: (nodeId: string) => Promise<boolean>;
+  workflowRunId: string;
+} | null>(null);
+const workflowSwitchBusy = ref(false);
+const rememberWorkflowProject = (workflow: AssetWorkflow, projectId: string): void => {
+  const key = workflowProjectStorageKey(workflow);
+  if (projectId) localStorage.setItem(key, projectId);
+  else localStorage.removeItem(key);
+};
 const exitBusy = ref(false);
 const exitError = ref('');
 const projectEntryBusy = ref(false);
@@ -89,7 +102,62 @@ const WORKFLOW_NAV_ITEMS: ReadonlyArray<{
     description: '爆款复刻、数字人口播与局部元素替换',
   },
 ];
-const activeWorkflow = ref<AssetWorkflow>('EFFECT');
+const savedWorkflow = localStorage.getItem('ai-marketing.current-workflow');
+const activeWorkflow = ref<AssetWorkflow>(
+  WORKFLOW_NAV_ITEMS.some((item) => item.value === savedWorkflow)
+    ? (savedWorkflow as AssetWorkflow)
+    : 'EFFECT',
+);
+const activeNode = computed(() =>
+  activeWorkflow.value === 'EFFECT'
+    ? effectNode.value
+    : activeWorkflow.value === 'CUSTOMIZED'
+      ? customizedNode.value
+      : null,
+);
+const switchWorkflow = async (workflow: AssetWorkflow): Promise<void> => {
+  if (
+    workflowSwitchBusy.value ||
+    exitBusy.value ||
+    projectEntryBusy.value ||
+    workflow === activeWorkflow.value
+  )
+    return;
+  workflowSwitchBusy.value = true;
+  try {
+    let clearProjectBinding = false;
+    if (currentProject.value && !projectMatchesWorkflow(currentProject.value, workflow)) {
+      if ((await activeNode.value?.flushPendingEdits()) === false) {
+        showCreateToast('请先保存当前资料和所选文件，再切换工作流');
+        return;
+      }
+      rememberWorkflowProject(activeWorkflow.value, currentProject.value.id);
+      clearProjectBinding = true;
+    } else if ((await activeNode.value?.flushPendingEdits()) === false) {
+      showCreateToast('请先保存当前资料和所选文件，再切换工作流');
+      return;
+    }
+    activeWorkflow.value = workflow;
+    localStorage.setItem('ai-marketing.current-workflow', workflow);
+    if (clearProjectBinding) selectProject('');
+    if (!currentProject.value) {
+      const savedWorkflowProjectId =
+        localStorage.getItem(workflowProjectStorageKey(workflow)) ?? '';
+      const savedWorkflowProject = projects.value.find(
+        (project) => project.id === savedWorkflowProjectId,
+      );
+      if (savedWorkflowProject && projectMatchesWorkflow(savedWorkflowProject, workflow)) {
+        selectProject(savedWorkflowProject.id, workflow);
+      } else if (!projectsLoading.value && savedWorkflowProjectId) {
+        rememberWorkflowProject(workflow, '');
+      }
+    } else {
+      rememberWorkflowProject(workflow, currentProject.value.id);
+    }
+  } finally {
+    workflowSwitchBusy.value = false;
+  }
+};
 const activeWorkflowMeta = computed(() =>
   WORKFLOW_NAV_ITEMS.find((item) => item.value === activeWorkflow.value)!,
 );
@@ -106,7 +174,7 @@ const projectBinding = computed(() =>
   ),
 );
 
-const selectProject = (projectId: string): void => {
+const selectProject = (projectId: string, workflow = activeWorkflow.value): void => {
   if (!projectId) {
     currentProjectId.value = '';
     localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
@@ -119,6 +187,7 @@ const selectProject = (projectId: string): void => {
   }
   currentProjectId.value = projectId;
   localStorage.setItem(CURRENT_PROJECT_STORAGE_KEY, projectId);
+  rememberWorkflowProject(workflow, projectId);
 };
 
 const loadProjects = async (): Promise<void> => {
@@ -134,12 +203,21 @@ const loadProjects = async (): Promise<void> => {
     );
     if (controller.signal.aborted) return;
     projects.value = response.data;
-    const saved = localStorage.getItem(CURRENT_PROJECT_STORAGE_KEY) ?? '';
-    const preferred = resolveBoundProjectId(response.data, currentProjectId.value, saved);
-    if (preferred) selectProject(preferred);
+    const scopedProjectId =
+      localStorage.getItem(workflowProjectStorageKey(activeWorkflow.value)) ?? '';
+    const legacyProjectId = localStorage.getItem(CURRENT_PROJECT_STORAGE_KEY) ?? '';
+    const preferred =
+      resolveBoundProjectId(
+        response.data,
+        currentProjectId.value,
+        scopedProjectId,
+        activeWorkflow.value,
+      ) || resolveBoundProjectId(response.data, '', legacyProjectId, activeWorkflow.value);
+    if (preferred) selectProject(preferred, activeWorkflow.value);
     else {
       currentProjectId.value = '';
       localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
+      if (scopedProjectId) rememberWorkflowProject(activeWorkflow.value, '');
     }
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -165,8 +243,8 @@ const closeAssetDrawer = (): void => {
 };
 
 const resumeWorkflowNode = async (nodeId: string): Promise<void> => {
-  if (projectEntryBusy.value || activeWorkflow.value !== 'EFFECT' || !effectNode.value) return;
-  const resumed = await effectNode.value.resumeWorkflowNode(nodeId);
+  if (projectEntryBusy.value || !activeNode.value) return;
+  const resumed = await activeNode.value.resumeWorkflowNode(nodeId);
   if (!resumed) return;
   assetDrawerOpen.value = false;
 };
@@ -193,18 +271,21 @@ const showCreateToast = (message: string): void => {
   }, 3000);
 };
 
-const exitProject = async (): Promise<boolean> => {
+const exitProject = async (preserveWorkflowSelection = false): Promise<boolean> => {
   const project = currentProject.value;
   if (exitBusy.value) return false;
   if (!project) return true;
   exitBusy.value = true;
   exitError.value = '';
   try {
-    if (activeWorkflow.value === 'EFFECT') {
-      const flushed = await effectNode.value?.flushPendingEdits();
+    if (activeNode.value) {
+      const flushed = await activeNode.value.flushPendingEdits();
       if (flushed === false) throw new Error('仍有编辑未能自动保存，请修复后重试退出');
-      const workflowRunId = effectNode.value?.workflowRunId;
+      const workflowRunId = activeNode.value.workflowRunId;
       if (workflowRunId) await pauseWorkflowRun(project.id, workflowRunId);
+    }
+    if (project) {
+      rememberWorkflowProject(activeWorkflow.value, preserveWorkflowSelection ? project.id : '');
     }
     selectProject('');
     showCreateToast('草稿已自动保存并退出项目，未创建正式资产');
@@ -239,8 +320,8 @@ const enterAssetProject = async (
     }
     const entered = await enterLibraryProject(projectId, {
       currentProjectId: () => currentProjectId.value,
-      leaveCurrent: exitProject,
-      selectProject,
+      leaveCurrent: () => exitProject(activeWorkflow.value !== workflow),
+      selectProject: (id) => selectProject(id, workflow),
       changingWorkflow: activeWorkflow.value !== workflow,
     });
     if (!entered) {
@@ -248,6 +329,8 @@ const enterAssetProject = async (
       return;
     }
     activeWorkflow.value = workflow;
+    localStorage.setItem('ai-marketing.current-workflow', workflow);
+    rememberWorkflowProject(workflow, projectId);
     closeAssetDrawer();
   } catch {
     projectEntryError.value = '进入项目失败，请稍后重试。';
@@ -316,8 +399,8 @@ onBeforeUnmount(() => {
           :class="{ active: activeWorkflow === item.value }"
           type="button"
           :aria-pressed="activeWorkflow === item.value"
-          :disabled="projectEntryBusy || exitBusy"
-          @click="activeWorkflow = item.value"
+          :disabled="projectEntryBusy || exitBusy || workflowSwitchBusy"
+          @click="switchWorkflow(item.value)"
         >
           {{ item.label }}
         </button>
@@ -381,10 +464,14 @@ onBeforeUnmount(() => {
         </button>
       </section>
       <EffectImportNodePage v-else-if="activeWorkflow === 'EFFECT'" ref="effectNode" />
+      <CustomizedImportNodePage
+        v-else-if="activeWorkflow === 'CUSTOMIZED'"
+        :key="currentProject.id"
+        ref="customizedNode"
+      />
       <section v-else class="workflow-state workflow-state-ready" role="status">
         <span class="workflow-state-icon">
-          <Sparkles v-if="activeWorkflow === 'CUSTOMIZED'" :size="30" />
-          <GitBranch v-else :size="30" />
+          <GitBranch :size="30" />
         </span>
         <h2>已切换到{{ activeWorkflowMeta.label }}工作流</h2>
         <p>当前项目：{{ currentProject.name }}</p>

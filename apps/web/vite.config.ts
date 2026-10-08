@@ -22,6 +22,8 @@ export default defineConfig(({ mode }) => {
     },
     optimizeDeps: {
       exclude: ['@ai-marketing/contracts'],
+      // This lazy dependency is imported inside a Worker, outside the main-page scan.
+      include: ['mammoth/mammoth.browser'],
     },
     server: {
       port: 5173,

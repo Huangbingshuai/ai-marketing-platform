@@ -5,12 +5,18 @@ import {
   presentProjectBinding,
   projectCreationScope,
   resolveBoundProjectId,
+  workflowProjectStorageKey,
 } from './project-context';
 
 const project = {
   id: 'project-a',
   name: '夏季投放',
   client: '广味食品',
+  workflowSpaces: {
+    effect: true,
+    customized: false,
+    fission: { clone: false, avatar: false, localReplace: false },
+  },
 } as Project;
 
 describe('project binding context', () => {
@@ -30,6 +36,15 @@ describe('project binding context', () => {
     expect(resolveBoundProjectId([project], '', '')).toBe('');
     expect(resolveBoundProjectId([project], '', 'project-a')).toBe('project-a');
     expect(resolveBoundProjectId([project], '', 'missing-project')).toBe('');
+    expect(resolveBoundProjectId([project], '', 'project-a', 'CUSTOMIZED')).toBe('');
+    expect(resolveBoundProjectId([project], '', 'project-a', 'EFFECT')).toBe('project-a');
+  });
+
+  it('keeps a separate remembered project id for every workflow', () => {
+    expect(workflowProjectStorageKey('EFFECT')).toBe('ai-marketing.current-project-id.effect');
+    expect(workflowProjectStorageKey('CUSTOMIZED')).toBe(
+      'ai-marketing.current-project-id.customized',
+    );
   });
 
   it('distinguishes bound, unbound, empty, loading and error states', () => {

@@ -400,10 +400,7 @@ export class AssetService {
     }
   }
 
-  private async present(
-    record: AssetRecord,
-    workflowFileObjectId?: string | null,
-  ): Promise<Asset> {
+  private async present(record: AssetRecord, workflowFileObjectId?: string | null): Promise<Asset> {
     const fileObjectId =
       workflowFileObjectId === undefined
         ? (await this.repository.findFileObjectId(record.projectId, record.storageKey))?.id
@@ -433,10 +430,14 @@ export class AssetService {
       projectId,
       items.map(({ storageKey }) => storageKey),
     );
-    const fileObjectByStorageKey = new Map(fileObjects.map(({ storageKey, id }) => [storageKey, id]));
+    const fileObjectByStorageKey = new Map(
+      fileObjects.map(({ storageKey, id }) => [storageKey, id]),
+    );
     return {
       items: await Promise.all(
-        items.map((item) => this.present(item, fileObjectByStorageKey.get(item.storageKey) ?? null)),
+        items.map((item) =>
+          this.present(item, fileObjectByStorageKey.get(item.storageKey) ?? null),
+        ),
       ),
       total: resolvedTotal,
       facets: buildFacets(facetRecords),
@@ -557,6 +558,35 @@ export class AssetService {
     return this.present(record);
   }
 
+  private async versionRecord(projectId: string, assetId: string, version: number) {
+    const [asset, snapshot] = await Promise.all([
+      this.repository.find(projectId, assetId),
+      this.repository.findVersion(projectId, assetId, version),
+    ]);
+    if (!asset || !snapshot || !snapshot.storageKey || snapshot.status === 'UNAVAILABLE')
+      throw assetNotFound();
+    return {
+      ...asset,
+      originalFileName: snapshot.originalFileName,
+      mimeType: snapshot.mimeType,
+      sizeBytes: snapshot.sizeBytes,
+      storageKey: snapshot.storageKey,
+      content: snapshot.content,
+      businessData: snapshot.businessData,
+      currentVersion: version,
+    };
+  }
+
+  async getVersion(projectId: string, assetId: string, version: number): Promise<Asset> {
+    return this.presentVersion(await this.versionRecord(projectId, assetId, version));
+  }
+
+  private async presentVersion(record: AssetRecord): Promise<Asset> {
+    const asset = await this.present(record);
+    const url = `/api/projects/${record.projectId}/assets/${record.id}/versions/${record.currentVersion}/content`;
+    return { ...asset, contentUrl: url, downloadUrl: `${url}?download=true` };
+  }
+
   async update(projectId: string, assetId: string, input: UpdateAssetRequest): Promise<Asset> {
     if (Object.keys(input).length === 0) throw validationError('至少提供一个要修改的字段');
     const current = await this.repository.find(projectId, assetId);
@@ -583,8 +613,16 @@ export class AssetService {
     return { id: assetId, archivedAt: archivedAt.toISOString() };
   }
 
-  async content(projectId: string, assetId: string, rangeHeader?: string): Promise<AssetContent> {
-    const record = await this.repository.find(projectId, assetId);
+  async content(
+    projectId: string,
+    assetId: string,
+    rangeHeader?: string,
+    version?: number,
+  ): Promise<AssetContent> {
+    const record =
+      version === undefined
+        ? await this.repository.find(projectId, assetId)
+        : await this.versionRecord(projectId, assetId, version);
     if (!record) throw assetNotFound();
     if (!record.hasFile) throw assetNotFound();
     const mimeType = recordMimeType(record);
@@ -603,7 +641,13 @@ export class AssetService {
 
   async importMany(
     projectId: string,
-    metadata: { workflow: AssetWorkflow; space: AssetWorkflowSpace; type: AssetType },
+    metadata: {
+      workflow: AssetWorkflow;
+      space: AssetWorkflowSpace;
+      type: AssetType;
+      contentIdentity?: string;
+      editableCustomizedRunId?: string;
+    },
     files: UploadedAssetFile[],
   ): Promise<Asset[]> {
     if (!files.length)
@@ -627,12 +671,18 @@ export class AssetService {
           );
         const originalFileName = safeOriginalFileName(file.originalname),
           mimeType = safeMimeType(file.mimetype);
+        let contentHash: string | undefined;
+        if (metadata.contentIdentity) {
+          const hash = createHash('sha256');
+          for await (const chunk of createReadStream(file.path)) hash.update(chunk);
+          contentHash = hash.digest('hex');
+        }
         const idempotencyKey = [
           metadata.workflow,
           metadata.space,
           metadata.type,
           originalFileName,
-          file.size,
+          contentHash ? `${metadata.contentIdentity}:${contentHash}` : file.size,
         ].join('|');
         const existing = await this.repository.findByIdempotency(
           projectId,
@@ -640,6 +690,10 @@ export class AssetService {
           metadata.space,
           idempotencyKey,
         );
+        if (existing && contentHash) {
+          results.push(await this.getVersion(projectId, existing.id, 1));
+          continue;
+        }
         let stored;
         try {
           stored = await this.storage.put({
@@ -687,13 +741,36 @@ export class AssetService {
                   status: 'PENDING_REVIEW',
                   qualityStatus: 'PENDING_REVIEW',
                   idempotencyKey,
+                  ...(contentHash
+                    ? { sourceRunId: metadata.editableCustomizedRunId, sourceNode: 'SOURCE_IMPORT' }
+                    : {}),
                 },
                 `上传 ${originalFileName}`,
+                undefined,
+                metadata.editableCustomizedRunId,
               );
           if (!record) throw assetNotFound();
-          results.push(await this.present(record));
+          results.push(await (contentHash ? this.presentVersion(record) : this.present(record)));
         } catch (error) {
           await this.storage.delete(stored.key).catch(() => undefined);
+          if (
+            contentHash &&
+            error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            error.code === 'P2002'
+          ) {
+            const concurrent = await this.repository.findByIdempotency(
+              projectId,
+              metadata.workflow,
+              metadata.space,
+              idempotencyKey,
+            );
+            if (concurrent) {
+              results.push(await this.getVersion(projectId, concurrent.id, 1));
+              continue;
+            }
+          }
           throw error;
         }
       } finally {

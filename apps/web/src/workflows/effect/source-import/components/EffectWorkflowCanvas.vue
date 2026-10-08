@@ -2,13 +2,28 @@
 import { AlertCircle, Check, ChevronRight, GitBranch } from '@lucide/vue';
 import { computed } from 'vue';
 
-const props = defineProps<{
-  activeStep: number;
-  staleCounts?: readonly number[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    activeStep: number;
+    staleCounts?: readonly number[];
+    // Absence selects the effect workflow's built-in nodes.
+    // eslint-disable-next-line vue/require-default-prop
+    nodes?: readonly { label: string; status: string; title: string; description: string }[];
+    workflowLabel?: string;
+    workflowNumber?: string;
+    showBranches?: boolean;
+    disabled?: boolean;
+  }>(),
+  {
+    showBranches: true,
+    workflowLabel: '效果类',
+    workflowNumber: '01',
+    staleCounts: () => [],
+  },
+);
 const emit = defineEmits<{ select: [step: number]; branches: [] }>();
 
-const nodes = [
+const effectNodes = [
   {
     label: '导入',
     status: '当前',
@@ -46,14 +61,17 @@ const nodes = [
     description: '渲染已统一确认的成片，查看进度、恢复失败项、分页播放与下载',
   },
 ] as const;
+const nodes = computed(() => props.nodes ?? effectNodes);
 
 type NodeState = 'completed' | 'current' | 'ready';
 
-const currentNode = computed(() => nodes[props.activeStep] ?? nodes[0]);
+const currentNode = computed(
+  () => nodes.value[props.activeStep] ?? nodes.value[0] ?? effectNodes[0],
+);
 const currentStepLabel = computed(() => String(props.activeStep + 1).padStart(2, '0'));
 const staleCount = (index: number) => props.staleCounts?.[index] ?? 0;
-const statusText = (index: number) => staleCount(index) > 0
-  ? '待更新' : nodes[index]?.status;
+const statusText = (index: number) =>
+  staleCount(index) > 0 ? '待更新' : nodes.value[index]?.status;
 
 const nodeState = (index: number): NodeState => {
   if (index === props.activeStep) return 'current';
@@ -63,33 +81,50 @@ const nodeState = (index: number): NodeState => {
 </script>
 
 <template>
-  <section class="effect-flow" aria-label="效果类工作流节点">
+  <section class="effect-flow" :aria-label="`${workflowLabel ?? '效果类'}工作流节点`">
     <header class="effect-flow__title-row">
       <div>
-        <span class="effect-flow__eyebrow">WORKFLOW 01</span>
+        <span class="effect-flow__eyebrow">WORKFLOW {{ workflowNumber ?? '01' }}</span>
         <h2>{{ currentNode.title }}</h2>
         <p>{{ currentNode.description }}</p>
       </div>
       <div class="effect-flow__actions">
-        <button type="button" class="effect-flow__branch-button" @click="emit('branches')">
+        <button
+          v-if="showBranches !== false"
+          type="button"
+          class="effect-flow__branch-button"
+          @click="emit('branches')"
+        >
           <GitBranch :size="15" aria-hidden="true" />查看版本分支树
         </button>
         <div class="effect-flow__progress" aria-label="当前步骤">
           <strong>{{ currentStepLabel }}</strong
-          ><span>/ 06</span>
+          ><span>/ {{ String(nodes.length).padStart(2, '0') }}</span>
         </div>
       </div>
     </header>
 
     <div class="effect-flow__track">
       <template v-for="(node, index) in nodes" :key="node.title">
-        <article class="effect-flow__node" :class="[nodeState(index), { 'needs-update': staleCount(index) > 0 }]">
+        <article
+          class="effect-flow__node"
+          :class="[nodeState(index), { 'needs-update': staleCount(index) > 0 }]"
+        >
           <button
-            type="button" class="effect-flow__main"
+            type="button"
+            class="effect-flow__main"
+            :disabled="disabled"
+            :aria-current="index === activeStep ? 'step' : undefined"
             :title="staleCount(index) > 0 ? `${node.title}待更新，旧结果仍可查看` : node.title"
-            @click="emit('select', index)">
+            @click="emit('select', index)"
+          >
             <span class="effect-flow__number">
-              <AlertCircle v-if="staleCount(index) > 0" :size="17" :stroke-width="2.5" aria-hidden="true" />
+              <AlertCircle
+                v-if="staleCount(index) > 0"
+                :size="17"
+                :stroke-width="2.5"
+                aria-hidden="true"
+              />
               <Check v-else-if="nodeState(index) === 'completed'" :size="12" :stroke-width="3" />
               <template v-else>{{ index + 1 }}</template>
             </span>
@@ -169,8 +204,13 @@ const nodeState = (index: number): NodeState => {
   font-weight: 700;
   cursor: pointer;
 }
-.effect-flow__branch-button:hover { background: #eaf1ff; }
-.effect-flow__branch-button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.effect-flow__branch-button:hover {
+  background: #eaf1ff;
+}
+.effect-flow__branch-button:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
 .effect-flow__progress strong {
   color: #2563eb;
   font-size: 30px;
@@ -271,13 +311,18 @@ const nodeState = (index: number): NodeState => {
   background:
     linear-gradient(135deg, #eff5ff 0%, #fff4df 100%) padding-box,
     linear-gradient(112deg, #2563eb 0%, #7652c8 48%, #d97706 100%) border-box;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.2), 0 2px 9px rgba(217, 119, 6, 0.17);
+  box-shadow:
+    0 4px 14px rgba(37, 99, 235, 0.2),
+    0 2px 9px rgba(217, 119, 6, 0.17);
 }
 .effect-flow__node.needs-update .effect-flow__number {
   color: #b45309;
   background: #fff0d4;
 }
-.effect-flow__node.needs-update small { color: #b45309; font-weight: 800; }
+.effect-flow__node.needs-update small {
+  color: #b45309;
+  font-weight: 800;
+}
 .effect-flow__connector {
   width: 18px;
   min-width: 18px;
@@ -301,8 +346,16 @@ const nodeState = (index: number): NodeState => {
   .effect-flow__title-row p {
     max-width: 72vw;
   }
-  .effect-flow__title-row { gap: 8px; }
-  .effect-flow__actions { align-items: flex-end; flex-direction: column-reverse; gap: 5px; }
-  .effect-flow__branch-button { white-space: nowrap; }
+  .effect-flow__title-row {
+    gap: 8px;
+  }
+  .effect-flow__actions {
+    align-items: flex-end;
+    flex-direction: column-reverse;
+    gap: 5px;
+  }
+  .effect-flow__branch-button {
+    white-space: nowrap;
+  }
 }
 </style>

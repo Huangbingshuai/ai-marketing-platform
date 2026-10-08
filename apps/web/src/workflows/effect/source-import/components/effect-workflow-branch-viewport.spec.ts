@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import treeSource from './EffectWorkflowBranchTree.vue?raw';
-import { branchZoomScroll, clampBranchZoom, fitBranchZoom } from './effect-workflow-branch-viewport';
+import {
+  branchZoomScroll,
+  clampBranchZoom,
+  fitBranchZoom,
+} from './effect-workflow-branch-viewport';
 
 describe('branch tree display-only viewport', () => {
   it('bounds zoom and rejects non-finite input', () => {
@@ -27,10 +31,11 @@ describe('branch tree display-only viewport', () => {
     expect(treeSource).toContain('@click="locateCurrent"');
     expect(treeSource).toContain('data-branch-key');
     expect(treeSource).toContain('zoom: treeZoom');
-    expect(treeSource).toContain('Math.max(0.8, fitBranchZoom(');
+    expect(treeSource).toMatch(/Math\.max\(\s*0\.8,\s*fitBranchZoom\(/);
     expect(treeSource).toContain('right.stageIndex - left.stageIndex');
     expect(treeSource).toContain('card.focus({ preventScroll: true })');
-    expect(treeSource.split('.branch-node:hover:not(:disabled) {')[1]?.split('}')[0])
-      .not.toContain('border-color');
+    expect(treeSource.split('.branch-node:hover:not(:disabled) {')[1]?.split('}')[0]).not.toContain(
+      'border-color',
+    );
   });
 });

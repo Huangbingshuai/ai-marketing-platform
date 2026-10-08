@@ -8,6 +8,7 @@ import {
   isImageFileAsset,
   isCurrentOnlyEffectImportAsset,
   projectMatchesSpace,
+  projectMatchesWorkflow,
   typeLabel,
   typesForSpace,
   uploadAccept,
@@ -73,6 +74,46 @@ describe('V4 asset center mapping', () => {
     expect(projectMatchesSpace(project, 'EFFECT')).toBe(true);
     expect(projectMatchesSpace(project, 'FISSION_CLONE')).toBe(true);
     expect(projectMatchesSpace(project, 'CUSTOMIZED_PROJECT')).toBe(false);
+    expect(projectMatchesWorkflow(project, 'EFFECT')).toBe(true);
+    expect(projectMatchesWorkflow(project, 'CUSTOMIZED')).toBe(false);
+    expect(projectMatchesWorkflow(project, 'FISSION')).toBe(true);
+  });
+
+  it('recognizes an empty digital-human project as a fission workflow project', () => {
+    const project = {
+      id: 'avatar-project',
+      name: '口播项目',
+      description: null,
+      status: 'ACTIVE' as const,
+      createdAt: '',
+      updatedAt: '',
+      workflowSpaces: {
+        effect: false,
+        customized: false,
+        fission: { clone: false, avatar: true, localReplace: false },
+      },
+    };
+    expect(projectMatchesSpace(project, 'FISSION_AVATAR')).toBe(true);
+    expect(projectMatchesWorkflow(project, 'FISSION')).toBe(true);
+    expect(projectMatchesWorkflow(project, 'CUSTOMIZED')).toBe(false);
+  });
+
+  it('keeps a project bound when it explicitly supports both workflows', () => {
+    const project = {
+      id: 'shared-project',
+      name: '跨工作流项目',
+      description: null,
+      status: 'ACTIVE' as const,
+      createdAt: '',
+      updatedAt: '',
+      workflowSpaces: {
+        effect: true,
+        customized: true,
+        fission: { clone: false, avatar: false, localReplace: false },
+      },
+    };
+    expect(projectMatchesWorkflow(project, 'EFFECT')).toBe(true);
+    expect(projectMatchesWorkflow(project, 'CUSTOMIZED')).toBe(true);
   });
 
   it('maps selected upload types to an appropriate file picker accept value', () => {

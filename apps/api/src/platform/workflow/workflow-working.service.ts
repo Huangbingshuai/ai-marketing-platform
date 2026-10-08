@@ -1,3 +1,10 @@
+import {
+  restoreCustomizedImportDraft,
+  CUSTOMIZED_WORKFLOW_NODES,
+  customizedWorkflowNodeId,
+  type CustomizedWorkflowBranchTreeData,
+  type CustomizedWorkflowVersionData,
+} from "@ai-marketing/contracts";
 import type {
   ActivateEffectWorkflowBranchData,
   CreateEffectWorkflowBranchData,
@@ -317,6 +324,166 @@ export class WorkflowWorkingService {
     return {
       run: toRun(run),
       nodeStates: run.nodeStates.map(toNodeState),
+    };
+  }
+
+  async initializeCustomizedRun(projectId: string): Promise<ActivateWorkflowNodeData> {
+    await this.projectService.get(projectId);
+    const run = await this.repository.initializeCustomizedRun(projectId);
+    if (run.status === 'COMPLETED')
+      throw new ApiHttpException('该工作流已完成，无法继续编辑', HttpStatus.CONFLICT, 'CONFLICT');
+    return { run: toRun(run) };
+  }
+
+  async getCustomizedBranchTree(projectId: string): Promise<CustomizedWorkflowBranchTreeData> {
+    await this.projectService.get(projectId);
+    const runs = await this.repository.listCustomizedRunBranches(projectId);
+    const active = runs.find((run) => run.activeKey === 'ACTIVE');
+    const visibleId = active?.editSessionNodeId ? active.parentWorkflowRunId : active?.id;
+    return {
+      projectId,
+      activeWorkflowRunId: active?.id ?? null,
+      branches: runs
+        .filter((run) => !run.parentWorkflowRunId || run.branchPublishedAt)
+        .map((run) => ({
+          workflowRunId: run.id,
+          parentWorkflowRunId: run.parentWorkflowRunId,
+          forkNodeId: customizedWorkflowNodeId(run.forkNodeId),
+          label: run.branchLabel ?? '定制类工作流',
+          currentNodeId: customizedWorkflowNodeId(run.currentNodeId),
+          createdAt: run.createdAt.toISOString(),
+          isActive: run.id === visibleId,
+          nodes: CUSTOMIZED_WORKFLOW_NODES.map((nodeId) => {
+            const artifacts = run.workingArtifacts.filter(
+              (item) => customizedWorkflowNodeId(item.nodeId) === nodeId,
+            );
+            return {
+              nodeId,
+              status: artifacts.some((item) => item.freshness === 'STALE')
+                ? 'STALE'
+                : artifacts.length
+                  ? 'CONFIRMED'
+                  : 'PENDING',
+              artifactCount: artifacts.length,
+              revision: artifacts.length
+                ? Math.max(...artifacts.map((item) => item.revision))
+                : null,
+              artifactCreatedAt:
+                (nodeId === customizedWorkflowNodeId(run.forkNodeId) && run.branchPublishedAt
+                  ? run.branchPublishedAt
+                  : artifacts[0]?.createdAt
+                )?.toISOString() ?? null,
+            };
+          }),
+        })),
+    };
+  }
+
+  private customizedSourceNode(nodeId: string) {
+    if (nodeId !== 'SOURCE_IMPORT')
+      throw new ApiHttpException(
+        '该定制类节点尚未接入编辑',
+        HttpStatus.BAD_REQUEST,
+        'VALIDATION_ERROR',
+      );
+  }
+
+  async beginCustomizedNodeEdit(
+    projectId: string,
+    runId: string,
+    nodeId: string,
+  ): Promise<ActivateWorkflowNodeData> {
+    await this.projectService.get(projectId);
+    this.customizedSourceNode(nodeId);
+    return {
+      run: toRun(await this.repository.beginCustomizedNodeEdit(projectId, runId)),
+    };
+  }
+
+  async cancelCustomizedNodeEdit(
+    projectId: string,
+    runId: string,
+    nodeId: string,
+  ): Promise<ActivateWorkflowNodeData> {
+    await this.projectService.get(projectId);
+    this.customizedSourceNode(nodeId);
+    return {
+      run: toRun(await this.repository.cancelCustomizedNodeEdit(projectId, runId)),
+    };
+  }
+
+  async saveCustomizedSourceVersion(
+    projectId: string,
+    runId: string,
+    expectedRevision: number,
+  ): Promise<CustomizedWorkflowVersionData> {
+    await this.projectService.get(projectId);
+    await this.repository.assertCustomizedImportEditableForConfirmation(projectId, runId);
+    const state = await this.repository.findNodeState(projectId, runId, 'SOURCE_IMPORT');
+    if (!state || state.revision !== expectedRevision)
+      throw new ApiHttpException(
+        '资料草稿已更新，请重新加载后保存版本',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
+    let draft;
+    try {
+      draft = restoreCustomizedImportDraft(state.state);
+    } catch {
+      throw new ApiHttpException('资料草稿格式不正确', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+    }
+    const files = await this.repository.findCustomizedSourceFiles(projectId, draft.materials);
+    if (files.length !== draft.materials.length)
+      throw new ApiHttpException('资料版本不可用，请重新上传', HttpStatus.CONFLICT, 'CONFLICT');
+    for (const file of files) {
+      if (!file.storageKey || file.sizeBytes < 1 || file.status === 'UNAVAILABLE')
+        throw new ApiHttpException('资料文件不可用，请重新上传', HttpStatus.CONFLICT, 'CONFLICT');
+      try {
+        const opened = await this.storage.open(file.storageKey);
+        try {
+          if (opened.sizeBytes !== file.sizeBytes) throw new Error('FILE_SIZE_MISMATCH');
+          let readable = false;
+          for await (const chunk of opened.stream) {
+            if (chunk.length) {
+              readable = true;
+              break;
+            }
+          }
+          if (!readable) throw new Error('FILE_EMPTY');
+        } finally {
+          opened.stream.destroy();
+        }
+      } catch {
+        throw new ApiHttpException(
+          '资料文件读取失败，请重新上传后保存版本',
+          HttpStatus.CONFLICT,
+          'CONFLICT',
+        );
+      }
+    }
+    const result = await this.repository.saveCustomizedSourceVersion(
+      projectId,
+      runId,
+      expectedRevision,
+    );
+    return {
+      ...result,
+      run: toRun(result.run),
+      activeWorkflowRunId: result.run.id,
+    };
+  }
+
+  async activateCustomizedBranch(
+    projectId: string,
+    runId: string,
+    nodeId: string,
+  ): Promise<ActivateWorkflowNodeData> {
+    await this.projectService.get(projectId);
+    const targetNodeId = customizedWorkflowNodeId(nodeId);
+    if (!targetNodeId)
+      throw new ApiHttpException('定制类节点标识无效', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+    return {
+      run: toRun(await this.repository.activateCustomizedRunBranch(projectId, runId, targetNodeId)),
     };
   }
 

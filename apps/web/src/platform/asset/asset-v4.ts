@@ -225,6 +225,12 @@ export const projectMatchesSpace = (project: Project, space: AssetWorkflowSpace)
   return false;
 };
 
+export const projectMatchesWorkflow = (project: Project, workflow: AssetWorkflow): boolean =>
+  WORKFLOW_SPACES[workflow].some(
+    // Avatar membership represents a workflow project, even when its assets are browsed as a library.
+    (space) => space !== 'CUSTOMIZED_VOICE_LIBRARY' && projectMatchesSpace(project, space),
+  );
+
 export const assetSearchText = (project: Project): string =>
   [project.name, project.id, project.client, project.productName]
     .filter(Boolean)

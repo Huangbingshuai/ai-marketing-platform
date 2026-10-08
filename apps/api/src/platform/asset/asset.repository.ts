@@ -11,6 +11,7 @@ import type {
 import { Inject, Injectable } from '@nestjs/common';
 import type { Prisma, Asset as AssetRecord, AssetVersion } from '../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { assertCustomizedImportEditable } from '../workflow/customized-branches';
 
 export type CreateAssetRecord = {
   name: string;
@@ -161,8 +162,24 @@ export class AssetRepository {
     data: CreateAssetRecord,
     changeNote = '初始导入版本',
     operationKey?: string,
+    editableCustomizedRunId?: string,
   ): Promise<AssetRecord> {
     return this.prisma.$transaction(async (transaction) => {
+      if (editableCustomizedRunId) {
+        await assertCustomizedImportEditable(transaction, projectId, editableCustomizedRunId);
+        // Archived files remain historical records, but must not reserve a future upload identity.
+        if (data.idempotencyKey)
+          await transaction.asset.updateMany({
+            where: {
+              projectId,
+              storageWorkflow: 'CUSTOMIZED',
+              workflowSpace: 'CUSTOMIZED_PROJECT',
+              idempotencyKey: data.idempotencyKey,
+              archivedAt: { not: null },
+            },
+            data: { idempotencyKey: null },
+          });
+      }
       if (operationKey) {
         const receipt = await transaction.assetOperationReceipt.findUnique({
           where: { projectId_operationKey: { projectId, operationKey } },

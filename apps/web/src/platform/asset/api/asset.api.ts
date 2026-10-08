@@ -21,6 +21,17 @@ import { requestJson } from '../../../api/http-client';
 const assetBasePath = (projectId: string): string =>
   `/projects/${encodeURIComponent(projectId)}/assets`;
 
+export const getAssetVersion = (
+  projectId: string,
+  assetId: string,
+  version: number,
+  signal?: AbortSignal,
+): Promise<ApiResponse<Asset>> =>
+  requestJson(`${assetBasePath(projectId)}/${encodeURIComponent(assetId)}/versions/${version}`, {
+    operation: '读取资料版本',
+    signal,
+  });
+
 export const listAssets = (
   projectId: string,
   query: AssetListQuery,

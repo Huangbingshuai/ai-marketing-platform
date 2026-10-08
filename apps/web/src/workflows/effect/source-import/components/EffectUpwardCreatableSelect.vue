@@ -19,6 +19,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ 'update:modelValue': [value: SelectValue] }>();
 const root = ref<HTMLElement | null>(null);
+const trigger = ref<HTMLButtonElement | null>(null);
 const menu = ref<HTMLElement | null>(null);
 const searchInput = ref<HTMLInputElement | null>(null);
 const open = ref(false);
@@ -79,14 +80,15 @@ const openMenu = async (): Promise<void> => {
   searchInput.value?.focus();
 };
 
-const closeMenu = (): void => {
+const closeMenu = (restoreFocus = false): void => {
   open.value = false;
   query.value = '';
+  if (restoreFocus) void nextTick(() => trigger.value?.focus());
 };
 
 const selectValue = (value: SelectValue): void => {
   emit('update:modelValue', value);
-  closeMenu();
+  closeMenu(true);
 };
 
 const createValue = (): void => {
@@ -105,7 +107,7 @@ const onKeydown = (event: KeyboardEvent): void => {
   if (!open.value) return;
   if (event.key === 'Escape') {
     event.preventDefault();
-    closeMenu();
+    closeMenu(true);
   } else if (event.key === 'ArrowDown') {
     event.preventDefault();
     activeIndex.value = Math.min(activeIndex.value + 1, filteredOptions.value.length - 1);
@@ -144,6 +146,7 @@ onBeforeUnmount(() => {
 <template>
   <div ref="root" class="effect-up-select" :class="{ disabled, open }" @keydown="onKeydown">
     <button
+      ref="trigger"
       class="effect-up-select__trigger"
       type="button"
       role="combobox"

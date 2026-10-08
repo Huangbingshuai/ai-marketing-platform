@@ -17,6 +17,7 @@ import {
   Inject,
   Param,
   ParseUUIDPipe,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -145,10 +146,11 @@ export class AssetController {
     @Headers('range') range: string | undefined,
     @Query() query: ContentQueryDto,
     @Res() response: ServerResponse,
+    version?: number,
   ): Promise<void> {
     let content;
     try {
-      content = await this.assetService.content(projectId, assetId, range);
+      content = await this.assetService.content(projectId, assetId, range, version);
     } catch (error) {
       if (error instanceof AssetRangeNotSatisfiableError) {
         response.setHeader('content-range', `bytes */${error.sizeBytes}`);
@@ -179,6 +181,28 @@ export class AssetController {
       );
     }
     await pipeline(content.stream, response);
+  }
+
+  @Get(':assetId/versions/:version/content')
+  @RawResponse()
+  versionContent(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('assetId', new ParseUUIDPipe({ version: '4' })) assetId: string,
+    @Param('version', ParseIntPipe) version: number,
+    @Headers('range') range: string | undefined,
+    @Query() query: ContentQueryDto,
+    @Res() response: ServerResponse,
+  ): Promise<void> {
+    return this.content(projectId, assetId, range, query, response, version);
+  }
+
+  @Get(':assetId/versions/:version')
+  version(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('assetId', new ParseUUIDPipe({ version: '4' })) assetId: string,
+    @Param('version', ParseIntPipe) version: number,
+  ): Promise<Asset> {
+    return this.assetService.getVersion(projectId, assetId, version);
   }
 
   @Get(':assetId')

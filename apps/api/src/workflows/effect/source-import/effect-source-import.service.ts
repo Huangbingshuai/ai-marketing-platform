@@ -1,5 +1,6 @@
+import { validateImportFile } from '../../../platform/file/import-file-validation';
 import { createReadStream } from 'node:fs';
-import { open, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -1006,64 +1007,13 @@ export class EffectSourceImportService {
   ): Promise<UploadedEffectFile> {
     if (!EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES.some((candidate) => candidate === type))
       throw badRequest('当前只支持商品图片和产品文档', 'FILE_TYPE_UNSUPPORTED');
-    if (!file || file.size < 1) throw badRequest('请选择非空文件', 'FILE_REQUIRED');
-    const max =
+    return validateImportFile(
+      file,
+      type === 'PRODUCT_IMAGE' ? 'IMAGE' : 'DOCUMENT',
       type === 'PRODUCT_IMAGE'
         ? EFFECT_IMPORT_LIMITS.maxImageBytes
-        : EFFECT_IMPORT_LIMITS.maxDocumentBytes;
-    if (file.size > max) throw badRequest('文件大小超过该资料类型限制', 'FILE_TOO_LARGE');
-    const extension = file.originalname.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
-    const allowed =
-      type === 'PRODUCT_IMAGE'
-        ? ['.jpg', '.jpeg', '.png', '.psd', '.webp']
-        : ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.md'];
-    if (!allowed.includes(extension)) throw badRequest('文件扩展名与资料类型不匹配');
-    const mimeType = safeMime(file.mimetype);
-    const allowedMimeTypes =
-      type === 'PRODUCT_IMAGE'
-        ? [
-            'image/jpeg',
-            'image/png',
-            'image/vnd.adobe.photoshop',
-            'image/webp',
-            'application/octet-stream',
-          ]
-        : [
-            'application/pdf',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'application/vnd.ms-excel',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'text/plain',
-            'text/markdown',
-            'application/octet-stream',
-          ];
-    if (!allowedMimeTypes.includes(mimeType)) throw badRequest('文件 MIME 与资料类型不匹配');
-    const handle = await open(file.path, 'r');
-    const buffer = Buffer.alloc(16);
-    try {
-      await handle.read(buffer, 0, 16, 0);
-    } finally {
-      await handle.close();
-    }
-    const signature =
-      type === 'PRODUCT_IMAGE'
-        ? buffer.subarray(0, 2).equals(Buffer.from([0xff, 0xd8])) ||
-          buffer
-            .subarray(0, 8)
-            .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
-          buffer.subarray(0, 4).toString('ascii') === '8BPS' ||
-          (buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
-            buffer.subarray(8, 12).toString('ascii') === 'WEBP')
-        : extension === '.txt' ||
-          extension === '.md' ||
-          buffer.subarray(0, 4).toString('ascii') === '%PDF' ||
-          buffer.subarray(0, 2).toString('ascii') === 'PK' ||
-          buffer
-            .subarray(0, 8)
-            .equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
-    if (!signature) throw badRequest('文件签名与资料类型不匹配');
-    return file;
+        : EFFECT_IMPORT_LIMITS.maxDocumentBytes,
+    );
   }
 
   async uploadMaterial(

@@ -871,7 +871,7 @@ describe('EffectSourceImportService', () => {
     const psdPath = join(directory, 'hero.psd');
     const xlsxPath = join(directory, 'product.xlsx');
     await writeFile(psdPath, Buffer.concat([Buffer.from('8BPS'), Buffer.alloc(12)]));
-    await writeFile(xlsxPath, Buffer.concat([Buffer.from('PK'), Buffer.alloc(14)]));
+    await writeFile(xlsxPath, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(12)]));
     const service = serviceWith();
     const assertFile = (
       service as unknown as {

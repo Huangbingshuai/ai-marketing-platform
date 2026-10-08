@@ -1,3 +1,14 @@
+import {
+  assertCustomizedImportEditable,
+  beginCustomizedEdit,
+  cancelCustomizedEdit,
+  saveCustomizedVersion,
+  activateCustomizedBranch,
+  customizedScope,
+  lockCustomizedProject,
+  customizedConflict,
+} from "./customized-branches";
+import { CUSTOMIZED_SOURCE_ARTIFACT_KEY } from "@ai-marketing/contracts";
 import { EFFECT_WORKFLOW_BRANCH_NODES, EFFECT_WORKFLOW_EDITABLE_NODES, EFFECT_TEMPLATE_CURRENT_PATH_NODE_ID } from '@ai-marketing/contracts';
 import type {
   EffectWorkflowBranchNodeId,
@@ -346,6 +357,92 @@ export class WorkflowWorkingRepository {
     return this.prisma.workflowRun.findFirst({ where: { id: workflowRunId, projectId } });
   }
 
+  assertCustomizedImportEditable(projectId: string, runId: string) {
+    return this.prisma.$transaction((tx) => assertCustomizedImportEditable(tx, projectId, runId));
+  }
+
+  async assertCustomizedImportEditableForConfirmation(projectId: string, runId: string) {
+    const run = await this.findActiveRun(projectId, 'CUSTOMIZED', 'CUSTOMIZED_PROJECT');
+    if (
+      !run ||
+      run.id !== runId ||
+      (run.editSessionNodeId && run.editSessionNodeId !== 'SOURCE_IMPORT')
+    )
+      return customizedConflict('工作流版本已切换或已完成，请重新加载');
+  }
+
+  findCustomizedSourceFiles(
+    projectId: string,
+    materials: Array<{ assetId: string; assetVersion: number }>,
+  ) {
+    if (!materials.length) return Promise.resolve([]);
+    return this.prisma.assetVersion.findMany({
+      where: {
+        projectId,
+        OR: materials.map((item) => ({ assetId: item.assetId, version: item.assetVersion })),
+        asset: {
+          projectId,
+          storageWorkflow: 'CUSTOMIZED',
+          workflowSpace: 'CUSTOMIZED_PROJECT',
+          directory: 'SOURCE_MATERIALS',
+          type: 'SOURCE_MATERIAL',
+          archivedAt: null,
+          hasFile: true,
+          status: { not: 'UNAVAILABLE' },
+        },
+      },
+    });
+  }
+
+  async initializeCustomizedRun(projectId: string) {
+    const scope = {
+      projectId,
+      workflow: 'CUSTOMIZED' as const,
+      workflowSpace: 'CUSTOMIZED_PROJECT' as const,
+      activeKey: 'ACTIVE',
+    };
+    try {
+      return await this.prisma.workflowRun.upsert({
+        where: { projectId_workflow_workflowSpace_activeKey: scope },
+        create: { ...scope, currentNodeId: 'SOURCE_IMPORT' },
+        update: {},
+      });
+    } catch (error) {
+      // Concurrent initializations must converge on the same database unique key.
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+        const run = await this.findActiveRun(projectId, 'CUSTOMIZED', 'CUSTOMIZED_PROJECT');
+        if (run) return run;
+      }
+      throw error;
+    }
+  }
+
+  listCustomizedRunBranches(projectId: string) {
+    return this.prisma.workflowRun.findMany({
+      where: customizedScope(projectId),
+      include: { workingArtifacts: { where: { availability: 'AVAILABLE' } } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  beginCustomizedNodeEdit(projectId: string, runId: string) {
+    return this.prisma.$transaction((tx) => beginCustomizedEdit(tx, projectId, runId));
+  }
+
+  cancelCustomizedNodeEdit(projectId: string, runId: string) {
+    return this.prisma.$transaction((tx) => cancelCustomizedEdit(tx, projectId, runId));
+  }
+
+  saveCustomizedSourceVersion(projectId: string, runId: string, revision: number) {
+    return this.prisma.$transaction((tx) =>
+      saveCustomizedVersion(tx, this, projectId, runId, revision),
+    );
+  }
+
+  activateCustomizedRunBranch(projectId: string, runId: string, nodeId: string) {
+    return this.prisma.$transaction((tx) => activateCustomizedBranch(tx, projectId, runId, nodeId));
+  }
+
   findActiveRun(projectId: string, workflow: AssetWorkflow, space: AssetWorkflowSpace) {
     return this.prisma.workflowRun.findFirst({
       where: {
@@ -533,6 +630,29 @@ export class WorkflowWorkingRepository {
         where: { id: workflowRunId, projectId, status: { in: [...openRunStatuses] } },
       });
       if (!run) throw new Error('WORKFLOW_RUN_NOT_FOUND');
+      if (run.workflow === 'CUSTOMIZED') {
+        await lockCustomizedProject(transaction, projectId);
+        const selected = await transaction.workflowRun.findFirst({
+          where: {
+            ...customizedScope(projectId),
+            id: workflowRunId,
+            activeKey: 'ACTIVE',
+          },
+        });
+        if (!selected) return customizedConflict('工作流版本已切换，旧草稿不能覆盖当前内容');
+        const confirmed =
+          nodeId === 'SOURCE_IMPORT' &&
+          (await transaction.workingArtifact.findFirst({
+            where: {
+              projectId,
+              workflowRunId,
+              nodeId,
+              artifactKey: CUSTOMIZED_SOURCE_ARTIFACT_KEY,
+            },
+          }));
+        if (confirmed && selected.editSessionNodeId !== nodeId)
+          return customizedConflict('请先进入编辑，再修改已确认资料');
+      }
       if (nodeId === 'TEMPLATE_MIX')
         await lockMixNodeForSourceUpdate(transaction, projectId, workflowRunId);
       const current = await transaction.workflowNodeState.findUnique({
