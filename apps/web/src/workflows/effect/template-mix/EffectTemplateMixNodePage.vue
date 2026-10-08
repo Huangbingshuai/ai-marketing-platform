@@ -176,7 +176,15 @@ import {
   readMixWorkspaceWithDeadline,
 } from './effect-template-mix-workspace-load';
 
-import { currentMixTemplateWorkspace, mixTemplateCatalogEntries, mixTemplateCatalogPendingAdded, readMixTemplateCatalog, type MixTemplateCatalog } from './effect-template-mix-template-catalog';
+import {
+  currentMixTemplateWorkspace,
+  mixTemplateCatalogEntries,
+  mixTemplateCatalogFromWorkspace,
+  mixTemplateCatalogPendingAdded,
+  mixTemplateCatalogTargetRun,
+  readMixTemplateCatalog,
+  type MixTemplateCatalog,
+} from './effect-template-mix-template-catalog';
 
 const pageProps = defineProps<{
   products: EffectImportProduct[];
@@ -2076,8 +2084,12 @@ const load = async (): Promise<void> => {
     )
       return;
     const readToken = draftRace.readToken();
-    const response = await readMixWorkspaceWithDeadline(
-      (signal) => loadEffectTemplateMixWorkspace(projectId, workflowRunId, signal),
+    const [response, tree] = await readMixWorkspaceWithDeadline(
+      (signal) =>
+        Promise.all([
+          loadEffectTemplateMixWorkspace(projectId, workflowRunId, signal),
+          getEffectWorkflowBranchTree(projectId, signal),
+        ]),
       requestController,
     );
     if (
@@ -2102,43 +2114,99 @@ const load = async (): Promise<void> => {
       switchedRun || focusedBranchTemplate?.workflowRunId === workflowRunId
         ? props.branchTemplateId
         : null;
-    const tree = await getEffectWorkflowBranchTree(projectId, requestController.signal);
-    const historyTemplateId = explicitWorkspaceTarget?.projectId === projectId &&
-      explicitWorkspaceTarget.workflowRunId === workflowRunId ? explicitWorkspaceTarget.templateId :
-      effectMixHistoryTemplateId(pageProps.branchNavigation, projectId,
-        templateContextWorkflowRunId.value, 'CONFIG', pageProps.branchNavigation !== lastBranchNavigation);
-    const directory = await readMixTemplateCatalog(tree.data, workflowRunId, response.data,
-      async (id) => (await loadEffectTemplateMixWorkspace(projectId, id, requestController.signal)).data,
-      templateContextWorkflowRunId.value);
-    if (!workbenchActive || requestController.signal.aborted || requestController !== controller ||
-      projectId !== props.projectId || workflowRunId !== props.workflowRunId)
-      return;
-    if (wasReady && installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
-      !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving'))
-      return;
-    const previewTemplateId = pageProps.previewTarget?.projectId === projectId &&
+    const historyTemplateId =
+      explicitWorkspaceTarget?.projectId === projectId &&
+      explicitWorkspaceTarget.workflowRunId === workflowRunId
+        ? explicitWorkspaceTarget.templateId
+        : effectMixHistoryTemplateId(
+            pageProps.branchNavigation,
+            projectId,
+            templateContextWorkflowRunId.value,
+            'CONFIG',
+            pageProps.branchNavigation !== lastBranchNavigation,
+          );
+    const previewTemplateId =
+      pageProps.previewTarget?.projectId === projectId &&
       pageProps.previewTarget.workflowRunId === workflowRunId &&
-      pageProps.previewTarget !== lastPreviewTarget ? pageProps.previewTarget.templateId : null;
-    const initialTemplateId = previewTemplateId ?? historyTemplateId ?? branchTemplateId ??
+      pageProps.previewTarget !== lastPreviewTarget
+        ? pageProps.previewTarget.templateId
+        : null;
+    const initialTemplateId =
+      previewTemplateId ??
+      historyTemplateId ??
+      branchTemplateId ??
       (wasReady && !switchedRun ? activeTemplateId.value : response.data.draft.activeTemplateId);
-    const runningOnTemplate = response.data.aiRuns?.some(run => run.templateId === initialTemplateId &&
-      (run.status === 'QUEUED' || run.status === 'RUNNING')) || response.data.draft.templates.some(entry =>
-        entry.id === initialTemplateId && (entry.aiFillLocked || entry.packagingLocked));
+    const runningOnTemplate =
+      response.data.aiRuns?.some(
+        (run) =>
+          run.templateId === initialTemplateId &&
+          (run.status === 'QUEUED' || run.status === 'RUNNING'),
+      ) ||
+      response.data.draft.templates.some(
+        (entry) => entry.id === initialTemplateId && (entry.aiFillLocked || entry.packagingLocked),
+      );
+    const configNavigation =
+      effectBranchNavigationMatches(
+        pageProps.branchNavigation,
+        projectId,
+        templateContextWorkflowRunId.value,
+      ) &&
+      pageProps.branchNavigation.nodeId === 'TEMPLATE_MIX' &&
+      pageProps.branchNavigation.mixStage === 'TEMPLATE';
+    const targetRunId = mixTemplateCatalogTargetRun(
+      tree.data,
+      workflowRunId,
+      initialTemplateId,
+      templateContextWorkflowRunId.value,
+    );
+    const canInstallCurrentEarly =
+      !configNavigation &&
+      (historyTemplateId === initialTemplateId ||
+        previewTemplateId === initialTemplateId ||
+        runningOnTemplate ||
+        !targetRunId ||
+        targetRunId === workflowRunId);
+    const directoryRequest = readMixTemplateCatalog(
+      tree.data,
+      workflowRunId,
+      response.data,
+      async (id) =>
+        (await loadEffectTemplateMixWorkspace(projectId, id, requestController.signal)).data,
+      templateContextWorkflowRunId.value,
+    );
+    const directory = canInstallCurrentEarly
+      ? mixTemplateCatalogFromWorkspace(workflowRunId, response.data)
+      : await directoryRequest;
+    if (
+      !workbenchActive ||
+      requestController.signal.aborted ||
+      requestController !== controller ||
+      projectId !== props.projectId ||
+      workflowRunId !== props.workflowRunId
+    )
+      return;
+    if (
+      wasReady &&
+      installedWorkspaceScope.value === `${projectId}:${workflowRunId}` &&
+      !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')
+    )
+      return;
     const currentTarget = currentMixTemplateWorkspace(directory, initialTemplateId, workflowRunId, {
       explicit: historyTemplateId === initialTemplateId || previewTemplateId === initialTemplateId,
       running: runningOnTemplate,
     });
-    const configNavigation = effectBranchNavigationMatches(pageProps.branchNavigation, projectId,
-      templateContextWorkflowRunId.value) && pageProps.branchNavigation.nodeId === 'TEMPLATE_MIX' &&
-      pageProps.branchNavigation.mixStage === 'TEMPLATE';
     if (currentTarget) {
       // Reloading an obsolete global pointer must not install its old editor beneath the current list.
       // Route to the normal scoped loader; no global branch activation or cached draft install.
       const targetRunId = currentTarget.workflowRunId;
       templateDirectory.value = directory;
       templateNavigationTarget.value = `${projectId}:${targetRunId}`;
-      rememberWorkbench({ workflowRunId: targetRunId, templateId: initialTemplateId,
-        variantId: uiByTemplate[initialTemplateId]?.selectedVariantId ?? '', view: view.value });
+      rememberWorkbench({
+        workflowRunId: targetRunId,
+        templateId: initialTemplateId,
+        variantId: uiByTemplate[initialTemplateId]?.selectedVariantId ?? '',
+        view: view.value,
+      });
       selectedTemplateWorkflowRunId.value = targetRunId;
       if (configNavigation) view.value = 'CONFIG';
       // The scoped loader installs only its own fresh response, never this directory cache.
@@ -2156,6 +2224,30 @@ const load = async (): Promise<void> => {
       focusedBranchTemplate = null;
     }
     pageState.value = 'READY';
+    if (canInstallCurrentEarly) {
+      void directoryRequest
+        .then((completeDirectory) => {
+          if (
+            workbenchActive &&
+            !requestController.signal.aborted &&
+            requestController === controller &&
+            projectId === props.projectId &&
+            workflowRunId === props.workflowRunId &&
+            installedWorkspaceScope.value === `${projectId}:${workflowRunId}`
+          )
+            templateDirectory.value = completeDirectory;
+        })
+        .catch((error: unknown) => {
+          if (
+            !(error instanceof DOMException && error.name === 'AbortError') &&
+            workbenchActive &&
+            requestController === controller &&
+            projectId === props.projectId &&
+            workflowRunId === props.workflowRunId
+          )
+            showNotice('模板目录仍在后台恢复，可先编辑当前模板', 'warning');
+        });
+    }
     if (
       switchedRun &&
       branchTemplateId &&
@@ -6798,8 +6890,10 @@ watch(activeTemplateId, () => {
 });
 let sourcePollTimer: ReturnType<typeof setInterval> | undefined;
 let sourcePollController: AbortController | undefined;
+const SOURCE_POLL_INTERVAL_MS = 15_000;
 const startSourcePolling = (): void => {
-  if (!sourcePollTimer) sourcePollTimer = setInterval(() => void refreshMaterialSources(), 5000);
+  if (!sourcePollTimer)
+    sourcePollTimer = setInterval(() => void refreshMaterialSources(), SOURCE_POLL_INTERVAL_MS);
 };
 const refreshMaterialSources = async (): Promise<void> => {
   if (
@@ -6868,7 +6962,15 @@ onActivated(() => {
         return;
       }
       if (!(await flushPendingEdits())) return;
-      await load();
+      // KeepAlive retained the authoritative workspace for this exact scope. Show it immediately
+      // and refresh sources in the background; refreshMaterialSources performs a full reload only
+      // when the server reports a different draft revision.
+      if (
+        pageState.value === 'READY' &&
+        installedWorkspaceScope.value === currentWorkspaceScope.value
+      )
+        void refreshMaterialSources();
+      else await load();
       const deferred = deferredPackagingCompletion;
       deferredPackagingCompletion = null;
       if (
