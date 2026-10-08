@@ -9,6 +9,37 @@ const validEnvironment = {
 };
 
 describe('validateEnvironment', () => {
+  it('validates bounded cache options and supports a no-cache rollback', () => {
+    expect(validateEnvironment(validEnvironment)).toMatchObject({
+      EFFECT_READ_CACHE_ENABLED: true,
+      EFFECT_READ_CACHE_LOG_METRICS: false,
+      EFFECT_READ_CACHE_TIMEOUT_MS: 150,
+      EFFECT_READ_CACHE_TTL_SECONDS: 1800,
+      EFFECT_READ_CACHE_MAX_BYTES: 2097152,
+      EFFECT_READ_CACHE_MIN_LOAD_MS: 0,
+    });
+    expect(
+      validateEnvironment({ ...validEnvironment, EFFECT_READ_CACHE_ENABLED: 'false' })
+        .EFFECT_READ_CACHE_ENABLED,
+    ).toBe(false);
+    for (const key of [
+      'EFFECT_READ_CACHE_TIMEOUT_MS',
+      'EFFECT_READ_CACHE_TTL_SECONDS',
+      'EFFECT_READ_CACHE_MAX_BYTES',
+    ])
+      expect(() => validateEnvironment({ ...validEnvironment, [key]: '0' })).toThrow(key);
+    expect(() =>
+      validateEnvironment({ ...validEnvironment, EFFECT_READ_CACHE_ENABLED: 'maybe' }),
+    ).toThrow('EFFECT_READ_CACHE_ENABLED');
+    expect(
+      validateEnvironment({ ...validEnvironment, EFFECT_READ_CACHE_MIN_LOAD_MS: '0' })
+        .EFFECT_READ_CACHE_MIN_LOAD_MS,
+    ).toBe(0);
+    for (const invalid of ['-1', '1.5', 'invalid'])
+      expect(() =>
+        validateEnvironment({ ...validEnvironment, EFFECT_READ_CACHE_MIN_LOAD_MS: invalid }),
+      ).toThrow('EFFECT_READ_CACHE_MIN_LOAD_MS');
+  });
   it('applies safe local defaults', () => {
     expect(validateEnvironment(validEnvironment)).toMatchObject({
       APP_ENV: 'development',

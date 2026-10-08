@@ -1,5 +1,8 @@
+import { readRequestGeneration } from '../../../api/read-request-generation';
+
 type EffectWorkspacePrefetchEntry = {
   createdAt: number;
+  generation: number;
   promise: Promise<unknown>;
 };
 
@@ -38,7 +41,12 @@ const waitForSharedPromise = <T>(promise: Promise<T>, signal?: AbortSignal): Pro
 const currentEntry = (key: string): EffectWorkspacePrefetchEntry | undefined => {
   const entry = entries.get(key);
   if (!entry) return undefined;
-  if (Date.now() - entry.createdAt <= EFFECT_WORKSPACE_PREFETCH_TTL_MS) return entry;
+  if (
+    entry.generation >= 0 &&
+    entry.generation === readRequestGeneration() &&
+    Date.now() - entry.createdAt <= EFFECT_WORKSPACE_PREFETCH_TTL_MS
+  )
+    return entry;
   entries.delete(key);
   return undefined;
 };
@@ -49,12 +57,16 @@ export const prefetchEffectWorkspace = <T>(key: string, loader: () => Promise<T>
 
   const entry: EffectWorkspacePrefetchEntry = {
     createdAt: Date.now(),
+    generation: readRequestGeneration(),
     promise: Promise.resolve(undefined),
   };
-  entry.promise = loader().catch((error: unknown) => {
-    if (entries.get(key) === entry) entries.delete(key);
-    throw error;
-  });
+  // Only share an in-flight request. A completed snapshot cannot prove freshness for a later visit.
+  entry.promise = Promise.resolve()
+    .then(loader)
+    .finally(() => {
+      if (entries.get(key) === entry) entries.delete(key);
+    });
+  if (entries.size >= 128) entries.delete(entries.keys().next().value!);
   entries.set(key, entry);
   return entry.promise as Promise<T>;
 };
@@ -67,8 +79,12 @@ export const loadEffectWorkspaceSnapshot = async <T>(
   const entry = currentEntry(key);
   if (!entry) return { data: await loader(signal), prefetched: false };
   entries.delete(key);
+  const data = await waitForSharedPromise(entry.promise as Promise<T>, signal);
+  signal?.throwIfAborted();
+  if (entry.generation !== readRequestGeneration())
+    return { data: await loader(signal), prefetched: false };
   return {
-    data: await waitForSharedPromise(entry.promise as Promise<T>, signal),
+    data,
     prefetched: true,
   };
 };

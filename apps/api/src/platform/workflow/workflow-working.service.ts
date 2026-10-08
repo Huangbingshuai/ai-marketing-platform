@@ -19,7 +19,8 @@ import type {
   WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
 import { EFFECT_WORKFLOW_BRANCH_NODES, EFFECT_WORKFLOW_EDITABLE_NODES } from '@ai-marketing/contracts';
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
+import { EffectReadCacheService } from '../cache/effect-read-cache.service';
 import { ApiHttpException } from '../../common/api-http-exception';
 import type { StoragePort, StorageRange, StoredStream } from '../file/storage.port';
 import { STORAGE_PORT } from '../file/storage.port';
@@ -240,6 +241,7 @@ export class WorkflowWorkingService {
     private readonly repository: WorkflowWorkingRepository,
     @Inject(ProjectService) private readonly projectService: ProjectService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
+    @Optional() @Inject(EffectReadCacheService) private readonly readCache?: EffectReadCacheService,
   ) {}
 
   private effectEditNode(nodeId: string): EffectWorkflowEditableNodeId {
@@ -319,6 +321,12 @@ export class WorkflowWorkingService {
   }
 
   async getEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
+    return this.readCache
+      ? this.readCache.read({ projectId }, 'tree', () => this.loadEffectBranchTree(projectId))
+      : this.loadEffectBranchTree(projectId);
+  }
+
+  private async loadEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
     await this.projectService.get(projectId);
     const runs = await this.repository.listEffectRunBranches(projectId);
     const byId = new Map(runs.map((run) => [run.id, run]));
@@ -1007,6 +1015,22 @@ export class WorkflowWorkingService {
   }
 
   async listArtifacts(
+    projectId: string,
+    filters: WorkingArtifactListQuery,
+  ): Promise<WorkingArtifactListData> {
+    // Cache only audited Effect node projections. An unfiltered list can include
+    // original import payloads and must keep its existing database read path.
+    if (this.readCache && filters.workflowRunId &&
+      (!filters.workflow || filters.workflow === 'EFFECT') &&
+      (!filters.space || filters.space === 'EFFECT') &&
+      ['INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER', 'TEMPLATE_MIX', 'FINAL_OUTPUT']
+        .includes(filters.nodeId ?? ''))
+      return this.readCache.read({ projectId, workflowRunId: filters.workflowRunId },
+        'artifacts', () => this.loadArtifacts(projectId, filters), filters);
+    return this.loadArtifacts(projectId, filters);
+  }
+
+  private async loadArtifacts(
     projectId: string,
     filters: WorkingArtifactListQuery,
   ): Promise<WorkingArtifactListData> {

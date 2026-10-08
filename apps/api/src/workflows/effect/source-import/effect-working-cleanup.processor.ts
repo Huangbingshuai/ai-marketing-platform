@@ -36,6 +36,17 @@ export class EffectWorkingCleanupProcessor implements OnModuleInit, OnModuleDest
     if (this.running) return;
     this.running = true;
     try {
+      // Cached page reads need not visit storage; expiry still runs independently.
+      const manifests = await this.repository.dueManifestCleanupProjects();
+      for (const { projectId } of manifests) {
+        const files = await this.repository.expireManifestPreviews(projectId);
+        for (const file of files)
+          await this.repository.enqueueStorageCleanup(
+            projectId,
+            file.storageKey,
+            'MANIFEST_EXPIRED',
+          );
+      }
       const products = await this.repository.dueRemovedProducts();
       for (const product of products)
         await this.repository.purgeRemovedProduct(product.projectId, product.id).catch(() => false);

@@ -75,6 +75,14 @@ export class EffectSourceImportRepository {
   ) {}
 
   async initialize(projectId: string, config: EffectVideoConfig): Promise<EffectWorkspaceRecord> {
+    // Restoration is a read. Updating an already complete workspace on every GET
+    // changes its physical version and invalidates downstream read projections.
+    const existing = await this.workspace(projectId);
+    if (
+      existing &&
+      ['SINGLE', 'BATCH'].every((mode) => existing.drafts.some((draft) => draft.mode === mode))
+    )
+      return existing;
     return this.prisma.$transaction(async (transaction) => {
       const workflowRun = await transaction.workflowRun.upsert({
         where: {
@@ -124,7 +132,10 @@ export class EffectSourceImportRepository {
 
   workspace(projectId: string): Promise<EffectWorkspaceRecord | null> {
     return this.prisma.effectImportWorkspace.findFirst({
-      where: { projectId, workflowRun: { activeKey: 'ACTIVE' } },
+      where: {
+        projectId,
+        workflowRun: { activeKey: 'ACTIVE', workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      },
       include: workspaceInclude,
     });
   }
@@ -191,7 +202,12 @@ export class EffectSourceImportRepository {
     globalConfig: EffectVideoConfig,
   ): Promise<EffectDraftRecord | null> {
     const result = await this.prisma.effectImportDraft.updateMany({
-      where: { projectId, mode, revision: expectedRevision, workspace: { workflowRun: { activeKey: 'ACTIVE' } } },
+      where: {
+        projectId,
+        mode,
+        revision: expectedRevision,
+        workspace: { workflowRun: { activeKey: 'ACTIVE' } },
+      },
       data: {
         globalConfig: json(globalConfig),
         revision: { increment: 1 },
@@ -1424,6 +1440,23 @@ export class EffectSourceImportRepository {
     });
   }
 
+  dueManifestCleanupProjects(): Promise<Array<{ projectId: string }>> {
+    return this.prisma.effectManifestImport.findMany({
+      where: {
+        OR: [
+          { status: 'PREVIEW', expiresAt: { lte: new Date() } },
+          {
+            status: { in: ['EXPIRED', 'CANCELLED', 'COMMITTED'] },
+            stagedFiles: { some: { transferredAt: null } },
+          },
+        ],
+      },
+      distinct: ['projectId'],
+      select: { projectId: true },
+      take: 100,
+    });
+  }
+
   async retryMaterials(
     projectId: string,
     draftId: string,
@@ -1600,7 +1633,16 @@ export class EffectSourceImportRepository {
   }
 
   async isStorageHeld(projectId: string, storageKey: string): Promise<boolean> {
-    const [holds, materials, artifactFiles, revisionFiles, legacyRevisionFiles, uploadItems, assets, versions] = await Promise.all([
+    const [
+      holds,
+      materials,
+      artifactFiles,
+      revisionFiles,
+      legacyRevisionFiles,
+      uploadItems,
+      assets,
+      versions,
+    ] = await Promise.all([
       this.prisma.effectExtractionFileHold.count({ where: { projectId, storageKey } }),
       this.prisma.effectImportMaterial.count({
         where: { projectId, OR: [{ storageKey }, { fileObject: { storageKey } }] },
@@ -1625,7 +1667,17 @@ export class EffectSourceImportRepository {
       this.prisma.asset.count({ where: { projectId, storageKey } }),
       this.prisma.assetVersion.count({ where: { projectId, storageKey } }),
     ]);
-    return holds + materials + artifactFiles + revisionFiles + legacyRevisionFiles + uploadItems + assets + versions > 0;
+    return (
+      holds +
+        materials +
+        artifactFiles +
+        revisionFiles +
+        legacyRevisionFiles +
+        uploadItems +
+        assets +
+        versions >
+      0
+    );
   }
 
   deleteOrphanedFileObject(projectId: string, storageKey: string) {
@@ -1668,7 +1720,24 @@ export class EffectSourceImportRepository {
   }
 
   deleteStorageCleanup(projectId: string, id: string) {
-    return this.prisma.storageCleanupTask.deleteMany({ where: { projectId, id } });
+    return this.prisma.$transaction(async (transaction) => {
+      const task = await transaction.storageCleanupTask.findFirst({
+        where: { projectId, id },
+        select: { storageKey: true },
+      });
+      if (!task) return { count: 0 };
+      // Storage deletion succeeded. Retire its unused preview metadata too, so
+      // periodic expiry cannot enqueue the same disposed file every minute.
+      await transaction.effectManifestStagedFile.deleteMany({
+        where: {
+          projectId,
+          storageKey: task.storageKey,
+          transferredAt: null,
+          manifestImport: { status: { in: ['EXPIRED', 'CANCELLED', 'COMMITTED'] } },
+        },
+      });
+      return transaction.storageCleanupTask.deleteMany({ where: { projectId, id } });
+    });
   }
 
   failStorageCleanup(projectId: string, id: string, message: string) {

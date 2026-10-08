@@ -31,6 +31,7 @@ import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { ProjectService } from '../../../platform/project/project.service';
+import { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import { workingArtifactContentHash } from '../../../platform/workflow/workflow-working.repository';
 import { JOB_PROGRESS_STORE } from '../../../platform/job/job.constants';
@@ -242,6 +243,7 @@ export class EffectExtractionService {
     @Optional()
     @Inject(WorkflowWorkingService)
     private readonly workingService?: WorkflowWorkingService,
+    @Optional() @Inject(EffectReadCacheService) private readonly readCache?: EffectReadCacheService,
   ) {}
 
   private async assertExtractionWritable(projectId: string, draftId: string): Promise<void> {
@@ -390,6 +392,12 @@ export class EffectExtractionService {
   }
 
   async workspace(projectId: string, draftId: string): Promise<GetEffectExtractionWorkspaceData> {
+    return this.readCache
+      ? this.readCache.read({ projectId, draftId }, 'extraction', () => this.loadWorkspace(projectId, draftId), draftId)
+      : this.loadWorkspace(projectId, draftId);
+  }
+
+  private async loadWorkspace(projectId: string, draftId: string): Promise<GetEffectExtractionWorkspaceData> {
     await this.projects.get(projectId);
     const draft = await this.repository.workspace(projectId, draftId);
     if (!draft) throw notFound('效果类资料草稿不存在');

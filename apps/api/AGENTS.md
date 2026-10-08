@@ -19,7 +19,7 @@
 - 取消、超时、重试、部分失败和人工重跑必须有明确状态迁移。
 - 活动任务唯一性必须由数据库约束、锁或等价机制保证，不能只依赖前端按钮禁用。
 - claim、lease、heartbeat 和重领必须幂等；Worker 使用独立共享 Token 与 attempt token，不获得数据库凭据。
-- Redis 只作进度缓存，读取失败时回退 PostgreSQL 权威状态。
+- Redis 可作进度缓存及经 PostgreSQL 版本校验的只读投影缓存；PostgreSQL 始终权威。缓存键按项目、工作流、Run 和业务对象隔离，TTL 不能代替新鲜度校验；缓存失败回退数据库，不缓存鉴权结果、实时任务权威状态、原始资料正文、二进制或签名 URL。
 
 ## 工作副本
 
@@ -35,6 +35,8 @@
 - Mock 只能通过显式环境配置开启；生产/集成环境缺配置时应失败并报告原因。
 
 ## 验证
+
+- 本地 API 开发统一经 `pnpm dev:api` / `pnpm --filter @ai-marketing/api dev` 启动，复用工作区进程互斥入口；不额外启动裸 `nest start --watch`。开发输出 `dist-dev` 不与另一个 watcher 或手工开发构建共用；生产构建使用 `dist`。替换旧进程前核实所有任务与返修均不活跃，按本地开发指南操作。
 
 - 覆盖权限、项目隔离、幂等、状态迁移、内容指纹、revision、旧任务回写和异常分支。
 - 修改契约时同步验证 Web、API、Contracts 和相关 Worker。

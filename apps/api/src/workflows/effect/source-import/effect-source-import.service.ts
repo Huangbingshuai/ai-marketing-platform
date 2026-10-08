@@ -42,7 +42,7 @@ import {
   type EffectVideoConfig,
   type EffectVideoConfigOverride,
 } from '@ai-marketing/contracts';
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import type { Prisma } from '../../../generated/prisma/client';
 
@@ -51,6 +51,7 @@ import type { StoredStream, StoragePort } from '../../../platform/file/storage.p
 import { STORAGE_PORT } from '../../../platform/file/storage.port';
 import { safeOriginalFileName } from '../../../platform/file/file-name';
 import { ProjectService } from '../../../platform/project/project.service';
+import { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import {
   workingArtifactContentHash,
@@ -227,6 +228,7 @@ export class EffectSourceImportService {
     @Inject(ProjectService) private readonly projectService: ProjectService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
     @Inject(WorkflowWorkingService) private readonly workingService: WorkflowWorkingService,
+    @Optional() @Inject(EffectReadCacheService) private readonly readCache?: EffectReadCacheService,
   ) {}
 
   private async assertSourceWritable(
@@ -243,28 +245,39 @@ export class EffectSourceImportService {
     // A legacy BATCH draft can be confirmed one product at a time. Until every
     // product is confirmed, its unconfirmed products may still be edited in the
     // initial Run; an already-confirmed product always needs an edit branch.
-    if ((productIds !== undefined || appendOnly || finalizeUnchangedBatch) &&
-        await this.repository.isActiveInitialRun(projectId, workspace.workflowRunId)) {
+    if (
+      (productIds !== undefined || appendOnly || finalizeUnchangedBatch) &&
+      (await this.repository.isActiveInitialRun(projectId, workspace.workflowRunId))
+    ) {
       const batch = await this.repository.draft(projectId, 'BATCH');
       if (batch && batch.validatedRevision !== batch.revision) {
-        const confirmed = new Set((await this.repository.sourceWorkingArtifacts(
-          projectId, workspace.workflowRunId,
-        )).filter((artifact) => artifact.artifactKey.startsWith('source-package:'))
-          .map((artifact) => artifact.artifactKey));
+        const confirmed = new Set(
+          (await this.repository.sourceWorkingArtifacts(projectId, workspace.workflowRunId))
+            .filter((artifact) => artifact.artifactKey.startsWith('source-package:'))
+            .map((artifact) => artifact.artifactKey),
+        );
         const activeIds = new Set(batch.products.map((product) => product.id));
         if (includeRemoved) {
           const removed = await this.repository.removedProducts(projectId, batch.id);
           removed.forEach((product) => activeIds.add(product.id));
         }
-        const hasUnconfirmed = batch.products.some(
-          (product) => !confirmed.has(`source-package:${product.id}`),
-        ) || (includeRemoved && (productIds?.some(
-          (id) => activeIds.has(id) && !confirmed.has(`source-package:${id}`),
-        ) ?? false));
+        const hasUnconfirmed =
+          batch.products.some((product) => !confirmed.has(`source-package:${product.id}`)) ||
+          (includeRemoved &&
+            (productIds?.some(
+              (id) => activeIds.has(id) && !confirmed.has(`source-package:${id}`),
+            ) ??
+              false));
         if (finalizeUnchangedBatch && !hasUnconfirmed) return;
-        if (hasUnconfirmed && (appendOnly ||
-            (productIds?.every((id) => activeIds.has(id) &&
-              !confirmed.has(`source-package:${id}`)) ?? false))) return;
+        if (
+          hasUnconfirmed &&
+          (appendOnly ||
+            (productIds?.every(
+              (id) => activeIds.has(id) && !confirmed.has(`source-package:${id}`),
+            ) ??
+              false))
+        )
+          return;
       }
     }
     await this.workingService.assertEffectNodeWritable(
@@ -296,24 +309,6 @@ export class EffectSourceImportService {
       await this.storage.delete(storageKey);
     } catch {
       await this.repository.enqueueStorageCleanup(projectId, storageKey, reason);
-    }
-  }
-
-  private async drainStorageCleanup(projectId: string): Promise<void> {
-    const tasks = await this.repository.storageCleanupTasks(projectId);
-    for (const task of tasks) {
-      if (await this.repository.isStorageHeld(projectId, task.storageKey)) continue;
-      try {
-        await this.storage.delete(task.storageKey);
-        await this.repository.deleteOrphanedFileObject(projectId, task.storageKey);
-        await this.repository.deleteStorageCleanup(projectId, task.id);
-      } catch (error) {
-        await this.repository.failStorageCleanup(
-          projectId,
-          task.id,
-          error instanceof Error ? error.message : '存储清理失败',
-        );
-      }
     }
   }
 
@@ -621,11 +616,18 @@ export class EffectSourceImportService {
     await Promise.all(
       expired.map((file) => this.deleteOrQueue(projectId, file.storageKey, 'MANIFEST_EXPIRED')),
     );
-    await this.drainStorageCleanup(projectId);
+    // Cleanup records are durable; EffectWorkingCleanupProcessor drains them.
+    // Object storage latency must not hold foreground restoration hostage.
     return workspace;
   }
 
   async getWorkspace(projectId: string): Promise<GetEffectImportWorkspaceData> {
+    return this.readCache
+      ? this.readCache.read({ projectId }, 'import', () => this.loadWorkspace(projectId))
+      : this.loadWorkspace(projectId);
+  }
+
+  private async loadWorkspace(projectId: string): Promise<GetEffectImportWorkspaceData> {
     const record = await this.initialized(projectId);
     return {
       workspace: await this.workspaceValue(record),
@@ -652,6 +654,20 @@ export class EffectSourceImportService {
 
   async getDraft(projectId: string, modeValue: string): Promise<EffectImportDraft> {
     this.assertMode(modeValue);
+    return this.readCache
+      ? this.readCache.read(
+          { projectId },
+          'import-draft',
+          () => this.loadDraft(projectId, modeValue),
+          modeValue,
+        )
+      : this.loadDraft(projectId, modeValue);
+  }
+
+  private async loadDraft(
+    projectId: string,
+    modeValue: EffectImportMode,
+  ): Promise<EffectImportDraft> {
     await this.initialized(projectId);
     const record = await this.repository.draft(projectId, modeValue);
     if (!record) throw notFound();
@@ -684,6 +700,21 @@ export class EffectSourceImportService {
     query: { keyword?: string; category?: string; page?: number; pageSize?: number },
   ): Promise<EffectImportProductListData> {
     this.assertMode(modeValue);
+    return this.readCache
+      ? this.readCache.read(
+          { projectId },
+          'import-products',
+          () => this.loadProducts(projectId, modeValue, query),
+          { mode: modeValue, ...query },
+        )
+      : this.loadProducts(projectId, modeValue, query);
+  }
+
+  private async loadProducts(
+    projectId: string,
+    modeValue: EffectImportMode,
+    query: { keyword?: string; category?: string; page?: number; pageSize?: number },
+  ): Promise<EffectImportProductListData> {
     const draft = await this.getDraft(projectId, modeValue);
     const page = Math.max(1, query.page ?? 1),
       pageSize = Math.min(100, Math.max(1, query.pageSize ?? 20));
@@ -779,7 +810,11 @@ export class EffectSourceImportService {
   ): Promise<EffectImportProductMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? [productId] : undefined,
+    );
     const current = await this.repository.product(projectId, draft.id, productId);
     if (!current) throw notFound();
     const override =
@@ -814,7 +849,11 @@ export class EffectSourceImportService {
   ): Promise<BatchDeleteEffectImportProductsData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? productIds : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? productIds : undefined,
+    );
     const result = await this.repository.deleteProducts(
       projectId,
       draft.id,
@@ -856,6 +895,20 @@ export class EffectSourceImportService {
     modeValue: string,
   ): Promise<EffectImportRemovedProductListData> {
     this.assertMode(modeValue);
+    return this.readCache
+      ? this.readCache.read(
+          { projectId },
+          'import-removed-products',
+          () => this.loadRemovedProducts(projectId, modeValue),
+          modeValue,
+        )
+      : this.loadRemovedProducts(projectId, modeValue);
+  }
+
+  private async loadRemovedProducts(
+    projectId: string,
+    modeValue: EffectImportMode,
+  ): Promise<EffectImportRemovedProductListData> {
     const draft = await this.getDraft(projectId, modeValue);
     const products = await this.repository.removedProducts(projectId, draft.id);
     return {
@@ -880,8 +933,12 @@ export class EffectSourceImportService {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
     await this.assertSourceWritable(
-      projectId, undefined, modeValue === 'BATCH' ? productIds : undefined,
-      false, false, modeValue === 'BATCH',
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? productIds : undefined,
+      false,
+      false,
+      modeValue === 'BATCH',
     );
     try {
       const restored = await this.repository.restoreProducts(
@@ -1018,7 +1075,11 @@ export class EffectSourceImportService {
   ): Promise<EffectImportMaterialMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? [productId] : undefined,
+    );
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!product) throw notFound();
     const productName = normalizeProductName(product.name) || '待提炼产品';
@@ -1151,7 +1212,11 @@ export class EffectSourceImportService {
   ): Promise<EffectImportUploadSession> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? [productId] : undefined,
+    );
     if (draft.revision !== input.expectedRevision) throw conflict();
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!product) throw notFound();
@@ -1343,7 +1408,11 @@ export class EffectSourceImportService {
   ): Promise<EffectImportMaterialMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? [productId] : undefined,
+    );
     const current = await this.repository.material(projectId, productId, materialId);
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!current || !product) throw notFound();
@@ -1451,7 +1520,11 @@ export class EffectSourceImportService {
   ): Promise<EffectImportDeleteData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? [productId] : undefined,
+    );
     const result = await this.repository.deleteMaterial(
       projectId,
       draft.id,
@@ -1514,7 +1587,11 @@ export class EffectSourceImportService {
   ): Promise<BatchRetryEffectImportProductsData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? productIds : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? productIds : undefined,
+    );
     const materials = await this.repository.retryMaterials(
       projectId,
       draft.id,
@@ -2015,7 +2092,11 @@ export class EffectSourceImportService {
   ): Promise<ValidateEffectImportProductData> {
     this.assertMode(modeValue);
     await this.initialized(projectId);
-    await this.assertSourceWritable(projectId, undefined, modeValue === 'BATCH' ? [productId] : undefined);
+    await this.assertSourceWritable(
+      projectId,
+      undefined,
+      modeValue === 'BATCH' ? [productId] : undefined,
+    );
     const draftRecord = await this.repository.draft(projectId, modeValue);
     const workspace = await this.repository.workspace(projectId);
     if (!draftRecord || !workspace) throw notFound();

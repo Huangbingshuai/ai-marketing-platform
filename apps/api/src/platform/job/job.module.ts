@@ -5,8 +5,10 @@ import { JobOutboxDispatcher } from './job-outbox.dispatcher';
 import { JobOutboxRepository } from './job-outbox.repository';
 import { RabbitMqJobPublisher } from './rabbitmq-job.publisher';
 import { RedisJobProgressStore } from './redis-job-progress.store';
+import { RedisCacheModule } from '../cache/redis-cache.module';
 
 @Module({
+  imports: [RedisCacheModule],
   providers: [
     JobOutboxRepository,
     JobOutboxDispatcher,

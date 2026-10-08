@@ -13,6 +13,13 @@ export type EnvironmentVariables = {
   WORKING_FILE_CLEANUP_GRACE_HOURS: number;
   DATABASE_URL: string;
   REDIS_URL: string;
+  EFFECT_READ_CACHE_ENABLED: boolean;
+  EFFECT_READ_CACHE_LOG_METRICS: boolean;
+  EFFECT_READ_CACHE_TIMEOUT_MS: number;
+  EFFECT_READ_CACHE_TTL_SECONDS: number;
+  EFFECT_READ_CACHE_MAX_BYTES: number;
+  EFFECT_READ_CACHE_MIN_LOAD_MS: number;
+  EFFECT_READ_CACHE_NAMESPACE: string;
   RABBITMQ_URL: string;
   EFFECT_EXTRACTION_WORKER_TOKEN: string | undefined;
   EFFECT_PROMPT_WORKER_TOKEN: string | undefined;
@@ -45,6 +52,13 @@ const requiredString = (value: unknown, key: string): string => {
 const optionalString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined;
 
+const parseBoolean = (value: unknown, key: string, fallback: boolean): boolean => {
+  if (value === undefined) return fallback;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  throw new Error(`环境变量 ${key} 必须是 true 或 false`);
+};
+
 const parsePort = (value: unknown, key: string, defaultValue: number): number => {
   const port = Number(value ?? defaultValue);
 
@@ -70,6 +84,13 @@ const parsePositiveInteger = (value: unknown, key: string, defaultValue: number)
     throw new Error(`环境变量 ${key} 必须是正整数`);
   }
 
+  return parsed;
+};
+
+const parseNonnegativeInteger = (value: unknown, key: string, defaultValue: number): number => {
+  const parsed = Number(value ?? defaultValue);
+  if (!Number.isSafeInteger(parsed) || parsed < 0)
+    throw new Error(`环境变量 ${key} 必须是非负整数`);
   return parsed;
 };
 
@@ -136,6 +157,38 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     ),
     DATABASE_URL: requiredString(raw.DATABASE_URL, 'DATABASE_URL'),
     REDIS_URL: requiredString(raw.REDIS_URL, 'REDIS_URL'),
+    EFFECT_READ_CACHE_ENABLED: parseBoolean(
+      raw.EFFECT_READ_CACHE_ENABLED,
+      'EFFECT_READ_CACHE_ENABLED',
+      true,
+    ),
+    EFFECT_READ_CACHE_LOG_METRICS: parseBoolean(
+      raw.EFFECT_READ_CACHE_LOG_METRICS,
+      'EFFECT_READ_CACHE_LOG_METRICS',
+      false,
+    ),
+    EFFECT_READ_CACHE_TIMEOUT_MS: parsePositiveInteger(
+      raw.EFFECT_READ_CACHE_TIMEOUT_MS,
+      'EFFECT_READ_CACHE_TIMEOUT_MS',
+      150,
+    ),
+    EFFECT_READ_CACHE_TTL_SECONDS: parsePositiveInteger(
+      raw.EFFECT_READ_CACHE_TTL_SECONDS,
+      'EFFECT_READ_CACHE_TTL_SECONDS',
+      1800,
+    ),
+    EFFECT_READ_CACHE_MAX_BYTES: parsePositiveInteger(
+      raw.EFFECT_READ_CACHE_MAX_BYTES,
+      'EFFECT_READ_CACHE_MAX_BYTES',
+      2097152,
+    ),
+    EFFECT_READ_CACHE_NAMESPACE:
+      optionalString(raw.EFFECT_READ_CACHE_NAMESPACE) ?? 'amp:effect-read:v1',
+    EFFECT_READ_CACHE_MIN_LOAD_MS: parseNonnegativeInteger(
+      raw.EFFECT_READ_CACHE_MIN_LOAD_MS,
+      'EFFECT_READ_CACHE_MIN_LOAD_MS',
+      0,
+    ),
     RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),
     EFFECT_EXTRACTION_WORKER_TOKEN: effectExtractionWorkerToken,
     EFFECT_PROMPT_WORKER_TOKEN: effectPromptWorkerToken,

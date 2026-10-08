@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -42,6 +43,7 @@ import {
   packagingTimelineClips,
 } from '@ai-marketing/contracts';
 import { PrismaService } from '../../../database/prisma.service';
+import { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { Prisma } from '../../../generated/prisma/client';
 import {
@@ -172,6 +174,7 @@ export class EffectFinalOutputService {
     @Inject(WorkflowWorkingRepository) readonly working: WorkflowWorkingRepository,
     @Inject(STORAGE_PORT) readonly storage: StoragePort,
     @Inject(WorkflowWorkingService) readonly branches: WorkflowWorkingService,
+    @Optional() @Inject(EffectReadCacheService) private readonly readCache?: EffectReadCacheService,
   ) {}
 
   private async packagingByVariant(
@@ -1992,6 +1995,11 @@ export class EffectFinalOutputService {
     return result;
   }
   async list(projectId: string, workflowRunId: string) {
+    const load = () => this.loadList(projectId, workflowRunId);
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'output', load) : load();
+  }
+
+  private async loadList(projectId: string, workflowRunId: string) {
     const tree = await this.branches.getEffectBranchTree(projectId);
     // A rendering child remains invisible in the tree until success, but its progress must stay
     // visible in the output page. Only its own template overrides the published parent tips.

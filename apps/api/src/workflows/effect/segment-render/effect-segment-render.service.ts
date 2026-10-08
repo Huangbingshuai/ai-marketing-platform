@@ -36,9 +36,11 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ProjectService } from '../../../platform/project/project.service';
+import { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import {
   type WorkingArtifactUpsertInput,
@@ -392,6 +394,7 @@ export class EffectSegmentRenderService {
     private readonly workingRepository: WorkflowWorkingRepository,
     @Inject(WorkflowWorkingService)
     private readonly workflowWorkingService: WorkflowWorkingService,
+    @Optional() @Inject(EffectReadCacheService) private readonly readCache?: EffectReadCacheService,
   ) {}
 
   private modelFor(capabilityKey: EffectPromptRenderCapabilityKey): string {
@@ -448,6 +451,16 @@ export class EffectSegmentRenderService {
   }
 
   private async present(record: EffectSegmentRenderBatchRecord): Promise<EffectSegmentRenderBatch> {
+    const load = () => this.presentUncached(record);
+    // Include the already-loaded row snapshot. A concurrent write between fetching the batch
+    // and checking dependency versions must not poison the cache for the new batch snapshot.
+    return this.readCache ? this.readCache.read(
+      { projectId: record.projectId, workflowRunId: record.workflowRunId }, 'render', load,
+      { productId: record.productId, batchId: record.id, snapshot: JSON.stringify(record) },
+    ) : load();
+  }
+
+  private async presentUncached(record: EffectSegmentRenderBatchRecord): Promise<EffectSegmentRenderBatch> {
     const sourceSnapshot = sourcePackageSnapshot(record.tasks[0]?.requestSnapshot);
     const [prompt, sourcePackage, marketingInsight, settingsNode] = await Promise.all([
       this.repository.promptArtifact(record.projectId, record.workflowRunId, record.productId),
@@ -588,6 +601,17 @@ export class EffectSegmentRenderService {
   }
 
   async workspace(
+    projectId: string,
+    workflowRunId: string,
+    productId: string,
+  ): Promise<GetEffectSegmentRenderWorkspaceData> {
+    return this.readCache
+      ? this.readCache.read({ projectId, workflowRunId }, 'render-workspace',
+          () => this.loadWorkspace(projectId, workflowRunId, productId), { productId })
+      : this.loadWorkspace(projectId, workflowRunId, productId);
+  }
+
+  private async loadWorkspace(
     projectId: string,
     workflowRunId: string,
     productId: string,

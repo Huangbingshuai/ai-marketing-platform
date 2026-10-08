@@ -5,6 +5,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { validateEnvironment } from './config/environment';
 import { PrismaModule } from './database/prisma.module';
+import { RedisCacheModule } from './platform/cache/redis-cache.module';
 import { HealthModule } from './platform/health/health.module';
 import { AssetModule } from './platform/asset/asset.module';
 import { ProjectModule } from './platform/project/project.module';
@@ -24,6 +25,7 @@ import { EffectTemplateMixModule } from './workflows/effect/template-mix/effect-
       validate: validateEnvironment,
     }),
     PrismaModule,
+    RedisCacheModule,
     HealthModule,
     ProjectModule,
     AssetModule,

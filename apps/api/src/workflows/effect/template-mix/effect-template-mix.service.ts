@@ -35,6 +35,7 @@ import {
 
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { publishedRenderSource, hasAdoptedRenderPrompt } from '../../../platform/workflow/effect-published-render-source';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
@@ -1201,6 +1202,7 @@ export class EffectTemplateMixService {
     @Optional()
     @Inject(EffectPackagingRepository)
     private readonly packaging?: EffectPackagingRepository,
+    @Optional() @Inject(EffectReadCacheService) private readonly readCache?: EffectReadCacheService,
   ) {}
 
   async hasSuccessfulPackaging(projectId: string, workflowRunId: string, templateId: string) {
@@ -1262,6 +1264,13 @@ export class EffectTemplateMixService {
   }
 
   async workspace(
+    projectId: string, workflowRunId: string,
+  ): Promise<EffectTemplateMixWorkspaceData> {
+    const load = () => this.loadWorkspace(projectId, workflowRunId);
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix', load) : load();
+  }
+
+  private async loadWorkspace(
     projectId: string,
     workflowRunId: string,
   ): Promise<EffectTemplateMixWorkspaceData> {
@@ -1324,6 +1333,13 @@ export class EffectTemplateMixService {
 
   /** Refresh sources and purpose pools without serializing AI run details or loading workbench locks. */
   async materialSources(
+    projectId: string, workflowRunId: string,
+  ): Promise<EffectTemplateMixSourcesData> {
+    const load = () => this.loadMaterialSources(projectId, workflowRunId);
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix-sources', load) : load();
+  }
+
+  private async loadMaterialSources(
     projectId: string,
     workflowRunId: string,
   ): Promise<EffectTemplateMixSourcesData> {

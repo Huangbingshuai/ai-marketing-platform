@@ -1,3 +1,5 @@
+import { trackApiWrite } from './read-request-generation';
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
 export const apiUrl = (path: string): string => `${apiBaseUrl}${path}`;
@@ -39,6 +41,48 @@ const responsePayload = async (response: Response): Promise<ApiErrorPayload> => 
   }
 };
 
+const recoveryDelays = [250, 750, 1500, 2500] as const;
+const waitForRecovery = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const aborted = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', aborted);
+      reject(signal?.reason ?? new DOMException('aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', aborted);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', aborted, { once: true });
+    if (signal?.aborted) aborted();
+  });
+
+/** Only read requests can be replayed across a short service restart. */
+const fetchJsonResponse = async (url: string, init: RequestInit): Promise<Response> => {
+  const canRetry = init.method === 'GET' && init.body === undefined && !init.keepalive;
+  for (let attempt = 0; ; attempt++) {
+    init.signal?.throwIfAborted();
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+    } catch (error) {
+      if (
+        !canRetry ||
+        attempt >= recoveryDelays.length ||
+        init.signal?.aborted ||
+        !isNetworkError(error)
+      )
+        throw error;
+      await waitForRecovery(recoveryDelays[attempt]!, init.signal ?? undefined);
+      continue;
+    }
+    if (!canRetry || ![502, 503, 504].includes(response.status) || attempt >= recoveryDelays.length)
+      return response;
+    await response.body?.cancel().catch(() => undefined);
+    await waitForRecovery(recoveryDelays[attempt]!, init.signal ?? undefined);
+  }
+};
+
 export const requestJson = async <T>(
   path: string,
   {
@@ -56,13 +100,15 @@ export const requestJson = async <T>(
     headers['Content-Type'] = 'application/json';
   }
 
-  const response = await fetch(apiUrl(path), {
-    method,
-    headers,
-    ...(signal ? { signal } : {}),
-    ...(keepalive ? { keepalive: true } : {}),
-    ...(body === undefined ? {} : { body: isFormData ? body : JSON.stringify(body) }),
-  });
+  const response = await trackApiWrite(method, () =>
+    fetchJsonResponse(apiUrl(path), {
+      method,
+      headers,
+      ...(signal ? { signal } : {}),
+      ...(keepalive ? { keepalive: true } : {}),
+      ...(body === undefined ? {} : { body: isFormData ? body : JSON.stringify(body) }),
+    }),
+  );
 
   if (!response.ok) {
     const fallback = `${operation}失败（HTTP ${response.status}）`;
@@ -91,13 +137,15 @@ export const requestRaw = async (
   if (body !== undefined && !isFormData && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
-  const response = await fetch(apiUrl(path), {
-    method,
-    headers,
-    ...(signal ? { signal } : {}),
-    ...(keepalive ? { keepalive: true } : {}),
-    ...(body === undefined ? {} : { body: isFormData ? body : JSON.stringify(body) }),
-  });
+  const response = await trackApiWrite(method, () =>
+    fetch(apiUrl(path), {
+      method,
+      headers,
+      ...(signal ? { signal } : {}),
+      ...(keepalive ? { keepalive: true } : {}),
+      ...(body === undefined ? {} : { body: isFormData ? body : JSON.stringify(body) }),
+    }),
+  );
   if (!response.ok) {
     const fallback = `${operation}失败（HTTP ${response.status}）`;
     const payload = await responsePayload(response);

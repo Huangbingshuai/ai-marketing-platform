@@ -13,6 +13,29 @@
 
 ## 基础设施
 
+效果类恢复投影默认启用共享 Redis 缓存，`EFFECT_READ_CACHE_TTL_SECONDS=1800`，
+`EFFECT_READ_CACHE_MIN_LOAD_MS=0`（所有经审核的投影都允许缓存）。可按实测设置正数门槛，
+或用 `EFFECT_READ_CACHE_ENABLED=false` 回退原读路径。每次命中前仍读取 PostgreSQL 依赖版本，
+改草稿即换键；任务/返修执行时绕过缓存。文件正文、二进制、签名 URL 不进入该缓存。
+修改环境变量后需按本文启动方式重启 API；生产构建不会更新正在运行的进程。
+
+资料包、草稿、产品分页与移除列表、提炼、Prompt、渲染工作区、混剪、成片和效果类确认产物投影
+均接入缓存。通用 Run 概览和不限定节点的产物列表继续数据库读取，因为包含混合节点状态或原始资料。
+
+只读性能采样与实例检查：
+
+```powershell
+node apps/api/scripts/measure-effect-read-cache.mjs <projectId> 11
+node apps/api/scripts/inspect-effect-read-cache.mjs
+```
+
+真实数据库/Redis 的隔离 HTTP 验证（仅创建、清理随机测试项目，不执行生成任务）：
+
+```powershell
+$env:EFFECT_CACHE_DATABASE_TEST='1'
+pnpm --filter @ai-marketing/api exec vitest run src/platform/cache --maxWorkers=1
+```
+
 ```powershell
 docker compose up -d
 ```
@@ -31,6 +54,14 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 - 容器访问宿主机使用 `host.docker.internal`，内部 API 端口跟随 `API_PORT`。
 
 ## 常规验证
+
+API 的 `dev` 脚本先运行 `apps/api/scripts/dev-api.mjs`。该入口按工作区持有进程互斥，重复启动会复用现有服务；Windows 进程退出时内核释放互斥。请经上述 pnpm 入口启动，不再直接运行 `nest start --watch`。迁移前直接启动的 Nest watcher 会被检查并提示 PID，入口不会自动终止它。停止开发入口会结束它启动的 Nest 与运行进程。
+
+源码热更新仍有短暂重启窗口。共用 JSON GET 对 502/503/504 或断连最多重试 4 次，等待合计 5 秒；取消信号立即停止等待。写操作、普通业务错误和原始文件请求不重试，持续故障仍显示错误。生产环境应由部署进程管理保证服务可用性。
+
+API 的 `pnpm dev:api` / `pnpm --filter @ai-marketing/api dev` 使用 `tsconfig.dev.json`，热更新输出到 `apps/api/dist-dev`；生产构建继续输出到 `apps/api/dist`。这样执行 `pnpm build` 时，Nest 的 `deleteOutDir` 不会删除正在热更新的入口文件。已有 `nest start --watch` 进程须在没有活动任务时重启为上述命令，启动日志/进程命令行应指向 `dist-dev/main`。开发与生产输出均复制资料导入模板资源。
+
+同一工作区只保留一个 API 热更新进程。出现 `EADDRINUSE` 时，检查监听端口及其父进程；失败的旧 watch 也可能在下次源码变更时再次争抢端口。确认没有活动任务后，停止已核实属于当前 API 的重复 watch 及其子进程，再启动一个开发进程。
 
 本地 API 若以 `node dist/main.js` 运行，构建只更新磁盘文件，不会更新已运行进程中的代码。修复后先确认监听 `API_PORT` 的进程启动方式；普通启动须在无活动任务时重启，不能把构建成功视为运行服务已经生效。重启后检查健康接口、进程启动时间及实际业务输入/请求；前端请求拦截与源码单测不能代替服务生效验证。
 

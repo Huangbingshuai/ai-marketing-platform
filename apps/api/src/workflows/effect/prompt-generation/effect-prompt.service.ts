@@ -46,6 +46,7 @@ import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { ProjectService } from '../../../platform/project/project.service';
+import { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
 import {
   WorkflowWorkingRepository,
   workingArtifactContentHash,
@@ -483,6 +484,7 @@ export class EffectPromptService {
     @Optional()
     @Inject(WorkflowWorkingService)
     private readonly workingService?: WorkflowWorkingService,
+    @Optional() @Inject(EffectReadCacheService) private readonly readCache?: EffectReadCacheService,
   ) {}
 
   private async assertPromptWritable(projectId: string, workflowRunId: string): Promise<void> {
@@ -547,6 +549,12 @@ export class EffectPromptService {
   }
 
   async workspace(projectId: string, workflowRunId: string): Promise<GetEffectPromptWorkspaceData> {
+    return this.readCache
+      ? this.readCache.read({ projectId, workflowRunId }, 'prompt', () => this.loadWorkspace(projectId, workflowRunId))
+      : this.loadWorkspace(projectId, workflowRunId);
+  }
+
+  private async loadWorkspace(projectId: string, workflowRunId: string): Promise<GetEffectPromptWorkspaceData> {
     await this.requireWorkflow(projectId, workflowRunId);
     const products = await this.repository.products(projectId, workflowRunId);
     const states: EffectPromptProductState[] = await Promise.all(
@@ -815,6 +823,15 @@ export class EffectPromptService {
   }
 
   async result(
+    projectId: string, workflowRunId: string, productId: string, page: number, pageSize: number,
+    query = '', purpose?: EffectPromptFragmentType, purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
+  ): Promise<GetEffectPromptResultData> {
+    const load = () => this.loadResult(projectId, workflowRunId, productId, page, pageSize, query, purpose, purposeMatch);
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'prompt-result', load,
+      { productId, page, pageSize, query, purpose, purposeMatch }) : load();
+  }
+
+  private async loadResult(
     projectId: string,
     workflowRunId: string,
     productId: string,

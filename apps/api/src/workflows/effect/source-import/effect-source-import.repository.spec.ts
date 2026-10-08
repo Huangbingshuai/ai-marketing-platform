@@ -5,6 +5,60 @@ import type { PrismaService } from '../../../database/prisma.service';
 import { EffectSourceImportRepository } from './effect-source-import.repository';
 
 describe('EffectSourceImportRepository project isolation', () => {
+  it('retires only disposed, untransferred preview metadata after successful storage cleanup', async () => {
+    const transaction = {
+      storageCleanupTask: {
+        findFirst: vi.fn().mockResolvedValue({ storageKey: 'preview/a' }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      effectManifestStagedFile: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const db = {
+      $transaction: (callback: (tx: typeof transaction) => unknown) => callback(transaction),
+    };
+    const repository = new EffectSourceImportRepository(
+      db as unknown as PrismaService,
+      {} as never,
+    );
+    expect(await repository.deleteStorageCleanup('project-a', 'cleanup-a')).toEqual({ count: 1 });
+    expect(transaction.effectManifestStagedFile.deleteMany).toHaveBeenCalledWith({
+      where: {
+        projectId: 'project-a',
+        storageKey: 'preview/a',
+        transferredAt: null,
+        manifestImport: { status: { in: ['EXPIRED', 'CANCELLED', 'COMMITTED'] } },
+      },
+    });
+    transaction.storageCleanupTask.findFirst.mockResolvedValue(null as never);
+    expect(await repository.deleteStorageCleanup('project-b', 'cleanup-a')).toEqual({ count: 0 });
+    expect(transaction.effectManifestStagedFile.deleteMany).toHaveBeenCalledTimes(1);
+  });
+  it('restores a complete active Effect workspace without starting any write transaction', async () => {
+    const workspace = { id: 'workspace-a', drafts: [{ mode: 'SINGLE' }, { mode: 'BATCH' }] };
+    const db = {
+      effectImportWorkspace: { findFirst: vi.fn().mockResolvedValue(workspace) },
+      $transaction: vi.fn(),
+    };
+    const repository = new EffectSourceImportRepository(
+      db as unknown as PrismaService,
+      {} as never,
+    );
+    expect(await repository.initialize('project-a', DEFAULT_EFFECT_VIDEO_CONFIG)).toBe(workspace);
+    expect(await repository.initialize('project-a', DEFAULT_EFFECT_VIDEO_CONFIG)).toBe(workspace);
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.effectImportWorkspace.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          projectId: 'project-a',
+          workflowRun: {
+            activeKey: 'ACTIVE',
+            workflow: 'EFFECT',
+            workflowSpace: 'EFFECT',
+          },
+        },
+      }),
+    );
+  });
   it('keeps confirmed artifacts untouched while autosaving a product edit', async () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const updateProduct = vi.fn().mockResolvedValue({ id: 'product-a' });
@@ -56,6 +110,7 @@ describe('EffectSourceImportRepository project isolation', () => {
     };
     const repository = new EffectSourceImportRepository(
       {
+        effectImportWorkspace: { findFirst: vi.fn().mockResolvedValue(null) },
         $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
       } as unknown as PrismaService,
       {} as never,
