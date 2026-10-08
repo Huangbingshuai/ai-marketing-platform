@@ -50,6 +50,14 @@ const basePath = (projectId: string): string =>
 const draftPath = (projectId: string, mode: EffectImportMode): string =>
   `${basePath(projectId)}/drafts/${mode}`;
 
+export const effectImportMaterialContentPath = (
+  projectId: string,
+  mode: EffectImportMode,
+  productId: string,
+  materialId: string,
+): string =>
+  `${draftPath(projectId, mode)}/products/${encodeURIComponent(productId)}/materials/${encodeURIComponent(materialId)}/content`;
+
 const revisionHeaders = (revision: number): Record<string, string> => ({
   'If-Match': String(revision),
 });

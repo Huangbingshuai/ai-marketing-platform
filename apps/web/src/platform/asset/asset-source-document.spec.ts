@@ -4,9 +4,11 @@ import { buildBrowserAssets } from './project-asset-browser';
 import { extractSourceDocxText } from './asset-source-document-parser';
 import {
   parseSourceDocx,
+  readSourceDocumentAtPath,
   readSourceDocument,
   sourceDocumentContentPath,
   sourceDocumentMode,
+  sourceDocumentModeFromFileName,
   SOURCE_DOCUMENT_PREVIEW_LIMIT,
 } from './asset-source-document';
 import sourceReader from './components/AssetSourceDocumentReader.vue?raw';
@@ -150,6 +152,26 @@ describe('source document reading', () => {
     for (const format of ['txt', 'md', 'csv', 'json'])
       expect(sourceDocumentMode(asset(`资料.${format}`))).toBe('TEXT');
     expect(sourceDocumentMode(asset('资料.doc'))).toBe('UNSUPPORTED');
+    expect(sourceDocumentModeFromFileName('资料包.DOCX')).toBe('DOCX');
+    expect(sourceDocumentModeFromFileName('资料包.pdf?download=1')).toBe('PDF');
+    expect(sourceDocumentModeFromFileName('资料包.xlsx')).toBe('UNSUPPORTED');
+  });
+  it('reads a caller-supplied project-scoped document path through the shared bounded reader', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('完整资料正文'));
+    vi.stubGlobal('fetch', fetch);
+    expect(
+      await (
+        await readSourceDocumentAtPath(
+          '/projects/p1/workflows/effect/source-import/drafts/SINGLE/products/product-1/materials/material-1/content',
+          1024,
+          'TEXT',
+          new AbortController().signal,
+        )
+      ).text(),
+    ).toBe('完整资料正文');
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      '/api/projects/p1/workflows/effect/source-import/drafts/SINGLE/products/product-1/materials/material-1/content',
+    );
   });
   it('reads through scoped API IDs, not a supplied external URL, and returns exact original text', async () => {
     const item = asset('资料.txt');

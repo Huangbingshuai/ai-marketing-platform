@@ -150,15 +150,20 @@ const canvasFreshness = useEffectCanvasFreshness(() => ({
   projectId: projectContext.currentProject.value?.id ?? '',
   workflowRunId: workspace.value?.workflowRunId ?? '',
   publishedWorkflowRunId: activeWorkflowRun.value?.isTemporaryBranch
-    ? activeWorkflowRun.value.parentWorkflowRunId : null,
+    ? activeWorkflowRun.value.parentWorkflowRunId
+    : null,
   activeStep: activeStep.value,
   enabled: pageStatus.value === 'success',
 }));
 const canvasStaleCounts = canvasFreshness.staleCounts;
 watch(canvasFreshness.branchTree, (tree) => {
   // The open version tree and canvas must use the same completed-update projection.
-  if (branchTreeOpen.value && !branchSwitching.value &&
-    tree?.projectId === projectContext.currentProject.value?.id) branchTree.value = tree;
+  if (
+    branchTreeOpen.value &&
+    !branchSwitching.value &&
+    tree?.projectId === projectContext.currentProject.value?.id
+  )
+    branchTree.value = tree;
 });
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const promptGenerationNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
@@ -1744,10 +1749,16 @@ const selectBranch = async (
     await activationQueue.catch(() => undefined);
     if (currentProjectId.value !== projectId) return;
     const switchedRun = workspace.value?.workflowRunId !== target.workflowRunId;
-    const selectingTemplatePath = Boolean(target.templateId &&
-      (target.nodeId === 'FINAL_OUTPUT' || target.mixStage === 'FILL' || target.mixStage === 'PACKAGING'));
-    if (switchedRun || selectingTemplatePath) await activateEffectWorkflowBranch(projectId,
-      target.workflowRunId, undefined, { templateId: selectingTemplatePath ? target.templateId : null });
+    const selectingTemplatePath = Boolean(
+      target.templateId &&
+      (target.nodeId === 'FINAL_OUTPUT' ||
+        target.mixStage === 'FILL' ||
+        target.mixStage === 'PACKAGING'),
+    );
+    if (switchedRun || selectingTemplatePath)
+      await activateEffectWorkflowBranch(projectId, target.workflowRunId, undefined, {
+        templateId: selectingTemplatePath ? target.templateId : null,
+      });
     if (currentProjectId.value !== projectId) return;
     branchNavigation.value = target;
     mixPreviewTarget.value = null;
@@ -2082,8 +2093,9 @@ onBeforeUnmount(() => {
           ref="templateMixNode"
           :project-id="currentProjectId"
           :workflow-run-id="workspace?.workflowRunId ?? ''"
-          :published-workflow-run-id="activeWorkflowRun?.isTemporaryBranch
-            ? activeWorkflowRun.parentWorkflowRunId : null"
+          :published-workflow-run-id="
+            activeWorkflowRun?.isTemporaryBranch ? activeWorkflowRun.parentWorkflowRunId : null
+          "
           :products="products"
           :branch-navigation="branchNavigation"
           :preview-target="mixPreviewTarget"
@@ -2091,7 +2103,9 @@ onBeforeUnmount(() => {
           @next="selectWorkflowStep(5)"
           @workflow-run-change="handleTemplateMixWorkflowRunChange"
           @mix-freshness="canvasFreshness.acceptMix"
-          @navigation-consumed="branchNavigation = consumeEffectNavigation(branchNavigation, $event)"
+          @navigation-consumed="
+            branchNavigation = consumeEffectNavigation(branchNavigation, $event)
+          "
           @preview-consumed="mixPreviewTarget = consumeEffectNavigation(mixPreviewTarget, $event)"
           @notice="showNotice"
         />
@@ -2116,47 +2130,50 @@ onBeforeUnmount(() => {
               <h1>资料包导入</h1>
               <p>整理产品图片、文本资料与电商链接</p>
             </div>
-            <button
-              v-if="!sourceEditing"
-              type="button"
-              :disabled="sourceEditBusy || transitioning"
-              @click="beginSourceEdit"
-            >
-              <Pencil :size="14" />进入编辑
-            </button>
-            <button
-              v-else-if="
-                activeWorkflowRun?.isTemporaryBranch &&
-                activeWorkflowRun.editNodeId === 'SOURCE_IMPORT'
-              "
-              type="button"
-              :disabled="sourceEditBusy || validatingDraft || transitioning"
-              @click="cancelSourceEdit"
-            >
-              <X :size="14" />取消编辑
-            </button>
-            <button
-              v-if="sourceEditing"
-              type="button"
-              :aria-busy="validatingDraft"
-              :disabled="
-                transitioning ||
-                sourceEditBusy ||
-                saveState === 'saving' ||
-                !draft?.productCount ||
-                validatingDraft
-              "
-              @click="validateDraft"
-            >
-              <LoaderCircle v-if="validatingDraft" class="spin" :size="14" />
-              <CheckCircle2 v-else :size="14" />{{ validatingDraft ? '正在校验…' : '保存版本' }}
-            </button>
-            <div class="save-indicator" :class="saveState">
-              <CloudUpload :size="14" />{{ saveStateLabel }}
+            <div class="node-heading__actions">
+              <button
+                v-if="!sourceEditing"
+                type="button"
+                :disabled="sourceEditBusy || transitioning"
+                @click="beginSourceEdit"
+              >
+                <Pencil :size="14" />进入编辑
+              </button>
+              <button
+                v-else-if="
+                  activeWorkflowRun?.isTemporaryBranch &&
+                  activeWorkflowRun.editNodeId === 'SOURCE_IMPORT'
+                "
+                type="button"
+                :disabled="sourceEditBusy || validatingDraft || transitioning"
+                @click="cancelSourceEdit"
+              >
+                <X :size="14" />取消编辑
+              </button>
+              <button
+                v-if="sourceEditing"
+                class="node-heading__save-action"
+                type="button"
+                :aria-busy="validatingDraft"
+                :disabled="
+                  transitioning ||
+                  sourceEditBusy ||
+                  saveState === 'saving' ||
+                  !draft?.productCount ||
+                  validatingDraft
+                "
+                @click="validateDraft"
+              >
+                <LoaderCircle v-if="validatingDraft" class="spin" :size="14" />
+                <CheckCircle2 v-else :size="14" />{{ validatingDraft ? '正在校验…' : '保存版本' }}
+              </button>
+              <button type="button" @click="downloadProductPackageTemplate">
+                <FileText :size="14" />下载资料包模板
+              </button>
+              <div class="save-indicator" :class="saveState">
+                <CloudUpload :size="14" />{{ saveStateLabel }}
+              </div>
             </div>
-            <button type="button" @click="downloadProductPackageTemplate">
-              <FileText :size="14" />下载资料包模板
-            </button>
           </section>
 
           <section v-if="removedProducts.length" class="recently-removed" aria-live="polite">
@@ -2220,6 +2237,7 @@ onBeforeUnmount(() => {
                 </div>
                 <ProductImportEditor
                   v-else
+                  :mode="currentMode"
                   :product="singleProduct"
                   :busy-material-ids="busyMaterialIds"
                   :link-busy="busyCommerceProductIds.has(singleProduct.id)"
@@ -2296,6 +2314,7 @@ onBeforeUnmount(() => {
                     v-for="product in products"
                     :key="product.id"
                     batch
+                    :mode="currentMode"
                     :position="products.indexOf(product) + 1"
                     :product="product"
                     :disabled="transitioning || !sourceEditing"
@@ -2333,7 +2352,6 @@ onBeforeUnmount(() => {
               </p>
             </div>
           </section>
-
 
           <WorkflowNodeFooter
             :show-validate="false"
@@ -2690,7 +2708,6 @@ onBeforeUnmount(() => {
 }
 .save-indicator {
   display: inline-flex;
-  margin-left: auto;
   align-items: center;
   gap: 5px;
   color: #708098;
@@ -2706,7 +2723,14 @@ onBeforeUnmount(() => {
 .save-indicator.dirty {
   color: #b47a26;
 }
-.node-heading > button {
+.node-heading__actions {
+  display: flex;
+  margin-left: auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.node-heading__actions > button {
   display: inline-flex;
   height: 36px;
   padding: 0 13px;
@@ -3121,6 +3145,11 @@ onBeforeUnmount(() => {
   }
   .node-heading > div:nth-child(2) {
     width: calc(100% - 60px);
+  }
+  .node-heading__actions {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
   }
   .node-heading p {
     display: none;

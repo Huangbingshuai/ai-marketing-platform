@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import pageSource from './EffectImportNodePage.vue?raw';
+import { effectImportMaterialContentPath } from './api/effect-import.api';
 import manifestDialogSource from './components/BatchManifestImportDialog.vue?raw';
+import contentViewerSource from './components/EffectImportDocumentReaderDialog.vue?raw';
 import globalConfigSource from './components/GlobalVideoConfigPanel.vue?raw';
 import productEditorSource from './components/ProductImportEditor.vue?raw';
 import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from './effect-import-options';
@@ -16,8 +18,9 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).toContain('@branch-activated="refreshActiveRunInPlace(currentProjectId)"');
     // A full update in the mix or output node forks a child Run, and those pages report it here so
     // the canvas follows instead of leaving the user on the published branch.
-    expect(pageSource.match(/@workflow-run-change="refreshActiveRunInPlace\(currentProjectId\)"/gu))
-      .toHaveLength(3);
+    expect(
+      pageSource.match(/@workflow-run-change="refreshActiveRunInPlace\(currentProjectId\)"/gu),
+    ).toHaveLength(3);
     expect(pageSource).toContain('@workflow-run-change="handleTemplateMixWorkflowRunChange"');
     expect(pageSource).toContain('@workflow-run-change="handleFinalOutputWorkflowRunChange"');
   });
@@ -26,9 +29,15 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).toContain('branchNavigation.value = effectTemplateStepNavigation(');
     expect(pageSource).toContain('templateMixNode.value?.getCurrentTemplateId() ?? null');
     expect(pageSource).toContain('@back="returnToOutputTemplateMix"');
-    expect(pageSource).toMatch(/workflowRunId === workspace\.value\?\.workflowRunId\s*&&\s*activeStep\.value === 4/);
-    expect(pageSource).toContain('@navigation-consumed="branchNavigation = consumeEffectNavigation(branchNavigation, $event)"');
-    expect(pageSource).toContain('@preview-consumed="mixPreviewTarget = consumeEffectNavigation(mixPreviewTarget, $event)"');
+    expect(pageSource).toMatch(
+      /workflowRunId === workspace\.value\?\.workflowRunId\s*&&\s*activeStep\.value === 4/,
+    );
+    expect(pageSource).toMatch(
+      /@navigation-consumed="\s*branchNavigation = consumeEffectNavigation\(branchNavigation, \$event\)\s*"/,
+    );
+    expect(pageSource).toMatch(
+      /@preview-consumed="\s*mixPreviewTarget = consumeEffectNavigation\(mixPreviewTarget, \$event\)\s*"/,
+    );
   });
 
   it('copies the active branch only after flushing pending drafts', () => {
@@ -52,7 +61,9 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).toContain('prefetchBranchTree(projectId);');
     expect(pageSource).toContain('branchPrefetchController?.abort();');
     expect(pageSource).toContain('branchTreeOpen.value = true;\n  void loadBranchTree();');
-    expect(pageSource).not.toContain('const openBranchTree = (): void => {\n  branchTree.value = null;');
+    expect(pageSource).not.toContain(
+      'const openBranchTree = (): void => {\n  branchTree.value = null;',
+    );
   });
 
   it('creates an upload target automatically instead of showing an empty-state gate', () => {
@@ -181,7 +192,7 @@ describe('effect import identity boundary', () => {
     expect(manifestDialogSource).not.toContain('<th>品类</th>');
   });
 
-  it('keeps next-step access locked and places whole-node validation beside the edit button', () => {
+  it('keeps next-step access locked and places version saving at the far right of the header', () => {
     expect(pageSource).not.toContain('unnamedProductCount');
     expect(pageSource).toContain('validateEffectImportDraft(');
     expect(pageSource).not.toContain('<WorkflowNodeDraftBar');
@@ -197,6 +208,16 @@ describe('effect import identity boundary', () => {
     expect(pageSource).toContain('<X :size="14" />取消编辑');
     expect(pageSource).toContain('<CheckCircle2 v-else :size="14" />');
     expect(pageSource).toContain("validatingDraft ? '正在校验…' : '保存版本'");
+    expect(pageSource).toContain('class="node-heading__actions"');
+    expect(pageSource.indexOf('<Pencil :size="14" />进入编辑')).toBeLessThan(
+      pageSource.indexOf('class="node-heading__save-action"'),
+    );
+    expect(pageSource.indexOf('class="node-heading__save-action"')).toBeLessThan(
+      pageSource.indexOf('下载资料包模板'),
+    );
+    expect(pageSource.indexOf('下载资料包模板')).toBeLessThan(
+      pageSource.indexOf('class="save-indicator"'),
+    );
     expect(pageSource).toContain('@next="advanceDraft"');
     expect(productEditorSource).not.toContain('完成校验');
     expect(pageSource).not.toContain('个产品未填写名称');
@@ -209,6 +230,37 @@ describe('effect import material previews', () => {
     expect(productEditorSource).toContain('<EffectImportImagePreview :material="material" />');
     expect(productEditorSource).not.toContain('failedThumbnailIds');
     expect(productEditorSource).toMatch(/v-else class="file-extension"/);
+  });
+
+  it('opens ready product documents as read-only content without presenting the action as preview', () => {
+    expect(productEditorSource).toContain("material.type === 'PRODUCT_DOCUMENT'");
+    expect(productEditorSource).toContain("material.status === 'READY'");
+    expect(productEditorSource).toContain('<FileText v-else :size="13" />查看内容');
+    expect(productEditorSource).toContain('<EffectImportContentViewerDialog');
+    expect(pageSource).toContain(':mode="currentMode"');
+    expect(contentViewerSource).toContain('只读查看，不会修改草稿或工作副本');
+    expect(contentViewerSource).toContain('readSourceDocumentAtPath(');
+    expect(contentViewerSource).toContain('parseSourceDocx(');
+    expect(contentViewerSource).toContain('type="application/pdf"');
+    expect(contentViewerSource).not.toContain('v-html');
+    expect(contentViewerSource).not.toContain('保存');
+    expect(effectImportMaterialContentPath('项目 1', 'SINGLE', '产品/1', '素材?1')).toBe(
+      '/projects/%E9%A1%B9%E7%9B%AE%201/workflows/effect/source-import/drafts/SINGLE/products/%E4%BA%A7%E5%93%81%2F1/materials/%E7%B4%A0%E6%9D%90%3F1/content',
+    );
+  });
+
+  it('opens ready product images in the same read-only content viewer without cropping', () => {
+    expect(productEditorSource).toContain("material.type === 'PRODUCT_IMAGE'");
+    expect(productEditorSource).toContain(
+      '<ImageIcon v-if="material.type === \'PRODUCT_IMAGE\'" :size="13" />',
+    );
+    expect(contentViewerSource).toContain(
+      "const isImage = computed(() => props.material.type === 'PRODUCT_IMAGE')",
+    );
+    expect(contentViewerSource).toContain(':href="originalContentUrl"');
+    expect(contentViewerSource).toContain('<figure v-if="isImage && imageSource"');
+    expect(contentViewerSource).toContain('按原始比例显示，图片内容不会被裁切');
+    expect(contentViewerSource).toMatch(/\.image-reader > img[\s\S]*object-fit:\s*contain;/);
   });
 });
 

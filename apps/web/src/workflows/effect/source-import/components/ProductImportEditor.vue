@@ -2,10 +2,22 @@
 import {
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
   type EffectImportMaterial,
+  type EffectImportMode,
   type EffectImportProduct,
 } from '@ai-marketing/contracts';
-import { AlertTriangle, CheckCircle2, Link2, Plus, RefreshCw, Trash2, Upload } from '@lucide/vue';
-import { computed, ref } from 'vue';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  FileText,
+  Image as ImageIcon,
+  Link2,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Upload,
+} from '@lucide/vue';
+import { computed, nextTick, ref } from 'vue';
+import EffectImportContentViewerDialog from './EffectImportDocumentReaderDialog.vue';
 import EffectImportImagePreview from './EffectImportImagePreview.vue';
 
 const props = withDefaults(
@@ -14,6 +26,7 @@ const props = withDefaults(
     busyMaterialIds?: ReadonlySet<string>;
     disabled?: boolean;
     linkBusy?: boolean;
+    mode: EffectImportMode;
     position?: number;
     product: EffectImportProduct;
     selected?: boolean;
@@ -43,6 +56,8 @@ const emit = defineEmits<{
 
 const unifiedUploadAccept = '.jpg,.jpeg,.png,.psd,.webp,.doc,.docx,.xls,.xlsx,.pdf,.txt,.md';
 const commerceInput = ref<HTMLInputElement | null>(null);
+const readingMaterial = ref<EffectImportMaterial | null>(null);
+let readingTrigger: HTMLButtonElement | null = null;
 const savedCommerceUrl = computed(() => props.product.commerceUrl?.trim() ?? '');
 const importedItemCount = computed(
   () => props.product.materials.length + Number(Boolean(savedCommerceUrl.value)),
@@ -83,6 +98,16 @@ const extension = (material: EffectImportMaterial): string => {
 };
 const materialName = (material: EffectImportMaterial): string =>
   material.originalFileName || material.expectedFileName || '待补传文件';
+const openDocument = (material: EffectImportMaterial, event: MouseEvent): void => {
+  readingTrigger = event.currentTarget as HTMLButtonElement;
+  readingMaterial.value = material;
+};
+const closeDocument = (): void => {
+  readingMaterial.value = null;
+  const trigger = readingTrigger;
+  readingTrigger = null;
+  void nextTick(() => trigger?.focus());
+};
 const replaceCommerceLink = (): void => {
   commerceInput.value?.focus();
   commerceInput.value?.select();
@@ -229,6 +254,20 @@ const statusText = (material: EffectImportMaterial): string =>
           }}</em
         >
         <button
+          v-if="
+            (material.type === 'PRODUCT_DOCUMENT' || material.type === 'PRODUCT_IMAGE') &&
+            material.status === 'READY' &&
+            material.contentUrl
+          "
+          class="file-read"
+          type="button"
+          :disabled="busyMaterialIds.has(material.id)"
+          @click="openDocument(material, $event)"
+        >
+          <ImageIcon v-if="material.type === 'PRODUCT_IMAGE'" :size="13" />
+          <FileText v-else :size="13" />查看内容
+        </button>
+        <button
           v-if="material.status === 'FAILED' && material.failureDisposition === 'RETRYABLE'"
           type="button"
           :disabled="disabled || busyMaterialIds.has(material.id)"
@@ -288,6 +327,12 @@ const statusText = (material: EffectImportMaterial): string =>
         commitStatusLabel
       }}</span>
     </footer>
+    <EffectImportContentViewerDialog
+      v-if="readingMaterial"
+      :material="readingMaterial"
+      :mode="mode"
+      @close="closeDocument"
+    />
   </article>
 </template>
 
@@ -624,6 +669,14 @@ const statusText = (material: EffectImportMaterial): string =>
   color: #a6acb7;
   border-color: transparent;
 }
+.material-file-row button.file-read {
+  color: #2563eb;
+  border-color: #cfddfb;
+}
+.material-file-row button.file-read:hover {
+  background: #f4f7ff;
+  border-color: #a9c1f6;
+}
 .commit-footer {
   display: flex;
   justify-content: flex-end;
@@ -708,6 +761,15 @@ input:disabled {
 @media (max-width: 780px) {
   .source-dropzone {
     min-height: 190px;
+  }
+  .material-file-row {
+    flex-wrap: wrap;
+  }
+  .material-file-row .file-copy {
+    flex: 1 1 calc(100% - 64px);
+  }
+  .material-file-row > em {
+    margin-left: 56px;
   }
   .completion-badge {
     display: none;
