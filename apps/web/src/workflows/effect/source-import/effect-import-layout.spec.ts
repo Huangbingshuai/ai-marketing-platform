@@ -206,8 +206,8 @@ describe('effect import identity boundary', () => {
 describe('effect import material previews', () => {
   it('renders product images from the project-scoped content URL instead of an extension badge', () => {
     expect(productEditorSource).toContain("material.type === 'PRODUCT_IMAGE'");
-    expect(productEditorSource).toContain(':src="thumbnailUrl(material)!"');
-    expect(productEditorSource).toContain('@error="markThumbnailFailed(material.id)"');
+    expect(productEditorSource).toContain('<EffectImportImagePreview :material="material" />');
+    expect(productEditorSource).not.toContain('failedThumbnailIds');
     expect(productEditorSource).toMatch(/v-else class="file-extension"/);
   });
 });

@@ -6,6 +6,7 @@ import {
 } from '@ai-marketing/contracts';
 import { AlertTriangle, CheckCircle2, Link2, Plus, RefreshCw, Trash2, Upload } from '@lucide/vue';
 import { computed, ref } from 'vue';
+import EffectImportImagePreview from './EffectImportImagePreview.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -42,7 +43,6 @@ const emit = defineEmits<{
 
 const unifiedUploadAccept = '.jpg,.jpeg,.png,.psd,.webp,.doc,.docx,.xls,.xlsx,.pdf,.txt,.md';
 const commerceInput = ref<HTMLInputElement | null>(null);
-const failedThumbnailIds = ref<ReadonlySet<string>>(new Set());
 const savedCommerceUrl = computed(() => props.product.commerceUrl?.trim() ?? '');
 const importedItemCount = computed(
   () => props.product.materials.length + Number(Boolean(savedCommerceUrl.value)),
@@ -83,18 +83,6 @@ const extension = (material: EffectImportMaterial): string => {
 };
 const materialName = (material: EffectImportMaterial): string =>
   material.originalFileName || material.expectedFileName || '待补传文件';
-const thumbnailUrl = (material: EffectImportMaterial): string | null =>
-  material.type === 'PRODUCT_IMAGE' &&
-  material.status === 'READY' &&
-  material.contentUrl &&
-  !failedThumbnailIds.value.has(material.id)
-    ? material.contentUrl
-    : null;
-const markThumbnailFailed = (materialId: string): void => {
-  const next = new Set(failedThumbnailIds.value);
-  next.add(materialId);
-  failedThumbnailIds.value = next;
-};
 const replaceCommerceLink = (): void => {
   commerceInput.value?.focus();
   commerceInput.value?.select();
@@ -219,15 +207,7 @@ const statusText = (material: EffectImportMaterial): string =>
         :class="material.status.toLowerCase()"
       >
         <span v-if="material.type === 'PRODUCT_IMAGE'" class="material-thumbnail">
-          <img
-            v-if="thumbnailUrl(material)"
-            :src="thumbnailUrl(material)!"
-            :alt="`${materialName(material)} 缩略图`"
-            loading="lazy"
-            decoding="async"
-            @error="markThumbnailFailed(material.id)"
-          />
-          <small v-else>{{ material.status === 'UPLOADING' ? '上传中' : '暂无预览' }}</small>
+          <EffectImportImagePreview :material="material" />
         </span>
         <span v-else class="file-extension">{{ extension(material) }}</span>
         <span class="file-copy"
