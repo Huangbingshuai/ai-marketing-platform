@@ -60,6 +60,15 @@ export const EFFECT_CACHE_TABLES = {
   tree: [...base, ...source, ...mix, ...output],
 } as const;
 export const CUSTOMIZED_CACHE_TABLES = {
+  'customized-extraction': [
+    'workflow_runs',
+    'working_artifacts',
+    'customized_extraction_tasks',
+    'customized_extraction_steps',
+    'customized_extraction_results',
+    'assets',
+    'asset_versions',
+  ],
   'customized-overview': ['workflow_runs', 'workflow_node_states'],
   'customized-import-draft': ['workflow_runs', 'workflow_node_states'],
   'customized-tree': ['workflow_runs', 'working_artifacts'],
@@ -74,6 +83,7 @@ export type EffectCacheScope = {
 };
 export type EffectCacheStamp = { workflowRunId: string; version: string; active: boolean };
 const taskTables = new Set<string>([
+  'customized_extraction_tasks',
   ...extraction.slice(0, 1),
   ...prompt.slice(0, 1),
   ...render,
@@ -88,6 +98,7 @@ const revisionTables = new Set<string>([
   'effect_import_drafts',
   'effect_extraction_results',
   'effect_prompt_results',
+  'customized_extraction_results',
 ]);
 
 @Injectable()
@@ -141,7 +152,11 @@ export class EffectCacheRevisionService {
       const workflowFilter = customized
         ? table === 'workflow_runs'
           ? Prisma.sql`AND t.workflow::text = ${workflow} AND t."workflowSpace"::text = ${space}`
-          : Prisma.sql`AND t."workflowRunId" IN (SELECT r.id FROM workflow_runs r
+          : table === 'assets' || table === 'asset_versions'
+            ? Prisma.empty
+          : table === 'customized_extraction_steps'
+            ? Prisma.sql`AND t."taskId" IN (SELECT id FROM customized_extraction_tasks WHERE "projectId" = ${scope.projectId}::uuid)`
+            : Prisma.sql`AND t."workflowRunId" IN (SELECT r.id FROM workflow_runs r
               WHERE r."projectId" = ${scope.projectId}::uuid
                 AND r.workflow::text = ${workflow} AND r."workflowSpace"::text = ${space})`
         : Prisma.empty;

@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { ModulesContainer, NestFactory } from '@nestjs/core';
 import { expect, it, vi } from 'vitest';
 import {
+  CUSTOMIZED_BRAND_IMAGE_USAGES,
   emptyCustomizedImportDraft,
   type WorkflowRunOverviewData,
   type WorkflowNodeState,
@@ -261,6 +262,62 @@ it.skipIf(process.env.CUSTOMIZED_CACHE_DATABASE_TEST !== '1')(
         data: { currentNodeId: 'INFORMATION_EXTRACTION' },
       });
       expect(await versions.read(scoped, 'customized-overview')).toEqual(beforeEffectNavigation);
+      // New brand usages survive real HTTP, confirmation and Redis reads; old usages remain pinned.
+      let brandAssetId = '';
+      let legacyImageRun = '';
+      for (const imageUsage of ['SCENE', ...CUSTOMIZED_BRAND_IMAGE_USAGES] as const) {
+        child = (await request<{ run: { id: string } }>(editPath(child), 'POST')).run.id;
+        if (!brandAssetId) {
+          const form = new FormData();
+          form.set('section', 'VISUAL_REFERENCE');
+          form.set(
+            'file',
+            new Blob(
+              [
+                Buffer.from(
+                  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jp1sAAAAASUVORK5CYII=',
+                  'base64',
+                ),
+              ],
+              { type: 'image/png' },
+            ),
+            'brand.png',
+          );
+          brandAssetId = (
+            await request<{ id: string }>(
+              `/workflows/customized/source-import/runs/${child}/materials`,
+              'POST',
+              form,
+            )
+          ).id;
+        }
+        const previous = await request<WorkflowNodeState>(statePath(child));
+        const next = {
+          ...one,
+          materials: [
+            ...one.materials,
+            { assetId: brandAssetId, assetVersion: 1, category: 'VISUAL_REFERENCE', imageUsage },
+          ],
+        };
+        const saved = await put(child, previous.revision, next);
+        for (let read = 0; read < 2; read++)
+          expect((await request<WorkflowNodeState>(statePath(child))).state).toEqual(next);
+        expect((await put(child, saved.revision, next)).revision).toBe(saved.revision);
+        expect((await save(child, saved.revision)).createdBranch).toBe(true);
+        if (imageUsage === 'SCENE') legacyImageRun = child;
+      }
+      expect((await request<WorkflowNodeState>(statePath(legacyImageRun))).state).toEqual({
+        ...one,
+        materials: [
+          ...one.materials,
+          {
+            assetId: brandAssetId,
+            assetVersion: 1,
+            category: 'VISUAL_REFERENCE',
+            imageUsage: 'SCENE',
+          },
+        ],
+      });
       // Legacy drafts keep working but neither the draft nor overview leaks raw text to Redis.
       await db.workflowNodeState.updateMany({
         where: { projectId, workflowRunId: child },

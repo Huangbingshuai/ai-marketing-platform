@@ -3,6 +3,7 @@ import type {
   AssetWorkflowSpace,
   ProjectListQuery,
   ProjectStatus,
+  Project,
 } from '@ai-marketing/contracts';
 import { Inject, Injectable } from '@nestjs/common';
 import type { Prisma, Project as ProjectRecord } from '../../generated/prisma/client';
@@ -92,6 +93,51 @@ export class ProjectRepository {
   }
 
   async exists(id: string): Promise<boolean> {
-    return (await this.prisma.project.count({ where: { id } })) > 0;
+    return (await this.prisma.project.count({ where: { id, deletionState: null } })) > 0;
+  }
+
+  async listDeletingFiles(query: ProjectListQuery): Promise<Project[]> {
+    const jobs = await this.prisma.projectDeletionCleanup.findMany({
+      where: { phase: 'FILES' },
+      select: { projectSnapshot: true, status: true, lastError: true },
+    });
+    const keyword = query.keyword?.trim().toLowerCase();
+    return jobs.flatMap((job) => {
+      if (!job.projectSnapshot) return [];
+      const snapshot = job.projectSnapshot as unknown as {
+        project: Project;
+        spaces: AssetWorkflowSpace[];
+      };
+      const project = snapshot.project;
+      if (query.space && !snapshot.spaces.includes(query.space)) return [];
+      if (
+        query.workflow &&
+        !snapshot.spaces.some((space) =>
+          query.workflow === 'EFFECT'
+            ? space === 'EFFECT'
+            : query.workflow === 'CUSTOMIZED'
+              ? space.startsWith('CUSTOMIZED_')
+              : space.startsWith('FISSION_'),
+        )
+      )
+        return [];
+      if (
+        keyword &&
+        ![project.name, project.client, project.productName].some((value) =>
+          value?.toLowerCase().includes(keyword),
+        )
+      )
+        return [];
+      return [
+        {
+          ...project,
+          deletion: {
+            status: job.status as 'QUEUED' | 'RUNNING' | 'FAILED',
+            phase: 'FILES' as const,
+            ...(job.lastError ? { message: job.lastError } : {}),
+          },
+        },
+      ];
+    });
   }
 }

@@ -2,8 +2,10 @@
 
 正式定制类页面的第二节点使用 `CustomizedInfoExtractionNodePage.vue`。画布、版本树和节点导航仍由既有定制导入页面统一管理，提炼页不创建另一套项目或 Run 状态。
 
-页面包括项目与用途、品牌与产品信息、目标受众、创意与风格、视频规格。复用 `WorkflowInformationCard`、`WorkflowInformationField`（同时用于效果类提炼）、编辑动作、加载、进度、底部导航、资料行和图片预览。来源内容通过父页面的共用资料阅读器查看，固定引用版本不改写。
+页面字段、名称和分组顺序与下载的 Word 简报模板一致：品牌基础信息、产品核心信息，共两组、12 项。品牌卡包含品牌名称、项目名称、项目背景、品牌调性、视觉统一规则、画面禁用元素；产品卡包含产品名称、产品介绍、产品规格、产品外观、核心卖点、目标受众。品牌名称和产品名称独立维护，项目名称不修改系统项目。品牌约束合并到第一张卡，不另设创意方向及风格、色彩、情绪选项；只记录已明确的品牌与视觉要求，没有可留空，不要求提前确定脚本叙事与创意方案。移除视频规格卡和时长、分辨率、画幅、格式四个 UI 字段，不改变已导入的历史文档。产品介绍、产品规格、产品外观使用独立多行文本，不增加使用方式字段。核心卖点复用效果类抽出的 WorkflowSellingPointsEditor 共享列表，按独立字符串数组维护，每次点击添加增加一条，支持逐条编辑与删除；有内容的条目删除前确认，取消编辑恢复原列表。模板中的卖点按行填写。核心卖点支持多条独立优势，不限定条数或划分核心与次要层级；后续脚本可选择重点、自然组合，不要求每个版本覆盖全部卖点。宽屏品牌、产品两卡左右并列，窄屏按模板顺序单列。复用共享卡片、字段、编辑动作、加载、进度、底部导航和资料阅读器；来源仍读取已确认资料固定引用。
 
-`customized-extraction-view.ts` 仅是受控 UI 展示模型，不是 API DTO。模型通过 props 输入、事件输出，不在页面中自动提交、存储结果或推进 revision。专用后端未接入时 `available` 默认 false，字段只读、生成和版本操作禁用；生产页面没有 Mock 回退。未来接通必须先定义共用契约和标准化 Brief 提交边界，不能把草稿或前端事件当作确认产物。
+`CustomizedExtractionWorkspace.vue` 负责真实 API 适配、请求取消、串行草稿保存、revision 冲突与任务轮询。业务字段及差异直接来自 Contracts，`customized-extraction-view.ts` 仅适配展示状态。切换项目 / Run 取消旧查询；断网保留后台执行状态；409 保留本地修改，用户点击加载最新结果才替换。已确认内容进入隐藏编辑 Run，重新提炼确认只出现一次；取消返回原版本，保存版本由 API 提交 `customized-brief`。
 
-隔离浏览器验收用例可通过显式 fixture 展示状态与操作，不代表真实模型、版本发布和数据库持久化已经完成。详见[前端验收](../../../../../../docs/workflows/customized/evidence/browser/2026-10-09-information-extraction-frontend.md)。
+效果类和定制类直接引用同一 `WorkflowExtractionGraphDialog`、`WorkflowExtractionActions`、`WorkflowExtractionFeedback` 和轮询工具。执行图由 Contracts 配置，效果类保留三路并行，定制类显示六阶段线性图；详情、状态与进度来自服务端。共用原有 `WorkflowRunProgress`、编辑动作、确认弹窗及资料阅读器。不复制静态工作流弹窗，不使用计时器模拟进度。品牌图片仅显示来源用途，模型不分析图片。
+
+实施与验证边界见[后端与共享交互计划](../../../../../../docs/workflows/customized/plans/2026-10-09-信息提炼后端与共享交互.md)。历史[前端验收](../../../../../../docs/workflows/customized/evidence/browser/2026-10-09-information-extraction-frontend.md)仅记录当时界面，不作为本次后端验收结论。

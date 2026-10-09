@@ -6,7 +6,25 @@ import { useActionConfirmation } from '../composables/action-confirmation';
 
 const { state, confirm, cancel } = useActionConfirmation();
 const confirmButton = ref<HTMLButtonElement | null>(null);
+const dialog = ref<HTMLElement | null>(null);
 let trigger: HTMLElement | null = null;
+
+const keepDialogFocus = (event: KeyboardEvent): void => {
+  if (event.key !== 'Tab' || !dialog.value) return;
+  const buttons = Array.from(
+    dialog.value.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+  );
+  const first = buttons[0];
+  const last = buttons.at(-1);
+  if (!first || !last) return;
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+};
 
 watch(
   () => state.open,
@@ -31,6 +49,7 @@ onBeforeUnmount(cancel);
   <Teleport to="body">
     <div v-if="state.open" class="action-confirmation-backdrop" @mousedown.self="cancel">
       <section
+        ref="dialog"
         class="action-confirmation-dialog"
         :class="`action-confirmation-dialog--${state.tone}`"
         role="alertdialog"
@@ -39,6 +58,7 @@ onBeforeUnmount(cancel);
         aria-describedby="action-confirmation-description"
         tabindex="-1"
         @keydown.esc="cancel"
+        @keydown="keepDialogFocus"
       >
         <span class="action-confirmation-icon" aria-hidden="true">
           <AlertTriangle :size="21" />

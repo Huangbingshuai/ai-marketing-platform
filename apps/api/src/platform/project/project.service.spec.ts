@@ -15,11 +15,33 @@ const record: ProjectRecord = {
   defaultWorkflow: null,
   defaultSpace: null,
   status: 'ACTIVE',
+  deletionState: null,
+  deletionError: null,
   createdAt: timestamp,
   updatedAt: timestamp,
 };
 
 describe('ProjectService', () => {
+  it('keeps a file-cleanup snapshot once when database deletion races with a list read', async () => {
+    const snapshot = {
+      id: record.id,
+      name: record.name,
+      deletion: { status: 'QUEUED', phase: 'FILES' },
+    };
+    const service = new ProjectService({
+      list: vi.fn().mockResolvedValue([{ ...record, assets: [], deletionState: 'RUNNING' }]),
+      listDeletingFiles: vi.fn().mockResolvedValue([snapshot]),
+    } as unknown as ProjectRepository);
+    await expect(service.list()).resolves.toEqual([snapshot]);
+  });
+  it('rejects entry into a frozen project even before its database rows are deleted', async () => {
+    const service = new ProjectService({
+      find: vi.fn().mockResolvedValue({ ...record, deletionState: 'QUEUED' }),
+    } as unknown as ProjectRepository);
+    await expect(service.get(record.id)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'PROJECT_DELETING' }),
+    });
+  });
   let repository: {
     create: ReturnType<typeof vi.fn>;
     find: ReturnType<typeof vi.fn>;

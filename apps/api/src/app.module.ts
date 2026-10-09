@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 
+import { CustomizedExtractionModule } from './workflows/customized/information-extraction/customized-extraction.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
@@ -33,6 +34,7 @@ import { CustomizedSourceImportModule } from './workflows/customized/source-impo
     WorkflowModule,
     EffectSourceImportModule,
     CustomizedSourceImportModule,
+    CustomizedExtractionModule,
     EffectExtractionModule,
     EffectPromptModule,
     EffectSegmentRenderModule,

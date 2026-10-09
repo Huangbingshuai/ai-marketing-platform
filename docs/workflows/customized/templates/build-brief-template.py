@@ -10,32 +10,21 @@ from docx.shared import Cm, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parent
 SECTIONS = [
-    ("一 项目与视频用途", [
-        ("项目名称", "例：618大促AI素材定制", "暮白晨间陶瓷杯新品短片"),
-        ("视频用途", "信息流广告 / 社媒内容 / 电商详情页 / 品牌宣传 / 活动营销 / KOC分发 / 线下展示 / 其他", "新品介绍，展示外观与日常使用情境"),
-        ("发布平台或位置", "抖音 / 小红书 / 微信 / 微博 / B站 / 快手 / 淘宝天猫 / 京东 / 线下 / 其他", "品牌官方社交账号，移动端观看"),
+    ('一 品牌基础信息', [
+        ('品牌名称', '例：暮白', '暮白'),
+        ('项目名称', '例：暮白晨间陶瓷杯新品短片', '暮白晨间陶瓷杯新品短片'),
+        ('项目背景', '例：晨间系列新品上市，向喜欢咖啡与简洁家居的人群展示从容的晨间生活，建立自然亲切的品牌印象。', '为晨间系列新品建立简洁自然的品牌印象，展现从容的晨间生活'),
+        ('品牌调性', '例：自然亲切、真实克制，呈现从容的日常生活质感。', '自然亲切、真实克制，呈现从容的日常生活质感'),
+        ('视觉统一规则', '例：杯身米白色、弧形把手始终一致；品牌标识保持原样；同一人物在各镜头中保持相同外观。', '品牌名称统一为暮白，标识使用官方版本；人物与产品外观全片一致，杯身米白色和弧形把手保持不变'),
+        ('画面禁用元素', '例：不添加杯盖和印花，不展示保温等未确认功能，不出现其他品牌标识。', '不添加杯盖或印花，不展示保温等未确认功能，不出现其他品牌标识'),
     ]),
-    ("二 品牌与产品介绍", [
-        ("品牌或产品名称", "填写品牌或产品全称", "暮白晨间 300 mL 陶瓷杯，米白款"),
-        ("品牌或产品介绍", "产品介绍，可文字说明或直接上传附件", "陶瓷单杯，有弧形把手，无杯盖，适合日常盛放咖啡"),
-        ("相关规格与用法", "产品规格、使用方法，可文字说明或直接上传附件", "300 mL；具体尺寸见“晨间杯产品说明.pdf”"),
-    ]),
-    ("三 目标受众", [
-        ("目标人群年龄段", "18-24 / 25-30 / 31-40 / 41-50 / 50+ / 不限", "25-30"),
-        ("性别倾向", "女性为主 / 男性为主 / 不限", "不限"),
-        ("地域", "一线城市 / 全国 / 特定省份", "全国"),
-        ("兴趣标签 / 人群画像", "关注什么？消费习惯？内容偏好？", "喜欢简洁家居与咖啡，关注日常生活质感，偏好安静自然的生活内容"),
-    ]),
-    ("四 创意需求", [
-        ("核心主题 / 传达信息", "一句话概括核心卖点或信息", "留一点时间给早晨，让人感到安静、从容"),
-        ("视觉风格偏好", "写实 / 插画 / 国潮 / 科技感 / 极简 / 温暖 / 高端 / 卡通 / 赛博朋克 / 复古 / 清新 / 商务 / 其他", "写实、极简，有晨间自然侧光"),
-        ("主色调偏好", "如有品牌色，可填写颜色名称或色值，如 #0066FF", "以米白和浅木色为主，保留产品本身的米白色"),
-        ("情绪调性", "活泼轻快 / 温馨治愈 / 高级质感 / 炫酷冲击 / 沉稳专业 / 趣味搞怪 / 待确认", "温馨治愈，安静、从容，节奏舒缓"),
-        ("必须避免的元素", "行业禁忌 / 品牌红线 / 不出现的颜色或元素 / 无", "不改变杯子颜色或把手形状，不加杯盖或印花，不表达保温等未确认功能"),
-    ]),
-    ("五 视频规格", [
-        ("视频时长", "5～15 秒 / 15～30 秒 / 30～60 秒 / 60 秒以上 / 自定义", "30 秒左右，允许 28～32 秒"),
-        ("画幅或尺寸", "竖屏 9:16 / 横屏 16:9 / 方形 1:1 / 自定义尺寸", "9:16 竖屏，输出分辨率待确认"),
+    ('二 产品核心信息', [
+        ('产品名称', '例：暮白晨间陶瓷杯，米白款', '暮白晨间陶瓷杯，米白款'),
+        ('产品介绍', '例：日常饮用器具，陶瓷杯身，适合盛放咖啡。', '日常饮用器具，陶瓷杯身，适合盛放咖啡'),
+        ('产品规格', '例：容量 300 mL，单杯装；具体尺寸待确认。', '容量 300 mL，单杯装；尺寸待确认'),
+        ('产品外观', '例：米白色圆润陶瓷杯身，弧形把手，无杯盖、无印花；这些特征固定，品牌标识置于杯底，包装请 AI 设计。', '米白色圆润陶瓷杯身，弧形把手，无杯盖和印花；杯型、颜色与把手保持固定，杯底使用上传的品牌标识；包装尚未确定，请 AI 根据品牌调性设计'),
+        ('核心卖点', '例（每行一条）：\n弧形把手，便于持握\n300 mL 容量，适合日常盛放咖啡\n米白色杯身，便于搭配简洁餐桌', '弧形把手，便于持握\n300 mL 容量，适合日常盛放咖啡\n米白色杯身，便于搭配简洁餐桌'),
+        ('目标受众', '例：25-30 岁，性别不限，全国；喜欢咖啡与简洁家居，关注生活质感，偏好安静自然的生活内容。', '25-30 岁，性别不限，全国；喜欢简洁家居与咖啡，关注日常生活质感，偏好安静自然的生活内容'),
     ]),
 ]
 
@@ -118,13 +107,15 @@ def build(example=False):
         doc.add_paragraph("以下品牌、产品与文件名均为虚构，仅用于说明如何填写。")
     else:
         doc.add_paragraph("你希望做一支什么样的视频？把想法和已有资料填写在下表中即可。")
-        doc.add_paragraph("在“填写内容”一栏填写，右侧说明、示例与选项仅供参考。没想好的可写“待确认”或“请 AI 提方案”，不涉及的可以留空；现成的产品介绍、规格说明可作为附件上传，不用重复填写。")
+        doc.add_paragraph("在“填写内容”一栏填写，右侧均为虚构填写示例，仅供参考。没想好的可写“待确认”或“请 AI 提方案”，不涉及的可以留空；现成的产品介绍、规格说明可作为附件上传，不用重复填写。")
     for index, (heading, rows) in enumerate(SECTIONS):
         heading_paragraph = doc.add_paragraph(heading, "Heading 1")
-        if index == 2:
-            heading_paragraph.paragraph_format.page_break_before = True
-        table(doc, rows, example, "备注 / 示例" if index < 2 else "可选项参考")
         if index == 1:
+            heading_paragraph.paragraph_format.page_break_before = True
+        table(doc, rows, example, "备注 / 示例")
+        if index == 1:
+            appearance_note = doc.add_paragraph("产品形象由系统根据简报生成。在产品外观中写清已确定的特征和允许 AI 设计的部分；品牌 Logo 等已有素材可在页面单独上传，无需提供产品成品图片。")
+            appearance_note.paragraph_format.space_before = Pt(7)
             doc.add_paragraph("涉及成分、性能、数据或效果时，提供相关说明资料即可；尚未确认的内容请注明“待确认”。")
     doc.core_properties.author = ""
     doc.core_properties.last_modified_by = ""
@@ -135,18 +126,21 @@ def build(example=False):
             border.getparent().remove(border)
     destination = ROOT / ("视频创作简报填写示例.docx" if example else "视频创作简报模板.docx")
     doc.save(destination)
-    # Validate editable fields and the independent audience section.
+    # Validate editable fields and separate brand and product sections.
     check = Document(destination)
-    assert len(check.tables) == 5
-    assert sum(len(t.rows) - 1 for t in check.tables) == 17
+    assert len(check.tables) == 2
+    assert sum(len(t.rows) - 1 for t in check.tables) == 12
     for index, t in enumerate(check.tables):
-        assert [c.text for c in t.rows[0].cells] == ["填写项", "填写内容", "备注 / 示例" if index < 2 else "可选项参考"]
+        assert [c.text for c in t.rows[0].cells] == ["填写项", "填写内容", "备注 / 示例"]
         assert all(bool(row.cells[1].text) == example for row in t.rows[1:])
     content = "\n".join(c.text for t in check.tables for row in t.rows for c in row.cells)
+    assert all(row.cells[2].text.startswith("例") for t in check.tables for row in t.rows[1:])
     assert "客户" not in content
     assert all(label not in content for label in ("想重点展示的特点", "希望给谁看", "填写提示", "已有的创意或故事", "必须包含的元素", "视频风格偏好", "文案安排", "声音形式", "配乐或音效偏好", "交付内容与数量"))
-    assert [row.cells[0].text for row in check.tables[2].rows[1:]] == [row[0] for row in SECTIONS[2][1]]
-    assert [row.cells[0].text for row in check.tables[3].rows[1:]] == [row[0] for row in SECTIONS[3][1]]
+    for index, t in enumerate(check.tables):
+        labels = [row.cells[0].text for row in t.rows[1:]]
+        assert labels == [row[0] for row in SECTIONS[index][1]]
+        assert all("或" not in label and "/" not in label for label in labels)
     assert all("参考图片与补充资料" not in p.text and "其他补充" not in p.text for p in check.paragraphs)
     print(destination)
 

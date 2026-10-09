@@ -194,12 +194,18 @@ try {
   });
   check(unchanged.unchanged && unchanged.run.id === run, '同内容保存丢弃隐藏空分支');
   let parent = run;
-  for (const usage of ['STYLE', 'OTHER']) {
+  const changedUsages = ['LOGO', 'WORDMARK', 'BRAND_GRAPHIC', 'BRAND_IP', 'PACKAGING'];
+  for (const usage of changedUsages) {
     child = (await request(`${branchPath(p, parent)}/nodes/SOURCE_IMPORT/edit`, 'POST')).run.id;
     const old = await request(nodePath(p, child));
     const changed = structuredClone(old.state);
     changed.materials.find((m) => m.assetId === image.id).imageUsage = usage;
     const saved = await saveDraft(p, child, changed, old.revision);
+    check(
+      (await request(nodePath(p, child))).state.materials.find((m) => m.assetId === image.id)
+        .imageUsage === usage,
+      `品牌用途 ${usage} 保存后读回`,
+    );
     check(
       (
         await request(`${branchPath(p, child)}/source-version`, 'POST', {
@@ -211,7 +217,7 @@ try {
     parent = child;
   }
   const tree = await request(`/projects/${p}/workflow-runs/customized/branches`);
-  check(tree.branches.length === 3, '两轮变更保留三个历史版本');
+  check(tree.branches.length === changedUsages.length + 1, '品牌用途迭代保留全部历史版本');
   await request(`${branchPath(p, run)}/nodes/SOURCE_IMPORT/activate`, 'POST');
   check(
     (await request(nodePath(p, run))).state.materials.find((m) => m.assetId === image.id)

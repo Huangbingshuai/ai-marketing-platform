@@ -14,16 +14,16 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-COPY pyproject.toml uv.lock ./
+WORKDIR /app/effect-extraction
+COPY shared/extraction-runtime /app/shared/extraction-runtime
+COPY effect-extraction/pyproject.toml effect-extraction/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
-RUN /app/.venv/bin/playwright install --with-deps chromium \
+RUN /app/effect-extraction/.venv/bin/playwright install --with-deps chromium \
     && useradd --create-home --uid 10001 extraction \
-    && chmod -R a+rX /ms-playwright /app
-COPY src ./src
-RUN uv sync --frozen --no-dev \
-    && chmod -R a+rX /app
+    && chmod -R a+rX /ms-playwright
+COPY effect-extraction/src ./src
+RUN uv sync --frozen --no-dev
 
 USER extraction
 
-CMD ["/app/.venv/bin/effect-extraction-worker"]
+CMD ["/app/effect-extraction/.venv/bin/effect-extraction-worker"]

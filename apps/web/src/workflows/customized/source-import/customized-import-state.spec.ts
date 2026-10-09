@@ -1,6 +1,7 @@
 import type { Asset } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  customizedImageUsageOptions,
   createCustomizedDraftPersistence,
   customizedFileError,
   emptyCustomizedImportDraft,
@@ -12,6 +13,28 @@ import { customizedWorkflowNodes } from '../customized-workflow';
 import pageSource from './CustomizedImportNodePage.vue?raw';
 
 describe('customized source draft boundaries', () => {
+  it('offers only brand usages for new images and keeps the current legacy usage available', () => {
+    const options = customizedImageUsageOptions();
+    expect(options.map((option) => option.value)).toEqual([
+      '',
+      'LOGO',
+      'WORDMARK',
+      'BRAND_GRAPHIC',
+      'BRAND_IP',
+      'PACKAGING',
+    ]);
+    expect(customizedImageUsageOptions('LOGO')).toEqual(options);
+    expect(customizedImageUsageOptions('PRODUCT')).toEqual([
+      ...options,
+      { label: '产品参考（历史资料）', value: 'PRODUCT' },
+    ]);
+    for (const usage of ['PERSON', 'SCENE', 'STYLE', 'OTHER'] as const) {
+      expect(customizedImageUsageOptions(usage).map((option) => option.value)).toEqual([
+        ...options.map((option) => option.value),
+        usage,
+      ]);
+    }
+  });
   it('uses six nodes with asset binding owned by shot rendering', () => {
     expect(customizedWorkflowNodes.map((item) => item.id)).toEqual([
       'SOURCE_IMPORT',

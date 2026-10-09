@@ -2,7 +2,8 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
-from effect_extraction import model_init
+from extraction_runtime import model_init
+from effect_extraction.model_init import main as effect_main
 
 
 def test_model_init_downloads_into_configured_artifacts_path(
@@ -17,6 +18,7 @@ def test_model_init_downloads_into_configured_artifacts_path(
     monkeypatch.setenv("DOCLING_ARTIFACTS_PATH", str(artifacts_path))
     monkeypatch.setattr(model_init, "download_models", fake_download_models)
 
+    assert effect_main is model_init.main
     model_init.main()
 
     assert (artifacts_path / "layout-model").is_dir()

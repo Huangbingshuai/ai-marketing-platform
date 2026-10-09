@@ -712,6 +712,7 @@ async def test_ark_provider_runs_independent_semantic_reviews_in_parallel() -> N
             both_reviews_started.set()
         await asyncio.wait_for(both_reviews_started.wait(), timeout=0.5)
         schema_name = payload["text"]["format"]["name"]
+        response: SemanticUserFactModelReview | SemanticImageSuggestionReview
         if schema_name == "effect_semantic_user_fact_review":
             input_text = str(payload["input"])
             response = SemanticUserFactModelReview(
@@ -810,8 +811,12 @@ async def test_ark_provider_runs_independent_semantic_reviews_in_parallel() -> N
     ]
     payloads_by_schema: dict[str, list[dict[str, object]]] = {}
     for _, payload in requests:
+        text_config = payload["text"]
+        assert isinstance(text_config, dict)
+        schema_config = text_config["format"]
+        assert isinstance(schema_config, dict)
         payloads_by_schema.setdefault(
-            str(payload["text"]["format"]["name"]), []
+            str(schema_config["name"]), []
         ).append(payload)
     assert set(payloads_by_schema) == {
         "effect_semantic_user_fact_review",

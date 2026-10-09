@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CUSTOMIZED_BRAND_IMAGE_USAGES,
   CUSTOMIZED_WORKFLOW_NODES,
   customizedWorkflowNodeId,
   emptyCustomizedImportDraft,
@@ -9,6 +10,50 @@ import {
 } from './customized-import';
 
 describe('customized unified requirements source package', () => {
+  it.each(CUSTOMIZED_BRAND_IMAGE_USAGES)(
+    'round-trips brand usage %s without changing fixed file versions',
+    (imageUsage) => {
+      const draft = {
+        ...emptyCustomizedImportDraft(),
+        materials: [
+          { assetId: 'brief', assetVersion: 2, category: 'BRIEF' as const },
+          {
+            assetId: 'z-brand',
+            assetVersion: 3,
+            category: 'VISUAL_REFERENCE' as const,
+            imageUsage,
+          },
+        ],
+      };
+      const before = JSON.stringify(draft);
+      expect(restoreCustomizedImportDraft(draft)).toEqual(draft);
+      expect(normalizeCustomizedImportDraft(draft, new Set(['z-brand']))).toEqual(draft);
+      expect(validateCustomizedImportDraft(draft)).toEqual([]);
+      expect(JSON.stringify(draft)).toBe(before);
+      expect(
+        validateCustomizedImportDraft({ ...draft, materials: draft.materials.slice(1) }),
+      ).toEqual(['请上传至少一份视频创作简报文档']);
+    },
+  );
+  it.each(['PRODUCT', 'PERSON', 'SCENE', 'STYLE', 'OTHER'] as const)(
+    'preserves historical usage %s instead of converting it into a brand asset',
+    (imageUsage) => {
+      const draft = {
+        ...emptyCustomizedImportDraft(),
+        materials: [
+          {
+            assetId: 'old-image',
+            assetVersion: 7,
+            category: 'VISUAL_REFERENCE' as const,
+            imageUsage,
+          },
+        ],
+      };
+      const before = JSON.stringify(draft);
+      expect(normalizeCustomizedImportDraft(draft, new Set(['old-image']))).toEqual(draft);
+      expect(JSON.stringify(draft)).toBe(before);
+    },
+  );
   it('defines six stages and projects legacy asset navigation into shot rendering', () => {
     expect(CUSTOMIZED_WORKFLOW_NODES).toEqual([
       'SOURCE_IMPORT',

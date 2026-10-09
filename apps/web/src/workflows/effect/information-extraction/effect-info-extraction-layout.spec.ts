@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import viteConfigSource from '../../../../vite.config.ts?raw';
 import pageSource from './EffectInfoExtractionNodePage.vue?raw';
+import listSource from '../../../platform/workflow/components/WorkflowSellingPointsEditor.vue?raw';
 
+import graphSource from '../../../platform/workflow/components/WorkflowExtractionGraphDialog.vue?raw';
+import actionsSource from '../../../platform/workflow/components/WorkflowExtractionActions.vue?raw';
+import editSource from '../../../platform/workflow/components/WorkflowNodeEditActions.vue?raw';
 const normalizedPageSource = pageSource.replace(/\r\n?/gu, '\n');
 
 describe('effect info extraction result layout', () => {
@@ -23,9 +27,10 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('class="content-block selling-layer-card"');
     expect(pageSource).toContain('.selling-layer-card {');
     expect(pageSource).toContain('grid-area: selling;');
-    expect(pageSource).toContain('.selling-points--unified {');
+    expect(pageSource).toContain('<WorkflowSellingPointsEditor');
+    expect(listSource).toContain('.selling-points--unified {');
     expect(pageSource).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
-    expect(normalizedPageSource).toContain(
+    expect(listSource.replace(/\r\n?/gu, '\n')).toContain(
       '@media (max-width: 860px) {\n  .selling-points--unified {',
     );
     expect(pageSource).not.toContain('grid-area: user;');
@@ -42,30 +47,32 @@ describe('effect info extraction result layout', () => {
     );
     expect(pageSource).toContain('这些卖点可用于后续视频创作，您可以按需修改、添加或删除。');
     expect(pageSource).toContain('EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS');
-    expect(pageSource).toContain(':aria-label="`卖点 ${index + 1}`"');
+    expect(listSource).toContain(':aria-label="`卖点 ${index + 1}`"');
     expect(pageSource).not.toContain('卖点分层');
     expect(pageSource).not.toContain('>核心卖点');
     expect(pageSource).not.toContain('>次要卖点');
-    expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr) 38px;');
+    expect(listSource).toContain('grid-template-columns: minmax(0, 1fr) 38px;');
   });
 
   it('uses the heading action as the only extraction trigger instead of a lower empty-state button', () => {
     expect(pageSource).not.toContain('empty-result-card');
     expect(pageSource).not.toContain('processing-card');
     expect(pageSource).not.toContain('尚未生成提炼结果');
-    expect(pageSource.match(/@click="runCurrentExtraction\(\)"/g)).toHaveLength(3);
+    expect(pageSource).toContain('@extract="runCurrentExtraction()"');
   });
 
   it('keeps re-extraction clickable after a version is confirmed and enters the isolated edit itself', () => {
     expect(pageSource).not.toContain(':disabled="currentRunning || !editing"');
     expect(pageSource).not.toContain(':disabled="!editing"');
     expect(
-      pageSource.match(/:disabled="editBusy \|\| currentRunning" @click="runCurrentExtraction\(\)"/g),
-    ).toHaveLength(2);
+      pageSource.match(
+        /:disabled="editBusy \|\| currentRunning"\s+@click="runCurrentExtraction\(\)"/g,
+      ),
+    ).toHaveLength(1);
     expect(pageSource).toContain(
       'const ensureExtractionEdit = async (productId: string): Promise<boolean> => {',
     );
-    expect(pageSource).toContain("const result = await beginEffectNodeEdit(");
+    expect(pageSource).toContain('const result = await beginEffectNodeEdit(');
     expect(pageSource).toContain("'INFORMATION_EXTRACTION',");
     expect(pageSource).toContain('result.data.run.id === props.workflowRunId');
     expect(pageSource).toContain('result.data.productIdMap[productId] ?? productId');
@@ -93,7 +100,7 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain('class="product-switcher"');
     expect(pageSource).not.toContain('<span>当前商品</span>');
     expect(pageSource).not.toContain('<select :value="currentProductId"');
-    expect(pageSource).toContain('class="secondary-button workflow-graph-trigger"');
+    expect(actionsSource).toContain('class="secondary-button workflow-graph-trigger"');
   });
 
   it('runs only the selected product and exposes progress and conflict recovery', () => {
@@ -128,13 +135,14 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
     expect(pageSource).toContain('back-label="上一步：资料导入"');
-    expect(pageSource).toContain('next-label="下一步：Prompt 生成"');
-    expect(pageSource).toContain('<Pencil :size="14" />进入编辑');
+    expect(pageSource).toContain('next-label="下一步：素材 Prompt"');
+    expect(pageSource).toContain('<WorkflowNodeEditActions');
+    expect(editSource).toContain('进入编辑');
     expect(pageSource).toContain(':show-validate="false"');
-    expect(pageSource).toContain('@click="validateCurrentResult"');
-    expect(pageSource).toContain('<X :size="14" />取消编辑');
-    expect(pageSource).toContain('<CheckCircle2 v-else :size="14" />');
-    expect(pageSource).toContain("validating ? '正在校验…' : '保存版本'");
+    expect(pageSource).toContain('@save="validateCurrentResult"');
+    expect(editSource).toContain('取消编辑');
+    expect(editSource).toContain('CheckCircle2');
+    expect(editSource).toContain('保存版本');
     expect(pageSource).not.toContain('class="extraction-footer"');
     expect(pageSource).not.toContain('class="draft-save-bar"');
   });
@@ -147,52 +155,44 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('nodeStateRevision.value = 0');
   });
 
-  it('opens one accessible real-status workflow dialog without exposing intermediate payloads', () => {
-    expect(pageSource.match(/>查看工作流/g)).toHaveLength(1);
-    expect(pageSource).toContain('role="dialog"');
-    expect(pageSource).toContain('aria-modal="true"');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_GRAPH_EDGES.filter');
-    expect(pageSource).toContain("graphExecution('FUSION')");
-    expect(pageSource).toContain("graphExecution('SEMANTIC_REFINEMENT')");
-    expect(pageSource).toContain("graphExecution('NORMALIZATION')");
-    expect(pageSource).toContain('ref="graphCloseButton"');
-    expect(pageSource).toContain("graphExecution('FUSION').errorMessage");
-    expect(pageSource).toContain("graphExecution('SEMANTIC_REFINEMENT').warnings");
-    expect(pageSource).toContain("graphExecution('NORMALIZATION').warnings");
-    expect(pageSource).toContain('const graphWarningSummary');
-    expect(pageSource).toContain('class="node-warning node-warning--summary"');
-    expect(pageSource).toContain('grid-template-columns: repeat(3, minmax(0, 1fr));');
-    expect(pageSource).toContain('right: 16.6667%;');
-    expect(pageSource).toContain('left: 16.6667%;');
-    expect(pageSource).toContain('role="button"');
-    expect(pageSource).toContain('@keydown.enter.prevent="selectGraphNode');
-    expect(pageSource).toContain('class="workflow-node-detail"');
-    expect(pageSource).toContain('点击节点查看数据');
+  it('shares the accessible real-status graph renderer with customized extraction', () => {
+    expect(pageSource).toContain('<WorkflowExtractionGraphDialog');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_GRAPH_NODES.map');
     expect(pageSource).toContain('loadEffectExtractionNodeDetail');
-    expect(pageSource).toContain('仅展示安全摘要');
+    for (const token of [
+      'role=',
+      'aria-modal=',
+      'graphCloseButton',
+      'workflow-node-detail',
+      '仅展示安全摘要',
+    ])
+      expect(graphSource).toContain(token);
+    expect(graphSource).toContain('grid-template-columns: repeat(3, minmax(0, 1fr));');
     expect(pageSource).not.toContain('structuredOutput');
-    expect(pageSource).not.toContain('textStorageKey');
+    expect(graphSource).not.toContain('textStorageKey');
   });
 
   it('renders snapshot materials as import-style cards and explains an unclaimed queued task', () => {
     expect(pageSource).toContain('本次共使用');
     expect(pageSource).toContain("materialCount('PRODUCT_IMAGE')");
     expect(pageSource).toContain("kind: 'LINK' as const");
-    expect(pageSource).toContain("source.media.kind === 'LINK'");
+    expect(graphSource).toContain("source.media.kind === 'LINK'");
     expect(pageSource).toContain("'commerceUrlCount', '电商链接', '个'");
-    expect(pageSource).toContain('class="workflow-node-detail__source-visual"');
-    expect(pageSource).toContain(':src="graphPreviewUrl(source)!"');
-    expect(pageSource).toContain('graphDetailBytes(source.media.sizeBytes)');
+    expect(graphSource).toContain('class="workflow-node-detail__source-visual"');
+    expect(graphSource).toContain(':src="graphPreviewUrl(source)!"');
+    expect(graphSource).toContain('graphDetailBytes(source.media.sizeBytes)');
     expect(pageSource).toContain('AI 提炼服务暂未接单');
     expect(pageSource).toContain('任务已经保存，不会丢失');
-    expect(pageSource).toContain('正在等待 AI 提炼服务接单');
+    expect(pageSource).toContain(
+      'extractionProgressMessage(currentState.value, currentGraphNodes.value)',
+    );
     expect(pageSource).not.toContain('等待异步 Worker 接收任务');
   });
 
   it('lets document and image branches extract product identity without a form branch', () => {
     expect(pageSource).not.toContain("FORM: '");
     expect(pageSource).toContain("materialSources(['PRODUCT_IMAGE'])");
-    expect(pageSource).toContain('v-for="(source, sourceIndex) in graphDetail.sources"');
+    expect(graphSource).toContain('v-for="(source, sourceIndex) in graphDetail.sources"');
     expect(pageSource).not.toContain("nodeId === 'FORM'");
     expect(pageSource).not.toContain("detailField('productName', '产品名称', product.name");
     expect(pageSource).not.toContain("detailField('resolution', '分辨率'");
@@ -203,7 +203,7 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain("result.sellingPoints.push('')");
     expect(pageSource).toContain(':disabled="baseFieldsReadonly"');
     expect(pageSource).not.toContain('最多添加');
-    expect(pageSource).toContain(
+    expect(listSource).toContain(
       'placeholder="例如：原料、工艺、功能、口味、用法、场景或可信背书"',
     );
     expect(pageSource).toContain('class="selling-add-button"');
@@ -244,11 +244,13 @@ describe('effect info extraction result layout', () => {
   });
 
   it('edits every selling point as an independent row', () => {
-    expect(pageSource).toContain('v-model="visibleResult.sellingPoints[index]"');
-    expect(pageSource).toContain('@click="removeSellingPoint(index)"');
+    expect(pageSource).toContain(':items="visibleResult.sellingPoints"');
+    expect(pageSource).toContain('@update-item="updateSellingPoint"');
+    expect(pageSource).toContain('result.sellingPoints[index] = value;');
+    expect(pageSource).toContain('@remove="removeSellingPoint"');
     expect(pageSource).toContain('@click="addSellingPoint"');
     expect(pageSource).toContain('if (value.trim() && !(await confirmInformationRemoval');
-    expect(pageSource).toContain('暂无卖点，可点击“添加”补充。');
+    expect(listSource).toContain('暂无卖点，可点击“添加”补充。');
     expect(pageSource).not.toContain('visibleResult.sellingPoints.length <= 1');
     expect(pageSource).not.toContain('textListValue');
     expect(pageSource).not.toContain('updateTextList');

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "LangGraph worker for the effect workflow information-extraction node"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "extraction-runtime",
   "aio-pika>=9.5.7,<10",
   "docling==2.117.0",
   "httpx>=0.28.1,<1",
@@ -62,5 +63,6 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
+extraction-runtime = { path = "../shared/extraction-runtime", editable = true }
 torch = [{ index = "pytorch-cpu" }]
 torchvision = [{ index = "pytorch-cpu" }]

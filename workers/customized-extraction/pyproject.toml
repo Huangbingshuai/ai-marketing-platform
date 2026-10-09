@@ -1,0 +1,37 @@
+[project]
+name = "customized-extraction-worker"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["extraction-runtime", "aio-pika>=9.5.7,<10", "langgraph>=1.0.6,<2", "pydantic-settings>=2.12,<3", "torch>=2.2.2,<3", "torchvision>=0,<1"]
+[project.scripts]
+customized-extraction-worker = "customized_extraction.main:main"
+customized-extraction-download-models = "extraction_runtime.model_init:main"
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2,<10",
+    "pytest-asyncio>=1.2,<2",
+    "mypy>=1.18,<2",
+    "types-openpyxl>=3.1.5.20260827",
+]
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+[tool.hatch.build.targets.wheel]
+packages = ["src/customized_extraction"]
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
+extraction-runtime = { path = "../shared/extraction-runtime", editable = true }
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["customized_extraction"]

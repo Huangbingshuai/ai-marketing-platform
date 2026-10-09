@@ -1,16 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import WorkflowExtractionGraphDialog from '../../../platform/workflow/components/WorkflowExtractionGraphDialog.vue';
+import WorkflowExtractionActions from '../../../platform/workflow/components/WorkflowExtractionActions.vue';
+import WorkflowExtractionFeedback from '../../../platform/workflow/components/WorkflowExtractionFeedback.vue';
 import {
-  AlertCircle,
-  ArrowLeft,
-  CheckCircle2,
-  FileText,
-  Images,
-  Plus,
-  RefreshCw,
-  Trash2,
-  Workflow,
-} from '@lucide/vue';
+  CUSTOMIZED_EXTRACTION_NODES,
+  type CustomizedExtractionTask,
+  type ExtractionNodeDetail,
+} from '@ai-marketing/contracts';
+import { computed, ref, watch } from 'vue';
+import { AlertCircle, CheckCircle2, FileText, RefreshCw } from '@lucide/vue';
 import { CUSTOMIZED_IMAGE_USAGE_LABELS } from '@ai-marketing/contracts';
 import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
@@ -18,6 +16,8 @@ import WorkflowNodeEditActions from '../../../platform/workflow/components/Workf
 import WorkflowEditingBanner from '../../../platform/workflow/components/WorkflowEditingBanner.vue';
 import WorkflowInformationCard from '../../../platform/workflow/components/WorkflowInformationCard.vue';
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
+import WorkflowSellingPointsEditor from '../../../platform/workflow/components/WorkflowSellingPointsEditor.vue';
+import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
 import ImportMaterialRow from '../../../platform/file/components/ImportMaterialRow.vue';
 import ImportImagePreview from '../../../platform/file/components/ImportImagePreview.vue';
@@ -27,6 +27,7 @@ import {
   customizedExtractionReady,
   type CustomizedExtractionView,
   type CustomizedExtractionFieldKey,
+  type CustomizedExtractionTextFieldKey,
   type CustomizedExtractionSource,
 } from './customized-extraction-view';
 
@@ -34,21 +35,23 @@ const props = withDefaults(
   defineProps<{
     projectId: string;
     workflowRunId: string;
-    projectName: string;
     sourceConfirmed: boolean;
-    sourceRevision?: number | null;
     sources: CustomizedExtractionSource[];
     view?: CustomizedExtractionView;
     available?: boolean;
     loading?: boolean;
     loadError?: string;
+    task?: CustomizedExtractionTask | null;
+    selectedGraphNode?: string | null;
+    graphDetail?: ExtractionNodeDetail | null;
+    graphLoading?: boolean;
+    graphError?: string;
   }>(),
   {
     view: () => emptyCustomizedExtractionView(),
     available: false,
     loading: false,
     loadError: '',
-    sourceRevision: null,
   },
 );
 const emit = defineEmits<{
@@ -59,6 +62,9 @@ const emit = defineEmits<{
   cancelEdit: [];
   save: [];
   extract: [];
+  retryTask: [];
+  selectGraphNode: [nodeId: string];
+  closeGraph: [];
   'update:view': [view: CustomizedExtractionView];
   viewSource: [assetId: string, event: MouseEvent, returnFocus: HTMLElement | null];
 }>();
@@ -81,12 +87,6 @@ const editable = computed(() =>
 const ready = computed(() =>
   customizedExtractionReady(props.view, props.available, props.sourceConfirmed),
 );
-const docs = computed(() =>
-  props.sources.filter((source) => source.reference.category !== 'VISUAL_REFERENCE'),
-);
-const images = computed(() =>
-  props.sources.filter((source) => source.reference.category === 'VISUAL_REFERENCE'),
-);
 const shownSources = computed(() =>
   selectedSourceIds.value === null
     ? props.sources
@@ -105,98 +105,47 @@ const readSource = (assetId: string, event: MouseEvent) => {
   emit('viewSource', assetId, event, sourceTrigger);
 };
 const fieldDefinitions: {
+  id: string;
   title: string;
   description: string;
+  badge?: string;
   fields: {
     key: CustomizedExtractionFieldKey;
     label: string;
     wide?: boolean;
     multiline?: boolean;
-    options?: string[];
   }[];
 }[] = [
   {
-    title: '项目与视频用途',
-    description: '明确视频的用途与发布位置',
+    id: 'brand',
+    title: '品牌基础信息',
+    description: '',
+    badge: '品牌',
     fields: [
-      { key: 'videoPurpose', label: '视频用途' },
-      { key: 'publication', label: '发布平台或位置' },
+      { key: 'brandName', label: '品牌名称', wide: true },
+      { key: 'projectName', label: '项目名称', wide: true },
+      { key: 'projectBackground', label: '项目背景', wide: true, multiline: true },
+      { key: 'brandTone', label: '品牌调性', wide: true, multiline: true },
+      { key: 'visualConsistencyRules', label: '视觉统一规则', wide: true, multiline: true },
+      { key: 'avoidedElements', label: '画面禁用元素', wide: true, multiline: true },
     ],
   },
   {
-    title: '品牌与产品信息',
-    description: '整理资料中已有的主体介绍、规格和使用方式',
+    id: 'product',
+    title: '产品核心信息',
+    description: '',
+    badge: '产品',
     fields: [
-      { key: 'subjectName', label: '品牌或产品名称', wide: true },
-      { key: 'subjectDescription', label: '品牌或产品介绍', wide: true, multiline: true },
-      { key: 'specificationAndUsage', label: '相关规格与用法', wide: true, multiline: true },
-    ],
-  },
-  {
-    title: '目标受众',
-    description: '未限定的受众信息可以留空，不自动推测',
-    fields: [
-      {
-        key: 'audienceAge',
-        label: '目标人群年龄段',
-        options: ['18-24', '25-30', '31-40', '41-50', '50+', '不限'],
-      },
-      { key: 'audienceGender', label: '性别倾向', options: ['女性为主', '男性为主', '不限'] },
-      { key: 'audienceRegion', label: '地域', options: ['一线城市', '全国', '特定省份'] },
-      { key: 'audienceProfile', label: '兴趣标签 / 人群画像', wide: true, multiline: true },
-    ],
-  },
-  {
-    title: '创意与风格',
-    description: '保留希望表达的信息与全片视觉偏好',
-    fields: [
-      { key: 'coreMessage', label: '核心主题 / 传达信息', wide: true, multiline: true },
-      {
-        key: 'visualStyle',
-        label: '视觉风格偏好',
-        wide: true,
-        options: [
-          '写实',
-          '插画',
-          '国潮',
-          '科技感',
-          '极简',
-          '温暖',
-          '高端',
-          '卡通',
-          '赛博朋克',
-          '复古',
-          '清新',
-          '商务',
-          '其他',
-        ],
-      },
-      { key: 'mainColors', label: '主色调偏好' },
-      {
-        key: 'emotionalTone',
-        label: '情绪调性',
-        options: ['活泼轻快', '温馨治愈', '高级质感', '炫酷冲击', '沉稳专业', '趣味搞怪', '待确认'],
-      },
-    ],
-  },
-  {
-    title: '视频规格',
-    description: '保留时长范围、画幅与尚待确定的内容',
-    fields: [
-      {
-        key: 'duration',
-        label: '视频时长',
-        options: ['5～15 秒', '15～30 秒', '30～60 秒', '60 秒以上', '自定义'],
-      },
-      {
-        key: 'aspectRatio',
-        label: '画幅或尺寸',
-        options: ['竖屏 9:16', '横屏 16:9', '方形 1:1', '自定义尺寸'],
-      },
+      { key: 'productName', label: '产品名称', wide: true },
+      { key: 'productDescription', label: '产品介绍', wide: true, multiline: true },
+      { key: 'productSpecifications', label: '产品规格', wide: true, multiline: true },
+      { key: 'productAppearance', label: '产品外观', wide: true, multiline: true },
+      { key: 'sellingPoints', label: '核心卖点', wide: true, multiline: true },
+      { key: 'targetAudience', label: '目标受众', wide: true, multiline: true },
     ],
   },
 ];
-const updateField = (field: CustomizedExtractionFieldKey, value: string) => {
+const updateField = (field: CustomizedExtractionTextFieldKey, value: string) => {
   if (!editable.value) return;
   emit('update:view', {
     ...props.view,
@@ -205,31 +154,47 @@ const updateField = (field: CustomizedExtractionFieldKey, value: string) => {
     fieldSources: { ...props.view.fieldSources, [field]: [] },
   });
 };
-const chooseOption = (field: CustomizedExtractionFieldKey, option: string) => {
-  const multi = field === 'visualStyle';
-  const value = props.view.fields[field].trim();
-  updateField(field, multi && value ? `${value}、${option}` : option);
-};
-type ListKey = 'facts' | 'avoidedElements';
-const updateList = (key: ListKey, id: string, text: string) => {
+const updateSellingPoints = (points: string[]) => {
   if (!editable.value) return;
   emit('update:view', {
     ...props.view,
-    [key]: props.view[key].map((item) =>
-      item.id === id ? { ...item, text, sourceIds: [] } : item,
-    ),
+    fields: { ...props.view.fields, sellingPoints: points },
+    suggestions: props.view.suggestions.filter((key) => key !== 'sellingPoints'),
+    fieldSources: { ...props.view.fieldSources, sellingPoints: [] },
   });
 };
-const addItem = (key: ListKey) => {
+const addSellingPoint = () => updateSellingPoints([...props.view.fields.sellingPoints, '']);
+const updateSellingPoint = (index: number, value: string) => {
+  if (index < 0 || index >= props.view.fields.sellingPoints.length) return;
+  updateSellingPoints(
+    props.view.fields.sellingPoints.map((point, i) => (i === index ? value : point)),
+  );
+};
+const removeSellingPoint = async (index: number) => {
   if (!editable.value) return;
-  emit('update:view', {
-    ...props.view,
-    [key]: [...props.view[key], { id: crypto.randomUUID(), text: '', sourceIds: [] }],
-  });
-};
-const removeItem = (key: ListKey, id: string) => {
-  if (editable.value)
-    emit('update:view', { ...props.view, [key]: props.view[key].filter((item) => item.id !== id) });
+  const points = props.view.fields.sellingPoints;
+  const value = points[index];
+  if (value === undefined) return;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  if (
+    value.trim() &&
+    !(await requestActionConfirmation({
+      eyebrow: '删除卖点',
+      title: `删除“${value.trim().slice(0, 36)}${value.trim().length > 36 ? '…' : ''}”？`,
+      description: '该卖点会从当前信息卡草稿中移除，保存后用于后续分镜创作。',
+      confirmLabel: '确认删除',
+      tone: 'danger',
+    }))
+  )
+    return;
+  if (
+    projectId !== props.projectId ||
+    workflowRunId !== props.workflowRunId ||
+    points !== props.view.fields.sellingPoints
+  )
+    return;
+  updateSellingPoints(points.filter((_point, i) => i !== index));
 };
 const acknowledgeIssue = (id: string) => {
   if (editable.value)
@@ -238,7 +203,7 @@ const acknowledgeIssue = (id: string) => {
       issues: props.view.issues.filter((issue) => issue.id !== id),
     });
 };
-const useAlternative = (id: string, field: CustomizedExtractionFieldKey, value: string) => {
+const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, value: string) => {
   if (!editable.value) return;
   emit('update:view', {
     ...props.view,
@@ -248,8 +213,8 @@ const useAlternative = (id: string, field: CustomizedExtractionFieldKey, value: 
     suggestions: props.view.suggestions.filter((key) => key !== field),
   });
 };
-const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核对', '结果保存'];
-// No fabricated per-step progress: the future adapter must provide real execution detail.
+
+// Execution status and details are supplied by the API-backed workspace adapter.
 </script>
 
 <template>
@@ -268,7 +233,7 @@ const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核�
     </div>
     <template v-else>
       <WorkflowEditingBanner
-        v-if="view.editing"
+        v-if="view.temporary"
         node-label="信息提炼"
         description="修改先保留在编辑副本中；保存版本后用于分镜创作，取消编辑返回原版本。"
       />
@@ -277,7 +242,7 @@ const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核�
           <span>02</span>
           <div>
             <h2 id="customized-extraction-title">视频创作信息卡</h2>
-            <p>整理主体信息、创作方向和视频规格，确认后用于分镜创作</p>
+            <p>整理品牌信息、产品信息与视觉约束，确认后用于分镜创作</p>
           </div>
         </div>
         <div class="extraction-heading__actions">
@@ -291,40 +256,17 @@ const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核�
             @cancel="emit('cancelEdit')"
             @save="emit('save')"
           />
-          <button
-            type="button"
+          <WorkflowExtractionActions
             :disabled="actionDisabled"
-            :title="!available ? 'AI 提炼功能待接入' : !sourceConfirmed ? '请先保存资料版本' : ''"
-            @click="emit('extract')"
-          >
-            <RefreshCw :size="14" />{{ view.status === 'EMPTY' ? 'AI 提炼' : '重新 AI 提炼' }}
-          </button>
-          <button type="button" @click="workflowOpen = true">
-            <Workflow :size="14" />查看工作流
-          </button>
+            :running="running"
+            :label="view.status === 'EMPTY' ? 'AI 提炼' : '重新 AI 提炼'"
+            @extract="emit('extract')"
+            @details="workflowOpen = true"
+          />
         </div>
       </header>
 
-      <div class="source-summary">
-        <div>
-          <FileText :size="17" /><span>{{ projectName }}</span
-          ><small>{{
-            sourceConfirmed
-              ? `资料版本 ${sourceRevision ?? '已确认'} · ${docs.length} 份文档 · ${images.length} 张参考图片`
-              : '尚无已确认的资料包'
-          }}</small>
-        </div>
-        <button type="button" @click="openSources()"><Images :size="14" />查看来源资料</button>
-      </div>
-      <div v-if="!sourceConfirmed" class="state-alert warning" role="status">
-        <AlertCircle :size="17" />
-        <div>
-          <strong>请先确认导入资料</strong>
-          <p>返回资料导入并保存版本后，再以已确认的简报开始提炼。</p>
-        </div>
-        <button type="button" @click="emit('back')"><ArrowLeft :size="14" />返回资料导入</button>
-      </div>
-      <div v-else-if="!available" class="state-alert information" role="status">
+      <div v-if="sourceConfirmed && !available" class="state-alert information" role="status">
         <AlertCircle :size="17" />
         <div>
           <strong>尚未开始提炼</strong>
@@ -338,18 +280,14 @@ const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核�
           <p>旧结果仍可查看，重新提炼并保存版本后继续分镜创作。</p>
         </div>
       </div>
-      <div
+      <WorkflowExtractionFeedback
         v-if="view.status === 'FAILED' || view.status === 'PARTIAL'"
-        class="state-alert danger"
-        role="alert"
-      >
-        <AlertCircle :size="17" />
-        <div>
-          <strong>{{ view.status === 'PARTIAL' ? '部分资料未能完成提炼' : '本次提炼失败' }}</strong>
-          <p>{{ view.error || '请重试，已确认的信息不会被本次失败覆盖。' }}</p>
-        </div>
-        <button type="button" :disabled="actionDisabled" @click="emit('extract')">重新提炼</button>
-      </div>
+        :title="view.status === 'PARTIAL' ? '部分资料未能完成提炼' : '本次提炼失败'"
+        :message="view.error || '请重试，已确认的信息仍保留。'"
+        action="重试失败文档"
+        :disabled="actionDisabled"
+        @action="emit('retryTask')"
+      />
       <WorkflowRunProgress
         v-if="running"
         :progress="view.progress"
@@ -357,154 +295,97 @@ const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核�
         @show-details="workflowOpen = true"
       />
 
-      <div v-if="view.issues.length" class="issues-panel">
-        <h3>
-          待确认信息 <small>{{ view.issues.length }} 项</small>
-        </h3>
-        <article v-for="issue in view.issues" :key="issue.id">
-          <AlertCircle :size="16" />
-          <div>
-            <strong>{{ issue.message }}</strong>
-            <p>查看来源后选择采用内容，也可在对应字段中自行修改。</p>
-            <div class="issue-actions">
-              <button type="button" @click="openSources(issue.sourceIds)">查看来源</button
-              ><button
-                v-for="option in issue.alternatives"
-                :key="option"
-                type="button"
-                :disabled="!editable"
-                @click="useAlternative(issue.id, issue.field, option)"
-              >
-                采用：{{ option }}</button
-              ><button type="button" :disabled="!editable" @click="acknowledgeIssue(issue.id)">
-                确认保留当前填写
-              </button>
-            </div>
-          </div>
-        </article>
-      </div>
-
       <div class="result-grid" :aria-busy="running">
         <WorkflowInformationCard
           v-for="section in fieldDefinitions"
           :key="section.title"
           class="content-block"
+          :class="[`card-${section.id}`, { 'content-block--identity': section.badge }]"
+          :data-section="section.id"
         >
           <div class="block-heading">
             <div>
               <h3>{{ section.title }}</h3>
-              <p>{{ section.description }}</p>
+              <p v-if="section.description">{{ section.description }}</p>
             </div>
+            <span v-if="section.badge" class="identity-badge">{{ section.badge }}</span>
           </div>
           <div class="base-fields">
-            <WorkflowInformationField
-              v-for="field in section.fields"
-              :key="field.key"
-              :label="field.label"
-              :model-value="view.fields[field.key]"
-              :multiline="!!field.multiline"
-              :readonly="!editable"
-              :class="{ wide: field.wide }"
-              :placeholder="view.status === 'EMPTY' ? '待提炼' : '未提供 / 待确认'"
-              @update:model-value="updateField(field.key, $event)"
-            >
-              <template #source
-                ><span v-if="view.suggestions.includes(field.key)" class="suggestion-label"
-                  >AI 建议</span
-                ><button
-                  v-if="view.fieldSources[field.key]?.length"
-                  type="button"
-                  class="field-source"
-                  :aria-label="`查看${field.label}来源`"
-                  @click="openSources(view.fieldSources[field.key]!)"
-                >
-                  来源
-                </button></template
+            <template v-for="field in section.fields" :key="field.key">
+              <WorkflowSellingPointsEditor
+                v-if="field.key === 'sellingPoints'"
+                class="wide"
+                title="核心卖点"
+                :items="view.fields.sellingPoints"
+                :readonly="!editable"
+                single-column
+                @add="addSellingPoint"
+                @update-item="updateSellingPoint"
+                @remove="removeSellingPoint"
               >
-              <details v-if="field.options && editable" class="option-reference">
-                <summary>可选项参考</summary>
-                <div>
+                <template #heading-source>
+                  <span v-if="view.suggestions.includes('sellingPoints')" class="suggestion-label"
+                    >AI 建议</span
+                  >
                   <button
-                    v-for="option in field.options"
+                    v-if="view.fieldSources.sellingPoints?.length"
+                    type="button"
+                    class="field-source"
+                    aria-label="查看核心卖点来源"
+                    @click="openSources(view.fieldSources.sellingPoints)"
+                  >
+                    来源
+                  </button>
+                </template>
+              </WorkflowSellingPointsEditor>
+              <WorkflowInformationField
+                v-else
+                :label="field.label"
+                :model-value="view.fields[field.key]"
+                :multiline="!!field.multiline"
+                :readonly="!editable"
+                :class="{ wide: field.wide }"
+                :placeholder="view.status === 'EMPTY' ? '待提炼' : '未提供 / 待确认'"
+                @update:model-value="updateField(field.key, $event)"
+              >
+                <template #source
+                  ><span v-if="view.suggestions.includes(field.key)" class="suggestion-label"
+                    >AI 建议</span
+                  ><button
+                    v-if="view.fieldSources[field.key]?.length"
+                    type="button"
+                    class="field-source"
+                    :aria-label="`查看${field.label}来源`"
+                    @click="openSources(view.fieldSources[field.key]!)"
+                  >
+                    来源
+                  </button></template
+                >
+              </WorkflowInformationField>
+              <div
+                v-for="issue in view.issues.filter((item) => item.field === field.key)"
+                :key="issue.id"
+                class="field-issue wide"
+              >
+                <WorkflowExtractionFeedback
+                  title="待确认信息"
+                  :message="issue.message"
+                  tone="warning"
+                />
+                <div class="issue-actions">
+                  <button type="button" @click="openSources(issue.sourceIds)">查看来源</button
+                  ><button
+                    v-for="option in issue.alternatives"
                     :key="option"
                     type="button"
-                    @click="chooseOption(field.key, option)"
+                    :disabled="!editable"
+                    @click="useAlternative(issue.id, issue.field, option)"
                   >
-                    {{ option }}
+                    采用：{{ option }}</button
+                  ><button type="button" :disabled="!editable" @click="acknowledgeIssue(issue.id)">
+                    确认保留当前填写
                   </button>
                 </div>
-              </details>
-            </WorkflowInformationField>
-          </div>
-          <div
-            v-if="section.title === '品牌与产品信息' || section.title === '创意与风格'"
-            class="item-section"
-          >
-            <template
-              v-for="list in [
-                section.title === '品牌与产品信息'
-                  ? ('facts' as const)
-                  : ('avoidedElements' as const),
-              ]"
-              :key="list"
-            >
-              <div class="block-heading">
-                <div>
-                  <h4>
-                    {{ list === 'facts' ? '产品特点与事实' : '必须避免的元素' }}
-                    <small>{{ view[list].length }} 条</small>
-                  </h4>
-                  <p>
-                    {{
-                      list === 'facts'
-                        ? '保留有资料依据的特点，不将创作愿望作为产品事实'
-                        : '没有特别限制时可以留空'
-                    }}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  :disabled="!editable"
-                  :aria-label="list === 'facts' ? '添加产品事实' : '添加避免元素'"
-                  @click="addItem(list)"
-                >
-                  <Plus :size="13" />添加
-                </button>
-              </div>
-              <p v-if="!view[list].length" class="empty-inline">
-                {{
-                  view.status === 'EMPTY'
-                    ? '尚未提炼'
-                    : list === 'facts'
-                      ? '暂无产品事实，可在编辑时补充'
-                      : '暂无避免元素'
-                }}
-              </p>
-              <div v-for="(item, index) in view[list]" :key="item.id" class="information-item">
-                <textarea
-                  :value="item.text"
-                  :readonly="!editable"
-                  :aria-label="`${list === 'facts' ? '产品事实' : '避免元素'} ${index + 1}`"
-                  placeholder="填写一条完整内容"
-                  @input="updateList(list, item.id, ($event.target as HTMLTextAreaElement).value)"
-                />
-                <button
-                  type="button"
-                  :disabled="!editable"
-                  :aria-label="`删除${list === 'facts' ? '产品事实' : '避免元素'} ${index + 1}`"
-                  @click="removeItem(list, item.id)"
-                >
-                  <Trash2 :size="14" />
-                </button>
-                <button
-                  v-if="item.sourceIds.length"
-                  class="field-source item-source"
-                  type="button"
-                  :aria-label="`查看${list === 'facts' ? '产品事实' : '避免元素'} ${index + 1}来源`"
-                  @click="openSources(item.sourceIds)"
-                >
-                  查看来源资料
-                </button>
               </div>
             </template>
           </div>
@@ -526,7 +407,7 @@ const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核�
     <WorkflowInformationDialog
       :open="sourcesOpen"
       title="来源资料"
-      description="查看已确认简报与参考图片；图片保留原有参考用途"
+      description="查看已确认简报与品牌素材；历史图片保留原有参考用途"
       @close="sourcesOpen = false"
     >
       <p v-if="!shownSources.length" class="dialog-empty">
@@ -576,27 +457,23 @@ const phaseLabels = ['读取资料', '文档解析', '信息整理', '差异核�
         </ImportMaterialRow>
       </div>
     </WorkflowInformationDialog>
-    <WorkflowInformationDialog
+    <WorkflowExtractionGraphDialog
       :open="workflowOpen"
-      title="信息提炼工作流"
-      description="将确认的资料整理为视频创作信息，提炼结果需审阅后保存版本"
-      @close="workflowOpen = false"
-    >
-      <div class="workflow-overview">
-        <div v-for="(phase, index) in phaseLabels" :key="phase">
-          <span>{{ String(index + 1).padStart(2, '0') }}</span
-          ><strong>{{ phase }}</strong
-          ><small>待接入执行状态</small>
-        </div>
-      </div>
-      <p class="workflow-explanation">
-        {{
-          available
-            ? '当前整体任务状态由进度条展示，步骤详情待接入。'
-            : 'AI 提炼尚未接入，当前没有执行任务。'
-        }}
-      </p>
-    </WorkflowInformationDialog>
+      title="视频创作信息提炼工作流"
+      :subtitle="`${view.fields.productName || '当前简报'} · ${view.progress}%`"
+      :nodes="CUSTOMIZED_EXTRACTION_NODES"
+      :executions="task?.nodes ?? []"
+      :selected-node-id="selectedGraphNode ?? null"
+      :detail="graphDetail ?? null"
+      :detail-loading="graphLoading ?? false"
+      :detail-error="graphError ?? ''"
+      @close="
+        workflowOpen = false;
+        emit('closeGraph');
+      "
+      @select="emit('selectGraphNode', $event)"
+      @refresh="selectedGraphNode && emit('selectGraphNode', selectedGraphNode)"
+    />
   </section>
 </template>
 
@@ -681,37 +558,9 @@ button:disabled {
   opacity: 0.55;
   cursor: default;
 }
-button:focus-visible,
-summary:focus-visible {
+button:focus-visible {
   outline: 2px solid #7da7ef;
   outline-offset: 3px;
-}
-.source-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 12px 15px;
-  margin-bottom: 18px;
-  background: #f8faff;
-  border: 1px solid #e3ebf7;
-  border-radius: 12px;
-}
-.source-summary > div {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  font-size: 13px;
-}
-.source-summary span {
-  overflow-wrap: anywhere;
-}
-.source-summary small {
-  color: #8492a8;
-  font-size: 11px;
 }
 .state-alert {
   display: flex;
@@ -752,9 +601,62 @@ summary:focus-visible {
 }
 .result-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas: 'brand product';
   gap: 18px;
   margin-top: 18px;
+}
+.card-product {
+  grid-area: product;
+}
+.card-brand {
+  grid-area: brand;
+}
+.content-block--identity {
+  padding: 0;
+  overflow: hidden;
+  background: #f7faff;
+}
+.content-block--identity .block-heading {
+  align-items: center;
+  margin-bottom: 0;
+  padding: 22px 24px;
+  border-bottom: 1px solid #f0e2db;
+}
+.identity-badge {
+  padding: 6px 12px;
+  color: #2563eb;
+  background: #edf4ff;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.base-fields {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  padding: 24px;
+}
+.content-block--identity :deep(input) {
+  height: 52px;
+  padding: 0 14px;
+}
+.content-block--identity :deep(.selling-point-row input) {
+  height: 40px;
+  padding: 0 11px;
+}
+.content-block--identity :deep(textarea) {
+  height: 100px;
+  min-height: 100px;
+  padding: 9px 14px;
+  resize: vertical;
+}
+@media (max-width: 680px) {
+  .content-block--identity .block-heading {
+    padding: 18px 16px;
+  }
+  .content-block--identity .base-fields {
+    padding: 20px 16px;
+  }
 }
 .block-heading {
   display: flex;
@@ -777,6 +679,7 @@ summary:focus-visible {
 }
 .base-fields {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px 16px;
 }
@@ -796,64 +699,6 @@ summary:focus-visible {
   color: #8057c7;
   font-size: 11px;
   font-weight: 400;
-}
-.item-section {
-  margin-top: 22px;
-  padding-top: 20px;
-  border-top: 1px solid #edf0f5;
-}
-.empty-inline {
-  padding: 12px 0;
-  color: #a0aec0;
-  font-size: 13px;
-}
-.information-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
-  gap: 7px;
-  margin-top: 12px;
-}
-.information-item textarea {
-  box-sizing: border-box;
-  min-width: 0;
-  width: 100%;
-  min-height: 56px;
-  padding: 8px 11px;
-  border: 1px solid #dce3ec;
-  border-radius: 10px;
-  color: #42526a;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.6;
-  resize: vertical;
-}
-.information-item > button {
-  padding: 0;
-  align-self: start;
-}
-.item-source {
-  grid-column: 1;
-  justify-self: start;
-}
-.option-reference {
-  color: #8492a8;
-  font-size: 11px;
-  font-weight: 400;
-}
-.option-reference summary {
-  cursor: pointer;
-}
-.option-reference > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-top: 8px;
-}
-.option-reference button {
-  min-height: 28px;
-  padding: 3px 8px;
-  font-weight: 400;
-  font-size: 11px;
 }
 .issues-panel {
   padding: 16px;
@@ -949,6 +794,15 @@ summary:focus-visible {
   justify-items: center;
   color: #8492a8;
   text-align: center;
+}
+@media (max-width: 980px) {
+  .result-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: none;
+  }
+  .content-block {
+    grid-area: auto;
+  }
 }
 @media (max-width: 680px) {
   .customized-extraction-node {

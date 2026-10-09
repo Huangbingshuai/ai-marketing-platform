@@ -23,6 +23,8 @@ export class CustomizedSourceImportService {
     try {
       if (section !== 'BRIEF' && section !== 'VISUAL_REFERENCE')
         throw new ApiHttpException('资料区域无效', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+      if (section === 'BRIEF' && file && !/\.(docx|pdf|xlsx|txt|md)$/i.test(normalizeMultipartFileName(file.originalname)))
+        throw new ApiHttpException('简报支持 DOCX、PDF、XLSX、TXT、Markdown；旧版 DOC/XLS 请转换后上传', HttpStatus.BAD_REQUEST, 'FILE_TYPE_UNSUPPORTED');
       await this.workflows.assertCustomizedImportEditable(projectId, runId);
       const validated = await validateImportFile(
         file ? { ...file, originalname: normalizeMultipartFileName(file.originalname) } : undefined,

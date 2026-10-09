@@ -46,9 +46,12 @@ export type {
   UpdateAssetRequest,
 } from './asset';
 export type { HealthData, HealthStatus } from './health';
-export { PROJECT_STATUSES } from './project';
+export { PROJECT_STATUSES, PROJECT_DELETION_STATUSES } from './project';
 export type {
   CreateProjectRequest,
+  DeleteProjectResult,
+  DeleteProjectRequest,
+  ProjectDeletionStatus,
   Project,
   ProjectListQuery,
   ProjectStatus,
@@ -61,8 +64,10 @@ export * from './effect-prompt-generation';
 export * from './effect-segment-render';
 export * from './workflow-working';
 export * from './effect-template-mix';
+export * from './effect-template-mix-transform';
 export * from './effect-template-mix-packaging';
 export * from './effect-final-output';
 export * from './effect-voice';
-export * from './effect-template-mix-transform';
 export * from './customized-import';
+export * from './extraction-execution';
+export * from './customized-extraction';

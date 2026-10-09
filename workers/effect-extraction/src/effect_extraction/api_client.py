@@ -1,4 +1,5 @@
 from __future__ import annotations
+from extraction_runtime.http import InternalApiError as InternalApiError, request as shared_request
 
 from collections.abc import Mapping
 from typing import Any, Protocol
@@ -21,13 +22,6 @@ from .models import (
 )
 
 
-class InternalApiError(RuntimeError):
-    def __init__(
-        self, message: str, *, retryable: bool, status_code: int | None = None
-    ) -> None:
-        super().__init__(message)
-        self.retryable = retryable
-        self.status_code = status_code
 
 
 class InternalApi(Protocol):
@@ -105,20 +99,7 @@ class HttpInternalApi:
         await self._client.aclose()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        try:
-            response = await self._client.request(method, path, **kwargs)
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise InternalApiError(
-                "internal API is unavailable", retryable=True
-            ) from exc
-        if response.is_error:
-            retryable = response.status_code == 429 or response.status_code >= 500
-            raise InternalApiError(
-                f"internal API returned HTTP {response.status_code}",
-                retryable=retryable,
-                status_code=response.status_code,
-            )
-        return response
+        return await shared_request(self._client, method, path, **kwargs)
 
     async def _json(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._request(method, path, **kwargs)

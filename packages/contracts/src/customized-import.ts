@@ -35,14 +35,35 @@ export type UploadCustomizedMaterialRequest = { section: CustomizedImportSection
 export const CUSTOMIZED_MATERIAL_CATEGORY_LABELS: Record<CustomizedMaterialCategory, string> = {
   BRIEF: '视频创作简报',
   PRODUCT: '产品资料',
-  VISUAL_REFERENCE: '视觉参考图片',
+  VISUAL_REFERENCE: '品牌素材',
   CHARACTER: '人物与人设',
   BRAND: '品牌资料',
   REFERENCE: '历史参考资料',
 };
-export const CUSTOMIZED_IMAGE_USAGES = ['PRODUCT', 'PERSON', 'SCENE', 'STYLE', 'OTHER'] as const;
+/** New uploads describe supplied brand elements; generated product assets belong downstream. */
+export const CUSTOMIZED_BRAND_IMAGE_USAGES = [
+  'LOGO',
+  'WORDMARK',
+  'BRAND_GRAPHIC',
+  'BRAND_IP',
+  'PACKAGING',
+] as const;
+/** Legacy usages remain valid to preserve pinned files and confirmed source packages. */
+export const CUSTOMIZED_IMAGE_USAGES = [
+  ...CUSTOMIZED_BRAND_IMAGE_USAGES,
+  'PRODUCT',
+  'PERSON',
+  'SCENE',
+  'STYLE',
+  'OTHER',
+] as const;
 export type CustomizedImageUsage = (typeof CUSTOMIZED_IMAGE_USAGES)[number];
 export const CUSTOMIZED_IMAGE_USAGE_LABELS: Record<CustomizedImageUsage, string> = {
+  LOGO: '品牌 Logo',
+  WORDMARK: '品牌标准字',
+  BRAND_GRAPHIC: '品牌图案',
+  BRAND_IP: '品牌 IP',
+  PACKAGING: '包装平面图',
   PRODUCT: '产品参考',
   PERSON: '人物参考',
   SCENE: '场景参考',

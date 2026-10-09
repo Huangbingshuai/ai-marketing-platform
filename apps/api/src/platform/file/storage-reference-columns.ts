@@ -1,6 +1,8 @@
 // Typed storage-key columns shared by permanent cleanup workflows.
 // JSON snapshots are not interpreted as deletable storage paths.
 export const PROJECT_STORAGE_COLUMNS = [
+  ['customized_extraction_artifacts', 'storageKey'],
+  ['customized_extraction_file_holds', 'storageKey'],
   ['assets', 'storageKey'],
   ['asset_versions', 'storageKey'],
   ['working_artifacts', 'storageKey'],

@@ -4,13 +4,33 @@ export {
   validateCustomizedImportDraft,
 } from '@ai-marketing/contracts';
 import {
+  CUSTOMIZED_BRAND_IMAGE_USAGES,
+  CUSTOMIZED_IMAGE_USAGE_LABELS,
   CUSTOMIZED_IMPORT_LIMITS,
   type Asset,
+  type CustomizedImageUsage,
   type CustomizedImportDraftState,
 } from '@ai-marketing/contracts';
 
+/** Keep only this file's historical usage selectable; never relabel it on read. */
+export const customizedImageUsageOptions = (current?: CustomizedImageUsage) => {
+  const options: { label: string; value: CustomizedImageUsage | '' }[] = [
+    { label: '未指定用途', value: '' },
+    ...CUSTOMIZED_BRAND_IMAGE_USAGES.map((value) => ({
+      label: CUSTOMIZED_IMAGE_USAGE_LABELS[value],
+      value,
+    })),
+  ];
+  if (current && !options.some((option) => option.value === current))
+    options.push({
+      label: `${CUSTOMIZED_IMAGE_USAGE_LABELS[current]}（历史资料）`,
+      value: current,
+    });
+  return options;
+};
+
 export const customizedFileError = (file: Pick<File, 'name' | 'size'>): string => {
-  if (!/\.(docx?|pdf|xlsx?|txt|md|jpe?g|png|webp|psd|mp4|mov|webm)$/i.test(file.name))
+  if (!/\.(docx|pdf|xlsx|txt|md|jpe?g|png|webp|psd|mp4|mov|webm)$/i.test(file.name))
     return '支持 Word、PDF、Excel、文本、图片与 MP4 / MOV / WebM 视频';
   if (file.size < 1) return '文件不能为空';
   if (file.size > 512 * 1024 * 1024) return '单个文件不能超过 512 MB';
@@ -39,7 +59,7 @@ export const sectionFileError = (
   if (
     section === 'VISUAL_REFERENCE'
       ? !/\.(jpe?g|png|webp|psd)$/i.test(file.name)
-      : !/\.(docx?|pdf|xlsx?|txt|md)$/i.test(file.name)
+      : !/\.(docx|pdf|xlsx|txt|md)$/i.test(file.name)
   )
     return section === 'VISUAL_REFERENCE'
       ? '此区域只支持 JPG、PNG、WebP、PSD 图片'

@@ -1,3 +1,4 @@
+import { pollAsyncTask } from '../../../../platform/workflow/poll-async-task';
 import type {
   EffectExtractionNodeDetail,
   EffectExtractionRun,
@@ -28,24 +29,6 @@ export type PollEffectExtractionRunOptions = {
   intervalMs?: number;
   onUpdate?: (run: EffectExtractionRun) => void;
   signal?: AbortSignal;
-};
-
-const abortError = (): DOMException => new DOMException('AI 信息提炼轮询已取消', 'AbortError');
-
-const waitForNextPoll = (duration: number, signal?: AbortSignal): Promise<void> => {
-  if (signal?.aborted) return Promise.reject(abortError());
-  return new Promise((resolve, reject) => {
-    const timer = globalThis.setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, duration);
-    const onAbort = (): void => {
-      globalThis.clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      reject(abortError());
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
 };
 
 export const createExtractionIdempotencyKey = (): string => {
@@ -122,13 +105,12 @@ export const pollEffectExtractionRun = async (
   runId: string,
   { intervalMs = 1_200, onUpdate, signal }: PollEffectExtractionRunOptions = {},
 ): Promise<EffectExtractionRun> => {
-  while (true) {
-    if (signal?.aborted) throw abortError();
-    const run = (await getEffectExtractionRun(projectId, runId, signal)).data.run;
-    onUpdate?.(run);
-    if (isTerminalExtractionRun(run)) return run;
-    await waitForNextPoll(intervalMs, signal);
-  }
+  return pollAsyncTask(
+    async (requestSignal) =>
+      (await getEffectExtractionRun(projectId, runId, requestSignal)).data.run,
+    isTerminalExtractionRun,
+    { intervalMs, onUpdate, signal },
+  );
 };
 
 export const saveEffectExtractionResult = async (

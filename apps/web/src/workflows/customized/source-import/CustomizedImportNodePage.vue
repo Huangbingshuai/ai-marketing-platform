@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import {
-  CUSTOMIZED_IMAGE_USAGE_LABELS,
-  CUSTOMIZED_IMAGE_USAGES,
   normalizeCustomizedImportDraft,
   customizedWorkflowNodeId,
   customizedMaterialSection,
@@ -48,7 +46,7 @@ import EffectWorkflowBranchTree from '../../effect/source-import/components/Effe
 import EffectWorkflowCanvas from '../../effect/source-import/components/EffectWorkflowCanvas.vue';
 import EffectUpwardCreatableSelect from '../../effect/source-import/components/EffectUpwardCreatableSelect.vue';
 import { customizedWorkflowNodes } from '../customized-workflow';
-import CustomizedInfoExtractionNodePage from '../information-extraction/CustomizedInfoExtractionNodePage.vue';
+import CustomizedInfoExtractionNodePage from '../information-extraction/CustomizedExtractionWorkspace.vue';
 import type { CustomizedExtractionSource } from '../information-extraction/customized-extraction-view';
 import {
   initializeCustomizedDraft,
@@ -60,6 +58,7 @@ import {
   activateCustomizedBranch,
 } from './api/customized-import.api';
 import {
+  customizedImageUsageOptions,
   createCustomizedDraftPersistence,
   emptyCustomizedImportDraft,
   isCustomizedSourceAsset,
@@ -107,10 +106,17 @@ const temporaryEdit = computed(() =>
   Boolean(activeRun.value?.isTemporaryBranch && activeRun.value.editNodeId === 'SOURCE_IMPORT'),
 );
 const sourceEditing = computed(() => temporaryEdit.value || !confirmedSteps.value.includes(0));
-const canvasNodes = customizedWorkflowNodes.map((node, index) => ({
-  ...node,
-  status: index === 0 ? '当前' : '就绪',
-}));
+const canvasNodes = computed(() =>
+  customizedWorkflowNodes.map((node, index) => ({
+    ...node,
+    status:
+      index === activeStep.value
+        ? '当前'
+        : confirmedSteps.value.includes(index)
+          ? '已确认'
+          : '就绪',
+  })),
+);
 const staleCounts = computed(() =>
   customizedWorkflowNodes.map((node) =>
     publishedBranch.value?.nodes.find((state) => state.nodeId === node.id)?.status === 'STALE'
@@ -195,10 +201,6 @@ const extractionSources = computed<CustomizedExtractionSource[]>(() =>
           : {}),
       }))
     : [],
-);
-const extractionSourceRevision = computed(
-  () =>
-    publishedBranch.value?.nodes.find((node) => node.nodeId === 'SOURCE_IMPORT')?.revision ?? null,
 );
 const safeError = (error: unknown, fallback: string) =>
   error instanceof ApiClientError && error.status < 500 ? error.message : fallback;
@@ -374,6 +376,8 @@ const load = async (options: { preserveView?: boolean } = {}) => {
     if (!disposed && !controller.signal.aborted) {
       controller.abort();
       loadError.value = safeError(error, '资料草稿加载失败，请重新加载');
+      loading.value = false;
+      runContextSwitching.value = false;
     }
   } finally {
     if (!disposed && !controller.signal.aborted) {
@@ -393,7 +397,10 @@ const save = async (): Promise<boolean> => {
   if (!persistence || loadError.value || loading.value) return false;
   return persistence.flush();
 };
+const extractionWorkspace = ref<InstanceType<typeof CustomizedInfoExtractionNodePage> | null>(null);
 const flushPendingEdits = async (): Promise<boolean> => {
+  if (extractionWorkspace.value && !(await extractionWorkspace.value.flushPendingEdits()))
+    return false;
   if (uploading.value || pendingFiles.value.length) {
     actionError.value = '请先将所选文件保存到项目资产库，或移除待保存文件，再切换或退出。';
     return false;
@@ -663,7 +670,7 @@ const next = async () => {
   }
   await selectStep(1);
 };
-const documentAccept = '.doc,.docx,.pdf,.xls,.xlsx,.txt,.md';
+const documentAccept = '.docx,.pdf,.xlsx,.txt,.md';
 const imageAccept = '.jpg,.jpeg,.png,.webp,.psd';
 const sections = [
   {
@@ -674,9 +681,9 @@ const sections = [
   },
   {
     id: 'VISUAL_REFERENCE',
-    title: '视觉参考图片',
-    description: '可选 · 为后续产品、人物、场景和风格资产生成提供参考',
-    prompt: '点击或将视觉参考图片拖拽到此处',
+    title: '品牌素材',
+    description: '可选 · 上传已有品牌元素，供后续视觉资产生成使用',
+    prompt: '点击或将品牌素材图片拖拽到此处',
   },
 ] as const;
 const sectionMaterials = (section: CustomizedImportSection) =>
@@ -687,13 +694,6 @@ const sectionMaterials = (section: CustomizedImportSection) =>
   );
 const sectionPending = (section: CustomizedImportSection) =>
   pendingFiles.value.filter((item) => item.category === section);
-const imageUsageOptions = [
-  { label: '未指定用途', value: '' },
-  ...CUSTOMIZED_IMAGE_USAGES.map((value) => ({
-    label: CUSTOMIZED_IMAGE_USAGE_LABELS[value],
-    value,
-  })),
-];
 const readingFile = ref<{
   name: string;
   mimeType: string;
@@ -800,7 +800,7 @@ onBeforeUnmount(() => {
     />
     <WorkflowPageLoading
       v-if="loading && !runContextSwitching"
-      description="加载当前项目的视频创作简报与参考图片…"
+      description="加载当前项目的视频创作简报与品牌素材…"
     />
     <section v-else-if="loadError" class="page-state" role="alert">
       <AlertCircle :size="25" />
@@ -818,7 +818,7 @@ onBeforeUnmount(() => {
           <span class="node-number">01</span>
           <div>
             <h1>资料包导入</h1>
-            <p>导入视频创作简报和可选的视觉参考图片</p>
+            <p>导入视频创作简报和可选的品牌素材</p>
           </div>
           <div class="heading-actions">
             <WorkflowNodeEditActions
@@ -867,7 +867,7 @@ onBeforeUnmount(() => {
               :prompt="section.prompt"
               :hint="
                 section.id === 'VISUAL_REFERENCE'
-                  ? '不限于产品图片，可提供人物、场景或风格参考'
+                  ? '品牌 Logo、标准字、品牌图案等；无需提供产品成品图片'
                   : '支持导入一份完整简报，也可同时上传多份补充文档'
               "
               :formats="
@@ -878,7 +878,7 @@ onBeforeUnmount(() => {
               @files="chooseFiles($event, section.id)"
             />
             <div class="materials-heading">
-              <strong>已导入{{ section.id === 'VISUAL_REFERENCE' ? '图片' : '文档' }}</strong
+              <strong>已导入{{ section.id === 'VISUAL_REFERENCE' ? '品牌素材' : '文档' }}</strong
               ><small
                 >{{ sectionMaterials(section.id).length }} 份<span
                   v-if="sectionPending(section.id).length"
@@ -893,7 +893,7 @@ onBeforeUnmount(() => {
             >
               {{
                 section.id === 'VISUAL_REFERENCE'
-                  ? '暂无参考图片，可按需添加'
+                  ? '暂无品牌素材，不影响简报导入'
                   : '暂无简报文档，请上传填写好的视频创作简报'
               }}
             </div>
@@ -928,7 +928,7 @@ onBeforeUnmount(() => {
                     v-if="section.id === 'VISUAL_REFERENCE'"
                     :field-label="`${assets[item.assetId]?.originalFileName || '图片'}用途`"
                     :model-value="item.imageUsage ?? ''"
-                    :options="imageUsageOptions"
+                    :options="customizedImageUsageOptions(item.imageUsage)"
                     :creatable="false"
                     :disabled="busy || !sourceEditing"
                     @update:model-value="
@@ -997,15 +997,16 @@ onBeforeUnmount(() => {
         />
       </section>
       <CustomizedInfoExtractionNodePage
+        ref="extractionWorkspace"
         v-else-if="activeStep === 1"
         :key="`${projectId}:${workflowRunId}`"
         :project-id="projectId"
         :workflow-run-id="workflowRunId"
-        :project-name="context.currentProject.value?.name ?? '当前项目'"
         :source-confirmed="extractionSourceConfirmed"
-        :source-revision="extractionSourceRevision"
         :sources="extractionSources"
         @back="selectStep(0)"
+        @next="selectStep(2)"
+        @workflow-run-change="load({ preserveView: true })"
         @view-source="preview"
       />
       <section v-else class="import-workspace-card next-node">

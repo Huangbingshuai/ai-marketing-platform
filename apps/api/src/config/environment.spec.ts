@@ -166,6 +166,28 @@ describe('validateEnvironment', () => {
     });
   });
 
+  it('preserves a dedicated customized extraction token without inheriting effect credentials', () => {
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        CUSTOMIZED_EXTRACTION_WORKER_TOKEN: 'customized-test-token',
+        EFFECT_EXTRACTION_WORKER_TOKEN: 'effect-test-token',
+      }),
+    ).toMatchObject({
+      CUSTOMIZED_EXTRACTION_WORKER_TOKEN: 'customized-test-token',
+      EFFECT_EXTRACTION_WORKER_TOKEN: 'effect-test-token',
+    });
+    for (const token of [undefined, '', '   ']) {
+      expect(
+        validateEnvironment({
+          ...validEnvironment,
+          CUSTOMIZED_EXTRACTION_WORKER_TOKEN: token,
+          EFFECT_EXTRACTION_WORKER_TOKEN: 'effect-test-token',
+        }).CUSTOMIZED_EXTRACTION_WORKER_TOKEN,
+      ).toBeUndefined();
+    }
+  });
+
   it('validates the optional reference-video signing secret', () => {
     expect(() =>
       validateEnvironment({

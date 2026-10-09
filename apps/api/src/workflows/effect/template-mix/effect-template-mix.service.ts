@@ -1384,7 +1384,6 @@ export class EffectTemplateMixService {
         source.draft,
         source.draftRevision,
         workflowRunId,
-      renderAspectRatio: source.renderAspectRatio ?? null,
         source.artifacts,
         [],
         [],

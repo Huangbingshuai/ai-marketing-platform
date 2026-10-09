@@ -60,68 +60,114 @@ export async function beginCustomizedEdit(
   tx: Prisma.TransactionClient,
   projectId: string,
   runId: string,
+  nodeId = 'SOURCE_IMPORT',
 ) {
   await lockCustomizedProject(tx, projectId);
   const active = await activeRun(tx, projectId);
   if (!active) return customizedConflict('定制类工作流不存在');
   if (
-    active.editSessionNodeId === 'SOURCE_IMPORT' &&
+    active.editSessionNodeId === nodeId &&
     (active.id === runId || active.parentWorkflowRunId === runId)
   )
     return active;
   if (active.id !== runId || active.editSessionNodeId)
     return customizedConflict('请先保存或取消当前编辑，再切换版本');
-  const baseline = await sourceArtifact(tx, projectId, runId);
-  if (!baseline) return active;
-  const state = await tx.workflowNodeState.findUnique({
-    where: {
-      projectId_workflowRunId_nodeId: { projectId, workflowRunId: runId, nodeId: 'SOURCE_IMPORT' },
-    },
+  if (
+    await tx.customizedExtractionTask.count({
+      where: { projectId, workflowRunId: runId, status: { in: ['QUEUED', 'RUNNING'] } },
+    })
+  )
+    return customizedConflict('信息提炼仍在执行，请等待完成后编辑');
+  const key = nodeId === 'SOURCE_IMPORT' ? CUSTOMIZED_SOURCE_ARTIFACT_KEY : 'customized-brief';
+  const artifacts = await tx.workingArtifact.findMany({
+    where: { projectId, workflowRunId: runId },
+    include: { dependencies: true, files: true },
   });
-  if (!state) return customizedConflict('资料草稿不存在，请重新加载');
+  const baseline = artifacts.find((a) => a.artifactKey === key);
+  if (!baseline) return active;
   const child = await tx.workflowRun.create({
     data: {
       ...customizedScope(projectId),
       activeKey: null,
       parentWorkflowRunId: runId,
-      forkNodeId: 'SOURCE_IMPORT',
-      currentNodeId: 'SOURCE_IMPORT',
-      editSessionNodeId: 'SOURCE_IMPORT',
+      forkNodeId: nodeId,
+      currentNodeId: nodeId,
+      editSessionNodeId: nodeId,
       editSessionPurpose: 'MANUAL',
       editBaselineHash: baseline.contentHash,
     },
   });
-  await tx.workflowNodeState.create({
-    data: {
-      projectId,
-      workflowRunId: child.id,
-      nodeId: 'SOURCE_IMPORT',
-      schemaVersion: state.schemaVersion,
-      revision: state.revision,
-      state: state.state as Prisma.InputJsonValue,
-      contentHash: state.contentHash,
-      executionInputHash: state.executionInputHash,
-      executionInputSchemaVersion: state.executionInputSchemaVersion,
-    },
+  const states = await tx.workflowNodeState.findMany({
+    where: { projectId, workflowRunId: runId },
   });
-  // Clone the confirmed baseline so the shared commit helper preserves business revision.
-  await tx.workingArtifact.create({
-    data: {
-      projectId,
-      workflowRunId: child.id,
-      nodeId: baseline.nodeId,
-      artifactKey: baseline.artifactKey,
-      kind: baseline.kind,
-      name: baseline.name,
-      directory: baseline.directory,
-      type: baseline.type,
-      tags: baseline.tags,
-      payload: baseline.payload as Prisma.InputJsonValue,
-      revision: baseline.revision,
-      contentHash: baseline.contentHash,
-      createdAt: baseline.createdAt,
-    },
+  for (const state of states) {
+    const { id: _id, createdAt: _created, updatedAt: _updated, ...data } = state;
+    await tx.workflowNodeState.create({
+      data: { ...data, workflowRunId: child.id, state: state.state as Prisma.InputJsonValue },
+    });
+  }
+  const ids = new Map<string, string>();
+  for (const artifact of artifacts) {
+    const {
+      id: _id,
+      dependencies: _deps,
+      files: _files,
+      createdAt,
+      updatedAt: _updated,
+      ...data
+    } = artifact;
+    const copy = await tx.workingArtifact.create({
+      data: {
+        ...data,
+        workflowRunId: child.id,
+        sourceArtifactId: artifact.sourceArtifactId ?? artifact.id,
+        sourceRunId: artifact.sourceRunId ?? runId,
+        payload: artifact.payload as Prisma.InputJsonValue,
+        metadata:
+          artifact.metadata === null
+            ? Prisma.JsonNull
+            : (artifact.metadata as Prisma.InputJsonValue),
+        createdAt,
+      },
+    });
+    ids.set(artifact.id, copy.id);
+  }
+  for (const artifact of artifacts)
+    for (const dependency of artifact.dependencies) {
+      const { id: _id, createdAt: _created, ...data } = dependency;
+      await tx.workingArtifactDependency.create({
+        data: {
+          ...data,
+          workflowRunId: child.id,
+          dependentArtifactId: ids.get(artifact.id)!,
+          sourceArtifactId: dependency.sourceArtifactId
+            ? (ids.get(dependency.sourceArtifactId) ?? dependency.sourceArtifactId)
+            : null,
+        },
+      });
+    }
+  for (const artifact of artifacts)
+    for (const file of artifact.files) {
+      const { id: _id, createdAt: _created, ...data } = file;
+      await tx.workingArtifactFile.create({
+        data: { ...data, workflowRunId: child.id, workingArtifactId: ids.get(artifact.id)! },
+      });
+    }
+  const result = await tx.customizedExtractionResult.findUnique({
+    where: { projectId_workflowRunId: { projectId, workflowRunId: runId } },
   });
+  if (result) {
+    const { id: _id, createdAt: _created, updatedAt: _updated, ...data } = result;
+    await tx.customizedExtractionResult.create({
+      data: {
+        ...data,
+        workflowRunId: child.id,
+        generatedResult: data.generatedResult as Prisma.InputJsonValue,
+        draftResult: data.draftResult as Prisma.InputJsonValue,
+        manualOverrides: data.manualOverrides as Prisma.InputJsonValue,
+      },
+    });
+  }
   await tx.workflowRun.update({
     where: { id: runId },
     data: { activeKey: null, status: 'PAUSED' },
@@ -142,6 +188,30 @@ async function returnToParent(
     },
   });
   if (!parent) return customizedConflict('原版本不可用，请重新加载');
+  const tasks = await tx.customizedExtractionTask.findMany({
+    where: { projectId, workflowRunId: child.id },
+    select: { id: true },
+  });
+  const artifacts = await tx.customizedExtractionArtifact.findMany({
+    where: { projectId, taskId: { in: tasks.map((t) => t.id) } },
+    select: { storageKey: true },
+  });
+  await tx.storageCleanupTask.createMany({
+    data: [...new Set(artifacts.map((a) => a.storageKey))].map((storageKey) => ({
+      projectId,
+      storageKey,
+      reason: 'CUSTOMIZED_EDIT_CANCELLED',
+    })),
+    skipDuplicates: true,
+  });
+  await tx.jobOutbox.deleteMany({
+    where: {
+      projectId,
+      jobType: 'CUSTOMIZED_EXTRACTION',
+      aggregateId: { in: tasks.map((t) => t.id) },
+    },
+  });
+  await tx.workingArtifactDependency.deleteMany({ where: { projectId, workflowRunId: child.id } });
   await tx.workflowRun.delete({ where: { id: child.id } });
   return tx.workflowRun.update({
     where: { id: parent.id },
@@ -153,13 +223,14 @@ export async function cancelCustomizedEdit(
   tx: Prisma.TransactionClient,
   projectId: string,
   runId: string,
+  nodeId = 'SOURCE_IMPORT',
 ) {
   await lockCustomizedProject(tx, projectId);
   const active = await activeRun(tx, projectId);
   if (
     active?.id !== runId ||
     !active.parentWorkflowRunId ||
-    active.editSessionNodeId !== 'SOURCE_IMPORT' ||
+    active.editSessionNodeId !== nodeId ||
     active.branchPublishedAt
   )
     return customizedConflict('编辑作用域已变化，请重新加载');

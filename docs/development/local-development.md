@@ -24,6 +24,8 @@
 
 定制类资料导入也复用上述 Redis 连接和 `EFFECT_READ_CACHE_*` 配置，缓存当前 Run 概览、文件引用草稿和版本树；键按 CUSTOMIZED / 实际 Run 隔离。概览仅在包含无历史文字的资料导入草稿时允许缓存，其他节点、历史正文及文件内容仍走原读取链路，每次命中仍以 PostgreSQL 版本核对新鲜度。
 
+定制类信息提炼工作区也接入相同投影缓存，依赖资料包、任务、步骤、结果和资产版本；活动执行绕过缓存，正文和签名 URL 不进入缓存。PostgreSQL 权威版本与确认事务不变。
+
 只读性能采样与实例检查：
 
 ```powershell
@@ -61,6 +63,25 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 - Docling 模型位于 `docling-models` named volume：一次性初始化任务以 root 写入，常驻非 root Worker 在 `/models` 只读挂载。
 - Docling 使用 CPU 版 PyTorch；无明确需求不得引入 CUDA、NVIDIA 或 Triton。
 - 容器访问宿主机使用 `host.docker.internal`，内部 API 端口跟随 `API_PORT`。
+
+定制类信息提炼使用独立 profile / 服务，共享 Docling 模型卷：
+
+```powershell
+docker compose --profile customized-extraction build customized-extraction-worker
+docker compose --profile customized-extraction up -d customized-extraction-worker
+```
+
+API 与该 Worker 必须设置相同的 `CUSTOMIZED_EXTRACTION_WORKER_TOKEN`。模型配置复用 `ARK_DOCUMENT_*`，不分析品牌图片。两个提炼镜像的构建上下文均为 `workers/`，通过本地 `shared/extraction-runtime` 依赖共享解析底座。构建镜像不代表已替换现有容器；更新前核实无活动任务。启动消费者会处理待执行队列，不应把真实模型运行作为无付费验证。
+
+无付费定制提炼接口验证（随机隔离项目、禁用后台分发）：
+
+```powershell
+$env:CUSTOMIZED_EXTRACTION_DATABASE_TEST='1'
+$env:CUSTOMIZED_EXTRACTION_HTTP_TEST='1'
+pnpm --filter @ai-marketing/api exec vitest run src/workflows/customized/information-extraction --maxWorkers=1
+```
+
+两类 Python 验证分别在 `workers/effect-extraction` 和 `workers/customized-extraction` 使用各自锁文件运行 pytest / mypy；效果类付费集成标记需排除。真实本地 Docling 验证入口见[定制 Worker](../../workers/customized-extraction/README.md)。
 
 ## 常规验证
 

@@ -293,6 +293,8 @@ enum JobOutboxStatus {
 }
 
 model Project {
+  customizedExtractionTasks CustomizedExtractionTask[]
+  customizedExtractionResults CustomizedExtractionResult[]
   id                         String                                @id @default(uuid()) @db.Uuid
   name                       String                                @db.VarChar(120)
   description                String?                               @db.VarChar(500)
@@ -302,6 +304,8 @@ model Project {
   defaultWorkflow            AssetWorkflow?
   defaultSpace               AssetWorkflowSpace?
   status                     ProjectStatus                         @default(ACTIVE)
+  deletionState              String?                               @db.VarChar(20)
+  deletionError              String?                               @db.VarChar(500)
   createdAt                  DateTime                              @default(now())
   updatedAt                  DateTime                              @updatedAt
   assets                     Asset[]
@@ -383,6 +387,8 @@ model Asset {
 }
 
 model WorkflowRun {
+  customizedExtractionTasks CustomizedExtractionTask[]
+  customizedExtractionResults CustomizedExtractionResult[]
   id                         String                      @id @default(uuid()) @db.Uuid
   projectId                  String                      @db.Uuid
   parentWorkflowRunId        String?                     @db.Uuid
@@ -848,6 +854,24 @@ model StorageCleanupTask {
   @@unique([projectId, storageKey])
   @@index([projectId, nextAttemptAt])
   @@map("storage_cleanup_tasks")
+}
+
+// Independent of Project: cleanup must survive permanent deletion and process restarts.
+model ProjectDeletionCleanup {
+  projectId     String   @id @db.Uuid
+  storageKeys   Json
+  phase         String   @default("FILES") @db.VarChar(20)
+  status        String   @default("QUEUED") @db.VarChar(20)
+  lastError     String?  @db.VarChar(500)
+  projectSnapshot Json?
+  attempts      Int      @default(0)
+  leaseToken    String?  @db.Uuid
+  nextAttemptAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([nextAttemptAt])
+  @@map("project_deletion_cleanups")
 }
 
 // Durable deletion receipt/tombstone; no business snapshot survives cleanup.
@@ -1532,4 +1556,87 @@ model EffectFinalOutputItem {
   fileObject FileObject? @relation(fields: [projectId, fileObjectId], references: [projectId, id], onDelete: Restrict)
   @@unique([projectId, runId, variantId])
   @@map("effect_final_output_items")
+}
+
+model CustomizedExtractionTask {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  workflowRunId String @db.Uuid
+  idempotencyKey String @db.VarChar(500)
+  inputHash String @db.Char(64)
+  inputSnapshot Json
+  status String @default("QUEUED") @db.VarChar(24)
+  progress Int @default(0)
+  currentNode String? @db.VarChar(120)
+  errorMessage String? @db.VarChar(1000)
+  attemptToken String? @db.Uuid
+  attemptCount Int @default(0)
+  leaseExpiresAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun WorkflowRun @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
+  steps CustomizedExtractionStep[]
+  artifacts CustomizedExtractionArtifact[]
+  fileHolds CustomizedExtractionFileHold[]
+  @@unique([projectId, id])
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, workflowRunId, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@map("customized_extraction_tasks")
+}
+model CustomizedExtractionStep {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  taskId String @db.Uuid
+  nodeId String @db.VarChar(120)
+  sourceId String @default("") @db.VarChar(255)
+  status String @default("PENDING") @db.VarChar(24)
+  output Json?
+  errorMessage String? @db.VarChar(1000)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  task CustomizedExtractionTask @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)
+  @@unique([projectId, taskId, nodeId, sourceId])
+  @@map("customized_extraction_steps")
+}
+model CustomizedExtractionResult {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  workflowRunId String @db.Uuid
+  taskId String @db.Uuid
+  sourceFingerprint String @db.Char(64)
+  generatedResult Json
+  draftResult Json
+  manualOverrides Json @default("{}")
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun WorkflowRun @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
+  @@unique([projectId, id])
+  @@unique([projectId, workflowRunId])
+  @@map("customized_extraction_results")
+}
+model CustomizedExtractionArtifact {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  taskId String @db.Uuid
+  sourceId String @db.VarChar(255)
+  storageKey String @db.VarChar(500)
+  sizeBytes Int
+  createdAt DateTime @default(now())
+  task CustomizedExtractionTask @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)
+  @@unique([projectId, taskId, sourceId])
+  @@map("customized_extraction_artifacts")
+}
+model CustomizedExtractionFileHold {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  taskId String @db.Uuid
+  storageKey String @db.VarChar(500)
+  createdAt DateTime @default(now())
+  task CustomizedExtractionTask @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)
+  @@unique([projectId, taskId, storageKey])
+  @@map("customized_extraction_file_holds")
 }

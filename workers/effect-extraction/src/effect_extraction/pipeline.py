@@ -23,7 +23,7 @@ from .document_facts import (
     merge_document_candidates,
     split_document_markdown,
 )
-from .fusion import FusionError, branch_candidate, fuse
+from .fusion import FusionError as FusionError, branch_candidate, fuse
 from .image_processing import ImageProcessor
 from .models import (
     BranchItem,

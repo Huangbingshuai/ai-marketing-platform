@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -15,7 +16,7 @@ from effect_extraction.models import (
 )
 
 
-def claim_data() -> dict[str, object]:
+def claim_data() -> dict[str, Any]:
     return {
         "terminal": False,
         "runId": "run-1",

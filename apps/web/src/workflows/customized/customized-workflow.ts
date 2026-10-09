@@ -5,13 +5,13 @@ export const customizedWorkflowNodes = [
     label: '资料导入',
     status: '资料草稿',
     title: '资料包导入',
-    description: '汇集品牌 Brief、产品、人设与风格参考，明确视频制作需求',
+    description: '导入视频创作简报与可选品牌素材，明确产品信息和视频制作目标',
   },
   {
     label: '信息提炼',
     status: '待接入',
     title: '信息提炼',
-    description: '整理简报中的主体信息、创作方向与视频规格，形成视频创作信息卡',
+    description: '整理简报中的品牌信息、产品信息与视觉约束，形成视频创作信息卡',
   },
   {
     label: '分镜创作',

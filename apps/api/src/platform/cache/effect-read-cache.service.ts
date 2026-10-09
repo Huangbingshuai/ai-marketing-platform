@@ -116,7 +116,8 @@ export class EffectReadCacheService {
     try {
       if (this.config.get<boolean>('EFFECT_READ_CACHE_ENABLED') === false) return await load();
       // Include the wire schema in the key so old/new API processes cannot misread each other's DTOs.
-      const varyHash = hash(JSON.stringify([2, vary]));
+      // Bump it whenever a cached projection adds or changes response fields.
+      const varyHash = hash(JSON.stringify([3, vary]));
       hintKey = `${scope.projectId}:${scope.workflow ?? 'EFFECT'}:${scope.workflowRunId ?? ''}:${scope.draftId ?? ''}:${resource}:${varyHash}`;
       const fastUntil = this.fastReads.get(hintKey);
       if (fastUntil && fastUntil > Date.now()) {
