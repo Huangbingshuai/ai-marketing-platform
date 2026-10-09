@@ -103,7 +103,7 @@ describe('mix draft save races', () => {
     expect(page).toContain('savedDraftBaseline = snapshot');
     expect(page).toContain('const saved = await saveLatestMixDraft');
     expect(page).toContain('if (scope !== currentWorkspaceScope.value || draftSaveBlocked) return false');
-    expect(page).toContain('const merged = rebaseMixDraft(savedDraftBaseline');
+    expect(page).toMatch(/const merged = rebaseMixDraft\(\s*savedDraftBaseline/);
     expect(page).toContain('draftSaveBlocked = true');
   });
 });

@@ -64,6 +64,20 @@ const tree = (): EffectWorkflowBranchTreeData => ({
 });
 
 describe('read-only directory of each template current workflow', () => {
+  it('keeps the first directory and its freshness unpublished until all current paths are loaded', () => {
+    expect(page).toContain("templateDirectoryStatus.value === 'READY'");
+    expect(page).toContain("directoryStatus === 'READY'");
+    expect(page).toContain('正在读取当前模板版本');
+    expect(page).toContain("if (!canInstallCurrentEarly) {");
+    const background = page.split('.then((completeDirectory) => {')[1]!.split('.catch(')[0]!;
+    expect(background).toContain('templateDirectory.value = completeDirectory;');
+    expect(background).toContain("templateDirectoryStatus.value = 'READY';");
+    expect(background).toContain('requestController === controller');
+    expect(background).toContain('installedWorkspaceScope.value ===');
+    expect(background).not.toContain('draftRace.canInstall');
+    expect(page).toContain('const directoryRequest = readMixWorkspaceWithDeadline(');
+  });
+
   it('builds an immediate current-Run directory without mutating the workspace', () => {
     const current = workspace(['a', 'b'], 'current');
     const before = JSON.stringify(current);

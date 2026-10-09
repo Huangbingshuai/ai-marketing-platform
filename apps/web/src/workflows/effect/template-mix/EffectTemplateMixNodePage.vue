@@ -221,10 +221,19 @@ const props = reactive({
   ...toRefs(pageProps),
   workflowRunId: computed(() => selectedTemplateWorkflowRunId.value ?? templateContextWorkflowRunId.value),
 });
-watch(() => [pageProps.projectId, templateContextWorkflowRunId.value], () => {
-  selectedTemplateWorkflowRunId.value = null;
-  templateDirectory.value = { entries: [], workflowRunIds: {}, pendingAddedMaterialIds: {}, workspaces: {} };
-});
+watch(
+  () => [pageProps.projectId, templateContextWorkflowRunId.value],
+  () => {
+    selectedTemplateWorkflowRunId.value = null;
+    templateDirectoryStatus.value = 'LOADING';
+    templateDirectory.value = {
+      entries: [],
+      workflowRunIds: {},
+      pendingAddedMaterialIds: {},
+      workspaces: {},
+    };
+  },
+);
 const emit = defineEmits<{
   back: [];
   next: [];
@@ -276,14 +285,22 @@ let deferredFillCompletion: {
 } | null = null;
 const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
-const templateDirectory = ref<MixTemplateCatalog>({ entries: [], workflowRunIds: {}, pendingAddedMaterialIds: {}, workspaces: {} });
-const installedWorkspaceRunId = computed(() =>
-  installedWorkspaceScope.value.slice(props.projectId.length + 1) || props.workflowRunId);
-const templateListCatalog = computed(() => mixTemplateCatalogEntries(
-  templateDirectory.value,
-  installedWorkspaceRunId.value,
-  catalog.value,
-));
+// A Run's inherited template copies are editable snapshots, not the current-path directory.
+const templateDirectoryStatus = ref<'LOADING' | 'READY' | 'ERROR'>('LOADING');
+const templateDirectory = ref<MixTemplateCatalog>({
+  entries: [],
+  workflowRunIds: {},
+  pendingAddedMaterialIds: {},
+  workspaces: {},
+});
+const installedWorkspaceRunId = computed(
+  () => installedWorkspaceScope.value.slice(props.projectId.length + 1) || props.workflowRunId,
+);
+const templateListCatalog = computed(() =>
+  templateDirectoryStatus.value === 'READY'
+    ? mixTemplateCatalogEntries(templateDirectory.value, installedWorkspaceRunId.value, catalog.value)
+    : [],
+);
 const templateAddedMaterialIds = (id: string): string[] =>
   mixTemplateCatalogPendingAdded(templateDirectory.value, installedWorkspaceRunId.value, id,
     pendingAddedMaterialIds.value);
@@ -744,14 +761,30 @@ const mutedAudioClip = (clipId: string): boolean =>
 const variantSourceChanges = (variant: EffectTemplateMixVariant) =>
   effectTemplateMixSourceChanges(variant, sourceMaterials.value);
 const templatePendingUpdateCount = (entry: EffectTemplateMixTemplateEntry) =>
-  entry.workspace.variants.filter((variant) =>
-    effectTemplateMixSourceChanges(variant, entry.workspace.materials).length > 0).length;
-watch(() => [pageState.value, pageProps.projectId, pageProps.workflowRunId,
-  templateListCatalog.value.reduce((sum, entry) => sum + templatePendingUpdateCount(entry) +
-    (templateAddedMaterialIds(entry.id).length ? 1 : 0), 0)] as const,
-([state, projectId, workflowRunId, pendingProjectCount]) => {
-  if (state === 'READY') emit('mixFreshness', { projectId, workflowRunId, pendingProjectCount });
-});
+  entry.workspace.variants.filter(
+    (variant) => effectTemplateMixSourceChanges(variant, entry.workspace.materials).length > 0,
+  ).length;
+watch(
+  () =>
+    [
+      pageState.value,
+      pageProps.projectId,
+      pageProps.workflowRunId,
+      installedWorkspaceScope.value === currentWorkspaceScope.value && !runSwitching.value,
+      templateListCatalog.value.reduce(
+        (sum, entry) =>
+          sum +
+          templatePendingUpdateCount(entry) +
+          (templateAddedMaterialIds(entry.id).length ? 1 : 0),
+        0,
+      ),
+      templateDirectoryStatus.value,
+    ] as const,
+  ([state, projectId, workflowRunId, installed, pendingProjectCount, directoryStatus]) => {
+    if (state === 'READY' && installed && directoryStatus === 'READY')
+      emit('mixFreshness', { projectId, workflowRunId, pendingProjectCount });
+  },
+);
 const canUndoTimeline = computed(() => timelineUndoStack.value.length > 0);
 const canRedoTimeline = computed(() => timelineRedoStack.value.length > 0);
 let sourceUpdateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2316,13 +2349,15 @@ const load = async (): Promise<void> => {
         runningOnTemplate ||
         !targetRunId ||
         targetRunId === workflowRunId);
-    const directoryRequest = readMixTemplateCatalog(
-      tree.data,
-      workflowRunId,
-      response.data,
-      async (id) =>
-        (await loadEffectTemplateMixWorkspace(projectId, id, requestController.signal)).data,
-      templateContextWorkflowRunId.value,
+    const directoryRequest = readMixWorkspaceWithDeadline(
+      (signal) => readMixTemplateCatalog(
+        tree.data,
+        workflowRunId,
+        response.data,
+        async (id) => (await loadEffectTemplateMixWorkspace(projectId, id, signal)).data,
+        templateContextWorkflowRunId.value,
+      ),
+      requestController,
     );
     const directory = canInstallCurrentEarly
       ? mixTemplateCatalogFromWorkspace(workflowRunId, response.data)
@@ -2350,6 +2385,7 @@ const load = async (): Promise<void> => {
       // Route to the normal scoped loader; no global branch activation or cached draft install.
       const targetRunId = currentTarget.workflowRunId;
       templateDirectory.value = directory;
+      templateDirectoryStatus.value = 'READY';
       templateNavigationTarget.value = `${projectId}:${targetRunId}`;
       rememberWorkbench({
         workflowRunId: targetRunId,
@@ -2366,7 +2402,10 @@ const load = async (): Promise<void> => {
     if (!installWorkspaceData(response.data, `${projectId}:${workflowRunId}`)) return;
     installedWorkspaceScope.value = `${projectId}:${workflowRunId}`;
     loadedWorkspaceRunId = workflowRunId;
-    templateDirectory.value = directory;
+    if (!canInstallCurrentEarly) {
+      templateDirectory.value = directory;
+      templateDirectoryStatus.value = 'READY';
+    }
     if (branchTemplateId && catalog.value.some(({ id }) => id === branchTemplateId)) {
       activeTemplateId.value = branchTemplateId;
       focusedBranchTemplate = { workflowRunId, templateId: branchTemplateId };
@@ -2384,8 +2423,13 @@ const load = async (): Promise<void> => {
             projectId === props.projectId &&
             workflowRunId === props.workflowRunId &&
             installedWorkspaceScope.value === `${projectId}:${workflowRunId}`
-          )
+          ) {
+            // Read-only directory: installing the workspace advances draftRace, and later
+            // local edits must not strand this list in LOADING. Entries for this Run are
+            // overlaid from the local draft; deletion cancels the controller above.
             templateDirectory.value = completeDirectory;
+            templateDirectoryStatus.value = 'READY';
+          }
         })
         .catch((error: unknown) => {
           if (
@@ -2394,8 +2438,10 @@ const load = async (): Promise<void> => {
             requestController === controller &&
             projectId === props.projectId &&
             workflowRunId === props.workflowRunId
-          )
-            showNotice('模板目录仍在后台恢复，可先编辑当前模板', 'warning');
+          ) {
+            if (templateDirectoryStatus.value !== 'READY') templateDirectoryStatus.value = 'ERROR';
+            showNotice('模板列表读取失败，当前模板仍可编辑；请重试', 'warning');
+          }
         });
     }
     if (
@@ -7411,8 +7457,17 @@ defineExpose({
       >
         <aside class="panel template-list">
           <h2>
-            模板列表 <small class="template-list__count">共 {{ templateListCatalog.length }} 个</small>
+            模板列表
+            <small v-if="templateDirectoryStatus === 'READY'" class="template-list__count"
+              >共 {{ templateListCatalog.length }} 个</small>
           </h2>
+          <p v-if="templateDirectoryStatus === 'LOADING'" class="template-directory-state" role="status">
+            <Layers :size="14" />正在读取当前模板版本…
+          </p>
+          <div v-else-if="templateDirectoryStatus === 'ERROR'" class="template-directory-state" role="alert">
+            <span>模板列表读取失败</span>
+            <button class="button" type="button" @click="load()">重试</button>
+          </div>
           <div
             v-for="entry in templateListCatalog"
             :key="entry.id"
@@ -7449,7 +7504,11 @@ defineExpose({
               <Trash2 :size="15" />
             </button>
           </div>
-          <button class="button new-template" :disabled="checkingTemplateCreation" @click="openCreate">
+          <button
+            class="button new-template"
+            :disabled="checkingTemplateCreation || templateDirectoryStatus !== 'READY'"
+            @click="openCreate"
+          >
             <Plus :size="14" />新建模板
           </button>
         </aside>
@@ -9020,6 +9079,15 @@ defineExpose({
 </template>
 
 <style scoped>
+.template-directory-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px 0;
+  color: #64748b;
+  font-size: 12px;
+}
 .source-update-badge {
   display: inline-block;
   padding: 2px 6px;
