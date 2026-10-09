@@ -25,6 +25,7 @@ import {
   effectTemplateMixContentDuration,
   EFFECT_VIDEO_TRANSFORM_DEFAULT,
   effectVideoGeometry,
+  effectVideoCanvasFit,
   effectResolvedCanvasRatio,
   effectVideoTransformValid,
   EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
@@ -1371,6 +1372,11 @@ const canvasPixelSize = computed(() => {
 });
 const slotVideoGeometry = (id: string, t = videoTransform(id)) => effectVideoGeometry(
   slotSourceAspect(id), stageAspectRatio.value, t);
+const slotVideoContentStyle = (id: string) => {
+  const fit = effectVideoCanvasFit(slotSourceAspect(id), stageAspectRatio.value);
+  return { position: 'absolute' as const, width: `${fit.mediaWidth * 100}%`, height: `${fit.mediaHeight * 100}%`,
+    left: `${(1 - fit.mediaWidth) * 50}%`, top: `${(1 - fit.mediaHeight) * 50}%` };
+};
 const slotVideoFrameStyle = (id: string) => {
   const t = videoTransform(id), g = slotVideoGeometry(id, t);
   const mediaFit = slotMeasuredAspect(id) ? 'fill' : 'contain';
@@ -8030,7 +8036,7 @@ defineExpose({
                         !auditionMaterial &&
                         visibleTimelineSlotIds.has(slot.id),
                     }"
-                    :style="timelinePlayerStyle(slot.id)"
+                    :style="{ ...timelinePlayerStyle(slot.id), ...slotVideoContentStyle(slot.id) }"
                     :src="materialForSlot(slot.id)?.contentUrl"
                     :volume="
                       packagingPreviewEnabled && selectedPackaging
@@ -8054,6 +8060,7 @@ defineExpose({
                   class="player-first-frame" :style="{ ...slotVideoFrameStyle(previewSlot.id), zIndex: 4 }"
                   role="status" :aria-label="playerUnavailableSlotId ? '预览加载失败' : '正在加载成片首帧'">
                   <EffectTemplateMixThumbnail :source="previewMaterial.contentUrl"
+                    :style="slotVideoContentStyle(previewSlot.id)"
                     :time="selectedVariant?.offsets[previewSlot.id] ?? 0"
                     :version="`${previewMaterial.artifactRevision}:${previewMaterial.contentHash}`"
                     alt="当前成片首帧预览" />
@@ -10318,7 +10325,7 @@ button:disabled {
   object-fit: cover;
   pointer-events: none;
 }
-.player-first-frame { position: absolute; z-index: 4; pointer-events: none; }
+.player-first-frame { position: absolute; z-index: 4; pointer-events: none; overflow: hidden; }
 .player-first-frame :deep(img) { object-fit: var(--video-fit, contain); }
 .player-first-frame :deep(.thumbnail-loading)::after { content: '首帧加载中…'; font-size: 12px; }
 .player-first-frame-error { position: absolute; inset: auto 0 0; padding: 8px; color: white; background: #334155e6; text-align: center; font-size: 12px; }
@@ -10338,7 +10345,7 @@ button:disabled {
   opacity: 0;
   pointer-events: none;
 }
-.video-spatial-layer{position:absolute;pointer-events:none;transform-origin:center}
+.video-spatial-layer{position:absolute;pointer-events:none;transform-origin:center;overflow:hidden}
 .stage .video-spatial-layer video{width:100%;height:100%;object-fit:var(--video-fit, contain)}
 .video-selection-target{position:absolute;inset:0;z-index:3;border:0;background:transparent;cursor:pointer}
 .video-transform-frame{position:absolute;border:1px solid white;box-sizing:border-box;z-index:5!important;cursor:move;touch-action:none;transform-origin:center}

@@ -47,12 +47,25 @@ export function effectVideoTransformValid(value: unknown): value is EffectVideoT
     typeof t.uniform === 'boolean'
   );
 }
-/** Contain baseline, shared by the browser frame and FFmpeg output. */
+/** Mirrored by the FFmpeg worker: codec pixel rounding may differ from the nominal ratio. */
+export const EFFECT_VIDEO_MATCHING_ASPECT_TOLERANCE = 0.01;
+export function effectVideoCanvasFit(sourceRatio: number, canvasRatio: number) {
+  const matching =
+    Math.max(sourceRatio / canvasRatio, canvasRatio / sourceRatio) <=
+    1 + EFFECT_VIDEO_MATCHING_ASPECT_TOLERANCE;
+  return {
+    aspect: matching ? canvasRatio : sourceRatio,
+    mediaWidth: matching ? Math.max(1, sourceRatio / canvasRatio) : 1,
+    mediaHeight: matching ? Math.max(1, canvasRatio / sourceRatio) : 1,
+  };
+}
+/** Near-matching ratios cover/crop first; other ratios contain, then apply user transforms. */
 export function effectVideoGeometry(
   sourceRatio: number,
   canvasRatio: number,
   t: EffectVideoTransform,
 ) {
+  sourceRatio = effectVideoCanvasFit(sourceRatio, canvasRatio).aspect;
   const width = Math.min(1, sourceRatio / canvasRatio) * t.scaleX;
   const height = Math.min(1, canvasRatio / sourceRatio) * t.scaleY;
   const radians = (t.rotation * Math.PI) / 180;

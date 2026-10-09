@@ -3,12 +3,48 @@ import {
   EFFECT_VIDEO_TRANSFORM_DEFAULT as identity,
   effectCanvasAspect,
   effectVideoGeometry,
+  effectVideoCanvasFit,
   effectVideoTransformValid,
   effectVideoTransformSnapshot,
   effectResolvedCanvasRatio,
   EFFECT_CANVAS_RATIOS,
 } from './effect-template-mix-transform';
 describe('canvas and video transform contract', () => {
+  it.each([
+    [752, 560, 4 / 3],
+    [560, 752, 3 / 4],
+    [854, 480, 16 / 9],
+  ])('fills near-matching %s × %s without a black rim or stretching', (w, h, canvas) => {
+    const fit = effectVideoCanvasFit(w / h, canvas);
+    expect(fit.aspect).toBe(canvas);
+    expect((fit.mediaWidth / fit.mediaHeight) * canvas).toBeCloseTo(w / h, 12);
+    expect(Math.min(fit.mediaWidth, fit.mediaHeight)).toBe(1);
+    expect(effectVideoGeometry(w / h, canvas, identity)).toEqual({
+      width: 1,
+      height: 1,
+      boxWidth: 1,
+      boxHeight: 1,
+    });
+  });
+  it('keeps genuinely different ratios contained and bounds the symmetric tolerance', () => {
+    for (const aspect of [9 / 16, 16 / 9, 1, (4 / 3) * 1.011, 4 / 3 / 1.011]) {
+      expect(effectVideoCanvasFit(aspect, 4 / 3)).toEqual({
+        aspect,
+        mediaWidth: 1,
+        mediaHeight: 1,
+      });
+    }
+    expect(effectVideoCanvasFit(1.01, 1).aspect).toBe(1);
+    expect(effectVideoCanvasFit(1 / 1.01, 1).aspect).toBe(1);
+  });
+  it('applies explicit nonuniform user transforms after the small baseline crop', () => {
+    expect(
+      effectVideoGeometry(752 / 560, 4 / 3, { ...identity, scaleX: 0.5, scaleY: 0.8 }).width,
+    ).toBe(0.5);
+    expect(
+      effectVideoGeometry(752 / 560, 4 / 3, { ...identity, scaleX: 0.5, scaleY: 0.8 }).height,
+    ).toBe(0.8);
+  });
   it.each(EFFECT_CANVAS_RATIOS)('supports $value', ({ value }) =>
     expect(effectCanvasAspect(value)).not.toBeNull(),
   );

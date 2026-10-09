@@ -176,9 +176,29 @@ def output_size(ratio: str, resolution: str = '720p') -> tuple[int, int]:
 
 def video_transform_filter(width: int, height: int, clip: dict[str, Any] | None,
                            info: dict[str, Any] | None) -> str:
-    """Contain, then transform around centre; crop only at the canvas, as the editor does."""
+    """Crop near-matching codec ratios before user transforms; contain genuinely different ratios."""
+    # Keep the symmetric 1% tolerance aligned with effectVideoCanvasFit in contracts.
+    try:
+        source = next(s for s in (info or {})['streams'] if s['codec_type'] == 'video')
+        sw, sh = float(source['width']), float(source['height'])
+        sar = source.get('sample_aspect_ratio', '1:1')
+        if sar not in (None, 'N/A', '0:1'):
+            a, b = str(sar).split(':')
+            sw *= float(a) / float(b)
+        if not all(math.isfinite(v) and v > 0 for v in (sw, sh)):
+            raise ValueError()
+    except (ValueError, KeyError, ZeroDivisionError, StopIteration, TypeError):
+        sw = sh = 0.0
+    matching = sw > 0 and sh > 0 and max((sw / sh) / (width / height), (width / height) / (sw / sh)) <= 1.01
+    cover = max(width / sw, height / sh) if matching else 0.0
+    cover_w = math.ceil(sw * cover / 2 - 1e-9) * 2 if matching else 0
+    cover_h = math.ceil(sh * cover / 2 - 1e-9) * 2 if matching else 0
+    baseline = (f'scale={cover_w}:{cover_h},setsar=1,'
+                f'crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,') if matching else ''
     t = (clip or {}).get('transform')
     if not t:
+        if matching:
+            return baseline.rstrip(',')
         return (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
             f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1')
     try:
@@ -186,12 +206,8 @@ def video_transform_filter(width: int, height: int, clip: dict[str, Any] | None,
         if not all(math.isfinite(v) for v in (x, y, sx, sy, rotation)) or not (
             abs(x) <= 2 and abs(y) <= 2 and .1 <= sx <= 5 and .1 <= sy <= 5 and abs(rotation) <= 180):
             raise ValueError()
-        source = next(s for s in (info or {})['streams'] if s['codec_type'] == 'video')
-        sw, sh = float(source['width']), float(source['height'])
-        sar = source.get('sample_aspect_ratio', '1:1')
-        if sar not in (None, 'N/A', '0:1'):
-            a, b = str(sar).split(':')
-            sw *= float(a) / float(b)
+        if matching:
+            sw, sh = float(width), float(height)
         base = min(width / sw, height / sh)
         scaled_w, scaled_h = max(2, round(sw * base * sx / 2) * 2), max(2, round(sh * base * sy / 2) * 2)
         angle = rotation * math.pi / 180
@@ -203,7 +219,7 @@ def video_transform_filter(width: int, height: int, clip: dict[str, Any] | None,
     except (ValueError, KeyError, ZeroDivisionError, StopIteration, TypeError):
         raise PackagingError('视频空间变换参数无效') from None
     rotate = f'rotate={angle}:ow=rotw({angle}):oh=roth({angle}):c=black,' if rotation else ''
-    return (f'scale={scaled_w}:{scaled_h},setsar=1,{rotate}'
+    return (f'{baseline}scale={scaled_w}:{scaled_h},setsar=1,{rotate}'
         f'pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:black,'
         f'crop={width}:{height}:{(pw-width)//2-dx}:{(ph-height)//2-dy}')
 

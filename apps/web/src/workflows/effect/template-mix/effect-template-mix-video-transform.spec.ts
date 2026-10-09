@@ -10,6 +10,12 @@ import {
   effectVideoGeometry,
 } from '@ai-marketing/contracts';
 describe('video transform integration', () => {
+  it('crops only the near-matching baseline before explicit user transforms', () => {
+    expect(page).toContain('effectVideoCanvasFit(slotSourceAspect(id), stageAspectRatio.value)');
+    expect(page).toContain('...timelinePlayerStyle(slot.id), ...slotVideoContentStyle(slot.id)');
+    expect(page).toContain(':style="slotVideoContentStyle(previewSlot.id)"');
+    expect(page).toContain('transform-origin:center;overflow:hidden');
+  });
   it('uses decoded dimensions for video, poster, transform frame and guides instead of generation ratio', () => {
     expect(page).toContain('playerMediaAspect(video.videoWidth, video.videoHeight)');
     expect(page).toContain("video.getAttribute('src') !== material.contentUrl");

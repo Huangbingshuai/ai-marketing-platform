@@ -9,6 +9,45 @@ from effect_template_mix import final_output
 IDENTITY = dict(x=0, y=0, scaleX=1, scaleY=1, rotation=0, uniform=True)
 INFO = {'streams': [{'codec_type': 'video', 'width': 100, 'height': 100}]}
 
+@pytest.mark.parametrize('size,canvas', [((752,560),(640,480)), ((560,752),(480,640)), ((854,480),(640,360))])
+@pytest.mark.parametrize('transform', [None, IDENTITY, {**IDENTITY, 'scaleX': .5, 'scaleY': .8}])
+def test_matching_canvas_has_no_black_rim(tmp_path: Path, size: tuple[int,int], canvas: tuple[int,int], transform: dict | None) -> None:
+    if not shutil.which('ffmpeg'):
+        pytest.skip('ffmpeg unavailable')
+    sw, sh = size
+    w, h = canvas
+    info = {'streams':[{'codec_type':'video','width':sw,'height':sh}]}
+    filters = video_transform_filter(w,h, {'transform':transform} if transform else {}, info)
+    assert f'crop={w}:{h}:(iw-ow)/2:(ih-oh)/2' in filters
+    pixels = asyncio.run(command('ffmpeg',['-v','error','-f','lavfi','-i',f'color=red:s={sw}x{sh}:d=0.1',
+        '-vf',filters,'-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],cwd=tmp_path))
+    if not transform or transform == IDENTITY:
+        # Every boundary pixel is covered; checking just the centre would miss a 1px rim.
+        edges = [y*w+x for y in range(h) for x in range(w) if x in (0,w-1) or y in (0,h-1)]
+        assert all(pixels[i*3]>180 and pixels[i*3+1]<50 for i in edges)
+    else:
+        points = [(i%w,i//w) for i in range(w*h) if pixels[i*3]>180]
+        assert abs((max(x for x,y in points)-min(x for x,y in points)+1)-w*.5)<=2
+        assert abs((max(y for x,y in points)-min(y for x,y in points)+1)-h*.8)<=2
+
+def test_different_ratio_still_letterboxes() -> None:
+    info = {'streams':[{'codec_type':'video','width':726,'height':1266}]}
+    assert 'force_original_aspect_ratio=decrease' in video_transform_filter(640,480,{},info)
+
+def test_matching_display_ratio_respects_sample_aspect() -> None:
+    info = {'streams':[{'codec_type':'video','width':100,'height':100,'sample_aspect_ratio':'4:3'}]}
+    assert video_transform_filter(640,480,{},info).startswith('scale=640:480,setsar=1,crop=640:480')
+
+def test_browser_worker_tolerance_is_aligned() -> None:
+    import re
+    contract = (Path(__file__).resolve().parents[3] / 'packages/contracts/src/effect-template-mix-transform.ts').read_text(encoding='utf-8')
+    tolerance = float(re.search(r'EFFECT_VIDEO_MATCHING_ASPECT_TOLERANCE = ([\d.]+)',contract)[1])
+    assert tolerance == .01
+    for ratio, matching in [(1+tolerance,True),(1/(1+tolerance),True),(1.011,False)]:
+        info = {'streams':[{'codec_type':'video','width':ratio*100,'height':100}]}
+        assert ('crop=100:100:(iw-ow)' in video_transform_filter(100,100,{},info)) == matching
+
+
 @pytest.mark.parametrize('ratio', ['2.35:1', '2:1', '1.85:1', '9:19.5', '123:456'])
 def test_custom_and_menu_ratios(ratio: str) -> None:
     w, h = output_size(ratio, '480p')
