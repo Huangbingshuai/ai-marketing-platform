@@ -318,6 +318,20 @@ export class WorkflowWorkingService {
     workflow: NonNullable<WorkingArtifactListQuery['workflow']>,
     space: NonNullable<WorkingArtifactListQuery['space']>,
   ): Promise<WorkflowRunOverviewData> {
+    if (this.readCache && workflow === 'CUSTOMIZED' && space === 'CUSTOMIZED_PROJECT')
+      return this.readCache.read(
+        { projectId, workflow: 'CUSTOMIZED' },
+        'customized-overview',
+        () => this.loadActiveRunOverview(projectId, workflow, space),
+      );
+    return this.loadActiveRunOverview(projectId, workflow, space);
+  }
+
+  private async loadActiveRunOverview(
+    projectId: string,
+    workflow: NonNullable<WorkingArtifactListQuery['workflow']>,
+    space: NonNullable<WorkingArtifactListQuery['space']>,
+  ): Promise<WorkflowRunOverviewData> {
     await this.projectService.get(projectId);
     const run = await this.repository.findActiveRunWithNodeStates(projectId, workflow, space);
     if (!run) return { run: null, nodeStates: [] };
@@ -336,6 +350,18 @@ export class WorkflowWorkingService {
   }
 
   async getCustomizedBranchTree(projectId: string): Promise<CustomizedWorkflowBranchTreeData> {
+    return this.readCache
+      ? this.readCache.read(
+          { projectId, workflow: 'CUSTOMIZED' },
+          'customized-tree',
+          () => this.loadCustomizedBranchTree(projectId),
+        )
+      : this.loadCustomizedBranchTree(projectId);
+  }
+
+  private async loadCustomizedBranchTree(
+    projectId: string,
+  ): Promise<CustomizedWorkflowBranchTreeData> {
     await this.projectService.get(projectId);
     const runs = await this.repository.listCustomizedRunBranches(projectId);
     const active = runs.find((run) => run.activeKey === 'ACTIVE');
@@ -378,7 +404,6 @@ export class WorkflowWorkingService {
         })),
     };
   }
-
   private customizedSourceNode(nodeId: string) {
     if (nodeId !== 'SOURCE_IMPORT')
       throw new ApiHttpException(
@@ -1105,6 +1130,29 @@ export class WorkflowWorkingService {
     await this.projectService.get(projectId);
     const run = await this.repository.findRun(projectId, workflowRunId);
     if (!run)
+      throw new ApiHttpException('工作流运行不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    if (
+      this.readCache &&
+      run.workflow === 'CUSTOMIZED' &&
+      run.workflowSpace === 'CUSTOMIZED_PROJECT' &&
+      nodeId === 'SOURCE_IMPORT'
+    )
+      return this.readCache.read(
+        { projectId, workflow: 'CUSTOMIZED', workflowRunId },
+        'customized-import-draft',
+        () => this.loadNodeState(projectId, workflowRunId, nodeId, true),
+      );
+    return this.loadNodeState(projectId, workflowRunId, nodeId);
+  }
+
+  private async loadNodeState(
+    projectId: string,
+    workflowRunId: string,
+    nodeId: string,
+    recheckRun = false,
+  ) {
+    // Recheck Run after a cache retry (e.g. an edit child was cancelled during loading).
+    if (recheckRun && !(await this.repository.findRun(projectId, workflowRunId)))
       throw new ApiHttpException('工作流运行不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
     const state = await this.repository.findNodeState(projectId, workflowRunId, nodeId);
     if (!state)

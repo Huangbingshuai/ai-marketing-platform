@@ -22,6 +22,8 @@
 资料包、草稿、产品分页与移除列表、提炼、Prompt、渲染工作区、混剪、成片和效果类确认产物投影
 均接入缓存。通用 Run 概览和不限定节点的产物列表继续数据库读取，因为包含混合节点状态或原始资料。
 
+定制类资料导入也复用上述 Redis 连接和 `EFFECT_READ_CACHE_*` 配置，缓存当前 Run 概览、文件引用草稿和版本树；键按 CUSTOMIZED / 实际 Run 隔离。概览仅在包含无历史文字的资料导入草稿时允许缓存，其他节点、历史正文及文件内容仍走原读取链路，每次命中仍以 PostgreSQL 版本核对新鲜度。
+
 只读性能采样与实例检查：
 
 ```powershell
@@ -34,6 +36,13 @@ node apps/api/scripts/inspect-effect-read-cache.mjs
 ```powershell
 $env:EFFECT_CACHE_DATABASE_TEST='1'
 pnpm --filter @ai-marketing/api exec vitest run src/platform/cache --maxWorkers=1
+```
+
+定制类资料导入的隔离 HTTP / 本地文件验证：
+
+```powershell
+$env:CUSTOMIZED_CACHE_DATABASE_TEST='1'
+pnpm --filter @ai-marketing/api exec vitest run src/platform/cache/customized-cache.http.spec.ts --maxWorkers=1
 ```
 
 ```powershell

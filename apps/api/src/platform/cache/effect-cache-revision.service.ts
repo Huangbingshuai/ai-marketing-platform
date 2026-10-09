@@ -58,8 +58,19 @@ export const EFFECT_CACHE_TABLES = {
   output: [...base, ...render, ...mix, ...output],
   tree: [...base, ...source, ...mix, ...output],
 } as const;
-export type EffectCacheResource = keyof typeof EFFECT_CACHE_TABLES;
-export type EffectCacheScope = { projectId: string; workflowRunId?: string; draftId?: string };
+export const CUSTOMIZED_CACHE_TABLES = {
+  'customized-overview': ['workflow_runs', 'workflow_node_states'],
+  'customized-import-draft': ['workflow_runs', 'workflow_node_states'],
+  'customized-tree': ['workflow_runs', 'working_artifacts'],
+} as const;
+const CACHE_TABLES = { ...EFFECT_CACHE_TABLES, ...CUSTOMIZED_CACHE_TABLES };
+export type EffectCacheResource = keyof typeof CACHE_TABLES;
+export type EffectCacheScope = {
+  projectId: string;
+  workflow?: 'EFFECT' | 'CUSTOMIZED';
+  workflowRunId?: string;
+  draftId?: string;
+};
 export type EffectCacheStamp = { workflowRunId: string; version: string; active: boolean };
 const taskTables = new Set<string>([
   ...extraction.slice(0, 1),
@@ -86,6 +97,11 @@ export class EffectCacheRevisionService {
     scope: EffectCacheScope,
     resource: EffectCacheResource,
   ): Promise<EffectCacheStamp | null> {
+    const workflow = scope.workflow ?? 'EFFECT';
+    const customized = workflow === 'CUSTOMIZED';
+    if (resource.startsWith('customized-') !== customized || (customized && scope.draftId))
+      return null;
+    const space = customized ? 'CUSTOMIZED_PROJECT' : 'EFFECT';
     // Resolve scope and all dependency versions in one PostgreSQL statement snapshot.
     const runQuery = scope.draftId
       ? Prisma.sql`SELECT r.id FROM workflow_runs r
@@ -96,9 +112,9 @@ export class EffectCacheRevisionService {
             ${scope.workflowRunId ? Prisma.sql`AND r.id = ${scope.workflowRunId}::uuid` : Prisma.empty}`
       : Prisma.sql`SELECT r.id FROM workflow_runs r
           WHERE r."projectId" = ${scope.projectId}::uuid
-            AND r.workflow = 'EFFECT' AND r."workflowSpace" = 'EFFECT'
+            AND r.workflow::text = ${workflow} AND r."workflowSpace"::text = ${space}
             ${scope.workflowRunId ? Prisma.sql`AND r.id = ${scope.workflowRunId}::uuid` : Prisma.sql`AND r."activeKey" = 'ACTIVE'`}`;
-    const queries = EFFECT_CACHE_TABLES[resource].map((table) => {
+    const queries = CACHE_TABLES[resource].map((table) => {
       // xmin is an additional physical row version, not a business revision. It catches updates
       // to child/link rows without updatedAt, same-millisecond changes, inserts and deletions.
       // Values expire within minutes; no persisted identity or business ordering uses xmin.
@@ -117,13 +133,21 @@ export class EffectCacheRevisionService {
       // exposes currentNodeId, so only that resource retains it. All other Run metadata
       // (including paths, publication, active pointer and edit-session scope) remains hashed.
       const rowVersion =
-        table === 'workflow_runs'
+        table === 'workflow_runs' && !customized
           ? Prisma.sql`(to_jsonb(t) - 'lastActiveAt' - 'updatedAt'
             ${resource === 'tree' ? Prisma.empty : Prisma.sql` - 'currentNodeId'`})::text`
           : Prisma.sql`t.id::text || ':' || t.xmin::text ${revision}`;
+      const workflowFilter = customized
+        ? table === 'workflow_runs'
+          ? Prisma.sql`AND t.workflow::text = ${workflow} AND t."workflowSpace"::text = ${space}`
+          : Prisma.sql`AND t."workflowRunId" IN (SELECT r.id FROM workflow_runs r
+              WHERE r."projectId" = ${scope.projectId}::uuid
+                AND r.workflow::text = ${workflow} AND r."workflowSpace"::text = ${space})`
+        : Prisma.empty;
       return Prisma.sql`SELECT ${table} AS name,
         md5(COALESCE(string_agg(${rowVersion}, ',' ORDER BY t.id), '')) AS version,
-        ${active} AS active FROM ${Prisma.raw(table)} t WHERE t."projectId" = ${scope.projectId}::uuid`;
+        ${active} AS active FROM ${Prisma.raw(table)} t
+        WHERE t."projectId" = ${scope.projectId}::uuid ${workflowFilter}`;
     });
     const rows = await this.db.$queryRaw<
       Array<{ workflowRunId: string; name: string; version: string; active: boolean }>
@@ -132,7 +156,7 @@ export class EffectCacheRevisionService {
         SELECT cache_scope.id AS "workflowRunId", versions.* FROM cache_scope
         CROSS JOIN LATERAL (${Prisma.join(queries, ' UNION ALL ')}) versions`,
     );
-    const expected = new Set<string>(EFFECT_CACHE_TABLES[resource]);
+    const expected = new Set<string>(CACHE_TABLES[resource]);
     if (
       rows.length !== expected.size ||
       new Set(rows.map((row) => row.name)).size !== expected.size ||

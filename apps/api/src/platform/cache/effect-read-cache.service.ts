@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { ApiHttpException } from '../../common/api-http-exception';
 import { ProjectService } from '../project/project.service';
 import { RedisConnectionService } from './redis-connection.service';
+import { canCacheCustomizedProjection } from './customized-cache-policy';
 import {
   EffectCacheRevisionService,
   type EffectCacheResource,
@@ -116,7 +117,7 @@ export class EffectReadCacheService {
       if (this.config.get<boolean>('EFFECT_READ_CACHE_ENABLED') === false) return await load();
       // Include the wire schema in the key so old/new API processes cannot misread each other's DTOs.
       const varyHash = hash(JSON.stringify([2, vary]));
-      hintKey = `${scope.projectId}:${scope.workflowRunId ?? ''}:${scope.draftId ?? ''}:${resource}:${varyHash}`;
+      hintKey = `${scope.projectId}:${scope.workflow ?? 'EFFECT'}:${scope.workflowRunId ?? ''}:${scope.draftId ?? ''}:${resource}:${varyHash}`;
       const fastUntil = this.fastReads.get(hintKey);
       if (fastUntil && fastUntil > Date.now()) {
         metric.outcome = 'fast';
@@ -150,7 +151,7 @@ export class EffectReadCacheService {
       };
       const namespace =
         this.config.get<string>('EFFECT_READ_CACHE_NAMESPACE') ?? 'amp:effect-read:v1';
-      const key = `${namespace}:${scope.projectId}:EFFECT:${stamp.workflowRunId}:${resource}:${varyHash}:${stamp.version}`;
+      const key = `${namespace}:${scope.projectId}:${scope.workflow ?? 'EFFECT'}:${stamp.workflowRunId}:${resource}:${varyHash}:${stamp.version}`;
       const maxBytes = this.config.get<number>('EFFECT_READ_CACHE_MAX_BYTES') ?? 2_097_152;
       const decode = (raw: string | null): Payload<T> | undefined => {
         // The envelope JSON escapes the already serialized body; allow its encoding overhead.
@@ -181,7 +182,8 @@ export class EffectReadCacheService {
           if (
             !payload ||
             (payload.kind !== 'value' && payload.kind !== 'missing') ||
-            (payload.kind === 'missing' && typeof payload.message !== 'string')
+            (payload.kind === 'missing' && typeof payload.message !== 'string') ||
+            (payload.kind === 'value' && !canCacheCustomizedProjection(resource, payload.value))
           ) {
             metric.invalidEntries++;
             return undefined;
@@ -284,6 +286,10 @@ export class EffectReadCacheService {
             return body;
           }
           if (!locked) return body;
+          if (payload.kind === 'value' && !canCacheCustomizedProjection(resource, payload.value)) {
+            metric.outcome = 'sensitive';
+            return body;
+          }
           // DTOs currently use protected relative media routes. Fail closed if a future
           // provider introduces a signed/external token-bearing URL into a read projection.
           if (

@@ -24,6 +24,8 @@ SOURCE_IMPORT 已接入专用上传 API，仍复用共享项目、资产、文�
 
 实现计划见[资料包后端接通](plans/2026-10-08-source-import-backend.md)。隔离真实接口验证脚本为 `apps/api/scripts/verify-customized-source-import.mjs`，只操作随机测试项目，不触发模型。
 
+活动 Run 概览、SOURCE_IMPORT 文件引用草稿及版本树复用效果类的 Redis 只读投影缓存。每次读取核对 PostgreSQL 的项目、CUSTOMIZED / CUSTOMIZED_PROJECT 作用域及依赖行版本，编辑/取消/发布/切换或保存后立即换键；迟到读取复核失败后重新加载。只缓存无历史文字的当前资料草稿，其他节点、历史文字、文件正文、二进制和签名 URL 不进入缓存。Redis 故障回源，业务 revision、固定文件版本、确认提交及存储可读校验保持原边界。配置复用 `EFFECT_READ_CACHE_*`，无数据库迁移；项目删除会同时清理定制类缓存。计划和验证边界见[资料导入 Redis 缓存](plans/2026-10-09-资料导入Redis缓存.md)。
+
 ## 固定规则
 
 - 每个分镜版本是独立工作副本；版本名称可修改，镜头文本可直接编辑。

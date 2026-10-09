@@ -54,6 +54,55 @@ function harness(overrides = {}) {
 }
 
 describe('version-verified Effect read cache', () => {
+  it('reuses Redis for customized file references with workflow and Run isolation', async () => {
+    const h = harness();
+    const customScope = { ...scope, workflow: 'CUSTOMIZED' as const };
+    const load = vi.fn(async () => ({
+      nodeId: 'SOURCE_IMPORT',
+      state: {
+        schemaVersion: 3,
+        requirements: '',
+        materials: [],
+      },
+    }));
+    await h.service.read(customScope, 'customized-import-draft', load);
+    await h.service.read(customScope, 'customized-import-draft', load);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect([...h.entries.keys()][0]).toContain(':CUSTOMIZED:run-a:customized-import-draft:');
+    await h.service.read(
+      { ...customScope, workflowRunId: 'sibling' },
+      'customized-import-draft',
+      load,
+    );
+    expect(load).toHaveBeenCalledTimes(2);
+    h.revisions.read.mockResolvedValue({
+      workflowRunId: scope.workflowRunId,
+      version: 'v2',
+      active: false,
+    });
+    await h.service.read(customScope, 'customized-import-draft', load);
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns legacy text and unknown fields without publishing them into Redis', async () => {
+    const h = harness();
+    const load = vi.fn(async () => ({
+      nodeId: 'SOURCE_IMPORT',
+      state: {
+        schemaVersion: 3,
+        requirements: 'legacy-private-body',
+        materials: [],
+      },
+    }));
+    const customScope = { ...scope, workflow: 'CUSTOMIZED' as const };
+    expect(
+      (await h.service.read(customScope, 'customized-import-draft', load)).state.requirements,
+    ).toBe('legacy-private-body');
+    await h.service.read(customScope, 'customized-import-draft', load);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(h.entries.size).toBe(0);
+    expect(h.service.diagnostics().counts.sensitive).toBe(2);
+  });
   it('bypasses Redis for fast reads, then learns when the same scope becomes expensive', async () => {
     const h = harness({ EFFECT_READ_CACHE_MIN_LOAD_MS: 20 });
     let expensive = false;
