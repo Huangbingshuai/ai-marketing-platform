@@ -10,8 +10,8 @@ export const customizedWorkflowNodes = [
   {
     label: '信息提炼',
     status: '待接入',
-    title: '标准化提炼',
-    description: '统一制作需求、卖点、受众、品牌调性和禁忌',
+    title: '信息提炼',
+    description: '整理简报中的主体信息、创作方向与视频规格，形成视频创作信息卡',
   },
   {
     label: '分镜创作',

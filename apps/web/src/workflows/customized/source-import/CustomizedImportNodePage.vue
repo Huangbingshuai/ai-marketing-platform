@@ -48,6 +48,8 @@ import EffectWorkflowBranchTree from '../../effect/source-import/components/Effe
 import EffectWorkflowCanvas from '../../effect/source-import/components/EffectWorkflowCanvas.vue';
 import EffectUpwardCreatableSelect from '../../effect/source-import/components/EffectUpwardCreatableSelect.vue';
 import { customizedWorkflowNodes } from '../customized-workflow';
+import CustomizedInfoExtractionNodePage from '../information-extraction/CustomizedInfoExtractionNodePage.vue';
+import type { CustomizedExtractionSource } from '../information-extraction/customized-extraction-view';
 import {
   initializeCustomizedDraft,
   uploadCustomizedMaterial,
@@ -179,6 +181,24 @@ const sourceReady = computed(() =>
   draft.value.materials.every(
     (item) => assets.value[item.assetId] && !materialErrors.value[item.assetId],
   ),
+);
+const extractionSourceConfirmed = computed(
+  () => confirmedSteps.value.includes(0) && !sourceEditing.value,
+);
+const extractionSources = computed<CustomizedExtractionSource[]>(() =>
+  extractionSourceConfirmed.value
+    ? draft.value.materials.map((reference) => ({
+        reference,
+        asset: assets.value[reference.assetId] ?? null,
+        ...(materialErrors.value[reference.assetId]
+          ? { error: materialErrors.value[reference.assetId] }
+          : {}),
+      }))
+    : [],
+);
+const extractionSourceRevision = computed(
+  () =>
+    publishedBranch.value?.nodes.find((node) => node.nodeId === 'SOURCE_IMPORT')?.revision ?? null,
 );
 const safeError = (error: unknown, fallback: string) =>
   error instanceof ApiClientError && error.status < 500 ? error.message : fallback;
@@ -683,10 +703,10 @@ const readingFile = ref<{
   updatedAt: string;
 } | null>(null);
 let readingTrigger: HTMLElement | null = null;
-const preview = (assetId: string, event: MouseEvent) => {
+const preview = (assetId: string, event: MouseEvent, returnFocus?: HTMLElement | null) => {
   const asset = assets.value[assetId];
   if (!asset || materialErrors.value[assetId]) return;
-  readingTrigger = event.currentTarget as HTMLElement;
+  readingTrigger = returnFocus ?? (event.currentTarget as HTMLElement);
   readingFile.value = {
     name: asset.originalFileName,
     mimeType: asset.mimeType,
@@ -969,14 +989,25 @@ onBeforeUnmount(() => {
           </ImportSourceCard>
         </div>
         <p v-if="notice" class="source-notice" role="status">{{ notice }}</p>
-        <ImportContentViewer v-if="readingFile" :file="readingFile" @close="closePreview" />
         <WorkflowNodeFooter
           :show-validate="false"
-          next-label="下一步：标准化提炼"
+          next-label="下一步：信息提炼"
           :next-disabled="busy || sourceEditing || !confirmedSteps.includes(0)"
           @next="next"
         />
       </section>
+      <CustomizedInfoExtractionNodePage
+        v-else-if="activeStep === 1"
+        :key="`${projectId}:${workflowRunId}`"
+        :project-id="projectId"
+        :workflow-run-id="workflowRunId"
+        :project-name="context.currentProject.value?.name ?? '当前项目'"
+        :source-confirmed="extractionSourceConfirmed"
+        :source-revision="extractionSourceRevision"
+        :sources="extractionSources"
+        @back="selectStep(0)"
+        @view-source="preview"
+      />
       <section v-else class="import-workspace-card next-node">
         <header class="node-heading">
           <span class="node-number">{{ String(activeStep + 1).padStart(2, '0') }}</span>
@@ -998,6 +1029,7 @@ onBeforeUnmount(() => {
           @back="selectStep(0)"
         />
       </section>
+      <ImportContentViewer v-if="readingFile" :file="readingFile" @close="closePreview" />
     </template>
   </div>
 </template>

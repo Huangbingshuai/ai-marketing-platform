@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
+import WorkflowInformationCard from '../../../platform/workflow/components/WorkflowInformationCard.vue';
 import type {
   EffectExtractionNodeDetail,
   EffectExtractionNodeExecution,
@@ -1183,10 +1185,10 @@ const productBaseValue = (field: ProductBaseField): string => {
   return currentState.value?.result?.[field] ?? '';
 };
 
-const updateProductBaseField = (field: ProductBaseField, event: Event): void => {
+const updateProductBaseField = (field: ProductBaseField, value: string): void => {
   const result = currentState.value?.result;
   if (!result) return;
-  result[field] = (event.target as HTMLInputElement | HTMLTextAreaElement).value;
+  result[field] = value;
   markFieldDirty(field);
 };
 
@@ -1578,17 +1580,21 @@ onBeforeUnmount(() => {
         }"
         :aria-busy="currentRunning"
       >
-        <section
+        <WorkflowInformationCard
           class="content-block product-base-card"
           :class="{ processing: currentRunning }"
           :aria-busy="currentRunning"
         >
           <h3>产品基础层</h3>
           <div class="base-fields">
-            <label
-              ><span
-                >品类
-                <em
+            <WorkflowInformationField
+              label="品类"
+              :model-value="productBaseValue('productCategory')"
+              :readonly="baseFieldsReadonly"
+              @update:model-value="updateProductBaseField('productCategory', $event)"
+            >
+              <template #source
+                ><em
                   :data-origin="fieldOrigin('productCategory')"
                   :title="originSourceTitle(fieldSourceNames('productCategory'))"
                   >{{
@@ -1597,31 +1603,33 @@ onBeforeUnmount(() => {
                       fieldSourceNames('productCategory'),
                     )
                   }}</em
-                ></span
-              ><input
-                :value="productBaseValue('productCategory')"
-                :readonly="baseFieldsReadonly"
-                @input="updateProductBaseField('productCategory', $event)"
-            /></label>
-            <label
-              ><span
-                >产品名称
-                <em
+                ></template
+              >
+            </WorkflowInformationField>
+            <WorkflowInformationField
+              label="产品名称"
+              :model-value="productBaseValue('productName')"
+              :readonly="baseFieldsReadonly"
+              @update:model-value="updateProductBaseField('productName', $event)"
+            >
+              <template #source
+                ><em
                   :data-origin="fieldOrigin('productName')"
                   :title="originSourceTitle(fieldSourceNames('productName'))"
                   >{{
                     originSourceLabel(fieldOrigin('productName'), fieldSourceNames('productName'))
                   }}</em
-                ></span
-              ><input
-                :value="productBaseValue('productName')"
-                :readonly="baseFieldsReadonly"
-                @input="updateProductBaseField('productName', $event)"
-            /></label>
-            <label
-              ><span
-                >核心规格
-                <em
+                ></template
+              >
+            </WorkflowInformationField>
+            <WorkflowInformationField
+              label="核心规格"
+              :model-value="productBaseValue('coreSpecification')"
+              :readonly="baseFieldsReadonly"
+              @update:model-value="updateProductBaseField('coreSpecification', $event)"
+            >
+              <template #source
+                ><em
                   :data-origin="fieldOrigin('coreSpecification')"
                   :title="originSourceTitle(fieldSourceNames('coreSpecification'))"
                   >{{
@@ -1630,31 +1638,35 @@ onBeforeUnmount(() => {
                       fieldSourceNames('coreSpecification'),
                     )
                   }}</em
-                ></span
-              ><input
-                :value="productBaseValue('coreSpecification')"
-                :readonly="baseFieldsReadonly"
-                @input="updateProductBaseField('coreSpecification', $event)"
-            /></label>
-            <label
-              ><span
-                >价格带
-                <em
+                ></template
+              >
+            </WorkflowInformationField>
+            <WorkflowInformationField
+              label="价格带"
+              :model-value="productBaseValue('priceRange')"
+              :readonly="baseFieldsReadonly"
+              @update:model-value="updateProductBaseField('priceRange', $event)"
+            >
+              <template #source
+                ><em
                   :data-origin="fieldOrigin('priceRange')"
                   :title="originSourceTitle(fieldSourceNames('priceRange'))"
                   >{{
                     originSourceLabel(fieldOrigin('priceRange'), fieldSourceNames('priceRange'))
                   }}</em
-                ></span
-              ><input
-                :value="productBaseValue('priceRange')"
-                :readonly="baseFieldsReadonly"
-                @input="updateProductBaseField('priceRange', $event)"
-            /></label>
-            <label class="wide"
-              ><span
-                >核心外观特征
-                <em
+                ></template
+              >
+            </WorkflowInformationField>
+            <WorkflowInformationField
+              class="wide"
+              multiline
+              label="核心外观特征"
+              :model-value="productBaseValue('visualFeatures')"
+              :readonly="baseFieldsReadonly"
+              @update:model-value="updateProductBaseField('visualFeatures', $event)"
+            >
+              <template #source
+                ><em
                   :data-origin="fieldOrigin('visualFeatures')"
                   :title="originSourceTitle(fieldSourceNames('visualFeatures'))"
                   >{{
@@ -1663,16 +1675,12 @@ onBeforeUnmount(() => {
                       fieldSourceNames('visualFeatures'),
                     )
                   }}</em
-                ></span
-              ><textarea
-                :value="productBaseValue('visualFeatures')"
-                :readonly="baseFieldsReadonly"
-                @input="updateProductBaseField('visualFeatures', $event)"
-              />
-            </label>
+                ></template
+              >
+            </WorkflowInformationField>
           </div>
-        </section>
-        <section class="content-block selling-layer-card">
+        </WorkflowInformationCard>
+        <WorkflowInformationCard class="content-block selling-layer-card">
           <div class="block-heading compact">
             <div>
               <div class="selling-heading-row">
@@ -1767,9 +1775,8 @@ onBeforeUnmount(() => {
               </p>
             </div>
           </div>
-        </section>
+        </WorkflowInformationCard>
       </div>
-
 
       <p v-if="validationMessage" class="validation-message" aria-live="polite">
         {{ validationMessage }}
@@ -2389,7 +2396,7 @@ button:disabled {
   gap: 8px;
   line-height: 22px;
 }
-.base-fields label.wide {
+.base-fields .wide {
   grid-column: 1 / -1;
 }
 input,
@@ -2461,8 +2468,8 @@ select {
   color: #606266;
   background: #fff;
 }
-.product-base-card.processing .base-fields input,
-.product-base-card.processing .base-fields textarea {
+.product-base-card.processing .base-fields :deep(input),
+.product-base-card.processing .base-fields :deep(textarea) {
   color: #2563eb;
   background: #f5f8ff;
 }
@@ -3501,7 +3508,7 @@ select {
   .base-fields {
     grid-template-columns: 1fr;
   }
-  .base-fields label.wide {
+  .base-fields .wide {
     grid-column: auto;
   }
   .extraction-heading__title {
