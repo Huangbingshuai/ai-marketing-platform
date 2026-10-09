@@ -166,6 +166,7 @@ import {
 import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
 import EffectMusicLibrary from './EffectMusicLibrary.vue';
 import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
+import { TimelineFramePresentation } from './effect-template-mix-frame-presentation';
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
 import { splitRangeAtPlayhead } from './effect-template-mix-split';
@@ -1115,6 +1116,10 @@ const currentDuration = computed(() => {
 });
 const coverMaterial = (variant: EffectTemplateMixVariant): EffectTemplateMixMaterial | null =>
   variant.slots.map((slot) => materialForSlot(slot.id, variant)).find(Boolean) ?? null;
+const coverOffset = (variant: EffectTemplateMixVariant): number => {
+  const slot = variant.slots.find((item) => materialForSlot(item.id, variant));
+  return slot ? variant.offsets[slot.id] ?? 0 : 0;
+};
 const selectedMaterial = computed(() =>
   selectedSlot.value ? materialForSlot(selectedSlot.value.id) : null,
 );
@@ -1296,6 +1301,17 @@ const previewRange = computed(() =>
 const previewMaterial = computed(() =>
   previewSlot.value ? materialForSlot(previewSlot.value.id) : null,
 );
+const previewMediaIdentity = computed(() => JSON.stringify([
+  currentWorkspaceScope.value, activeTemplateId.value, selectedVariant.value?.id,
+  previewSlot.value?.id, previewMaterial.value?.contentUrl, previewMaterial.value?.contentHash,
+  selectedVariant.value?.offsets[previewSlot.value?.id ?? ''] ?? 0,
+  playbackSeekVersion.value,
+]));
+const presentedPreviewIdentity = ref('');
+const framePresentation = new TimelineFramePresentation();
+const previewPosterVisible = computed(() => !auditionMaterial.value &&
+  videoTrackVisible.value && !!previewMaterial.value &&
+  presentedPreviewIdentity.value !== previewMediaIdentity.value);
 const stageMaterial = computed(() => auditionMaterial.value ?? previewMaterial.value);
 const sourceAspectLabel = computed(() => {
   const ratio = stageMaterial.value?.ratio.trim();
@@ -3790,6 +3806,8 @@ const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string =
   );
 };
 const resetTimelinePlayerState = (): void => {
+  framePresentation.reset();
+  presentedPreviewIdentity.value = '';
   positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   timelineVideoSeeks.reset();
   activePlaybackSlotId = '';
@@ -3826,6 +3844,18 @@ const detectMaterialAudio = (
 };
 const activeTimelinePlayer = (): HTMLVideoElement | null =>
   previewSlot.value ? (timelinePlayers.get(previewSlot.value.id) ?? null) : null;
+const presentTimelineFrame = (slotId: string, video: HTMLVideoElement): void => {
+  if (slotId !== previewSlot.value?.id) return;
+  const identity = previewMediaIdentity.value;
+  const sourceTime = timelineSourceTime(slotId);
+  if (sourceTime === null) return;
+  framePresentation.present(video, sourceTime, 1 / TIMELINE_FPS, () => {
+    if (identity !== previewMediaIdentity.value || timelinePlayers.get(slotId) !== video ||
+      auditionMaterial.value || !timelineVideoSeeks.isSettled(video)) return;
+    presentedPreviewIdentity.value = identity;
+    transitionFrame.value = '';
+  });
+};
 const slotHasDetachedAudio = (slotId: string): boolean =>
   Boolean(selectedVariant.value?.detachedAudios?.some((audio) => audio.sourceSlotId === slotId));
 const syncDetachedAudio = (forceSeek = false): void => {
@@ -3964,25 +3994,6 @@ const closeMaterialPreview = (): void => {
   auditionMaterial.value = null;
   auditionTime.value = 0;
 };
-const captureDisplayedFrame = (): string => {
-  const slotId = displayedTimelineSlotId.value;
-  const video = slotId ? timelinePlayers.get(slotId) : null;
-  if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return '';
-  try {
-    const scale = Math.min(1, 640 / Math.max(video.videoWidth, 1));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-    const context = canvas.getContext('2d');
-    if (!context) return '';
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.82);
-  } catch {
-    // Cross-origin media without CORS cannot be copied to a canvas. In that
-    // case the normal video readiness path remains the fallback.
-    return '';
-  }
-};
 const previewLibraryMaterial = async (material: EffectTemplateMixMaterial): Promise<void> => {
   playing.value = false;
   stopPlaybackClock();
@@ -4083,7 +4094,7 @@ async function openTemplateWorkspace(templateId: string, targetView: 'CONFIG' | 
 }
 const selectVariant = (id: string): void => {
   if (!activeUi.value || !workspace.value) return;
-  transitionFrame.value = captureDisplayedFrame();
+  transitionFrame.value = '';
   playing.value = false;
   pauseTimelinePlayers();
   resetTimelinePlayerState();
@@ -6475,6 +6486,9 @@ const startPlaybackClock = (): void => {
 };
 const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
   const requestId = ++seekSyncRequestId;
+  // A same-slot variant switch still has the previous src until Vue patches the DOM.
+  // Never register a seek against that old source or clear the poster from its cached frame.
+  await nextTick();
   const apply = (): boolean => {
     if (requestId !== seekSyncRequestId) return true;
     const slot = previewSlot.value;
@@ -6502,7 +6516,7 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
       if (incoming && timelineVideoSeeks.isSettled(incoming)) {
         playerUnavailableSlotId.value = '';
         displayedTimelineSlotId.value = transition.incomingSlot.id;
-        transitionFrame.value = '';
+        presentTimelineFrame(transition.incomingSlot.id, incoming);
       } else if (outgoing && timelineVideoSeeks.isSettled(outgoing)) {
         playerUnavailableSlotId.value = '';
         displayedTimelineSlotId.value = transition.outgoingSlot.id;
@@ -6525,7 +6539,7 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
     if (timelineVideoSeeks.isSettled(video)) {
       playerUnavailableSlotId.value = '';
       displayedTimelineSlotId.value = slot.id;
-      transitionFrame.value = '';
+      presentTimelineFrame(slot.id, video);
     }
     if (resume && timelineVideoSeeks.isSettled(video) && video.paused) {
       void video.play().catch(() => undefined);
@@ -6599,8 +6613,9 @@ const togglePlay = async (): Promise<void> => {
   syncDetachedAudio(true);
   await syncPlayerToPlayhead(true);
 };
-const onTimelinePlayerReady = (slotId: string, seeked = false): void => {
+const onTimelinePlayerReady = (slotId: string, event: Event, seeked = false): void => {
   const video = timelinePlayers.get(slotId);
+  if (!video || event.currentTarget !== video || video.currentSrc !== video.src) return;
   const transition = activeTransitionPreview.value;
   const isVisibleSlot =
     previewSlot.value?.id === slotId ||
@@ -6620,13 +6635,14 @@ const onTimelinePlayerReady = (slotId: string, seeked = false): void => {
   detectMaterialAudio(materialForSlot(slotId), video);
   playerUnavailableSlotId.value = '';
   displayedTimelineSlotId.value = slotId;
-  transitionFrame.value = '';
+  presentTimelineFrame(slotId, video);
   // Readiness callbacks may arrive repeatedly during decoding. The project RAF
   // advances the timeline while the active media element owns frame delivery.
   if (playing.value) syncPlayingVideoFrame();
   else void syncPlayerToPlayhead(false);
 };
-const onTimelinePlayerError = (slotId: string): void => {
+const onTimelinePlayerError = (slotId: string, event: Event): void => {
+  if (event.currentTarget !== timelinePlayers.get(slotId)) return;
   if (previewSlot.value?.id !== slotId) return;
   playerUnavailableSlotId.value = slotId;
   displayedTimelineSlotId.value = '';
@@ -6823,9 +6839,10 @@ watch(
   () => void applyBranchNavigation(),
   { flush: 'post' },
 );
-watch([() => previewSlot.value?.id, () => previewMaterial.value?.id], () => {
+watch(previewMediaIdentity, () => {
+  framePresentation.reset();
   if (!auditionMaterial.value) void syncPlayerToPlayhead(playing.value);
-});
+}, { flush: 'post' });
 watch(auditionMaterial, (material) => {
   if (!material) void syncPlayerToPlayhead(playing.value);
 });
@@ -6987,6 +7004,7 @@ onActivated(() => {
   })();
 });
 onDeactivated(() => {
+  framePresentation.reset();
   releaseExplicitWorkspaceTarget();
   stopSourceUpdatePolling();
   workbenchActive = false;
@@ -7001,6 +7019,7 @@ onDeactivated(() => {
   packagingPanel.value?.stopPlaybackAudio();
 });
 onBeforeUnmount(() => {
+  framePresentation.reset();
   stopSourceUpdatePolling();
   workbenchActive = false;
   clearInterval(sourcePollTimer);
@@ -7700,7 +7719,7 @@ defineExpose({
                   @play="onAuditionPlay"
                   @timeupdate="onAuditionTime"
                 />
-                <template v-for="slot in selectedVariant?.slots ?? []" :key="`player:${slot.id}`">
+                <template v-for="slot in selectedVariant?.slots ?? []" :key="`player:${currentWorkspaceScope}:${slot.id}:${materialForSlot(slot.id)?.contentUrl}:${materialForSlot(slot.id)?.contentHash}`">
                   <video
                     v-if="materialForSlot(slot.id)"
                     :ref="(element) => setTimelinePlayer(slot.id, element)"
@@ -7720,15 +7739,25 @@ defineExpose({
                     "
                     playsinline
                     :muted="videoTrackMuted || slotHasDetachedAudio(slot.id)"
-                    preload="metadata"
+                    :preload="slot.id === previewSlot?.id ? 'auto' : 'metadata'"
                     draggable="false"
-                    @canplay="onTimelinePlayerReady(slot.id)"
-                    @seeked="onTimelinePlayerReady(slot.id, true)"
-                    @loadedmetadata="onTimelinePlayerReady(slot.id)"
+                    @canplay="onTimelinePlayerReady(slot.id, $event)"
+                    @loadeddata="onTimelinePlayerReady(slot.id, $event)"
+                    @seeked="onTimelinePlayerReady(slot.id, $event, true)"
+                    @loadedmetadata="onTimelinePlayerReady(slot.id, $event)"
                     @timeupdate="onTimelinePlayerTimeUpdate(slot.id)"
-                    @error="onTimelinePlayerError(slot.id)"
+                    @error="onTimelinePlayerError(slot.id, $event)"
                   />
                 </template>
+                <div v-if="previewPosterVisible && previewMaterial && previewSlot"
+                  class="player-first-frame"
+                  role="status" :aria-label="playerUnavailableSlotId ? '预览加载失败' : '正在加载成片首帧'">
+                  <EffectTemplateMixThumbnail :source="previewMaterial.contentUrl"
+                    :time="selectedVariant?.offsets[previewSlot.id] ?? 0"
+                    :version="`${previewMaterial.artifactRevision}:${previewMaterial.contentHash}`"
+                    alt="当前成片首帧预览" />
+                  <span v-if="playerUnavailableSlotId" class="player-first-frame-error">预览加载失败，请重新选择成片重试</span>
+                </div>
                 <audio
                   v-for="audio in selectedVariant?.detachedAudios ?? []"
                   :key="`detached-player:${audio.id}`"
@@ -8035,6 +8064,7 @@ defineExpose({
                   <EffectTemplateMixThumbnail
                     v-if="coverMaterial(variant)"
                     :source="coverMaterial(variant)!.contentUrl"
+                    :time="coverOffset(variant)"
                     :version="`${coverMaterial(variant)!.artifactRevision}:${coverMaterial(variant)!.contentHash}`"
                     :alt="`${variantDisplayName(variant, index)} 封面`"
                   />
@@ -9958,6 +9988,10 @@ button:disabled {
   object-fit: cover;
   pointer-events: none;
 }
+.player-first-frame { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 4; pointer-events: none; }
+.player-first-frame :deep(img) { object-fit: cover; }
+.player-first-frame :deep(.thumbnail-loading)::after { content: '首帧加载中…'; font-size: 12px; }
+.player-first-frame-error { position: absolute; inset: auto 0 0; padding: 8px; color: white; background: #334155e6; text-align: center; font-size: 12px; }
 .player-transition-overlay {
   position: absolute;
   z-index: 4;

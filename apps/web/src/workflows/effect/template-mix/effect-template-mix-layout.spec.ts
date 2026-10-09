@@ -521,7 +521,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const resetTimelinePlayerState = (): void => {');
     expect(pageSource).toContain('positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();');
     expect(pageSource).not.toContain('drift > 0.12');
-    expect(pageSource).toContain('preload="metadata"');
+    expect(pageSource).toContain(':preload="slot.id === previewSlot?.id ? \'auto\' : \'metadata\'"');
     expect(pageSource).toContain("otherVideo.preload = slotId === slot.id ? 'auto' : 'metadata'");
     expect(pageSource).toContain('scheduleSeekSync');
     expect(pageSource).toContain('seekSyncRequestId');
