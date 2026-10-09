@@ -101,6 +101,14 @@ const checkpoint = (): PackagingCheckpoint => ({
 });
 
 describe('slot-bound narration layout', () => {
+  it('preserves packaging source hashes while freezing transforms for final rendering', () => {
+    const v = variant(), original = visualHash(v);
+    v.canvasRatio = '4:3';
+    v.videoTransforms = { s: { x: .2, y: -.1, scaleX: .5, scaleY: .7, rotation: 90, uniform: false } };
+    expect(visualHash(v)).toBe(original);
+    const clip = packagingClips(v, materials, artifactVisitor(sources()))[0]!;
+    expect(clip.transform).toEqual(v.videoTransforms.s);
+  });
   it('freezes the confirmed reverse-description owned by an imported render clip', () => {
     const imported = artifact('clip', 'render-clip:c', {
       origin: 'EXTERNAL_IMPORT', promptId: 'not-a-generated-prompt',

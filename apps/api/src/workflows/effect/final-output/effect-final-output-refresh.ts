@@ -91,6 +91,7 @@ export function clearRemovedSourceSlots(variant: EffectTemplateMixVariant, cp: P
     delete result.bindingRevisions[slotId];
     delete result.bindingSources?.[slotId];
     delete result.offsets[slotId];
+    delete result.videoTransforms?.[slotId];
     delete result.bindingMetadata?.[slotId];
   }
   for (const id of [...detached.map((audio) => `detached:${audio.id}`), ...lines.map((line) => `voice:${line.id}`)])

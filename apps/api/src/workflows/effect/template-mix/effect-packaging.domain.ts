@@ -1,5 +1,6 @@
 import {
   EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
+  effectVideoTransformValid,
   EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION,
   PACKAGING_AUDIO_GAIN_CEILING,
   effectTemplateMixContentDuration,
@@ -144,6 +145,7 @@ export function packagingClips(
       lane > 20 ||
       !Number.isFinite(slot.duration) ||
       slot.duration <= 0 ||
+      (variant.videoTransforms?.[slot.id] !== undefined && !effectVideoTransformValid(variant.videoTransforms[slot.id])) ||
       offset + slot.duration > m.duration + 0.05
     )
       throw new BadRequestException('成片存在空槽、失效素材或越界截取');
@@ -169,6 +171,7 @@ export function packagingClips(
     if (!prompt) throw new BadRequestException('缺少素材对应的已确认原始 Prompt');
     return {
       slotId: slot.id,
+      ...(variant.videoTransforms?.[slot.id] ? { transform: variant.videoTransforms[slot.id] } : {}),
       materialId: m.id,
       materialCode: m.code,
       materialName: m.name,

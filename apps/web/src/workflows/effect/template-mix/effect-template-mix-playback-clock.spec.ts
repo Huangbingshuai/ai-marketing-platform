@@ -52,15 +52,14 @@ describe('template mix compositor playback clock', () => {
   });
 
   it('keeps Space playback available when the player scrubber has focus', () => {
-    const scrubberSpaceHandler = pageSource.indexOf(
-      "if (event.code === 'Space' && target === playerScrubber.value)",
-    );
+    const scrubberSpaceHandler = pageSource.indexOf('const onPlayerSpaceKeydown =');
     const genericInputGuard = pageSource.indexOf(
       'target?.matches(\'input, textarea, select, [contenteditable="true"]\')',
     );
     expect(scrubberSpaceHandler).toBeGreaterThan(-1);
     expect(genericInputGuard).toBeGreaterThan(scrubberSpaceHandler);
-    expect(pageSource).toContain('if (!event.repeat) togglePreviewPlayback()');
+    expect(pageSource).toContain('!event.repeat && !playerSpacePressed');
+    expect(pageSource).toContain("window.addEventListener('keydown', onPlayerSpaceKeydown, true);");
   });
 
   it('steps left and right by one whole frame and clamps at the preview ends', () => {

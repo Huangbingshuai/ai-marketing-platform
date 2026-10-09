@@ -6,6 +6,7 @@ import type {
   EffectTemplateMixSlot,
   EffectTemplateMixTransition,
   EffectTemplateMixVariant,
+  EffectVideoTransform,
   PackagingItem,
 } from '@ai-marketing/contracts';
 import {
@@ -170,11 +171,13 @@ const emit = defineEmits<{
   selectAudioClip: [clipId: string | null];
   toggleAudioMute: [track: AudioTrack | 'VIDEO', muted: boolean];
   toggleTrackVisibility: [track: 'CAPTION' | 'VIDEO', visible: boolean];
+  toggleVideoLock: [locked: boolean];
   /** The whole caption selection, so the editor can move and scale a group as one. */
   selectCaptionClips: [captionIds: string[]];
   /** The whole voice/music selection, so the editor can retune a group from one standard clip. */
   selectAudioClips: [clipIds: string[]];
   selectSlot: [slotId: string];
+  selectVideoClips: [slotIds: string[]];
   splitMaterial: [target: { kind: 'VIDEO' | 'AUDIO' | 'CAPTION'; id: string }, at: number];
   separateAudio: [slotId: string];
   pasteVideoMaterials: [
@@ -184,6 +187,7 @@ const emit = defineEmits<{
       offset: number;
       duration: number;
       detachedAudio?: EffectTemplateMixDetachedAudio;
+      transform?: EffectVideoTransform;
     }>,
   ];
   pasteAudioMaterial: [
@@ -410,6 +414,7 @@ type TimelineClipboard =
         offset: number;
         duration: number;
         detachedAudio?: EffectTemplateMixDetachedAudio;
+        transform?: EffectVideoTransform;
       }>;
     }
   | {
@@ -453,6 +458,7 @@ const toggleTrackLock = (track: VisibleTrack): void => {
     return;
   }
   trackLocked[track] = !trackLocked[track];
+  if (track === 'VIDEO') emit('toggleVideoLock', Boolean(trackLocked.VIDEO));
 };
 let resizeObserver: ResizeObserver | null = null;
 
@@ -1676,6 +1682,7 @@ const startTimelineResize = (event: PointerEvent): void => {
 const setSelection = (slotIds: string[]): void => {
   selectedClipIds.value = slotIds;
   emit('selectSlot', slotIds.at(-1) ?? '');
+  emit('selectVideoClips', slotIds);
 };
 
 const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
@@ -1714,6 +1721,10 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
   } else if (!selectedClipIds.value.includes(slotId)) {
     selectedAudioIds.value = [];
     setSelection([slotId]);
+  } else {
+    // A restored or already highlighted clip still needs to activate its contextual controls.
+    selectedAudioIds.value = [];
+    setSelection([...selectedClipIds.value]);
   }
   const element = viewport.value;
   const range = rangeForSlot(slotId);
@@ -1781,6 +1792,7 @@ const videoClipboardEntries = (
         materialId: material.id,
         offset: Math.max(0, props.variant?.offsets[slotId] ?? 0),
         duration: slot.duration,
+        ...(props.variant?.videoTransforms?.[slotId] ? { transform: { ...props.variant.videoTransforms[slotId]! } } : {}),
         ...(detachedAudio ? { detachedAudio: { ...detachedAudio } } : {}),
       },
     ];
@@ -1963,6 +1975,7 @@ const pasteVideoSlots = (targetSlotIds: string[]): void => {
       targetSlotId: targetSlotIds[index]!,
       offset: entry.offset,
       duration: entry.duration,
+      ...(entry.transform ? { transform: { ...entry.transform } } : {}),
       ...(entry.detachedAudio ? { detachedAudio: { ...entry.detachedAudio } } : {}),
     })),
   );
@@ -2762,6 +2775,7 @@ function onWindowPointerUp(): void {
   }
   if (marquee.value?.moved) {
     emit('selectSlot', selectedClipIds.value.at(-1) ?? '');
+    emit('selectVideoClips', selectedClipIds.value);
   }
   const audio = audioDrag.value;
   if (audio?.moved) {

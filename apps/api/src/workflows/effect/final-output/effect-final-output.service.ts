@@ -31,6 +31,8 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
+  effectResolvedCanvasRatio,
+  effectVideoTransformSnapshot,
   effectTemplateMixContentDuration,
   effectTemplateMixPlacedContentDuration,
   effectTemplateMixSourceChanges,
@@ -79,10 +81,14 @@ const outputDraftContentHash = (variant: EffectTemplateMixVariant) => {
   const ids = new Set(clips.map(({ slot }) => slot.id));
   const keep = <T>(values: Record<string, T> | undefined) =>
     Object.fromEntries(Object.entries(values ?? {}).filter(([id]) => ids.has(id)));
+  const transforms = Object.fromEntries(Object.entries(variant.videoTransforms ?? {}).filter(([id, t]) =>
+    ids.has(id) && effectVideoTransformSnapshot(t)).map(([id, t]) => [id, effectVideoTransformSnapshot(t)]));
   return workflowStateHash({
     clips: clips.map(({ slot, start, lane }) => ({ slot, start, lane })),
     bindings: keep(variant.bindings), bindingRevisions: keep(variant.bindingRevisions),
     offsets: keep(variant.offsets),
+    canvasRatio: variant.canvasRatio,
+    ...(Object.keys(transforms).length ? { videoTransforms: transforms } : {}),
     detachedAudios: variant.detachedAudios ?? [], voice: variant.voice, bgm: variant.bgm,
     captions: variant.captions, subtitleStyle: variant.subtitleStyle,
     originalVolume: variant.originalVolume ?? 1, preservedTimelineEnd: variant.preservedTimelineEnd,
@@ -160,6 +166,7 @@ const pictureHash = (clips: PackagingSnapshot['clips']) =>
         overlay: clip.overlay === true,
         transition: clip.transition,
         transitionDuration: clip.transitionDuration,
+        transform: effectVideoTransformSnapshot(clip.transform),
       }))
       .sort((a, b) => a.start - b.start || a.lane - b.lane || a.slotId.localeCompare(b.slotId)),
   );
@@ -344,9 +351,7 @@ export class EffectFinalOutputService {
           packaging: { voices: {}, captions: [] },
           unpackaged: true,
           dependencies: [dependency],
-          aspectRatio: workspace.materials.find(
-            (material) => material.fileObjectId === clips[0]?.fileObjectId,
-          )?.ratio ?? '9:16',
+          aspectRatio: effectResolvedCanvasRatio(variant, workspace.materials, workspace.renderAspectRatio),
           originalVolume: variant.originalVolume ?? 1,
           resolution: '720p', frameRate: 30,
         };
@@ -635,13 +640,16 @@ export class EffectFinalOutputService {
           const timelineClips = [
             ...row.snapshot.clips.filter((clip) => clip.overlay !== true),
             ...row.overlays,
-          ].map((clip) => ({
-            ...clip,
+          ].map((clip) => {
             // Rows are numbered against the live draft, and adding an overlay shifts the ones under
             // it. Keeping the frozen row numbers would place the overlay beside a clip it should
             // cover, so every row is re-read from the draft the user is looking at.
-            lane: row.variant.videoLanes?.[clip.slotId] ?? clip.lane,
-          }));
+            const updated = { ...clip, lane: row.variant.videoLanes?.[clip.slotId] ?? clip.lane };
+            delete updated.transform;
+            const transform = row.variant.videoTransforms?.[clip.slotId];
+            if (transform) updated.transform = transform;
+            return updated;
+          });
           const snapshot: FinalOutputSnapshot = {
             ...(options.onlyVariantIds ? { appendOnly: true } : {}),
             timeline: {
@@ -661,9 +669,7 @@ export class EffectFinalOutputService {
                 contentHash: packaging.contentHash,
               },
             ],
-            aspectRatio:
-              workspace.materials.find((m) => m.fileObjectId === firstClip?.fileObjectId)?.ratio ??
-              '9:16',
+            aspectRatio: effectResolvedCanvasRatio(row.variant, workspace.materials, workspace.renderAspectRatio),
             originalVolume: 0.15,
             resolution: '720p',
             frameRate: 30,
@@ -782,7 +788,7 @@ export class EffectFinalOutputService {
     templateId: string,
     item: OutputItemRow,
     variant: EffectTemplateMixVariant,
-    workspace: Pick<EffectTemplateMixWorkspaceData, 'draft' | 'materials'>,
+    workspace: Pick<EffectTemplateMixWorkspaceData, 'draft' | 'materials' | 'renderAspectRatio'>,
     artifacts: WorkingArtifact[],
     status: 'QUEUED' | 'PENDING_RENDER',
     latestPackaging?: PackagingCheckpoint,
@@ -887,6 +893,7 @@ export class EffectFinalOutputService {
           unpackaged: latestPackaging ? false : snapshot.unpackaged,
           dependencies,
           originalVolume: variant.originalVolume ?? snapshot.originalVolume,
+          aspectRatio: effectResolvedCanvasRatio(variant, workspace.materials, workspace.renderAspectRatio, snapshot.aspectRatio),
         }),
       },
     });
@@ -1158,9 +1165,8 @@ export class EffectFinalOutputService {
         packaging: { voices: variant.voice ? { manual: variant.voice } : {},
           ...(variant.bgm ? { music: variant.bgm } : {}), captions: variant.captions ?? [] },
         unpackaged: !variant.voice && !variant.bgm && !(variant.captions?.length), dependencies: [dependency],
-        aspectRatio: workspace.materials.find((material) => material.fileObjectId === clips[0]?.fileObjectId)?.ratio ||
-          (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.aspectRatio ||
-          configuredRatio || '9:16',
+        aspectRatio: effectResolvedCanvasRatio(variant, workspace.materials, workspace.renderAspectRatio ?? configuredRatio,
+          (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.aspectRatio),
         originalVolume: variant.originalVolume ?? 1,
         resolution: settings.resolution, frameRate: settings.frameRate,
       };
@@ -1392,7 +1398,7 @@ export class EffectFinalOutputService {
               sourceTimelineHash: visualHash(variant), duration: effectTemplateMixContentDuration(variant, cp),
               dependencies: [dependency] },
             packaging: cp ?? { voices: {}, captions: [] }, unpackaged: !cp,
-            dependencies: [dependency], aspectRatio: workspace.materials[0]?.ratio ?? '9:16',
+            dependencies: [dependency], aspectRatio: effectResolvedCanvasRatio(variant, workspace.materials, workspace.renderAspectRatio),
             originalVolume: variant.originalVolume ?? 1, resolution: '720p', frameRate: 30,
           };
           return { variantId: variant.id, name: variant.name, status: 'PENDING_RENDER' as const, snapshot: json(snapshot) };
@@ -1735,6 +1741,7 @@ export class EffectFinalOutputService {
         try {
           if (pictureHash(this.liveClips(liveVariant, workspace.materials,
             artifacts as unknown as WorkingArtifact[])) !== pictureHash(updated.timeline.clips) ||
+            (liveVariant.canvasRatio ?? null) !== (updated.timeline.variant.canvasRatio ?? null) ||
             effectTemplateMixContentDuration(liveVariant, updated.packaging) !==
               updated.timeline.duration) return false;
         } catch {
@@ -1828,6 +1835,7 @@ export class EffectFinalOutputService {
       return (
         pictureHash(this.liveClips(variant, workspace!.materials, artifacts)) !==
           pictureHash(snapshot.timeline.clips) ||
+        (variant.canvasRatio ?? null) !== (snapshot.timeline.variant.canvasRatio ?? null) ||
         workflowStateHash(variant.detachedAudios ?? []) !==
           workflowStateHash(snapshot.timeline.detachedAudios ?? []) ||
         (variant.originalVolume ?? snapshot.originalVolume) !== snapshot.originalVolume ||

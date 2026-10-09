@@ -21,6 +21,8 @@ import type {
 import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
+  effectCanvasAspect,
+  effectVideoTransformValid,
   effectTemplateMixSlotDurationLimit,
   effectTemplateMixMaterialFitsTemplate,
   effectTemplateMixSourceChanges,
@@ -120,6 +122,11 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
             Array.isArray(variant.manualSlotIds) &&
             Array.isArray(variant.conflictSlotIds) &&
             Array.isArray(variant.captions) &&
+            (variant.canvasRatio === undefined || effectCanvasAspect(variant.canvasRatio) !== null) &&
+            (variant.videoTransforms === undefined || (object(variant.videoTransforms) !== null &&
+              Object.entries(variant.videoTransforms as Record<string, unknown>).length <= 100 &&
+              Object.entries(variant.videoTransforms as Record<string, unknown>).every(([id, transform]) =>
+                (variant.slots as Array<{ id: string }>).some(slot => slot.id === id) && effectVideoTransformValid(transform)))) &&
             (variant.detachedAudios === undefined ||
               (Array.isArray(variant.detachedAudios) &&
                 variant.detachedAudios.length <= 100 &&
@@ -1267,7 +1274,27 @@ export class EffectTemplateMixService {
     projectId: string, workflowRunId: string,
   ): Promise<EffectTemplateMixWorkspaceData> {
     const load = () => this.loadWorkspace(projectId, workflowRunId);
-    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix', load) : load();
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix', load, 'canvas-generation-source-v3') : load();
+  }
+
+  private async renderRatio(_projectId: string, workflowRunId: string, artifacts: WorkingArtifact[]) {
+    const batches = artifacts.filter(a => a.nodeId === 'SEGMENT_RENDER' && a.artifactKey.startsWith('render-batch:'));
+    // The shared pool's published owner is authoritative, not a downstream copied batch.
+    const batch = batches.find(a => object(a.metadata)?.branchSourceOwner === true)
+      ?? batches.find(a => a.workflowRunId === workflowRunId) ?? batches.at(-1);
+    // Published clip ratios are serialized from the adopted generation request, not
+    // the mutable settings draft for the user's next batch. Imports cannot override it.
+    const clips = object(batch?.payload)?.clips;
+    const ratios = (Array.isArray(clips) ? clips : [])
+      .map(object).filter(clip => clip && clip.origin !== 'EXTERNAL_IMPORT')
+      .map(clip => clip!.ratio).filter((ratio): ratio is string =>
+        ratio === 'adaptive' || effectCanvasAspect(ratio) !== null);
+    const first = ratios[0];
+    if (first && first !== 'adaptive' && ratios.every(ratio => effectCanvasAspect(ratio) === effectCanvasAspect(first)))
+      return first;
+    // Adaptive, mixed generations and legacy missing snapshots share the existing
+    // actual-material majority resolver; never infer history from today's settings.
+    return 'adaptive';
   }
 
   private async loadWorkspace(
@@ -1328,6 +1355,7 @@ export class EffectTemplateMixService {
       ]),
     );
     result.autoPackagingTemplateIds = await this.aiRuns?.successfulPackagingTemplateIds?.(projectId, workflowRunId) ?? [];
+    result.renderAspectRatio = await this.renderRatio(projectId, workflowRunId, artifactData.items);
     return result;
   }
 
@@ -1336,7 +1364,7 @@ export class EffectTemplateMixService {
     projectId: string, workflowRunId: string,
   ): Promise<EffectTemplateMixSourcesData> {
     const load = () => this.loadMaterialSources(projectId, workflowRunId);
-    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix-sources', load) : load();
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix-sources', load, 'canvas-generation-source-v3') : load();
   }
 
   private async loadMaterialSources(
@@ -1356,6 +1384,7 @@ export class EffectTemplateMixService {
         source.draft,
         source.draftRevision,
         workflowRunId,
+      renderAspectRatio: source.renderAspectRatio ?? null,
         source.artifacts,
         [],
         [],
@@ -1394,7 +1423,7 @@ export class EffectTemplateMixService {
     workflowRunId: string,
     includeSources = true,
   ): Promise<
-    Pick<EffectTemplateMixWorkspaceData, 'draft' | 'materials' | 'draftRevision'> & {
+    Pick<EffectTemplateMixWorkspaceData, 'draft' | 'materials' | 'draftRevision' | 'renderAspectRatio'> & {
       artifacts: WorkingArtifact[];
     }
   > {
@@ -1414,6 +1443,7 @@ export class EffectTemplateMixService {
       draftRevision: state?.revision ?? null,
       artifacts,
       materials,
+      renderAspectRatio: includeSources ? await this.renderRatio(projectId, workflowRunId, artifacts) : null,
     };
   }
 
@@ -3205,6 +3235,7 @@ export class EffectTemplateMixService {
         variant.bindings = remapRecord(variant.bindings);
         variant.bindingRevisions = remapRecord(variant.bindingRevisions);
         if (variant.bindingSources) variant.bindingSources = remapRecord(variant.bindingSources);
+        if (variant.videoTransforms) variant.videoTransforms = remapRecord(variant.videoTransforms);
         variant.offsets = remapRecord(variant.offsets);
         variant.bindingMetadata = remapRecord(variant.bindingMetadata ?? {});
         variant.manualSlotIds = variant.manualSlotIds.flatMap((id) =>

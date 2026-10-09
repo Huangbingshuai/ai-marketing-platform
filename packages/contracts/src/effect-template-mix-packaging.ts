@@ -30,6 +30,7 @@ export type PackagingStatus =
 export type PackagingComponent = 'ALL' | 'VOICE' | 'MUSIC' | 'CAPTIONS';
 export type PackagingFact = { id: string; text: string; artifactId: string; revision: number };
 export type PackagingClip = {
+  transform?: import('./effect-template-mix-transform').EffectVideoTransform;
   slotId: string;
   materialId: string;
   /** Frozen user-facing source label; optional on historical snapshots. */

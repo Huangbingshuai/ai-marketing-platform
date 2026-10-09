@@ -125,6 +125,8 @@ export function effectTemplateMixSourceUpdateSignature(
   });
 }
 export type EffectTemplateMixSourcesData = {
+  /** Published generation ratio, independent of the mutable next-generation settings draft. */
+  renderAspectRatio?: string | null;
   autoPackagingTemplateIds?: string[];
   materials: EffectTemplateMixMaterial[];
   draftRevision: number | null;
@@ -298,6 +300,9 @@ export type EffectTemplateMixBindingMetadata = {
 export type EffectTemplateMixVariant = {
   id: string;
   name: string;
+  /** Manual canvas override; missing uses the adopted generation ratio or material majority. */
+  canvasRatio?: string;
+  videoTransforms?: Record<string, import('./effect-template-mix-transform').EffectVideoTransform>;
   /** Local template edit sequence, NOT WorkingArtifact revision. */
   appliedTemplateVersion: number;
   /** Exact template configuration used by the latest successful smart-fill for this variant. */
@@ -527,6 +532,8 @@ export type EffectTemplateMixDraft = {
 export type EffectTemplateMixWorkspaceData = {
   /** Templates with successful packaging history; used by local-update cost confirmation. */
   autoPackagingTemplateIds?: string[];
+  /** Adopted generation ratio; adaptive/missing uses the actual material majority. */
+  renderAspectRatio?: string | null;
   pendingAddedMaterialIds?: Record<string, string[]>;
   draft: EffectTemplateMixDraft;
   draftRevision: number | null;

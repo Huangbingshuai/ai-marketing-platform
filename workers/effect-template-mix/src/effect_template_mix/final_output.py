@@ -160,15 +160,52 @@ async def encode(args: list[str], cwd: Path) -> None:
 
 
 def output_size(ratio: str, resolution: str = '720p') -> tuple[int, int]:
-    if ratio not in {'9:16', '16:9', '3:4', '4:3', '1:1', '21:9'}:
+    import re
+    if not isinstance(ratio, str) or not re.fullmatch(r'\d+(?:\.\d+)?:\d+(?:\.\d+)?', ratio):
         raise PackagingError('不支持的工程画幅，请检查已确认渲染配置')
+    first, second = (float(part) for part in ratio.split(':'))
+    if not all(math.isfinite(v) and v > 0 for v in (first, second)) or not .25 <= first / second <= 4:
+        raise PackagingError('工程画幅超出范围')
     short_edge = {'480p': 480, '720p': 720, '1080p': 1080, '2K': 1440, '4K': 2160}.get(resolution)
     if short_edge is None:
         raise PackagingError('不支持的输出分辨率')
-    first, second = (int(part) for part in ratio.split(':'))
     if first >= second:
         return round(short_edge * first / second / 2) * 2, short_edge
     return short_edge, round(short_edge * second / first / 2) * 2
+
+
+def video_transform_filter(width: int, height: int, clip: dict[str, Any] | None,
+                           info: dict[str, Any] | None) -> str:
+    """Contain, then transform around centre; crop only at the canvas, as the editor does."""
+    t = (clip or {}).get('transform')
+    if not t:
+        return (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+            f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1')
+    try:
+        x, y, sx, sy, rotation = (float(t[k]) for k in ('x', 'y', 'scaleX', 'scaleY', 'rotation'))
+        if not all(math.isfinite(v) for v in (x, y, sx, sy, rotation)) or not (
+            abs(x) <= 2 and abs(y) <= 2 and .1 <= sx <= 5 and .1 <= sy <= 5 and abs(rotation) <= 180):
+            raise ValueError()
+        source = next(s for s in (info or {})['streams'] if s['codec_type'] == 'video')
+        sw, sh = float(source['width']), float(source['height'])
+        sar = source.get('sample_aspect_ratio', '1:1')
+        if sar not in (None, 'N/A', '0:1'):
+            a, b = str(sar).split(':')
+            sw *= float(a) / float(b)
+        base = min(width / sw, height / sh)
+        scaled_w, scaled_h = max(2, round(sw * base * sx / 2) * 2), max(2, round(sh * base * sy / 2) * 2)
+        angle = rotation * math.pi / 180
+        rw = abs(math.cos(angle)) * scaled_w + abs(math.sin(angle)) * scaled_h
+        rh = abs(math.cos(angle)) * scaled_h + abs(math.sin(angle)) * scaled_w
+        dx, dy = round(x * width), round(y * height)
+        pw = math.ceil((max(width, rw) + 2 * abs(dx) + 4) / 2) * 2
+        ph = math.ceil((max(height, rh) + 2 * abs(dy) + 4) / 2) * 2
+    except (ValueError, KeyError, ZeroDivisionError, StopIteration, TypeError):
+        raise PackagingError('视频空间变换参数无效') from None
+    rotate = f'rotate={angle}:ow=rotw({angle}):oh=roth({angle}):c=black,' if rotation else ''
+    return (f'scale={scaled_w}:{scaled_h},setsar=1,{rotate}'
+        f'pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:black,'
+        f'crop={width}:{height}:{(pw-width)//2-dx}:{(ph-height)//2-dy}')
 
 
 def ass_time(value: float, *, round_up: bool = False) -> str:
@@ -346,9 +383,9 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
             audio_index = video_index
         # `apad` before the trim keeps a source whose audio track ends early from shortening the
         # interval; the trim then makes every branch exactly `length` so concat stays aligned.
+        geometry = video_transform_filter(width, height, clip, media[clip['fileObjectId']] if clip else None)
         filters += [f'[{video_index}:v]trim=duration={length},setpts=PTS-STARTPTS,'
-            f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
-            f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={frame_rate},settb=AVTB[v{index}]',
+            f'{geometry},fps={frame_rate},settb=AVTB[v{index}]',
             f'[{audio_index}:a]aresample=48000,apad,atrim=duration={length},asetpts=PTS-STARTPTS[a{index}]']
     # Center transitions on the cut, as in the editor. Padding supplies handles
     # without shortening the frozen timeline or inventing black frames.

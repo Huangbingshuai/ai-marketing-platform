@@ -91,6 +91,86 @@ const source = {
   },
 } as WorkingArtifact;
 
+describe('saved video spatial transforms', () => {
+  it('uses the published generation ratio despite copied batches and changing next-batch settings', async () => {
+    const { service, working } = harness();
+    const owner = { ...source, workflowRunId: 'render-owner', artifactKey: 'render-batch:owner-product',
+      metadata: { branchSourceOwner: true }, payload: { clips: [{ ratio: '4:3' }] } } as WorkingArtifact;
+    const copied = { ...owner, workflowRunId: 'mix-run', artifactKey: 'render-batch:copy-product',
+      metadata: { branchSourceOwner: false }, payload: { clips: [{ ratio: '16:9' }] } } as WorkingArtifact;
+    working.listArtifacts.mockResolvedValue({ items: [source, copied, owner], total: 3 });
+    let nextRatio = '9:16';
+    working.getNodeStateOrNull.mockImplementation(async (_p, _run, node) => {
+      if (node === 'TEMPLATE_MIX') return { revision: 7, state: draft() } as never;
+      return { revision: 2, state: { ratio: nextRatio } } as never;
+    });
+    for (const ratio of ['9:16', '1:1', 'adaptive']) {
+      nextRatio = ratio;
+      expect((await service.workspace('project', 'mix-run')).renderAspectRatio).toBe('4:3');
+      expect((await service.outputSourceWorkspace('project', 'mix-run')).renderAspectRatio).toBe('4:3');
+      expect((await service.materialSources('project', 'mix-run')).renderAspectRatio).toBe('4:3');
+    }
+    expect(working.getNodeStateOrNull.mock.calls.some(call => String(call[2]).startsWith('SEGMENT_RENDER_SETTINGS'))).toBe(false);
+    expect(working.putNodeState).not.toHaveBeenCalled();
+    // A newly adopted generation, unlike a settings edit, does change the default.
+    owner.payload = { clips: [{ ratio: '9:16' }] };
+    expect((await service.workspace('project', 'mix-run')).renderAspectRatio).toBe('9:16');
+    owner.payload = { clips: [{ ratio: '1:1' }] };
+    expect((await service.materialSources('project', 'mix-run')).renderAspectRatio).toBe('1:1');
+  });
+  it.each([
+    [[], 'adaptive'],
+    [[{ ratio: '16:9' }], '16:9'],
+    [[{ ratio: 'adaptive' }], 'adaptive'],
+    [[{ ratio: '4:3' }, { ratio: '16:9' }], 'adaptive'],
+    [[{ ratio: '4:3' }, { ratio: '8:6' }], '4:3'],
+    [[{ ratio: '4:3' }, { ratio: '9:16', origin: 'EXTERNAL_IMPORT' }], '4:3'],
+    [[{ ratio: 'broken' }], 'adaptive'],
+    [[{ ratio: '9:16', origin: 'EXTERNAL_IMPORT' }], 'adaptive'],
+  ])('resolves only committed generation snapshots %j', async (clips, expected) => {
+    const { service, working } = harness();
+    const batch = { ...source, workflowRunId: 'render-owner', artifactKey: 'render-batch:product',
+      metadata: { branchSourceOwner: true }, payload: { clips } } as WorkingArtifact;
+    const prompt = { ...source, nodeId: 'PROMPT_GENERATION', workflowRunId: 'render-owner',
+      artifactKey: 'prompt-batch:product', payload: { renderProfile: { ratio: '9:16' } } } as WorkingArtifact;
+    working.listArtifacts.mockResolvedValue({ items: [source, batch, prompt], total: 3 });
+    working.getNodeStateOrNull.mockImplementation(async (_p, _r, node) => node === 'TEMPLATE_MIX'
+      ? { revision: 7, state: draft() } as never : null as never);
+    expect((await service.workspace('project', 'mix-run')).renderAspectRatio).toBe(expected);
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+  it('saves valid transforms through the existing revision-controlled draft', async () => {
+    const { service, working } = harness();
+    const value = draft();
+    value.templates[0]!.workspace.variants[0]!.videoTransforms = { [slotId]: { x: .2, y: -.1, scaleX: .7, scaleY: 1.2, rotation: 35, uniform: false } };
+    await service.saveDraft('project', 'run', 7, value, true);
+    expect(working.putNodeState.mock.calls[0]![3].state.templates[0].workspace.variants[0].videoTransforms)
+      .toEqual(value.templates[0]!.workspace.variants[0]!.videoTransforms);
+  });
+  it.each([Infinity, NaN, 3])('rejects invalid spatial offset %s before persistence', async x => {
+    const { service, working } = harness();
+    const value = draft();
+    value.templates[0]!.workspace.variants[0]!.videoTransforms = { [slotId]: { x, y: 0, scaleX: 1, scaleY: 1, rotation: 0, uniform: true } };
+    await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow();
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+  it('allows user canvas overrides independently of the render default', async () => {
+    const { service, working } = harness(); const value = draft();
+    value.templates[0]!.workspace.variants[0]!.canvasRatio = '1:1';
+    await service.saveDraft('project', 'run', 7, value, true);
+    expect(working.putNodeState).toHaveBeenCalledOnce();
+  });
+  it('reads the committed adaptive generation ratio and accepts a manual canvas', async () => {
+    const { service, working } = harness(); const value = draft();
+    working.listArtifacts.mockResolvedValue({ items: [source, { ...source, artifactKey: 'render-batch:product', payload: { clips: [{ ratio: 'adaptive' }] } }], total: 2 });
+    working.getNodeStateOrNull.mockImplementation(async (_p, _r, node) => ({ revision: 7, state: node === 'SEGMENT_RENDER_SETTINGS:product' ? { ratio: 'adaptive' } : draft() }) as never);
+    value.templates[0]!.workspace.variants[0]!.canvasRatio = '2.35:1';
+    await service.saveDraft('project', 'run', 7, value, true);
+    expect((await service.workspace('project', 'run')).renderAspectRatio).toBe('adaptive');
+    expect(working.getNodeStateOrNull).not.toHaveBeenCalledWith('project', 'run', 'SEGMENT_RENDER_SETTINGS:product');
+    expect(working.putNodeState).toHaveBeenCalledOnce();
+  });
+});
 describe('inherited render replacements in a selected mix branch', () => {
   it('updates only changed source slots and keeps unchanged cloned bindings current', async () => {
     const { working, service } = harness();

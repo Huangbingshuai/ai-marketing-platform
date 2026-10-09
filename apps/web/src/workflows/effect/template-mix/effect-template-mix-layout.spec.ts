@@ -264,7 +264,7 @@ describe('effect template mix workbench layout', () => {
     // A focused control owns only the keys it can act on. Clicking 「添加」 leaves that button focused,
     // and a button-wide bail swallowed Delete and Ctrl+Z there — so "delete this subtitle" did nothing.
     expect(pageSource).toContain('const buttonOwnsKey =');
-    expect(pageSource).toContain("(event.code === 'Space' || event.key === 'Enter');");
+    expect(pageSource).toContain("event.key === 'Enter';");
     expect(pageSource).not.toContain("(target?.matches('button') &&");
     expect(pageSource).toContain("if (event.key === 'Delete' || event.key === 'Backspace') {");
     expect(pageSource).toContain('<strong>字幕</strong');
@@ -1592,14 +1592,14 @@ describe('effect template mix workbench layout', () => {
       'Object.keys(packaging.checkpoint.captionVoices ?? {}).length > 0',
     );
   });
-  it('gives Space to the player instead of to a focused track button', () => {
+  it('gives Space to the player instead of to any focused workbench button', () => {
     // Clicking a track's mute leaves it focused. Letting a focused button own Space meant the next
     // Space re-toggled the mute; inside the timeline Space is the player's, and Enter still
     // activates whatever button the user tabbed to.
     expect(pageSource).toContain("!target?.closest('.mix-timeline-shell') &&");
-    expect(pageSource).toContain("(event.code === 'Space' || event.key === 'Enter');");
-    expect(pageSource).toContain('if (!event.repeat) togglePreviewPlayback();');
-    // The exclusion is scoped to the timeline, so a button anywhere else keeps the browser default.
+    expect(pageSource).toContain("event.key === 'Enter';");
+    expect(pageSource).toContain('!event.repeat && !playerSpacePressed');
+    expect(pageSource).toContain("window.addEventListener('keydown', onPlayerSpaceKeydown, true);");
     expect(pageSource).not.toContain("!target?.closest('.track-actions')");
   });
   it('lets a caption narration light the sound meter like any other packaging clip', () => {

@@ -1258,6 +1258,44 @@ async function exportedRun(count = 2) {
   return { ...context, items };
 }
 
+describe('canvas and spatial transform output', () => {
+  it('freezes the current physical transform, not the old packaging picture', async () => {
+    const { service, state, mix, outputRun } = harness();
+    const variant = state.state.templates[0]!.workspace.variants[0]!;
+    variant.canvasRatio = '2.35:1';
+    variant.videoTransforms = { s: { x: .2, y: -.1, scaleX: .7, scaleY: .7, rotation: 20, uniform: true } };
+    const workspace = await mix.workspace('p', 'w');
+    mix.workspace.mockResolvedValue({ ...workspace, renderAspectRatio: 'adaptive' } as never);
+    await service.upsertFromPackaging('p', 'w', 't');
+    const snapshot = (outputRun.items[0] as { snapshot: FinalOutputSnapshot }).snapshot;
+    expect(snapshot.aspectRatio).toBe('2.35:1');
+    expect(snapshot.timeline.clips[0]!.transform).toEqual(variant.videoTransforms.s);
+    expect(snapshot.packaging.voices?.line?.fileObjectId).toBe('voice');
+  });
+
+  it('exports the user canvas override instead of the render default', async () => {
+    const { service, state, mix, outputRun } = harness();
+    state.state.templates[0]!.workspace.variants[0]!.canvasRatio = '1:1';
+    const workspace = await mix.workspace('p', 'w');
+    mix.workspace.mockResolvedValue({ ...workspace, renderAspectRatio: '16:9' } as never);
+    await service.upsertFromPackaging('p', 'w', 't');
+    expect((outputRun.items[0] as { snapshot: FinalOutputSnapshot }).snapshot.aspectRatio).toBe('1:1');
+  });
+
+  it('marks a spatial edit stale but explicit identity and UI-only uniform settings stay current', async () => {
+    const { service, variant } = await localUpdateHarness();
+    const identity = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, uniform: false };
+    variant.videoTransforms = { s: identity };
+    expect((await service.listPath('p', 'w'))[0]!.items[0]!.stale).toBe(false);
+    variant.videoTransforms.s = { ...identity, x: .1 };
+    expect((await service.listPath('p', 'w'))[0]!.items[0]!.stale).toBe(true);
+    variant.videoTransforms.s = identity;
+    expect((await service.listPath('p', 'w'))[0]!.items[0]!.stale).toBe(false);
+    variant.canvasRatio = '1:1';
+    expect((await service.listPath('p', 'w'))[0]!.items[0]!.stale).toBe(true);
+  });
+});
+
 describe('picture-only output items', () => {
   /** An exported batch whose first item was confirmed without a package. */
   async function unpackaged() {

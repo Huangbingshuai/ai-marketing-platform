@@ -23,6 +23,10 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   effectTemplateMixContentDuration,
+  EFFECT_VIDEO_TRANSFORM_DEFAULT,
+  effectVideoGeometry,
+  effectResolvedCanvasRatio,
+  effectVideoTransformValid,
   EFFECT_TEMPLATE_MIX_MAX_CONTENT_SECONDS,
   packagingTimelineClips,
   packagingTimelineDuration,
@@ -77,6 +81,12 @@ import {
   ZoomOut,
 } from '@lucide/vue';
 import { createScopedTimelineHistory } from './effect-template-mix-history';
+import { ownsPlayerSpace } from './effect-player-space-shortcut';
+import { playerMediaAspect, playerMediaIdentity } from './effect-player-media-aspect';
+import EffectVideoTransformToolbar from './EffectVideoTransformToolbar.vue';
+import EffectCanvasRatioMenu from './EffectCanvasRatioMenu.vue';
+import { scaleVideoTransform, videoTransformGuides, videoWheelDelta, videoPositionOverview } from './effect-video-transform-gesture';
+import type { EffectVideoTransform } from '@ai-marketing/contracts';
 import { mixAppendProgress } from './effect-template-mix-operation-progress';
 import {
   computed,
@@ -278,6 +288,8 @@ const templateAddedMaterialIds = (id: string): string[] =>
     pendingAddedMaterialIds.value);
 // Keep the confirmed clip pool available while the initial template draft is bootstrapped.
 const sourceMaterials = ref<EffectTemplateMixMaterial[]>([]);
+const renderAspectRatio = ref<string | null>(null);
+const selectedVideoTransformIds = ref<string[]>([]);
 const pendingAddedMaterialIds = ref<Record<string, string[]>>({});
 const autoPackagingTemplateIds = ref<string[]>([]);
 const pendingAddedCount = computed(
@@ -418,6 +430,7 @@ const videoTrackMuted = ref(false);
  */
 const audioRowMuted = ref<boolean[]>([]);
 const videoTrackVisible = ref(true);
+const videoTrackLocked = ref(false);
 const captionTrackVisible = ref(true);
 const setTimelineTrackMute = (track: 'VIDEO' | AudioRowTrack, muted: boolean): void => {
   if (track === 'VIDEO') {
@@ -478,6 +491,7 @@ const displayedTimelineSlotId = ref('');
 const playerUnavailableSlotId = ref('');
 const transitionFrame = ref('');
 const timelinePlayers = new Map<string, HTMLVideoElement>();
+const measuredVideoAspects = reactive(new Map<string, number>());
 const detachedAudioPlayers = new Map<string, HTMLAudioElement>();
 let positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 const timelineVideoSeeks = new TimelineVideoSeekQueue();
@@ -1028,6 +1042,7 @@ const restoreTimelineSnapshot = (snapshot: TimelineEditSnapshot): void => {
   bump();
 };
 const undoTimelineEdit = (): void => {
+  finishVideoWheelGesture();
   const target = timelineUndoStack.value.at(-1);
   const current = captureTimelineSnapshot();
   if (!target || !current || target.variant.id !== current.variant.id) return;
@@ -1036,6 +1051,7 @@ const undoTimelineEdit = (): void => {
   restoreTimelineSnapshot(target);
 };
 const redoTimelineEdit = (): void => {
+  finishVideoWheelGesture();
   const target = timelineRedoStack.value.at(-1);
   const current = captureTimelineSnapshot();
   if (!target || !current || target.variant.id !== current.variant.id) return;
@@ -1314,7 +1330,8 @@ const previewPosterVisible = computed(() => !auditionMaterial.value &&
   presentedPreviewIdentity.value !== previewMediaIdentity.value);
 const stageMaterial = computed(() => auditionMaterial.value ?? previewMaterial.value);
 const sourceAspectLabel = computed(() => {
-  const ratio = stageMaterial.value?.ratio.trim();
+  const ratio = selectedVariant.value
+    ? effectResolvedCanvasRatio(selectedVariant.value, sourceMaterials.value, renderAspectRatio.value) : renderAspectRatio.value;
   return ratio && /^\d+(?:\.\d+)?\s*[:/]\s*\d+(?:\.\d+)?$/u.test(ratio)
     ? ratio.replace(/\s*[/]\s*/u, ':').replace(/\s+/gu, '')
     : '9:16';
@@ -1327,8 +1344,117 @@ const stageAspectRatio = computed(() => {
 });
 const stageStyle = computed(() => ({
   aspectRatio: String(stageAspectRatio.value),
+  '--stage-aspect': String(stageAspectRatio.value),
   transform: previewZoom.value === 100 ? undefined : `scale(${previewZoom.value / 100})`,
 }));
+const videoTransformIds = computed(() => selectedVideoTransformIds.value.filter(id =>
+  selectedVariant.value?.bindings[id] && selectedVariant.value.slots.some(slot => slot.id === id)));
+const transformSlotId = computed(() => videoTransformIds.value.at(-1) ?? null);
+const videoTransform = (id: string): EffectVideoTransform => ({ ...EFFECT_VIDEO_TRANSFORM_DEFAULT,
+  ...selectedVariant.value?.videoTransforms?.[id] });
+const selectedVideoTransform = computed(() => videoTransform(transformSlotId.value ?? ''));
+const slotMediaIdentity = (id: string): string => {
+  const material = materialForSlot(id);
+  return playerMediaIdentity(currentWorkspaceScope.value, material?.contentUrl ?? '', material?.contentHash ?? '');
+};
+const slotMeasuredAspect = (id: string): number | undefined => measuredVideoAspects.get(slotMediaIdentity(id));
+// Until metadata arrives, contain the source in the canvas rather than stretching guessed dimensions.
+const slotSourceAspect = (id: string): number => slotMeasuredAspect(id) ?? stageAspectRatio.value;
+const videoOverview = computed(() => videoPositionOverview(selectedVideoTransform.value,
+  slotSourceAspect(transformSlotId.value ?? ''), stageAspectRatio.value));
+const canvasPixelSize = computed(() => {
+  const resolution = stageMaterial.value?.resolution ?? '720p';
+  const short = (({ '2K': 1440, '4K': 2160 } as Record<string, number>)[resolution] ?? Number.parseInt(resolution)) || 720;
+  const ratio = stageAspectRatio.value;
+  return { width: Math.round(short * Math.max(1, ratio) / 2) * 2,
+    height: Math.round(short * Math.max(1, 1 / ratio) / 2) * 2 };
+});
+const slotVideoGeometry = (id: string, t = videoTransform(id)) => effectVideoGeometry(
+  slotSourceAspect(id), stageAspectRatio.value, t);
+const slotVideoFrameStyle = (id: string) => {
+  const t = videoTransform(id), g = slotVideoGeometry(id, t);
+  const mediaFit = slotMeasuredAspect(id) ? 'fill' : 'contain';
+  // Avoid compositor seams from percentage centering of an otherwise full-canvas image.
+  if (t.x === 0 && t.y === 0 && t.rotation === 0 && g.width === 1 && g.height === 1) {
+    return { left: '0', top: '0', width: '100%', height: '100%', transform: 'none', '--video-fit': mediaFit,
+      zIndex: id === activeTransitionPreview.value?.incomingSlot.id ? 3 : 2 };
+  }
+  return { left: `${(0.5 + t.x - g.width / 2) * 100}%`, top: `${(0.5 + t.y - g.height / 2) * 100}%`,
+    '--video-fit': mediaFit,
+    width: `${g.width * 100}%`, height: `${g.height * 100}%`,
+    transform: t.rotation === 0 ? 'none' : `rotate(${t.rotation}deg)`,
+    zIndex: id === activeTransitionPreview.value?.incomingSlot.id ? 3 : 2 };
+};
+const transformFrameVisible = computed(() => !auditionMaterial.value && !previewIsPlaying.value &&
+  videoTrackVisible.value && transformSlotId.value && visibleTimelineSlotIds.value.has(transformSlotId.value));
+const changeCanvasRatio = (ratio: string | undefined) => {
+  finishVideoWheelGesture();
+  const variant = selectedVariant.value;
+  if (!variant || projectEditLocked.value || auditionMaterial.value) return;
+  if (variant.canvasRatio === ratio) return;
+  rememberTimelineEdit();
+  if (ratio) variant.canvasRatio = ratio; else delete variant.canvasRatio;
+  bump();
+};
+const changeVideoTransform = (patch: Partial<EffectVideoTransform>) => {
+  finishVideoWheelGesture();
+  const variant = selectedVariant.value;
+  if (!variant || projectEditLocked.value || videoTrackLocked.value || !videoTransformIds.value.length) return;
+  const values = videoTransformIds.value.map(id => {
+    const current = videoTransform(id), next = { ...current, ...patch };
+    if ((patch.uniform === true || current.uniform) && patch.scaleX !== undefined) next.scaleY = patch.scaleX;
+    if (patch.uniform === true) next.scaleY = next.scaleX;
+    return [id, next] as const;
+  });
+  if (values.some(([, t]) => !effectVideoTransformValid(t))) return;
+  rememberTimelineEdit();
+  variant.videoTransforms = { ...variant.videoTransforms, ...Object.fromEntries(values) };
+  if (patch.scaleX !== undefined || patch.scaleY !== undefined) {
+    updateVideoGuides(transformSlotId.value!, videoTransform(transformSlotId.value!));
+    clearTimeout(videoGuideTimer);
+    videoGuideTimer = setTimeout(clearVideoGuides, 650);
+  }
+  bump();
+};
+const beginVideoTransformControl = () => {
+  finishVideoWheelGesture();
+  if (projectEditLocked.value || videoTrackLocked.value) return;
+  rememberTimelineEdit(); clearTimeout(saveTimer); groupedTimelineMove = true;
+};
+const endVideoTransformControl = () => {
+  if (!groupedTimelineMove) return;
+  groupedTimelineMove = false; bump();
+  clearVideoGuides();
+};
+const alignVideoTransform = (mode: string) => {
+  finishVideoWheelGesture();
+  const variant = selectedVariant.value;
+  if (!variant || projectEditLocked.value || videoTrackLocked.value) return;
+  const ids = videoTransformIds.value;
+  if (mode.startsWith('DISTRIBUTE') && ids.length < 3) return;
+  const axis = mode.endsWith('X') ? 'x' : 'y';
+  const sorted = [...ids].sort((a, b) => videoTransform(a)[axis] - videoTransform(b)[axis]);
+  const first = videoTransform(sorted[0] ?? '')[axis], last = videoTransform(sorted.at(-1) ?? '')[axis];
+  rememberTimelineEdit();
+  variant.videoTransforms ??= {};
+  for (const id of ids) {
+    const t = videoTransform(id), g = slotVideoGeometry(id, t);
+    if (mode === 'LEFT') t.x = (g.boxWidth - 1) / 2;
+    if (mode === 'RIGHT') t.x = (1 - g.boxWidth) / 2;
+    if (mode === 'TOP') t.y = (g.boxHeight - 1) / 2;
+    if (mode === 'BOTTOM') t.y = (1 - g.boxHeight) / 2;
+    if (mode === 'CENTER_X') t.x = 0;
+    if (mode === 'CENTER_Y') t.y = 0;
+    if (mode.startsWith('DISTRIBUTE')) t[axis] = first + (last - first) * sorted.indexOf(id) / (ids.length - 1);
+    if (effectVideoTransformValid(t)) variant.videoTransforms[id] = t;
+  }
+  bump();
+};
+watch(() => [props.projectId, props.workflowRunId, activeTemplateId.value, selectedVariant.value?.id], () => {
+  finishVideoWheelGesture(true);
+  clearVideoGuides();
+  selectedVideoTransformIds.value = [];
+}, { flush: 'sync' });
 const captionPresentationTime = ref(0);
 const previewCurrentTime = computed(() =>
   auditionMaterial.value ? auditionTime.value : playhead.value,
@@ -1903,9 +2029,11 @@ const installWorkspaceData = (
   data: Awaited<ReturnType<typeof loadEffectTemplateMixWorkspace>>['data'],
   scope: string,
 ): boolean => {
-  if (!workspaceRevisionFence.accept(scope, currentWorkspaceScope.value, data.draftRevision)) return false;
+  if (!workspaceRevisionFence.accept(scope, currentWorkspaceScope.value, data.draftRevision))
+    return false;
   resetTimelinePlayerState();
   sourceMaterials.value = data.materials;
+  renderAspectRatio.value = data.renderAspectRatio ?? null;
   pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
   autoPackagingTemplateIds.value = data.autoPackagingTemplateIds ?? [];
   renderSlotDurationLimit.value =
@@ -2950,11 +3078,13 @@ const canAddCaption = computed(
   () => !projectEditLocked.value && (!selectedPackaging.value || captionEditable.value),
 );
 const onAudioClipSelected = (clipId: string | null): void => {
+  if (clipId) selectedVideoTransformIds.value = [];
   // Captions arrive as a whole set on their own event, so this one only handles voice and music.
   if (clipId?.startsWith('caption:')) return;
   selectedCaptionIds.value = [];
 };
 const onCaptionClipsSelected = (captionIds: string[]): void => {
+  if (captionIds.length) selectedVideoTransformIds.value = [];
   selectedCaptionIds.value = captionIds;
 };
 /**
@@ -2964,6 +3094,9 @@ const onCaptionClipsSelected = (captionIds: string[]): void => {
  */
 const selectedAudioClipIds = ref<string[]>([]);
 const onAudioClipsSelected = (clipIds: string[]): void => {
+  // Clearing audio/caption selection is also emitted after selecting a video.
+  // Only an actual selection of another track should dismiss the video controls.
+  if (clipIds.length) selectedVideoTransformIds.value = [];
   selectedAudioClipIds.value = clipIds;
 };
 const separatingAudioSlots = new Set<string>();
@@ -3438,6 +3571,75 @@ type CaptionDragMode = 'MOVE' | 'LEFT' | 'RIGHT';
 /** Snapped alignment lines, so the drag reads like an editor instead of free-floating. */
 const captionGuideX = ref<number | null>(null);
 const captionGuideY = ref<number | null>(null);
+const videoGuideXs = ref<number[]>([]);
+const videoGuideYs = ref<number[]>([]);
+let videoGuideTimer: ReturnType<typeof setTimeout> | undefined;
+const clearVideoGuides = () => {
+  clearTimeout(videoGuideTimer);
+  videoGuideXs.value = []; videoGuideYs.value = [];
+};
+const updateVideoGuides = (id: string, transform: EffectVideoTransform) => {
+  const bounds = stageElement.value?.getBoundingClientRect();
+  if (!bounds) return;
+  const guides = videoTransformGuides(transform, slotSourceAspect(id),
+    stageAspectRatio.value, bounds);
+  videoGuideXs.value = guides.x; videoGuideYs.value = guides.y;
+};
+let videoWheelTimer: ReturnType<typeof setTimeout> | undefined;
+let previewWheelTimer: ReturnType<typeof setTimeout> | undefined;
+let previewWheelZoom: number | null = null;
+let videoWheelGesture: { scope: string; variant: EffectTemplateMixVariant;
+  originals: Record<string, EffectVideoTransform>; saved: EffectTemplateMixVariant['videoTransforms'];
+  undo: TimelineEditSnapshot[]; redo: TimelineEditSnapshot[]; factor: number; changed: boolean } | null = null;
+const finishVideoWheelGesture = (cancel = false) => {
+  clearTimeout(videoWheelTimer);
+  clearTimeout(previewWheelTimer); previewWheelZoom = null;
+  const gesture = videoWheelGesture;
+  if (!gesture) return;
+  videoWheelGesture = null;
+  const sameScope = gesture.scope === currentWorkspaceScope.value && gesture.variant.id === selectedVariant.value?.id;
+  groupedTimelineMove = false;
+  clearVideoGuides();
+  if (cancel || !sameScope || !gesture.changed) {
+    if (gesture.saved) gesture.variant.videoTransforms = gesture.saved; else delete gesture.variant.videoTransforms;
+    timelineUndoStack.value = gesture.undo; timelineRedoStack.value = gesture.redo;
+  } else if (gesture.changed) bump();
+};
+const onVideoWheel = (event: WheelEvent) => {
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+  if (event.target instanceof Element && event.target.closest('.player-caption-box')) return;
+  const bounds = stageElement.value?.getBoundingClientRect();
+  if (!bounds?.width || !bounds.height) return;
+  const delta = videoWheelDelta(event.deltaY, event.deltaMode, bounds.height);
+  if (!transformFrameVisible.value || !transformSlotId.value || !selectedVariant.value) {
+    // No editable material selected: this is a viewing preference, not an engineering edit.
+    if (projectEditLocked.value || previewIsPlaying.value) return;
+    event.preventDefault(); event.stopPropagation();
+    previewWheelZoom = Math.max(25, Math.min(200, (previewWheelZoom ?? previewZoom.value) * Math.exp(-delta * .003)));
+    setPreviewZoom(previewWheelZoom);
+    clearTimeout(previewWheelTimer);
+    previewWheelTimer = setTimeout(() => { previewWheelZoom = null; }, 220);
+    return;
+  }
+  if (projectEditLocked.value || videoTrackLocked.value || videoDrag || groupedTimelineMove && !videoWheelGesture) return;
+  event.preventDefault(); event.stopPropagation();
+  if (!videoWheelGesture) {
+    videoWheelGesture = { scope: currentWorkspaceScope.value, variant: selectedVariant.value,
+      originals: Object.fromEntries(videoTransformIds.value.map(id => [id, videoTransform(id)])),
+      saved: selectedVariant.value.videoTransforms ? cloneMix(selectedVariant.value.videoTransforms) : undefined,
+      undo: [...timelineUndoStack.value], redo: [...timelineRedoStack.value], factor: 1, changed: false };
+    rememberTimelineEdit(); clearTimeout(saveTimer); groupedTimelineMove = true;
+  }
+  const gesture = videoWheelGesture;
+  gesture.factor = Math.max(.02, Math.min(50, gesture.factor * Math.exp(-delta * .003)));
+  const values = Object.entries(gesture.originals).map(([id, original]) => [id, scaleVideoTransform(original,
+    gesture.factor, slotSourceAspect(id), stageAspectRatio.value, bounds)] as const);
+  gesture.variant.videoTransforms = { ...gesture.variant.videoTransforms, ...Object.fromEntries(values) };
+  gesture.changed = values.some(([id, value]) => JSON.stringify(value) !== JSON.stringify(gesture.originals[id]));
+  updateVideoGuides(transformSlotId.value, videoTransform(transformSlotId.value));
+  clearTimeout(videoWheelTimer);
+  videoWheelTimer = setTimeout(() => finishVideoWheelGesture(), 220);
+};
 /**
  * The stage clips its overflow, so a line drawn exactly on the far border would fall outside it;
  * pulling it in by its own width puts it on the border instead. The width comes from the same
@@ -3481,6 +3683,61 @@ const snapAxis = (
  * caption always has somewhere to rest and can be dragged back off a line.
  */
 const snapThreshold = (span: number): number => Math.min(CAPTION_SNAP, Math.max(0, span) / 3);
+let videoDrag: { id: string; scope: string; variantId: string; startX: number; startY: number;
+  bounds: DOMRect; original: EffectVideoTransform; corner: string | null; moved: boolean } | null = null;
+const startVideoDrag = (event: PointerEvent, corner: string | null = null) => {
+  if (event.button !== 0 || projectEditLocked.value || videoTrackLocked.value || !transformSlotId.value || !selectedVariant.value || !stageElement.value) return;
+  event.preventDefault(); event.stopPropagation();
+  finishVideoWheelGesture(); clearVideoGuides();
+  const bounds = stageElement.value.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  videoDrag = { id: transformSlotId.value, scope: currentWorkspaceScope.value, variantId: selectedVariant.value.id,
+    startX: event.clientX, startY: event.clientY, bounds, original: videoTransform(transformSlotId.value), corner, moved: false };
+};
+const moveVideoDrag = (event: PointerEvent) => {
+  const drag = videoDrag, variant = selectedVariant.value;
+  if (!drag || !variant || variant.id !== drag.variantId || currentWorkspaceScope.value !== drag.scope || projectEditLocked.value || videoTrackLocked.value) return;
+  const dx = (event.clientX - drag.startX) / drag.bounds.width, dy = (event.clientY - drag.startY) / drag.bounds.height;
+  if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 3) return;
+  if (!drag.moved) { rememberTimelineEdit(); clearTimeout(saveTimer); drag.moved = true; }
+  const t = { ...drag.original }, g = slotVideoGeometry(drag.id, t);
+  captionGuideX.value = null; captionGuideY.value = null;
+  if (!drag.corner) {
+    const x = snapAxis(t.x + dx, [{ target: 0, guide: .5 }, { target: (g.boxWidth - 1) / 2, guide: 0 },
+      { target: (1 - g.boxWidth) / 2, guide: 1 }], Math.min(.015, 6 / drag.bounds.width));
+    const y = snapAxis(t.y + dy, [{ target: 0, guide: .5 }, { target: (g.boxHeight - 1) / 2, guide: 1 },
+      { target: (1 - g.boxHeight) / 2, guide: 0 }], Math.min(.015, 6 / drag.bounds.height));
+    t.x = Math.max(-2, Math.min(2, x.value)); t.y = Math.max(-2, Math.min(2, y.value));
+    captionGuideX.value = x.guide; captionGuideY.value = y.guide;
+  } else {
+    const angle = t.rotation * Math.PI / 180, px = dx * drag.bounds.width, py = dy * drag.bounds.height;
+    const localX = (Math.cos(angle) * px + Math.sin(angle) * py) * (drag.corner.includes('E') ? 1 : -1);
+    const localY = (-Math.sin(angle) * px + Math.cos(angle) * py) * (drag.corner.includes('S') ? 1 : -1);
+    const w = g.width * drag.bounds.width / 2, h = g.height * drag.bounds.height / 2;
+    if (t.uniform) {
+      const factor = Math.max(.1 / Math.min(t.scaleX, t.scaleY), Math.min(5 / Math.max(t.scaleX, t.scaleY),
+        1 + (localX * w + localY * h) / (w * w + h * h)));
+      Object.assign(t, scaleVideoTransform(t, factor, slotSourceAspect(drag.id),
+        stageAspectRatio.value, drag.bounds));
+    } else {
+      t.scaleX = Math.max(.1, Math.min(5, t.scaleX * (1 + localX / w)));
+      t.scaleY = Math.max(.1, Math.min(5, t.scaleY * (1 + localY / h)));
+    }
+    updateVideoGuides(drag.id, t);
+  }
+  variant.videoTransforms = { ...variant.videoTransforms, [drag.id]: t };
+};
+const endVideoDrag = (event: PointerEvent) => {
+  const target = event.currentTarget as HTMLElement;
+  if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+  const drag = videoDrag;
+  videoDrag = null; captionGuideX.value = null; captionGuideY.value = null;
+  clearVideoGuides();
+  if (!drag?.moved || currentWorkspaceScope.value !== drag.scope || selectedVariant.value?.id !== drag.variantId) return;
+  if (event.type === 'pointercancel') (selectedVariant.value.videoTransforms ??= {})[drag.id] = drag.original;
+  bump();
+};
 /**
  * The frame has no side handles, so which part of it was grabbed decides move versus stretch.
  * The zones straddle the edges rather than extending inwards, so clicking the empty wrap space
@@ -4093,6 +4350,7 @@ async function openTemplateWorkspace(templateId: string, targetView: 'CONFIG' | 
   return false;
 }
 const selectVariant = (id: string): void => {
+  finishVideoWheelGesture();
   if (!activeUi.value || !workspace.value) return;
   transitionFrame.value = '';
   playing.value = false;
@@ -4210,6 +4468,7 @@ const leaveEditor = async (): Promise<void> => {
   await load();
 };
 const selectSlot = (id: string): void => {
+  selectedVideoTransformIds.value = id ? [id] : [];
   if (!activeUi.value) return;
   closeMaterialPreview();
   activeTransitionSlotId.value = '';
@@ -4222,6 +4481,7 @@ type TimelineVideoPaste = {
   offset: number;
   duration: number;
   detachedAudio?: EffectTemplateMixDetachedAudio;
+  transform?: EffectVideoTransform;
 };
 const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
   const variant = selectedVariant.value;
@@ -4247,6 +4507,7 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
       item.duration > 15 ||
       item.offset < 0 ||
       item.offset + item.duration > material.duration
+      || (item.transform !== undefined && !effectVideoTransformValid(item.transform))
     )
       return null;
     return { ...item, slot, material };
@@ -4284,6 +4545,8 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
     variant.bindingRevisions[item.slot.id] = item.material.artifactRevision;
     (variant.bindingSources ??= {})[item.slot.id] = cloneMaterial(item.material);
     variant.offsets[item.slot.id] = item.offset;
+    delete variant.videoTransforms?.[item.slot.id];
+    if (item.transform) (variant.videoTransforms ??= {})[item.slot.id] = { ...item.transform };
     item.slot.duration = item.duration;
     variant.bindingMetadata ??= {};
     variant.bindingMetadata[item.slot.id] = {
@@ -4414,6 +4677,7 @@ const removeMaterialFromSlot = (slotId: string): void => {
   delete variant.bindingRevisions[slot.id];
   delete variant.bindingSources?.[slot.id];
   delete variant.offsets[slot.id];
+  delete variant.videoTransforms?.[slot.id];
   if (variant.bindingMetadata) delete variant.bindingMetadata[slot.id];
   variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== slot.id);
   // An overlay exists only because a material was dropped on it, so emptying it takes the whole
@@ -4637,6 +4901,7 @@ const splitTimelineMaterial = (
     variant.timelineStarts[right.id] = at;
     variant.videoLanes ??= {};
     variant.videoLanes[right.id] = variant.videoLanes[target.id] ?? 0;
+    if (variant.videoTransforms?.[target.id]) variant.videoTransforms[right.id] = cloneMix(variant.videoTransforms[target.id]!);
     normalizeVariantVideoLanes(variant);
     if (activeUi.value) activeUi.value.selectedSlotId = right.id;
     clearDetachedTransitions(variant);
@@ -6616,6 +6881,12 @@ const togglePlay = async (): Promise<void> => {
 const onTimelinePlayerReady = (slotId: string, event: Event, seeked = false): void => {
   const video = timelinePlayers.get(slotId);
   if (!video || event.currentTarget !== video || video.currentSrc !== video.src) return;
+  const material = materialForSlot(slotId);
+  if (!material || video.getAttribute('src') !== material.contentUrl) return;
+  const aspect = playerMediaAspect(video.videoWidth, video.videoHeight);
+  if (aspect !== undefined && aspect !== slotMeasuredAspect(slotId)) {
+    measuredVideoAspects.set(slotMediaIdentity(slotId), aspect);
+  }
   const transition = activeTransitionPreview.value;
   const isVisibleSlot =
     previewSlot.value?.id === slotId ||
@@ -6717,6 +6988,7 @@ const onFullscreenChange = (): void => {
   playerFullscreen.value = document.fullscreenElement === playerPanel.value;
 };
 const flushPendingEdits = async (): Promise<boolean> => {
+  finishVideoWheelGesture();
   clearTimeout(saveTimer);
   // The page is still alive during awaited navigation. Full timeline drafts can exceed
   // the browser keepalive payload limit; only actual teardown uses keepalive.
@@ -6725,10 +6997,38 @@ const flushPendingEdits = async (): Promise<boolean> => {
 };
 const onEscape = (event: KeyboardEvent): void => {
   if (event.key === 'Escape') {
+    finishVideoWheelGesture(true); clearVideoGuides();
     if (createOpen.value) void closeCreate();
     if (workflowDialogOpen.value) void closeWorkflowDialog();
   }
 };
+let playerSpacePressed = false;
+const onPlayerSpaceKeydown = (event: KeyboardEvent): void => {
+  const target = event.target instanceof Element ? event.target : null;
+  const input = target?.closest('input');
+  const textEditing = Boolean(target?.closest('textarea, [contenteditable]:not([contenteditable="false"])')) ||
+    Boolean(input && !['number', 'range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'color'].includes(input.type));
+  if (!ownsPlayerSpace(event, {
+    active: workbenchActive && view.value === 'EDITOR',
+    blocked: createOpen.value || workflowDialogOpen.value || Boolean(packagingPanel.value?.visible),
+    textEditing,
+    inDialog: Boolean(target?.closest('[role="dialog"], [aria-modal="true"]')),
+  })) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat && !playerSpacePressed) {
+    playerSpacePressed = true;
+    finishVideoWheelGesture();
+    togglePreviewPlayback();
+  }
+};
+const onPlayerSpaceKeyup = (event: KeyboardEvent): void => {
+  if (!playerSpacePressed || (event.code !== 'Space' && event.key !== ' ')) return;
+  playerSpacePressed = false;
+  event.preventDefault();
+  event.stopPropagation();
+};
+const resetPlayerSpace = (): void => { playerSpacePressed = false; };
 const onEditorKeydown = (event: KeyboardEvent): void => {
   onEscape(event);
   if (
@@ -6746,26 +7046,16 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)
   )
     return;
-  // The player scrubber keeps focus after seeking. It is a range input, but
-  // Space is still the editor's play/pause shortcut there (unlike text inputs).
-  if (event.code === 'Space' && target === playerScrubber.value) {
-    event.preventDefault();
-    if (!event.repeat) togglePreviewPlayback();
-    return;
-  }
   // A focused control only owns the keys it can actually act on: a text field takes them all, and a
-  // button takes Space and Enter. Delete and Ctrl+Z mean the same thing everywhere else in the editor,
+  // button takes Enter. Space is captured exclusively for playback above. Delete and Ctrl+Z stay editor-wide,
   // so a stale focus left on a button must not swallow them — clicking 「添加」 leaves the button
   // focused, and that is what made "delete this subtitle" and undo go missing.
-  // The timeline's own buttons are the one exception: clicking a track's mute leaves it focused, and
-  // letting it take Space meant the next Space re-toggled the mute instead of playing. Space belongs
-  // to the player inside the timeline, so those buttons only keep Enter.
   const buttonOwnsKey =
     Boolean(target?.matches('button')) &&
     !target?.closest('.mix-timeline-shell') &&
     !target?.closest('.transition-junction') &&
     !activeTransitionSlotId.value &&
-    (event.code === 'Space' || event.key === 'Enter');
+    event.key === 'Enter';
   if (
     target?.matches('input, textarea, select, [contenteditable="true"]') ||
     buttonOwnsKey ||
@@ -6791,11 +7081,6 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
   if ((event.ctrlKey || event.metaKey) && key === 'y') {
     event.preventDefault();
     redoTimelineEdit();
-    return;
-  }
-  if (event.code === 'Space') {
-    event.preventDefault();
-    if (!event.repeat) togglePreviewPlayback();
     return;
   }
   if (event.key === 'Delete' || event.key === 'Backspace') {
@@ -6935,9 +7220,13 @@ const refreshMaterialSources = async (): Promise<void> => {
       workflowRunId !== props.workflowRunId
     )
       return;
-    if (!workspaceRevisionFence.isCurrent(`${projectId}:${workflowRunId}`, data.draftRevision) ||
-      !draftRace.canInstall(readToken, false)) return;
+    if (
+      !workspaceRevisionFence.isCurrent(`${projectId}:${workflowRunId}`, data.draftRevision) ||
+      !draftRace.canInstall(readToken, false)
+    )
+      return;
     sourceMaterials.value = data.materials;
+    if (data.renderAspectRatio !== undefined) renderAspectRatio.value = data.renderAspectRatio;
     if (data.classificationPools) classificationPools.value = data.classificationPools;
     pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
     autoPackagingTemplateIds.value = data.autoPackagingTemplateIds ?? [];
@@ -6955,6 +7244,9 @@ onMounted(() => {
   updateWorkbenchMode();
   window.addEventListener('resize', updateWorkbenchMode);
   window.addEventListener('keydown', onEditorKeydown);
+  window.addEventListener('keydown', onPlayerSpaceKeydown, true);
+  window.addEventListener('keyup', onPlayerSpaceKeyup, true);
+  window.addEventListener('blur', resetPlayerSpace);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   void load();
   startSourcePolling();
@@ -7004,7 +7296,9 @@ onActivated(() => {
   })();
 });
 onDeactivated(() => {
+  resetPlayerSpace();
   framePresentation.reset();
+  finishVideoWheelGesture(); clearVideoGuides();
   releaseExplicitWorkspaceTarget();
   stopSourceUpdatePolling();
   workbenchActive = false;
@@ -7020,6 +7314,8 @@ onDeactivated(() => {
 });
 onBeforeUnmount(() => {
   framePresentation.reset();
+  finishVideoWheelGesture();
+  clearVideoGuides();
   stopSourceUpdatePolling();
   workbenchActive = false;
   clearInterval(sourcePollTimer);
@@ -7050,6 +7346,9 @@ onBeforeUnmount(() => {
   backgroundAiGeneration += 1;
   clearTimeout(backgroundAiTimer);
   window.removeEventListener('keydown', onEditorKeydown);
+  window.removeEventListener('keydown', onPlayerSpaceKeydown, true);
+  window.removeEventListener('keyup', onPlayerSpaceKeyup, true);
+  window.removeEventListener('blur', resetPlayerSpace);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   if (saveState.value === 'dirty') void persist(true);
 });
@@ -7687,11 +7986,11 @@ defineExpose({
             <header>
               <strong>播放器</strong
               ><span
-                >{{ stageMaterial?.ratio || '画幅未记录' }} ·
+                >{{ sourceAspectLabel }} · 素材
                 {{ stageMaterial?.resolution || '分辨率未记录' }}</span
               >
             </header>
-            <div class="stage-space" :class="{ 'is-zoomed': previewZoom > 100 }">
+            <div class="stage-space" :class="{ 'is-zoomed': previewZoom > 100 }" @wheel="onVideoWheel">
               <div
                 ref="stageElement"
                 class="stage"
@@ -7720,6 +8019,7 @@ defineExpose({
                   @timeupdate="onAuditionTime"
                 />
                 <template v-for="slot in selectedVariant?.slots ?? []" :key="`player:${currentWorkspaceScope}:${slot.id}:${materialForSlot(slot.id)?.contentUrl}:${materialForSlot(slot.id)?.contentHash}`">
+                  <div v-if="materialForSlot(slot.id)" class="video-spatial-layer" :style="slotVideoFrameStyle(slot.id)">
                   <video
                     v-if="materialForSlot(slot.id)"
                     :ref="(element) => setTimelinePlayer(slot.id, element)"
@@ -7748,15 +8048,27 @@ defineExpose({
                     @timeupdate="onTimelinePlayerTimeUpdate(slot.id)"
                     @error="onTimelinePlayerError(slot.id, $event)"
                   />
+                  </div>
                 </template>
                 <div v-if="previewPosterVisible && previewMaterial && previewSlot"
-                  class="player-first-frame"
+                  class="player-first-frame" :style="{ ...slotVideoFrameStyle(previewSlot.id), zIndex: 4 }"
                   role="status" :aria-label="playerUnavailableSlotId ? '预览加载失败' : '正在加载成片首帧'">
                   <EffectTemplateMixThumbnail :source="previewMaterial.contentUrl"
                     :time="selectedVariant?.offsets[previewSlot.id] ?? 0"
                     :version="`${previewMaterial.artifactRevision}:${previewMaterial.contentHash}`"
                     alt="当前成片首帧预览" />
                   <span v-if="playerUnavailableSlotId" class="player-first-frame-error">预览加载失败，请重新选择成片重试</span>
+                </div>
+                <button v-if="!auditionMaterial && previewSlot && !transformFrameVisible && !previewIsPlaying && videoTrackVisible"
+                  class="video-selection-target" type="button" aria-label="选中播放器视频素材" @click.stop="selectSlot(previewSlot.id)" />
+                <div v-if="transformFrameVisible && transformSlotId" class="video-transform-frame"
+                  :class="{ locked: projectEditLocked || videoTrackLocked }" :style="slotVideoFrameStyle(transformSlotId)"
+                  role="group" aria-label="移动视频素材" @pointerdown="startVideoDrag($event)"
+                  @pointermove="moveVideoDrag" @pointerup="endVideoDrag" @pointercancel="endVideoDrag">
+                  <button v-for="corner in ['NW', 'NE', 'SW', 'SE']" :key="corner" type="button"
+                    class="video-scale-handle" :class="`corner-${corner}`" :disabled="projectEditLocked || videoTrackLocked"
+                    :aria-label="`缩放视频素材 ${corner}`" @pointerdown.stop="startVideoDrag($event, corner)"
+                    @pointermove.stop="moveVideoDrag" @pointerup.stop="endVideoDrag" @pointercancel.stop="endVideoDrag" />
                 </div>
                 <audio
                   v-for="audio in selectedVariant?.detachedAudios ?? []"
@@ -7808,12 +8120,25 @@ defineExpose({
                   :style="{ bottom: captionGuideOffset(captionGuideY) }"
                   aria-hidden="true"
                 />
+                <div v-for="guide in videoGuideXs" :key="`video-x:${guide}`"
+                  class="caption-guide is-vertical" data-testid="video-scale-guide-x"
+                  :style="{ left: captionGuideOffset(guide) }" aria-hidden="true" />
+                <div v-for="guide in videoGuideYs" :key="`video-y:${guide}`"
+                  class="caption-guide is-horizontal" data-testid="video-scale-guide-y"
+                  :style="{ bottom: captionGuideOffset(guide) }" aria-hidden="true" />
                 <div v-if="!selectedVariant && !auditionMaterial" class="player-empty">
                   <Film :size="34" />
                   <b>尚未生成成片</b>
                   <span>点击右侧“新建成片”，再从素材库拖入画面</span>
                 </div>
               </div>
+              <svg v-if="transformFrameVisible" class="video-position-overview" viewBox="0 0 80 56"
+                role="img" aria-label="素材位置概览" @pointerdown.stop @wheel.stop>
+                <title>素材位置概览：蓝色为素材，边框为画布</title>
+                <rect v-bind="videoOverview.canvas" class="overview-canvas" />
+                <rect v-bind="videoOverview.material" class="overview-material"
+                  :transform="`rotate(${selectedVideoTransform.rotation} ${videoOverview.centre.x} ${videoOverview.centre.y})`" />
+              </svg>
             </div>
             <footer class="player-controls" @click.stop>
               <div class="player-scrubber-visual" aria-hidden="true">
@@ -7931,12 +8256,9 @@ defineExpose({
                     </button>
                   </div>
                 </div>
-                <span
-                  class="player-aspect-label"
-                  title="画幅跟随当前素材，不可修改"
-                  :aria-label="`当前素材画幅 ${sourceAspectLabel}`"
-                  >{{ sourceAspectLabel }}</span
-                >
+                <EffectCanvasRatioMenu :value="selectedVariant?.canvasRatio" :label="sourceAspectLabel"
+                  :disabled="projectEditLocked || !selectedVariant || !!auditionMaterial"
+                  @change="changeCanvasRatio" />
                 <button
                   class="player-icon-button"
                   type="button"
@@ -8124,6 +8446,11 @@ defineExpose({
             </div>
           </aside>
         </div>
+        <EffectVideoTransformToolbar v-if="videoTransformIds.length && !auditionMaterial"
+          :transform="selectedVideoTransform" :width="canvasPixelSize.width" :height="canvasPixelSize.height"
+          :disabled="projectEditLocked || videoTrackLocked" :count="videoTransformIds.length" @change="changeVideoTransform"
+          @begin="beginVideoTransformControl" @end="endVideoTransformControl"
+          @align="alignVideoTransform" @reset="changeVideoTransform({ ...EFFECT_VIDEO_TRANSFORM_DEFAULT })" />
         <div
           v-if="selectedSlot && selectedVariant"
           class="slot-settings"
@@ -8394,8 +8721,10 @@ defineExpose({
           @select-audio-clips="onAudioClipsSelected"
           @toggle-audio-mute="setTimelineTrackMute"
           @toggle-track-visibility="setTimelineTrackVisibility"
+          @toggle-video-lock="videoTrackLocked = $event"
           @select-caption-clips="onCaptionClipsSelected"
           @select-slot="selectSlot"
+          @select-video-clips="selectedVideoTransformIds = $event"
           @trim-slot="changeTimelineTrimStart"
           @resize-slot="resizeTimelineSlot"
           @preview-transition-duration="previewTransitionDuration"
@@ -9946,6 +10275,7 @@ button:disabled {
   color: #334155;
 }
 .stage-space {
+  position: relative;
   min-width: 0;
   min-height: 0;
   padding: 10px 14px;
@@ -9954,30 +10284,30 @@ button:disabled {
   justify-content: center;
   overflow: hidden;
   background: #eef2f7;
+  container-type: size;
 }
 .stage-space.is-zoomed {
   overflow: auto;
 }
+.video-position-overview{position:absolute;right:12px;bottom:12px;width:80px;height:56px;z-index:10;background:rgba(248,250,255,.94);border:1px solid #a9b9cf;box-shadow:0 2px 8px #14274424;pointer-events:none}
+.overview-canvas{fill:#dce5f0;stroke:#7d90a9;stroke-width:1}
+.overview-material{fill:#2563eb;fill-opacity:.55;stroke:#2563eb;stroke-width:.8}
 .stage {
   position: relative;
   display: grid;
   place-items: center;
-  width: auto;
+  width: min(100cqw, calc(100cqh * var(--stage-aspect)));
   max-width: 100%;
   min-width: 0;
   min-height: 0;
-  height: 100%;
+  height: min(100cqh, calc(100cqw / var(--stage-aspect)));
   max-height: 100%;
   overflow: hidden;
   background: #05070b;
-  border-radius: 6px;
-  box-shadow: 0 0 0 1px #d7deea;
+  border-radius: 0;
+  box-shadow: none;
   transform-origin: center;
   transition: transform 160ms ease;
-}
-.stage.landscape {
-  width: 100%;
-  height: auto;
 }
 .player-transition-frame {
   position: absolute;
@@ -9988,8 +10318,8 @@ button:disabled {
   object-fit: cover;
   pointer-events: none;
 }
-.player-first-frame { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 4; pointer-events: none; }
-.player-first-frame :deep(img) { object-fit: cover; }
+.player-first-frame { position: absolute; z-index: 4; pointer-events: none; }
+.player-first-frame :deep(img) { object-fit: var(--video-fit, contain); }
 .player-first-frame :deep(.thumbnail-loading)::after { content: '首帧加载中…'; font-size: 12px; }
 .player-first-frame-error { position: absolute; inset: auto 0 0; padding: 8px; color: white; background: #334155e6; text-align: center; font-size: 12px; }
 .player-transition-overlay {
@@ -10003,11 +10333,19 @@ button:disabled {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   background: transparent;
   opacity: 0;
   pointer-events: none;
 }
+.video-spatial-layer{position:absolute;pointer-events:none;transform-origin:center}
+.stage .video-spatial-layer video{width:100%;height:100%;object-fit:var(--video-fit, contain)}
+.video-selection-target{position:absolute;inset:0;z-index:3;border:0;background:transparent;cursor:pointer}
+.video-transform-frame{position:absolute;border:1px solid white;box-sizing:border-box;z-index:5!important;cursor:move;touch-action:none;transform-origin:center}
+.video-transform-frame.locked{cursor:default}
+.video-scale-handle{position:absolute;width:10px;height:10px;background:white;border:1px solid #91a3bc;border-radius:50%;padding:0;touch-action:none}
+.corner-NW{left:-5px;top:-5px;cursor:nwse-resize}.corner-NE{right:-5px;top:-5px;cursor:nesw-resize}.corner-SW{left:-5px;bottom:-5px;cursor:nesw-resize}.corner-SE{right:-5px;bottom:-5px;cursor:nwse-resize}
+.player-caption-box{z-index:7!important}
 .stage video.is-visible {
   z-index: 2;
   opacity: 1;
