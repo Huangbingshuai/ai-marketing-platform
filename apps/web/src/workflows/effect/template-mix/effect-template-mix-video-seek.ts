@@ -11,6 +11,17 @@ type SeekState = {
   pendingTime: number | null;
 };
 
+/** Buffer only the selected project's next two clips, in timeline rather than array order. */
+export const upcomingTimelineRanges = <T extends { id: string; start: number; end: number }>(
+  ranges: readonly T[],
+  current: { id: string; end: number },
+  hasMedia: (id: string) => boolean,
+): T[] =>
+  ranges
+    .filter((range) => range.id !== current.id && range.start >= current.end && hasMedia(range.id))
+    .sort((left, right) => left.start - right.start)
+    .slice(0, 2);
+
 /** Keep only the newest scrub target while the browser decodes an earlier seek. */
 export class TimelineVideoSeekQueue {
   private states = new WeakMap<SeekableVideo, SeekState>();

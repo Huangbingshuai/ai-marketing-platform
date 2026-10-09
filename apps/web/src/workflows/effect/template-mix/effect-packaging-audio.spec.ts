@@ -31,7 +31,7 @@ describe('packaging audio playback wiring', () => {
     expect(pageSource).toContain('const next = currentPlaybackClockSeconds()');
     expect(pageSource).toContain('now - lastUiPlaybackMilliseconds >= 1000');
     expect(pageSource).toContain('syncPlaybackNeedleClock(next)');
-    expect(pageSource).toContain('await audioReady');
+    expect(pageSource).toContain('await Promise.all([videoReady, audioReady])');
     expect(pageSource).not.toContain(':playback-time="packagingPlaybackTime"');
   });
   it('uses one editable package-wide subtitle font size for every preview caption', () => {

@@ -1,8 +1,37 @@
 import { describe, expect, it } from 'vitest';
 
-import { prepareTimelineVideo, TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
+import {
+  prepareTimelineVideo,
+  TimelineVideoSeekQueue,
+  upcomingTimelineRanges,
+} from './effect-template-mix-video-seek';
 
 const video = () => ({ currentTime: 0, readyState: 4, seeking: false, src: 'clip-a' });
+
+describe('bounded timeline lookahead', () => {
+  const ranges = [0, 1, 2, 3, 4].map((index) => ({
+    id: `slot-${index}`,
+    start: index * 4,
+    end: (index + 1) * 4,
+  }));
+  it('prepares exactly the next two clips without changing timeline order', () => {
+    const shuffled = [ranges[3]!, ranges[0]!, ranges[4]!, ranges[2]!, ranges[1]!];
+    expect(upcomingTimelineRanges(shuffled, ranges[0]!, () => true).map(({ id }) => id)).toEqual([
+      'slot-1',
+      'slot-2',
+    ]);
+    expect(shuffled[0]!.id).toBe('slot-3');
+  });
+  it('skips empty slots, past clips and the currently playing clip', () => {
+    expect(
+      upcomingTimelineRanges(ranges, ranges[1]!, (id) => id !== 'slot-2').map(({ id }) => id),
+    ).toEqual(['slot-3', 'slot-4']);
+  });
+  it('does not wrap around or invent media at the end', () => {
+    expect(upcomingTimelineRanges(ranges, ranges[4]!, () => true)).toEqual([]);
+    expect(upcomingTimelineRanges(ranges, ranges[3]!, () => false)).toEqual([]);
+  });
+});
 
 describe('timeline video seek queue', () => {
   it('coalesces fast scrubbing to the latest target while a seek is decoding', () => {

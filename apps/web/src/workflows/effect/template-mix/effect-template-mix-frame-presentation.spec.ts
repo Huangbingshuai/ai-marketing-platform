@@ -36,6 +36,44 @@ describe('montage first frame presentation', () => {
     tick();
     expect(publish).toHaveBeenCalledOnce();
   });
+  it('accepts an advancing decoded playback frame without requiring the paused trim timestamp', () => {
+    const gate = new TimelineFramePresentation(),
+      publish = vi.fn(),
+      player = video();
+    player.currentTime = 4.75;
+    expect(gate.presentPlayback(player, publish)).toBe(true);
+    player.currentTime += 0.1;
+    tick();
+    tick();
+    expect(publish).toHaveBeenCalledOnce();
+  });
+  it.each(['seeking', 'metadata', 'old-source'])(
+    'does not hand off a %s playback frame',
+    (kind) => {
+      const gate = new TimelineFramePresentation(),
+        publish = vi.fn(),
+        player = video();
+      if (kind === 'seeking') player.seeking = true;
+      if (kind === 'metadata') player.readyState = 1;
+      if (kind === 'old-source') player.currentSrc = 'old';
+      expect(gate.presentPlayback(player, publish)).toBe(false);
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+  it('cancels a still-frame paint request when decoded playback takes over', () => {
+    const gate = new TimelineFramePresentation(),
+      still = vi.fn(),
+      running = vi.fn(),
+      player = video();
+    gate.present(player, 1.25, 1 / 30, still);
+    tick();
+    player.currentTime = 1.5;
+    expect(gate.presentPlayback(player, running)).toBe(true);
+    tick();
+    expect(still).not.toHaveBeenCalled();
+    expect(running).toHaveBeenCalledOnce();
+    expect(frames.size).toBe(0);
+  });
   it.each(['seeking', 'metadata', 'old-source', 'wrong-trim'])(
     'does not publish %s as a first frame',
     (kind) => {
@@ -107,7 +145,41 @@ describe('montage first frame presentation', () => {
     expect(page).toContain('framePresentation.reset()');
     expect(identity).toContain('playbackSeekVersion.value');
     expect(visibility).not.toContain('playhead.value === 0');
-    expect(visibility).not.toContain('!playing.value');
+    expect(visibility).toContain('!playing.value');
+    expect(visibility).toContain('!displayedTimelineSlotId.value && !!previewCachedPoster.value');
     expect(page).not.toContain('captureDisplayedFrame()');
+  });
+  it('uses decoded playback handoffs and never re-seeks a natural boundary from the poster watcher', () => {
+    const playback = page
+      .split('const syncPlayingVideoFrame =')[1]!
+      .split('const updatePlaybackFrame =')[0]!;
+    const switched = playback.split('if (switchedSlot) {')[1]!.split('// Only unprepared')[0]!;
+    const watcher = page
+      .split('watch(previewMediaIdentity,')[1]!
+      .split('watch(auditionMaterial,')[0]!;
+    expect(page).toContain('framePresentation.presentPlayback(video, publish)');
+    expect(playback).toContain('presentTimelineFrame(slot.id, video)');
+    expect(playback).toContain('presentTimelineFrame(transition.incomingSlot.id, incoming)');
+    expect(switched).not.toContain("displayedTimelineSlotId.value = ''");
+    expect(page).toContain('playing.value ? playbackDisplaySlotId.value');
+    expect(watcher).toContain('if (playing.value) syncPlayingVideoFrame()');
+    expect(watcher).not.toContain('syncPlayerToPlayhead(playing.value)');
+  });
+  it('hands the media layer over immediately only after source and decoded-frame validation', () => {
+    const presentation = page
+      .split('const presentTimelineFrame =')[1]!
+      .split('const slotHasDetachedAudio')[0]!;
+    const callback = presentation
+      .split('const publish = () => {')[1]!
+      .split('if (playing.value) {')[0]!;
+    expect(callback.indexOf('identity !== previewMediaIdentity.value')).toBeLessThan(
+      callback.indexOf('player.style.opacity'),
+    );
+    expect(callback).toContain("player.classList.toggle('is-visible', visible)");
+    expect(callback).toContain('displayedTimelineSlotId.value = slotId');
+    const running = page
+      .split('const syncPlayingVideoFrame =')[1]!
+      .split('const updatePlaybackFrame =')[0]!;
+    expect(running).not.toContain('displayedTimelineSlotId.value = slot.id');
   });
 });

@@ -15,6 +15,15 @@ export class TimelineFramePresentation {
     this.pending.clear();
   }
 
+  /** A running native clock cannot match a frozen seek time across two animation frames. */
+  presentPlayback(video: FrameVideo, publish: () => void): boolean {
+    if (video.currentSrc !== video.src || video.readyState < 2 || video.seeking) return false;
+    this.pending.get(video)?.cancel();
+    this.pending.delete(video);
+    publish();
+    return true;
+  }
+
   present(video: FrameVideo, seconds: number, tolerance: number, publish: () => void): void {
     this.pending.get(video)?.cancel();
     const source = video.src;

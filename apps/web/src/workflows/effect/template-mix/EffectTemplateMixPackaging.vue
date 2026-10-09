@@ -341,6 +341,7 @@ defineExpose({
   loading,
   starting,
   startPlaybackAudio,
+  preparePlaybackAudio,
   stopPlaybackAudio,
   playbackAudioTime,
 });
@@ -463,11 +464,14 @@ const sampleClock = new PackagingSampleClock(fileUrl);
 function playbackAudioTime(): number | null {
   return sampleClock.time();
 }
-async function startPlaybackAudio(seconds = props.playhead): Promise<boolean> {
+function preparePlaybackAudio(): Promise<void> {
+  return sampleClock.prepare(previewAudioClips.value);
+}
+async function startPlaybackAudio(seconds = props.playhead, frameReady?: Promise<boolean>): Promise<boolean> {
   previewError.value = '';
   const version = generation;
   try {
-    return await sampleClock.start(previewAudioClips.value, seconds);
+    return await sampleClock.start(previewAudioClips.value, seconds, frameReady);
   } catch {
     if (version === generation) {
       previewError.value = '口播或配乐暂时无法播放，请再次点击播放；字幕不会提前继续。';

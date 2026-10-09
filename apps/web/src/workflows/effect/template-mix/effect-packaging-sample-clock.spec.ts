@@ -26,6 +26,29 @@ function contextFixture() {
   return { context, nodes, gains };
 }
 describe('sample-scheduled packaged audio', () => {
+  it('unlocks audio immediately but waits for the video frame before scheduling sound', async () => {
+    const { context, nodes } = contextFixture();
+    const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext,
+      async () => new ArrayBuffer(2));
+    let release!: (ready: boolean) => void;
+    const frame = new Promise<boolean>(resolve => { release = resolve; });
+    const pending = clock.start([clip('voice', 0)], 0, frame);
+    expect(context.resume).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    expect(clock.time()).toBe(0);
+    expect(nodes).toHaveLength(0);
+    release(true);
+    expect(await pending).toBe(true);
+    expect(nodes).toHaveLength(1);
+  });
+  it('does not schedule sound after cancelled frame preparation', async () => {
+    const { context, nodes } = contextFixture();
+    const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext,
+      async () => new ArrayBuffer(2));
+    expect(await clock.start([clip('voice', 0)], 0, Promise.resolve(false))).toBe(false);
+    expect(nodes).toHaveLength(0);
+    expect(clock.time()).toBeNull();
+  });
   it('uses presentation timestamps instead of the rendering cursor ahead of the loudspeaker', () => {
     const { context } = contextFixture();
     expect(audioOutputSeconds(context as unknown as AudioContext, 1030)).toBeCloseTo(99.93);

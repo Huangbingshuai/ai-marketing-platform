@@ -4,6 +4,47 @@ import pageSource from './EffectTemplateMixNodePage.vue?raw';
 import timelineSource from './EffectTemplateMixTimeline.vue?raw';
 
 describe('template mix compositor playback clock', () => {
+  it('prepares audio and video together but starts the clock only after the selected video can play', () => {
+    const start = pageSource
+      .split('const togglePlay =')[1]!
+      .split('const onTimelinePlayerReady')[0]!;
+    expect(start).not.toContain('await audioReady');
+    expect(start.indexOf('syncPlayerToPlayhead(false)')).toBeLessThan(
+      start.indexOf('await Promise.all'),
+    );
+    expect(start).toContain('Promise.all([videoReady, audioReady])');
+    expect(start.indexOf('await video.play()')).toBeLessThan(start.indexOf('startPlaybackClock()'));
+    expect(start).toContain('startPlaybackAudio(playhead.value, videoReady)');
+    expect(start).toContain('preparePlaybackAudio()');
+    expect(start).toContain('Promise.all([frameReady, audioPrepared])');
+    expect(start).toContain('cancelAnimationFrame(pendingSeekSyncFrame)');
+    expect(start).toContain('if (!ready || !currentStart()) return');
+    expect(start).toContain('if (!playing.value || activeTimelinePlayer() !== video) video?.pause()');
+  });
+  it('retries late decoded handoffs every frame without republishing the editor playhead', () => {
+    const retry = pageSource
+      .split('// A late decoder must hand off')[1]!
+      .split('playbackAnimationFrame =')[0]!;
+    expect(retry).toContain(
+      'video.paused || displayedTimelineSlotId.value !== activePlaybackSlotId',
+    );
+    expect(retry).toContain('syncPlayingVideoFrame()');
+    expect(retry).not.toContain('playhead.value =');
+    expect(pageSource).toContain('...upcoming.map(({ id }) => id)');
+  });
+  it('holds all transports when the native decoder buffers instead of letting captions skip ahead', () => {
+    const waiting = pageSource.split('const onTimelinePlayerWaiting =')[1]!
+      .split('const onTimelinePlayerReady =')[0]!;
+    expect(pageSource).toContain('@waiting="onTimelinePlayerWaiting(slot.id, $event)"');
+    expect(waiting).toContain('video.currentTime - (selectedVariant.value.offsets[slotId] ?? 0)');
+    expect(waiting).toContain('stopPlaybackClock(false)');
+    expect(waiting).toContain('stopPlaybackAudio()');
+    expect(waiting).toContain('startPreparedPlayback(false)');
+    expect(pageSource).toContain('activeTimelinePlayer()!.readyState >= 3');
+    expect(pageSource).toContain('playing.value && !playbackStarting');
+    expect(pageSource).toContain('if (video.paused) holdTimelinePlayback(slot.id, video)');
+    expect(pageSource).toContain('if (!playbackStarting) playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame)');
+  });
   it('warms the next clip without reloads and reuses positioned frames at natural boundaries', () => {
     expect(pageSource).toContain('prepareTimelineVideo(video, timelineVideoSeeks, targetTime');
     const timelinePreparation = pageSource.slice(

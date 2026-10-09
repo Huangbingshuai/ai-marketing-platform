@@ -83,6 +83,7 @@ import {
 } from '@lucide/vue';
 import { createScopedTimelineHistory } from './effect-template-mix-history';
 import { ownsPlayerSpace } from './effect-player-space-shortcut';
+import { NativePlaybackProgress, waitForPlaybackFrame } from './effect-template-mix-playback-start';
 import { playerMediaAspect, playerMediaIdentity } from './effect-player-media-aspect';
 import EffectVideoTransformToolbar from './EffectVideoTransformToolbar.vue';
 import EffectCanvasRatioMenu from './EffectCanvasRatioMenu.vue';
@@ -177,13 +178,16 @@ import {
 } from './effect-packaging-navigation';
 import EffectVoiceLibrary from './EffectVoiceLibrary.vue';
 import EffectMusicLibrary from './EffectMusicLibrary.vue';
-import { pauseEffectTemplateMixThumbnailCapture } from './effect-template-mix-thumbnail-cache';
+import { pauseEffectTemplateMixThumbnailCapture, useEffectTemplateMixThumbnail } from './effect-template-mix-thumbnail-cache';
 import { TimelineFramePresentation } from './effect-template-mix-frame-presentation';
 import { pauseEffectTemplateMixWaveformDecoding } from './effect-template-mix-waveform-cache';
 import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
 import { splitRangeAtPlayhead } from './effect-template-mix-split';
-import { resizeVideoRangeAtEdge, startsAfterIndependentTrim } from './effect-template-mix-edge-trim';
-import { prepareTimelineVideo, TimelineVideoSeekQueue } from './effect-template-mix-video-seek';
+import {
+  resizeVideoRangeAtEdge,
+  startsAfterIndependentTrim,
+} from './effect-template-mix-edge-trim';
+import { prepareTimelineVideo, TimelineVideoSeekQueue, upcomingTimelineRanges } from './effect-template-mix-video-seek';
 import {
   isMixWorkspaceSwitching,
   readMixWorkspaceWithDeadline,
@@ -609,6 +613,9 @@ let lastUiPlaybackMilliseconds = 0;
 let playbackSyncBoundaries: number[] = [];
 let nextPlaybackBoundaryIndex = 0;
 let activePlaybackSlotId = '';
+let playbackStarting = false;
+let playbackStartVersion = 0;
+const nativePlaybackProgress = new NativePlaybackProgress();
 let pendingSeekSyncFrame: number | undefined;
 let seekSyncRequestId = 0;
 let materialGridResizeObserver: ResizeObserver | null = null;
@@ -1268,16 +1275,22 @@ const transitionPreviewAt = (time: number): ActiveTransitionPreview | null => {
 const activeTransitionPreview = computed<ActiveTransitionPreview | null>(() =>
   transitionPreviewAt(playhead.value),
 );
+const playbackDisplaySlotId = computed(() =>
+  previewMaterial.value
+    ? displayedTimelineSlotId.value || previewSlot.value?.id || ''
+    : '',
+);
 const visibleTimelineSlotIds = computed(() => {
   const transition = activeTransitionPreview.value;
   return transition
     ? new Set([transition.outgoingSlot.id, transition.incomingSlot.id])
-    : new Set(previewSlot.value ? [previewSlot.value.id] : []);
+    : new Set(playing.value ? [playbackDisplaySlotId.value] : previewSlot.value ? [previewSlot.value.id] : []);
 });
 const timelinePlayerStyle = (slotId: string): Record<string, string> => {
   const transition = activeTransitionPreview.value;
   if (!transition) {
-    return { opacity: slotId === previewSlot.value?.id ? '1' : '0' };
+    const visibleSlot = playing.value ? playbackDisplaySlotId.value : previewSlot.value?.id;
+    return { opacity: slotId === visibleSlot ? '1' : '0' };
   }
   const presentation = effectTemplateMixTransitionPresentation(
     transition.transition,
@@ -1360,7 +1373,13 @@ const previewMediaIdentity = computed(() => JSON.stringify([
 ]));
 const presentedPreviewIdentity = ref('');
 const framePresentation = new TimelineFramePresentation();
-const previewPosterVisible = computed(() => !auditionMaterial.value &&
+const previewCachedPoster = useEffectTemplateMixThumbnail(
+  computed(() => previewMaterial.value?.contentUrl ?? ''),
+  computed(() => selectedVariant.value?.offsets[previewSlot.value?.id ?? ''] ?? 0),
+  computed(() => `${previewMaterial.value?.artifactRevision}:${previewMaterial.value?.contentHash}`),
+);
+const previewPosterVisible = computed(() =>
+  (!playing.value || (!displayedTimelineSlotId.value && !!previewCachedPoster.value)) && !auditionMaterial.value &&
   videoTrackVisible.value && !!previewMaterial.value &&
   presentedPreviewIdentity.value !== previewMediaIdentity.value);
 const stageMaterial = computed(() => auditionMaterial.value ?? previewMaterial.value);
@@ -4115,6 +4134,7 @@ const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string =
 const resetTimelinePlayerState = (): void => {
   framePresentation.reset();
   presentedPreviewIdentity.value = '';
+  displayedTimelineSlotId.value = '';
   positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   timelineVideoSeeks.reset();
   activePlaybackSlotId = '';
@@ -4154,14 +4174,31 @@ const activeTimelinePlayer = (): HTMLVideoElement | null =>
 const presentTimelineFrame = (slotId: string, video: HTMLVideoElement): void => {
   if (slotId !== previewSlot.value?.id) return;
   const identity = previewMediaIdentity.value;
-  const sourceTime = timelineSourceTime(slotId);
-  if (sourceTime === null) return;
-  framePresentation.present(video, sourceTime, 1 / TIMELINE_FPS, () => {
+  const publish = () => {
     if (identity !== previewMediaIdentity.value || timelinePlayers.get(slotId) !== video ||
       auditionMaterial.value || !timelineVideoSeeks.isSettled(video)) return;
+    if (playing.value && !transitionPreviewAt(currentPlaybackClockSeconds())) {
+      // The media layer hands off now, without waiting for a render of the
+      // whole timeline. Vue receives the same state for its next patch.
+      for (const [id, player] of timelinePlayers) {
+        const visible = id === slotId && videoTrackVisible.value;
+        player.style.opacity = visible ? '1' : '0';
+        player.classList.toggle('is-visible', visible);
+      }
+    }
+    displayedTimelineSlotId.value = slotId;
     presentedPreviewIdentity.value = identity;
     transitionFrame.value = '';
-  });
+  };
+  if (playing.value) {
+    // The seek queue already verified positioning. A running video's decoded frame
+    // is authoritative; do not wait for its advancing time to equal a paused target.
+    if (timelineVideoSeeks.isSettled(video)) framePresentation.presentPlayback(video, publish);
+    return;
+  }
+  const sourceTime = timelineSourceTime(slotId);
+  if (sourceTime === null) return;
+  framePresentation.present(video, sourceTime, 1 / TIMELINE_FPS, publish);
 };
 const slotHasDetachedAudio = (slotId: string): boolean =>
   Boolean(selectedVariant.value?.detachedAudios?.some((audio) => audio.sourceSlotId === slotId));
@@ -4181,6 +4218,7 @@ const syncDetachedAudio = (forceSeek = false): void => {
     // longer silences every detached clip at once.
     const active =
       playing.value &&
+      !playbackStarting &&
       !mutedAudioClip(`detached:${row.id}`) &&
       localTime >= 0 &&
       localTime < row.duration;
@@ -4262,32 +4300,27 @@ const syncTimelineVideo = (
   return video;
 };
 const primeUpcomingTimelinePlayer = (range: { id: string; end: number }): void => {
-  const upcoming = currentTiming.value.slots
-    .filter(
-      (candidate) =>
-        candidate.id !== range.id &&
-        candidate.start >= range.end &&
-        Boolean(materialForSlot(candidate.id)),
-    )
-    .sort((left, right) => left.start - right.start)[0];
+  const upcoming = upcomingTimelineRanges(currentTiming.value.slots, range,
+    (id) => Boolean(materialForSlot(id)));
   const transition = transitionPreviewAt(
     playing.value ? currentPlaybackClockSeconds() : playhead.value,
   );
   const keep = new Set([
     range.id,
-    upcoming?.id,
+    ...upcoming.map(({ id }) => id),
     transition?.outgoingSlot.id,
     transition?.incomingSlot.id,
   ]);
   for (const [slotId, player] of timelinePlayers) {
     player.preload = keep.has(slotId) ? 'auto' : 'metadata';
   }
-  if (!upcoming) return;
-  const video = timelinePlayers.get(upcoming.id);
-  if (!video) return;
-  const targetTime = selectedVariant.value?.offsets[upcoming.id] ?? 0;
-  prepareTimelineVideo(video, timelineVideoSeeks, targetTime, 1 / TIMELINE_FPS);
-  positionedTimelinePlayers.add(video);
+  for (const candidate of upcoming) {
+    const video = timelinePlayers.get(candidate.id);
+    if (!video) continue;
+    const targetTime = selectedVariant.value?.offsets[candidate.id] ?? 0;
+    prepareTimelineVideo(video, timelineVideoSeeks, targetTime, 1 / TIMELINE_FPS);
+    positionedTimelinePlayers.add(video);
+  }
 };
 const pauseTimelinePlayers = (exceptSlotId: string | string[] = ''): void => {
   const keep = new Set(Array.isArray(exceptSlotId) ? exceptSlotId : [exceptSlotId]);
@@ -6601,6 +6634,8 @@ const addCaption = (): void => {
 const quantizeTimelineTime = (raw: number): number =>
   Math.round(Math.max(0, Math.min(currentDuration.value, raw)) * TIMELINE_FPS) / TIMELINE_FPS;
 const stopPlaybackClock = (resumeBackgroundMediaWork = true, freezeVisualClock = true): void => {
+  playbackStarting = false;
+  playbackStartVersion++;
   if (playbackAnimationFrame !== undefined) cancelAnimationFrame(playbackAnimationFrame);
   playbackAnimationFrame = undefined;
   stopTransitionPlaybackAnimation();
@@ -6620,7 +6655,7 @@ const resetPlaybackClock = (): void => {
   playbackAnchorSeconds = playhead.value;
 };
 const packagingPlaybackTime = (): number =>
-  playing.value
+  playing.value && !playbackStarting
     ? Math.min(
         currentDuration.value,
         packagingPanel.value?.playbackAudioTime() ??
@@ -6677,6 +6712,7 @@ const resetPlaybackSyncBoundaries = (): void => {
 };
 const currentPlaybackClockSeconds = (): number => Math.max(0, packagingPlaybackTime());
 const syncPlayingVideoFrame = (): void => {
+  if (playbackStarting) return;
   const playbackTime = currentPlaybackClockSeconds();
   const transition = transitionPreviewAt(playbackTime);
   if (transition) {
@@ -6699,6 +6735,7 @@ const syncPlayingVideoFrame = (): void => {
     if (incoming && timelineVideoSeeks.isSettled(incoming)) {
       playerUnavailableSlotId.value = '';
       displayedTimelineSlotId.value = transition.incomingSlot.id;
+      presentTimelineFrame(transition.incomingSlot.id, incoming);
     }
     return;
   }
@@ -6723,7 +6760,7 @@ const syncPlayingVideoFrame = (): void => {
   const needsSlotSeek = !positionedTimelinePlayers.has(video);
   if (switchedSlot) {
     activePlaybackSlotId = slot.id;
-    displayedTimelineSlotId.value = '';
+    // Keep the outgoing decoded frame until the prepared incoming clip is ready.
     pauseTimelinePlayers(slot.id);
     video.preload = 'auto';
   }
@@ -6736,13 +6773,22 @@ const syncPlayingVideoFrame = (): void => {
   if (switchedSlot) primeUpcomingTimelinePlayer(range);
   if (timelineVideoSeeks.isSettled(video)) {
     playerUnavailableSlotId.value = '';
-    displayedTimelineSlotId.value = slot.id;
-    if (video.paused) void video.play().catch(() => undefined);
+    presentTimelineFrame(slot.id, video);
+    // play() can stay pending even with a decoded frame. Do not let the
+    // shared clock consume part of the incoming clip before it actually starts.
+    if (video.paused) holdTimelinePlayback(slot.id, video);
   }
 };
 const updatePlaybackFrame = (now: number): void => {
   if (!playing.value) {
     stopPlaybackClock();
+    return;
+  }
+  const activeVideo = timelinePlayers.get(activePlaybackSlotId);
+  if (activeVideo && !playbackStarting && !transitionPreviewAt(currentPlaybackClockSeconds()) &&
+    nativePlaybackProgress.stalled(activeVideo, activeVideo.currentTime, now,
+      !activeVideo.paused && !activeVideo.seeking && !activeVideo.ended)) {
+    holdTimelinePlayback(activePlaybackSlotId, activeVideo);
     return;
   }
   const next = currentPlaybackClockSeconds();
@@ -6781,14 +6827,22 @@ const updatePlaybackFrame = (now: number): void => {
     playhead.value = next;
     syncPlayingVideoFrame();
     syncDetachedAudio();
+  } else {
+    // A late decoder must hand off on the very next frame, not wait for the
+    // next one-second UI update. Keep the large editor tree out of this retry.
+    const video = timelinePlayers.get(activePlaybackSlotId);
+    if (video && (video.paused || displayedTimelineSlotId.value !== activePlaybackSlotId)) {
+      syncPlayingVideoFrame();
+    }
   }
-  playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame);
+  if (!playbackStarting) playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame);
 };
 const startPlaybackClock = (): void => {
   stopPlaybackClock(false, false);
   pauseEffectTemplateMixThumbnailCapture(true);
   pauseEffectTemplateMixWaveformDecoding(true);
   resetPlaybackClock();
+  nativePlaybackProgress.reset();
   syncPlayerTimecode(playhead.value);
   resetPlaybackSyncBoundaries();
   timelineRef.value?.startPlaybackNeedle(playhead.value, currentDuration.value);
@@ -6853,7 +6907,6 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
     primeUpcomingTimelinePlayer(range);
     if (timelineVideoSeeks.isSettled(video)) {
       playerUnavailableSlotId.value = '';
-      displayedTimelineSlotId.value = slot.id;
       presentTimelineFrame(slot.id, video);
     }
     if (resume && timelineVideoSeeks.isSettled(video) && video.paused) {
@@ -6882,10 +6935,12 @@ const seek = (raw: number): void => {
   playbackSeekVersion.value += 1;
   captionPresentationTime.value = playhead.value;
   if (playing.value) {
-    resetPlaybackClock();
-    resetPlaybackSyncBoundaries();
-    timelineRef.value?.startPlaybackNeedle(playhead.value, currentDuration.value);
-    startPlayerScrubberMotion(playhead.value);
+    stopPlaybackClock(false);
+    pauseTimelinePlayers();
+    packagingPanel.value?.stopPlaybackAudio();
+    void startPreparedPlayback(true);
+    syncDetachedAudio();
+    return;
   }
   syncDetachedAudio(playing.value);
   scheduleSeekSync();
@@ -6917,16 +6972,83 @@ const togglePlay = async (): Promise<void> => {
     return;
   }
   if (playhead.value >= currentDuration.value - 1 / TIMELINE_FPS) seek(0);
+  // Replay/scrubbing may have queued a second seek. Startup owns one fixed
+  // target, never a target that advances while its first frame is decoding.
+  if (pendingSeekSyncFrame !== undefined) cancelAnimationFrame(pendingSeekSyncFrame);
+  pendingSeekSyncFrame = undefined;
   playing.value = true;
+  await startPreparedPlayback(true);
+};
+const startPreparedPlayback = async (reposition: boolean): Promise<void> => {
+  playbackStarting = true;
+  const startVersion = ++playbackStartVersion;
+  const scope = previewMediaIdentity.value;
+  const currentStart = () => playing.value && playbackStarting &&
+    startVersion === playbackStartVersion && scope === previewMediaIdentity.value;
+  if (reposition && previewCachedPoster.value) {
+    displayedTimelineSlotId.value = '';
+    presentedPreviewIdentity.value = '';
+  }
   // Start packaged audio before the async video seek so the browser still treats it as the
   // player's user gesture. The child continues syncing it to the shared playhead afterwards.
   captionPresentationTime.value = playhead.value;
-  const audioReady = packagingPanel.value?.startPlaybackAudio(playhead.value);
-  startPlaybackClock();
-  await audioReady;
-  if (!playing.value) return;
-  syncDetachedAudio(true);
-  await syncPlayerToPlayhead(true);
+  const positioned = reposition ? syncPlayerToPlayhead(false) : Promise.resolve();
+  const frameReady = positioned.then(() => waitForPlaybackFrame(
+    () => !previewMaterial.value || (!!activeTimelinePlayer() && activeTimelinePlayer()!.readyState >= 3 &&
+      timelineVideoSeeks.isSettled(activeTimelinePlayer()!)), currentStart,
+  ));
+  const audioPrepared = packagingPanel.value?.preparePlaybackAudio();
+  const videoReady = Promise.all([frameReady, audioPrepared]).then(async ([ready]) => {
+    if (!ready || !currentStart()) return false;
+    const video = activeTimelinePlayer();
+    if (video) await video.play();
+    if (!currentStart()) {
+      // A newer start may already own this same element. A late play promise
+      // must not pause that newer transport while cleaning up the old request.
+      if (!playing.value || activeTimelinePlayer() !== video) video?.pause();
+      return false;
+    }
+    return true;
+  });
+  // Resume the audio context inside the gesture, but schedule sound only once
+  // the video is decoded. Audio and video preparation still run concurrently.
+  const audioReady = packagingPanel.value?.startPlaybackAudio(playhead.value, videoReady);
+  try {
+    const [ready] = await Promise.all([videoReady, audioReady]);
+    if (!ready || !currentStart()) return;
+    playbackStarting = false;
+    startPlaybackClock();
+    syncPlayingVideoFrame();
+    syncDetachedAudio(true);
+  } catch {
+    if (!currentStart()) return;
+    playing.value = false;
+    playbackStarting = false;
+    packagingPanel.value?.stopPlaybackAudio();
+    pauseTimelinePlayers();
+    showNotice('视频暂时无法播放，请再次点击播放重试', 'error');
+  }
+};
+const onTimelinePlayerWaiting = (slotId: string, event: Event): void => {
+  const video = timelinePlayers.get(slotId);
+  if (!video || event.currentTarget !== video || !playing.value || playbackStarting ||
+    slotId !== activePlaybackSlotId || transitionPreviewAt(currentPlaybackClockSeconds())) return;
+  holdTimelinePlayback(slotId, video);
+};
+const holdTimelinePlayback = (slotId: string, video: HTMLVideoElement): void => {
+  if (playbackStarting) return;
+  const range = currentTiming.value.slots.find(({ id }) => id === slotId);
+  if (!range || !selectedVariant.value) return;
+  // A stalled decoder still has a valid last frame. Hold all clocks there,
+  // not just the image, so buffering cannot silently skip the rest of a clip.
+  playhead.value = Math.max(range.start, Math.min(range.end,
+    range.start + video.currentTime - (selectedVariant.value.offsets[slotId] ?? 0)));
+  captionPresentationTime.value = playhead.value;
+  stopPlaybackClock(false);
+  pauseTimelinePlayers();
+  packagingPanel.value?.stopPlaybackAudio();
+  void startPreparedPlayback(false);
+  syncDetachedAudio();
 };
 const onTimelinePlayerReady = (slotId: string, event: Event, seeked = false): void => {
   const video = timelinePlayers.get(slotId);
@@ -6955,7 +7077,6 @@ const onTimelinePlayerReady = (slotId: string, event: Event, seeked = false): vo
   if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
   detectMaterialAudio(materialForSlot(slotId), video);
   playerUnavailableSlotId.value = '';
-  displayedTimelineSlotId.value = slotId;
   presentTimelineFrame(slotId, video);
   // Readiness callbacks may arrive repeatedly during decoding. The project RAF
   // advances the timeline while the active media element owns frame delivery.
@@ -7176,7 +7297,11 @@ watch(
 );
 watch(previewMediaIdentity, () => {
   framePresentation.reset();
-  if (!auditionMaterial.value) void syncPlayerToPlayhead(playing.value);
+  if (auditionMaterial.value) return;
+  // Natural boundaries have already been positioned by the playback path.
+  // Re-entering syncPlayerToPlayhead would seek again and discard the decoded frame.
+  if (playing.value) syncPlayingVideoFrame();
+  else void syncPlayerToPlayhead(false);
 }, { flush: 'post' });
 watch(auditionMaterial, (material) => {
   if (!material) void syncPlayerToPlayhead(playing.value);
@@ -8109,6 +8234,7 @@ defineExpose({
                     @seeked="onTimelinePlayerReady(slot.id, $event, true)"
                     @loadedmetadata="onTimelinePlayerReady(slot.id, $event)"
                     @timeupdate="onTimelinePlayerTimeUpdate(slot.id)"
+                    @waiting="onTimelinePlayerWaiting(slot.id, $event)"
                     @error="onTimelinePlayerError(slot.id, $event)"
                   />
                   </div>

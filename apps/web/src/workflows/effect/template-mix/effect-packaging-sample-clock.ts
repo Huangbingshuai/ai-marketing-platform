@@ -57,7 +57,7 @@ export class PackagingSampleClock {
     }));
   }
 
-  async start(clips: ScheduledPackagingClip[], seconds: number): Promise<boolean> {
+  async start(clips: ScheduledPackagingClip[], seconds: number, frameReady?: Promise<boolean>): Promise<boolean> {
     this.stop();
     if (!clips.length) return false;
     const version = this.version;
@@ -66,8 +66,9 @@ export class PackagingSampleClock {
     this.pending = true;
     try {
       // Called synchronously from the play gesture, before any network/decode await.
-      await Promise.all([context.resume(), this.prepare(clips)]);
+      const [, , ready] = await Promise.all([context.resume(), this.prepare(clips), frameReady]);
       if (version !== this.version) return false;
+      if (ready === false) { this.stop(); return false; }
       if (context.state !== 'running') throw new Error('浏览器未允许音频播放，请再次点击播放');
       this.anchor = context.currentTime + 0.05;
       for (const clip of clips) {
