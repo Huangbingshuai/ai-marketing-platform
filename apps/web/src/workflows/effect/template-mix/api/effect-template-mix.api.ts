@@ -1,5 +1,6 @@
 import type {
   ApiResponse,
+  DeleteEffectTemplateMixData,
   EffectTemplateMixDraft,
   EffectTemplateMixAiRun,
   EffectTemplateMixWorkspaceData,
@@ -23,6 +24,12 @@ const basePath = (projectId: string): string =>
 
 const outputPath = (projectId: string): string =>
   '/projects/' + encodeURIComponent(projectId) + '/workflows/effect/final-output';
+
+export const deleteEffectTemplateMix = (projectId: string, workflowRunId: string,
+  templateId: string, expectedRevision: number): Promise<ApiResponse<DeleteEffectTemplateMixData>> =>
+  requestJson(basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/delete', {
+    method: 'POST', operation: '删除混剪模板及其全部分支', body: { workflowRunId, expectedRevision },
+  });
 export const loadMixFinalOutputRuns = (projectId: string, workflowRunId: string, signal?: AbortSignal)
   : Promise<ApiResponse<FinalOutputRun[]>> => requestJson(outputPath(projectId) +
     '?workflowRunId=' + encodeURIComponent(workflowRunId), { operation: '读取成片工程更新任务', signal });

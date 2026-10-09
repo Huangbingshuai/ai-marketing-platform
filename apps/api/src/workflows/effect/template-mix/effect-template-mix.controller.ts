@@ -14,11 +14,23 @@ import {
 import { EffectTemplateMixService } from './effect-template-mix.service';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { EffectTemplateDeletionService } from './effect-template-deletion.service';
 
 @Controller('projects/:projectId/workflows/effect/template-mix')
 export class EffectTemplateMixController {
   constructor(private readonly service: EffectTemplateMixService,
-    private readonly completion: EffectTemplateMixCompletionService) {}
+    private readonly completion: EffectTemplateMixCompletionService,
+    private readonly deletion: EffectTemplateDeletionService) {}
+
+  @Post('templates/:templateId/delete')
+  deleteTemplate(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('templateId', new ParseUUIDPipe({ version: '4' })) templateId: string,
+    @Body() body: EffectTemplateMixRevisionDto,
+  ) {
+    return this.deletion.remove(projectId, body.workflowRunId, templateId, body.expectedRevision);
+  }
 
   @Get()
   workspace(

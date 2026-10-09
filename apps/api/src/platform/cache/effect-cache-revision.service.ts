@@ -14,6 +14,7 @@ const base = [
   'working_artifact_revision_files',
   'effect_import_products',
   'effect_import_workspaces',
+  'effect_template_deletions',
 ] as const;
 const source = ['effect_import_drafts', 'effect_import_materials'] as const;
 const extraction = [

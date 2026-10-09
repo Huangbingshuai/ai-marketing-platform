@@ -36,6 +36,7 @@ import {
 import { createEffectManualBranchInTransaction } from './effect-manual-branch';
 import { selectedEffectTemplatePaths } from './effect-template-current-path';
 import { recoverPublishedRenderPrompt } from './effect-published-render-source';
+import { artifactTemplateId, pruneDeletedTemplates } from './effect-template-deletion';
 
 export type WorkingArtifactUpsertInput = {
   kind: WorkingArtifactKind;
@@ -353,7 +354,15 @@ export class WorkflowWorkingRepository {
     );
   }
 
-  findRun(projectId: string, workflowRunId: string) {
+  private deletedTemplates(projectId: string) {
+    return this.prisma.effectTemplateDeletion?.findMany?.({ where: { projectId },
+      select: { templateId: true, workflowRunIds: true } }) ?? Promise.resolve([]);
+  }
+
+
+  async findRun(projectId: string, workflowRunId: string) {
+    const deletions = await this.deletedTemplates(projectId);
+    if (deletions.some((d) => d.workflowRunIds.includes(workflowRunId))) return null;
     return this.prisma.workflowRun.findFirst({ where: { id: workflowRunId, projectId } });
   }
 
@@ -487,8 +496,11 @@ export class WorkflowWorkingRepository {
    * It does not reserve a visible version number, but a later branch forked from it still has to
    * land under an ancestor the user can actually see.
    */
-  listEffectRunBranches(projectId: string) {
-    return this.prisma.workflowRun.findMany({
+  async listEffectRunBranches(projectId: string) {
+    const deletions = await this.deletedTemplates(projectId);
+    const deletedIds = new Set(deletions.map((d) => d.templateId));
+    const removedRuns = new Set(deletions.flatMap((d) => d.workflowRunIds));
+    const rows = await this.prisma.workflowRun.findMany({
       where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
       include: {
         nodeStates: {
@@ -501,8 +513,15 @@ export class WorkflowWorkingRepository {
         },
         effectTemplateMixAiRuns: {
           where: { status: 'COMPLETED', outputVariantId: { not: null } },
-          select: { templateId: true, outputVariantId: true, idempotencyKey: true,
-            status: true, inputSnapshot: true, selectionResult: true, completedAt: true },
+          select: {
+            templateId: true,
+            outputVariantId: true,
+            idempotencyKey: true,
+            status: true,
+            inputSnapshot: true,
+            selectionResult: true,
+            completedAt: true,
+          },
         },
         effectPackagingRuns: {
           select: { templateId: true, status: true, idempotencyKey: true, completedAt: true },
@@ -527,6 +546,20 @@ export class WorkflowWorkingRepository {
         },
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return rows.filter((r) => !removedRuns.has(r.id)).map((r) => {
+      let parent = r.parentWorkflowRunId;
+      const seen = new Set<string>();
+      while (parent && removedRuns.has(parent) && !seen.has(parent)) {
+        seen.add(parent); parent = rows.find((row) => row.id === parent)?.parentWorkflowRunId ?? null;
+      }
+      const visibleArtifacts = r.workingArtifacts.filter((a) => !deletedIds.has(artifactTemplateId(a.artifactKey) ?? ''));
+      const visibleIds = new Set(visibleArtifacts.map((a) => a.id));
+      return { ...r, parentWorkflowRunId: parent, workingArtifacts: visibleArtifacts,
+        workingArtifactRevisions: r.workingArtifactRevisions.filter((s) => visibleIds.has(s.workingArtifactId)),
+        effectTemplateMixAiRuns: r.effectTemplateMixAiRuns.filter((t) => !deletedIds.has(t.templateId)),
+        effectPackagingRuns: r.effectPackagingRuns.filter((t) => !deletedIds.has(t.templateId)),
+        nodeStates: r.nodeStates.map((s) => ({ ...s, state: pruneDeletedTemplates(s.state, deletedIds) as Prisma.JsonValue })) };
     });
   }
 
@@ -596,10 +629,13 @@ export class WorkflowWorkingRepository {
     });
   }
 
-  findNodeState(projectId: string, workflowRunId: string, nodeId: string) {
-    return this.prisma.workflowNodeState.findUnique({
+  async findNodeState(projectId: string, workflowRunId: string, nodeId: string) {
+    const row = await this.prisma.workflowNodeState.findUnique({
       where: { projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId } },
     });
+    if (!row || !['TEMPLATE_MIX', 'FINAL_OUTPUT', EFFECT_TEMPLATE_CURRENT_PATH_NODE_ID].includes(nodeId)) return row;
+    const deleted = new Set((await this.deletedTemplates(projectId)).map((d) => d.templateId));
+    return deleted.size ? { ...row, state: pruneDeletedTemplates(row.state, deleted) as Prisma.JsonValue } : row;
   }
 
   async activateNode(projectId: string, workflowRunId: string, nodeId: string) {
@@ -813,6 +849,18 @@ export class WorkflowWorkingRepository {
   }
 
   async listArtifacts(
+    projectId: string,
+    filters: WorkingArtifactListQuery,
+  ): Promise<WorkingArtifactRecord[]> {
+    const deletions = await this.deletedTemplates(projectId);
+    const ids = new Set(deletions.map((d) => d.templateId));
+    const removedRuns = new Set(deletions.flatMap((d) => d.workflowRunIds));
+    return (await this.loadArtifacts(projectId, filters)).filter((a) =>
+      !ids.has(artifactTemplateId(a.artifactKey) ?? '') && !removedRuns.has(a.workflowRunId));
+  }
+
+
+  private async loadArtifacts(
     projectId: string,
     filters: WorkingArtifactListQuery,
   ): Promise<WorkingArtifactRecord[]> {

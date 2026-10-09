@@ -691,3 +691,9 @@ export type EffectTemplateMixIncrementalPlan = {
   }>;
   omitted: Array<{ materialId: string; reason: string }>;
 };
+/** Accepted immediately; database/files/cache cleanup runs in the background. */
+export interface DeleteEffectTemplateMixData {
+  templateId: string;
+  workflowRunId: string;
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED';
+}

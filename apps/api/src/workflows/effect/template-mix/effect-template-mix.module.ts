@@ -5,6 +5,9 @@ import { FileModule } from '../../../platform/file/file.module';
 import { JobModule } from '../../../platform/job/job.module';
 import { EffectTemplateMixController } from './effect-template-mix.controller';
 import { EffectTemplateMixService } from './effect-template-mix.service';
+import { EffectTemplateDeletionService } from './effect-template-deletion.service';
+import { EffectTemplateDeletionRepository } from './effect-template-deletion.repository';
+import { EffectTemplateDeletionCache } from './effect-template-deletion-cache.service';
 import { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 import { EffectTemplateMixWorkerController } from './effect-template-mix-worker.controller';
@@ -44,6 +47,9 @@ import {
   ],
   providers: [
     EffectTemplateMixService,
+    EffectTemplateDeletionService,
+    EffectTemplateDeletionRepository,
+    EffectTemplateDeletionCache,
     EffectTemplateMixCompletionService,
     EffectTemplateMixAiRepository,
     EffectTemplateMixWorkerGuard,

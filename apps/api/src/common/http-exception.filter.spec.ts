@@ -17,6 +17,15 @@ afterEach(() => {
 });
 
 describe('HttpExceptionFilter', () => {
+  it('reports deleted-template late writes as a safe conflict, without logging raw database data', () => {
+    const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const { host, response } = hostFor();
+    new HttpExceptionFilter().catch(new Error('driver message EFFECT_TEMPLATE_DELETED'), host as never);
+    expect(response.status).toHaveBeenCalledWith(409);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'VALIDATION_ERROR',
+      message: '此混剪模板已删除，请返回模板列表继续操作' }));
+    expect(logged).not.toHaveBeenCalled();
+  });
   it('answers a thrown HttpException with its own status and message', () => {
     const { host, response } = hostFor();
 

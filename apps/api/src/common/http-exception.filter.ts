@@ -53,6 +53,9 @@ const isFileTooLarge = (exception: unknown): boolean =>
   'code' in exception &&
   exception.code === 'LIMIT_FILE_SIZE';
 
+const isDeletedTemplateWrite = (exception: unknown): boolean =>
+  exception instanceof Error && exception.message.includes('EFFECT_TEMPLATE_DELETED');
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
@@ -60,12 +63,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const status =
       exception instanceof HttpException
         ? exception.getStatus()
+        : isDeletedTemplateWrite(exception)
+          ? HttpStatus.CONFLICT
         : isFileTooLarge(exception)
           ? HttpStatus.PAYLOAD_TOO_LARGE
           : HttpStatus.INTERNAL_SERVER_ERROR;
-    const code = exceptionCode(exception);
+    const code = isDeletedTemplateWrite(exception) ? 'VALIDATION_ERROR' : exceptionCode(exception);
     const message =
-      code === 'FILE_TOO_LARGE'
+      isDeletedTemplateWrite(exception)
+        ? '此混剪模板已删除，请返回模板列表继续操作'
+      : code === 'FILE_TOO_LARGE'
         ? '文件大小超过上传限制'
         : exception instanceof HttpException
           ? exceptionMessage(exception)
@@ -75,7 +82,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // This filter takes over from Nest's own handler, which is the thing that normally prints unhandled
     // stacks. Without this line an unexpected 500 leaves no trace anywhere — the response body says only
     // "服务器内部错误", so there is nothing to debug with. Log the stack; keep the body as it is.
-    if (!(exception instanceof HttpException))
+    if (!(exception instanceof HttpException) && !isDeletedTemplateWrite(exception))
       logger.error(
         `[${String(requestId)}] ${exception instanceof Error ? exception.stack : String(exception)}`,
       );

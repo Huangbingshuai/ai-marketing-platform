@@ -108,6 +108,7 @@ import {
   resumeEffectTemplateMixAppend,
   createEmptyEffectTemplateMixVariant,
   deleteEffectTemplateMixVariant,
+  deleteEffectTemplateMix,
   getBackgroundEffectTemplateMixAiRun,
   getEffectTemplateMixAiRun,
   loadEffectTemplateMixWorkspace,
@@ -4035,29 +4036,13 @@ const addTemplate = (): void => {
 const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<void> => {
   if (deletingTemplateId.value) return;
   const scope = currentWorkspaceScope.value;
-  if (templateDirectory.value.workflowRunIds[entry.id] &&
-    templateDirectory.value.workflowRunIds[entry.id] !== props.workflowRunId) {
-    await openTemplateWorkspace(entry.id, 'CONFIG');
-    return;
-  }
-  if (
-    entry.aiFillLocked ||
-    Boolean(entry.filledTemplateHash) ||
-    aiRuns.value.some(
-      (run) =>
-        run.templateId === entry.id &&
-        (run.status === 'QUEUED' || run.status === 'RUNNING' || run.status === 'COMPLETED'),
-    ) ||
-    committedVersions[entry.id]
-  ) {
-    showNotice('此模板已有智能填充或下游分支，不能删除', 'warning');
-    return;
-  }
+  const projectId = props.projectId;
+  const targetRunId = templateDirectory.value.workflowRunIds[entry.id] ?? props.workflowRunId;
   if (
     !(await requestActionConfirmation({
       eyebrow: '删除模板',
       title: `删除模板「${entry.workspace.template.name}」？`,
-      description: '删除后模板配置将无法恢复，此操作不会影响其他模板。',
+      description: '将永久删除此模板、全部成片工程、包装、导出结果及其版本子分支，并取消其正在执行的任务。确认后后台清理，不影响其他模板；共享素材保留。此操作无法恢复。',
       confirmLabel: '确认删除',
       tone: 'danger',
     }))
@@ -4065,21 +4050,34 @@ const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<vo
     return;
   deletingTemplateId.value = entry.id;
   try {
-    if (!(await persist())) return;
-    const remaining = catalog.value.filter(({ id }) => id !== entry.id);
-    const nextActiveId =
-      activeTemplateId.value === entry.id ? (remaining[0]?.id ?? '') : activeTemplateId.value;
-    const result = await saveEffectTemplateMixDraft(
-      props.projectId,
-      props.workflowRunId,
-      draftRevision.value,
-      serializeEffectTemplateMixDraft(remaining, nextActiveId),
-    );
-    if (!installWorkspaceData(result.data, scope)) return;
+    if (!(await flushPendingEdits()) || scope !== currentWorkspaceScope.value) return;
+    const target = (await loadEffectTemplateMixWorkspace(projectId, targetRunId)).data;
+    if (!target.draftRevision || !target.draft.templates.some((template) => template.id === entry.id))
+      throw new Error('模板已变化，请刷新后重新确认');
+    const result = await deleteEffectTemplateMix(projectId, targetRunId, entry.id, target.draftRevision);
+    if (projectId !== props.projectId || scope !== currentWorkspaceScope.value) return;
+    draftRace.changed();
+    controller?.abort();
+    clearTimeout(saveTimer);
+    catalog.value = catalog.value.filter(({ id }) => id !== entry.id);
+    templateDirectory.value.entries = templateDirectory.value.entries.filter(({ id }) => id !== entry.id);
+    delete templateDirectory.value.workflowRunIds[entry.id];
+    delete templateDirectory.value.workspaces[entry.id];
+    delete templateDirectory.value.pendingAddedMaterialIds[entry.id];
     delete uiByTemplate[entry.id];
+    delete committedVersions[entry.id];
+    aiRuns.value = aiRuns.value.filter((run) => run.templateId !== entry.id);
+    if (activeTemplateId.value === entry.id || !catalog.value.some(({ id }) => id === activeTemplateId.value))
+      activeTemplateId.value = catalog.value[0]?.id ?? '';
     view.value = 'CONFIG';
     saveState.value = 'saved';
-    showNotice('模板已删除');
+    releaseExplicitWorkspaceTarget();
+    showNotice('模板及其分支已移除，后台正在清理数据');
+    emit('workflowRunChange');
+    if (props.workflowRunId === targetRunId && result.data.workflowRunId !== targetRunId) {
+      rememberWorkbench({ workflowRunId: result.data.workflowRunId, templateId: '', variantId: '', view: 'CONFIG' });
+      selectedTemplateWorkflowRunId.value = result.data.workflowRunId;
+    } else await load();
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '删除模板失败，请刷新后重试', 'error');
   } finally {
