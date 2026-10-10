@@ -71,7 +71,7 @@ docker compose --profile customized-extraction build customized-extraction-worke
 docker compose --profile customized-extraction up -d customized-extraction-worker
 ```
 
-API 与该 Worker 必须设置相同的 `CUSTOMIZED_EXTRACTION_WORKER_TOKEN`。模型配置复用 `ARK_DOCUMENT_*`，不分析品牌图片。两个提炼镜像的构建上下文均为 `workers/`，通过本地 `shared/extraction-runtime` 依赖共享解析底座。构建镜像不代表已替换现有容器；更新前核实无活动任务。启动消费者会处理待执行队列，不应把真实模型运行作为无付费验证。
+API 与该 Worker 必须设置相同的 `CUSTOMIZED_EXTRACTION_WORKER_TOKEN`。模型名称复用 `ARK_DOCUMENT_MODEL`，重试使用 `CUSTOMIZED_EXTRACTION_MAX_ATTEMPTS=2`；定制类使用 `CUSTOMIZED_EXTRACTION_REASONING_EFFORT=medium`、`CUSTOMIZED_EXTRACTION_AUDIT_REASONING_EFFORT=low`、`CUSTOMIZED_EXTRACTION_DOCUMENT_REASONING_EFFORT=low`、`CUSTOMIZED_EXTRACTION_MODEL_TIMEOUT_SECONDS=300`、`CUSTOMIZED_EXTRACTION_MAX_OUTPUT_TOKENS=16384`、`CUSTOMIZED_EXTRACTION_RETRY_MAX_OUTPUT_TOKENS=32768`，不影响效果类配置，不分析品牌图片。两个提炼镜像的构建上下文均为 `workers/`，通过本地 `shared/extraction-runtime` 依赖共享解析底座。构建镜像不代表已替换现有容器；更新前核实无活动任务。启动消费者会处理待执行队列，不应把真实模型运行作为无付费验证。
 
 无付费定制提炼接口验证（随机隔离项目、禁用后台分发）：
 

@@ -77,6 +77,80 @@ class Review(StrictModel):
     dismissedIssueIds: list[str] = Field(default_factory=list)
 
 
+BriefField = Literal[
+    "brandName",
+    "projectName",
+    "projectBackground",
+    "brandTone",
+    "visualConsistencyRules",
+    "avoidedElements",
+    "productName",
+    "productDescription",
+    "productSpecifications",
+    "productAppearance",
+    "sellingPoints",
+    "targetAudience",
+]
+
+
+class AuditEvidence(StrictModel):
+    assetId: str
+    assetVersion: int = Field(ge=1)
+    location: str = Field(min_length=1, max_length=1000)
+    quote: str = Field(min_length=1, max_length=2000)
+
+
+class AuditFindingContent(StrictModel):
+    field: BriefField
+    kind: Literal["MISSING", "INCORRECT", "MISATTRIBUTED", "CONFLICT"]
+    description: str = Field(min_length=1, max_length=1000)
+    proposedValue: str = Field(max_length=50000)
+    itemIndex: int | None = Field(ge=0)
+
+
+class AuditFinding(AuditFindingContent):
+    evidence: AuditEvidence
+
+
+class AuditReport(StrictModel):
+    checkedFields: list[BriefField]
+    findings: list[AuditFinding]
+
+
+class RawAuditFinding(AuditFindingContent):
+    lineNumbers: list[int] = Field(min_length=1, max_length=4)
+
+
+class RawAuditReport(StrictModel):
+    """Provider-only references; the runtime pins exact quotes and source identity."""
+
+    checkedFields: list[BriefField]
+    findings: list[RawAuditFinding]
+
+
+class ContextFact(StrictModel):
+    field: BriefField
+    fact: str = Field(min_length=1, max_length=50000)
+    lineNumbers: list[int] = Field(min_length=1)
+
+
+class RepairContext(StrictModel):
+    """Private model output, not a replacement for the public brief contract."""
+
+    facts: list[ContextFact]
+
+
+class ConflictChoice(StrictModel):
+    conflictingFacts: list[str] = Field(min_length=1)
+
+
+class ConflictAlternatives(StrictModel):
+    """AI partitions semantics; runtime formats every choice with the shared facts."""
+
+    commonFacts: list[str]
+    choices: list[ConflictChoice] = Field(min_length=2)
+
+
 class QueueMessage(StrictModel):
     schemaVersion: Literal[1]
     projectId: str

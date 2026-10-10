@@ -8,15 +8,24 @@ from langgraph.graph import START, END, StateGraph
 from extraction_runtime.docling_parser import DocumentParser
 from extraction_runtime.documents import split_document_markdown
 from .api import Api
-from .models import Candidate, Review, Source, NODES
+from .models import AuditReport, BriefField, Candidate, Review, Source, NODES, LABELS
 from .documents import (
     template_candidate,
     filled_template_text,
-    combine_chunks,
     restore_docx_form_linebreaks,
-    restore_selling_point_sources,
 )
 from .provider import Provider
+from .quality import (
+    AuditValidationError,
+    audit_document,
+    merge_candidates,
+    repair_candidate,
+    validate_audit,
+    collect_repair_context,
+    review_candidate,
+    FINAL_REVIEW_INSTRUCTION,
+    complete_conflict_alternatives,
+)
 
 
 class PartialFailure(RuntimeError):
@@ -88,6 +97,12 @@ class Pipeline:
         self.checkpoints = {
             (c["nodeId"], c["sourceId"]): c["output"] for c in checkpoints
         }
+        # Old unfinished tasks may reuse parsing/extraction, but cannot bypass the new raw audit.
+        semantic = self.checkpoints.get(("SEMANTIC_REFINEMENT", ""), {})
+        summary = semantic.get("auditSummary") if isinstance(semantic, dict) else None
+        if not isinstance(summary, dict) or summary.get("schemaVersion") != 1:
+            self.checkpoints.pop(("SEMANTIC_REFINEMENT", ""), None)
+            self.checkpoints.pop(("NORMALIZATION", ""), None)
         self.semaphore = asyncio.Semaphore(concurrency)
         self.model_semaphore = asyncio.Semaphore(concurrency)
         self.chunk_chars = chunk_chars
@@ -179,7 +194,17 @@ class Pipeline:
                             for value in values:
                                 if isinstance(value, BaseException):
                                     raise value
-                            candidate = combine_chunks(cast(list[Candidate], values))
+                            candidates = cast(list[Candidate], values)
+                            for value in candidates:
+                                validate_provenance(value, [doc])
+                            candidate = await merge_candidates(
+                                self.provider,
+                                self.model_semaphore,
+                                validate_provenance,
+                                candidates,
+                                [doc],
+                                "DOCUMENT_EXTRACT",
+                            )
                         validate_provenance(candidate, [doc])
                         output = candidate.model_dump()
                     await self.checkpoint(node, doc["assetId"], output)
@@ -211,6 +236,101 @@ class Pipeline:
             await self.checkpoint(node, "", {}, "PARTIAL")
             raise PartialFailure("one or more documents failed")
 
+    async def audit_documents(
+        self, candidate: Candidate
+    ) -> tuple[list[AuditReport], int, int]:
+        done: set[str] = set()
+
+        async def progress(doc: dict[str, Any]) -> None:
+            done.add(doc["assetId"])
+            self.progress = 64 + int(12 * len(done) / len(self.input["documents"]))
+            await self.api.call(
+                "PUT",
+                "progress",
+                {"progress": self.progress, "nodeId": "SEMANTIC_REFINEMENT"},
+            )
+
+        async def one(doc: dict[str, Any]) -> tuple[AuditReport, int]:
+            async with self.semaphore:
+                try:
+                    parsed = (
+                        await self.api.content(doc["assetId"], parsed=True)
+                    ).decode("utf-8")
+                    text = filled_template_text(parsed)
+                    # Empty forms do not carry facts; their examples never become model input.
+                    template = template_candidate(parsed, doc)
+                    if template is not None and not any(
+                        template.fields.model_dump().values()
+                    ):
+                        await self.checkpoint(
+                            "SEMANTIC_REFINEMENT", doc["assetId"], {}, "SKIPPED"
+                        )
+                        await progress(doc)
+                        return AuditReport(checkedFields=[], findings=[]), 0
+                    cached = self.checkpoints.get(
+                        ("SEMANTIC_REFINEMENT", doc["assetId"])
+                    )
+                    if cached and "auditReport" in cached:
+                        report = AuditReport.model_validate(cached["auditReport"])
+                        validate_audit(report, doc, text, candidate)
+                        count = int(cached["chunkCount"])
+                        if count < 1:
+                            raise ValueError(
+                                "raw audit checkpoint has invalid chunk count"
+                            )
+                        await progress(doc)
+                        return report, count
+                    await self.checkpoint(
+                        "SEMANTIC_REFINEMENT", doc["assetId"], {}, "RUNNING"
+                    )
+                    document_candidate = Candidate.model_validate(
+                        self.checkpoints[("DOCUMENT_EXTRACT", doc["assetId"])]
+                    )
+                    report, count = await audit_document(
+                        self.provider,
+                        self.model_semaphore,
+                        doc,
+                        text,
+                        document_candidate,
+                        candidate,
+                        self.chunk_chars,
+                    )
+                    await self.checkpoint(
+                        "SEMANTIC_REFINEMENT",
+                        doc["assetId"],
+                        {"auditReport": report.model_dump(), "chunkCount": count},
+                    )
+                    await progress(doc)
+                    return report, count
+                except Exception as error:
+                    if isinstance(error, AuditValidationError):
+                        logging.warning(
+                            "Extraction audit validation task=%s reason=%s",
+                            self.api.task_id,
+                            error,
+                        )
+                    await self.checkpoint(
+                        "SEMANTIC_REFINEMENT", doc["assetId"], {}, "FAILED"
+                    )
+                    raise
+
+        values = await asyncio.gather(
+            *(one(doc) for doc in self.input["documents"]), return_exceptions=True
+        )
+        if any(isinstance(value, BaseException) for value in values):
+            await self.checkpoint("SEMANTIC_REFINEMENT", "", {}, "PARTIAL")
+            raise PartialFailure("one or more raw document audits failed")
+        audited = [
+            (report, count)
+            for report, count in cast(list[tuple[AuditReport, int]], values)
+            if count
+        ]
+        return (
+            [report for report, _ in audited],
+            sum(count for _, count in audited),
+            len(audited),
+        )
+
     async def stage(self, node: str) -> None:
         self.current_node = node
         self.progress = NODES.index(node) * 16
@@ -232,70 +352,76 @@ class Pipeline:
                 )
                 for d in self.input["documents"]
             ]
-            # Blank forms carry no facts; merging them adds cost and risks importing examples.
-            candidates = [
-                c for c in candidates if any(c.fields.model_dump().values()) or c.issues
-            ]
-            if not candidates:
-                fused = Candidate.model_validate(
-                    self.checkpoints[
-                        ("DOCUMENT_EXTRACT", self.input["documents"][0]["assetId"])
-                    ]
-                )
-            elif len(candidates) == 1:
-                fused = candidates[0]
-            else:
-
-                async def merge(left: Candidate, right: Candidate) -> Candidate:
-                    async with self.model_semaphore:
-                        result = await self.provider.generate(
-                            node,
-                            "合并两份信息卡，完整保留独立事实和来源；独立卖点尽量保持原文，不合并、不改写。sellingPoints 合并后 fieldSources 的 itemIndex 必须重新按最终数组从0编号，不沿用各输入的局部索引。相互矛盾的文本字段列入 issues，blocking=true；候选值保留该字段不冲突的共同信息。不要把不同段落补充误判为冲突。有文档依据的同一产品全名与简称不构成名称冲突，采用完整名称。待设计的包装版式仅归入外观，不重复混入规格。",
-                            json.dumps(
-                                [left.model_dump(), right.model_dump()],
-                                ensure_ascii=False,
-                            ),
-                            Candidate,
-                        )
-                        result = restore_selling_point_sources(result, [left, right])
-                        validate_provenance(result, self.input["documents"])
-                        return result
-
-                # Balanced rounds retain the same N-1 merges without serialising independent pairs.
-                while len(candidates) > 1:
-                    merged = await asyncio.gather(
-                        *(
-                            merge(candidates[i], candidates[i + 1])
-                            for i in range(0, len(candidates) - 1, 2)
-                        ),
-                        return_exceptions=True,
-                    )
-                    for value in merged:
-                        if isinstance(value, BaseException):
-                            raise value
-                    candidates = cast(list[Candidate], merged) + (
-                        candidates[-1:] if len(candidates) % 2 else []
-                    )
-                fused = candidates[0]
+            fused = await merge_candidates(
+                self.provider,
+                self.model_semaphore,
+                validate_provenance,
+                candidates,
+                self.input["documents"],
+                node,
+            )
             validate_provenance(fused, self.input["documents"])
             await self.checkpoint(node, "", fused.model_dump())
         elif node == "SEMANTIC_REFINEMENT":
             candidate = Candidate.model_validate(self.checkpoints[("FUSION", "")])
+            reports, chunk_count, document_count = await self.audit_documents(candidate)
+            audit = AuditReport(
+                checkedFields=reports[0].checkedFields if reports else [],
+                findings=[finding for report in reports for finding in report.findings],
+            )
+            original_fields = candidate.fields.model_dump()
+            context_fields = {f.field for f in audit.findings} | {
+                i.field for i in candidate.issues
+            }
+            context = (
+                await collect_repair_context(
+                    self.provider,
+                    self.model_semaphore,
+                    [
+                        (
+                            doc,
+                            filled_template_text(
+                                (
+                                    await self.api.content(doc["assetId"], parsed=True)
+                                ).decode("utf-8")
+                            ),
+                        )
+                        for doc in self.input["documents"]
+                    ],
+                    audit,
+                    self.chunk_chars,
+                    cast(list[BriefField], [issue.field for issue in candidate.issues]),
+                )
+                if audit.findings or candidate.issues
+                else []
+            )
+            candidate = await repair_candidate(
+                self.provider,
+                self.model_semaphore,
+                validate_provenance,
+                candidate,
+                audit,
+                self.input["documents"],
+                context,
+            )
+            self.progress = 78
+            await self.api.call(
+                "PUT", "progress", {"progress": self.progress, "nodeId": node}
+            )
             review = (
-                await self.provider.generate(
-                    node,
-                    "根据 documentCandidates 核对 candidate 中无依据断言与实质矛盾。判断顺序：先判断各文档是否在说同一产品，再判断同一属性的断言是否互斥。完整名称与同产品补充资料的简称、型号代称不是互斥事实；一份文档未提及某字段也不构成冲突。不得仅因两份文档 productName 文本不同生成 issue；已保留明确完整名称且其他文档只是简称时属于正常项。返回全部仍成立的 issues，包括核对后保持不变的既有条目；正常项不创建提示，不改写原始事实。不强制补齐空字段。已有冲突须逐条重新阅读 documentCandidates 的完整字段，先找出所有非冲突事实，再仅替换互斥部分，为每个 alternatives 重建完整字段值；不得直接照抄可能残缺的融合候选。修订已有 issue 时沿用其 id。dismissedIssueIds 仅填经原始文档核对后明确属于误报的已有 issue id，例如同产品全名与简称；不存在误报时返回空数组。不能因缺少证据、自己偏好某个候选、或候选措辞相似而消除真实规格冲突；仅省略 issue 不能消除它。必须逐一复核已有冲突的 alternatives：每项都是用户选用后替换整个字段的完整值，不是冲突片段。某一规格冲突不代表整组规格冲突；一份文档未提及某项事实不等于否认，其他文档明确且没有反证的事实须保留在每个候选中。即使融合时字段被清空，也须从 documentCandidates 找回这些共同信息。仅当资料已明确保质期12个月、仅净含量200g和250g冲突时，两项候选都必须含保质期12个月。不得增加无依据事实。",
-                    json.dumps(
-                        {
-                            "candidate": candidate.model_dump(),
-                            "documentCandidates": [
-                                self.checkpoints[("DOCUMENT_EXTRACT", d["assetId"])]
-                                for d in self.input["documents"]
-                            ],
-                        },
-                        ensure_ascii=False,
-                    ),
-                    Review,
+                await review_candidate(
+                    self.provider,
+                    FINAL_REVIEW_INSTRUCTION,
+                    {
+                        "candidate": candidate.model_dump(),
+                        "documentCandidates": [
+                            self.checkpoints[("DOCUMENT_EXTRACT", d["assetId"])]
+                            for d in self.input["documents"]
+                        ],
+                        "verifiedRawFindings": [f.model_dump() for f in audit.findings],
+                        "supportingRawContext": context,
+                    },
+                    candidate,
                 )
                 if any(candidate.fields.model_dump().values())
                 else Review(issues=[])
@@ -314,11 +440,65 @@ class Pipeline:
             }
             issues.update({i.id: i for i in review.issues})
             candidate.issues = list(issues.values())
+            new_issue_fields = {i.field for i in candidate.issues} - context_fields
+            if new_issue_fields:
+                context.extend(
+                    await collect_repair_context(
+                        self.provider,
+                        self.model_semaphore,
+                        [
+                            (
+                                doc,
+                                filled_template_text(
+                                    (
+                                        await self.api.content(
+                                            doc["assetId"], parsed=True
+                                        )
+                                    ).decode("utf-8")
+                                ),
+                            )
+                            for doc in self.input["documents"]
+                        ],
+                        AuditReport(checkedFields=[], findings=[]),
+                        self.chunk_chars,
+                        cast(list[BriefField], sorted(new_issue_fields)),
+                    )
+                )
+            candidate = await complete_conflict_alternatives(
+                self.provider,
+                self.model_semaphore,
+                candidate,
+                [
+                    self.checkpoints[("DOCUMENT_EXTRACT", doc["assetId"])]
+                    for doc in self.input["documents"]
+                ],
+                context,
+            )
             validate_provenance(candidate, self.input["documents"])
-            await self.checkpoint(node, "", candidate.model_dump())
+            await self.checkpoint(
+                node,
+                "",
+                {
+                    **candidate.model_dump(),
+                    "auditSummary": {
+                        "schemaVersion": 1,
+                        "documentCount": document_count,
+                        "chunkCount": chunk_count,
+                        "findingCount": len(audit.findings),
+                        "correctedFields": [
+                            key
+                            for key in LABELS
+                            if original_fields[key] != getattr(candidate.fields, key)
+                        ],
+                    },
+                },
+            )
         elif node == "NORMALIZATION":
             candidate = Candidate.model_validate(
-                self.checkpoints[("SEMANTIC_REFINEMENT", "")]
+                {
+                    key: self.checkpoints[("SEMANTIC_REFINEMENT", "")][key]
+                    for key in ("fields", "fieldSources", "issues")
+                }
             )
             if not any(candidate.fields.model_dump().values()):
                 raise ValueError("empty template contains no facts")
@@ -338,7 +518,7 @@ class Pipeline:
                 except PartialFailure:
                     raise
                 except Exception as error:
-                    if isinstance(error, ProvenanceError):
+                    if isinstance(error, (ProvenanceError, AuditValidationError)):
                         logging.warning(
                             "Extraction validation task=%s node=%s reason=%s",
                             self.api.task_id,

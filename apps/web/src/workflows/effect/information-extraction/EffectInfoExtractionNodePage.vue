@@ -1415,6 +1415,7 @@ onBeforeUnmount(() => {
           <WorkflowExtractionActions
             :disabled="currentRunning || editBusy || validating"
             :running="currentRunning || editBusy"
+            :reextract="currentState.status !== 'NOT_GENERATED'"
             :label="currentActionLabel"
             @extract="runCurrentExtraction()"
             @details="openGraphDialog"
@@ -2433,3 +2434,5 @@ select {
   }
 }
 </style>
+
+<style scoped src="../../../platform/workflow/components/workflow-extraction-heading.css"></style>

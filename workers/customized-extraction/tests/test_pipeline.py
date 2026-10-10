@@ -18,6 +18,10 @@ from customized_extraction.models import (
     QueueMessage,
     Review,
     Issue,
+    AuditReport,
+    RepairContext,
+    RawAuditReport,
+    ConflictAlternatives,
 )
 from customized_extraction.pipeline import Pipeline, PartialFailure, validate_provenance
 from customized_extraction.api import Api
@@ -39,7 +43,7 @@ class FakeApi:
 
     def __init__(self) -> None:
         self.raw: dict[str, bytes] = {DOC["assetId"]: TEXT.encode()}
-        self.parsed: dict[str, bytes] = {}
+        self.parsed: dict[str, bytes] = {DOC["assetId"]: TEXT.encode()}
         self.steps: dict[tuple[str, str], dict[str, Any]] = {}
         self.progress: list[int] = []
         self.completed: dict[str, Any] | None = None
@@ -74,8 +78,23 @@ class FakeProvider:
     ) -> T:
         self.calls.append(stage)
         assert "brandReferences" not in content
+        if model in (AuditReport, RawAuditReport):
+            assert "虚构认证示例" not in content
+            return model.model_validate({"checkedFields": list(LABELS), "findings": []})
         if model is Review:
             return model.model_validate({"issues": []})
+        if model is RepairContext:
+            return model.model_validate({"facts": []})
+        if model is ConflictAlternatives:
+            return model.model_validate(
+                {
+                    "commonFacts": [],
+                    "choices": [
+                        {"conflictingFacts": [value]}
+                        for value in json.loads(content)["issue"]["alternatives"]
+                    ],
+                }
+            )
         if stage == "FUSION":
             return model.model_validate(json.loads(content)[0])
         raise AssertionError("standard template must not send examples to model")
@@ -154,7 +173,7 @@ async def test_linear_graph_saves_every_stage_and_never_reads_brand_image() -> N
     await pipeline(api, provider, [doc]).run()
     assert api.completed is not None
     assert Candidate.model_validate(api.completed).fields.productName == "青梅酱"
-    assert provider.calls == ["SEMANTIC_REFINEMENT"]
+    assert provider.calls == ["SEMANTIC_REFINEMENT", "SEMANTIC_REFINEMENT"]
     assert [api.steps[n, ""]["status"] for n in NODES] == ["SUCCEEDED"] * 6
     assert set(api.downloads) == {DOC["assetId"]}
     assert max(api.progress) >= 80
@@ -185,7 +204,11 @@ async def test_legacy_form_is_mapped_by_model_using_only_entered_values() -> Non
     doc = {**DOC, "sizeBytes": len(api.raw[DOC["assetId"]])}
     await pipeline(api, provider, [doc]).run()
     assert api.completed is not None
-    assert provider.calls == ["DOCUMENT_EXTRACT", "SEMANTIC_REFINEMENT"]
+    assert provider.calls == [
+        "DOCUMENT_EXTRACT",
+        "SEMANTIC_REFINEMENT",
+        "SEMANTIC_REFINEMENT",
+    ]
 
 
 @pytest.mark.asyncio
@@ -205,7 +228,7 @@ async def test_partial_failure_retains_success_and_retry_uses_same_snapshot_chec
     await pipeline(api, provider, [first, second], checkpoints).run()
     assert api.completed is not None
     # First document is read only as parsed text, never downloaded/reparsed again.
-    assert api.downloads.count(first["assetId"]) == 1
+    assert api.downloads.count(first["assetId"]) == 2
 
 
 @pytest.mark.asyncio
@@ -235,7 +258,14 @@ async def test_chunks_run_with_global_bound_and_keep_input_order() -> None:
         ) -> T:
             if stage != "DOCUMENT_EXTRACT":
                 return await super().generate(stage, instruction, content, model)
-            index = json.loads(content)["chunk"]
+            payload = json.loads(content)
+            if isinstance(payload, list):
+                return model.model_validate(
+                    combine_chunks(
+                        [Candidate.model_validate(v) for v in payload]
+                    ).model_dump()
+                )
+            index = payload["chunk"]
             self.active += 1
             self.peak = max(self.peak, self.active)
             await asyncio.sleep(0.02 if index % 2 else 0.005)
@@ -315,7 +345,7 @@ async def test_blank_companion_does_not_trigger_paid_fusion() -> None:
     )
     second["sizeBytes"] = len(api.raw[second["assetId"]])
     await pipeline(api, provider, [first, second]).run()
-    assert provider.calls == ["SEMANTIC_REFINEMENT"]
+    assert provider.calls == ["SEMANTIC_REFINEMENT", "SEMANTIC_REFINEMENT"]
     assert api.completed and api.completed["fields"]["productName"] == "青梅酱"
 
 
@@ -348,6 +378,13 @@ async def test_review_can_complete_existing_conflict_candidates_without_duplicat
             self, stage: str, instruction: str, content: str, model: type[T]
         ) -> T:
             assert stage == "SEMANTIC_REFINEMENT"
+            if model in (
+                AuditReport,
+                RawAuditReport,
+                RepairContext,
+                ConflictAlternatives,
+            ):
+                return await super().generate(stage, instruction, content, model)
             assert (
                 json.loads(content)["documentCandidates"][0]["fields"][
                     "productSpecifications"
@@ -371,7 +408,10 @@ async def test_review_can_complete_existing_conflict_candidates_without_duplicat
     )
     await execution.stage("SEMANTIC_REFINEMENT")
     reviewed = Candidate.model_validate(
-        execution.checkpoints["SEMANTIC_REFINEMENT", ""]
+        {
+            key: execution.checkpoints["SEMANTIC_REFINEMENT", ""][key]
+            for key in ("fields", "fieldSources", "issues")
+        }
     )
     assert reviewed.issues == [repaired]
 
@@ -381,7 +421,7 @@ async def test_review_can_complete_existing_conflict_candidates_without_duplicat
     "decision,remaining,invalid",
     [
         ({"issues": [], "dismissedIssueIds": ["name-alias"]}, 1, False),
-        ({"issues": []}, 2, False),
+        ({"issues": []}, 2, True),
         ({"issues": [], "dismissedIssueIds": ["unknown"]}, 1, True),
         ({"issues": [], "dismissedIssueIds": ["name-alias", "name-alias"]}, 1, True),
     ],
@@ -412,6 +452,8 @@ async def test_review_requires_explicit_valid_decision_to_dismiss_conflict(
         blocking=True,
     )
     candidate.issues.append(weight)
+    if decision.get("dismissedIssueIds") == ["name-alias"]:
+        decision = {**decision, "issues": [weight.model_dump()]}
 
     class DecisionProvider(FakeProvider):
         async def generate(
@@ -421,6 +463,13 @@ async def test_review_requires_explicit_valid_decision_to_dismiss_conflict(
             content: str,
             model: type[T],
         ) -> T:
+            if model in (
+                AuditReport,
+                RawAuditReport,
+                RepairContext,
+                ConflictAlternatives,
+            ):
+                return await super().generate(stage, instruction, content, model)
             return model.model_validate(decision)
 
     execution = pipeline(
@@ -437,13 +486,18 @@ async def test_review_requires_explicit_valid_decision_to_dismiss_conflict(
         ],
     )
     if invalid:
-        with pytest.raises(ValueError, match="dismissed issue identifiers"):
+        with pytest.raises(
+            ValueError, match="dismissed issue identifiers|cover all existing issues"
+        ):
             await execution.stage("SEMANTIC_REFINEMENT")
         assert ("SEMANTIC_REFINEMENT", "") not in execution.checkpoints
     else:
         await execution.stage("SEMANTIC_REFINEMENT")
         actual = Candidate.model_validate(
-            execution.checkpoints["SEMANTIC_REFINEMENT", ""]
+            {
+                key: execution.checkpoints["SEMANTIC_REFINEMENT", ""][key]
+                for key in ("fields", "fieldSources", "issues")
+            }
         )
         assert len(actual.issues) == remaining
         assert weight in actual.issues

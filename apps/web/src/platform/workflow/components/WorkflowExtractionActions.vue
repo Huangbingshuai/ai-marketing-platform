@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { LoaderCircle, RefreshCw, Workflow } from '@lucide/vue';
-defineProps<{ disabled?: boolean; running?: boolean; label: string }>();
+import { LoaderCircle, RefreshCw, Sparkles, Workflow } from '@lucide/vue';
+defineProps<{ disabled?: boolean; running?: boolean; reextract?: boolean; label: string }>();
 defineEmits<{ extract: []; details: [] }>();
 </script>
 <template>
   <button class="secondary-button" type="button" :disabled="disabled" @click="$emit('extract')">
-    <LoaderCircle v-if="running" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{
-      label
-    }}
+    <LoaderCircle v-if="running" class="spin" :size="14" />
+    <RefreshCw v-else-if="reextract" :size="14" />
+    <Sparkles v-else :size="14" />{{ label }}
   </button>
   <button
     class="secondary-button workflow-graph-trigger"

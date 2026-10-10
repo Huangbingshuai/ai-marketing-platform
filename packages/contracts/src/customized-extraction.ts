@@ -82,6 +82,27 @@ export type CustomizedBriefCandidate = {
   fieldSources: Partial<Record<CustomizedBriefField, CustomizedBriefSource[]>>;
   issues: CustomizedBriefIssue[];
 };
+/** Internal persisted review evidence; public detail uses the shared display projection. */
+export type CustomizedExtractionAuditFinding = {
+  field: CustomizedBriefField;
+  kind: 'MISSING' | 'INCORRECT' | 'MISATTRIBUTED' | 'CONFLICT';
+  description: string;
+  proposedValue: string;
+  /** Existing global selling-point index, or null for a missing fact/scalar field. */
+  itemIndex: number | null;
+  evidence: { assetId: string; assetVersion: number; location: string; quote: string };
+};
+export type CustomizedExtractionAuditReport = {
+  checkedFields: CustomizedBriefField[];
+  findings: CustomizedExtractionAuditFinding[];
+};
+export type CustomizedExtractionAuditSummary = {
+  schemaVersion: 1;
+  documentCount: number;
+  chunkCount: number;
+  findingCount: number;
+  correctedFields: CustomizedBriefField[];
+};
 export type CustomizedExtractionTaskStatus =
   'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED';
 export type CustomizedExtractionTask = {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
 import { emptyCustomizedBrief, type CustomizedBriefCandidate } from '@ai-marketing/contracts';
 import type { ProjectService } from '../../../platform/project/project.service';
 import type { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
@@ -91,5 +92,88 @@ describe('customized extraction result validation', () => {
     ).rejects.toThrow('结构无效');
     candidate.fieldSources.productName![0]!.assetVersion = 1;
     await expect(service.complete('p', 't', 'attempt', candidate)).rejects.toThrow('来源映射');
+  });
+});
+
+describe('customized extraction detail reads', () => {
+  const detailSetup = () => {
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'p' }) };
+    const repository = {
+      task: vi.fn().mockResolvedValue({
+        id: 't',
+        projectId: 'p',
+        workflowRunId: 'r',
+        status: 'COMPLETED',
+        progress: 100,
+        currentNode: 'NORMALIZATION',
+        errorMessage: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        inputSnapshot: {
+          source: { revision: 1 },
+          documents: [{ assetId: 'doc', assetVersion: 2, name: '简报.docx', sizeBytes: 4000 }],
+          brandReferences: [],
+        },
+        steps: [
+          {
+            nodeId: 'DOCUMENT_PARSE',
+            sourceId: 'doc',
+            status: 'SUCCEEDED',
+            errorMessage: null,
+            output: { parsed: true },
+          },
+          {
+            nodeId: 'DOCUMENT_PARSE',
+            sourceId: '',
+            status: 'SUCCEEDED',
+            errorMessage: null,
+            output: { processed: 1 },
+          },
+        ],
+      }),
+      findArtifact: vi.fn().mockResolvedValue({ storageKey: 'frozen/parsed', sizeBytes: 100000 }),
+    };
+    const storage = {
+      open: vi
+        .fn()
+        .mockImplementation(async () => ({ stream: Readable.from(['# 产品名称\n青梅酱']) })),
+    };
+    const service = new CustomizedExtractionService(
+      repository as unknown as CustomizedExtractionRepository,
+      projects as unknown as ProjectService,
+      storage as unknown as StoragePort,
+      {} as EffectReadCacheService,
+    );
+    return { projects, repository, storage, service };
+  };
+  it('reads the frozen artifact within a bounded range after project and task validation', async () => {
+    const { repository, storage, service } = detailSetup();
+    const detail = await service.nodeDetail('p', 't', 'DOCUMENT_PARSE');
+    expect(repository.findArtifact).toHaveBeenCalledWith('p', 't', 'doc');
+    expect(storage.open).toHaveBeenCalledWith('frozen/parsed', { start: 0, end: 65535 });
+    expect(detail.sources[0]?.fields.find((f) => f.key === 'excerpt')?.value).toBe(
+      '产品名称\n青梅酱',
+    );
+    expect(JSON.stringify(detail)).not.toContain('frozen/parsed');
+  });
+  it('does not read files when project access fails', async () => {
+    const { projects, repository, storage, service } = detailSetup();
+    projects.get.mockRejectedValue(new Error('forbidden'));
+    await expect(service.nodeDetail('p', 't', 'DOCUMENT_PARSE')).rejects.toThrow('forbidden');
+    expect(repository.task).not.toHaveBeenCalled();
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+  it('does not read parser files for other stages', async () => {
+    const { storage, service } = detailSetup();
+    await service.nodeDetail('p', 't', 'FUSION');
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+  it('does not turn a file-read error into a failed task', async () => {
+    const { storage, service } = detailSetup();
+    storage.open.mockRejectedValue(new Error('private backend endpoint'));
+    const detail = await service.nodeDetail('p', 't', 'DOCUMENT_PARSE');
+    expect(detail.status).toBe('SUCCEEDED');
+    expect(detail.sources[0]?.warnings).toHaveLength(1);
+    expect(JSON.stringify(detail)).not.toContain('private backend');
   });
 });

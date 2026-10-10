@@ -259,6 +259,7 @@ const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, val
           <WorkflowExtractionActions
             :disabled="actionDisabled"
             :running="running"
+            :reextract="view.status !== 'EMPTY'"
             :label="view.status === 'EMPTY' ? 'AI 提炼' : '重新 AI 提炼'"
             @extract="emit('extract')"
             @details="workflowOpen = true"
@@ -827,3 +828,5 @@ button:focus-visible {
   }
 }
 </style>
+
+<style scoped src="../../../platform/workflow/components/workflow-extraction-heading.css"></style>

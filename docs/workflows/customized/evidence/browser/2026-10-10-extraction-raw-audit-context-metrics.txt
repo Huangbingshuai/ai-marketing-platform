@@ -1,0 +1,16 @@
+INFO:root:Extraction stage task=82d1db89-9ce7-4d07-9ad9-59f50ac54ede node=LOAD_AND_SNAPSHOT succeeded=True elapsed_ms=57
+INFO:root:Extraction stage task=82d1db89-9ce7-4d07-9ad9-59f50ac54ede node=DOCUMENT_PARSE succeeded=True elapsed_ms=1503
+INFO:extraction_runtime.responses:Ark call succeeded stage=DOCUMENT_EXTRACT model=doubao-seed-2-1-pro-260628 prompt_version=0dfd62ca6057 input_tokens=2020 output_tokens=2433 reasoning_tokens=1628 total_tokens=4453 latency_ms=34126 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=DOCUMENT_EXTRACT model=doubao-seed-2-1-pro-260628 prompt_version=0dfd62ca6057 input_tokens=9086 output_tokens=5914 reasoning_tokens=5077 total_tokens=15000 latency_ms=95849 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=DOCUMENT_EXTRACT model=doubao-seed-2-1-pro-260628 prompt_version=d69c76fb3d00 input_tokens=3452 output_tokens=5756 reasoning_tokens=4523 total_tokens=9208 latency_ms=91024 attempts=1
+INFO:root:Extraction stage task=82d1db89-9ce7-4d07-9ad9-59f50ac54ede node=DOCUMENT_EXTRACT succeeded=True elapsed_ms=187245
+INFO:root:Extraction stage task=82d1db89-9ce7-4d07-9ad9-59f50ac54ede node=FUSION succeeded=True elapsed_ms=46
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=4592 output_tokens=3418 reasoning_tokens=3117 total_tokens=8010 latency_ms=65150 attempts=1
+WARNING:root:Raw audit validation chunk=2 attempt=1 reason=raw audit evidence is not present in the pinned document
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=11658 output_tokens=5711 reasoning_tokens=5210 total_tokens=17369 latency_ms=107384 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=4d205019dbc2 input_tokens=4661 output_tokens=3708 reasoning_tokens=3508 total_tokens=8369 latency_ms=65533 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=82b0656f8c0e input_tokens=8450 output_tokens=1005 reasoning_tokens=914 total_tokens=9455 latency_ms=20330 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=82b0656f8c0e input_tokens=1384 output_tokens=1533 reasoning_tokens=1431 total_tokens=2917 latency_ms=29103 attempts=1
+WARNING:root:Extraction validation task=82d1db89-9ce7-4d07-9ad9-59f50ac54ede node=SEMANTIC_REFINEMENT reason=repair context evidence is not present in the pinned document
+INFO:root:Extraction stage task=82d1db89-9ce7-4d07-9ad9-59f50ac54ede node=SEMANTIC_REFINEMENT succeeded=False elapsed_ms=162322
+ERROR:root:Extraction failed project=310cd48e-e250-434f-9f42-0f4522c1d9fe task=82d1db89-9ce7-4d07-9ad9-59f50ac54ede type=AuditValidationError

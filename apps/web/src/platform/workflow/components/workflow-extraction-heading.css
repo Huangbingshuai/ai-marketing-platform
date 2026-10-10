@@ -1,0 +1,49 @@
+/* Both extraction pages use the effect workflow's heading action dimensions. */
+.extraction-heading {
+  flex-wrap: wrap;
+}
+
+.extraction-heading__title {
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+
+.extraction-heading__title > div {
+  min-width: 0;
+}
+
+.extraction-heading__title p {
+  overflow: visible;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .extraction-heading__title {
+    gap: 8px;
+  }
+
+  .extraction-heading__title p {
+    font-size: clamp(8px, 2.2vw, 12px);
+  }
+}
+
+.extraction-heading__actions {
+  align-items: center;
+}
+
+.extraction-heading__actions :deep(button) {
+  height: 40px;
+  min-height: 40px;
+  padding: 0 14px;
+  justify-content: center;
+  color: #42526a;
+  border-color: #dbe4f6;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.extraction-heading__actions :deep(.secondary-button) {
+  min-width: 139px;
+}

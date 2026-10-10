@@ -27,6 +27,11 @@ import {
   type ExtractionInput,
 } from './customized-extraction.repository';
 import { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
+import {
+  parsedDocumentExcerpt,
+  presentCustomizedNodeDetail,
+  type ParsedDocumentPreview,
+} from './customized-extraction-node-detail';
 
 function invalid(message: string): never {
   throw new ApiHttpException(message, 400, 'VALIDATION_ERROR');
@@ -114,54 +119,55 @@ export class CustomizedExtractionService implements OnModuleInit, OnModuleDestro
     const record = await this.repository.task(projectId, taskId);
     const execution = presentTask(record).nodes.find((n) => n.nodeId === nodeId)!;
     const input = record.inputSnapshot as unknown as ExtractionInput;
-    const fields = (output: unknown): ExtractionNodeDetail['fields'] => {
-      const value =
-        output && typeof output === 'object' ? (output as { fields?: unknown }).fields : null;
-      if (!isCustomizedBrief(value)) return [];
-      return (Object.keys(CUSTOMIZED_BRIEF_LABELS) as Array<keyof typeof value>)
-        .filter((key) => (Array.isArray(value[key]) ? value[key].length : value[key].trim()))
-        .map((key) => ({
-          key,
-          label: CUSTOMIZED_BRIEF_LABELS[key],
-          value: value[key],
-          source: null,
-        }));
-    };
-    const aggregate = record.steps.find((s) => s.nodeId === nodeId && !s.sourceId);
-    return {
-      ...execution,
-      summary: node.description,
-      fields: [
-        { key: 'documentCount', label: '简报文档', value: input.documents.length, source: null },
-        ...(nodeId === 'LOAD_AND_SNAPSHOT'
-          ? [
-              {
-                key: 'brandCount',
-                label: '品牌素材引用（供后续视觉生成使用）',
-                value: input.brandReferences.length,
-                source: null,
-              },
-            ]
-          : []),
-        ...fields(aggregate?.output),
-      ],
-      sources: input.documents.map((d) => {
-        const s = record.steps.find((s) => s.nodeId === nodeId && s.sourceId === d.assetId);
-        return {
-          name: d.name,
-          status: (s?.status ?? execution.status) as ExtractionNodeDetail['status'],
-          media: {
-            kind: 'DOCUMENT' as const,
-            typeLabel: '视频创作简报',
-            previewUrl: null,
-            sizeBytes: d.sizeBytes,
-          },
-          fields: fields(s?.output),
-          warnings: s?.errorMessage ? ['该文档处理未完成，请重试或检查文件'] : [],
-        };
-      }),
-      updatedAt: record.updatedAt.toISOString(),
-    };
+    const previews = new Map<string, ParsedDocumentPreview>();
+    if (nodeId === 'DOCUMENT_PARSE') {
+      // Read only frozen successful parse artifacts, two at a time and at most 64 KiB each.
+      const documents = input.documents.filter((d) =>
+        record.steps.some(
+          (s) => s.nodeId === nodeId && s.sourceId === d.assetId && s.status === 'SUCCEEDED',
+        ),
+      );
+      for (let index = 0; index < documents.length; index += 2) {
+        await Promise.all(
+          documents.slice(index, index + 2).map(async (doc) => {
+            try {
+              const artifact = await this.repository.findArtifact(projectId, taskId, doc.assetId);
+              if (!artifact) {
+                previews.set(doc.assetId, null);
+                return;
+              }
+              if (artifact.sizeBytes === 0) {
+                previews.set(doc.assetId, { sizeBytes: 0, text: '' });
+                return;
+              }
+              const opened = await this.storage.open(artifact.storageKey, {
+                start: 0,
+                end: Math.min(artifact.sizeBytes, 65536) - 1,
+              });
+              const chunks: Buffer[] = [];
+              try {
+                let read = 0;
+                for await (const chunk of opened.stream) {
+                  const buffer = Buffer.from(chunk);
+                  chunks.push(buffer.subarray(0, 65536 - read));
+                  read += buffer.length;
+                  if (read >= 65536) break;
+                }
+              } finally {
+                opened.stream.destroy();
+              }
+              previews.set(doc.assetId, {
+                sizeBytes: artifact.sizeBytes,
+                text: parsedDocumentExcerpt(Buffer.concat(chunks).toString('utf8')),
+              });
+            } catch {
+              previews.set(doc.assetId, null);
+            }
+          }),
+        );
+      }
+    }
+    return presentCustomizedNodeDetail(record, execution, previews);
   }
   claim(projectId: string, taskId: string) {
     return this.repository.claim(projectId, taskId);

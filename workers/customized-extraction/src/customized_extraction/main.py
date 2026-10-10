@@ -24,9 +24,21 @@ async def consume() -> None:
         os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
         required("ARK_API_KEY"),
         os.getenv("ARK_DOCUMENT_MODEL", "doubao-seed-2-1-pro-260628"),
-        timeout=float(os.getenv("ARK_DOCUMENT_TIMEOUT_SECONDS", "180")),
-        max_attempts=int(os.getenv("ARK_DOCUMENT_MAX_ATTEMPTS", "2")),
-        max_output_tokens=int(os.getenv("ARK_DOCUMENT_MAX_OUTPUT_TOKENS", "8192")),
+        timeout=float(os.getenv("CUSTOMIZED_EXTRACTION_MODEL_TIMEOUT_SECONDS", "300")),
+        max_attempts=int(os.getenv("CUSTOMIZED_EXTRACTION_MAX_ATTEMPTS", "2")),
+        max_output_tokens=int(
+            os.getenv("CUSTOMIZED_EXTRACTION_MAX_OUTPUT_TOKENS", "16384")
+        ),
+        retry_max_output_tokens=int(
+            os.getenv("CUSTOMIZED_EXTRACTION_RETRY_MAX_OUTPUT_TOKENS", "32768")
+        ),
+        reasoning_effort=os.getenv("CUSTOMIZED_EXTRACTION_REASONING_EFFORT", "medium"),
+        audit_reasoning_effort=os.getenv(
+            "CUSTOMIZED_EXTRACTION_AUDIT_REASONING_EFFORT", "low"
+        ),
+        document_reasoning_effort=os.getenv(
+            "CUSTOMIZED_EXTRACTION_DOCUMENT_REASONING_EFFORT", "low"
+        ),
     )
     parser = LocalDoclingParser(
         artifacts_path=os.getenv("DOCLING_ARTIFACTS_PATH"),

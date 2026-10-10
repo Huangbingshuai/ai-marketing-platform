@@ -788,6 +788,7 @@ onBeforeUnmount(() => {
 }
 .workflow-node-detail__fields dt {
   display: flex;
+  flex-wrap: wrap;
   margin: 0;
   align-items: center;
   justify-content: space-between;
@@ -796,10 +797,13 @@ onBeforeUnmount(() => {
   font-size: 8px;
 }
 .workflow-node-detail__fields dt span {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
   color: #2563eb;
 }
 .workflow-node-detail__fields dd {
   margin: 0;
+  white-space: pre-line;
   overflow-wrap: anywhere;
   color: #33415a;
   font-size: 10px;

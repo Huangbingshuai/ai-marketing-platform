@@ -1,0 +1,44 @@
+INFO:root:Extraction stage task=15be1f1d-ac7b-4360-a0e1-4f98b4ecb71d node=LOAD_AND_SNAPSHOT succeeded=True elapsed_ms=18
+INFO:root:Extraction stage task=15be1f1d-ac7b-4360-a0e1-4f98b4ecb71d node=DOCUMENT_PARSE succeeded=True elapsed_ms=16
+INFO:root:Extraction stage task=15be1f1d-ac7b-4360-a0e1-4f98b4ecb71d node=DOCUMENT_EXTRACT succeeded=True elapsed_ms=14
+INFO:root:Extraction stage task=15be1f1d-ac7b-4360-a0e1-4f98b4ecb71d node=FUSION succeeded=True elapsed_ms=16
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=4522 output_tokens=2191 reasoning_tokens=2127 total_tokens=6713 latency_ms=41229 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=11588 output_tokens=4820 reasoning_tokens=4132 total_tokens=16408 latency_ms=85127 attempts=1
+WARNING:root:Raw audit validation chunk=1 attempt=1 reason=raw audit evidence is not present in the pinned document
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=4d205019dbc2 input_tokens=11657 output_tokens=6216 reasoning_tokens=5741 total_tokens=17873 latency_ms=111220 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=7a9026461242 input_tokens=3668 output_tokens=8420 reasoning_tokens=7281 total_tokens=12088 latency_ms=136647 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=94c67d8da3cb input_tokens=4449 output_tokens=1664 reasoning_tokens=1651 total_tokens=6113 latency_ms=35304 attempts=1
+INFO:root:Extraction stage task=15be1f1d-ac7b-4360-a0e1-4f98b4ecb71d node=SEMANTIC_REFINEMENT succeeded=True elapsed_ms=368860
+INFO:root:Extraction stage task=15be1f1d-ac7b-4360-a0e1-4f98b4ecb71d node=NORMALIZATION succeeded=True elapsed_ms=38
+INFO:root:Extraction stage task=2460fdf3-9fa3-419f-9c6b-20dd93999f08 node=LOAD_AND_SNAPSHOT succeeded=True elapsed_ms=35
+INFO:root:Extraction stage task=2460fdf3-9fa3-419f-9c6b-20dd93999f08 node=DOCUMENT_PARSE succeeded=True elapsed_ms=8605
+INFO:root:Extraction stage task=2460fdf3-9fa3-419f-9c6b-20dd93999f08 node=DOCUMENT_EXTRACT succeeded=True elapsed_ms=233
+INFO:root:Extraction stage task=2460fdf3-9fa3-419f-9c6b-20dd93999f08 node=FUSION succeeded=True elapsed_ms=40
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=4525 output_tokens=8809 reasoning_tokens=8745 total_tokens=13334 latency_ms=329894 attempts=2
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=94c67d8da3cb input_tokens=3978 output_tokens=127 reasoning_tokens=114 total_tokens=4105 latency_ms=4255 attempts=1
+INFO:root:Extraction stage task=2460fdf3-9fa3-419f-9c6b-20dd93999f08 node=SEMANTIC_REFINEMENT succeeded=True elapsed_ms=334416
+INFO:root:Extraction stage task=2460fdf3-9fa3-419f-9c6b-20dd93999f08 node=NORMALIZATION succeeded=True elapsed_ms=58
+INFO:root:Extraction stage task=d3d69c7b-a462-43cd-b70d-5369ea6419c2 node=LOAD_AND_SNAPSHOT succeeded=True elapsed_ms=61
+INFO:root:Extraction stage task=d3d69c7b-a462-43cd-b70d-5369ea6419c2 node=DOCUMENT_PARSE succeeded=True elapsed_ms=734
+INFO:extraction_runtime.responses:Ark call succeeded stage=DOCUMENT_EXTRACT model=doubao-seed-2-1-pro-260628 prompt_version=0dfd62ca6057 input_tokens=1875 output_tokens=4744 reasoning_tokens=4058 total_tokens=6619 latency_ms=73027 attempts=1
+INFO:root:Extraction stage task=d3d69c7b-a462-43cd-b70d-5369ea6419c2 node=DOCUMENT_EXTRACT succeeded=True elapsed_ms=73753
+INFO:root:Extraction stage task=d3d69c7b-a462-43cd-b70d-5369ea6419c2 node=FUSION succeeded=True elapsed_ms=42
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=3203 output_tokens=309 reasoning_tokens=245 total_tokens=3512 latency_ms=6800 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=94c67d8da3cb input_tokens=2930 output_tokens=120 reasoning_tokens=107 total_tokens=3050 latency_ms=4379 attempts=1
+INFO:root:Extraction stage task=d3d69c7b-a462-43cd-b70d-5369ea6419c2 node=SEMANTIC_REFINEMENT succeeded=True elapsed_ms=11484
+INFO:root:Extraction stage task=d3d69c7b-a462-43cd-b70d-5369ea6419c2 node=NORMALIZATION succeeded=True elapsed_ms=40
+INFO:root:Extraction stage task=0e0f253d-045f-439d-9d6e-d12aa5259f73 node=LOAD_AND_SNAPSHOT succeeded=True elapsed_ms=39
+INFO:root:Extraction stage task=0e0f253d-045f-439d-9d6e-d12aa5259f73 node=DOCUMENT_PARSE succeeded=True elapsed_ms=786
+INFO:extraction_runtime.responses:Ark call succeeded stage=DOCUMENT_EXTRACT model=doubao-seed-2-1-pro-260628 prompt_version=0dfd62ca6057 input_tokens=1791 output_tokens=1417 reasoning_tokens=883 total_tokens=3208 latency_ms=18048 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=DOCUMENT_EXTRACT model=doubao-seed-2-1-pro-260628 prompt_version=0dfd62ca6057 input_tokens=1788 output_tokens=1358 reasoning_tokens=907 total_tokens=3146 latency_ms=22463 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=DOCUMENT_EXTRACT model=doubao-seed-2-1-pro-260628 prompt_version=0dfd62ca6057 input_tokens=1800 output_tokens=2483 reasoning_tokens=2065 total_tokens=4283 latency_ms=40670 attempts=1
+INFO:root:Extraction stage task=0e0f253d-045f-439d-9d6e-d12aa5259f73 node=DOCUMENT_EXTRACT succeeded=True elapsed_ms=59151
+INFO:extraction_runtime.responses:Ark call succeeded stage=FUSION model=doubao-seed-2-1-pro-260628 prompt_version=d69c76fb3d00 input_tokens=2632 output_tokens=1908 reasoning_tokens=1222 total_tokens=4540 latency_ms=26808 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=FUSION model=doubao-seed-2-1-pro-260628 prompt_version=d69c76fb3d00 input_tokens=2952 output_tokens=8021 reasoning_tokens=6668 total_tokens=10973 latency_ms=131241 attempts=1
+INFO:root:Extraction stage task=0e0f253d-045f-439d-9d6e-d12aa5259f73 node=FUSION succeeded=True elapsed_ms=158110
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=3057 output_tokens=619 reasoning_tokens=567 total_tokens=3676 latency_ms=15376 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=2992 output_tokens=1255 reasoning_tokens=1191 total_tokens=4247 latency_ms=26170 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=cf656559b2ab input_tokens=3135 output_tokens=2527 reasoning_tokens=2475 total_tokens=5662 latency_ms=53026 attempts=1
+INFO:extraction_runtime.responses:Ark call succeeded stage=SEMANTIC_REFINEMENT model=doubao-seed-2-1-pro-260628 prompt_version=94c67d8da3cb input_tokens=3679 output_tokens=1410 reasoning_tokens=1231 total_tokens=5089 latency_ms=25161 attempts=1
+INFO:root:Extraction stage task=0e0f253d-045f-439d-9d6e-d12aa5259f73 node=SEMANTIC_REFINEMENT succeeded=True elapsed_ms=94558
+INFO:root:Extraction stage task=0e0f253d-045f-439d-9d6e-d12aa5259f73 node=NORMALIZATION succeeded=True elapsed_ms=53
