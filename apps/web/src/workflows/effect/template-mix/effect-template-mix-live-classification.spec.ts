@@ -57,6 +57,8 @@ function sourceHarness() {
       },
     }),
     sourceMaterials: ref([{ id: 'old' }]),
+    renderAspectRatio: ref(null),
+    autoPackagingTemplateIds: ref([]),
     classificationPools: ref([{ templateId: 'old', items: [] }]),
     pendingAddedMaterialIds: ref({}),
     catalog: ref([

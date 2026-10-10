@@ -863,9 +863,10 @@ const handleTemplateMixWorkflowRunChange = async (detail?: {
 }): Promise<void> => {
   const projectId = currentProjectId.value;
   const previousRunId = workspace.value?.workflowRunId;
-  await refreshActiveRunInPlace(projectId);
+  // Fill publication is background synchronization, not a full-page navigation curtain.
+  await refreshActiveRunInPlace(projectId, { showCurtain: false });
   if (detail && workspace.value?.workflowRunId !== detail.workflowRunId)
-    await refreshActiveRunInPlace(projectId);
+    await refreshActiveRunInPlace(projectId, { showCurtain: false });
   if (
     !detail ||
     currentProjectId.value !== projectId ||

@@ -129,6 +129,7 @@ import {
   rebaseMixDraft,
   saveLatestMixDraft,
 } from './effect-template-mix-draft-race';
+import { canRetainMixPlayback, retainUnchangedMixValue } from './effect-template-mix-background-sync';
 import { resolveEffectTemplateMixMaterialRoles } from '@ai-marketing/contracts';
 import {
   activateEffectWorkflowBranch,
@@ -2072,16 +2073,16 @@ const hydrate = (
 const initializeUi = (): void => {
   for (const entry of catalog.value) {
     const current = uiByTemplate[entry.id];
-    uiByTemplate[entry.id] = {
-      selectedVariantId:
-        entry.workspace.variants.find(({ id }) => id === current?.selectedVariantId)?.id ??
-        entry.workspace.variants[0]?.id ??
-        '',
+    const variant = entry.workspace.variants.find(({ id }) => id === current?.selectedVariantId) ??
+      entry.workspace.variants[0];
+    const slots = variant?.slots ?? entry.workspace.template.slots;
+    uiByTemplate[entry.id] = retainUnchangedMixValue(current, {
+      selectedVariantId: variant?.id ?? '',
       selectedSlotId:
-        entry.workspace.template.slots.find(({ id }) => id === current?.selectedSlotId)?.id ??
-        entry.workspace.template.slots[0]?.id ??
+        slots.find(({ id }) => id === current?.selectedSlotId)?.id ??
+        slots[0]?.id ??
         '',
-    };
+    });
   }
 };
 const installWorkspaceData = (
@@ -2090,8 +2091,27 @@ const installWorkspaceData = (
 ): boolean => {
   if (!workspaceRevisionFence.accept(scope, currentWorkspaceScope.value, data.draftRevision))
     return false;
-  resetTimelinePlayerState();
-  sourceMaterials.value = data.materials;
+  const sameWorkspace = pageState.value === 'READY' && installedWorkspaceScope.value === scope;
+  const nextTemplateId = sameWorkspace && data.draft.templates.some(({ id }) => id === activeTemplateId.value)
+    ? activeTemplateId.value : data.draft.activeTemplateId;
+  const incomingMaterials = retainUnchangedMixValue(sourceMaterials.value, data.materials);
+  const nextCatalog = data.draft.templates.map((entry) => {
+    const next = hydrate(entry, incomingMaterials);
+    const current = sameWorkspace ? catalog.value.find(({ id }) => id === entry.id) : undefined;
+    if (current) {
+      next.workspace.variants = next.workspace.variants.map((variant) =>
+        retainUnchangedMixValue(current.workspace.variants.find(({ id }) => id === variant.id), variant));
+      return retainUnchangedMixValue(current, next);
+    }
+    return next;
+  });
+  const nextEntry = nextCatalog.find(({ id }) => id === nextTemplateId) ?? nextCatalog[0];
+  const nextVariant = nextEntry?.workspace.variants.find(({ id }) => id === activeUi.value?.selectedVariantId) ??
+    nextEntry?.workspace.variants[0] ?? null;
+  if (!sameWorkspace || !canRetainMixPlayback(installedWorkspaceScope.value, scope,
+    activeTemplateId.value, nextEntry?.id ?? '', selectedVariant.value, nextVariant,
+    sourceMaterials.value, incomingMaterials)) resetTimelinePlayerState();
+  sourceMaterials.value = incomingMaterials;
   renderAspectRatio.value = data.renderAspectRatio ?? null;
   pendingAddedMaterialIds.value = data.pendingAddedMaterialIds ?? {};
   autoPackagingTemplateIds.value = data.autoPackagingTemplateIds ?? [];
@@ -2101,7 +2121,7 @@ const installWorkspaceData = (
       : effectTemplateMixSlotDurationLimit(data.materials);
   templateCreationReady.value =
     data.templateCreationReady ?? data.materials.some((item) => item.available);
-  catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
+  catalog.value = retainUnchangedMixValue(catalog.value, nextCatalog);
   draftRevision.value = data.draftRevision;
   savedDraftBaseline = cloneMix(
     serializeEffectTemplateMixDraft(data.draft.templates, data.draft.activeTemplateId),
@@ -2109,7 +2129,7 @@ const installWorkspaceData = (
   draftSaveBlocked = false;
   draftRace.changed();
   activeTemplateId.value =
-    catalog.value.find(({ id }) => id === data.draft.activeTemplateId)?.id ??
+    catalog.value.find(({ id }) => id === nextTemplateId)?.id ??
     catalog.value[0]?.id ??
     '';
   let detachedTransitionChanged = false;
@@ -2188,7 +2208,7 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
       entry?.workspace.variants.find(({ id }) => id === variantId)?.slots[0]?.id ?? '';
   }
   if (activeTemplateId.value === run.templateId) {
-    resetWorkbenchDefaults();
+    if (view.value !== 'EDITOR') resetWorkbenchDefaults();
     view.value = 'EDITOR';
   }
   saveState.value = 'saved';
@@ -2481,9 +2501,11 @@ const load = async (): Promise<void> => {
         (!targetVariantId || entry.workspace.variants.some(({ id }) => id === targetVariantId)),
       );
     });
-    const handoff = !wasReady || switchedRun || templateNavigationTarget.value === `${projectId}:${workflowRunId}`
-      ? takeWorkbench(workflowRunId) : null;
-    if (resumedRun) {
+    const handoff =
+      !wasReady || switchedRun || templateNavigationTarget.value === `${projectId}:${workflowRunId}`
+        ? takeWorkbench(workflowRunId)
+        : null;
+    if (resumedRun && (!wasReady || switchedRun)) {
       activeTemplateId.value = resumedRun.templateId;
       const ui = uiByTemplate[resumedRun.templateId];
       const entry = catalog.value.find(({ id }) => id === resumedRun.templateId);
@@ -2537,16 +2559,20 @@ const load = async (): Promise<void> => {
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
     if (requestController !== controller || workflowRunId !== props.workflowRunId) return;
-    if (wasReady && (saveState.value === 'dirty' || saveState.value === 'saving')) {
-      showNotice('工作区暂未刷新，本页未保存的编辑已保留', 'warning');
+    if (wasReady && installedWorkspaceScope.value === `${projectId}:${workflowRunId}`) {
+      showNotice('后台同步暂未完成，当前工作台和编辑已保留，将继续读取任务进度', 'warning');
+      for (const run of aiRuns.value.filter(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
+        void pollAiRun(run.id);
       return;
     }
     errorMessage.value = error instanceof Error ? error.message : '混剪工作区加载失败';
     pageState.value = 'ERROR';
   } finally {
     if (requestController === controller) requestedWorkspaceScope.value = null;
-    if (requestController === controller &&
-      templateNavigationTarget.value === `${projectId}:${workflowRunId}`) {
+    if (
+      requestController === controller &&
+      templateNavigationTarget.value === `${projectId}:${workflowRunId}`
+    ) {
       templateNavigationTarget.value = null;
       templateNavigationPending.value = false;
     }
