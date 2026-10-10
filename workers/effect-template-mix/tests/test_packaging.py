@@ -6,7 +6,7 @@ import io
 import json
 import wave
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
@@ -223,6 +223,27 @@ def test_narration_window_materialization_has_no_model_timing_or_order_dependenc
     plan = NarrationPlan(lines=[*plan_result(slotId='s2').lines, *plan_result(id='line-2').lines], musicBrief='纯音乐')
     result = materialize_script(plan, windows)
     assert [(r.start, r.end) for r in result.lines] == [(0, 10), (10, 14)]
+
+
+def test_sparse_append_packages_real_slots_in_time_order_without_renumbering_or_closing_gaps() -> None:
+    snapshot = script_snapshot()
+    snapshot['duration'] = 22
+    snapshot['variant']['slots'] = [
+        {'id': 'empty-first', 'role': 'HOOK'}, {'id': 's1', 'role': 'PRODUCT'},
+        {'id': 'empty-middle', 'role': 'SELLING_POINT'}, {'id': 's3', 'role': 'END'},
+        {'id': 'empty-last', 'role': 'END'},
+    ]
+    snapshot['clips'] = [{'slotId': 's3', 'start': 14, 'duration': 4},
+                         {'slotId': 's1', 'start': 4, 'duration': 6}]
+    windows = narration_windows(snapshot)
+    assert [(row['slotId'], row['start'], row['end']) for row in windows] == [
+        ('s1', 4, 10), ('s3', 14, 18)]
+    plan = NarrationPlan(lines=[*plan_result(slotId='s3').lines,
+                               *plan_result(id='line-2').lines], musicBrief='纯音乐')
+    result = materialize_script(plan, windows)
+    assert [(row.slotId, row.start, row.end) for row in result.lines] == [('s1', 4, 10), ('s3', 14, 18)]
+    with pytest.raises(PackagingError, match='槽位'):
+        materialize_script(plan_result(slotId='empty-middle'), windows)
 
 
 @pytest.mark.parametrize(('duration', 'valid'), [(3.999, False), (4, True), (15, True), (15.001, False)])

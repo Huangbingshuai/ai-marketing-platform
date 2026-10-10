@@ -318,7 +318,7 @@ export type EffectTemplateMixVariant = {
   /** Server-authorized media actually consumed by each occurrence, never the live pool. */
   bindingSources?: Record<string, EffectTemplateMixMaterial>;
   offsets: Record<string, number>;
-  /** Source-delete holes are intentional and remain renderable, unlike unfinished fill slots. */
+  /** Source-delete/partial-append holes remain renderable, unlike unfinished fill slots. */
   intentionallyEmptySlotIds?: string[];
   /** Seconds; explicit source removal must not shrink the film's original extent. */
   preservedTimelineEnd?: number;
@@ -423,6 +423,8 @@ export type EffectTemplateMixAiRun = {
   packageNewVariants?: boolean;
   omittedNewMaterials?: Array<{ materialId: string; code: string; reason: string }>;
   newMaterialUsage?: Array<{ materialId: string; code: string; filmCount: number }>;
+  /** Successful append films with intentional holes; an informational reminder, not stale state. */
+  emptySlotVariantCount?: number;
   targetVariantId: string | null;
   outputVariantId: string | null;
   status: EffectTemplateMixAiRunStatus;
@@ -591,6 +593,8 @@ export type EffectTemplateMixAiClassification = {
   reasons: Partial<Record<EffectTemplateMixRole, string>>;
 };
 export type EffectTemplateMixAiSelection = {
+  /** First row of each new-protocol APPEND group; never a fabricated media selection. */
+  intentionallyEmptySlotIds?: string[];
   /** Stored on the first selection of an append run, alongside the AI choice provenance. */
   omittedNewMaterials?: Array<{ materialId: string; reason: string }>;
   /** Zero-based output group; absent means the historical single-output group. */
@@ -644,6 +648,8 @@ export type EffectTemplateMixAiSnapshot = {
     packageNewVariants: boolean;
     /** Omitted by historical AI-planned runs. */
     combinationStrategy?: 'ADAPTIVE';
+    /** Server-only opt-in for local append; absent keeps historical complete-film validation. */
+    emptySlotPolicy?: 'ALLOW_EMPTY_POOLS';
   };
   refreshBindings?: Array<{ slotId: string; materialId: string; artifactRevision: number }>;
   maxOutputVariants: number;

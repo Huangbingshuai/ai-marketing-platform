@@ -473,7 +473,7 @@ const sequentialStarts = computed(() => {
   return starts;
 });
 const clipStart = (slotId: string): number =>
-  Math.max(0, props.variant && props.variant.bindings[slotId]
+  Math.max(0, props.variant && (props.variant.bindings[slotId] || props.variant.intentionallyEmptySlotIds?.includes(slotId))
     ? packagingTimelineClips(props.variant).find(({ slot }) => slot.id === slotId)?.start ?? 0
     : sequentialStarts.value[slotId] ?? 0);
 const rawClipLane = (slotId: string): number =>
@@ -1282,12 +1282,20 @@ const slotIdFromDragEvent = (event: DragEvent): string => {
     event.target instanceof Element ? event.target.closest<HTMLElement>('[data-slot-id]') : null;
   if (target?.dataset.slotId) return target.dataset.slotId;
   const element = viewport.value;
-  if (!element || !layoutSlots.value.length) return '';
+  const dropSlots = props.variant
+    ? packagingTimelineClips(props.variant)
+        .filter(
+          ({ slot }) => props.variant!.bindings[slot.id] ||
+            props.variant!.intentionallyEmptySlotIds?.includes(slot.id),
+        )
+        .map(({ slot, start, end }) => ({ id: slot.id, start, end }))
+    : [];
+  if (!element || !dropSlots.length) return '';
   const bounds = element.getBoundingClientRect();
   const time = (event.clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value;
   return (
-    layoutSlots.value.find(({ start, end }) => time >= start && time < end)?.id ??
-    layoutSlots.value.at(-1)?.id ??
+    dropSlots.find(({ start, end }) => time >= start && time < end)?.id ??
+    dropSlots.at(-1)?.id ??
     ''
   );
 };
@@ -3439,7 +3447,7 @@ onBeforeUnmount(() => {
                     ...clipStyle(slot),
                   }"
                   :data-slot-id="variant.bindings[slot.id] ? slot.id : undefined"
-                  :aria-hidden="!variant.bindings[slot.id] ? true : undefined"
+                  :aria-hidden="!variant.bindings[slot.id] && !variant.intentionallyEmptySlotIds?.includes(slot.id) ? true : undefined"
                   @pointerdown="onClipPointerDown($event, slot.id)"
                   @contextmenu="onVideoClipContextMenu($event, slot.id)"
                   @dblclick="onVideoClipDoubleClick($event, slot.id)"
@@ -3480,7 +3488,7 @@ onBeforeUnmount(() => {
                     />
                   </template>
                   <div v-else class="missing-copy">
-                    <b>{{ variant.bindings[slot.id] ? '素材不可用' : '模板槽位' }}</b>
+                    <b>{{ variant.bindings[slot.id] ? '素材不可用' : variant.intentionallyEmptySlotIds?.includes(slot.id) ? '空槽待补充' : '模板槽位' }}</b>
                     <span
                       >{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }} · {{ slot.duration }}s</span
                     >

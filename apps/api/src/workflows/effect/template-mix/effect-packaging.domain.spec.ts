@@ -101,6 +101,35 @@ const checkpoint = (): PackagingCheckpoint => ({
 });
 
 describe('slot-bound narration layout', () => {
+  it('orders sparse append clips by saved time, keeps identities and full music capacity', () => {
+    const v = variant();
+    const base = v.slots[0]!;
+    v.slots = [
+      { ...base, id: 'last', duration: 4, role: 'END' },
+      { ...base, id: 'hole', duration: 6, role: 'PAIN_POINT' },
+      { ...base, id: 'first', duration: 4, role: 'HOOK' },
+    ];
+    v.bindings = { first: 'clip', last: 'clip2' };
+    v.bindingRevisions = { first: 1, last: 1 };
+    v.offsets = { first: 0, last: 0 };
+    v.timelineStarts = { first: 4, hole: 8, last: 14 };
+    v.intentionallyEmptySlotIds = ['hole'];
+    v.preservedTimelineEnd = 22;
+    const rows = [
+      ...materials,
+      { ...materials[0]!, id: 'clip2', artifactId: 'clip2', fileObjectId: 'video2' },
+    ];
+    const frozen = packagingSnapshot(v, rows, [
+      ...sources(),
+      artifact('clip2', 'render-clip:c2', { promptId: 'p' }, 'prompt'),
+    ]);
+    expect(frozen.clips.map((clip) => [clip.slotId, clip.start, clip.duration])).toEqual([
+      ['first', 4, 4],
+      ['last', 14, 4],
+    ]);
+    expect(frozen.duration).toBe(22);
+    expect(frozen.variant.intentionallyEmptySlotIds).toEqual(['hole']);
+  });
   it('preserves packaging source hashes while freezing transforms for final rendering', () => {
     const v = variant(), original = visualHash(v);
     v.canvasRatio = '4:3';

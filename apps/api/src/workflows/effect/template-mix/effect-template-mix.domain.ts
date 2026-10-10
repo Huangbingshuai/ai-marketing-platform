@@ -313,9 +313,26 @@ export const enumerateAssignedVariants = (
   maxVariants = 0,
   maxOverlap = MAX_SLOT_REUSE_OVERLAP,
   fixedRoles: Readonly<Record<string, EffectTemplateMixRole>> = {},
-  options: { requiredMaterialIds?: ReadonlySet<string> } = {},
+  options: { requiredMaterialIds?: ReadonlySet<string>; allowEmptyPools?: boolean } = {},
 ): EffectTemplateMixAiSelection[][] => {
   const pools = buildAssignedPools(slots, materials, classifications, new Set(), fixedRoles);
+  if (options.allowEmptyPools && slots.some((slot) => !pools.get(slot.role)?.length)) {
+    // Keep the original assignment. Removing empty roles must not rebalance existing footage.
+    const filledSlots = slots.filter((slot) => pools.get(slot.role)?.length);
+    if (!filledSlots.length) return [];
+    return enumerateAssignedVariants(
+      filledSlots,
+      materials,
+      classifications,
+      existingGroups,
+      maxVariants,
+      maxOverlap,
+      Object.fromEntries(
+        [...pools].flatMap(([role, pool]) => pool.map((item) => [item.materialId, role])),
+      ),
+      options.requiredMaterialIds ? { requiredMaterialIds: options.requiredMaterialIds } : {},
+    );
+  }
   const limit = Math.max(0, Math.floor(maxVariants));
   if (!slots.length || !limit || slots.some((slot) => !pools.get(slot.role)?.length)) return [];
   const ordered = slots.map((slot) => pools.get(slot.role)!);

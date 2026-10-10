@@ -88,6 +88,7 @@ class IncrementalInput(BaseModel):
     oldVariantIds: list[str]
     packageNewVariants: bool
     combinationStrategy: Literal["ADAPTIVE"] | None = None
+    emptySlotPolicy: Literal["ALLOW_EMPTY_POOLS"] | None = None
 
 
 class IncrementalBinding(BaseModel):
@@ -187,6 +188,7 @@ class TrimCheckpoint(BaseModel):
 
 
 class Selection(BaseModel):
+    intentionallyEmptySlotIds: list[str] | None = None
     variantIndex: int = Field(default=0, ge=0)
     slotId: str
     role: Role

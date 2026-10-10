@@ -64,6 +64,7 @@ import {
   incrementalVariantId,
   pendingAddedMaterials,
   validateIncrementalPlan,
+  validatePartialAppendSelections,
 } from './effect-template-mix-incremental';
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -829,6 +830,7 @@ const toAiRun = (run: {
         matchLevel?: 'NORMAL' | 'LOW_MATCH';
         classificationReason?: string;
         omittedNewMaterials?: Array<{ materialId: string; reason: string }>;
+        intentionallyEmptySlotIds?: string[];
       }>)
     : [];
   const trims = Array.isArray(run.trimResult)
@@ -1052,6 +1054,9 @@ const toAiRun = (run: {
     ...(snapshot?.incremental
       ? {
           packageNewVariants: snapshot.incremental.packageNewVariants,
+          emptySlotVariantCount: [...byVariant.values()].filter((items) =>
+            items.some((item) => item.intentionallyEmptySlotIds?.length),
+          ).length,
           newMaterialUsage: snapshot.incremental.materialIds.map((materialId) => ({
             materialId,
             code: materialById.get(materialId)?.code ?? '素材',
@@ -2280,7 +2285,7 @@ export class EffectTemplateMixService {
       })),
       lockedIds,
     );
-    if (!durationFeasible)
+    if (!durationFeasible && !appendNewMaterials)
       throw new ApiHttpException(
         target
           ? '可用且时长足够的视频片段不足，六个槽位必须使用不同素材'
@@ -2315,10 +2320,13 @@ export class EffectTemplateMixService {
             incremental: {
               materialIds: addedMaterialIds,
               oldVariantIds: entry!.workspace.variants.map(({ id }) => id),
-              packageNewVariants: sourceOperation ? sourceOperation.packageNewVariants : (
-                await this.aiRuns!.successfulPackagingTemplateIds(projectId, workflowRunId)
-              ).includes(templateId),
+              packageNewVariants: sourceOperation
+                ? sourceOperation.packageNewVariants
+                : (
+                    await this.aiRuns!.successfulPackagingTemplateIds(projectId, workflowRunId)
+                  ).includes(templateId),
               combinationStrategy: 'ADAPTIVE',
+              emptySlotPolicy: 'ALLOW_EMPTY_POOLS',
             },
           }
         : {}),
@@ -2976,6 +2984,15 @@ export class EffectTemplateMixService {
       (!Array.isArray(classifications) || !classificationsValid(snapshot, classifications, true))
     )
       throw new ApiHttpException('Prompt 归槽结果缺失或无效', HttpStatus.CONFLICT, 'CONFLICT');
+    try {
+      validatePartialAppendSelections(snapshot, classifications, selections);
+    } catch (error) {
+      throw new ApiHttpException(
+        error instanceof Error ? error.message : '新增成片结构无效',
+        HttpStatus.BAD_REQUEST,
+        'VALIDATION_ERROR',
+      );
+    }
     if (snapshot.trimOnly) {
       const expected = snapshot.refreshBindings ?? [];
       if (
@@ -3245,6 +3262,10 @@ export class EffectTemplateMixService {
         variant.status = 'CURRENT';
       }
       variant.bindingMetadata ??= {};
+      if (snapshot.incremental?.emptySlotPolicy === 'ALLOW_EMPTY_POOLS') {
+        variant.intentionallyEmptySlotIds = [...(group[0]?.intentionallyEmptySlotIds ?? [])];
+        variant.preservedTimelineEnd = variant.slots.reduce((sum, slot) => sum + slot.duration, 0);
+      }
       const slotIdsToSet = new Set(group.map(({ slotId }) => slotId));
       for (const slotId of slotIdsToSet) {
         delete variant.bindings[slotId];
@@ -3272,7 +3293,9 @@ export class EffectTemplateMixService {
         };
       }
       variant.conflictSlotIds = variant.slots
-        .filter(({ id }) => !variant!.bindings[id])
+        .filter(
+          ({ id }) => !variant!.bindings[id] && !variant!.intentionallyEmptySlotIds?.includes(id),
+        )
         .map(({ id }) => id);
       draftChanged ||=
         previousVariantHash === null || previousVariantHash !== workflowStateHash(variant);

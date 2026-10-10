@@ -1827,6 +1827,10 @@ const selectedVariantDisplayName = computed(() => {
 const variantTemplateLabel = computed(() => workspace.value?.template.name?.trim() || '当前模板');
 const variantConflictCount = (variant: EffectTemplateMixVariant) =>
   variant.conflictSlotIds.filter((id) => Boolean(variant.bindings[id])).length;
+const variantEmptySlotCount = (variant: EffectTemplateMixVariant) =>
+  variant.slots.filter(
+    (slot) => !variant.bindings[slot.id] && variant.intentionallyEmptySlotIds?.includes(slot.id),
+  ).length;
 const complete = computed(
   () =>
     Boolean(workspace.value?.variants.length) &&
@@ -4288,7 +4292,9 @@ const timelinePlaybackStart = (slotId: string): number => {
   const slot = variant.slots[slotIndex];
   const previousSlot = variant.slots[slotIndex - 1];
   const previousRange = currentTiming.value.slots.find(({ id }) => id === previousSlot?.id);
-  if (!slot || !previousSlot || !previousRange || slot.transition === '硬切') return range.start;
+  if (!slot || !previousSlot || !previousRange || slot.transition === '硬切' ||
+    !variant.bindings[slot.id] || !variant.bindings[previousSlot.id] ||
+    Math.abs(previousRange.end - range.start) > 1 / TIMELINE_FPS) return range.start;
   const duration = effectTemplateMixTransitionDuration(slot, previousSlot);
   return Math.max(previousRange.start, range.start - duration / 2);
 };
@@ -4651,6 +4657,10 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
   for (const item of resolved) {
     if (!item) continue;
     variant.bindings[item.slot.id] = item.material.id;
+    if (variant.intentionallyEmptySlotIds)
+      variant.intentionallyEmptySlotIds = variant.intentionallyEmptySlotIds.filter(
+        (id) => id !== item.slot.id,
+      );
     variant.bindingRevisions[item.slot.id] = item.material.artifactRevision;
     (variant.bindingSources ??= {})[item.slot.id] = cloneMaterial(item.material);
     variant.offsets[item.slot.id] = item.offset;
@@ -4761,6 +4771,10 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
   rememberTimelineEdit();
   clearDetachedAudioForSlots(variant, [slot.id]);
   variant.bindings[slot.id] = material.id;
+  if (variant.intentionallyEmptySlotIds)
+    variant.intentionallyEmptySlotIds = variant.intentionallyEmptySlotIds.filter(
+      (id) => id !== slot.id,
+    );
   variant.bindingRevisions[slot.id] = material.artifactRevision;
   (variant.bindingSources ??= {})[slot.id] = cloneMaterial(material);
   variant.offsets[slot.id] = 0;
@@ -7898,6 +7912,9 @@ defineExpose({
               completedAppendRun.packageNewVariants ? '；新增成片按模板历史自动包装' : ''
             }}
           </summary>
+          <p v-if="completedAppendRun.emptySlotVariantCount">
+            追加成功，{{ completedAppendRun.emptySlotVariantCount }} 条成片含空槽待补充；空槽保留原时长，包装自动跳过。
+          </p>
           <p v-for="item in completedAppendRun.newMaterialUsage" :key="item.materialId">
             {{ item.code }}：参与 {{ item.filmCount }} 条新增成片
           </p>
@@ -8613,10 +8630,15 @@ defineExpose({
                   <small v-if="variantSourceUpdateLocked(variant.id)" class="source-update-badge"
                     ><Lock :size="10" />更新中</small
                   >
-                  <small v-else-if="variantSourceChanges(variant).length" class="source-update-badge"
+                  <small
+                    v-else-if="variantSourceChanges(variant).length"
+                    class="source-update-badge"
                     >待更新</small
                   >
                   <small class="project-duration">{{ variantDuration(variant).toFixed(0) }}s</small>
+                  <small v-if="variantEmptySlotCount(variant)" class="source-update-badge">
+                    {{ variantEmptySlotCount(variant) }} 个空槽待补充
+                  </small>
                   <span
                     class="project-status"
                     :class="{

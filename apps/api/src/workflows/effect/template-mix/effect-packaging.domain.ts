@@ -192,7 +192,7 @@ export function packagingClips(
         (audio) => audio.sourceSlotId === slot.id,
       ),
     };
-  });
+  }).sort((left, right) => left.start - right.start || left.slotId.localeCompare(right.slotId));
 }
 
 export function packagingSnapshot(

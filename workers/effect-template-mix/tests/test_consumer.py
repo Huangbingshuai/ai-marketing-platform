@@ -160,6 +160,41 @@ async def test_append_recovery_keeps_distinct_trim_points_for_reused_clip() -> N
 
 
 @pytest.mark.asyncio
+async def test_sparse_append_recovery_only_consumes_real_media_and_keeps_optional_hole_protocol() -> None:
+    api = AsyncMock(spec=InternalApi)
+    selection = {'variantIndex': 0, 'slotId': 'product', 'role': 'PRODUCT', 'materialId': 'm1',
+                 'matchScore': 1, 'matchLevel': 'NORMAL', 'classificationReason': '产品动作',
+                 'duration': 4, 'intentionallyEmptySlotIds': ['hole']}
+    trim = {'variantIndex': 0, 'slotId': 'product', 'materialId': 'm1',
+            'trimStartSeconds': 1, 'trimReason': '已完成截取'}
+    api.claim.return_value = Claim.model_validate({'terminal': False, 'attemptToken': 'lease', 'snapshot': {
+        'schemaVersion': 1, 'template': {'id': 't', 'slots': [
+            {'id': 'hole', 'role': 'HOOK', 'label': '片头', 'duration': 4},
+            {'id': 'product', 'role': 'PRODUCT', 'label': '产品', 'duration': 4}]},
+        'draftRevision': 1, 'targetVariantId': None, 'lockedBindings': [], 'promptArtifacts': [],
+        'materials': [material(1).model_dump()], 'incremental': {
+            'materialIds': ['m1'], 'oldVariantIds': ['old'], 'packageNewVariants': True,
+            'combinationStrategy': 'ADAPTIVE', 'emptySlotPolicy': 'ALLOW_EMPTY_POOLS'},
+    }, 'checkpoint': {'selections': [selection], 'trims': [trim], 'classifications': [{
+        'materialId': 'm1', 'scores': {role: int(role == 'PRODUCT') for role in
+            ('HOOK', 'PAIN_POINT', 'PRODUCT', 'SELLING_POINT', 'TRANSFORMATION', 'END')}, 'reasons': {},
+    }]}})
+    assert api.claim.return_value.snapshot.incremental.emptySlotPolicy == 'ALLOW_EMPTY_POOLS'
+    assert Selection.model_validate(selection).intentionallyEmptySlotIds == ['hole']
+    provider = AsyncMock(spec=ArkProvider)
+    consumer = Consumer('amqp://test', 'effect.template-mix.requested', api, provider, 1000, 10, 16000, 8192, 1)
+    message = AsyncMock()
+    message.body = b'{"schemaVersion":1,"projectId":"project","runId":"run","requestId":"request"}'
+    await consumer.handle(message)
+    provider.classify.assert_not_awaited()
+    provider.trim.assert_not_awaited()
+    api.video.assert_not_awaited()
+    assert [(row.slotId, row.materialId) for row in api.complete.await_args.args[1]] == [('product', 'm1')]
+    api.fail.assert_not_awaited()
+    message.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_manual_role_skips_ai_classification_and_keeps_unassigned_materials_in_ai_batch() -> None:
     api = AsyncMock(spec=InternalApi)
     roles = ("HOOK", "PAIN_POINT", "PRODUCT", "SELLING_POINT", "TRANSFORMATION", "END")

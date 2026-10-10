@@ -164,6 +164,80 @@ function harness(oldCount = 3) {
 }
 
 describe('full-template regeneration entry through successful completion', () => {
+  it.each(['HOOK', 'PAIN_POINT', 'END'] as const)(
+    'append commits real holes after deletion empties %s, without moving other slots',
+    async (deletedRole) => {
+      const h = harness();
+      const deletedSlotId = h
+        .child()
+        .templates[0]!.workspace.template.slots.find((s) => s.role === deletedRole)!.id;
+      const deletedIds = new Set(
+        h.clips.filter((clip) => clip.id.startsWith(`${deletedRole}-`)).map((clip) => clip.id),
+      );
+      const latest = h.clips.filter((clip) => !deletedIds.has(clip.id));
+      const added = latest.find((clip) => clip.id === 'PRODUCT-4')!;
+      for (const variant of h.child().templates[0]!.workspace.variants) {
+        delete variant.bindings[deletedSlotId];
+        delete variant.bindingRevisions[deletedSlotId];
+        delete variant.offsets[deletedSlotId];
+        variant.intentionallyEmptySlotIds = [deletedSlotId];
+        variant.preservedTimelineEnd = 48;
+      }
+      const old = structuredClone(h.child());
+      h.repo.sourceArtifacts.mockResolvedValue([h.prompt, ...latest]);
+      h.working.listArtifacts.mockResolvedValue({ items: [h.prompt, ...latest] });
+      h.repo.listRecent.mockResolvedValue([
+        {
+          templateId: 't',
+          status: 'COMPLETED',
+          inputSnapshot: {
+            materials: h.clips
+              .filter((clip) => clip.id !== added.id)
+              .map((clip) => ({ id: clip.id, promptId: clip.payload.promptId })),
+          },
+        },
+      ] as never);
+      Object.assign(h.repo, { successfulPackagingTemplateIds: vi.fn().mockResolvedValue(['t']) });
+      await h.service.createAiRun('p', 'child', 't', 7, 'sparse-append', undefined, false, true);
+      expect(h.snapshot().incremental?.emptySlotPolicy).toBe('ALLOW_EMPTY_POOLS');
+      const result = await h.service.classifyAiRun(
+        'p',
+        'fill-run',
+        'lease',
+        h.rows.filter((row) => !deletedIds.has(row.materialId)),
+      );
+      expect(result.selections.every((s) => s.slotId !== deletedSlotId)).toBe(true);
+      await h.service.completeAiRun(
+        'p',
+        'fill-run',
+        'lease',
+        result.selections.map((s) => ({
+          materialId: s.materialId,
+          slotId: s.slotId,
+          variantIndex: s.variantIndex ?? 0,
+          trimStartSeconds: 0,
+          trimReason: '冻结素材合法截取',
+        })),
+      );
+      const variants = h.child().templates[0]!.workspace.variants;
+      expect(variants.filter((v) => v.id.startsWith('old-'))).toEqual(
+        old.templates[0]!.workspace.variants,
+      );
+      const appended = variants.filter((v) => !v.id.startsWith('old-'));
+      expect(appended.length).toBeGreaterThan(0);
+      for (const v of appended) {
+        expect(v.intentionallyEmptySlotIds).toEqual([deletedSlotId]);
+        expect(v.preservedTimelineEnd).toBe(48);
+        expect(v.conflictSlotIds).toEqual([]);
+        expect(Object.keys(v.bindings)).toHaveLength(5);
+        expect(Object.values(v.bindings)).toContain(added.id);
+        expect(v.bindingRevisions[deletedSlotId]).toBeUndefined();
+        expect(v.offsets[deletedSlotId]).toBeUndefined();
+        expect(v.bindingMetadata?.[deletedSlotId]).toBeUndefined();
+      }
+      expect(h.child().templates[1]).toEqual(old.templates[1]);
+    },
+  );
   it('keeps APPEND sources and manual roles frozen even when all live clips are subsequently removed', async () => {
     const h = harness();
     const entry = h.child().templates[0]!;

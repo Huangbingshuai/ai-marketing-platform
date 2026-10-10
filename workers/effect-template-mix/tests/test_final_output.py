@@ -305,7 +305,7 @@ async def test_timeline_gap_renders_black_and_keeps_the_frozen_duration(tmp_path
         {'fileObjectId': 'red', 'start': 0, 'duration': 1, 'offset': 0, 'lane': 0,
          'transition': '硬切', 'transitionDuration': 0},
         {'fileObjectId': 'red', 'start': 2, 'duration': 1, 'offset': 0, 'lane': 0,
-         'transition': '硬切', 'transitionDuration': 0},
+         'transition': '叠化', 'transitionDuration': .5},
     ]
     snapshot = {'timeline': {'duration': 3, 'clips': clips}, 'aspectRatio': '4:3',
         'originalVolume': 0, 'resolution': '480p', 'frameRate': 30,

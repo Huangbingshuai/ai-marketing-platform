@@ -1,13 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import type { EffectTemplateMixVariant } from './effect-template-mix';
-import { packagingSlotBoundaryError } from './effect-template-mix-packaging';
+import {
+  packagingSlotBoundaryError,
+  packagingTimelineClips,
+  packagingTimelineDuration,
+} from './effect-template-mix-packaging';
 
-const variant = (durations: number[]) => ({
-  slots: durations.map((duration, index) => ({ id: String(index), duration })),
-  bindings: Object.fromEntries(durations.map((_, index) => [String(index), `material-${index}`])),
-}) as unknown as EffectTemplateMixVariant;
+const variant = (durations: number[]) =>
+  ({
+    slots: durations.map((duration, index) => ({ id: String(index), duration })),
+    bindings: Object.fromEntries(durations.map((_, index) => [String(index), `material-${index}`])),
+  }) as unknown as EffectTemplateMixVariant;
 
 describe('slot packaging boundaries', () => {
+  it.each([0, 1, 2])(
+    'preserves empty append slot %s position and total length without narration coverage',
+    (index) => {
+      const v = variant([4, 6, 8]);
+      delete v.bindings[String(index)];
+      v.intentionallyEmptySlotIds = [String(index)];
+      v.preservedTimelineEnd = 18;
+      expect(packagingTimelineClips(v).map((row) => row.start)).toEqual([0, 4, 10]);
+      expect(packagingTimelineDuration(v)).toBe(18);
+      expect(packagingSlotBoundaryError(v)).toBeNull();
+    },
+  );
   it('does not treat a preserved deletion hole as a narrated clip to validate', () => {
     const v = variant([4, 15]);
     delete v.bindings['1'];

@@ -9,6 +9,7 @@ import {
   adaptiveIncrementalSelections,
   pendingAddedMaterials,
   validateIncrementalPlan,
+  validatePartialAppendSelections,
 } from './effect-template-mix-incremental';
 
 const roles: EffectTemplateMixRole[] = [
@@ -73,21 +74,30 @@ describe('same-branch incremental material provenance', () => {
   });
   it('collects two unprocessed addition batches together and acknowledges only successful consumption', () => {
     const added = ['batch-1-a', 'batch-1-b', 'batch-2-a', 'batch-2-b'].map((id) => ({
-      id, sourcePromptId: id, available: true,
+      id,
+      sourcePromptId: id,
+      available: true,
     }));
     const materials = [pool[0]!, ...added];
     const inputSnapshot = {
       materials: added.map(({ id }) => ({ id, promptId: id })),
       incremental: { materialIds: added.map(({ id }) => id) },
     };
-    const completed = { templateId: 't', status: 'COMPLETED', inputSnapshot,
-      selectionResult: added.map(({ id }) => ({ materialId: id })) };
+    const completed = {
+      templateId: 't',
+      status: 'COMPLETED',
+      inputSnapshot,
+      selectionResult: added.map(({ id }) => ({ materialId: id })),
+    };
     expect(pendingAddedMaterials('t', materials, [baseline])).toEqual(added.map(({ id }) => id));
-    expect(pendingAddedMaterials('t', materials, [baseline, { ...completed, status: 'RUNNING' }]))
-      .toEqual(added.map(({ id }) => id));
+    expect(
+      pendingAddedMaterials('t', materials, [baseline, { ...completed, status: 'RUNNING' }]),
+    ).toEqual(added.map(({ id }) => id));
     expect(pendingAddedMaterials('t', materials, [completed, baseline])).toEqual([]);
     const next = { id: 'batch-3', sourcePromptId: 'batch-3', available: true };
-    expect(pendingAddedMaterials('t', [...materials, next], [completed, baseline])).toEqual(['batch-3']);
+    expect(pendingAddedMaterials('t', [...materials, next], [completed, baseline])).toEqual([
+      'batch-3',
+    ]);
   });
   it('does not consume omitted additions just because an append run completed', () => {
     const append = {
@@ -108,10 +118,18 @@ describe('same-branch incremental material provenance', () => {
     ).toEqual([]);
   });
   it('does not acknowledge new materials present only in a source-replacement trim snapshot', () => {
-    const trim = { templateId: 't', status: 'COMPLETED', inputSnapshot: {
-      trimOnly: true,
-      materials: [{ id: 'replacement', promptId: 'old-prompt' }, { id: 'new', promptId: 'new-prompt' }],
-    }, selectionResult: [{ materialId: 'replacement' }] };
+    const trim = {
+      templateId: 't',
+      status: 'COMPLETED',
+      inputSnapshot: {
+        trimOnly: true,
+        materials: [
+          { id: 'replacement', promptId: 'old-prompt' },
+          { id: 'new', promptId: 'new-prompt' },
+        ],
+      },
+      selectionResult: [{ materialId: 'replacement' }],
+    };
     expect(pendingAddedMaterials('t', pool, [trim, baseline])).toEqual(['new']);
   });
   it('only flags additions that fit at least one slot, including equality', () => {
@@ -126,6 +144,79 @@ describe('same-branch incremental material provenance', () => {
 });
 
 describe('adaptive incremental combination reuse', () => {
+  it.each([[0], [2], [5], [1, 3, 5]])(
+    'allows only genuine empty pools in new append: %j',
+    (...missing) => {
+      const { snapshot, rows } = fixture();
+      const missingIndexes = missing as number[];
+      snapshot.incremental!.emptySlotPolicy = 'ALLOW_EMPTY_POOLS';
+      if (missingIndexes.includes(0)) {
+        snapshot.materialRoleAssignments!.new = 'PRODUCT';
+        rows.find((row) => row.materialId === 'new')!.scores.PRODUCT = 1;
+      }
+      const removed = new Set(missingIndexes.map((index) => `m${index}`));
+      snapshot.materials = snapshot.materials.filter((m) => !removed.has(m.id));
+      const remainingRows = rows.filter((row) => !removed.has(row.materialId));
+      const selections = adaptiveIncrementalSelections(snapshot, remainingRows);
+      expect(selections).toHaveLength(6 - missingIndexes.length);
+      expect(selections[0]!.intentionallyEmptySlotIds).toEqual(
+        missingIndexes.map((index) => `s${index}`),
+      );
+      expect(selections.some((item) => item.materialId === 'new')).toBe(true);
+      expect(() =>
+        validatePartialAppendSelections(snapshot, remainingRows, selections),
+      ).not.toThrow();
+      delete snapshot.incremental!.emptySlotPolicy;
+      expect(() => adaptiveIncrementalSelections(snapshot, remainingRows)).toThrow();
+    },
+  );
+  it('keeps a single nonempty slot, never creates all-empty films, and detects tampered holes', () => {
+    const { snapshot, rows } = fixture();
+    snapshot.incremental!.emptySlotPolicy = 'ALLOW_EMPTY_POOLS';
+    snapshot.materials = snapshot.materials.filter((m) => m.id === 'new');
+    const remainingRows = rows.filter((row) => row.materialId === 'new');
+    const selections = adaptiveIncrementalSelections(snapshot, remainingRows);
+    expect(selections).toHaveLength(1);
+    expect(selections[0]!.intentionallyEmptySlotIds).toEqual(['s1', 's2', 's3', 's4', 's5']);
+    expect(() =>
+      validatePartialAppendSelections(snapshot, remainingRows, [
+        {
+          ...selections[0]!,
+          intentionallyEmptySlotIds: ['s0', 's2', 's3', 's4', 's5'],
+        },
+      ]),
+    ).toThrow('覆盖');
+    snapshot.materials[0]!.duration = 1;
+    expect(() => adaptiveIncrementalSelections(snapshot, remainingRows)).toThrow(
+      '没有可采用的新增素材',
+    );
+  });
+  it('does not voluntarily empty a usable slot and excludes existing sparse combinations', () => {
+    const { snapshot, rows } = fixture();
+    snapshot.incremental!.emptySlotPolicy = 'ALLOW_EMPTY_POOLS';
+    const selections = adaptiveIncrementalSelections(snapshot, rows);
+    expect(selections[0]!.intentionallyEmptySlotIds).toEqual([]);
+    const tampered = structuredClone(selections).filter((item) => item.slotId !== 's2');
+    tampered[0]!.intentionallyEmptySlotIds = ['s2'];
+    expect(() => validatePartialAppendSelections(snapshot, rows, tampered)).toThrow();
+    snapshot.materials = snapshot.materials.filter((m) => m.id !== 'm2');
+    const remaining = rows.filter((row) => row.materialId !== 'm2');
+    const sparse = adaptiveIncrementalSelections(snapshot, remaining);
+    snapshot.existingVariantBindings.push(sparse);
+    expect(() => adaptiveIncrementalSelections(snapshot, remaining)).toThrow();
+  });
+  it('reports unusable additions without acknowledging them and covers all usable additions', () => {
+    const { snapshot, rows } = fixture();
+    snapshot.incremental!.emptySlotPolicy = 'ALLOW_EMPTY_POOLS';
+    snapshot.materials.push({ ...snapshot.materials[0]!, id: 'short', duration: 1 });
+    snapshot.incremental!.materialIds.push('short');
+    rows.push({ ...rows[0]!, materialId: 'short' });
+    const selections = adaptiveIncrementalSelections(snapshot, rows);
+    expect(selections[0]!.omittedNewMaterials).toEqual([
+      expect.objectContaining({ materialId: 'short' }),
+    ]);
+    expect(selections.some((item) => item.materialId === 'short')).toBe(false);
+  });
   it('covers additions, preserves roles/durations and excludes existing exact films', () => {
     const { snapshot, rows } = fixture();
     const selections = adaptiveIncrementalSelections(snapshot, rows);
