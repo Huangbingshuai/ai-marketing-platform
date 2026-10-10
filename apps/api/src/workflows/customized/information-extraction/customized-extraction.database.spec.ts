@@ -289,6 +289,10 @@ it.skipIf(process.env.CUSTOMIZED_EXTRACTION_DATABASE_TEST !== '1')(
           where: { id: currentSource.id },
           data: { revision, contentHash: workflowStateHash({ sourcePayload, revision }) },
         });
+        await db.workingArtifact.updateMany({
+          where: { projectId, workflowRunId: runId, artifactKey: 'customized-brief' },
+          data: { freshness: 'STALE' },
+        });
         expect((await repo.workspace(projectId, runId)).stale).toBe(true);
         await expect(
           repo.confirm(
@@ -308,7 +312,14 @@ it.skipIf(process.env.CUSTOMIZED_EXTRACTION_DATABASE_TEST !== '1')(
         });
         const lease = await repo.claim(projectId, task.id);
         await finish(task.id, lease.attemptToken!);
-        const fresh = (await repo.workspace(projectId, runId)).result!;
+        const freshWorkspace = await repo.workspace(projectId, runId);
+        expect(freshWorkspace.stale).toBe(false);
+        expect(
+          await db.workingArtifact.findFirst({
+            where: { projectId, workflowRunId: runId, artifactKey: 'customized-brief' },
+          }),
+        ).toMatchObject({ freshness: 'STALE' });
+        const fresh = freshWorkspace.result!;
         expect(fresh.fields.productName).toBe('青梅酱');
         expect(fresh.fields.sellingPoints).toEqual(candidate.fields.sellingPoints);
         await repo.confirm(projectId, fresh.id, fresh.revision);

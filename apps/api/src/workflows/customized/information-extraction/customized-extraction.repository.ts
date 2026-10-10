@@ -234,9 +234,12 @@ export class CustomizedExtractionRepository {
         task: task ? presentTask(task) : null,
         committed: Boolean(artifact),
         stale: Boolean(
-          artifact?.freshness === 'STALE' ||
           input?.documentsAvailable === false ||
-          (result && result.sourceFingerprint !== input?.source.fingerprint),
+          // A newly generated draft may be fresh while the previously confirmed
+          // artifact is still stale. Confirmation is what replaces that artifact.
+          (result
+            ? result.sourceFingerprint !== input?.source.fingerprint
+            : artifact?.freshness === 'STALE'),
         ),
         editing: !artifact || run.editSessionNodeId === 'INFORMATION_EXTRACTION',
         temporary:
