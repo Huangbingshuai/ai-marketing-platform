@@ -2,7 +2,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
 import aio_pika
 from extraction_runtime.docling_parser import LocalDoclingParser
 from extraction_runtime.http import InternalApiError

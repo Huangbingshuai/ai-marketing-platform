@@ -8,7 +8,10 @@ from pathlib import Path
 import os
 from openpyxl import Workbook
 from extraction_runtime.docling_parser import LocalDoclingParser
-from customized_extraction.documents import template_candidate
+from customized_extraction.documents import (
+    template_candidate,
+    restore_docx_form_linebreaks,
+)
 
 
 def pdf_fixture() -> bytes:
@@ -48,8 +51,10 @@ async def main() -> None:
     )
     example = root / "docs/workflows/customized/templates/视频创作简报填写示例.docx"
     docx = await parser.parse(example.read_bytes(), file_name=example.name)
+    docx = restore_docx_form_linebreaks(docx, example.read_bytes())
     candidate = template_candidate(docx, {"assetId": "docx-fixture", "assetVersion": 1})
     assert candidate and candidate.fields.productName and candidate.fields.sellingPoints
+    assert len(candidate.fields.sellingPoints) == 3
     blank_path = example.with_name("视频创作简报模板.docx")
     blank = await parser.parse(blank_path.read_bytes(), file_name=blank_path.name)
     empty = template_candidate(blank, {"assetId": "empty-fixture", "assetVersion": 1})

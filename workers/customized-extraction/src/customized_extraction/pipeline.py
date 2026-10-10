@@ -1,18 +1,30 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
+from time import perf_counter
 from typing import Any, TypedDict, cast
 from langgraph.graph import START, END, StateGraph
 from extraction_runtime.docling_parser import DocumentParser
 from extraction_runtime.documents import split_document_markdown
 from .api import Api
 from .models import Candidate, Review, Source, NODES
-from .documents import template_candidate, combine_chunks
+from .documents import (
+    template_candidate,
+    filled_template_text,
+    combine_chunks,
+    restore_docx_form_linebreaks,
+    restore_selling_point_sources,
+)
 from .provider import Provider
 
 
 class PartialFailure(RuntimeError):
     pass
+
+
+class ProvenanceError(ValueError):
+    """Safe mechanical error, never includes document/model text."""
 
 
 def validate_provenance(candidate: Candidate, documents: list[dict[str, Any]]) -> None:
@@ -22,22 +34,24 @@ def validate_provenance(candidate: Candidate, documents: list[dict[str, Any]]) -
     for key, value in candidate.fields.model_dump().items():
         sources = cast(list[Source], getattr(candidate.fieldSources, key))
         if value and not sources:
-            raise ValueError("field has no document provenance")
+            raise ProvenanceError(f"field has no document provenance: {key}")
         for source in sources:
             if (
                 (source.assetId, source.assetVersion) not in pinned
                 or not source.location.strip()
                 or len(source.location) > 1000
             ):
-                raise ValueError("source is outside the pinned document input")
+                raise ProvenanceError(
+                    f"source is outside the pinned document input: {key}"
+                )
         if key == "sellingPoints":
             indices = {s.itemIndex for s in sources}
             if any(
                 not point.strip() or len(point) > 10000 for point in value
             ) or indices != set(range(len(value))):
-                raise ValueError("selling point provenance indices are invalid")
+                raise ProvenanceError("selling point provenance indices are invalid")
         elif len(value) > 50000:
-            raise ValueError("field exceeds the contract limit")
+            raise ProvenanceError(f"field exceeds the contract limit: {key}")
     issue_ids: set[str] = set()
     for issue in candidate.issues:
         if (
@@ -48,7 +62,9 @@ def validate_provenance(candidate: Candidate, documents: list[dict[str, Any]]) -
             or any(len(v) > 50000 for v in issue.alternatives)
             or not set(issue.sourceIds).issubset(document_ids)
         ):
-            raise ValueError("issue identifiers or document references are invalid")
+            raise ProvenanceError(
+                "issue identifiers or document references are invalid"
+            )
         issue_ids.add(issue.id)
 
 
@@ -73,6 +89,7 @@ class Pipeline:
             (c["nodeId"], c["sourceId"]): c["output"] for c in checkpoints
         }
         self.semaphore = asyncio.Semaphore(concurrency)
+        self.model_semaphore = asyncio.Semaphore(concurrency)
         self.chunk_chars = chunk_chars
         self.current_node = NODES[0]
         self.progress = 0
@@ -116,6 +133,8 @@ class Pipeline:
                         ):
                             raise ValueError("legacy document must be converted")
                         parsed = await self.parser.parse(raw, file_name=doc["name"])
+                        if doc["name"].lower().endswith(".docx"):
+                            parsed = restore_docx_form_linebreaks(parsed, raw)
                         await self.api.upload(doc["assetId"], parsed)
                         output: Any = {"parsed": True}
                     else:
@@ -125,10 +144,12 @@ class Pipeline:
                         candidate = template_candidate(text, doc)
                         if candidate is None:
                             chunks = split_document_markdown(
-                                text, max_chars=self.chunk_chars
+                                filled_template_text(text), max_chars=self.chunk_chars
                             )
-                            values = []
-                            for index, chunk in enumerate(chunks):
+
+                            async def extract_chunk(
+                                index: int, chunk: str
+                            ) -> Candidate:
                                 content = json.dumps(
                                     {
                                         "document": {
@@ -140,15 +161,25 @@ class Pipeline:
                                     },
                                     ensure_ascii=False,
                                 )
-                                values.append(
-                                    await self.provider.generate(
+                                async with self.model_semaphore:
+                                    return await self.provider.generate(
                                         node,
                                         "提取本段资料中的12个信息字段；空字段保持空字符串或空数组。",
                                         content,
                                         Candidate,
                                     )
-                                )
-                            candidate = combine_chunks(values)
+
+                            values = await asyncio.gather(
+                                *(
+                                    extract_chunk(index, chunk)
+                                    for index, chunk in enumerate(chunks)
+                                ),
+                                return_exceptions=True,
+                            )
+                            for value in values:
+                                if isinstance(value, BaseException):
+                                    raise value
+                            candidate = combine_chunks(cast(list[Candidate], values))
                         validate_provenance(candidate, [doc])
                         output = candidate.model_dump()
                     await self.checkpoint(node, doc["assetId"], output)
@@ -162,7 +193,14 @@ class Pipeline:
                     await self.api.call(
                         "PUT", "progress", {"progress": self.progress, "nodeId": node}
                     )
-                except Exception:
+                except Exception as error:
+                    if isinstance(error, ProvenanceError):
+                        logging.warning(
+                            "Extraction validation task=%s node=%s reason=%s",
+                            self.api.task_id,
+                            node,
+                            error,
+                        )
                     await self.checkpoint(node, doc["assetId"], {}, "FAILED")
                     raise
 
@@ -194,33 +232,88 @@ class Pipeline:
                 )
                 for d in self.input["documents"]
             ]
-            if len(candidates) == 1:
+            # Blank forms carry no facts; merging them adds cost and risks importing examples.
+            candidates = [
+                c for c in candidates if any(c.fields.model_dump().values()) or c.issues
+            ]
+            if not candidates:
+                fused = Candidate.model_validate(
+                    self.checkpoints[
+                        ("DOCUMENT_EXTRACT", self.input["documents"][0]["assetId"])
+                    ]
+                )
+            elif len(candidates) == 1:
                 fused = candidates[0]
             else:
-                # Hierarchical merge bounds each request while retaining every input document.
-                fused = candidates[0]
-                for candidate in candidates[1:]:
-                    fused = await self.provider.generate(
-                        node,
-                        "合并两份信息卡，完整保留独立事实和来源；相互矛盾的文本字段列入 issues，blocking=true。不要把不同段落补充误判为冲突。",
-                        json.dumps(
-                            [fused.model_dump(), candidate.model_dump()],
-                            ensure_ascii=False,
+
+                async def merge(left: Candidate, right: Candidate) -> Candidate:
+                    async with self.model_semaphore:
+                        result = await self.provider.generate(
+                            node,
+                            "合并两份信息卡，完整保留独立事实和来源；独立卖点尽量保持原文，不合并、不改写。sellingPoints 合并后 fieldSources 的 itemIndex 必须重新按最终数组从0编号，不沿用各输入的局部索引。相互矛盾的文本字段列入 issues，blocking=true；候选值保留该字段不冲突的共同信息。不要把不同段落补充误判为冲突。有文档依据的同一产品全名与简称不构成名称冲突，采用完整名称。待设计的包装版式仅归入外观，不重复混入规格。",
+                            json.dumps(
+                                [left.model_dump(), right.model_dump()],
+                                ensure_ascii=False,
+                            ),
+                            Candidate,
+                        )
+                        result = restore_selling_point_sources(result, [left, right])
+                        validate_provenance(result, self.input["documents"])
+                        return result
+
+                # Balanced rounds retain the same N-1 merges without serialising independent pairs.
+                while len(candidates) > 1:
+                    merged = await asyncio.gather(
+                        *(
+                            merge(candidates[i], candidates[i + 1])
+                            for i in range(0, len(candidates) - 1, 2)
                         ),
-                        Candidate,
+                        return_exceptions=True,
                     )
+                    for value in merged:
+                        if isinstance(value, BaseException):
+                            raise value
+                    candidates = cast(list[Candidate], merged) + (
+                        candidates[-1:] if len(candidates) % 2 else []
+                    )
+                fused = candidates[0]
             validate_provenance(fused, self.input["documents"])
             await self.checkpoint(node, "", fused.model_dump())
         elif node == "SEMANTIC_REFINEMENT":
             candidate = Candidate.model_validate(self.checkpoints[("FUSION", "")])
-            review = await self.provider.generate(
-                node,
-                "核对品牌/产品混淆、无依据断言、资料歧义或无法确定的产品身份。仅返回待确认 issues；正常项不创建提示，不改写原始事实。不强制补齐空字段。",
-                candidate.model_dump_json(),
-                Review,
+            review = (
+                await self.provider.generate(
+                    node,
+                    "根据 documentCandidates 核对 candidate 中无依据断言与实质矛盾。判断顺序：先判断各文档是否在说同一产品，再判断同一属性的断言是否互斥。完整名称与同产品补充资料的简称、型号代称不是互斥事实；一份文档未提及某字段也不构成冲突。不得仅因两份文档 productName 文本不同生成 issue；已保留明确完整名称且其他文档只是简称时属于正常项。返回全部仍成立的 issues，包括核对后保持不变的既有条目；正常项不创建提示，不改写原始事实。不强制补齐空字段。已有冲突须逐条重新阅读 documentCandidates 的完整字段，先找出所有非冲突事实，再仅替换互斥部分，为每个 alternatives 重建完整字段值；不得直接照抄可能残缺的融合候选。修订已有 issue 时沿用其 id。dismissedIssueIds 仅填经原始文档核对后明确属于误报的已有 issue id，例如同产品全名与简称；不存在误报时返回空数组。不能因缺少证据、自己偏好某个候选、或候选措辞相似而消除真实规格冲突；仅省略 issue 不能消除它。必须逐一复核已有冲突的 alternatives：每项都是用户选用后替换整个字段的完整值，不是冲突片段。某一规格冲突不代表整组规格冲突；一份文档未提及某项事实不等于否认，其他文档明确且没有反证的事实须保留在每个候选中。即使融合时字段被清空，也须从 documentCandidates 找回这些共同信息。仅当资料已明确保质期12个月、仅净含量200g和250g冲突时，两项候选都必须含保质期12个月。不得增加无依据事实。",
+                    json.dumps(
+                        {
+                            "candidate": candidate.model_dump(),
+                            "documentCandidates": [
+                                self.checkpoints[("DOCUMENT_EXTRACT", d["assetId"])]
+                                for d in self.input["documents"]
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    Review,
+                )
+                if any(candidate.fields.model_dump().values())
+                else Review(issues=[])
             )
-            existing = {i.id for i in candidate.issues}
-            candidate.issues.extend(i for i in review.issues if i.id not in existing)
+            # Only explicit AI decisions can clear false positives; omission keeps conflicts.
+            issues = {i.id: i for i in candidate.issues}
+            dismissed = set(review.dismissedIssueIds)
+            if (
+                len(dismissed) != len(review.dismissedIssueIds)
+                or not dismissed.issubset(issues)
+                or dismissed.intersection(i.id for i in review.issues)
+            ):
+                raise ProvenanceError("review dismissed issue identifiers are invalid")
+            issues = {
+                key: issue for key, issue in issues.items() if key not in dismissed
+            }
+            issues.update({i.id: i for i in review.issues})
+            candidate.issues = list(issues.values())
             validate_provenance(candidate, self.input["documents"])
             await self.checkpoint(node, "", candidate.model_dump())
         elif node == "NORMALIZATION":
@@ -237,13 +330,31 @@ class Pipeline:
         for node in NODES:
 
             async def execute(state: State, node_id: str = node) -> dict[str, Any]:
+                started = perf_counter()
+                succeeded = False
                 try:
                     await self.stage(node_id)
+                    succeeded = True
                 except PartialFailure:
                     raise
-                except Exception:
+                except Exception as error:
+                    if isinstance(error, ProvenanceError):
+                        logging.warning(
+                            "Extraction validation task=%s node=%s reason=%s",
+                            self.api.task_id,
+                            node_id,
+                            error,
+                        )
                     await self.checkpoint(node_id, "", {}, "FAILED")
                     raise
+                finally:
+                    logging.info(
+                        "Extraction stage task=%s node=%s succeeded=%s elapsed_ms=%d",
+                        self.api.task_id,
+                        node_id,
+                        succeeded,
+                        (perf_counter() - started) * 1000,
+                    )
                 return {}
 
             graph.add_node(node, execute)

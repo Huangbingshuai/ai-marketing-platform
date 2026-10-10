@@ -74,6 +74,7 @@ class Candidate(StrictModel):
 
 class Review(StrictModel):
     issues: list[Issue]
+    dismissedIssueIds: list[str] = Field(default_factory=list)
 
 
 class QueueMessage(StrictModel):
