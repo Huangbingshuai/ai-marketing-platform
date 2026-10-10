@@ -22,6 +22,7 @@ import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
   effectCanvasAspect,
+  normalizeEffectPromptFragmentType,
   effectVideoTransformValid,
   effectTemplateMixSlotDurationLimit,
   effectTemplateMixMaterialFitsTemplate,
@@ -333,15 +334,11 @@ const clipDuration = (artifact: WorkingArtifact): number =>
   Number(payload(artifact).durationSeconds ?? 0);
 const clipHash = (artifact: WorkingArtifact): string => String(payload(artifact).contentHash ?? '');
 const materialPurpose = (value: unknown): EffectTemplateMixMaterial['purpose'] | null => {
-  if (
-    value === 'HOOK' ||
-    value === 'EFFECT' ||
-    value === 'PRODUCT_DISPLAY' ||
-    value === 'END_CONVERSION'
-  ) {
-    return value;
-  }
-  return null;
+  // Prompt/render uses CTA, while the timeline's existing purpose is END_CONVERSION.
+  // This is a read projection, not a change to the saved source or AI slot assignment.
+  if (value === 'END_CONVERSION') return value;
+  const purpose = normalizeEffectPromptFragmentType(value);
+  return purpose === 'CTA' ? 'END_CONVERSION' : purpose;
 };
 
 type MaterialPromptSource = {
@@ -1274,7 +1271,7 @@ export class EffectTemplateMixService {
     projectId: string, workflowRunId: string,
   ): Promise<EffectTemplateMixWorkspaceData> {
     const load = () => this.loadWorkspace(projectId, workflowRunId);
-    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix', load, 'canvas-generation-source-v3') : load();
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix', load, 'canvas-generation-source-v4-purpose') : load();
   }
 
   private async renderRatio(_projectId: string, workflowRunId: string, artifacts: WorkingArtifact[]) {
@@ -1364,7 +1361,7 @@ export class EffectTemplateMixService {
     projectId: string, workflowRunId: string,
   ): Promise<EffectTemplateMixSourcesData> {
     const load = () => this.loadMaterialSources(projectId, workflowRunId);
-    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix-sources', load, 'canvas-generation-source-v3') : load();
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'mix-sources', load, 'canvas-generation-source-v4-purpose') : load();
   }
 
   private async loadMaterialSources(

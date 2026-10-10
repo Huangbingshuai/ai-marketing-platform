@@ -172,6 +172,83 @@ describe('saved video spatial transforms', () => {
   });
 });
 describe('inherited render replacements in a selected mix branch', () => {
+  it.each([
+    ['HOOK', 'HOOK'], ['PRODUCT_DISPLAY', 'PRODUCT_DISPLAY'], ['EFFECT', 'EFFECT'],
+    ['CTA', 'END_CONVERSION'], ['END_CONVERSION', 'END_CONVERSION'],
+    ['PAIN', 'HOOK'], ['SELLING_POINT_EXPLANATION', 'EFFECT'], ['OUTRO', 'END_CONVERSION'],
+  ])('keeps confirmed %s clips visible as %s without making a first fill stale', async (raw, expected) => {
+    const { service, working } = harness();
+    const clip = { ...source, payload: { ...(source.payload as object),
+      primaryPurpose: raw, compatiblePurposes: [raw, 'CTA', 'OUTRO', 'unknown'],
+    } };
+    working.listArtifacts.mockResolvedValue({ items: [clip], total: 1 });
+    const workspace = await service.workspace('project', 'run');
+    expect(workspace.materials).toHaveLength(1);
+    expect(workspace.materials[0]).toMatchObject({ id: sourceId, artifactRevision: 2,
+      fileObjectId: 'file-1', purpose: expected, available: true, activeSource: true });
+    expect(workspace.materials[0]!.compatiblePurposes).toEqual([...new Set([expected, 'END_CONVERSION'])]);
+    expect(effectTemplateMixSourceChanges(workspace.draft.templates[0]!.workspace.variants[0]!, workspace.materials))
+      .toEqual([]);
+    const sources = await service.materialSources('project', 'run');
+    expect(sources.materials).toHaveLength(1);
+    expect(sources.pendingProjectCount).toBe(0);
+    expect(working.putNodeState).not.toHaveBeenCalled();
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unchanged bound CTA clone current without rebinding it to the ancestor', async () => {
+    const { service, working } = harness();
+    const payload = { ...(source.payload as object), primaryPurpose: 'CTA', promptId: 'prompt-cta' };
+    const bound = { ...source, workflowRunId: 'run', payload };
+    const ancestor = { ...bound, id: 'ancestor', workflowRunId: 'parent', artifactKey: 'render-clip:parent-task',
+      metadata: { branchSourceOwner: true } };
+    working.listArtifacts.mockResolvedValue({ items: [ancestor, bound], total: 2 });
+    const result = await service.materialSources('project', 'run');
+    expect(result.materials).toHaveLength(1);
+    expect(result.materials[0]!.id).toBe(sourceId);
+    expect(result.pendingProjectCount).toBe(0);
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
+  it.each(['replacement', 'removed', 'unavailable'])('still reports a real CTA source %s', async (change) => {
+    const { service, working } = harness();
+    const clip = { ...source, workflowRunId: 'run', payload: { ...(source.payload as object),
+      primaryPurpose: 'CTA', promptId: 'prompt-cta' } };
+    working.listArtifacts.mockResolvedValue({ items: [clip], total: 1 });
+    const initial = await service.workspace('project', 'run');
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: initial.draft });
+    if (change === 'replacement') {
+      working.listArtifacts.mockResolvedValue({ items: [{ ...clip, revision: 3,
+        payload: { ...clip.payload, fileObjectId: 'new-file', contentHash: 'new-sha' } }], total: 1 });
+    } else if (change === 'removed') {
+      const batch = { ...source, id: 'pool', workflowRunId: 'run', artifactKey: 'render-batch:product',
+        payload: { clips: [], removedSources: [{ taskId: 'task-1', promptId: 'prompt-cta' }] } };
+      working.listArtifacts.mockResolvedValue({ items: [clip, batch], total: 2 });
+    } else {
+      working.listArtifacts.mockResolvedValue({ items: [{ ...clip, availability: 'MISSING' }], total: 1 });
+    }
+    const result = await service.materialSources('project', 'run');
+    const changes = effectTemplateMixSourceChanges(initial.draft.templates[0]!.workspace.variants[0]!, result.materials);
+    expect(result.pendingProjectCount).toBe(1);
+    expect(changes).toHaveLength(1);
+    if (change === 'removed') expect(changes[0]!.kind).toBe('REMOVED');
+    else if (change === 'replacement') expect(changes[0]!.material?.fileObjectId).toBe('new-file');
+    else expect(changes[0]!.blockedReason).toBeTruthy();
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
+  it('does not guess a purpose or mark unknown source metadata as a deletion', async () => {
+    const { service, working } = harness();
+    working.listArtifacts.mockResolvedValue({ items: [{ ...source,
+      payload: { ...(source.payload as object), primaryPurpose: 'unknown' } }], total: 1 });
+    const result = await service.outputSourceWorkspace('project', 'run');
+    expect(result.materials).toEqual([]);
+    const changes = effectTemplateMixSourceChanges(result.draft.templates[0]!.workspace.variants[0]!, result.materials);
+    expect(changes[0]!.kind).not.toBe('REMOVED');
+    expect(changes[0]!.blockedReason).toBeTruthy();
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
   it('updates only changed source slots and keeps unchanged cloned bindings current', async () => {
     const { working, service } = harness();
     const state = draft();
