@@ -1,0 +1,2472 @@
+{
+  "date": "2026-10-10",
+  "scope": "CUSTOMIZED INFORMATION_EXTRACTION",
+  "fictionalFixtures": true,
+  "taskCount": 22,
+  "productTaskCount": 20,
+  "conflictRegressionTaskIds": [
+    "0ffcb0a3-45e2-48c7-8e7a-d35c9af7a9d5",
+    "73c131b7-90d4-4335-b64c-512495e0f335"
+  ],
+  "modelUsage": {
+    "successfulCalls": 56,
+    "inputTokens": 173181,
+    "outputTokens": 36022,
+    "reasoningTokens": 0,
+    "actualBilledAmount": null,
+    "calls": [
+      {
+        "taskId": "2820e544-57c3-4034-a19a-a11a829f5b5b",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 3429,
+        "output_tokens": 5,
+        "reasoning_tokens": 0,
+        "total_tokens": 3434,
+        "latency_ms": 1828,
+        "attempts": 1
+      },
+      {
+        "taskId": "41884230-5c1a-4a08-b4a6-b15586bcee1c",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "e1504a70eaac",
+        "input_tokens": 1558,
+        "output_tokens": 632,
+        "reasoning_tokens": 0,
+        "total_tokens": 2190,
+        "latency_ms": 9056,
+        "attempts": 1
+      },
+      {
+        "taskId": "41884230-5c1a-4a08-b4a6-b15586bcee1c",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "4ad1c1ec5e21",
+        "input_tokens": 3355,
+        "output_tokens": 1549,
+        "reasoning_tokens": 0,
+        "total_tokens": 4904,
+        "latency_ms": 16884,
+        "attempts": 1
+      },
+      {
+        "taskId": "41884230-5c1a-4a08-b4a6-b15586bcee1c",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 4439,
+        "output_tokens": 136,
+        "reasoning_tokens": 0,
+        "total_tokens": 4575,
+        "latency_ms": 4091,
+        "attempts": 1
+      },
+      {
+        "taskId": "f560f004-c901-4979-87c5-29f342639aea",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 3393,
+        "output_tokens": 5,
+        "reasoning_tokens": 0,
+        "total_tokens": 3398,
+        "latency_ms": 1448,
+        "attempts": 1
+      },
+      {
+        "taskId": "7a080f72-59b0-4fdc-a8d7-3c6afecf33a5",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "e1504a70eaac",
+        "input_tokens": 1575,
+        "output_tokens": 432,
+        "reasoning_tokens": 0,
+        "total_tokens": 2007,
+        "latency_ms": 8665,
+        "attempts": 1
+      },
+      {
+        "taskId": "7a080f72-59b0-4fdc-a8d7-3c6afecf33a5",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "4ad1c1ec5e21",
+        "input_tokens": 3200,
+        "output_tokens": 2065,
+        "reasoning_tokens": 0,
+        "total_tokens": 5265,
+        "latency_ms": 21134,
+        "attempts": 1
+      },
+      {
+        "taskId": "7a080f72-59b0-4fdc-a8d7-3c6afecf33a5",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 4266,
+        "output_tokens": 159,
+        "reasoning_tokens": 0,
+        "total_tokens": 4425,
+        "latency_ms": 2810,
+        "attempts": 1
+      },
+      {
+        "taskId": "22289943-5a13-44b2-9196-66bc1714c488",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 3511,
+        "output_tokens": 5,
+        "reasoning_tokens": 0,
+        "total_tokens": 3516,
+        "latency_ms": 1836,
+        "attempts": 1
+      },
+      {
+        "taskId": "be45da7e-2667-45de-baba-c638ea370db2",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "e1504a70eaac",
+        "input_tokens": 1559,
+        "output_tokens": 501,
+        "reasoning_tokens": 0,
+        "total_tokens": 2060,
+        "latency_ms": 6166,
+        "attempts": 1
+      },
+      {
+        "taskId": "be45da7e-2667-45de-baba-c638ea370db2",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "4ad1c1ec5e21",
+        "input_tokens": 3243,
+        "output_tokens": 1929,
+        "reasoning_tokens": 0,
+        "total_tokens": 5172,
+        "latency_ms": 23247,
+        "attempts": 1
+      },
+      {
+        "taskId": "be45da7e-2667-45de-baba-c638ea370db2",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 4196,
+        "output_tokens": 5,
+        "reasoning_tokens": 0,
+        "total_tokens": 4201,
+        "latency_ms": 3418,
+        "attempts": 1
+      },
+      {
+        "taskId": "53055529-c538-4ea1-9d48-3c96102a7e89",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 3461,
+        "output_tokens": 5,
+        "reasoning_tokens": 0,
+        "total_tokens": 3466,
+        "latency_ms": 1332,
+        "attempts": 1
+      },
+      {
+        "taskId": "1986db0c-5cb0-42af-b9e1-7565746cf7e9",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "e1504a70eaac",
+        "input_tokens": 1564,
+        "output_tokens": 515,
+        "reasoning_tokens": 0,
+        "total_tokens": 2079,
+        "latency_ms": 7398,
+        "attempts": 1
+      },
+      {
+        "taskId": "1986db0c-5cb0-42af-b9e1-7565746cf7e9",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "4ad1c1ec5e21",
+        "input_tokens": 3243,
+        "output_tokens": 1938,
+        "reasoning_tokens": 0,
+        "total_tokens": 5181,
+        "latency_ms": 22561,
+        "attempts": 1
+      },
+      {
+        "taskId": "1986db0c-5cb0-42af-b9e1-7565746cf7e9",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "75fdbc08cdb6",
+        "input_tokens": 4205,
+        "output_tokens": 5,
+        "reasoning_tokens": 0,
+        "total_tokens": 4210,
+        "latency_ms": 2908,
+        "attempts": 1
+      },
+      {
+        "taskId": "709acbf8-e32b-48cf-b057-e23336cb0460",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 3630,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 3643,
+        "latency_ms": 3004,
+        "attempts": 1
+      },
+      {
+        "taskId": "17748c4e-df20-4aaf-b614-bf03a35d9bca",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "c22a2140844c",
+        "input_tokens": 1662,
+        "output_tokens": 573,
+        "reasoning_tokens": 0,
+        "total_tokens": 2235,
+        "latency_ms": 9553,
+        "attempts": 1
+      },
+      {
+        "taskId": "17748c4e-df20-4aaf-b614-bf03a35d9bca",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "1f88561032cf",
+        "input_tokens": 3448,
+        "output_tokens": 2014,
+        "reasoning_tokens": 0,
+        "total_tokens": 5462,
+        "latency_ms": 23410,
+        "attempts": 1
+      },
+      {
+        "taskId": "17748c4e-df20-4aaf-b614-bf03a35d9bca",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 4538,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 4551,
+        "latency_ms": 2001,
+        "attempts": 1
+      },
+      {
+        "taskId": "4b7e6513-3ab0-40d5-908e-6d09f86755e8",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 3594,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 3607,
+        "latency_ms": 1482,
+        "attempts": 1
+      },
+      {
+        "taskId": "9798e3d2-8bfb-4e42-8e4c-f23c43b7c024",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "c22a2140844c",
+        "input_tokens": 1679,
+        "output_tokens": 522,
+        "reasoning_tokens": 0,
+        "total_tokens": 2201,
+        "latency_ms": 7037,
+        "attempts": 1
+      },
+      {
+        "taskId": "9798e3d2-8bfb-4e42-8e4c-f23c43b7c024",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "1f88561032cf",
+        "input_tokens": 3410,
+        "output_tokens": 1459,
+        "reasoning_tokens": 0,
+        "total_tokens": 4869,
+        "latency_ms": 18529,
+        "attempts": 1
+      },
+      {
+        "taskId": "9798e3d2-8bfb-4e42-8e4c-f23c43b7c024",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 4460,
+        "output_tokens": 130,
+        "reasoning_tokens": 0,
+        "total_tokens": 4590,
+        "latency_ms": 5647,
+        "attempts": 1
+      },
+      {
+        "taskId": "344ad0a0-2ebb-4eb8-8074-e91efa92e46a",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 3712,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 3725,
+        "latency_ms": 1637,
+        "attempts": 1
+      },
+      {
+        "taskId": "0fc97aeb-832e-4dae-bdc6-08e73df56f2b",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "c22a2140844c",
+        "input_tokens": 1663,
+        "output_tokens": 626,
+        "reasoning_tokens": 0,
+        "total_tokens": 2289,
+        "latency_ms": 7732,
+        "attempts": 1
+      },
+      {
+        "taskId": "0fc97aeb-832e-4dae-bdc6-08e73df56f2b",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "1f88561032cf",
+        "input_tokens": 3491,
+        "output_tokens": 2054,
+        "reasoning_tokens": 0,
+        "total_tokens": 5545,
+        "latency_ms": 23063,
+        "attempts": 1
+      },
+      {
+        "taskId": "0fc97aeb-832e-4dae-bdc6-08e73df56f2b",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 4621,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 4634,
+        "latency_ms": 3036,
+        "attempts": 1
+      },
+      {
+        "taskId": "241b9100-ae90-4f2e-bc58-7fc1c1911a95",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 3662,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 3675,
+        "latency_ms": 3608,
+        "attempts": 1
+      },
+      {
+        "taskId": "be0157fd-49c2-4399-b7e7-e226842609ff",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "c22a2140844c",
+        "input_tokens": 1668,
+        "output_tokens": 517,
+        "reasoning_tokens": 0,
+        "total_tokens": 2185,
+        "latency_ms": 6603,
+        "attempts": 1
+      },
+      {
+        "taskId": "be0157fd-49c2-4399-b7e7-e226842609ff",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "1f88561032cf",
+        "input_tokens": 3381,
+        "output_tokens": 1935,
+        "reasoning_tokens": 0,
+        "total_tokens": 5316,
+        "latency_ms": 24257,
+        "attempts": 1
+      },
+      {
+        "taskId": "be0157fd-49c2-4399-b7e7-e226842609ff",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 4405,
+        "output_tokens": 160,
+        "reasoning_tokens": 0,
+        "total_tokens": 4565,
+        "latency_ms": 4117,
+        "attempts": 1
+      },
+      {
+        "taskId": "0ffcb0a3-45e2-48c7-8e7a-d35c9af7a9d5",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "c22a2140844c",
+        "input_tokens": 1641,
+        "output_tokens": 408,
+        "reasoning_tokens": 0,
+        "total_tokens": 2049,
+        "latency_ms": 5863,
+        "attempts": 1
+      },
+      {
+        "taskId": "0ffcb0a3-45e2-48c7-8e7a-d35c9af7a9d5",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "c22a2140844c",
+        "input_tokens": 1651,
+        "output_tokens": 624,
+        "reasoning_tokens": 0,
+        "total_tokens": 2275,
+        "latency_ms": 8448,
+        "attempts": 1
+      },
+      {
+        "taskId": "0ffcb0a3-45e2-48c7-8e7a-d35c9af7a9d5",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "c22a2140844c",
+        "input_tokens": 1640,
+        "output_tokens": 466,
+        "reasoning_tokens": 0,
+        "total_tokens": 2106,
+        "latency_ms": 6155,
+        "attempts": 1
+      },
+      {
+        "taskId": "0ffcb0a3-45e2-48c7-8e7a-d35c9af7a9d5",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "1f88561032cf",
+        "input_tokens": 2569,
+        "output_tokens": 694,
+        "reasoning_tokens": 0,
+        "total_tokens": 3263,
+        "latency_ms": 9713,
+        "attempts": 1
+      },
+      {
+        "taskId": "0ffcb0a3-45e2-48c7-8e7a-d35c9af7a9d5",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "1f88561032cf",
+        "input_tokens": 2774,
+        "output_tokens": 1020,
+        "reasoning_tokens": 0,
+        "total_tokens": 3794,
+        "latency_ms": 14916,
+        "attempts": 1
+      },
+      {
+        "taskId": "0ffcb0a3-45e2-48c7-8e7a-d35c9af7a9d5",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "08c9c3e0ec18",
+        "input_tokens": 3495,
+        "output_tokens": 179,
+        "reasoning_tokens": 0,
+        "total_tokens": 3674,
+        "latency_ms": 3617,
+        "attempts": 1
+      },
+      {
+        "taskId": "5bd305d0-9fd1-4980-be9b-97c36bd44e42",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "0dfd62ca6057",
+        "input_tokens": 1826,
+        "output_tokens": 703,
+        "reasoning_tokens": 0,
+        "total_tokens": 2529,
+        "latency_ms": 9880,
+        "attempts": 1
+      },
+      {
+        "taskId": "5bd305d0-9fd1-4980-be9b-97c36bd44e42",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "9eed231e79be",
+        "input_tokens": 3738,
+        "output_tokens": 1653,
+        "reasoning_tokens": 0,
+        "total_tokens": 5391,
+        "latency_ms": 18043,
+        "attempts": 1
+      },
+      {
+        "taskId": "5bd305d0-9fd1-4980-be9b-97c36bd44e42",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "02aace722eac",
+        "input_tokens": 5045,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 5058,
+        "latency_ms": 3258,
+        "attempts": 1
+      },
+      {
+        "taskId": "1d09d9fb-5d16-47ef-9bf6-44ce04d0edf0",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "0dfd62ca6057",
+        "input_tokens": 1815,
+        "output_tokens": 507,
+        "reasoning_tokens": 0,
+        "total_tokens": 2322,
+        "latency_ms": 7494,
+        "attempts": 1
+      },
+      {
+        "taskId": "1d09d9fb-5d16-47ef-9bf6-44ce04d0edf0",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "9eed231e79be",
+        "input_tokens": 3680,
+        "output_tokens": 1573,
+        "reasoning_tokens": 0,
+        "total_tokens": 5253,
+        "latency_ms": 20585,
+        "attempts": 1
+      },
+      {
+        "taskId": "1d09d9fb-5d16-47ef-9bf6-44ce04d0edf0",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "02aace722eac",
+        "input_tokens": 4921,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 4934,
+        "latency_ms": 1463,
+        "attempts": 1
+      },
+      {
+        "taskId": "03a19a8f-4dd9-44d4-bd40-e385d8335ce7",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "0dfd62ca6057",
+        "input_tokens": 1826,
+        "output_tokens": 621,
+        "reasoning_tokens": 0,
+        "total_tokens": 2447,
+        "latency_ms": 9475,
+        "attempts": 1
+      },
+      {
+        "taskId": "03a19a8f-4dd9-44d4-bd40-e385d8335ce7",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "9eed231e79be",
+        "input_tokens": 3656,
+        "output_tokens": 1552,
+        "reasoning_tokens": 0,
+        "total_tokens": 5208,
+        "latency_ms": 18233,
+        "attempts": 1
+      },
+      {
+        "taskId": "03a19a8f-4dd9-44d4-bd40-e385d8335ce7",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "5b1c1c623ece",
+        "input_tokens": 4913,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 4926,
+        "latency_ms": 2202,
+        "attempts": 1
+      },
+      {
+        "taskId": "dca975a5-9f95-4444-a02b-1677e56114ee",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "0dfd62ca6057",
+        "input_tokens": 1815,
+        "output_tokens": 599,
+        "reasoning_tokens": 0,
+        "total_tokens": 2414,
+        "latency_ms": 8598,
+        "attempts": 1
+      },
+      {
+        "taskId": "dca975a5-9f95-4444-a02b-1677e56114ee",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "9eed231e79be",
+        "input_tokens": 3594,
+        "output_tokens": 2013,
+        "reasoning_tokens": 0,
+        "total_tokens": 5607,
+        "latency_ms": 24207,
+        "attempts": 1
+      },
+      {
+        "taskId": "dca975a5-9f95-4444-a02b-1677e56114ee",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "5b1c1c623ece",
+        "input_tokens": 4797,
+        "output_tokens": 13,
+        "reasoning_tokens": 0,
+        "total_tokens": 4810,
+        "latency_ms": 2760,
+        "attempts": 1
+      },
+      {
+        "taskId": "73c131b7-90d4-4335-b64c-512495e0f335",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "0dfd62ca6057",
+        "input_tokens": 1788,
+        "output_tokens": 538,
+        "reasoning_tokens": 0,
+        "total_tokens": 2326,
+        "latency_ms": 6621,
+        "attempts": 1
+      },
+      {
+        "taskId": "73c131b7-90d4-4335-b64c-512495e0f335",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "0dfd62ca6057",
+        "input_tokens": 1798,
+        "output_tokens": 624,
+        "reasoning_tokens": 0,
+        "total_tokens": 2422,
+        "latency_ms": 7844,
+        "attempts": 1
+      },
+      {
+        "taskId": "73c131b7-90d4-4335-b64c-512495e0f335",
+        "stage": "DOCUMENT_EXTRACT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "0dfd62ca6057",
+        "input_tokens": 1787,
+        "output_tokens": 466,
+        "reasoning_tokens": 0,
+        "total_tokens": 2253,
+        "latency_ms": 6122,
+        "attempts": 1
+      },
+      {
+        "taskId": "73c131b7-90d4-4335-b64c-512495e0f335",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "9eed231e79be",
+        "input_tokens": 2669,
+        "output_tokens": 647,
+        "reasoning_tokens": 0,
+        "total_tokens": 3316,
+        "latency_ms": 11989,
+        "attempts": 1
+      },
+      {
+        "taskId": "73c131b7-90d4-4335-b64c-512495e0f335",
+        "stage": "FUSION",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "9eed231e79be",
+        "input_tokens": 2874,
+        "output_tokens": 959,
+        "reasoning_tokens": 0,
+        "total_tokens": 3833,
+        "latency_ms": 12309,
+        "attempts": 1
+      },
+      {
+        "taskId": "73c131b7-90d4-4335-b64c-512495e0f335",
+        "stage": "SEMANTIC_REFINEMENT",
+        "model": "doubao-seed-2-1-pro-260628",
+        "prompt_version": "5b1c1c623ece",
+        "input_tokens": 3648,
+        "output_tokens": 170,
+        "reasoning_tokens": 0,
+        "total_tokens": 3818,
+        "latency_ms": 2967,
+        "attempts": 1
+      }
+    ]
+  },
+  "crossProjectReads": [
+    {
+      "projectId": "9dcd8448-4292-4766-b817-62e7e8b64cf5",
+      "otherProjectId": "23ec1b91-2f9d-4343-8600-59d0d9b27e86",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "9dcd8448-4292-4766-b817-62e7e8b64cf5",
+      "otherProjectId": "23ec1b91-2f9d-4343-8600-59d0d9b27e86",
+      "kind": "run",
+      "status": 404
+    },
+    {
+      "projectId": "23ec1b91-2f9d-4343-8600-59d0d9b27e86",
+      "otherProjectId": "14e3640e-05e5-422a-903b-2cd2ffd58027",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "23ec1b91-2f9d-4343-8600-59d0d9b27e86",
+      "otherProjectId": "14e3640e-05e5-422a-903b-2cd2ffd58027",
+      "kind": "run",
+      "status": 404
+    },
+    {
+      "projectId": "14e3640e-05e5-422a-903b-2cd2ffd58027",
+      "otherProjectId": "9c3c3f0e-351c-4258-914b-038c5b6571d7",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "14e3640e-05e5-422a-903b-2cd2ffd58027",
+      "otherProjectId": "9c3c3f0e-351c-4258-914b-038c5b6571d7",
+      "kind": "run",
+      "status": 404
+    },
+    {
+      "projectId": "9c3c3f0e-351c-4258-914b-038c5b6571d7",
+      "otherProjectId": "11ddb5f4-9138-4106-b219-249de08b09fc",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "9c3c3f0e-351c-4258-914b-038c5b6571d7",
+      "otherProjectId": "11ddb5f4-9138-4106-b219-249de08b09fc",
+      "kind": "run",
+      "status": 404
+    },
+    {
+      "projectId": "11ddb5f4-9138-4106-b219-249de08b09fc",
+      "otherProjectId": "2cb0217e-a300-4d2c-95c1-bc6dd61e52ef",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "11ddb5f4-9138-4106-b219-249de08b09fc",
+      "otherProjectId": "2cb0217e-a300-4d2c-95c1-bc6dd61e52ef",
+      "kind": "run",
+      "status": 404
+    },
+    {
+      "projectId": "2cb0217e-a300-4d2c-95c1-bc6dd61e52ef",
+      "otherProjectId": "50d3edf6-f0f5-4ff8-a7cc-b7de2fb1221d",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "2cb0217e-a300-4d2c-95c1-bc6dd61e52ef",
+      "otherProjectId": "50d3edf6-f0f5-4ff8-a7cc-b7de2fb1221d",
+      "kind": "run",
+      "status": 404
+    },
+    {
+      "projectId": "50d3edf6-f0f5-4ff8-a7cc-b7de2fb1221d",
+      "otherProjectId": "18dacf18-6791-42f9-b07d-fd7120552b1e",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "50d3edf6-f0f5-4ff8-a7cc-b7de2fb1221d",
+      "otherProjectId": "18dacf18-6791-42f9-b07d-fd7120552b1e",
+      "kind": "run",
+      "status": 404
+    },
+    {
+      "projectId": "18dacf18-6791-42f9-b07d-fd7120552b1e",
+      "otherProjectId": "9dcd8448-4292-4766-b817-62e7e8b64cf5",
+      "kind": "task",
+      "status": 404
+    },
+    {
+      "projectId": "18dacf18-6791-42f9-b07d-fd7120552b1e",
+      "otherProjectId": "9dcd8448-4292-4766-b817-62e7e8b64cf5",
+      "kind": "run",
+      "status": 404
+    }
+  ],
+  "products": [
+    {
+      "name": "01燕麦片",
+      "projectId": "9dcd8448-4292-4766-b817-62e7e8b64cf5",
+      "workflowRunId": "cec552ea-951e-4b78-b343-e19b9108997c",
+      "source": {
+        "artifactId": "68d01cfa-b618-412e-b25e-d175d88c6f03",
+        "revision": 1,
+        "fingerprint": "6f4f5f873dfada1918d53dc11c0363bd7b5418fb623b32d3bdb7f200a0915e4b"
+      },
+      "attempts": [
+        {
+          "taskId": "2820e544-57c3-4034-a19a-a11a829f5b5b",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-01燕麦片-20261010",
+          "id": "2820e544-57c3-4034-a19a-a11a829f5b5b",
+          "queue_seconds": 0.41,
+          "execution_seconds": 3.2
+        },
+        {
+          "taskId": "709acbf8-e32b-48cf-b057-e23336cb0460",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-01燕麦片-20261010",
+          "id": "709acbf8-e32b-48cf-b057-e23336cb0460",
+          "queue_seconds": 1.59,
+          "execution_seconds": 16.29
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/01燕麦片/视频创作简报.docx",
+          "sha256": "c82654a548ffe5a7bdc1712a3d51754d9c80a363898c30053c04727017ad1307"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "谷晨",
+          "brandTone": "朴实、温暖、自然，避免夸张功效表达。",
+          "productName": "谷晨原味即食燕麦片",
+          "projectName": "谷晨原味燕麦片早餐短片",
+          "sellingPoints": [
+            "配料仅为燕麦，不添加其他配料",
+            "15包独立分装，单包30g便于定量取用",
+            "燕麦经过压片处理，保留薄片形态",
+            "单袋450g，可按小包安排早餐份量"
+          ],
+          "targetAudience": "25至40岁城市通勤人群，关注早餐便利性和原料清晰度。",
+          "avoidedElements": "不展示减肥效果，不出现零糖认证，不虚构有机认证。",
+          "productAppearance": "燕麦为浅米黄色不规则薄片；独立小包为米白色哑光袋；外盒尺寸待确认，请AI设计版式。",
+          "projectBackground": "推出面向忙碌通勤人群的原味燕麦片，展示日常早餐中的谷物质感。",
+          "productDescription": "配料仅为燕麦的即食谷物食品，供家庭日常早餐搭配。",
+          "productSpecifications": "净含量450g；每袋15小包，每小包30g；保质期12个月。",
+          "visualConsistencyRules": "燕麦片保持浅米黄色薄片，包装正面只出现谷晨标识，晨光色温全片一致。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "4cdd9619-2bb5-4aad-bde1-e57635ebcec7",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "3586c3b7-e549-4987-b755-b0376cf09763",
+        "revision": 2,
+        "sourceFingerprint": "6f4f5f873dfada1918d53dc11c0363bd7b5418fb623b32d3bdb7f200a0915e4b"
+      },
+      "committed": false,
+      "stale": false
+    },
+    {
+      "name": "02保湿霜",
+      "projectId": "23ec1b91-2f9d-4343-8600-59d0d9b27e86",
+      "workflowRunId": "cd858a8a-b984-456c-b728-5f52f3c585e7",
+      "source": {
+        "artifactId": "d4fc0fb0-0983-4879-bd8d-a56393499cd0",
+        "revision": 1,
+        "fingerprint": "61e53f7d83e28b81908512fd3db9b3216aa4b7e8cc46db8d6b2046ac62fb1536"
+      },
+      "attempts": [
+        {
+          "taskId": "41884230-5c1a-4a08-b4a6-b15586bcee1c",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-02保湿霜-20261010",
+          "id": "41884230-5c1a-4a08-b4a6-b15586bcee1c",
+          "queue_seconds": 2.36,
+          "execution_seconds": 31.42
+        },
+        {
+          "taskId": "17748c4e-df20-4aaf-b614-bf03a35d9bca",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-02保湿霜-20261010",
+          "id": "17748c4e-df20-4aaf-b614-bf03a35d9bca",
+          "queue_seconds": 17.6,
+          "execution_seconds": 36.48
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/02保湿霜/视频创作简报.docx",
+          "sha256": "538e1ab3e462a15a2b897197b9c1cb3fbaaebc78fe5d3d7f8e21e76be37a8bdd"
+        },
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/02保湿霜/产品补充说明.txt",
+          "sha256": "e27eb388f4081d3de765b7f022fbc979f3e4ca68e42b38eac051852ca00dd0bd"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "澄序",
+          "brandTone": "干净、温和、理性，不制造容貌焦虑。",
+          "productName": "澄序日常保湿霜",
+          "projectName": "澄序基础保湿霜新品展示",
+          "sellingPoints": [
+            "含甘油和角鲨烷的保湿配方",
+            "不添加香精",
+            "50g圆罐包装便于家庭梳妆台收纳",
+            "白色乳霜质地，适合呈现涂抹时的延展状态"
+          ],
+          "targetAudience": "20至35岁偏好基础护肤、关注配方信息的成年人。",
+          "avoidedElements": "未提供临床、敏感肌适用及防晒数据，不得推断此类功效；不出现治疗、修复皮肤疾病及前后对比，不使用医学认证标识。",
+          "productAppearance": "包装盒版式仍请AI设计；半透明浅蓝色圆柱罐，白色旋盖，内容物为白色乳霜；包装盒请AI设计，罐型和颜色不变。",
+          "projectBackground": "介绍基础保湿护肤单品，突出乳霜质地和简洁包装。",
+          "productDescription": "面部日常保湿乳霜，配方含甘油和角鲨烷，不添加香精。",
+          "productSpecifications": "罐体直径58mm，高46mm，上述尺寸已确定；净含量50g；单瓶装；未开封保质期36个月。",
+          "visualConsistencyRules": "瓶身始终为半透明浅蓝色，乳霜保持白色，标识统一置于瓶身正面中部。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "69aa1155-4e90-4001-a448-39fca47e971f",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "69aa1155-4e90-4001-a448-39fca47e971f",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "69aa1155-4e90-4001-a448-39fca47e971f",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "69aa1155-4e90-4001-a448-39fca47e971f",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "f4e19f2c-8d25-489b-b998-4bcb742f52d5",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "8875a51e-79bc-46aa-af16-70b3b676c233",
+        "revision": 2,
+        "sourceFingerprint": "61e53f7d83e28b81908512fd3db9b3216aa4b7e8cc46db8d6b2046ac62fb1536"
+      },
+      "committed": false,
+      "stale": false
+    },
+    {
+      "name": "03清洁剂",
+      "projectId": "14e3640e-05e5-422a-903b-2cd2ffd58027",
+      "workflowRunId": "9cde318b-cc82-46c8-9406-fe2217c8248a",
+      "source": {
+        "artifactId": "e92fb086-bc24-4f67-8ac2-9e804e15b2a2",
+        "revision": 1,
+        "fingerprint": "2e09e1aba43ecb0e3d70498cd821223b0e5f69555b591bcf0716f9f1beb4faa8"
+      },
+      "attempts": [
+        {
+          "taskId": "f560f004-c901-4979-87c5-29f342639aea",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-03清洁剂-20261010",
+          "id": "f560f004-c901-4979-87c5-29f342639aea",
+          "queue_seconds": 33.3,
+          "execution_seconds": 2.79
+        },
+        {
+          "taskId": "4b7e6513-3ab0-40d5-908e-6d09f86755e8",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-03清洁剂-20261010",
+          "id": "4b7e6513-3ab0-40d5-908e-6d09f86755e8",
+          "queue_seconds": 53.68,
+          "execution_seconds": 2.85
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/03清洁剂/视频创作简报.docx",
+          "sha256": "e1c4005b910cf06ccb020bed3aad4774c77404c60a1a6b2cef363e5fedb859b5"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "简净",
+          "brandTone": "清爽、务实、有生活气息。",
+          "productName": "简净厨房油污清洁剂",
+          "projectName": "简净厨房清洁剂场景展示",
+          "sellingPoints": [
+            "扳机喷头可形成喷雾",
+            "透明瓶身便于查看剩余液量",
+            "500mL单瓶规格适合家庭厨房收纳",
+            "采用柑橘香型"
+          ],
+          "targetAudience": "25至50岁承担家庭厨房清洁的成年人，关注收纳和清洁便利性。",
+          "avoidedElements": "不出现杀菌率、食品接触安全及无毒可饮用宣称；不混合不同清洁剂。",
+          "productAppearance": "透明淡绿色扁圆瓶身，白色扳机喷头，液体呈浅黄色；标签保持简净品牌名，其他版式待设计。",
+          "projectBackground": "展示厨房日常清洁用品的瓶型、泡沫和台面场景。",
+          "productDescription": "厨房日常油污清洁用品，采用扳机喷雾瓶和柑橘香型。",
+          "productSpecifications": "净含量500mL；每箱12瓶；保质期24个月。",
+          "visualConsistencyRules": "瓶身固定为透明淡绿色，白色扳机喷头不变，保持真实泡沫尺度。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "dc2964ee-6ee3-4957-aee1-5fe93be3e3bf",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "7d13dccb-38a4-40de-a480-c6c333c20d6a",
+        "revision": 2,
+        "sourceFingerprint": "2e09e1aba43ecb0e3d70498cd821223b0e5f69555b591bcf0716f9f1beb4faa8"
+      },
+      "committed": false,
+      "stale": false
+    },
+    {
+      "name": "04充电器",
+      "projectId": "9c3c3f0e-351c-4258-914b-038c5b6571d7",
+      "workflowRunId": "92bc0376-ce17-49b8-b20f-fe868cabf5f8",
+      "source": {
+        "artifactId": "163c6b98-7244-4c6a-b7c0-055a1f8f703f",
+        "revision": 1,
+        "fingerprint": "fa1c75ad8da278e90840a22239c9408e480280ea8ca51fda711cd1c1645703d1"
+      },
+      "attempts": [
+        {
+          "taskId": "7a080f72-59b0-4fdc-a8d7-3c6afecf33a5",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-04充电器-20261010",
+          "id": "7a080f72-59b0-4fdc-a8d7-3c6afecf33a5",
+          "queue_seconds": 34.69,
+          "execution_seconds": 33.75
+        },
+        {
+          "taskId": "9798e3d2-8bfb-4e42-8e4c-f23c43b7c024",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-04充电器-20261010",
+          "id": "9798e3d2-8bfb-4e42-8e4c-f23c43b7c024",
+          "queue_seconds": 56.04,
+          "execution_seconds": 32.37
+        },
+        {
+          "taskId": "5bd305d0-9fd1-4980-be9b-97c36bd44e42",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-04充电器-20261010",
+          "id": "5bd305d0-9fd1-4980-be9b-97c36bd44e42",
+          "queue_seconds": 0.91,
+          "execution_seconds": 39.73
+        },
+        {
+          "taskId": "03a19a8f-4dd9-44d4-bd40-e385d8335ce7",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-04充电器-20261010",
+          "id": "03a19a8f-4dd9-44d4-bd40-e385d8335ce7",
+          "queue_seconds": 0.63,
+          "execution_seconds": 38.89
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/04充电器/视频创作简报.docx",
+          "sha256": "e14b39b71b441a68c92f5d18926f46aa050ce5e8032cd1526eb41eaa84176c19"
+        },
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/04充电器/产品补充说明.txt",
+          "sha256": "22651e31b1bbaf441cca0ba07b56c902ba7ef2b2d4108f54269d725ede36c48b"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "弧电",
+          "brandTone": "精确、克制、现代。",
+          "productName": "弧电G65氮化镓充电器",
+          "projectName": "弧电65W充电器通勤展示",
+          "sellingPoints": [
+            "折叠插脚便于放入差旅收纳袋",
+            "提供2个USB-C和1个USB-A端口",
+            "单USB-C端口最高输出65W",
+            "机身重量118g"
+          ],
+          "targetAudience": "20至40岁经常携带手机和笔记本电脑通勤的成年人。",
+          "avoidedElements": "不展示所有设备均可65W充电，不虚构充电速度、认证或防水能力；功率信息不能改写成全设备通用承诺；不得表述单口65W等于三口各65W。",
+          "productAppearance": "深灰色磨砂长方体，折叠式双插脚，正面2个USB-C和1个橙色内芯USB-A，品牌标识在侧面。",
+          "projectBackground": "推出用于通勤桌面和差旅的多口充电器，准确展示端口与尺寸。",
+          "productDescription": "采用氮化镓方案的三口电源适配器，支持USB-C与USB-A设备连接。",
+          "productSpecifications": "型号G65；2个USB-C、1个USB-A；单USB-C最高65W；输入100-240V；尺寸53×42×30mm；重量118g；双USB-C同时连接时功率分配为45W+20W；三口同时连接时为45W+15W合计，后两口共享15W；单口65W不等于三口各65W。",
+          "visualConsistencyRules": "深灰色机身和橙色USB-A接口内芯全片一致，端口数量固定。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "a5fb8bef-3ee4-4467-b2e3-41af2e5e77a3",
+              "location": "产品补充说明.txt chunk 1：“弧电G65补充规格”",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "a5fb8bef-3ee4-4467-b2e3-41af2e5e77a3",
+              "location": "产品补充说明.txt chunk 1：“功率信息是规格，不能改写成全设备通用承诺。”；“单口65W不等于三口各65W。”",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "a5fb8bef-3ee4-4467-b2e3-41af2e5e77a3",
+              "location": "产品补充说明.txt chunk 1：“双USB-C同时连接时功率分配为45W+20W；三口同时连接时为45W+15W合计，后两口共享15W。单口65W不等于三口各65W。”",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "767b1a3f-000b-41df-8dd8-9fabefc9e604",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "4f8d7f6e-5043-4949-9f27-7b2fe721e70c",
+        "revision": 4,
+        "sourceFingerprint": "fa1c75ad8da278e90840a22239c9408e480280ea8ca51fda711cd1c1645703d1"
+      },
+      "committed": false,
+      "stale": false
+    },
+    {
+      "name": "05双肩包",
+      "projectId": "11ddb5f4-9138-4106-b219-249de08b09fc",
+      "workflowRunId": "aeeb2a66-b5dc-4eac-97f5-644d7daae0a7",
+      "source": {
+        "artifactId": "31b0db5e-0fc4-46fa-8481-6974404fb814",
+        "revision": 1,
+        "fingerprint": "f0989c6a2bd178dec83fe67280efbfd3a080297bd7f395131c05bc6e77678511"
+      },
+      "attempts": [
+        {
+          "taskId": "22289943-5a13-44b2-9196-66bc1714c488",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-05双肩包-20261010",
+          "id": "22289943-5a13-44b2-9196-66bc1714c488",
+          "queue_seconds": 67.87,
+          "execution_seconds": 2.91
+        },
+        {
+          "taskId": "344ad0a0-2ebb-4eb8-8074-e91efa92e46a",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-05双肩包-20261010",
+          "id": "344ad0a0-2ebb-4eb8-8074-e91efa92e46a",
+          "queue_seconds": 88.02,
+          "execution_seconds": 2.82
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/05双肩包/视频创作简报.docx",
+          "sha256": "333916c11f9901e72e6b39bdf52e21ee07a26ae9414bc7650e6afd79164fbdca"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "山径",
+          "brandTone": "轻快、可靠、自然。",
+          "productName": "山径轻行18L双肩包",
+          "projectName": "山径轻行双肩包城市通勤短片",
+          "sellingPoints": [
+            "独立电脑隔层可容纳14英寸笔记本电脑",
+            "背板设置透气网布",
+            "左右侧袋可放置直径7cm的水杯",
+            "正面纵向拉链袋便于分区收纳"
+          ],
+          "targetAudience": "25至40岁城市通勤人群，偏好简洁穿搭和分区收纳。",
+          "avoidedElements": "不出现完全防水、极限负重及不存在的户外认证。",
+          "productAppearance": "石墨灰织物包身，黑色拉链，正面单个纵向拉链袋，左右各一个侧袋；包装待设计。",
+          "projectBackground": "围绕城市步行和公共交通展示双肩包的收纳结构。",
+          "productDescription": "用于城市通勤的织物双肩包，设置电脑隔层与侧袋。",
+          "productSpecifications": "容积18L；空包重量620g；尺寸42×28×14cm；电脑隔层适配14英寸笔记本电脑。",
+          "visualConsistencyRules": "石墨灰织物包身、黑色拉链和双肩带结构保持一致。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "6d1bea9d-fa4b-4da8-b6f3-6e7544aa3968",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "f8ded8e6-d348-44cf-9c91-bec9a2ea0e66",
+        "revision": 2,
+        "sourceFingerprint": "f0989c6a2bd178dec83fe67280efbfd3a080297bd7f395131c05bc6e77678511"
+      },
+      "committed": false,
+      "stale": false
+    },
+    {
+      "name": "06落地灯",
+      "projectId": "2cb0217e-a300-4d2c-95c1-bc6dd61e52ef",
+      "workflowRunId": "97c22b74-14ff-4b6b-ac8b-a23242963a61",
+      "source": {
+        "artifactId": "4eb724a5-d640-4038-aa54-262b12a9eb00",
+        "revision": 1,
+        "fingerprint": "1a4da696ecd7ab65caafd003411f974a7987055e1b5a371e446aa93be86c1110"
+      },
+      "attempts": [
+        {
+          "taskId": "be45da7e-2667-45de-baba-c638ea370db2",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-06落地灯-20261010",
+          "id": "be45da7e-2667-45de-baba-c638ea370db2",
+          "queue_seconds": 69.79,
+          "execution_seconds": 33.99
+        },
+        {
+          "taskId": "0fc97aeb-832e-4dae-bdc6-08e73df56f2b",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-06落地灯-20261010",
+          "id": "0fc97aeb-832e-4dae-bdc6-08e73df56f2b",
+          "queue_seconds": 90.58,
+          "execution_seconds": 35.03
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/06落地灯/视频创作简报.docx",
+          "sha256": "7f03dda766acf709dc0ac4fa0d37e099872ca01b9284616d858f0fb522f0b789"
+        },
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/06落地灯/产品补充说明.txt",
+          "sha256": "2e88fc047e91bbd5637048b83a0e74704836cccaa2e5d7c6ec0eda43696f29c1"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "栖光",
+          "brandTone": "安静、温暖、舒展。",
+          "productName": "栖光弧线阅读落地灯",
+          "projectName": "栖光阅读落地灯空间展示",
+          "sellingPoints": [
+            "脚踏开关便于控制开闭",
+            "E27灯头可搭配相应规格灯泡",
+            "弯臂结构将光源延伸至座位旁",
+            "织物灯罩形成柔和的空间光感"
+          ],
+          "targetAudience": "28至50岁有客厅阅读角布置需求的家庭用户。",
+          "avoidedElements": "不展示护眼认证、无蓝光宣称及未提供的智能语音控制。",
+          "productAppearance": "黄铜色金属弯臂，米白色锥台布灯罩，深棕色圆形底座；灯罩直径36cm。外观设计已经确定。",
+          "projectBackground": "展示适合客厅阅读角的落地灯，突出光线层次与结构比例。",
+          "productDescription": "室内落地灯，采用金属弯臂与织物灯罩，配脚踏开关。",
+          "productSpecifications": "总高158cm；底座直径28cm；E27灯头；额定电压220V；灯泡另配。灯罩高度22cm，电源线长1.8m，底座内置配重。灯泡另配，色温与调光能力依所配灯泡，不提供统一固定色温或调光承诺。",
+          "visualConsistencyRules": "黄铜色灯杆、米白色布灯罩、深棕色圆底座固定，光线保持暖色。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "7c75f496-932a-4bf9-9b31-5fac9d48a53b",
+              "location": "chunk 1: \"栖光弧线阅读落地灯补充：\"",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "7c75f496-932a-4bf9-9b31-5fac9d48a53b",
+              "location": "chunk 1: \"外观设计已经确定。\"",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "7c75f496-932a-4bf9-9b31-5fac9d48a53b",
+              "location": "chunk 1: \"灯罩高度22cm，电源线长1.8m，底座内置配重。\"",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "7c75f496-932a-4bf9-9b31-5fac9d48a53b",
+              "location": "chunk 1: \"灯泡另配，色温与调光能力依所配灯泡，不提供统一固定色温或调光承诺。\"",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "520df9e0-0c61-47b1-b7f3-55e8fb271868",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "8a3c14a6-06f9-4d7c-8b37-9627b8cd964b",
+        "revision": 2,
+        "sourceFingerprint": "1a4da696ecd7ab65caafd003411f974a7987055e1b5a371e446aa93be86c1110"
+      },
+      "committed": false,
+      "stale": false
+    },
+    {
+      "name": "07扭矩扳手",
+      "projectId": "50d3edf6-f0f5-4ff8-a7cc-b7de2fb1221d",
+      "workflowRunId": "a9917117-b0d3-44d7-890b-c532e0c003b8",
+      "source": {
+        "artifactId": "4825544d-e627-4e3f-b536-651f4f1b99dd",
+        "revision": 1,
+        "fingerprint": "887036ffbfb7a76f236f18492486bb442fef76885873900f714e0f4376801b84"
+      },
+      "attempts": [
+        {
+          "taskId": "53055529-c538-4ea1-9d48-3c96102a7e89",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-07扭矩扳手-20261010",
+          "id": "53055529-c538-4ea1-9d48-3c96102a7e89",
+          "queue_seconds": 103.35,
+          "execution_seconds": 3.08
+        },
+        {
+          "taskId": "241b9100-ae90-4f2e-bc58-7fc1c1911a95",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-07扭矩扳手-20261010",
+          "id": "241b9100-ae90-4f2e-bc58-7fc1c1911a95",
+          "queue_seconds": 125.3,
+          "execution_seconds": 4.79
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/07扭矩扳手/视频创作简报.docx",
+          "sha256": "155ef8525ee69cea1b10461cd8540f2f2a7856fd088432fb4f46981e50705b5e"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "矩衡",
+          "brandTone": "严谨、清晰、可靠。",
+          "productName": "矩衡T60机械扭矩扳手",
+          "projectName": "矩衡T60扭矩扳手结构展示",
+          "sellingPoints": [
+            "10-60N·m可调扭矩范围",
+            "棘轮头支持切换转向",
+            "尾端锁定圈固定设定位置",
+            "配套收纳盒便于分类存放"
+          ],
+          "targetAudience": "成年自行车爱好者与维修人员，具备基础工具使用知识。",
+          "avoidedElements": "不虚构校准证书、精度等级和安全保证，不展示带电操作。",
+          "productAppearance": "银色金属杆身，黑色防滑握柄，尾端旋转调节圈，黑色矩形收纳盒；精度待确认。",
+          "projectBackground": "展示自行车维护工具的刻度、锁定结构和收纳盒。",
+          "productDescription": "用于螺纹紧固维护的可调机械扭矩扳手，采用棘轮头结构。",
+          "productSpecifications": "扭矩范围10-60N·m；3/8英寸方头；总长365mm；重量780g。",
+          "visualConsistencyRules": "银色金属杆身和黑色防滑握柄固定，刻度位置保持一致。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "14189310-59c4-495f-bdaa-c896abe5ebf6",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "a51c0961-6bc0-426f-8996-79e037de662c",
+        "revision": 2,
+        "sourceFingerprint": "887036ffbfb7a76f236f18492486bb442fef76885873900f714e0f4376801b84"
+      },
+      "committed": false,
+      "stale": false
+    },
+    {
+      "name": "08预约软件",
+      "projectId": "18dacf18-6791-42f9-b07d-fd7120552b1e",
+      "workflowRunId": "4151f4b2-42d4-4f9d-9ead-76be73efa296",
+      "source": {
+        "artifactId": "251decda-4288-4d01-a14e-a9bea167d5a0",
+        "revision": 1,
+        "fingerprint": "b74c829af681ac8f7805adbece92adaffb84deedd618747bcf4f497b768739ca"
+      },
+      "attempts": [
+        {
+          "taskId": "1986db0c-5cb0-42af-b9e1-7565746cf7e9",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-08预约软件-20261010",
+          "id": "1986db0c-5cb0-42af-b9e1-7565746cf7e9",
+          "queue_seconds": 105.62,
+          "execution_seconds": 34.24
+        },
+        {
+          "taskId": "be0157fd-49c2-4399-b7e7-e226842609ff",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-08预约软件-20261010",
+          "id": "be0157fd-49c2-4399-b7e7-e226842609ff",
+          "queue_seconds": 129.73,
+          "execution_seconds": 36.28
+        },
+        {
+          "taskId": "1d09d9fb-5d16-47ef-9bf6-44ce04d0edf0",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-08预约软件-20261010",
+          "id": "1d09d9fb-5d16-47ef-9bf6-44ce04d0edf0",
+          "queue_seconds": 40.46,
+          "execution_seconds": 30.81
+        },
+        {
+          "taskId": "dca975a5-9f95-4444-a02b-1677e56114ee",
+          "status": "COMPLETED",
+          "name": "多产品提炼验收-08预约软件-20261010",
+          "id": "dca975a5-9f95-4444-a02b-1677e56114ee",
+          "queue_seconds": 39.28,
+          "execution_seconds": 36.88
+        }
+      ],
+      "inputFiles": [
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/08预约软件/视频创作简报.docx",
+          "sha256": "1a2879482f7bd47ae8b891947dd6432d858137ec32647744d6dd0b9dee4b3d33"
+        },
+        {
+          "path": "素材/定制类项目素材/多产品提炼验收/08预约软件/产品补充说明.txt",
+          "sha256": "81ed867254b0ed07a02322c6f7e27594a41d7988ea6f181e9aacbaca1d1d11aa"
+        }
+      ],
+      "result": {
+        "fields": {
+          "brandName": "席间",
+          "brandTone": "友好、清晰、有秩序。",
+          "productName": "席间门店预约系统标准版",
+          "projectName": "席间门店预约系统功能介绍",
+          "sellingPoints": [
+            "日历视图集中展示预约时段",
+            "员工排班与可预约时段关联",
+            "支持导出预约记录CSV文件",
+            "不同员工账号按角色查看业务页面"
+          ],
+          "targetAudience": "经营美容、美甲、摄影等预约制小型门店的负责人及店员。",
+          "avoidedElements": "不得补造电池、机身尺寸、材质、物流包装及硬件资产；不得补造原生手机App、支付收款模块相关表现。不出现真实个人信息，不宣称保证增收，不虚构用户规模、奖项和离线能力。",
+          "productAppearance": "无实体外壳和包装；界面为深蓝顶部导航、白色日历区域和浅灰侧栏，Logo位置固定在左上角；具体图标请AI设计。",
+          "projectBackground": "向小型服务门店介绍预约与排班协作，演示真实功能路径。",
+          "productDescription": "席间标准版为软件服务。通过浏览器使用的门店预约管理软件，包含预约日历和员工排班，不是实体硬件。",
+          "productSpecifications": "单次CSV导出最多5000条预约记录；员工角色分为管理员和普通员工；无原生手机App；无支付收款模块。标准版支持1个门店、最多10个员工账号；支持电脑与手机浏览器；按年订阅。",
+          "visualConsistencyRules": "界面主色为深蓝，预约状态采用固定颜色，虚构示例姓名保持一致。"
+        },
+        "issues": [],
+        "fieldSources": {
+          "brandName": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 11 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "brandTone": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 14 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productName": [
+            {
+              "assetId": "10041724-bc59-4f3d-ba2a-9bd132b46a51",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 22 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectName": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 12 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "sellingPoints": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 0,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 1,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 2,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 26 行填写内容",
+              "itemIndex": 3,
+              "assetVersion": 1
+            }
+          ],
+          "targetAudience": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 27 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "avoidedElements": [
+            {
+              "assetId": "10041724-bc59-4f3d-ba2a-9bd132b46a51",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 16 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productAppearance": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 25 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "projectBackground": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 13 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productDescription": [
+            {
+              "assetId": "10041724-bc59-4f3d-ba2a-9bd132b46a51",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 23 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "productSpecifications": [
+            {
+              "assetId": "10041724-bc59-4f3d-ba2a-9bd132b46a51",
+              "location": "产品补充说明.txt chunk 1",
+              "itemIndex": null,
+              "assetVersion": 1
+            },
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 24 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ],
+          "visualConsistencyRules": [
+            {
+              "assetId": "c8c84ce6-6383-4a81-a2c3-ba06fce44447",
+              "location": "表格第 15 行填写内容",
+              "itemIndex": null,
+              "assetVersion": 1
+            }
+          ]
+        },
+        "id": "472030b2-3ec8-48ef-9796-ae00e533a6af",
+        "revision": 4,
+        "sourceFingerprint": "b74c829af681ac8f7805adbece92adaffb84deedd618747bcf4f497b768739ca"
+      },
+      "committed": false,
+      "stale": false
+    }
+  ],
+  "conflictResult": {
+    "fields": {
+      "brandName": "清禾",
+      "brandTone": "清新自然",
+      "productName": "清禾青梅酱",
+      "projectName": "",
+      "sellingPoints": ["含青梅果肉", "瓶盖有防拆封环"],
+      "targetAudience": "喜欢酸甜口味的家庭用户",
+      "avoidedElements": "",
+      "productAppearance": "透明玻璃瓶、深绿色金属盖",
+      "projectBackground": "",
+      "productDescription": "青梅果酱",
+      "productSpecifications": "",
+      "visualConsistencyRules": ""
+    },
+    "issues": [
+      {
+        "id": "issue-1",
+        "field": "productSpecifications",
+        "message": "净含量存在冲突，一处标注为200g/瓶且保质期12个月，另一处标注为250g/瓶，需确认准确规格",
+        "blocking": true,
+        "sourceIds": [
+          "4c672c2d-b739-4316-89e0-54eda001aebb",
+          "f7a19765-cd04-492f-b83f-69ffb64a066e"
+        ],
+        "alternatives": ["净含量200g/瓶，保质期12个月", "净含量250g/瓶，保质期12个月"]
+      }
+    ],
+    "fieldSources": {
+      "brandName": [
+        {
+          "assetId": "4c672c2d-b739-4316-89e0-54eda001aebb",
+          "location": "base.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        }
+      ],
+      "brandTone": [
+        {
+          "assetId": "4c672c2d-b739-4316-89e0-54eda001aebb",
+          "location": "base.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        }
+      ],
+      "productName": [
+        {
+          "assetId": "4c672c2d-b739-4316-89e0-54eda001aebb",
+          "location": "base.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        },
+        {
+          "assetId": "cf8d4ce3-4f8a-4e85-a1ee-e53c71a33dcd",
+          "location": "extra.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        },
+        {
+          "assetId": "f7a19765-cd04-492f-b83f-69ffb64a066e",
+          "location": "conflict.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        }
+      ],
+      "projectName": [],
+      "sellingPoints": [
+        {
+          "assetId": "4c672c2d-b739-4316-89e0-54eda001aebb",
+          "location": "base.txt chunk 1",
+          "itemIndex": 0,
+          "assetVersion": 1
+        },
+        {
+          "assetId": "cf8d4ce3-4f8a-4e85-a1ee-e53c71a33dcd",
+          "location": "extra.txt chunk 1",
+          "itemIndex": 1,
+          "assetVersion": 1
+        }
+      ],
+      "targetAudience": [
+        {
+          "assetId": "f7a19765-cd04-492f-b83f-69ffb64a066e",
+          "location": "conflict.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        }
+      ],
+      "avoidedElements": [],
+      "productAppearance": [
+        {
+          "assetId": "cf8d4ce3-4f8a-4e85-a1ee-e53c71a33dcd",
+          "location": "extra.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        }
+      ],
+      "projectBackground": [],
+      "productDescription": [
+        {
+          "assetId": "cf8d4ce3-4f8a-4e85-a1ee-e53c71a33dcd",
+          "location": "extra.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        }
+      ],
+      "productSpecifications": [
+        {
+          "assetId": "4c672c2d-b739-4316-89e0-54eda001aebb",
+          "location": "base.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        },
+        {
+          "assetId": "f7a19765-cd04-492f-b83f-69ffb64a066e",
+          "location": "conflict.txt chunk 1",
+          "itemIndex": null,
+          "assetVersion": 1
+        }
+      ],
+      "visualConsistencyRules": []
+    },
+    "id": "ab0a9328-cd27-477c-8fae-2ba74b24f915",
+    "revision": 5,
+    "sourceFingerprint": "5764151e02f7b79d9a313b8db76ddf8d17b42c25815aefeab53d1a8eeb8e2262"
+  }
+}
