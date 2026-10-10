@@ -47,6 +47,7 @@ import EffectWorkflowCanvas from '../../effect/source-import/components/EffectWo
 import EffectUpwardCreatableSelect from '../../effect/source-import/components/EffectUpwardCreatableSelect.vue';
 import { customizedWorkflowNodes } from '../customized-workflow';
 import CustomizedInfoExtractionNodePage from '../information-extraction/CustomizedExtractionWorkspace.vue';
+import CustomizedStoryboardWorkspace from '../storyboard/CustomizedStoryboardWorkspace.vue';
 import type { CustomizedExtractionSource } from '../information-extraction/customized-extraction-view';
 import {
   initializeCustomizedDraft,
@@ -398,7 +399,10 @@ const save = async (): Promise<boolean> => {
   return persistence.flush();
 };
 const extractionWorkspace = ref<InstanceType<typeof CustomizedInfoExtractionNodePage> | null>(null);
+const storyboardWorkspace = ref<InstanceType<typeof CustomizedStoryboardWorkspace> | null>(null);
 const flushPendingEdits = async (): Promise<boolean> => {
+  if (storyboardWorkspace.value && !(await storyboardWorkspace.value.flushPendingEdits()))
+    return false;
   if (extractionWorkspace.value && !(await extractionWorkspace.value.flushPendingEdits()))
     return false;
   if (uploading.value || pendingFiles.value.length) {
@@ -1008,6 +1012,16 @@ onBeforeUnmount(() => {
         @next="selectStep(2)"
         @workflow-run-change="load({ preserveView: true })"
         @view-source="preview"
+      />
+      <CustomizedStoryboardWorkspace
+        v-else-if="activeStep === 2"
+        ref="storyboardWorkspace"
+        :key="`${projectId}:${workflowRunId}`"
+        :project-id="projectId"
+        :workflow-run-id="workflowRunId"
+        :brief-confirmed="confirmedSteps.includes(1)"
+        :scope-readonly="Boolean(activeRun?.isTemporaryBranch)"
+        @back="selectStep(1)"
       />
       <section v-else class="import-workspace-card next-node">
         <header class="node-heading">

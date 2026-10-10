@@ -4,6 +4,13 @@ import { describe, expect, it } from 'vitest';
 import Actions from './WorkflowNodeEditActions.vue';
 
 describe('shared effect/customized node editing actions', () => {
+  it('supports draft labels without implying confirmed artifact submission', async () => {
+    const html = await renderToString(
+      createSSRApp(Actions, { editing: true, temporary: true, saveLabel: '保存草稿' }),
+    );
+    expect(html).toContain('保存草稿');
+    expect(html).not.toContain('保存版本');
+  });
   it('shows only enter-edit for a confirmed read-only node', async () => {
     const html = await renderToString(createSSRApp(Actions, { editing: false, temporary: false }));
     expect(html).toContain('进入编辑');

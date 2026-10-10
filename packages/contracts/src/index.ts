@@ -71,3 +71,4 @@ export * from './effect-voice';
 export * from './customized-import';
 export * from './extraction-execution';
 export * from './customized-extraction';
+export * from './customized-storyboard';

@@ -7,8 +7,16 @@ withDefaults(
     disabled?: boolean;
     saveDisabled?: boolean;
     saving?: boolean;
+    saveLabel?: string;
+    savingLabel?: string;
   }>(),
-  { disabled: false, saveDisabled: false, saving: false },
+  {
+    disabled: false,
+    saveDisabled: false,
+    saving: false,
+    saveLabel: '保存版本',
+    savingLabel: '正在校验…',
+  },
 );
 defineEmits<{ begin: []; cancel: []; save: [] }>();
 </script>
@@ -35,7 +43,7 @@ defineEmits<{ begin: []; cancel: []; save: [] }>();
       @click="$emit('save')"
     >
       <LoaderCircle v-if="saving" class="spin" :size="14" /><CheckCircle2 v-else :size="14" />
-      {{ saving ? '正在校验…' : '保存版本' }}
+      {{ saving ? savingLabel : saveLabel }}
     </button>
   </div>
 </template>
