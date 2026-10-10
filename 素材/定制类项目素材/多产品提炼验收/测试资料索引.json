@@ -1,0 +1,214 @@
+[
+  {
+    "name": "01燕麦片",
+    "fields": {
+      "brandName": "谷晨",
+      "projectName": "谷晨原味燕麦片早餐短片",
+      "projectBackground": "推出面向忙碌通勤人群的原味燕麦片，展示日常早餐中的谷物质感。",
+      "brandTone": "朴实、温暖、自然，避免夸张功效表达。",
+      "visualConsistencyRules": "燕麦片保持浅米黄色薄片，包装正面只出现谷晨标识，晨光色温全片一致。",
+      "avoidedElements": "不展示减肥效果，不出现零糖认证，不虚构有机认证。",
+      "productName": "谷晨原味即食燕麦片",
+      "productDescription": "配料仅为燕麦的即食谷物食品，供家庭日常早餐搭配。",
+      "productSpecifications": "净含量450g；每袋15小包，每小包30g；保质期12个月。",
+      "productAppearance": "燕麦为浅米黄色不规则薄片；独立小包为米白色哑光袋；外盒尺寸待确认，请AI设计版式。",
+      "sellingPoints": [
+        "配料仅为燕麦，不添加其他配料",
+        "15包独立分装，单包30g便于定量取用",
+        "燕麦经过压片处理，保留薄片形态",
+        "单袋450g，可按小包安排早餐份量"
+      ],
+      "targetAudience": "25至40岁城市通勤人群，关注早餐便利性和原料清晰度。"
+    },
+    "supplement": null,
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/01燕麦片/视频创作简报.docx"
+    ]
+  },
+  {
+    "name": "02保湿霜",
+    "fields": {
+      "brandName": "澄序",
+      "projectName": "澄序基础保湿霜新品展示",
+      "projectBackground": "介绍基础保湿护肤单品，突出乳霜质地和简洁包装。",
+      "brandTone": "干净、温和、理性，不制造容貌焦虑。",
+      "visualConsistencyRules": "瓶身始终为半透明浅蓝色，乳霜保持白色，标识统一置于瓶身正面中部。",
+      "avoidedElements": "不出现治疗、修复皮肤疾病及前后对比，不使用医学认证标识。",
+      "productName": "澄序日常保湿霜",
+      "productDescription": "面部日常保湿乳霜，配方含甘油和角鲨烷，不添加香精。",
+      "productSpecifications": "净含量50g；单瓶装；未开封保质期36个月。",
+      "productAppearance": "半透明浅蓝色圆柱罐，白色旋盖，内容物为白色乳霜；包装盒请AI设计，罐型和颜色不变。",
+      "sellingPoints": [
+        "含甘油和角鲨烷的保湿配方",
+        "不添加香精",
+        "50g圆罐包装便于家庭梳妆台收纳",
+        "白色乳霜质地，适合呈现涂抹时的延展状态"
+      ],
+      "targetAudience": "20至35岁偏好基础护肤、关注配方信息的成年人。"
+    },
+    "supplement": "本文件补充澄序日常保湿霜的产品规格：罐体直径58mm，高46mm。上述尺寸已确定，包装盒版式仍请AI设计。未提供临床、敏感肌适用及防晒数据，不得推断此类功效。",
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/02保湿霜/视频创作简报.docx",
+      "素材/定制类项目素材/多产品提炼验收/02保湿霜/产品补充说明.txt"
+    ]
+  },
+  {
+    "name": "03清洁剂",
+    "fields": {
+      "brandName": "简净",
+      "projectName": "简净厨房清洁剂场景展示",
+      "projectBackground": "展示厨房日常清洁用品的瓶型、泡沫和台面场景。",
+      "brandTone": "清爽、务实、有生活气息。",
+      "visualConsistencyRules": "瓶身固定为透明淡绿色，白色扳机喷头不变，保持真实泡沫尺度。",
+      "avoidedElements": "不出现杀菌率、食品接触安全及无毒可饮用宣称；不混合不同清洁剂。",
+      "productName": "简净厨房油污清洁剂",
+      "productDescription": "厨房日常油污清洁用品，采用扳机喷雾瓶和柑橘香型。",
+      "productSpecifications": "净含量500mL；每箱12瓶；保质期24个月。",
+      "productAppearance": "透明淡绿色扁圆瓶身，白色扳机喷头，液体呈浅黄色；标签保持简净品牌名，其他版式待设计。",
+      "sellingPoints": [
+        "扳机喷头可形成喷雾",
+        "透明瓶身便于查看剩余液量",
+        "500mL单瓶规格适合家庭厨房收纳",
+        "采用柑橘香型"
+      ],
+      "targetAudience": "25至50岁承担家庭厨房清洁的成年人，关注收纳和清洁便利性。"
+    },
+    "supplement": null,
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/03清洁剂/视频创作简报.docx"
+    ]
+  },
+  {
+    "name": "04充电器",
+    "fields": {
+      "brandName": "弧电",
+      "projectName": "弧电65W充电器通勤展示",
+      "projectBackground": "推出用于通勤桌面和差旅的多口充电器，准确展示端口与尺寸。",
+      "brandTone": "精确、克制、现代。",
+      "visualConsistencyRules": "深灰色机身和橙色USB-A接口内芯全片一致，端口数量固定。",
+      "avoidedElements": "不展示所有设备均可65W充电，不虚构充电速度、认证或防水能力。",
+      "productName": "弧电G65氮化镓充电器",
+      "productDescription": "采用氮化镓方案的三口电源适配器，支持USB-C与USB-A设备连接。",
+      "productSpecifications": "型号G65；2个USB-C、1个USB-A；单USB-C最高65W；输入100-240V；尺寸53×42×30mm；重量118g。",
+      "productAppearance": "深灰色磨砂长方体，折叠式双插脚，正面2个USB-C和1个橙色内芯USB-A，品牌标识在侧面。",
+      "sellingPoints": [
+        "折叠插脚便于放入差旅收纳袋",
+        "提供2个USB-C和1个USB-A端口",
+        "单USB-C端口最高输出65W",
+        "机身重量118g"
+      ],
+      "targetAudience": "20至40岁经常携带手机和笔记本电脑通勤的成年人。"
+    },
+    "supplement": "弧电G65补充规格：双USB-C同时连接时功率分配为45W+20W；三口同时连接时为45W+15W合计，后两口共享15W。单口65W不等于三口各65W。功率信息是规格，不能改写成全设备通用承诺。",
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/04充电器/视频创作简报.docx",
+      "素材/定制类项目素材/多产品提炼验收/04充电器/产品补充说明.txt"
+    ]
+  },
+  {
+    "name": "05双肩包",
+    "fields": {
+      "brandName": "山径",
+      "projectName": "山径轻行双肩包城市通勤短片",
+      "projectBackground": "围绕城市步行和公共交通展示双肩包的收纳结构。",
+      "brandTone": "轻快、可靠、自然。",
+      "visualConsistencyRules": "石墨灰织物包身、黑色拉链和双肩带结构保持一致。",
+      "avoidedElements": "不出现完全防水、极限负重及不存在的户外认证。",
+      "productName": "山径轻行18L双肩包",
+      "productDescription": "用于城市通勤的织物双肩包，设置电脑隔层与侧袋。",
+      "productSpecifications": "容积18L；空包重量620g；尺寸42×28×14cm；电脑隔层适配14英寸笔记本电脑。",
+      "productAppearance": "石墨灰织物包身，黑色拉链，正面单个纵向拉链袋，左右各一个侧袋；包装待设计。",
+      "sellingPoints": [
+        "独立电脑隔层可容纳14英寸笔记本电脑",
+        "背板设置透气网布",
+        "左右侧袋可放置直径7cm的水杯",
+        "正面纵向拉链袋便于分区收纳"
+      ],
+      "targetAudience": "25至40岁城市通勤人群，偏好简洁穿搭和分区收纳。"
+    },
+    "supplement": null,
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/05双肩包/视频创作简报.docx"
+    ]
+  },
+  {
+    "name": "06落地灯",
+    "fields": {
+      "brandName": "栖光",
+      "projectName": "栖光阅读落地灯空间展示",
+      "projectBackground": "展示适合客厅阅读角的落地灯，突出光线层次与结构比例。",
+      "brandTone": "安静、温暖、舒展。",
+      "visualConsistencyRules": "黄铜色灯杆、米白色布灯罩、深棕色圆底座固定，光线保持暖色。",
+      "avoidedElements": "不展示护眼认证、无蓝光宣称及未提供的智能语音控制。",
+      "productName": "栖光弧线阅读落地灯",
+      "productDescription": "室内落地灯，采用金属弯臂与织物灯罩，配脚踏开关。",
+      "productSpecifications": "总高158cm；底座直径28cm；E27灯头；额定电压220V；灯泡另配。",
+      "productAppearance": "黄铜色金属弯臂，米白色锥台布灯罩，深棕色圆形底座；灯罩直径36cm。",
+      "sellingPoints": [
+        "脚踏开关便于控制开闭",
+        "E27灯头可搭配相应规格灯泡",
+        "弯臂结构将光源延伸至座位旁",
+        "织物灯罩形成柔和的空间光感"
+      ],
+      "targetAudience": "28至50岁有客厅阅读角布置需求的家庭用户。"
+    },
+    "supplement": "栖光弧线阅读落地灯补充：灯罩高度22cm，电源线长1.8m，底座内置配重。外观设计已经确定。灯泡另配，色温与调光能力依所配灯泡，不提供统一固定色温或调光承诺。",
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/06落地灯/视频创作简报.docx",
+      "素材/定制类项目素材/多产品提炼验收/06落地灯/产品补充说明.txt"
+    ]
+  },
+  {
+    "name": "07扭矩扳手",
+    "fields": {
+      "brandName": "矩衡",
+      "projectName": "矩衡T60扭矩扳手结构展示",
+      "projectBackground": "展示自行车维护工具的刻度、锁定结构和收纳盒。",
+      "brandTone": "严谨、清晰、可靠。",
+      "visualConsistencyRules": "银色金属杆身和黑色防滑握柄固定，刻度位置保持一致。",
+      "avoidedElements": "不虚构校准证书、精度等级和安全保证，不展示带电操作。",
+      "productName": "矩衡T60机械扭矩扳手",
+      "productDescription": "用于螺纹紧固维护的可调机械扭矩扳手，采用棘轮头结构。",
+      "productSpecifications": "扭矩范围10-60N·m；3/8英寸方头；总长365mm；重量780g。",
+      "productAppearance": "银色金属杆身，黑色防滑握柄，尾端旋转调节圈，黑色矩形收纳盒；精度待确认。",
+      "sellingPoints": [
+        "10-60N·m可调扭矩范围",
+        "棘轮头支持切换转向",
+        "尾端锁定圈固定设定位置",
+        "配套收纳盒便于分类存放"
+      ],
+      "targetAudience": "成年自行车爱好者与维修人员，具备基础工具使用知识。"
+    },
+    "supplement": null,
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/07扭矩扳手/视频创作简报.docx"
+    ]
+  },
+  {
+    "name": "08预约软件",
+    "fields": {
+      "brandName": "席间",
+      "projectName": "席间门店预约系统功能介绍",
+      "projectBackground": "向小型服务门店介绍预约与排班协作，演示真实功能路径。",
+      "brandTone": "友好、清晰、有秩序。",
+      "visualConsistencyRules": "界面主色为深蓝，预约状态采用固定颜色，虚构示例姓名保持一致。",
+      "avoidedElements": "不出现真实个人信息，不宣称保证增收，不虚构用户规模、奖项和离线能力。",
+      "productName": "席间门店预约系统标准版",
+      "productDescription": "通过浏览器使用的门店预约管理软件，包含预约日历和员工排班，不是实体硬件。",
+      "productSpecifications": "标准版支持1个门店、最多10个员工账号；支持电脑与手机浏览器；按年订阅。",
+      "productAppearance": "无实体外壳和包装；界面为深蓝顶部导航、白色日历区域和浅灰侧栏，Logo位置固定在左上角；具体图标请AI设计。",
+      "sellingPoints": [
+        "日历视图集中展示预约时段",
+        "员工排班与可预约时段关联",
+        "支持导出预约记录CSV文件",
+        "不同员工账号按角色查看业务页面"
+      ],
+      "targetAudience": "经营美容、美甲、摄影等预约制小型门店的负责人及店员。"
+    },
+    "supplement": "席间标准版补充规格：单次CSV导出最多5000条预约记录；员工角色分为管理员和普通员工。没有原生手机App，没有支付收款模块。此产品为软件服务，不得补造电池、机身尺寸、材质、物流包装及硬件资产。",
+    "files": [
+      "素材/定制类项目素材/多产品提炼验收/08预约软件/视频创作简报.docx",
+      "素材/定制类项目素材/多产品提炼验收/08预约软件/产品补充说明.txt"
+    ]
+  }
+]
