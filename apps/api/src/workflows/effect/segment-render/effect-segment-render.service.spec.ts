@@ -1114,6 +1114,59 @@ describe('EffectSegmentRenderService', () => {
     ).toEqual([item.id]);
   });
 
+  it('compares the shared source pool with saved Prompts in the viewing branch, not its owner', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'scoped-view' });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    record.tasks[0].status = 'COMPLETED';
+    repository.batch.mockResolvedValue(record);
+    repository.workspaceBatch.mockResolvedValue(record);
+    const changed = promptBatch();
+    changed.items[0]!.content += '最终修改。';
+    changed.items.push({ ...structuredClone(item), id: '99999999-9999-4999-8999-999999999999' });
+    repository.promptArtifact.mockImplementation(async (_project, run) =>
+      run === 'view-run' ? { ...promptArtifact(changed), revision: 4 } : promptArtifact());
+    const result = await service.workspace('project-a', 'view-run', 'view-product');
+    expect(result.batch?.id).toBe(record.id);
+    expect(result.batch?.refreshScope).toBe('SELECTIVE');
+    expect(result.batch?.latestPromptRevision).toBe(4);
+    expect(result.batch?.tasks[0]?.needsUpdate).toBe(true);
+    expect(result.batch?.pendingPromptIds).toEqual([changed.items[1]!.id]);
+    expect((await service.batch('project-a', record.id)).batch.stale).toBe(false);
+    changed.items = [];
+    const removed = await service.workspace('project-a', 'view-run', 'view-product');
+    expect(removed.batch?.pendingRemovedTaskIds).toEqual([record.tasks[0].id]);
+    repository.promptArtifact.mockResolvedValue(promptArtifact());
+    expect((await service.workspace('project-a', 'view-run', 'view-product')).batch?.stale).toBe(false);
+  });
+
+  it('prepares a shared-pool refresh in the viewing branch and freezes its saved Prompt', async () => {
+    const { service, repository, workflowWorkingService } = serviceWith();
+    await service.start('project-a', 'product-a', { workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3, expectedSettingsRevision: 0, idempotencyKey: 'scoped-refresh' });
+    const record = (await repository.createBatch.mock.results[0]!.value).batch;
+    record.tasks[0].status = 'COMPLETED';
+    const target = { ...record, id: 'edit-batch', workflowRunId: 'edit-run', productId: 'edit-product' };
+    repository.batch.mockImplementation(async (_project, id) => id === target.id ? target : record);
+    repository.workspaceBatch.mockResolvedValue(record);
+    repository.latestBatch.mockResolvedValue(target);
+    workflowWorkingService.beginEffectNodeEdit.mockResolvedValue({ run: { id: 'edit-run' },
+      productIdMap: { 'view-product': 'edit-product' }, taskIdMap: {}, created: true });
+    const latest = promptBatch(); latest.items[0]!.content += '最终保存的修改。';
+    repository.promptArtifact.mockImplementation(async (_project, run) => run === 'run-a'
+      ? promptArtifact() : { ...promptArtifact(latest), revision: 4 });
+    await service.refresh('project-a', record.id, { expectedBatchRevision: 1,
+      expectedPromptArtifactRevision: 4, idempotencyKey: 'scoped-operation',
+      settingsContext: { workflowRunId: 'view-run', productId: 'view-product', expectedSettingsRevision: 0 } });
+    expect(workflowWorkingService.beginEffectNodeEdit).toHaveBeenLastCalledWith('project-a', 'view-run', 'SEGMENT_RENDER', 'MANUAL');
+    expect(repository.latestBatch).toHaveBeenCalledWith('project-a', 'edit-run', 'edit-product');
+    const operation = repository.regenerateTasks.mock.calls[0]!;
+    expect(operation[1]).toBe('edit-batch');
+    expect(operation[5].taskSnapshots[record.tasks[0].id].promptText).toBe(latest.items[0]!.content);
+    expect(operation[5].taskSnapshots[record.tasks[0].id].sourcePrompt.revision).toBe(4);
+  });
+
   it('detects additions without invalidating unchanged tasks and appends only the new Prompt', async () => {
     const { service, repository, workflowWorkingService } = serviceWith();
     await service.start('project-a', 'product-a', {

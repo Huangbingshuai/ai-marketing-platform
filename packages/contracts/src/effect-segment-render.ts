@@ -502,6 +502,12 @@ export type RefreshEffectSegmentRenderBatchRequest = {
   expectedPromptArtifactRevision: number;
   expectedDifferenceSignature?: string;
   idempotencyKey: string;
+  /** Defaults belong to the displayed workspace, which may inherit an ancestor batch. */
+  settingsContext?: {
+    workflowRunId: string;
+    productId: string;
+    expectedSettingsRevision: number;
+  };
 };
 
 export type RegenerateEffectSegmentRenderTasksRequest = {

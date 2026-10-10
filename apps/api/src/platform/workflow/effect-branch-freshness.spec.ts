@@ -19,6 +19,31 @@ const project = (id: string, workflowRunId: string, source: string, revision = 1
     sourceArtifactId: source, sourceRevision: revision }],
 });
 describe('branch dependency freshness projection', () => {
+  it('projects authoritative render media against the viewing branch Prompt without changing siblings', () => {
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    const item = { id: 'prompt', content: 'original', targetDurationSeconds: 5,
+      primaryPurpose: 'PRODUCT_DISPLAY', compatiblePurposes: ['PRODUCT_DISPLAY'] };
+    const prompt = { id: 'prompt-root', workflowRunId: 'render', nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:p', revision: 1, freshness: 'CURRENT',
+      payload: { items: [item], sharedPrompt: { contentHash: hash('shared') } } };
+    const rendered = { ...clip('a', 'render'), payload: { taskId: 'a', promptId: item.id,
+      promptContentHash: hash(item.content), adoptedPrompt: { promptContentHash: hash(item.content),
+        sharedPromptHash: hash('shared'), targetDurationSeconds: 5,
+        primaryPurpose: item.primaryPurpose, compatiblePurposes: item.compatiblePurposes } },
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceNodeId: 'PROMPT_GENERATION', sourceArtifactId: prompt.id, sourceRevision: 1 }] };
+    const batch = { ...rendered, id: 'batch', artifactKey: 'render-batch:p', payload: { clips: [rendered.payload] } };
+    for (const items of [[{ ...item, content: 'changed' }], [], [item, { ...item, id: 'added' }]]) {
+      const local = { ...prompt, id: 'prompt-local', workflowRunId: 'fill-a', revision: 2,
+        payload: { ...prompt.payload, items } };
+      const rows = [prompt, rendered, batch, local];
+      expect(projectEffectBranchFreshness(branches, rows, undefined, 'fill-a').find(row => row.id === 'batch')?.freshness).toBe('STALE');
+      expect(projectEffectBranchFreshness(branches, rows, undefined, 'fill-b').find(row => row.id === 'batch')?.freshness).toBe('CURRENT');
+      expect(projectEffectBranchFreshness(branches, rows).find(row => row.id === 'batch')?.freshness).toBe('CURRENT');
+    }
+    const restored = { ...prompt, id: 'prompt-local', workflowRunId: 'fill-a', revision: 3 };
+    expect(projectEffectBranchFreshness(branches, [prompt, rendered, batch, restored], undefined, 'fill-a')
+      .find(row => row.id === 'batch')?.freshness).toBe('CURRENT');
+  });
   it('reconciles body, shared constraints and membership by net content without staling saved video consumers', () => {
     const hash = (text: string) => createHash('sha256').update(text).digest('hex');
     const baseline = { promptContentHash: hash('正文'), sharedPromptHash: hash('约束'),

@@ -8,6 +8,7 @@ import type {
   EffectSegmentRenderExportFormat,
   EffectSegmentRenderImportMapping,
   EffectSegmentRenderSettings,
+  RefreshEffectSegmentRenderBatchRequest,
   EffectSegmentRenderRepairDecision,
   EffectSegmentRenderRepairRegion,
   EffectSegmentRenderPoster,
@@ -450,20 +451,22 @@ export class EffectSegmentRenderService {
     );
   }
 
-  private async present(record: EffectSegmentRenderBatchRecord): Promise<EffectSegmentRenderBatch> {
-    const load = () => this.presentUncached(record);
+  private async present(record: EffectSegmentRenderBatchRecord,
+    context = { workflowRunId: record.workflowRunId, productId: record.productId }): Promise<EffectSegmentRenderBatch> {
+    const load = () => this.presentUncached(record, context);
     // Include the already-loaded row snapshot. A concurrent write between fetching the batch
     // and checking dependency versions must not poison the cache for the new batch snapshot.
     return this.readCache ? this.readCache.read(
-      { projectId: record.projectId, workflowRunId: record.workflowRunId }, 'render', load,
-      { productId: record.productId, batchId: record.id, snapshot: JSON.stringify(record) },
+      { projectId: record.projectId, workflowRunId: context.workflowRunId }, 'render', load,
+      { projectionVersion: 5, productId: context.productId, batchId: record.id, snapshot: JSON.stringify(record) },
     ) : load();
   }
 
-  private async presentUncached(record: EffectSegmentRenderBatchRecord): Promise<EffectSegmentRenderBatch> {
+  private async presentUncached(record: EffectSegmentRenderBatchRecord,
+    context: { workflowRunId: string; productId: string }): Promise<EffectSegmentRenderBatch> {
     const sourceSnapshot = sourcePackageSnapshot(record.tasks[0]?.requestSnapshot);
     const [prompt, sourcePackage, marketingInsight, settingsNode] = await Promise.all([
-      this.repository.promptArtifact(record.projectId, record.workflowRunId, record.productId),
+      this.repository.promptArtifact(record.projectId, context.workflowRunId, context.productId),
       this.repository.sourcePackageArtifact(
         record.projectId,
         record.workflowRunId,
@@ -474,8 +477,8 @@ export class EffectSegmentRenderService {
         record.workflowRunId,
         record.productId,
       ),
-      this.workingRepository.findNodeState(record.projectId, record.workflowRunId,
-        effectSegmentRenderSettingsNodeId(record.productId)),
+      this.workingRepository.findNodeState(record.projectId, context.workflowRunId,
+        effectSegmentRenderSettingsNodeId(context.productId)),
     ]);
     const productName =
       insightProductName(marketingInsight?.payload) ?? (record.product.name.trim() || '未命名产品');
@@ -607,7 +610,7 @@ export class EffectSegmentRenderService {
   ): Promise<GetEffectSegmentRenderWorkspaceData> {
     return this.readCache
       ? this.readCache.read({ projectId, workflowRunId }, 'render-workspace',
-          () => this.loadWorkspace(projectId, workflowRunId, productId), { productId })
+          () => this.loadWorkspace(projectId, workflowRunId, productId), { projectionVersion: 8, productId })
       : this.loadWorkspace(projectId, workflowRunId, productId);
   }
 
@@ -645,7 +648,7 @@ export class EffectSegmentRenderService {
       settings:
         this.settingsFromState(settingsNode?.state) ?? this.legacySettings(prompt?.payload ?? null),
       settingsRevision: settingsNode?.revision ?? null,
-      batch: batch ? await this.present(batch) : null,
+      batch: batch ? await this.present(batch, { workflowRunId, productId }) : null,
     };
   }
 
@@ -913,13 +916,7 @@ export class EffectSegmentRenderService {
   async refresh(
     projectId: string,
     batchId: string,
-    input: {
-      expectedBatchRevision: number;
-      expectedPromptArtifactRevision: number;
-      idempotencyKey: string;
-      taskIds?: string[];
-      expectedDifferenceSignature?: string;
-    },
+    input: RefreshEffectSegmentRenderBatchRequest,
   ): Promise<StartEffectSegmentRenderBatchData> {
     await this.projects.get(projectId);
     const idempotencyKey = input.idempotencyKey.trim();
@@ -932,6 +929,7 @@ export class EffectSegmentRenderService {
       expectedPromptArtifactRevision: input.expectedPromptArtifactRevision,
       ...(input.expectedDifferenceSignature ? { expectedDifferenceSignature: input.expectedDifferenceSignature } : {}),
       ...(input.taskIds ? { taskIds: [...new Set(input.taskIds)].sort() } : {}),
+      ...(input.settingsContext ? { settingsContext: input.settingsContext } : {}),
     });
     const receipt = await this.repository.operationReceipt(projectId, idempotencyKey);
     if (receipt) {
@@ -947,12 +945,18 @@ export class EffectSegmentRenderService {
     if (!original) throw notFound('视频渲染批次不存在');
     if (original.revision !== input.expectedBatchRevision)
       throw conflict('素材已更新，请刷新后重试');
+    const settingsContext = input.settingsContext;
+    if (settingsContext) {
+      const scopedBatch = await this.repository.workspaceBatch(projectId, settingsContext.workflowRunId, settingsContext.productId);
+      if (scopedBatch?.id !== original.id) throw conflict('渲染配置不属于当前素材工作区');
+    }
+    const context = settingsContext ?? { workflowRunId: original.workflowRunId, productId: original.productId };
     const prompt = await this.repository.promptArtifact(
       projectId,
-      original.workflowRunId,
-      original.productId,
+      context.workflowRunId,
+      context.productId,
     );
-    const view = await this.present(original);
+    const view = await this.present(original, context);
     // A reverted edit is a read-only no-op: no edit Run, receipt, Outbox or paid task.
     const selectedViews = input.taskIds ? view.tasks.filter((task) => input.taskIds!.includes(task.id)) : view.tasks;
     if (view.refreshScope === 'NONE' || (input.taskIds && selectedViews.length === input.taskIds.length &&
@@ -975,11 +979,11 @@ export class EffectSegmentRenderService {
     // the original branch rather than creating a new published version like BATCH does.
     const edit = await this.workflowWorkingService.beginEffectNodeEdit(
       projectId,
-      original.workflowRunId,
+      context.workflowRunId,
       'SEGMENT_RENDER',
       'MANUAL',
     );
-    const productId = edit.productIdMap[original.productId] ?? original.productId;
+    const productId = edit.productIdMap[context.productId] ?? context.productId;
     const target =
       edit.run.id === original.workflowRunId
         ? original

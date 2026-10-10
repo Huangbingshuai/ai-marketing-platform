@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowWorkingService, workflowStateHash } from './workflow-working.service';
 
@@ -34,6 +35,30 @@ describe('effect mix version scopes', () => {
     );
     return (await service.getEffectBranchTree('project-a')).branches;
   };
+
+  it('shows render pending on the saved Prompt path while its shared media owner and sibling stay current', async () => {
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+    const item = { id: 'prompt', content: 'original', targetDurationSeconds: 5,
+      primaryPurpose: 'PRODUCT_DISPLAY', compatiblePurposes: ['PRODUCT_DISPLAY'] };
+    const prompt = { ...artifact('prompt-batch:p', 0), id: 'prompt-root', workflowRunId: 'root',
+      nodeId: 'PROMPT_GENERATION', payload: { items: [item], sharedPrompt: { contentHash: hash('shared') } } };
+    const media = { ...artifact('render-clip:task', 0), id: 'clip', workflowRunId: 'root', nodeId: 'SEGMENT_RENDER',
+      dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceNodeId: 'PROMPT_GENERATION', sourceArtifactId: prompt.id, sourceRevision: 1 }],
+      payload: { taskId: 'task', promptId: item.id, promptContentHash: hash(item.content),
+        adoptedPrompt: { promptContentHash: hash(item.content), sharedPromptHash: hash('shared'),
+          targetDurationSeconds: 5, primaryPurpose: item.primaryPurpose, compatiblePurposes: item.compatiblePurposes } } };
+    const pool = { ...media, id: 'pool', artifactKey: 'render-batch:p', payload: { clips: [media.payload] } };
+    const root = { ...run('root', null, 0, 'TEMPLATE'), workingArtifacts: [prompt, media, pool] };
+    const changed = { ...run('changed', 'root', 1, 'FILL'), workingArtifacts: [{ ...prompt,
+      id: 'prompt-local', workflowRunId: 'changed', revision: 2,
+      payload: { ...prompt.payload, items: [{ ...item, content: 'saved change' }] } }] };
+    const sibling = run('sibling', 'root', 2, 'FILL');
+    const states = (rows: Awaited<ReturnType<typeof treeOf>>) => rows.map(branch =>
+      branch.nodes.find(node => node.nodeId === 'SEGMENT_RENDER')?.status);
+    expect(states(await treeOf([root, changed, sibling]))).toEqual(['CONFIRMED', 'STALE', 'CONFIRMED']);
+    changed.workingArtifacts[0]!.payload = prompt.payload;
+    expect(states(await treeOf([root, changed, sibling]))).toEqual(['CONFIRMED', 'CONFIRMED', 'CONFIRMED']);
+  });
 
   it('projects only explicit choices stored in their actual branch, not inherited copies', async () => {
     const selected = { ...run('chosen', 'root', 1, 'FILL'), nodeStates: [{

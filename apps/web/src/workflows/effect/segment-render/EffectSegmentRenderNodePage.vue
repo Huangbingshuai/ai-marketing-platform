@@ -711,7 +711,8 @@ const needsPolling = (nextWorkspace: EffectSegmentRenderWorkspace): boolean =>
 
 const pollBatch = async (): Promise<void> => {
   const current = workspace.value;
-  if (!current?.batchId || !nodeActive || pollController) return;
+  if (!current?.batchId || !nodeActive || pollController || current.workflowRunId !== props.workflowRunId ||
+    current.productId !== currentProductId.value) return;
   if (operation.value || document.visibilityState === 'hidden') {
     schedulePolling(current);
     return;
@@ -723,23 +724,37 @@ const pollBatch = async (): Promise<void> => {
   const controller = new AbortController();
   pollController = controller;
   try {
-    const response = await getEffectSegmentRenderBatch(props.projectId, batchId, controller.signal);
+    // A shared pool may belong to an ancestor, while saved Prompt edits belong to this Run.
+    // Poll the workspace projection; the owner's raw batch cannot represent this net difference.
+    const response = await getEffectSegmentRenderWorkspace(props.projectId, workflowRunId, productId, controller.signal);
     if (
       controller.signal.aborted ||
       epoch !== pollEpoch ||
       productId !== currentProductId.value ||
       workflowRunId !== props.workflowRunId ||
-      response.data.batch.workflowRunId !== props.workflowRunId
+      response.data.workflowRunId !== props.workflowRunId
     )
       return;
-    applyBatch(response.data.batch);
+    const next = effectSegmentRenderWorkspaceFromApi(response.data);
+    if ((next.batchId === batchId && (next.batchRevision ?? 0) < (current.batchRevision ?? 0)) ||
+      (next.promptArtifactRevision ?? 0) < (current.promptArtifactRevision ?? 0)) return;
+    applyWorkspace(next);
   } catch (error) {
-    if (!isAbortError(error)) {
+    if (!isAbortError(error) && !controller.signal.aborted && epoch === pollEpoch &&
+      workflowRunId === props.workflowRunId && productId === currentProductId.value) {
       showNotice(safeMessage(error, '刷新视频渲染进度失败，将自动重试'), 'warning');
-      pollTimer = setTimeout(() => void pollBatch(), 5000);
+      pollTimer = setTimeout(() => { pollTimer = undefined; void pollBatch(); }, 5000);
     }
   } finally {
-    if (pollController === controller) pollController = null;
+    if (pollController === controller) {
+      pollController = null;
+      // Ignoring a stale response must not end the polling chain. In particular,
+      // a prefetch or a late response may carry an older Prompt revision.
+      if (nodeActive && !controller.signal.aborted &&
+        workflowRunId === props.workflowRunId && productId === currentProductId.value &&
+        workspace.value?.batchId === batchId && !pollTimer)
+        schedulePolling(workspace.value);
+    }
   }
 };
 
@@ -1113,18 +1128,24 @@ const startBatch = async (forceFull = false): Promise<void> => {
         {
           expectedBatchRevision: current.batchRevision!,
           expectedPromptArtifactRevision: current.promptArtifactRevision!,
+          settingsContext: { workflowRunId: props.workflowRunId, productId: product.id,
+            expectedSettingsRevision: renderSettingsRevision.value ?? 0 },
           ...(current.refreshSignature ? { expectedDifferenceSignature: current.refreshSignature } : {}),
           idempotencyKey: crypto.randomUUID(),
         },
         controller.signal,
       );
       if (controller.signal.aborted || currentProductId.value !== product.id) return;
+      if (response.data.noChanges) {
+        await loadCurrentWorkspace(false);
+        showNotice('变更已抵消，无需更新素材');
+        return;
+      }
       if (response.data.batch.workflowRunId !== props.workflowRunId) {
         emit('workflow-run-change', response.data.batch.workflowRunId);
         return;
       }
       applyBatch(response.data.batch);
-      if (response.data.noChanges) { showNotice('变更已抵消，无需更新素材'); return; }
       showNotice(renderCount + newPromptCount ? `${renderCount + newPromptCount} 个素材进入渲染队列，其余同步已完成；完成后请保存修改` : '素材信息同步/移除已完成，请保存修改');
       return;
     }
@@ -1184,6 +1205,9 @@ const retryTask = async (taskId: string): Promise<void> => {
   const task = current.tasks.find(({ id }) => id === taskId);
   if (!task || !canRetryTask(task)) return;
   const taskNeedsUpdate = task.needsUpdate;
+  const settingsContext = { workflowRunId: props.workflowRunId, productId: product.id,
+    expectedSettingsRevision: renderSettingsRevision.value ?? 0 };
+
   if (
     !(await requestActionConfirmation({
       eyebrow: taskNeedsUpdate ? '按最新 Prompt 更新素材' : '重新生成片段',
@@ -1200,6 +1224,7 @@ const retryTask = async (taskId: string): Promise<void> => {
     }))
   )
     return;
+  if (props.workflowRunId !== settingsContext.workflowRunId || currentProductId.value !== settingsContext.productId) return;
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
@@ -1210,7 +1235,7 @@ const retryTask = async (taskId: string): Promise<void> => {
       props.projectId, current.batchId,
       { taskIds: [taskId], expectedBatchRevision: current.batchRevision,
         ...(task.refreshSignature ? { expectedDifferenceSignature: task.refreshSignature } : {}),
-        expectedPromptArtifactRevision: current.promptArtifactRevision!, idempotencyKey: crypto.randomUUID() },
+        expectedPromptArtifactRevision: current.promptArtifactRevision!, idempotencyKey: crypto.randomUUID(), settingsContext },
       controller.signal,
     ) : await regenerateEffectSegmentRenderTasks(
       props.projectId,
@@ -1223,12 +1248,16 @@ const retryTask = async (taskId: string): Promise<void> => {
       controller.signal,
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
+    if ('noChanges' in response.data && response.data.noChanges) {
+      await loadCurrentWorkspace(false);
+      showNotice('变更已抵消，无需更新素材');
+      return;
+    }
     if (response.data.batch.workflowRunId !== props.workflowRunId) {
       emit('workflow-run-change', response.data.batch.workflowRunId);
       return;
     }
     applyBatch(response.data.batch);
-    if ('noChanges' in response.data && response.data.noChanges) { showNotice('变更已抵消，无需更新素材'); return; }
     showNotice(task.updateKind === 'METADATA' ? '素材信息已同步，请保存修改' : '视频素材片段已进入渲染队列');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '片段重生成失败'), 'error');

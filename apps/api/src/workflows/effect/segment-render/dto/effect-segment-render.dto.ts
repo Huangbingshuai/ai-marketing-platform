@@ -43,6 +43,12 @@ export class SegmentRenderSettingsDto {
   capabilityKey!: (typeof EFFECT_PROMPT_RENDER_CAPABILITY_KEYS)[number];
 }
 
+export class SegmentRenderSettingsContextDto {
+  @IsUUID('4') workflowRunId!: string;
+  @IsUUID('4') productId!: string;
+  @Type(() => Number) @IsInt() @Min(0) expectedSettingsRevision!: number;
+}
+
 export class SaveSegmentRenderSettingsDto {
   @IsUUID('4') workflowRunId!: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) expectedRevision!: number | null;
@@ -60,6 +66,8 @@ export class RegenerateSegmentRenderTasksDto {
 }
 
 export class RefreshSegmentRenderBatchDto {
+  @IsOptional() @ValidateNested() @Type(() => SegmentRenderSettingsContextDto)
+  settingsContext?: SegmentRenderSettingsContextDto;
   @IsOptional() @IsString() @MaxLength(64) expectedDifferenceSignature?: string;
   @IsOptional()
   @IsArray()

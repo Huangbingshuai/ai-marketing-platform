@@ -184,6 +184,7 @@ export function effectArtifactSourceOwner(
 export function projectEffectBranchFreshness<T extends Artifact>(
   branches: readonly Branch[], artifacts: readonly T[],
   sourceIdentities: readonly Pick<Artifact, 'id' | 'workflowRunId' | 'nodeId' | 'artifactKey' | 'revision' | 'metadata' | 'payload' | 'updatedAt'>[] = artifacts,
+  promptContextRunId?: string,
 ): T[] {
   const byId = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
   const independentVisualDependency = (artifact: T, dependency: NonNullable<T['dependencies']>[number]) => {
@@ -272,7 +273,15 @@ export function projectEffectBranchFreshness<T extends Artifact>(
     const promptDependency = artifact.dependencies?.find((dep) => dep.sourceNodeId === 'PROMPT_GENERATION' ||
       (dep.sourceType === 'WORKING_ARTIFACT' && dep.sourceArtifactId && byId.get(dep.sourceArtifactId)?.nodeId === 'PROMPT_GENERATION'));
     const source = promptDependency?.sourceArtifactId ? byId.get(promptDependency.sourceArtifactId) : undefined;
-    const prompt = source ? canonical(source) : undefined;
+    let prompt = source ? canonical(source) : undefined;
+    if (promptContextRunId && prompt) {
+      const owner = effectArtifactSourceOwner(branches, promptContextRunId, 'PROMPT_GENERATION', sourceIdentities);
+      const candidates = (stages.get(`${owner}:PROMPT_GENERATION`) ?? [])
+        .filter((row) => row.artifactKey.startsWith('prompt-batch:'));
+      // Clone products may have new IDs; only a unique product pair is safe to project.
+      prompt = candidates.find((row) => row.artifactKey === prompt!.artifactKey) ??
+        (candidates.length === 1 ? candidates[0] : prompt);
+    }
     if (!prompt || prompt.availability === 'UNAVAILABLE' || prompt.freshness !== 'CURRENT' ||
       !Array.isArray(record(prompt.payload)?.items)) return null;
     const payload = record(artifact.payload);

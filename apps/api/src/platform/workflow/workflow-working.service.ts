@@ -514,7 +514,7 @@ export class WorkflowWorkingService {
 
   async getEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
     return this.readCache
-      ? this.readCache.read({ projectId }, 'tree', () => this.loadEffectBranchTree(projectId))
+      ? this.readCache.read({ projectId }, 'tree', () => this.loadEffectBranchTree(projectId), 'scoped-prompt-diff-v3')
       : this.loadEffectBranchTree(projectId);
   }
 
@@ -875,6 +875,20 @@ export class WorkflowWorkingService {
     const projected = projectEffectBranchFreshness(runs, runs.flatMap((run) => run.workingArtifacts));
     const freshnessById = new Map(projected.filter((artifact) => artifact.id)
       .map((artifact) => [artifact.id, artifact.freshness]));
+    const upstreamArtifacts = runs.flatMap((run) => run.workingArtifacts)
+      .filter((artifact) => EFFECT_WORKFLOW_BRANCH_NODES.indexOf(artifact.nodeId as never) < 4);
+    const scopedRenderFreshness = new Map<string, Map<string, string>>();
+    const renderFreshnessFor = (runId: string) => {
+      const promptOwner = effectArtifactSourceOwner(runs, runId, 'PROMPT_GENERATION', upstreamArtifacts);
+      let result = scopedRenderFreshness.get(promptOwner);
+      if (!result) {
+        result = new Map(projectEffectBranchFreshness(runs, upstreamArtifacts, undefined, runId)
+          .filter((artifact) => artifact.nodeId === 'SEGMENT_RENDER')
+          .map((artifact) => [artifact.id, artifact.freshness]));
+        scopedRenderFreshness.set(promptOwner, result);
+      }
+      return result;
+    };
     const artifactStatus = (artifacts: BranchArtifact[]) => artifacts.some((artifact) =>
       (freshnessById.get(artifact.id) ?? artifact.freshness) === 'STALE')
       ? 'STALE' as const : artifacts.length ? 'CONFIRMED' as const : 'PENDING' as const;
@@ -894,6 +908,9 @@ export class WorkflowWorkingService {
         const forkNodeId = branchNodeIdOf(run);
         const forkMixStage = mixForkStage(run, forkNodeId);
         const forkTemplateId = mixForkTemplateId(run, forkNodeId, forkMixStage);
+        // Render media retain their confirmed owner; Prompt edits can be saved in this later
+        // branch. Compare those exact media against this path's Prompt, not the owner's old one.
+        const renderFreshness = renderFreshnessFor(run.id);
         const currentTemplateIds = currentDraftTemplates ? new Set(currentDraftTemplates.keys()) : null;
         const templatesById = new Map<string, EffectWorkflowBranch['templates'][number]>();
         for (const artifact of visibleArtifacts) {
@@ -1072,8 +1089,8 @@ export class WorkflowWorkingService {
               artifact.artifactKey.startsWith(revisionKeyPrefix[nodeId]),
             );
             const count = {
-              current: statusArtifacts.filter((artifact) => (freshnessById.get(artifact.id) ?? artifact.freshness) === 'CURRENT').length,
-              stale: statusArtifacts.filter((artifact) => (freshnessById.get(artifact.id) ?? artifact.freshness) === 'STALE').length,
+              current: statusArtifacts.filter((artifact) => ((nodeId === 'SEGMENT_RENDER' ? renderFreshness : freshnessById).get(artifact.id) ?? artifact.freshness) === 'CURRENT').length,
+              stale: statusArtifacts.filter((artifact) => ((nodeId === 'SEGMENT_RENDER' ? renderFreshness : freshnessById).get(artifact.id) ?? artifact.freshness) === 'STALE').length,
             };
             return {
               nodeId,
