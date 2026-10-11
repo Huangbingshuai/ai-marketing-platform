@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Mapping
 from typing import Any
+from time import monotonic
 
 import httpx
 
@@ -36,8 +37,13 @@ def _unwrap(value: Any) -> Any:
 class InternalApi:
     ROOT = "internal/workers/effect-template-mix"
 
-    def __init__(self, base_url: str, token: str, timeout: float, max_attempts: int = 4) -> None:
+    def __init__(self, base_url: str, token: str, timeout: float, max_attempts: int = 4, *,
+                 recovery_max_attempts: int | None = None, recovery_timeout_seconds: float = 600,
+                 recovery_max_delay_seconds: float = 30) -> None:
         self.max_attempts = max(1, max_attempts)
+        self.recovery_max_attempts = max(1, recovery_max_attempts if recovery_max_attempts is not None else self.max_attempts)
+        self.recovery_timeout_seconds = max(0.001, recovery_timeout_seconds)
+        self.recovery_max_delay_seconds = max(0.001, recovery_max_delay_seconds)
         self.client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
@@ -47,20 +53,27 @@ class InternalApi:
     async def close(self) -> None:
         await self.client.aclose()
 
+    async def _wait_for_recovery(self, attempt: int, deadline: float) -> bool:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(self.recovery_max_delay_seconds, 2 ** min(attempt + 1, 10), remaining))
+        return monotonic() < deadline
+
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        for attempt in range(self.max_attempts):
+        deadline = monotonic() + self.recovery_timeout_seconds
+        for attempt in range(self.recovery_max_attempts):
             try:
-                response = await self.client.request(method, path, **kwargs)
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                async with asyncio.timeout(max(0.001, deadline - monotonic())):
+                    response = await self.client.request(method, path, **kwargs)
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, TimeoutError) as exc:
                 # A failed connection sent no mutation. Ambiguous POST timeouts must
                 # not replay a claim and acquire a second attempt token.
                 safe_replay = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) or method.upper() in ("GET", "PUT")
-                if safe_replay and attempt + 1 < self.max_attempts:
-                    await asyncio.sleep(min(8, 2 ** (attempt + 1)))
+                if safe_replay and attempt + 1 < self.recovery_max_attempts and await self._wait_for_recovery(attempt, deadline):
                     continue
                 raise ApiError("internal API unavailable", retryable=True) from exc
-            if response.status_code >= 500 and method.upper() in ("GET", "PUT") and attempt + 1 < self.max_attempts:
-                await asyncio.sleep(min(8, 2 ** (attempt + 1)))
+            if response.status_code >= 500 and method.upper() in ("GET", "PUT") and attempt + 1 < self.recovery_max_attempts and await self._wait_for_recovery(attempt, deadline):
                 continue
             break
         if response.status_code >= 400:
@@ -130,11 +143,29 @@ class InternalApi:
 
     async def video(self, runtime: Runtime, material_id: str, max_bytes: int) -> bytes:
         path = f"{self.ROOT}/runs/{runtime.run_id}/materials/{material_id}/content"
+        deadline = monotonic() + self.recovery_timeout_seconds
+        for attempt in range(self.recovery_max_attempts):
+            try:
+                async with asyncio.timeout(max(0.001, deadline - monotonic())):
+                    return await self._video_once(runtime, path, max_bytes)
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, TimeoutError) as exc:
+                failure = ApiError("素材下载暂时中断，请稍后重试", retryable=True)
+                failure.__cause__ = exc
+            except ApiError as exc:
+                if not exc.retryable:
+                    raise
+                failure = exc
+            if attempt + 1 >= self.recovery_max_attempts or not await self._wait_for_recovery(attempt, deadline):
+                raise failure
+        raise AssertionError("unreachable download attempt")
+
+    async def _video_once(self, runtime: Runtime, path: str, max_bytes: int) -> bytes:
         async with self.client.stream(
             "GET", path, headers=self.headers(runtime), params={"projectId": runtime.project_id}
         ) as response:
             if response.status_code >= 400:
-                raise ApiError("selected video unavailable", retryable=response.status_code >= 500)
+                raise ApiError("selected video unavailable", retryable=response.status_code >= 500,
+                               status_code=response.status_code)
             if int(response.headers.get("content-length", "0") or 0) > max_bytes:
                 raise ApiError("selected video too large", retryable=False)
             parts: list[bytes] = []

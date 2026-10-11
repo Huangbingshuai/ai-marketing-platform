@@ -106,7 +106,7 @@ describe('video transform integration', () => {
   it('uses variant-owned geometry independently of preview zoom and audition', () => {
     expect(page).toContain('variant.videoTransforms =');
     expect(page).toContain('effectVideoGeometry(');
-    expect(page).toContain('effectResolvedCanvasRatio(selectedVariant.value');
+    expect(page).toContain('selectedVariant.value ?? { slots: [], bindings: {} }');
     expect(page).not.toContain("renderAspectRatio.value !== 'adaptive'");
     expect(page).toContain('transformFrameVisible');
     expect(page).toContain('!auditionMaterial');

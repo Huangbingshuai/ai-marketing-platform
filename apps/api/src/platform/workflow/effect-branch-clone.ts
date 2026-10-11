@@ -66,13 +66,13 @@ export async function clonePackagingRunsInTransaction(
 ): Promise<ClonedPackagingRun[]> {
   const runs = await tx.effectPackagingRun.findMany({
     where: {
-      projectId, workflowRunId: parentRunId, status: 'COMPLETED',
+      projectId, workflowRunId: parentRunId, items: { some: { status: 'COMPLETED' } },
       ...(options.templateIds ? { templateId: { in: [...options.templateIds] } } : {}),
     },
     include: { items: { include: { files: true } } },
   });
   const cloned = runs.filter((run) =>
-    run.items.some((item) => !options.variantIds || options.variantIds.has(item.variantId)));
+    run.items.some((item) => item.status === 'COMPLETED' && (!options.variantIds || options.variantIds.has(item.variantId))));
   if (!cloned.length) return runs;
   const snapshotIds = options.snapshotIds ?? ids;
   const prefix = options.keyPrefix ?? 'manual';
@@ -82,7 +82,7 @@ export async function clonePackagingRunsInTransaction(
     return { id, projectId, workflowRunId: childRunId, templateId: source.templateId,
       idempotencyKey: `${prefix}:${childRunId}:package:${source.id}`,
       requestHash: source.requestHash, status: 'COMPLETED',
-      completedAt: source.completedAt, startedAt: source.startedAt };
+      completedAt: source.completedAt, startedAt: source.startedAt, createdAt: source.createdAt };
   });
   const itemRows: Prisma.EffectPackagingItemCreateManyInput[] = [];
   const fileRows: Prisma.EffectPackagingFileCreateManyInput[] = [];

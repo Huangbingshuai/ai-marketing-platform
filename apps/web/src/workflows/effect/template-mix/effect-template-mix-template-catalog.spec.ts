@@ -70,7 +70,7 @@ describe('read-only directory of each template current workflow', () => {
     expect(page).toContain('正在读取当前模板版本');
     expect(page).toContain("if (!canInstallCurrentEarly) {");
     const background = page.split('.then((completeDirectory) => {')[1]!.split('.catch(')[0]!;
-    expect(background).toContain('templateDirectory.value = completeDirectory;');
+    expect(background).toContain('templateDirectory.value = withoutDeletedMixCatalog(freshDirectory(completeDirectory), deletedTemplateIds());');
     expect(background).toContain("templateDirectoryStatus.value = 'READY';");
     expect(background).toContain('requestController === controller');
     expect(background).toContain('installedWorkspaceScope.value ===');
@@ -288,7 +288,9 @@ describe('read-only directory of each template current workflow', () => {
     expect(selection).not.toContain('activateEffectWorkflowBranch');
     expect(selection).not.toContain("emit('workflowRunChange'");
     expect(selection).toContain('selectedTemplateWorkflowRunId.value = targetRunId');
-    expect(selection).not.toContain('installWorkspaceData');
+    expect(selection).toContain('installWorkspaceData(destination, cachedNavigationScope)');
+    expect(selection).toContain('workspaceRevisionFence.isCurrent');
+    expect(selection).toContain('cloneMix(cached)');
     expect(selection).toContain('releaseExplicitWorkspaceTarget()');
     const leaving = page.split('const leaveEditor =')[1]?.split('const selectSlot')[0];
     expect(leaving).toContain('releaseExplicitWorkspaceTarget()');

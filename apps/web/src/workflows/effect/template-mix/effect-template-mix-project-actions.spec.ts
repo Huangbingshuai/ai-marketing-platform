@@ -6,7 +6,14 @@ const rule = (selector: string) => page.split(`${selector} {`)[1]!.split('}')[0]
 
 describe('new-material partial-update action', () => {
   it('always uses amber styling and a short label without changing eligibility or behavior', () => {
-    const button = page.split('v-if="pendingAddedCount || (activeEntry && templatePendingUpdateCount(activeEntry)) || localUpdateBusy"')[1]!.split('</button>')[0]!;
+    const button = [...page.matchAll(/<button\b[\s\S]*?<\/button>/gu)]
+      .find(([markup]) => markup.includes('class="button source-update-button"'))![0]
+      .replace(/\s+/gu, ' ')
+      .replace(/="\s+/gu, '="')
+      .replace(/\s+"/gu, '"');
+    expect(button).toContain(
+      'v-if="pendingAddedCount || (activeEntry && templatePendingUpdateCount(activeEntry)) || localUpdateBusy"',
+    );
     expect(button).toContain('class="button source-update-button"');
     expect(button).toContain('<RefreshCw v-else :size="15" />局部更新');
     expect(button).toContain('<LoaderCircle v-if="localUpdateBusy" class="spin" :size="15" />');

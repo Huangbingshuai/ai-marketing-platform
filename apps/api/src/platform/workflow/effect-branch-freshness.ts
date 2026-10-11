@@ -4,6 +4,25 @@ import type { EffectSegmentRenderPromptBaseline } from '@ai-marketing/contracts'
 import type { EffectTemplateMixMaterial, EffectTemplateMixVariant, EffectTemplateMixTemplate, EffectTemplateMixAiSnapshot } from '@ai-marketing/contracts';
 import { workflowStateHash } from './workflow-state-hash';
 
+/**
+ * Evaluate saved engineering against the existing source graph without confirming it.
+ * These ephemeral graph inputs never enter storage, counts or business revisions.
+ */
+export function effectSavedMixSourcesStale(
+  branches: readonly Branch[], artifacts: readonly Artifact[], workflowRunId: string,
+  templateId: string, variants: readonly EffectTemplateMixVariant[],
+): Set<string> {
+  const prefix = `saved-output-source:${workflowRunId}:${templateId}:`;
+  const inputs = variants.map((variant): Artifact => ({
+    id: `${prefix}${variant.id}`, workflowRunId, nodeId: 'TEMPLATE_MIX',
+    artifactKey: `timeline-project:${templateId}:${variant.id}`, revision: 0,
+    freshness: 'CURRENT', availability: 'AVAILABLE', payload: { variant }, dependencies: [],
+  }));
+  return new Set(projectEffectBranchFreshness(branches, [...artifacts, ...inputs])
+    .filter((row) => row.id.startsWith(prefix) && row.freshness === 'STALE')
+    .map((row) => row.id.slice(prefix.length)));
+}
+
 type Branch = { id: string; parentWorkflowRunId: string | null; forkNodeId: string | null;
   branchPublishedAt?: Date | string | null; createdAt?: Date | string;
   effectTemplateMixAiRuns?: readonly { templateId: string; status?: string; inputSnapshot?: unknown;

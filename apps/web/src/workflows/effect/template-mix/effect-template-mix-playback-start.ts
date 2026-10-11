@@ -27,6 +27,33 @@ export const waitForPlaybackFrame = (
     check();
   });
 
+/** Native play() can remain pending forever, even after a frame is decoded. */
+export const waitForNativePlayback = (
+  work: Promise<void>,
+  current: () => boolean,
+  timeoutMilliseconds = 15_000,
+): Promise<boolean> => new Promise((resolve, reject) => {
+  const started = performance.now();
+  const timer = setInterval(() => {
+    if (!current()) { clearInterval(timer); resolve(false); }
+    else if (performance.now() - started >= timeoutMilliseconds) {
+      clearInterval(timer);
+      reject(new Error('视频播放启动超时'));
+    }
+  }, 50);
+  void work.then(() => {
+    clearInterval(timer);
+    resolve(current());
+  }, error => {
+    clearInterval(timer);
+    if (current()) reject(error);
+    else resolve(false);
+  });
+});
+
+export const previewStartupReady = (videoReady: boolean, audioReady: boolean | undefined,
+  audioRequired: boolean): boolean => videoReady && (!audioRequired || audioReady === true);
+
 /** Some decoders stop delivering media time without a waiting event. */
 export class NativePlaybackProgress {
   private key: unknown;

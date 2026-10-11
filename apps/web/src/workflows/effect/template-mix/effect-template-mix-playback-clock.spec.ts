@@ -13,7 +13,11 @@ describe('template mix compositor playback clock', () => {
       start.indexOf('await Promise.all'),
     );
     expect(start).toContain('Promise.all([videoReady, audioReady])');
-    expect(start.indexOf('await video.play()')).toBeLessThan(start.indexOf('startPlaybackClock()'));
+    const nativePlay = start.indexOf('const nativePlay = video.play()');
+    expect(nativePlay).toBeGreaterThan(-1);
+    expect(nativePlay).toBeLessThan(start.indexOf('startPlaybackClock()'));
+    expect(start).toContain('waitForNativePlayback(nativePlay, currentStart)');
+    expect(start).toContain('previewStartupReady(ready, soundReady, audioRequired)');
     expect(start).toContain('startPlaybackAudio(playhead.value, videoReady)');
     expect(start).toContain('preparePlaybackAudio()');
     expect(start).toContain('Promise.all([frameReady, audioPrepared])');

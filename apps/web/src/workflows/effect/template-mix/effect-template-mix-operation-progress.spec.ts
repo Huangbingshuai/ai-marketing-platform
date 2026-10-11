@@ -1,12 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import type { EffectTemplateMixAiRun } from '@ai-marketing/contracts';
 import page from './EffectTemplateMixNodePage.vue?raw';
-import { mixAppendProgress } from './effect-template-mix-operation-progress';
+import { mixAppendProgress, mixLocalUpdateProgress } from './effect-template-mix-operation-progress';
 
 const run = (
   status: EffectTemplateMixAiRun['status'],
   operation: EffectTemplateMixAiRun['operation'] = 'APPEND',
 ) => ({ status, operation, stage: 'TRIMMING', progress: 68 }) as EffectTemplateMixAiRun;
+
+describe('one confirmed local operation spans source updates and append', () => {
+  it('does not finish or reset to zero at the append handoff', () => {
+    const input = { source: { progress: 100, detail: '正在更新工程' }, hasAdditions: true,
+      handoff: true, append: null as { progress: number; detail: string } | null };
+    expect(mixLocalUpdateProgress(input)?.progress).toBe(50);
+    expect(mixLocalUpdateProgress({ ...input, source: null })?.progress).toBe(50);
+    expect(mixLocalUpdateProgress({ ...input, source: null, append: { progress: 0, detail: '排队' } })?.progress).toBe(50);
+    expect(mixLocalUpdateProgress({ ...input, source: null, append: { progress: 68, detail: '截取' } })).toEqual({ progress: 84, detail: '截取' });
+    expect(mixLocalUpdateProgress({ ...input, source: null, append: { progress: 100, detail: '保存' } })?.progress).toBe(99);
+  });
+  it('keeps standalone phases and clears a finished operation', () => {
+    expect(mixLocalUpdateProgress({ source: { progress: 68, detail: '更新' }, hasAdditions: false,
+      handoff: false, append: null })?.progress).toBe(68);
+    expect(mixLocalUpdateProgress({ source: null, hasAdditions: false, handoff: false,
+      append: { progress: 68, detail: '追加' } })?.progress).toBe(68);
+    expect(mixLocalUpdateProgress({ source: null, hasAdditions: true, handoff: false, append: null })).toBeNull();
+  });
+});
 
 describe('append uses existing partial-update progress separately from full fill', () => {
   it('does not describe an unclaimed queue item as a running model', () => {
@@ -99,8 +118,8 @@ describe('append uses existing partial-update progress separately from full fill
     expect(mixAppendProgress(run('RUNNING', 'FILL'))).toBeNull();
     expect(page).toContain("activeAiRun.value?.operation !== 'APPEND'");
     expect(page).toContain("displayedAiRun.value?.operation !== 'APPEND'");
-    expect(page).toContain("{{ activeFillRun ? '智能填充中…'");
-    expect(page).toContain('v-if="displayedFillRun"');
+    expect(page).toContain("{{ fillStartPending ? '正在提交…' : activeFillRun ? '智能填充中…'");
+    expect(page).toContain('v-if="displayedFillRun || fillStartPending"');
     expect(page).toContain('fillStartPending.value = !appendNewMaterials;');
   });
 });

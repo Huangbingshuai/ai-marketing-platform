@@ -86,6 +86,8 @@ export type EffectEditBeginOptions = {
   always?: boolean;
   /** Run an automatic child task in the background while its published parent stays active. */
   keepParentActive?: boolean;
+  /** Fresh packaging retains the complete previous package as its transactional rollback baseline. */
+  preservePackagingBaseline?: boolean;
   /** Reuse the same background child when a task request is retried. */
   creationKey?: string;
   /** Template-local mix/output branches only show the template that produced this version. */
@@ -865,7 +867,7 @@ export async function beginEffectEditInTransaction(
       { ...ids, ...artifactIds, ...hashReplacements },
     );
   }
-  if (stageIndex >= 5) {
+  if (stageIndex >= 5 || stageIndex === 4 && options.preservePackagingBaseline) {
     // The output stage is downstream of the mix stage: the branch keeps the packaging it exports
     // from, but every film starts unrendered so the export has to run again in this branch.
     // Every artifact is cloned by now, so the snapshots can be re-pointed in one pass here; a

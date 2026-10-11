@@ -17,7 +17,10 @@ from .video_import import IMPORT_OUTPUT_TOKENS
 
 async def serve() -> None:
     settings = get_settings()
-    api = InternalApi(str(settings.internal_api_base_url), settings.worker_token.get_secret_value(), settings.api_timeout_seconds)
+    api = InternalApi(str(settings.internal_api_base_url), settings.worker_token.get_secret_value(), settings.api_timeout_seconds,
+        recovery_max_attempts=settings.api_recovery_max_attempts,
+        recovery_timeout_seconds=settings.api_recovery_timeout_seconds,
+        recovery_max_delay_seconds=settings.api_recovery_max_delay_seconds)
     provider = ArkProvider(
         settings.ark_base_url,
         settings.ark_api_key.get_secret_value(),
@@ -34,7 +37,12 @@ async def serve() -> None:
         settings.model, settings.packaging_model_timeout_seconds,
         settings.packaging_model_max_output_tokens, settings.ark_reasoning_effort)
     packaging = PackagingHandler(api, packaging_model, packaging_provider, settings.max_video_bytes,
-        settings.packaging_item_concurrency, settings.packaging_model_concurrency, settings.packaging_tts_concurrency)
+        settings.packaging_item_concurrency, settings.packaging_model_concurrency, settings.packaging_tts_concurrency,
+        tts_connection_max_attempts=settings.packaging_tts_connection_max_attempts,
+        tts_connection_timeout_seconds=settings.packaging_tts_connection_timeout_seconds,
+        tts_connection_max_delay_seconds=settings.packaging_tts_connection_max_delay_seconds,
+        item_timeout_seconds=settings.packaging_item_timeout_seconds,
+        step_retry_attempts=settings.packaging_step_retry_attempts)
     consumer = Consumer(
         settings.rabbitmq_url.get_secret_value(),
         settings.queue_name,

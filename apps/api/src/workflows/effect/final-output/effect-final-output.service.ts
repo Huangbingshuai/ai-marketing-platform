@@ -71,6 +71,7 @@ import {
 import { wavDuration, parseVoiceSegmentFrames, parseVoiceSpeechRanges } from '../template-mix/effect-packaging-audio';
 import { withoutChangedSlots, withoutRemovedSlots, clearRemovedSourceSlots,
   assertRefreshPreservesContent, validateRefreshCheckpoint } from './effect-final-output-refresh';
+import { finalOutputSavedDraftDiffers, finalOutputSavedProjectChanges } from './effect-final-output-freshness';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -104,15 +105,6 @@ const NEEDS_REPACKAGING = '成片工程已变化，请返回混剪重新进行�
 const audioIds = (cp: PackagingCheckpoint) =>
   [...Object.values(cp.voices ?? {}), ...Object.values(cp.captionVoices ?? {}),
     ...(cp.music ? [cp.music] : [])].map((a) => a.fileObjectId);
-/** Only fields read by the final renderer determine whether an edited package needs export. */
-const renderPackagingHash = (cp: PackagingCheckpoint) => workflowStateHash({
-  voices: cp.voices ?? {},
-  captionVoices: cp.captionVoices ?? {},
-  music: cp.music ?? null,
-  captions: cp.captions ?? [],
-  captionFontSize: cp.captionFontSize ?? 16,
-  captionBoxes: cp.captionBoxes ?? {},
-});
 /**
  * The picture layers the user stacked on top after the package was confirmed.
  *
@@ -196,11 +188,16 @@ export class EffectFinalOutputService {
         workflowRunId, templateId: { in: templateIds },
       } },
       orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }],
-      distinct: ['variantId'],
-      select: { variantId: true, status: true, checkpoint: true },
+      select: { variantId: true, status: true, checkpoint: true, snapshot: true },
     });
-    return new Map(rows.filter((row) => row.status === 'COMPLETED')
-      .map((row) => [row.variantId, row.checkpoint as PackagingCheckpoint]));
+    const latest = new Map<string, PackagingCheckpoint | null>();
+    for (const row of rows) {
+      // A new transactional package has not replaced the saved package until its own commit.
+      if ((row.snapshot as unknown as PackagingSnapshot).operation && row.status !== 'COMPLETED') continue;
+      if (!latest.has(row.variantId)) latest.set(row.variantId,
+        row.status === 'COMPLETED' ? row.checkpoint as PackagingCheckpoint : null);
+    }
+    return new Map([...latest].filter((entry): entry is [string, PackagingCheckpoint] => entry[1] !== null));
   }
 
   private enqueue(tx: Prisma.TransactionClient, projectId: string, runId: string) {
@@ -427,7 +424,7 @@ export class EffectFinalOutputService {
     projectId: string,
     workflowRunId: string,
     templateId: string,
-    options: { publish?: boolean; onlyVariantIds?: string[] } = {},
+    options: { publish?: boolean; onlyVariantIds?: string[]; packagingRunId?: string; attemptToken?: string } = {},
   ): Promise<void> {
     const before = await this.db.workflowNodeState.findUnique({
       where: {
@@ -448,7 +445,7 @@ export class EffectFinalOutputService {
     );
     const { workspace } = plan;
     const variants = options.onlyVariantIds ? plan.variants.filter((variant) => options.onlyVariantIds!.includes(variant.id)) : plan.variants;
-    const inputs = options.onlyVariantIds ? plan.inputs.filter((input) => input.artifactKey === `mix-template:${templateId}` ||
+    const inputs = options.onlyVariantIds ? plan.inputs.filter((input) => (!options.packagingRunId && input.artifactKey === `mix-template:${templateId}`) ||
       options.onlyVariantIds!.some((id) => input.artifactKey === `timeline-project:${templateId}:${id}`)) : plan.inputs;
     if (!variants.length) return;
     await this.db.$transaction(
@@ -472,12 +469,19 @@ export class EffectFinalOutputService {
             status: { in: ['QUEUED', 'RUNNING'] },
           },
         });
-        if (active) throw new ConflictException('包装仍在执行，请等待全部成片成功');
+        if (active && !options.packagingRunId) throw new ConflictException('包装仍在执行，请等待全部成片成功');
+        if (options.packagingRunId) {
+          const lease = await tx.effectPackagingRun.count({ where: { projectId, id: options.packagingRunId,
+            workflowRunId, templateId, status: 'RUNNING', attemptToken: options.attemptToken ?? '',
+            leaseExpiresAt: { gt: new Date() } } });
+          if (!lease) throw new ConflictException('包装任务租约已失效');
+        }
         const history = await tx.effectPackagingItem.findMany({
           where: {
             projectId,
             run: { workflowRunId: workflowRunId, templateId },
             variantId: { in: variants.map((v) => v.id) },
+            ...(options.packagingRunId ? { runId: options.packagingRunId } : {}),
           },
           orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }],
           distinct: ['variantId'],
@@ -497,10 +501,16 @@ export class EffectFinalOutputService {
           // the user asked for these films, so a film whose packaging failed is submitted as a
           // picture-only one — no narration, captions or bed — and the failure is surfaced next to
           // it. Recovering that item and confirming once more adds its audio back as a new output.
-          if (!['COMPLETED', 'FAILED', 'CANCELLED'].includes(item.status))
+          const ready = Boolean(options.packagingRunId && item.status === 'RUNNING' && item.stage === 'READY');
+          if (!ready && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(item.status))
             throw new ConflictException(`${variant.name} 仍在包装中；请等待包装结束后提交`);
           const snapshot = item.snapshot as unknown as PackagingSnapshot;
-          const packaged = item.status === 'COMPLETED';
+          const packaged = ready || item.status === 'COMPLETED';
+          if (snapshot.operation && !packaged)
+            throw new ConflictException('本次包装未提交，已保留包装前原样');
+          if (options.packagingRunId && !packaged) throw new ConflictException('包装结果尚未就绪');
+          if (ready && snapshot.operation && workflowStateHash(variant) !== workflowStateHash(snapshot.baselineVariant))
+            throw new ConflictException('包装执行期间成片已被修改');
           const checkpoint: PackagingCheckpoint = packaged
             ? (item.checkpoint as PackagingCheckpoint)
             : { voices: {}, captions: [] };
@@ -511,11 +521,28 @@ export class EffectFinalOutputService {
             item,
             snapshot,
             checkpoint,
-            variant,
+            variant: ready && snapshot.operation ? structuredClone(snapshot.variant) : variant,
             unpackaged: !packaged,
             overlays: liveOverlays(variant, workspace.materials, overlayArtifacts),
           };
         });
+        // Commit the picture-only replacement and the complete new package together. Until this
+        // transaction succeeds the authoritative draft and all previous audio remain untouched.
+        const replacing = rows.filter((row) => options.packagingRunId && row.snapshot.operation && row.item.status !== 'COMPLETED');
+        if (replacing.length) {
+          const draft = locked!.state as unknown as import('@ai-marketing/contracts').EffectTemplateMixDraft;
+          const entry = draft.templates.find((entry) => entry.id === templateId)!;
+          for (const row of replacing) {
+            const index = entry.workspace.variants.findIndex((variant) => variant.id === row.variant.id);
+            entry.workspace.variants[index] = row.variant;
+            const input = inputs.find((input) => input.artifactKey === `timeline-project:${templateId}:${row.variant.id}`);
+            if (input) input.input.payload = { ...(input.input.payload as object), variant: packagingVisualVariant(row.variant) };
+          }
+          entry.workspace.editVersion += 1;
+          await tx.workflowNodeState.update({ where: { id: locked!.id }, data: {
+            state: json(draft), contentHash: workflowStateHash(draft), revision: { increment: 1 },
+          } });
+        }
         const inputHash = workflowStateHash(
           rows.map((r) => ({
             variant: visualHash(r.variant),
@@ -606,7 +633,7 @@ export class EffectFinalOutputService {
                     visualRevision: visual.revision,
                     duration,
                     ...cp,
-                    mix: { originalVolume: 0.15, bgmVolume: cp.music?.volume ?? 0, ducking: true },
+                    mix: { originalVolume: row.snapshot.operation ? row.variant.originalVolume : 0.15, bgmVolume: cp.music?.volume ?? 0, ducking: true },
                     subtitleStyle: 'standard',
                   },
                   files: files
@@ -670,7 +697,7 @@ export class EffectFinalOutputService {
               },
             ],
             aspectRatio: effectResolvedCanvasRatio(row.variant, workspace.materials, workspace.renderAspectRatio),
-            originalVolume: 0.15,
+            originalVolume: row.snapshot.operation ? row.variant.originalVolume : 0.15,
             resolution: '720p',
             frameRate: 30,
           };
@@ -680,6 +707,10 @@ export class EffectFinalOutputService {
             status: 'PENDING_RENDER',
             snapshot: json(snapshot),
           });
+          if (options.packagingRunId)
+            await tx.effectPackagingItem.update({ where: { id: row.item.id }, data: {
+              status: 'COMPLETED', completedAt: new Date(), errorMessage: null,
+            } });
         }
         // A delivered picture-only version keeps its existing files and batch. The newly
         // committed package makes those items stale through draftDiffersFromSnapshot; only an
@@ -1360,7 +1391,10 @@ export class EffectFinalOutputService {
         previousOperation.id !== body.operationId) {
         const appended = await tx.effectTemplateMixAiRun.findFirst({ where: { projectId, workflowRunId, templateId,
           inputSnapshot: { path: ['sourceOperation', 'id'], equals: previousOperation.id } }, select: { status: true } });
-        if (!appended || appended.status !== 'COMPLETED')
+        // A new explicit confirmation supersedes a failed/cancelled APPEND with today's net
+        // difference. Successful projects already advanced their own baseline and are not rerun.
+        // An unstarted handoff or live APPEND still owns its frozen operation.
+        if (!appended || !['COMPLETED', 'FAILED', 'CANCELLED'].includes(appended.status))
           throw new ConflictException('上一轮局部更新的新增成片尚未完成，请先继续或重试原任务');
       }
       if (await tx.effectPackagingRun.count({ where: { projectId, workflowRunId, templateId,
@@ -1825,21 +1859,15 @@ export class EffectFinalOutputService {
   ): boolean {
     if (this.sourceSnapshotDiffers(templateId, item, artifacts, workspace)) return true;
     const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
-    if (latestPackaging && renderPackagingHash(latestPackaging) !==
-      renderPackagingHash(snapshot.packaging)) return true;
     const variant = workspace?.draft?.templates
       .find((entry) => entry.id === templateId)
       ?.workspace.variants.find((candidate) => candidate.id === item.variantId);
     if (!variant) return true;
     try {
       return (
+        finalOutputSavedDraftDiffers(variant, snapshot, latestPackaging) ||
         pictureHash(this.liveClips(variant, workspace!.materials, artifacts)) !==
-          pictureHash(snapshot.timeline.clips) ||
-        (variant.canvasRatio ?? null) !== (snapshot.timeline.variant.canvasRatio ?? null) ||
-        workflowStateHash(variant.detachedAudios ?? []) !==
-          workflowStateHash(snapshot.timeline.detachedAudios ?? []) ||
-        (variant.originalVolume ?? snapshot.originalVolume) !== snapshot.originalVolume ||
-        effectTemplateMixContentDuration(variant, snapshot.packaging) !== snapshot.timeline.duration
+          pictureHash(snapshot.timeline.clips)
       );
     } catch {
       return true;
@@ -1856,10 +1884,10 @@ export class EffectFinalOutputService {
   ): FinalOutputRun['projectChanges'] {
     const variants = workspace?.draft?.templates.find((entry) => entry.id === run.templateId)?.workspace.variants;
     if (!variants || !hasOutputVersion(artifacts)) return undefined;
+    const membership = finalOutputSavedProjectChanges(variants, run.items, packaging);
     return {
       ...(typeof workspace?.draftRevision === 'number' ? { draftRevision: workspace.draftRevision } : {}),
-      added: variants.filter((variant) => !run.items.some((item) => item.variantId === variant.id) &&
-        effectTemplateMixPlacedContentDuration(variant, packaging.get(variant.id)) > 0).map((variant) => {
+      added: membership.added.map((variant) => {
           const duration = effectTemplateMixPlacedContentDuration(variant, packaging.get(variant.id));
           let cover: FinalOutputRun['items'][number]['cover'] = null;
           let blockedReason: string | undefined;
@@ -1879,8 +1907,7 @@ export class EffectFinalOutputService {
           return { variantId: variant.id, name: variant.name, duration, cover,
             ...(blockedReason ? { blockedReason } : {}) };
         }),
-      removedItemIds: run.items.filter((item) => !variants.some((variant) => variant.id === item.variantId))
-        .map((item) => item.id),
+      removedItemIds: membership.removedItemIds,
     };
   }
 

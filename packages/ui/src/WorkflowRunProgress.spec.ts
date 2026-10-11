@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import componentSource from './WorkflowRunProgress.vue?raw';
 
 describe('WorkflowRunProgress', () => {
+  it('shows terminal results without a frozen execution bar or a fake success percentage', () => {
+    expect(componentSource).toContain('terminal: false');
+    expect(componentSource).toContain('v-if="!terminal"');
+    expect(componentSource).toContain('<strong v-if="!terminal">');
+    expect(componentSource).toContain("'is-terminal': terminal");
+  });
   it('provides one accessible and reusable workflow progress layout', () => {
     expect(componentSource).toContain('role="progressbar"');
     expect(componentSource).toContain(':aria-valuenow="normalizedProgress"');

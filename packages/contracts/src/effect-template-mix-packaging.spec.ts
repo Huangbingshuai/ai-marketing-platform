@@ -17,9 +17,27 @@ import {
   packagingAudioToDb,
   packagingTimelineClips,
   packagingTimelineDuration,
+  packagingPictureOnlyVariant,
 } from './effect-template-mix-packaging';
 import type { EffectTemplateMixVariant } from './effect-template-mix';
 import type { PackagingCheckpoint } from './effect-template-mix-packaging';
+
+describe('fresh packaging picture-only projection', () => {
+  it('removes every non-video track without mutating the baseline or collapsing gaps and tails', () => {
+    const variant = { id: 'v', slots: [{ id: 's', duration: 6 }], bindings: { s: 'asset' },
+      clipStarts: { s: 6 }, captions: [{ start: 18, end: 22, text: 'original' }],
+      voice: { start: 0, duration: 10 }, bgm: { start: 0, duration: 30 },
+      detachedAudios: [{ start: 26, duration: 6 }], audioLanes: { a: 1 }, originalVolume: 1,
+      intentionallyEmptySlotIds: ['empty'], preservedTimelineEnd: 28,
+    } as unknown as EffectTemplateMixVariant;
+    const baseline = structuredClone(variant);
+    const clean = packagingPictureOnlyVariant(variant, { music: { start: 0, duration: 36 } } as PackagingCheckpoint);
+    expect(variant).toEqual(baseline);
+    expect(clean).toMatchObject({ preservedTimelineEnd: 36, captions: [], voice: null, bgm: null,
+      detachedAudios: [], audioLanes: {}, originalVolume: 0, intentionallyEmptySlotIds: ['empty'], bindings: { s: 'asset' } });
+    expect(clean.slots).toEqual(baseline.slots);
+  });
+});
 
 describe('packaging audio fades', () => {
   it('reports the fade the worker will actually render', () => {

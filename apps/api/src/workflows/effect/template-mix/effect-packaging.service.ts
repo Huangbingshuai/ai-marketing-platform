@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -25,7 +26,7 @@ import type {
   UpdatePackagingAudioRequest,
   WorkingArtifact,
 } from '@ai-marketing/contracts';
-import { packagingVisualTimeline, effectTemplateMixSourceChanges } from '@ai-marketing/contracts';
+import { packagingPictureOnlyVariant, packagingVisualTimeline, effectTemplateMixSourceChanges } from '@ai-marketing/contracts';
 import { packagingExecution } from './effect-packaging.metrics';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectTemplateMixService } from './effect-template-mix.service';
@@ -88,14 +89,26 @@ export class EffectPackagingService {
   ) {}
 
   /**
-   * The worker's finish callback. A finished package puts its films straight into the output node's
-   * queue, so they are ready for export without a validation step. Only a batch that packaged every
-   * film publishes the mix branch: the films a partial run failed on have to be recovered in the
-   * packaging panel first, and retrying reuses this very run, so the branch appears once it is whole
-   * instead of showing a version the user never got. The sync is best-effort: a draft that moved on
-   * while the worker ran must not fail the worker.
+   * New protocol commits each film at READY. Finishing only publishes a changed batch and
+   * records continuation, before terminalizing the lease, so persistence can resume without
+   * generating again. Legacy workers retain their original completion protocol below.
    */
   async finish(projectId: string, runId: string, token: string) {
+    const current = await this.repo.get(projectId, runId);
+    const operation = (current?.items[0]?.snapshot as unknown as PackagingSnapshot | undefined)?.operation;
+    if (operation) {
+      await this.repo.authorized(projectId, runId, token);
+      if (current!.items.some((item) => ['QUEUED', 'RUNNING'].includes(item.status)))
+        throw new ConflictException('包装任务仍有未完成成片');
+      // Publication is retried by lease recovery if it fails; never terminalize first.
+      if (operation === 'BATCH_PACKAGE' && current!.items.some((item) => item.status === 'COMPLETED'))
+        await this.finalOutput.publishMixBranch(projectId, current!.workflowRunId);
+      const appendId = (current!.items[0]?.snapshot as unknown as PackagingSnapshot).incrementalFillRunId;
+      if (appendId) await this.mix.recordAppendContinuation(projectId, appendId,
+        current!.items.some((item) => item.status !== 'COMPLETED'));
+      await this.repo.finish(projectId, runId, token);
+      return { accepted: true };
+    }
     const result = await this.repo.finish(projectId, runId, token);
     const fillRunId = result.items.map((item) =>
       (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId).find(Boolean);
@@ -144,6 +157,10 @@ export class EffectPackagingService {
 
   async create(projectId: string, templateId: string, body: CreatePackagingRequest,
     append?: { fillRunId: string; variantIds: string[] }) {
+    if (body.operation && (body.component && body.component !== 'ALL' || body.slotId ||
+        (body.operation === 'SINGLE_PACKAGE' ? !body.variantId : Boolean(body.variantId))))
+      throw new BadRequestException('包装操作与成片范围不一致');
+    const operation = append ? 'APPEND_PACKAGE' as const : body.operation;
     const requestHash = workflowStateHash({ ...body, templateId, ...(append ? { append } : {}) });
     const replay = await this.repo.db.effectPackagingRun.findUnique({
       where: { projectId_idempotencyKey: { projectId, idempotencyKey: body.idempotencyKey } },
@@ -156,7 +173,7 @@ export class EffectPackagingService {
     const sourceWorkspace = await this.mix.workspace(projectId, body.workflowRunId);
     const sourceEntry = sourceWorkspace.draft.templates.find((entry) => entry.id === templateId);
     if (
-      sourceEntry?.packagingSourceLocked
+      !operation && sourceEntry?.packagingSourceLocked
     )
       throw new ConflictException('智能成片包装正在进行，暂时不能再次包装');
     // Packaging never acts as a local source update, including full repackaging.
@@ -164,7 +181,7 @@ export class EffectPackagingService {
         sourceEntry?.workspace.variants.some((variant) =>
           effectTemplateMixSourceChanges(variant, sourceWorkspace.materials).length > 0)))
       throw new ConflictException('当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。');
-    if (await this.repo.activeUnpublishedChild?.(projectId, body.workflowRunId, templateId))
+    if (!operation && await this.repo.activeUnpublishedChild?.(projectId, body.workflowRunId, templateId))
       throw new ConflictException('此模板已有新分支正在智能成片包装，请等待任务完成');
     // A picture-only delivery already owns a published output branch. Its first package fills
     // the missing mix layer of that same branch; the delivered files remain untouched until the
@@ -187,7 +204,7 @@ export class EffectPackagingService {
     const packageInDeliveredRun = Boolean(
       activeSource && delivered && !packaged && !sourceEntry?.packagingLocked,
     );
-    const workflowRunId = append || packageInDeliveredRun
+    const workflowRunId = append || body.operation === 'SINGLE_PACKAGE' || (!operation && packageInDeliveredRun)
       ? body.workflowRunId
       : (await this.working.beginEffectNodeEdit(
           projectId,
@@ -197,6 +214,7 @@ export class EffectPackagingService {
           {
             always: true,
             keepParentActive: true,
+            ...(operation === 'BATCH_PACKAGE' ? { preservePackagingBaseline: true } : {}),
             creationKey: `mix-package:${workflowStateHash(body.idempotencyKey)}`,
           },
         )).run.id;
@@ -217,11 +235,15 @@ export class EffectPackagingService {
       throw new ConflictException(
         '模板已改动，或仍有成片未按当前模板重新智能填充；请完成需要更新的成片后再包装',
       );
-    const variants = entry.workspace.variants.filter(
+    const baselineVariants = entry.workspace.variants.filter(
       (v) =>
         (append ? append.variantIds.includes(v.id) : (!body.variantId || v.id === body.variantId)) &&
         v.slots.some((s) => v.bindings[s.id]),
     ).map((variant) => structuredClone(variant));
+    const history = await this.repo.list(projectId, workflowRunId, templateId);
+    const variants = operation ? baselineVariants.map((variant) => packagingPictureOnlyVariant(variant,
+      history.flatMap((run) => run.items).find((item) => item.variantId === variant.id && item.status === 'COMPLETED')
+        ?.checkpoint as PackagingCheckpoint | undefined)) : baselineVariants;
     if (!variants.length) throw new BadRequestException('没有可包装的视频成片');
     if (append && variants.length !== append.variantIds.length)
       throw new ConflictException('新增成片工程已变化，不能包装旧目标');
@@ -297,6 +319,10 @@ export class EffectPackagingService {
     }
     const snapshots = variants.map((v) => {
       const snapshot = packagingSnapshot(v, workspace.materials, artifacts, musicSources, frozenAppendSource);
+      if (operation) {
+        snapshot.operation = operation;
+        snapshot.baselineVariant = baselineVariants.find((variant) => variant.id === v.id)!;
+      }
       if (append) snapshot.incrementalFillRunId = append.fillRunId;
       return snapshot;
     });
@@ -318,7 +344,6 @@ export class EffectPackagingService {
     const checkpoints: PackagingCheckpoint[] = snapshots.map(() => ({
       narrationLayoutVersion: 'SLOT_V1',
     }));
-    const history = await this.repo.list(projectId, workflowRunId, templateId);
     const visionCache = new Map(
       history
         .flatMap((r) => r.items)
@@ -416,6 +441,7 @@ export class EffectPackagingService {
       projectId,
       workflowRunId,
       templateId,
+      ...(operation ? { sourceWorkflowRunId: body.workflowRunId } : {}),
       idempotencyKey: body.idempotencyKey,
       requestHash,
       snapshots,
@@ -444,6 +470,7 @@ export class EffectPackagingService {
         (checkpoint.script ?? []).flatMap(({ factIds }) => factIds),
       );
       return {
+        ...(snapshot.operation ? { operation: snapshot.operation, workflowRunId: run.workflowRunId } : {}),
         id: i.id,
         runId: run.id,
         variantId: i.variantId,
@@ -486,6 +513,7 @@ export class EffectPackagingService {
   private present(run: PackagingRunRow, workspace: EffectTemplateMixWorkspaceData): PackagingRun {
     const items = this.presentItems(run, workspace);
     return {
+      ...(items[0]?.operation ? { operation: items[0].operation } : {}),
       id: run.id,
       templateId: run.templateId,
       workflowRunId: run.workflowRunId,
@@ -559,7 +587,7 @@ export class EffectPackagingService {
         // The stored copy is canonical, so its head offset plus length is the real source tail.
         const available = (current.offset ?? 0) + current.duration;
         if (offset < 0 || length <= 0 || offset + length > available + 0.05)
-          throw new BadRequestException('口播裁剪超出真实音频长度');
+          throw new BadRequestException('口播裁剪超出音频长度');
         voices[id] = {
           ...current,
           start: edit.start,
@@ -589,7 +617,7 @@ export class EffectPackagingService {
         const length = edit.duration ?? current.duration;
         const available = (current.offset ?? 0) + current.duration;
         if (offset < 0 || length <= 0 || offset + length > available + 0.05)
-          throw new BadRequestException('字幕口播裁剪超出真实音频长度');
+          throw new BadRequestException('字幕口播裁剪超出音频长度');
         captionVoices[id] = {
           ...current,
           start: edit.start,
@@ -872,10 +900,11 @@ export class EffectPackagingService {
         projectId, workflowRunId: run.workflowRunId, nodeId: 'TEMPLATE_MIX',
       } } });
       const draft = state.state as unknown as EffectTemplateMixDraft;
-      const variant = draft.templates.find((entry) => entry.id === run.templateId)?.workspace.variants
+      const baseline = draft.templates.find((entry) => entry.id === run.templateId)?.workspace.variants
         .find((variant) => variant.id === item.variantId);
-      if (!variant || workflowStateHash(variant) !== workflowStateHash(snapshot.variant))
+      if (!baseline || workflowStateHash(baseline) !== workflowStateHash(snapshot.baselineVariant ?? snapshot.variant))
         throw new ConflictException('包装执行期间该成片工程已被修改');
+      const variant = snapshot.operation ? structuredClone(snapshot.variant) : baseline;
       if (trims.length !== snapshot.sourceTrimMaterials.length || new Set(trims.map((row) => row.slotId)).size !== trims.length)
         throw new BadRequestException('截取结果缺失或重复');
       for (const trim of trims) {
@@ -897,7 +926,7 @@ export class EffectPackagingService {
       snapshot.detachedAudios = variant.detachedAudios ?? [];
       snapshot.sourceTimelineHash = visualHash(variant);
       snapshot.sourceTrimsReady = true;
-      await tx.workflowNodeState.update({ where: { id: state.id }, data: {
+      if (!snapshot.operation) await tx.workflowNodeState.update({ where: { id: state.id }, data: {
         state: JSON.parse(JSON.stringify(draft)), contentHash: workflowStateHash(draft),
         revision: { increment: 1 },
       } });
@@ -926,13 +955,14 @@ export class EffectPackagingService {
       const files = await this.repo.db.fileObject.findMany({ where: { projectId,
         id: { in: snapshot.clips.map((clip) => clip.fileObjectId) }, status: 'AVAILABLE' } });
       if (!variant || !template || workflowStateHash(template) !== snapshot.sourceOperation.templateHash ||
-        workflowStateHash(variant) !== workflowStateHash(snapshot.variant) ||
+        workflowStateHash(variant) !== workflowStateHash(snapshot.baselineVariant ?? snapshot.variant) ||
         snapshot.clips.some((clip) => !files.some((file) => file.id === clip.fileObjectId && file.sha256 === clip.contentHash)))
         throw new ConflictException('包装执行期间该成片工程被编辑或冻结文件不可用');
       return { run, item, snapshot };
     }
     if (
       !variant ||
+      (snapshot.operation && workflowStateHash(variant) !== workflowStateHash(snapshot.baselineVariant)) ||
       (snapshot.sourceTrimMaterials?.length && workflowStateHash(variant) !== workflowStateHash(snapshot.variant)) ||
       snapshot.dependencies.some(
         (dependency) =>
@@ -957,6 +987,11 @@ export class EffectPackagingService {
     patch: PackagingCheckpoint,
     errorMessage?: string,
   ) {
+    const existing = await this.repo.getItem(projectId, runId, itemId);
+    if (existing?.status === 'COMPLETED') {
+      await this.repo.authorized(projectId, runId, token);
+      return { accepted: true };
+    }
     // Failure writes must be accepted even when the source changed during execution.
     if (errorMessage) {
       await this.repo.authorized(projectId, runId, token);
@@ -1004,7 +1039,23 @@ export class EffectPackagingService {
       if (new Set(owned.map((file) => file.fileObjectId)).size !== ids.length)
         throw new BadRequestException('音频资产不属于当前成片');
     }
-    return this.repo.checkpoint(projectId, runId, token, itemId, stage, patch);
+    const saved = await this.repo.checkpoint(projectId, runId, token, itemId, stage, patch);
+    if (stage === 'READY' && snapshot.operation) {
+      // Other films may commit between reading the workspace and acquiring its row lock.
+      // Rebuild only the persistence plan; the validated checkpoint already contains every result.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await this.finalOutput.upsertFromPackaging(projectId, run.workflowRunId, run.templateId, {
+            publish: false, onlyVariantIds: [item.variantId], packagingRunId: runId, attemptToken: token,
+          });
+          break;
+        } catch (error) {
+          if (!(error instanceof ConflictException) || error.message !== '草稿已变化，请刷新后重试') throw error;
+          if (attempt >= 7) throw new ServiceUnavailableException('其他成片正在提交，稍后继续保存本条包装');
+        }
+      }
+    }
+    return saved;
   }
   async content(projectId: string, runId: string, token: string, itemId: string, fileId: string) {
     const { snapshot, item, run } = await this.workerItem(projectId, runId, token, itemId);

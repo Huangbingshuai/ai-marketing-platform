@@ -118,6 +118,7 @@ class IncrementalReview(BaseModel):
 
 class Snapshot(BaseModel):
     durationFilteredImports: bool = False
+    durationFilteredMaterials: bool = False
     schemaVersion: Literal[1]
     template: dict[str, Any]
     draftRevision: int

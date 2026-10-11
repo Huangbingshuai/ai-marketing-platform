@@ -8,11 +8,20 @@ import thumbnailSource from './EffectTemplateMixThumbnail.vue?raw';
 import filmstripSource from './EffectTemplateMixFilmstrip.vue?raw';
 import rawTimelineSource from './EffectTemplateMixTimeline.vue?raw';
 import waveformSource from './EffectTemplateMixWaveform.vue?raw';
+import packagingProgressSource from './effect-packaging-progress.ts?raw';
 
 const pageSource = rawPageSource.replace(/\r\n/gu, '\n');
 const timelineSource = rawTimelineSource.replace(/\r\n/gu, '\n');
 
 describe('effect template mix workbench layout', () => {
+  it('uses product-facing copy without implementation qualifiers', () => {
+    expect(pageSource).not.toContain('真实');
+    expect(waveformSource).not.toContain('真实');
+    expect(packagingProgressSource).not.toContain('真实');
+    expect(pageSource).toContain('保留原始时间戳');
+    expect(pageSource).toContain('智能成片包装任务进度');
+  });
+
   it('shows the shared vertical guide during video edge trimming and clears it on release', () => {
     const begin = timelineSource.split('const beginEdgeTrim =')[1]?.split('const audioAreaTop')[0];
     const move = timelineSource.split('if (edgeTrimDrag.value) {')[1]?.split('if (audioDrag.value) {')[0];
@@ -52,7 +61,14 @@ describe('effect template mix workbench layout', () => {
     expect(eligibility).not.toContain('manualSlotIds');
     expect(pageSource).toContain('按模板规则整批生成成片；原分支保留，完成后查看新批次');
     expect(pageSource).toContain('await startAiFill(null, false, true, run.sourceOperationId);');
-    expect(pageSource).toContain('void startAiFill(selectedVariant.value, run.operation');
+  });
+  it('omits the smart-fill failure banner and its retry action without hiding workflow failure state', () => {
+    expect(pageSource).not.toContain('<b>智能填充失败</b>');
+    expect(pageSource).not.toContain('v-if="failedAiRun"');
+    expect(pageSource).not.toContain('retryFailedAiRun');
+    const workflow = pageSource.split('const workflowRunForDisplay =')[1]?.split('const workflowStageState')[0];
+    expect(workflow).toContain('failedAiRun.value');
+    expect(pageSource).toContain("if (run.status === 'FAILED' && stageIndex === currentIndex) return 'failed';");
   });
   it('blends selected blue borders with amber warnings on stale template cards', () => {
     const row = pageSource.split('class="template-list__row"')[1]?.split('<button')[0];
@@ -333,7 +349,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('@click="createEmptyVariant"');
     expect(pageSource).toContain('智能成片包装');
     expect(pageSource).toContain('<Workflow :size="13" />查看工作流');
-    expect(pageSource).toContain('智能成片包装真实任务进度');
+    expect(pageSource).toContain('智能成片包装任务进度');
     expect(pageSource).not.toContain('<Plus :size="13" />AI 智能填充');
   });
   it('keeps the smart-fill workflow as a read-only, per-node progress view', () => {
@@ -389,7 +405,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const expiredMaterialCount = computed(');
     expect(pageSource).toContain('const aiFillBlockReason = computed<string | null>(');
     expect(pageSource).toContain('if (!target && !refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {');
-    expect(pageSource).toContain("mutating.value = run.operation !== 'APPEND';");
+    expect(pageSource).not.toContain("mutating.value = run.operation !== 'APPEND';");
     expect(pageSource).toContain('class="material-expired-banner"');
     expect(pageSource).not.toContain('class="material-expired-badge"');
     expect(pageSource).not.toContain(

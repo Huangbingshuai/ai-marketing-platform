@@ -299,22 +299,13 @@ class Consumer:
             with temporary_video_directory() as root:
                 trim_semaphore = self.request_slots
 
-                async def trim_selection(index: int, selection: Selection) -> None:
+                async def trim_selection(
+                    selection: Selection, frames: list[tuple[float, bytes]],
+                ) -> None:
                     nonlocal heartbeat_progress
                     async with trim_semaphore:
                         material = materials[selection.materialId]
                         slot = slots[selection.slotId]
-                        data = await self.api.video(runtime, material.id, self.max_video_bytes)
-                        path = root / f"{selection.variantIndex:02d}-{index:03d}.mp4"
-                        path.write_bytes(data)
-                        frames = await sample_frames(path, material.duration)
-                        await self.api.checkpoint_sampling(
-                            runtime,
-                            [SampledMaterial(
-                                materialId=material.id,
-                                frameTimestampsSeconds=[timestamp for timestamp, _ in frames],
-                            )],
-                        )
                         choice = None
                         max_start = max(0.0, material.duration - slot.duration)
                         for attempt in range(2):
@@ -347,8 +338,38 @@ class Consumer:
                     saved = await self.api.checkpoint_trims(runtime, [result])
                     heartbeat_progress = max(heartbeat_progress, saved.progress)
 
+                # One frozen material can appear in many combinations. Reuse only
+                # its download and representative frames, not the independently
+                # chosen trim for each variant/slot. This cache is task-local.
+                pending_by_material: dict[str, list[Selection]] = {}
+                for _, selection in pending_selections:
+                    pending_by_material.setdefault(selection.materialId, []).append(selection)
+
+                async def trim_material(index: int, group: list[Selection]) -> None:
+                    material = materials[group[0].materialId]
+                    async with trim_semaphore:
+                        data = await self.api.video(runtime, material.id, self.max_video_bytes)
+                        path = root / f"material-{index:03d}.mp4"
+                        path.write_bytes(data)
+                        del data
+                        frames = await sample_frames(path, material.duration)
+                        await self.api.checkpoint_sampling(
+                            runtime,
+                            [SampledMaterial(
+                                materialId=material.id,
+                                frameTimestampsSeconds=[timestamp for timestamp, _ in frames],
+                            )],
+                        )
+                    # Release the permit before starting children to avoid a
+                    # semaphore deadlock. Nested cancellation is drained before
+                    # leaving the temporary directory, including on failures.
+                    await gather_cancel_on_error([
+                        trim_selection(selection, frames) for selection in group
+                    ])
+
                 await gather_cancel_on_error(
-                    [trim_selection(index, selection) for index, selection in pending_selections]
+                    [trim_material(index, group)
+                     for index, group in enumerate(pending_by_material.values())]
                 )
             trims = [trims_by_key[trim_key(selection)] for selection in selections]
             await self.api.complete(runtime, trims)
@@ -365,6 +386,11 @@ class Consumer:
             if runtime:
                 retryable = isinstance(exc, (ApiError, ProviderError)) and exc.retryable
                 error_message = "智能填充服务暂时不可用，请重试" if retryable else "智能填充结果无效，请检查素材后重试"
+                if retryable and isinstance(exc, ApiError):
+                    if str(exc) == "素材下载暂时中断，请稍后重试":
+                        error_message = "素材下载连接中断，已完成的检查点已保留"
+                    elif str(exc) == "internal API unavailable":
+                        error_message = "混剪后台连接暂时不可用，已完成的检查点已保留"
                 if not retryable and isinstance(exc, (ApiError, ProviderError)):
                     detail = str(exc)
                     if detail and detail not in ("internal API rejected request", "internal API unavailable"):

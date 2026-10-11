@@ -11,7 +11,7 @@ from effect_template_mix.api import InternalApi
 from effect_template_mix.packaging import PackagingHandler, SlotVisionOutput, narration_windows, slot_vision_key
 from effect_template_mix.packaging_provider import PackagingProvider, PackagingError, TimedVoicePcm
 from effect_template_mix.provider import ArkProvider
-from effect_template_mix.provider import ProviderIncompleteError, ProviderError
+from effect_template_mix.provider import ProviderIncompleteError, ProviderError, ProviderOutputError
 
 
 def snapshot(duration: float = 4) -> dict[str, Any]:
@@ -90,17 +90,27 @@ async def test_shared_vision_singleflight_and_restart_cache(tmp_path: Path, monk
     await api.client.aclose()
 
 
-async def test_global_tts_pool_bounds_calls_and_retains_successful_slots() -> None:
+@pytest.mark.parametrize('connection_failures', [0, 3])
+async def test_global_tts_pool_bounds_calls_and_retains_successful_slots(connection_failures: int, monkeypatch: Any) -> None:
     api = AsyncMock(spec=InternalApi)
     api.request.return_value = {'fileObjectId': 'saved'}
     provider = AsyncMock(spec=PackagingProvider)
+    pauses = []
+    async def backoff(_: float) -> None:
+        pauses.append(worker.requests._value)
+        await asyncio.sleep(.001)
+    monkeypatch.setattr('effect_template_mix.packaging_voice_recovery.sleep', backoff)
     active = maximum = 0
-    async def voice(_: str, **__: Any) -> bytes:
+    attempts: dict[str, int] = {}
+    async def voice(text: str, **__: Any) -> bytes:
         nonlocal active, maximum
         active += 1
         maximum = max(maximum, active)
         await asyncio.sleep(.01)
         active -= 1
+        attempts[text] = attempts.get(text, 0) + 1
+        if attempts[text] <= connection_failures:
+            raise httpx.ConnectError('unavailable')
         return TimedVoicePcm(b'\0\0' * 24000, 0, 24000)
     provider.voice.side_effect = voice
     worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), provider, 1000)
@@ -108,19 +118,22 @@ async def test_global_tts_pool_bounds_calls_and_retains_successful_slots() -> No
     value['duration'] = 24
     value['variant']['slots'] = [{'id': str(i), 'role': 'PRODUCT'} for i in range(6)]
     value['clips'] = [{**snapshot()['clips'][0], 'slotId': str(i), 'start': i * 4} for i in range(6)]
-    rows = [{'id': f'line-{i}', 'slotId': str(i), 'text': '短句', 'start': i * 4, 'end': i * 4 + 4, 'factIds': ['f']} for i in range(6)]
+    rows = [{'id': f'line-{i}', 'slotId': str(i), 'text': f'短句{i}', 'start': i * 4, 'end': i * 4 + 4, 'factIds': ['f']} for i in range(6)]
     item: dict[str, Any] = {'id': 'one', 'stage': 'VOICE', 'snapshot': value, 'checkpoint': {
         'narrationLayoutVersion': 'SLOT_V1', 'vision': [{'description': '画面'}], 'script': rows,
         'musicBrief': '器乐', 'music': {'fileObjectId': 'music', 'start': 0, 'duration': 24, 'volume': .12}}}
     other = copy.deepcopy(item)
     await asyncio.gather(worker.process_item('/r', {}, 'p', item), worker.process_item('/r', {}, 'p', other))
-    assert maximum == 4 and provider.voice.await_count == 12
+    assert maximum == 4 and provider.voice.await_count == 12 + 6 * connection_failures
+    assert len(pauses) == 6 * connection_failures
+    assert 'automaticRetries' not in item['checkpoint']
     assert len(item['checkpoint']['voices']) == len(item['checkpoint']['captions']) == 6
     await worker.process_item('/r', {}, 'p', item)
-    assert provider.voice.await_count == 12
+    assert provider.voice.await_count == 12 + 6 * connection_failures
 
 
-async def test_incomplete_slot_vision_splits_without_downloading_frames_twice(tmp_path: Path, monkeypatch: Any) -> None:
+@pytest.mark.parametrize('invalid_structure', [False, True])
+async def test_incomplete_slot_vision_splits_without_downloading_frames_twice(tmp_path: Path, monkeypatch: Any, invalid_structure: bool) -> None:
     api, ark = AsyncMock(spec=InternalApi), AsyncMock(spec=ArkProvider)
     downloads = []
     api.client = httpx.AsyncClient(base_url='http://test/', transport=httpx.MockTransport(
@@ -132,6 +145,8 @@ async def test_incomplete_slot_vision_splits_without_downloading_frames_twice(tm
         ids = [c['slotId'] for c in json.loads(content[0]['text'])['slots']]
         calls.append(ids)
         if len(ids) > 1:
+            if invalid_structure:
+                raise ProviderOutputError('invalid', retryable=False)
             raise ProviderIncompleteError('incomplete', retryable=False, split_recommended=True)
         return SlotVisionOutput.model_validate({'slots': [{'slotId': ids[0], 'description': '画面'}]})
     ark.structured.side_effect = describe
@@ -173,5 +188,68 @@ async def test_shared_vision_preserves_permanent_failure_and_can_be_retried(tmp_
         ark.structured.return_value = SlotVisionOutput.model_validate({'slots': [{'slotId': 's', 'description': '画面'}]})
         await run(2)
         assert ark.structured.await_count == 2 and len(worker.vision_cache) == 1
+    finally:
+        await api.client.aclose()
+
+
+async def test_single_slot_vision_format_correction_is_bounded(tmp_path: Path, monkeypatch: Any) -> None:
+    api, ark = AsyncMock(spec=InternalApi), AsyncMock(spec=ArkProvider)
+    api.client = httpx.AsyncClient(base_url='http://test/', transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, content=b'video')))
+    monkeypatch.setattr('effect_template_mix.packaging.slot_frames', AsyncMock(return_value=[b'a']))
+    ark.structured.side_effect = [ProviderOutputError('invalid', retryable=False),
+        SlotVisionOutput.model_validate({'slots': [{'slotId': 's', 'description': '合法画面'}]})]
+    worker = PackagingHandler(api, ark, AsyncMock(spec=PackagingProvider), 1000)
+    cp: dict[str, Any] = {'timings': {}}
+    async def save(_stage: str, patch: dict[str, Any]) -> None:
+        cp.update(patch)
+    try:
+        await worker.slot_vision(snapshot(), cp, '/i', {}, 'p', tmp_path, AsyncMock(), save)
+        assert ark.structured.await_count == 2
+        assert '结构校验' in ark.structured.call_args.args[0][-1]['text']
+        assert cp['slotVision']['s']['description'] == '合法画面'
+    finally:
+        await api.client.aclose()
+
+
+async def test_partial_split_vision_checkpoint_survives_failure_and_restart(tmp_path: Path, monkeypatch: Any) -> None:
+    api, ark = AsyncMock(spec=InternalApi), AsyncMock(spec=ArkProvider)
+    downloads: list[str] = []
+    api.client = httpx.AsyncClient(base_url='http://test/', transport=httpx.MockTransport(
+        lambda req: downloads.append(req.url.path) or httpx.Response(200, content=b'video')))
+    monkeypatch.setattr('effect_template_mix.packaging.slot_frames', AsyncMock(return_value=[b'a']))
+    calls: list[list[str]] = []
+    async def describe(content: Any, *_: Any, **__: Any) -> SlotVisionOutput:
+        import json
+        ids = [c['slotId'] for c in json.loads(content[0]['text'])['slots']]
+        calls.append(ids)
+        if ids != ['a']:
+            raise ProviderOutputError('invalid', retryable=False)
+        return SlotVisionOutput.model_validate({'slots': [{'slotId': 'a', 'description': '已保存画面'}]})
+    ark.structured.side_effect = describe
+    value = snapshot(8)
+    value['variant']['slots'] = [{'id': 'a'}, {'id': 'b'}]
+    value['clips'] = [{**value['clips'][0], 'slotId': slot_id, 'duration': 4,
+                       'start': index * 4, 'contentHash': slot_id}
+                      for index, slot_id in enumerate(['a', 'b'])]
+    cp: dict[str, Any] = {'timings': {}}
+    async def save(_stage: str, patch: dict[str, Any]) -> None:
+        cp.update(patch)
+    worker = PackagingHandler(api, ark, AsyncMock(spec=PackagingProvider), 1000)
+    try:
+        with pytest.raises(PackagingError, match='格式修正后仍无效'):
+            await worker.slot_vision(value, cp, '/i', {}, 'p', tmp_path, AsyncMock(), save)
+        assert calls == [['a', 'b'], ['a'], ['b'], ['b']]
+        assert set(cp['slotVision']) == {'a'} and 'vision' not in cp
+        assert not worker.vision_pending
+        restarted = PackagingHandler(api, ark, AsyncMock(spec=PackagingProvider), 1000)
+        restarted.vision_cache = {row['key']: row['description'] for row in cp['slotVision'].values()}
+        ark.structured.side_effect = None
+        ark.structured.return_value = SlotVisionOutput.model_validate({'slots': [{'slotId': 'b', 'description': '恢复画面'}]})
+        directory = tmp_path / 'restart'
+        directory.mkdir()
+        await restarted.slot_vision(value, cp, '/i', {}, 'p', directory, AsyncMock(), save)
+        assert ark.structured.await_count == 5 and len(downloads) == 3
+        assert set(cp['slotVision']) == {'a', 'b'} and len(cp['vision']) == 2
     finally:
         await api.client.aclose()

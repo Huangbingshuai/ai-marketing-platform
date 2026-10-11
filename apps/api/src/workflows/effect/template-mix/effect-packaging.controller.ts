@@ -56,6 +56,7 @@ import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard
 import { SourceTrimsDto } from './dto/effect-source-trims.dto';
 
 export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
+  @IsOptional() @IsIn(['BATCH_PACKAGE', 'SINGLE_PACKAGE']) operation?: 'BATCH_PACKAGE' | 'SINGLE_PACKAGE';
   @IsString() @MinLength(1) @MaxLength(500) idempotencyKey!: string;
   @IsOptional() @IsUUID('4') variantId?: string;
   @IsOptional() @IsIn(['ALL', 'VOICE', 'MUSIC', 'CAPTIONS']) component?: PackagingComponent;

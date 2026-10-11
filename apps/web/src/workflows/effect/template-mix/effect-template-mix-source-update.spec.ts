@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ScriptTarget, transpileModule } from 'typescript';
 import { computed, ref } from 'vue';
-import { resolveEffectTemplateMixMaterialRoles, packagingTimelineDuration } from '@ai-marketing/contracts';
+import { resolveEffectTemplateMixMaterialRoles, packagingTimelineDuration, effectTemplateMixMaterialFitsTemplate } from '@ai-marketing/contracts';
 import { effectTemplateMixTiming } from './effect-template-mix-state';
 import page from './EffectTemplateMixNodePage.vue?raw';
 import timeline from './EffectTemplateMixTimeline.vue?raw';
@@ -30,11 +30,11 @@ describe('current material library after repair or regeneration', () => {
     expect(checks.complete.value).toBe(false);
   });
   it('replaces the old file with the current file once and inherits the old purpose', () => {
-    const workspace = ref({ materials: [
+    const workspace = ref({ template: { slots: [{ duration: 4 }] }, materials: [
       { id: 'old', fileObjectId: 'old-file', available: true, activeSource: false },
-      { id: 'latest', fileObjectId: 'new-file', available: true, activeSource: true,
+      { id: 'latest', fileObjectId: 'new-file', duration: 5, available: true, activeSource: true,
         replacesMaterialIds: ['old'] },
-      { id: 'latest-alias', fileObjectId: 'new-file', available: true, activeSource: true,
+      { id: 'latest-alias', fileObjectId: 'new-file', duration: 5, available: true, activeSource: true,
         replacesMaterialIds: ['old'] },
       { id: 'candidate', fileObjectId: 'candidate-file', available: true, activeSource: false },
     ] });
@@ -45,8 +45,8 @@ describe('current material library after repair or regeneration', () => {
     const script = transpileModule(`const availableMaterials =${source}`, {
       compilerOptions: { target: ScriptTarget.ES2022 },
     }).outputText;
-    const library = new Function('computed', 'workspace', 'activeEntry', 'activeClassificationPool',
-      `${script}\nreturn availableMaterials;`)(computed, workspace, activeEntry, activeClassificationPool) as {
+    const library = new Function('computed', 'workspace', 'activeEntry', 'activeClassificationPool', 'effectTemplateMixMaterialFitsTemplate',
+      `${script}\nreturn availableMaterials;`)(computed, workspace, activeEntry, activeClassificationPool, effectTemplateMixMaterialFitsTemplate) as {
         value: typeof workspace.value.materials;
       };
     expect(library.value.map((item) => item.id)).toEqual(['latest']);
@@ -142,7 +142,7 @@ describe('workbench source update orchestration', () => {
     expect(context.showNotice).not.toHaveBeenCalled();
   });
   it('retains the durable operation and retries a progress read instead of reporting task failure', async () => {
-    const source = page.split('async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSuccess?: (run: FinalOutputRun) => Promise<void>) {')[1]!
+    const source = page.split('async function pollSourceUpdate(')[1]!.replace(/^[\s\S]*?\)\s*\{/, '')
       .split('\nasync function updateSourceProjects(')[0]!;
     const run = { id: 'confirmed', workflowRunId: 'workflow', templateId: 'template', status: 'RUNNING' };
     const context = { props: { projectId: 'project', workflowRunId: 'workflow' }, sourceUpdateGeneration: 1,
@@ -188,7 +188,7 @@ describe('workbench source update orchestration', () => {
     expect(c.updateMixSourceProjects).not.toHaveBeenCalled();
   });
   it.each(['PENDING_RENDER', 'COMPLETED'])('refreshes canvas artifacts immediately after local update succeeds (%s)', async (status) => {
-    const source = page.split('async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSuccess?: (run: FinalOutputRun) => Promise<void>) {')[1]!
+    const source = page.split('async function pollSourceUpdate(')[1]!.replace(/^[\s\S]*?\)\s*\{/, '')
       .split('\nasync function updateSourceProjects(')[0]!;
     const context = {
       props: { projectId: 'project', workflowRunId: 'workflow' }, sourceUpdateGeneration: 1,
@@ -197,6 +197,7 @@ describe('workbench source update orchestration', () => {
         id: 'local-update', workflowRunId: 'workflow', templateId: 'template', status, items: [],
       } }),
       sourceUpdateRun: { value: {} as unknown }, sourceUpdateTimer: undefined,
+      sourceUpdateHandoff: ref(false), activeAppendRun: ref<unknown>(null),
       setTimeout: vi.fn(() => 1),
       flushPendingEdits: vi.fn().mockResolvedValue(true),
       loadEffectTemplateMixWorkspace: vi.fn().mockResolvedValue({ data: { draft: 'confirmed' } }),
@@ -230,6 +231,29 @@ describe('workbench source update orchestration', () => {
     await execute({ id: 'local-update', workflowRunId: 'workflow', templateId: 'template' }, 1);
     expect(context.notifyOutputChange).not.toHaveBeenCalled();
     expect(context.setTimeout).toHaveBeenCalledTimes(2);
+    context.installWorkspaceData.mockReturnValue(true);
+    context.flushPendingEdits.mockResolvedValueOnce(false);
+    await execute({ id: 'local-update', workflowRunId: 'workflow', templateId: 'template' }, 1);
+    expect(context.setTimeout).toHaveBeenCalledTimes(3);
+    expect(context.sourceUpdateHandoff.value).toBe(true);
+    expect(context.notifyOutputChange).not.toHaveBeenCalled();
+
+    // The latest library can differ, but this click must consume its frozen additions.
+    context.getMixSourceUpdateRun.mockResolvedValue({ data: {
+      id: 'local-update', workflowRunId: 'workflow', templateId: 'template', status, items: [],
+      sourceOperationId: 'one-confirmation', sourceOperationHasAdditions: true,
+    } });
+    context.showNotice.mockClear();
+    context.afterSuccess.mockImplementationOnce(async () => {
+      expect(context.sourceUpdateHandoff.value).toBe(true);
+      expect(context.sourceUpdateRun.value).toMatchObject({ sourceOperationId: 'one-confirmation' });
+      context.activeAppendRun.value = { id: 'append', status: 'RUNNING' };
+    });
+    await execute({ id: 'local-update', workflowRunId: 'workflow', templateId: 'template' }, 1);
+    expect(context.afterSuccess).toHaveBeenLastCalledWith(expect.objectContaining({ sourceOperationId: 'one-confirmation' }));
+    expect(context.sourceUpdateHandoff.value).toBe(true);
+    expect(context.sourceUpdateRun.value).not.toBeNull();
+    expect(context.showNotice).not.toHaveBeenCalledWith('局部更新已完成');
   });
   it('offers scoped local update only in the editor without forcing a refill for repairs', () => {
     const config = page.split('<footer>')[1]!.split('</footer>')[0]!;
@@ -311,7 +335,7 @@ describe('workbench source update orchestration', () => {
     expect(context.pollSourceUpdate).not.toHaveBeenCalled();
   });
   it.each(['FAILED', 'PARTIAL', 'CANCELLED'])('does not append after an unsuccessful source update (%s)', async (status) => {
-    const source = page.split('async function pollSourceUpdate(run: FinalOutputRun, generation: number, afterSuccess?: (run: FinalOutputRun) => Promise<void>) {')[1]!
+    const source = page.split('async function pollSourceUpdate(')[1]!.replace(/^[\s\S]*?\)\s*\{/, '')
       .split('\nasync function updateSourceProjects(')[0]!;
     const context = { props: { projectId: 'project', workflowRunId: 'workflow' }, sourceUpdateGeneration: 1,
       activeTemplateId: ref('template'),
@@ -319,6 +343,7 @@ describe('workbench source update orchestration', () => {
         id: 'failed', workflowRunId: 'workflow', templateId: 'template', status, items: [],
       } }),
       sourceUpdateRun: ref<unknown>({}), showNotice: vi.fn(), afterSuccess: vi.fn(),
+      sourceUpdateHandoff: ref(true),
     };
     const script = transpileModule(`async function execute(run, generation) {${source}`, {}).outputText;
     const execute = new Function(...Object.keys(context), `${script}\nreturn execute;`)(...Object.values(context));
@@ -326,6 +351,7 @@ describe('workbench source update orchestration', () => {
     expect(context.afterSuccess).not.toHaveBeenCalled();
     expect(context.showNotice).toHaveBeenCalledWith('局部更新未完成，请重试', 'error');
     expect(context.sourceUpdateRun.value).toBeNull();
+    expect(context.sourceUpdateHandoff.value).toBe(false);
   });
   it('does not infer confirmation from a missing output list or ordinary sync', async () => {
     const { context, execute } = harness();
@@ -380,6 +406,8 @@ describe('source update project locks', () => {
       computed, sourceUpdateBusy: ref(true), sourceUpdateStarting: ref(false),
       sourceUpdatePendingVariantIds: ref(['v2']), sourceUpdateItemIds: ref(['i2']),
       workspaceTaskLocked: ref(false), selectedVariant: ref({ id: 'v2' }),
+      packagingPreviewReadOnly: ref(false),
+      variantPackagingLocked: () => false, packagingResults: ref([]),
       sourceUpdateRun: ref({ items: [{ id: 'i1', variantId: 'v1' }, { id: 'i2', variantId: 'v2' }] }),
     };
     const source = page.split('const sourceUpdateLockedVariantIds =')[1]!
@@ -413,6 +441,14 @@ describe('source update project locks', () => {
     context.sourceUpdateRun.value.items = [];
     expect(locks.variantEditLocked('v2')).toBe(true);
     expect(locks.variantEditLocked('v1')).toBe(false);
+  });
+  it('keeps a live packaging result read-only without using the edit lock as a playback guard', () => {
+    const { context, locks } = setup();
+    context.sourceUpdateBusy.value = false;
+    context.packagingPreviewReadOnly.value = true;
+    expect(locks.projectEditLocked.value).toBe(true);
+    const playback = page.split('const togglePlay =')[1]!.split('const onTimelinePlayerWaiting =')[0]!;
+    expect(playback).not.toContain('projectEditLocked');
   });
   it('reuses effective track locks without clearing manual locks after a task', () => {
     const props = { packagingSourceLock: false, sourceUpdateLock: true };

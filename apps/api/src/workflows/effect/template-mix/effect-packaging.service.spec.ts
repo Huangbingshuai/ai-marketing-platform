@@ -162,6 +162,7 @@ function harness(templateVoiceProfileId?: string) {
   // A finished package hands its films to the output node; the callback is a collaborator, not part
   // of what this service computes itself.
   const finalOutput = {
+    publishMixBranch: vi.fn().mockResolvedValue(undefined),
     upsertFromPackaging: vi.fn().mockResolvedValue(undefined),
   };
   const service = new EffectPackagingService(
@@ -173,6 +174,45 @@ function harness(templateVoiceProfileId?: string) {
   );
   return { service, mix, working, repo, storage, tx, visual, packaging, finalOutput };
 }
+
+describe('transactional packaging completion', () => {
+  it.each(['SINGLE_PACKAGE', 'APPEND_PACKAGE'] as const)('keeps %s in the current branch without rewriting completed films', async (operation) => {
+    const { service, repo, finalOutput } = harness();
+    repo.get.mockResolvedValue({ workflowRunId: 'w', items: [{ status: 'COMPLETED', snapshot: { operation } }] });
+    await service.finish('p', 'r', 'token');
+    expect(finalOutput.publishMixBranch).not.toHaveBeenCalled();
+    expect(finalOutput.upsertFromPackaging).not.toHaveBeenCalled();
+    expect(repo.finish).toHaveBeenCalledWith('p', 'r', 'token');
+  });
+  it('publishes partial batches but never all-failed or still-running batches', async () => {
+    const { service, repo, finalOutput } = harness();
+    const items = ['COMPLETED', 'FAILED'].map((status) => ({ status, snapshot: { operation: 'BATCH_PACKAGE' } }));
+    repo.get.mockResolvedValue({ workflowRunId: 'child', items });
+    await service.finish('p', 'r', 'token');
+    expect(finalOutput.publishMixBranch).toHaveBeenCalledExactlyOnceWith('p', 'child');
+    expect(finalOutput.upsertFromPackaging).not.toHaveBeenCalled();
+    finalOutput.publishMixBranch.mockClear();
+    items[0]!.status = 'FAILED';
+    await service.finish('p', 'r', 'token');
+    expect(finalOutput.publishMixBranch).not.toHaveBeenCalled();
+    items[0]!.status = 'RUNNING';
+    await expect(service.finish('p', 'r', 'token')).rejects.toThrow('未完成成片');
+  });
+  it('leaves the lease recoverable when branch publication fails', async () => {
+    const { service, repo, finalOutput } = harness();
+    repo.get.mockResolvedValue({ workflowRunId: 'child', items: [{ status: 'COMPLETED', snapshot: { operation: 'BATCH_PACKAGE' } }] });
+    finalOutput.publishMixBranch.mockRejectedValue(new Error('database temporarily unavailable'));
+    await expect(service.finish('p', 'r', 'token')).rejects.toThrow('temporarily unavailable');
+    expect(repo.finish).not.toHaveBeenCalled();
+  });
+  it('rejects a single operation without a target before creating any task', async () => {
+    const { service, working, repo } = harness();
+    await expect(service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1,
+      idempotencyKey: 'k', operation: 'SINGLE_PACKAGE' })).rejects.toThrow('范围不一致');
+    expect(repo.create).not.toHaveBeenCalled();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+});
 /** A finished item whose checkpoint matches the canonical worker output. */
 function completedItem() {
   const checkpoint: PackagingCheckpoint = {
@@ -1015,7 +1055,7 @@ describe('packaging service output boundary', () => {
         expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
         voices: { 'line-1': { start: 0, offset: 0.5, duration: 2.4, volume: 1 } },
       }),
-    ).rejects.toThrow('超出真实音频长度');
+    ).rejects.toThrow('超出音频长度');
     expect(repo.updateCheckpoint).not.toHaveBeenCalled();
   });
   it('moves source-timed captions without scaling them when narration is trimmed', async () => {
@@ -1524,7 +1564,7 @@ describe('editor-generated caption narration', () => {
         expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
         captionVoices: { 'line-1': { start: 0, offset: 0.5, duration: 2, volume: 1 } },
       }),
-    ).rejects.toThrow('字幕口播裁剪超出真实音频长度');
+    ).rejects.toThrow('字幕口播裁剪超出音频长度');
     expect(repo.updateCheckpoint).not.toHaveBeenCalled();
   });
   it('writes the worker’s audio back aligned on its caption and stays idempotent', async () => {

@@ -592,8 +592,48 @@ def capture_filters(monkeypatch: Any) -> list[str]:
     return captured
 
 
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for local audio verification')
+@pytest.mark.parametrize('split_music', [False, True])
+async def test_real_music_level_is_constant_before_during_and_after_voice(
+        tmp_path: Path, monkeypatch: Any, split_music: bool) -> None:
+    """Measure the music frequency separately from narration in a real AAC export."""
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    video, voice, music = [tmp_path / name for name in ('video.mp4', 'voice.wav', 'music.wav')]
+    await encode(['-f', 'lavfi', '-i', 'color=red:s=160x120:r=30:d=4', '-an',
+                  '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(video)], tmp_path)
+    for target, length, frequency in [(voice, 1, 880), (music, 4, 220)]:
+        await encode(['-f', 'lavfi', '-i', f'sine=frequency={frequency}:duration={length}',
+                      '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', str(target)], tmp_path)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1, 'duration': 1, 'volume': .5}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .4, 'fadeIn': 0, 'fadeOut': 0})
+    snapshot.update(originalVolume=0, resolution='480p', frameRate=30)
+    snapshot['packaging']['captions'] = []
+    if split_music:
+        snapshot['packaging']['music'] = None
+        snapshot['timeline']['detachedAudios'] = [{
+            'id': 'split', 'audioKind': 'MUSIC', 'sourceType': 'FILE', 'loopSource': True,
+            'fileObjectId': 'music', 'start': 0, 'duration': 4, 'offset': 0, 'volume': .4,
+        }]
+    result = await render(snapshot, {'a': video, 'voice': voice, 'music': music}, tmp_path, AsyncMock())
+    pcm = await command('ffmpeg', ['-v', 'error', '-i', str(result), '-vn', '-f', 's16le',
+                                   '-ar', '24000', '-ac', '1', 'pipe:1'])
+    samples = array.array('h', pcm)
+
+    def music_level(start: float) -> float:
+        window = samples[round(start * 24000):round((start + .3) * 24000)]
+        real = sum(value * math.cos(2 * math.pi * 220 * i / 24000) for i, value in enumerate(window))
+        imag = sum(value * math.sin(2 * math.pi * 220 * i / 24000) for i, value in enumerate(window))
+        return 2 * math.hypot(real, imag) / len(window)
+
+    before, during, after = [music_level(start) for start in (.6, 1.2, 2.3)]
+    assert before > 500  # Music is audible, not a trivially silent fixture.
+    assert during / before == pytest.approx(1, rel=.05)
+    assert after / before == pytest.approx(1, rel=.05)
+
+
 async def test_edited_voice_and_music_geometry_reaches_the_filter_graph(tmp_path: Path, monkeypatch: Any) -> None:
-    """Trimmed voices and moved/trimmed BGM must keep ducking and fades on the timeline."""
+    """Trimmed voices and moved/trimmed BGM keep independent gain and timeline fades."""
     filters = capture_filters(monkeypatch)
     snapshot = snapshot_with_audio(
         {'line': {'fileObjectId': 'voice', 'start': 1.2, 'duration': .5, 'volume': .8, 'offset': .2}},
@@ -604,8 +644,8 @@ async def test_edited_voice_and_music_geometry_reaches_the_filter_graph(tmp_path
     music = next(f for f in filters if f.endswith('[music]'))
     assert 'atrim=start=0.2:duration=0.5,asetpts=PTS-STARTPTS,volume=0.8,adelay=1200:all=1' in voice
     assert 'atrim=start=0.5,asetpts=PTS-STARTPTS,atrim=duration=1.5,adelay=1000:all=1' in music
-    # Fades and ducking run after `adelay`, so they use timeline seconds.
-    assert 'between(t,1.2,1.7)' in music
+    assert 'adelay=1000:all=1,volume=0.12,' in music
+    assert 'between(' not in music and 'eval=frame' not in music
     assert 'afade=t=in:st=1.0:d=0.5' in music and 'afade=t=out:st=2.0:d=0.5' in music
 
 
@@ -641,6 +681,20 @@ async def test_untouched_audio_keeps_the_pre_fade_filter_graph(tmp_path: Path, m
     assert 'afade=t=in:st=1.0:d=0.5' in music and 'afade=t=out:st=2.0:d=0.5' in music
 
 
+async def test_explicit_zero_music_fades_do_not_apply_ffmpeg_sample_count_fallback(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1, 'duration': 1, 'volume': .5}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .4,
+            'fadeIn': 0, 'fadeOut': 0})
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+        'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())
+    music = next(f for f in filters if f.endswith('[music]'))
+    assert music.endswith('volume=0.4[music]')
+    assert 'afade' not in music
+
+
 async def test_a_deleted_music_bed_renders_a_voice_only_mix(tmp_path: Path, monkeypatch: Any) -> None:
     """The editor may delete the packaged bed, so its absence is a normal checkpoint, not a broken
     one: the mix loses an input and the film keeps its length."""
@@ -655,7 +709,7 @@ async def test_a_deleted_music_bed_renders_a_voice_only_mix(tmp_path: Path, monk
     mix = next(f for f in filters if f.endswith('[audio]'))
     assert mix.startswith('[original][voice0]')
     assert 'amix=inputs=2:normalize=0:duration=longest,' in mix
-    # Nothing left to duck, and the narration still lands where the editor put it.
+    # The narration still lands where the editor put it.
     assert 'volume=' in next(f for f in filters if f.endswith('[voice0]'))
     assert 'atrim=duration=4.0[audio]' in mix
 
@@ -672,7 +726,7 @@ async def test_a_deleted_narration_leaves_a_silent_span_and_keeps_its_subtitle(
     del snapshot['packaging']['voices']['line']
     await render(snapshot, {'a': tmp_path / 'a.mp4', 'music': tmp_path / 'music.wav'},
         tmp_path, AsyncMock())
-    # Nothing to mix in for that line, and nothing left to duck the bed either.
+    # Nothing to mix in for that line; music retains its own gain.
     assert not any(f.endswith('[voice0]') for f in filters)
     assert not any('between(' in f for f in filters if f.endswith('[music]'))
     mix = next(f for f in filters if f.endswith('[audio]'))
@@ -685,7 +739,7 @@ async def test_a_deleted_narration_leaves_a_silent_span_and_keeps_its_subtitle(
 
 
 async def test_caption_narration_mixes_like_a_narration_line(tmp_path: Path, monkeypatch: Any) -> None:
-    """A caption narration the editor generated ducks the music and takes its own amix input."""
+    """Caption narration takes its own amix input without changing the music gain."""
     filters = capture_filters(monkeypatch)
     snapshot = snapshot_with_audio(
         {'line': {'fileObjectId': 'voice', 'start': 0, 'duration': .5, 'volume': 1}},
@@ -698,14 +752,14 @@ async def test_caption_narration_mixes_like_a_narration_line(tmp_path: Path, mon
     caption = next(f for f in filters if f.endswith('[voice1]'))
     music = next(f for f in filters if f.endswith('[music]'))
     assert 'adelay=2000:all=1[voice1]' in caption
-    # Both narrations duck the bed, not just the one the pipeline wrote.
-    assert 'between(t,0.0,0.5)+between(t,2.0,2.8)' in music
+    assert 'volume=0.12,' in music
+    assert 'between(' not in music and 'eval=frame' not in music
     assert 'amix=inputs=4:normalize=0' in next(f for f in filters if f.endswith('[audio]'))
 
 
-async def test_split_packaged_music_continuation_keeps_voice_ducking(
+async def test_split_packaged_music_continuation_keeps_independent_gain(
         tmp_path: Path, monkeypatch: Any) -> None:
-    """A packaged music bed's right-hand split remains ducked under the same voice spans."""
+    """A packaged music bed's split retains gain, offset and looping without voice ducking."""
     filters = capture_filters(monkeypatch)
     snapshot = snapshot_with_audio(
         {'line': {'fileObjectId': 'voice', 'start': .5, 'duration': .5, 'volume': 1}},
@@ -729,7 +783,8 @@ async def test_split_packaged_music_continuation_keeps_voice_ducking(
     assert input_args[music_input - 3:music_input] == ['-stream_loop', '-1', '-i']
     continuation = next(f for f in filters if f.endswith('[detached0]'))
     assert 'atrim=start=4.1:duration=2.0' in continuation
-    assert "volume='0.12*if(gt(between(t,0.5,1.0),0),0.35,1)':eval=frame" in continuation
+    assert 'volume=0.12,adelay=2000:all=1' in continuation
+    assert 'between(' not in continuation and 'eval=frame' not in continuation
 
 
 @pytest.mark.parametrize(('packaging', 'expected'), [

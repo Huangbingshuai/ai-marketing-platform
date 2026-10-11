@@ -60,7 +60,7 @@ export async function wavDuration(path: string, size: number): Promise<number> {
         return length / bytesPerSecond;
       pos += 8 + length + (length % 2);
     }
-    throw new BadRequestException('包装音频头或真实时长无效');
+    throw new BadRequestException('包装音频头或文件时长无效');
   } finally {
     await handle.close();
   }

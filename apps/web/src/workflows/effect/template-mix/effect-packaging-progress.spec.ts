@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
-import { currentPackagingRun, packagingActionText, packagingItemStageState, packagingProgress, packagingStageSamples, packagingStageState } from './effect-packaging-progress';
+import { currentPackagingRun, packagingActionText, packagingItemStageState, packagingProgress, packagingStageSamples, packagingStageState, packagingTerminalResult } from './effect-packaging-progress';
 import { PACKAGING_STAGES } from '@ai-marketing/contracts';
 import component from './EffectTemplateMixPackaging.vue?raw';
 import page from './EffectTemplateMixNodePage.vue?raw';
@@ -9,6 +9,25 @@ const item = (stage: PackagingItem['stage'], status: PackagingItem['status']) =>
   ({ stage, status }) as PackagingItem;
 const run = (items: PackagingItem[]) => ({ items }) as PackagingRun;
 describe('packaging workflow progress', () => {
+  it('reports the 27/44 partial result as ended rather than stuck at 78 percent', () => {
+    const partial = { status: 'PARTIAL', counts: {completed: 27, total: 44, failed: 17},
+      execution: {progressPercent: 78, queued: 0, running: 0} } as PackagingRun;
+    const result = packagingTerminalResult(partial)!;
+    expect(result.summary).toBe('智能成片包装 · 已结束（部分失败）');
+    expect(result.detail).toContain('成功 27 / 44 条 · 失败 17 条');
+    expect(result.detail).not.toMatch(/78%|预计|吞吐/);
+    expect(result.detail).toContain('已保留包装前原样');
+    expect(component).toContain(':terminal="Boolean(terminalResult)"');
+  });
+  it('keeps running progress and all terminal statuses distinct', () => {
+    for (const status of ['QUEUED', 'RUNNING'] as const)
+      expect(packagingTerminalResult({status} as PackagingRun)).toBeNull();
+    expect(packagingTerminalResult()).toBeNull();
+    for (const status of ['COMPLETED', 'FAILED', 'CANCELLED'] as const) {
+      const result = packagingTerminalResult({status, counts:{completed:0,total:2,failed:2}} as PackagingRun)!;
+      expect(result.summary).toContain('已结束');
+    }
+  });
   it('starts at zero without invented timer progress', () => {
     expect(packagingProgress()).toBe(0);
     expect(packagingProgress(run([item('SNAPSHOT', 'QUEUED')]))).toBe(0);
@@ -114,13 +133,14 @@ describe('packaging workflow progress', () => {
     expect(component).toContain("watch(failures, (value) => emit('failures', value), { immediate: true });");
     // The node has to say it out loud; a silent film is otherwise indistinguishable from a broken one.
     expect(page).toContain('@failures="packagingFailures = $event"');
-    expect(page).toContain('data-testid="packaging-failure-banner"');
-    expect(page).toContain('这些成片会以无包装成片提交，仅保留画面、没有口播字幕配乐');
+    expect(page.includes('data-testid="packaging-failure-banner"')).toBe(false);
+    expect(page.includes('失败项保留画面，可在包装面板恢复')).toBe(false);
+    expect(component.includes('恢复未完成项')).toBe(false);
+    expect(page).toContain('<EffectSinglePackagingControl');
     // 完成校验 was removed from this node: the batch has to say the partial run is not a version yet
     // instead of pointing at a button that no longer exists.
     expect(page).not.toContain('仍可完成校验');
-    expect(page).toContain('本次包装暂不计入版本，恢复失败项后重新包装成功才会新增分支');
-    expect(page).toContain('包装失败 · 将仅出画面');
+    expect(page.includes('本次包装失败 · 保留原结果')).toBe(false);
   });
   it('shows up to four real, human-readable examples from packaging checkpoints', () => {
     const source = {

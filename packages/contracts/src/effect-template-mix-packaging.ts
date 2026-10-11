@@ -28,6 +28,7 @@ export const PACKAGING_STAGE_LABELS: Record<PackagingStage, string> = {
 export type PackagingStatus =
   'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED';
 export type PackagingComponent = 'ALL' | 'VOICE' | 'MUSIC' | 'CAPTIONS';
+export type PackagingOperation = 'BATCH_PACKAGE' | 'SINGLE_PACKAGE' | 'APPEND_PACKAGE';
 export type PackagingFact = { id: string; text: string; artifactId: string; revision: number };
 export type PackagingClip = {
   transform?: import('./effect-template-mix-transform').EffectVideoTransform;
@@ -204,6 +205,14 @@ export type PackagingCheckpoint = {
   narrationMetrics?: Record<string, SlotNarrationMetrics>;
   /** Bounded item recovery budget, retained across worker restarts. */
   automaticRetries?: number;
+  /** Per-stage retry budget and wall-clock deadline survive lease recovery. */
+  recovery?: {
+    startedAt: string;
+    attempts: Record<string, number>;
+    waitingUntil?: string;
+    stage?: string;
+  };
+  voiceRecovery?: Record<string, { startedAt: string; attempts: number; waitingUntil?: string; pending?: boolean }>;
   narrationLayoutVersion?: 'SLOT_V1';
   voiceFitAttempts?: Record<string, 1>;
   /** One automatic fresh-script recovery per frozen slot after measured TTS still overruns. */
@@ -257,6 +266,10 @@ export type PackagingCheckpoint = {
   captionVoices?: Record<string, PackagingAudio>;
 };
 export type PackagingSnapshot = {
+  /** Missing means historical lifecycle semantics. Only the server sets APPEND_PACKAGE. */
+  operation?: PackagingOperation;
+  /** Immutable rollback/conflict baseline; confirmed content remains unchanged until success. */
+  baselineVariant?: EffectTemplateMixVariant;
   /** Only server-created local APPEND packaging may keep consuming a frozen render pool. */
   sourceOperation?: import('./effect-template-mix').EffectTemplateMixFrozenSourceContext;
   /** Server-authorized current-branch append; never supplied by the browser. */
@@ -291,6 +304,8 @@ export type PackagingSnapshot = {
   }[];
 };
 export type PackagingItem = {
+  operation?: PackagingOperation;
+  workflowRunId?: string;
   id: string;
   /** Owning run, so editors can address the item without re-listing runs. */
   runId: string;
@@ -322,6 +337,7 @@ export type PackagingItem = {
   updatedAt: string;
 };
 export type PackagingRun = {
+  operation?: PackagingOperation;
   id: string;
   templateId: string;
   workflowRunId: string;
@@ -355,6 +371,7 @@ export type PackagingExecution = {
   shards: { index: number; total: number; completed: number; running: number; failed: number }[];
 };
 export type CreatePackagingRequest = {
+  operation?: 'BATCH_PACKAGE' | 'SINGLE_PACKAGE';
   workflowRunId: string;
   expectedRevision: number;
   idempotencyKey: string;
@@ -362,6 +379,19 @@ export type CreatePackagingRequest = {
   component?: PackagingComponent;
   slotId?: string;
 };
+
+/** Fresh packaging replaces every non-picture track, including independently authored tracks. */
+export function packagingPictureOnlyVariant(variant: EffectTemplateMixVariant, checkpoint?: PackagingCheckpoint): EffectTemplateMixVariant {
+  const copy = JSON.parse(JSON.stringify(variant)) as EffectTemplateMixVariant;
+  copy.preservedTimelineEnd = effectTemplateMixContentDuration(variant, checkpoint);
+  copy.captions = [];
+  copy.voice = null;
+  copy.bgm = null;
+  copy.detachedAudios = [];
+  copy.audioLanes = {};
+  copy.originalVolume = 0;
+  return copy;
+}
 /**
  * The editor asks for one caption's text to be spoken again with the template's own voice.
  *

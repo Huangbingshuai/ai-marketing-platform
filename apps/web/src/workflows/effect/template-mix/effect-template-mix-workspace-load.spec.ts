@@ -96,4 +96,13 @@ describe('mix workspace branch loading', () => {
     expect(page).not.toContain('class="mix-run-switch"');
     expect(page).not.toContain('正在同步新分支');
   });
+  it('switches templates without inserting a request status into the ready directory', () => {
+    expect(page).not.toContain('正在读取所选模板');
+    expect(page).not.toContain('runSwitching && templateDirectoryStatus');
+    // Initial directory failures and per-template deletion still need feedback.
+    expect(page).toContain('模板列表读取失败');
+    expect(page).toContain('正在提交删除…');
+    expect(page).toContain(':disabled="mutating || deletingTemplateId === entry.id"');
+    expect(page).toContain('installedWorkspaceScope.value !== currentWorkspaceScope.value');
+  });
 });

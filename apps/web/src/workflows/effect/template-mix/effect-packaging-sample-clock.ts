@@ -1,5 +1,6 @@
 import { packagingAudioFade } from '@ai-marketing/contracts';
 import type { PackagingAudio } from '@ai-marketing/contracts';
+import { readPreviewAudioFile } from './effect-preview-audio-file';
 
 export type ScheduledPackagingClip = { id: string; kind: 'VOICE' | 'MUSIC'; audio: PackagingAudio; muted: boolean };
 
@@ -17,7 +18,7 @@ export function audioOutputSeconds(context: AudioContext, now = performance.now(
 export class PackagingSampleClock {
   private context: AudioContext | undefined;
   private buffers = new Map<string, Promise<AudioBuffer>>();
-  private nodes: { source: AudioBufferSourceNode; gain: GainNode; duck: GainNode }[] = [];
+  private nodes: { source: AudioBufferSourceNode; gain: GainNode }[] = [];
   private version = 0;
   private anchor = 0;
   private timelineStart = 0;
@@ -28,13 +29,7 @@ export class PackagingSampleClock {
   constructor(
     private readonly url: (id: string) => string,
     private readonly makeContext: () => AudioContext = () => new AudioContext({ latencyHint: 'interactive' }),
-    private readonly readFile: (url: string) => Promise<ArrayBuffer> = async (url) => {
-      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-      if (!response.ok) throw new Error('口播或配乐加载失败，请重新播放');
-      const content = await response.arrayBuffer();
-      if (content.byteLength > 100 * 1024 * 1024) throw new Error('音频超过预览容量');
-      return content;
-    },
+    private readonly readFile: (url: string) => Promise<ArrayBuffer> = readPreviewAudioFile,
   ) {}
 
   private audioContext(): AudioContext {
@@ -81,9 +76,9 @@ export class PackagingSampleClock {
         const length = Math.min(audio.duration - elapsed, buffer.duration - offset);
         if (length <= 0 || !Number.isFinite(length)) throw new Error('口播截取范围超过实际音频');
         const source = context.createBufferSource();
-        const gain = context.createGain(), duck = context.createGain();
+        const gain = context.createGain();
         source.buffer = buffer;
-        source.connect(gain).connect(duck).connect(context.destination);
+        source.connect(gain).connect(context.destination);
         const when = this.anchor + Math.max(0, audio.start - seconds);
         const fadeIn = packagingAudioFade(audio, clip.kind, 'fadeIn');
         const fadeOut = packagingAudioFade(audio, clip.kind, 'fadeOut');
@@ -96,19 +91,8 @@ export class PackagingSampleClock {
           gain.gain.setValueAtTime(volume, when + audio.duration - fadeOut - elapsed);
         }
         gain.gain.linearRampToValueAtTime(Math.max(0, fadeAt(elapsed + length)), when + length);
-        if (clip.kind === 'MUSIC') {
-          const intervals = clips.filter((entry) => entry.kind === 'VOICE' && !entry.muted && entry.audio.volume > 0)
-            .map((entry) => ({ start: entry.audio.start, end: entry.audio.start + entry.audio.duration }));
-          const beganAt = Math.max(seconds, audio.start);
-          duck.gain.setValueAtTime(intervals.some((range) => range.start <= beganAt && range.end > beganAt) ? .35 : 1, when);
-          const boundaries = [...new Set(intervals.flatMap((range) => [range.start, range.end]))].sort((a, b) => a - b);
-          for (const boundary of boundaries) {
-            if (boundary <= beganAt || boundary >= beganAt + length) continue;
-            const speaking = intervals.some((range) => range.start <= boundary && range.end > boundary);
-            duck.gain.setValueAtTime(speaking ? .35 : 1, this.anchor + boundary - seconds);
-          }
-        }
-        this.nodes.push({ source, gain, duck });
+        // Each clip owns its gain; narration must never automate another track's volume.
+        this.nodes.push({ source, gain });
         source.start(when, offset, length);
       }
       this.pending = false;
@@ -135,9 +119,9 @@ export class PackagingSampleClock {
     this.time();
     this.version++;
     this.active = this.pending = false;
-    for (const { source, gain, duck } of this.nodes) {
+    for (const { source, gain } of this.nodes) {
       try { source.stop(); } catch { /* Already ended. */ }
-      source.disconnect(); gain.disconnect(); duck.disconnect();
+      source.disconnect(); gain.disconnect();
     }
     this.nodes = [];
   }

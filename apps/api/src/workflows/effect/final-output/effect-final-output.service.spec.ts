@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { packagingPictureOnlyVariant } from '@ai-marketing/contracts';
 import type {
   EffectTemplateMixVariant,
   FinalOutputSnapshot,
@@ -77,7 +78,7 @@ function harness(count = 1) {
       captions: [{ id: 'line', start: 0, end: 2, text: '商品' }],
     },
   }));
-  const state = { revision: 1, state: { templates: [{ id: 't', workspace: { variants } }] } };
+  const state = { id: 'node', revision: 1, state: { templates: [{ id: 't', workspace: { editVersion: 1, variants } }] } };
   const files = ['video', 'voice', 'music'].map((id) => ({
     id,
     originalFileName: id,
@@ -109,7 +110,7 @@ function harness(count = 1) {
   const db = {
     $queryRaw: vi.fn(),
     $executeRaw: vi.fn(),
-    workflowNodeState: { findUnique: vi.fn().mockResolvedValue(state) },
+    workflowNodeState: { findUnique: vi.fn().mockResolvedValue(state), update: vi.fn() },
     workingArtifact: { findMany: vi.fn().mockResolvedValue(sources), findFirst: vi.fn().mockResolvedValue(null) },
     fileObject: {
       findMany: vi.fn().mockImplementation(({ where }: { where?: { id?: { in?: string[] } } }) =>
@@ -127,7 +128,7 @@ function harness(count = 1) {
     assetVersion: { create: vi.fn().mockResolvedValue({ id: 'version' }), deleteMany: vi.fn() },
     effectPackagingRun: { count: vi.fn().mockResolvedValue(0) },
     effectTemplateMixAiRun: { findFirst: vi.fn().mockResolvedValue(null) },
-    effectPackagingItem: { findMany: vi.fn().mockResolvedValue(rows) },
+    effectPackagingItem: { findMany: vi.fn().mockResolvedValue(rows), update: vi.fn() },
     effectFinalOutputRun: {
       count: vi.fn().mockResolvedValue(0),
       findUnique: vi.fn().mockResolvedValue(null),
@@ -197,7 +198,7 @@ function harness(count = 1) {
         })),
       ),
     enqueueCleanup: vi.fn(),
-    // No published version to protect, so the first export stays in the Run it was asked for.
+    // Individual tests which exercise a full re-export install an independent child below.
     beginEffectNodeEdit: vi.fn().mockResolvedValue({
       runId: 'w',
       parentWorkflowRunId: null,
@@ -250,6 +251,63 @@ function harness(count = 1) {
   );
   return { db, service, working, storage, rows, state, sources, mix, outputRun, pending };
 }
+
+/** Full exports clone a pending batch; a completed parent is never that pending child. */
+function forkExportHarness(context: ReturnType<typeof harness>) {
+  const { db, working, outputRun } = context;
+  const child = { ...structuredClone(outputRun), id: 'child-out', workflowRunId: 'child-run',
+    status: 'PENDING_RENDER', items: outputRun.items.map((item) => ({
+      ...structuredClone(item as Record<string, unknown>),
+      id: `child-${(item as { id: string }).id}`, status: 'PENDING_RENDER',
+      fileObjectId: null, assetId: null,
+    })) };
+  working.beginEffectNodeEdit.mockResolvedValue({ runId: 'child-run', parentWorkflowRunId: 'w',
+    productIdMap: {}, taskIdMap: {}, created: true });
+  db.effectFinalOutputRun.findFirst.mockImplementation((args) => Promise.resolve(
+    args.where?.workflowRunId === 'child-run' || args.where?.id === child.id ? child : outputRun));
+  db.effectFinalOutputRun.update.mockImplementation(({ where, data }) =>
+    Object.assign(where.id === child.id ? child : outputRun, data));
+  db.effectFinalOutputItem.update.mockImplementation(({ where, data }) => {
+    const item = [...outputRun.items, ...child.items].find((entry) =>
+      (entry as { id: string }).id === where.id) as Record<string, unknown> | undefined;
+    return item ? Object.assign(item, data) : data;
+  });
+  db.effectFinalOutputItem.findUniqueOrThrow.mockImplementation(({ where }) => Promise.resolve(
+    [...outputRun.items, ...child.items].find((item) => (item as { id: string }).id === where.id)));
+  return child;
+}
+
+describe('incremental transactional packaging commit', () => {
+  it('commits one complete package and removes old non-video tracks without touching a sibling', async () => {
+    const { db, service, rows, state, working } = harness(2);
+    const target = state.state.templates[0]!.workspace.variants[0]!;
+    target.captions = [{ id: 'manual', start: 0, end: 1, text: 'old' }];
+    target.originalVolume = 1;
+    const sibling = structuredClone(state.state.templates[0]!.workspace.variants[1]);
+    rows[0]!.snapshot.operation = 'SINGLE_PACKAGE';
+    rows[0]!.snapshot.baselineVariant = structuredClone(target);
+    rows[0]!.snapshot.variant = packagingPictureOnlyVariant(target);
+    Object.assign(rows[0]!, { status: 'RUNNING', stage: 'READY' });
+    db.effectPackagingRun.count.mockResolvedValue(1);
+    await service.upsertFromPackaging('p', 'w', 't', { publish: false,
+      onlyVariantIds: ['v0'], packagingRunId: 'pack', attemptToken: 'token' });
+    expect(db.workflowNodeState.update).toHaveBeenCalledOnce();
+    expect(state.state.templates[0]!.workspace.variants[0]).toMatchObject({ captions: [], originalVolume: 0 });
+    expect(state.state.templates[0]!.workspace.variants[1]).toEqual(sibling);
+    expect(db.effectPackagingItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'item-v0' }, data: expect.objectContaining({ status: 'COMPLETED' }) }));
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
+  });
+  it('never replaces the baseline on a failed new-protocol item', async () => {
+    const { service, rows, state, db } = harness();
+    rows[0]!.snapshot.operation = 'SINGLE_PACKAGE';
+    rows[0]!.status = 'FAILED';
+    const baseline = structuredClone(state);
+    await expect(service.upsertFromPackaging('p', 'w', 't')).rejects.toThrow('保留包装前原样');
+    expect(state).toEqual(baseline);
+    expect(db.workflowNodeState.update).not.toHaveBeenCalled();
+  });
+});
 
 /** A real on-disk file so upload()'s MP4 header probe and sha256 pass. */
 async function outputFile(): Promise<{ path: string; size: number; cleanup: () => Promise<void> }> {
@@ -399,7 +457,7 @@ describe('atomic workbench source update preparation', () => {
     expect(h.queue).not.toHaveBeenCalled();
     expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
   });
-  it.each([null, 'FAILED'])('does not overlap an unfinished frozen APPEND continuation (%s)', async (status) => {
+  it.each([null, 'QUEUED', 'RUNNING'])('does not overlap an unfinished frozen APPEND continuation (%s)', async (status) => {
     const h = preparation();
     Object.assign(h.outputRun, { status: 'PENDING_RENDER', items: [{ id: 'old', variantId: 'v0',
       snapshot: { sourceOperation: { id: 'previous-operation', addedMaterialIds: ['clip'] } } }] });
@@ -408,6 +466,18 @@ describe('atomic workbench source update preparation', () => {
       where.inputSnapshot ? (status ? { status } : null) : null);
     await expect(h.service.updateSourceProjects('p', body)).rejects.toThrow('上一轮局部更新');
     expect(h.queue).not.toHaveBeenCalled();
+  });
+  it.each(['FAILED', 'CANCELLED'])('allows a fresh net-difference confirmation after APPEND %s', async (status) => {
+    const h = preparation();
+    Object.assign(h.outputRun, { status: 'PENDING_RENDER', items: [{ id: 'old', variantId: 'v0',
+      snapshot: { sourceOperation: { id: 'previous-operation', addedMaterialIds: ['old-addition'] } } }] });
+    h.db.effectFinalOutputRun.findFirst.mockResolvedValue(h.outputRun);
+    h.db.effectTemplateMixAiRun.findFirst.mockImplementation(async ({ where }) =>
+      where.inputSnapshot ? { status } : null);
+    await expect(h.service.updateSourceProjects('p', { ...body, operationId: 'new-confirmation' }))
+      .resolves.toEqual({ id: 'repaired' });
+    expect(h.queue).toHaveBeenCalledExactlyOnceWith(expect.anything(), 'p', h.outputRun.id,
+      { itemIds: ['old'] }, false, true, expect.anything());
   });
   it('keeps the packaging fence while allowing upstream saves to occur independently', async () => {
     const h = preparation();
@@ -1087,14 +1157,18 @@ describe('atomic full packaging completion', () => {
     expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
   });
   it.each(['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'])(
-    're-exports a %s batch by resetting every item and rewriting the batch spec',
+    're-exports a %s batch in an independent child with every item and the new batch spec',
     async (status) => {
-      const { service, db, outputRun, sources } = harness(3);
+      const context = harness(3);
+      const { service, db, outputRun, sources } = context;
       await service.upsertFromPackaging('p', 'w', 't');
       outputRun.status = status;
       const items = outputRun.items as { status: string; snapshot: FinalOutputSnapshot }[];
       items.forEach((item) => { item.status = status; });
       db.workingArtifact.findMany.mockResolvedValue([...sources, ...currentRows(items)]);
+      // Keep the source delivery intact while the cloned batch is prepared.
+      const parent = structuredClone(outputRun);
+      const child = forkExportHarness(context);
 
       await service.start('p', 'out', { resolution: '480p', frameRate: 24 });
 
@@ -1104,10 +1178,13 @@ describe('atomic full packaging completion', () => {
         expect(call.data.snapshot).toMatchObject({ resolution: '480p', frameRate: 24 });
       }
       expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+      expect(outputRun).toEqual(parent);
+      expect(child.status).toBe('QUEUED');
     },
   );
   it('allows re-exporting the frozen film after its upstream package went stale', async () => {
-    const { service, db, outputRun, sources } = harness(2);
+    const context = harness(2);
+    const { service, db, outputRun, sources } = context;
     await service.upsertFromPackaging('p', 'w', 't');
     outputRun.status = 'COMPLETED';
     const items = outputRun.items as { status: string; snapshot: FinalOutputSnapshot }[];
@@ -1119,29 +1196,23 @@ describe('atomic full packaging completion', () => {
       ),
     );
 
+    const parent = structuredClone(outputRun);
+    const child = forkExportHarness(context);
     await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
     expect(db.effectFinalOutputItem.update).toHaveBeenCalled();
     expect(db.jobOutbox.upsert).toHaveBeenCalled();
-    expect(outputRun.status).toBe('QUEUED');
+    expect(child.status).toBe('QUEUED');
+    expect(outputRun).toEqual(parent);
   });
   it('exports inside the forked child Run once a published version is protected', async () => {
-    const { service, db, working, outputRun, sources } = harness();
+    const context = harness();
+    const { service, db, working, outputRun, sources } = context;
     await service.upsertFromPackaging('p', 'w', 't');
     outputRun.status = 'COMPLETED';
     db.workingArtifact.findMany.mockResolvedValue(
       [...sources, ...currentRows(outputRun.items as { snapshot: FinalOutputSnapshot }[])],
     );
-    working.beginEffectNodeEdit.mockResolvedValue({
-      runId: 'child-run',
-      parentWorkflowRunId: 'w',
-      productIdMap: {},
-      taskIdMap: {},
-      created: true,
-    });
-    // The source lookup names the batch it exports; the batch lookup then has to find the copy the
-    // fork cloned into the child Run rather than the published one.
-    db.effectFinalOutputRun.findFirst.mockImplementation((args: { select?: { id?: boolean } }) =>
-      Promise.resolve(args?.select?.id ? { id: 'child-out' } : outputRun));
+    forkExportHarness(context);
 
     await service.start('p', 'out', { resolution: '1080p', frameRate: 50 });
 
@@ -1577,8 +1648,10 @@ describe('independent full export and current-branch local update', () => {
   });
   it.each(['missing', 'incomplete', 'unavailable'])(
     'rejects %s current engineering without enqueueing or changing source files', async (failure) => {
-      const { service, db, working, mix, run, workspace, variant } = await localUpdateHarness();
+      const context = await localUpdateHarness();
+      const { service, db, working, mix, run, workspace, variant } = context;
       const old = structuredClone(run);
+      forkExportHarness(context);
       if (failure === 'missing') workspace.draft.templates[0]!.workspace.variants = [];
       if (failure === 'incomplete') variant.bindings = {};
       if (failure === 'unavailable') workspace.materials[0]!.available = false;
@@ -1587,7 +1660,7 @@ describe('independent full export and current-branch local update', () => {
       expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
       expect(run).toEqual(old);
       expect(db.effectFinalOutputRun.updateMany).toHaveBeenCalledWith({
-        where: { projectId: 'p', id: 'out', status: 'PENDING_RENDER' },
+        where: { projectId: 'p', id: 'child-out', status: 'PENDING_RENDER' },
         data: { status: 'FAILED', completedAt: expect.any(Date) },
       });
       expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();

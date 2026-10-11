@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import page from './EffectTemplateMixNodePage.vue?raw';
 import api from './api/effect-template-mix.api.ts?raw';
+import parent from '../source-import/EffectImportNodePage.vue?raw';
+import output from '../final-output/EffectFinalOutputNodePage.vue?raw';
 
 describe('permanent template deletion interaction', () => {
   const action = page.split('const deleteTemplate =')[1]!.split('const submitTemplateOnEnter')[0]!;
@@ -19,9 +21,46 @@ describe('permanent template deletion interaction', () => {
   it('removes local entries immediately, fences late reads and routes away from a deleted Run', () => {
     expect(action).toContain('draftRace.changed()');
     expect(action).toContain('controller?.abort()');
-    expect(action).toContain('templateDirectory.value.entries.filter');
-    expect(action).toContain('selectedTemplateWorkflowRunId.value = result.data.workflowRunId');
-    expect(action).toContain("emit('workflowRunChange')");
+    expect(action).toContain('withoutDeletedMixCatalog(templateDirectory.value, deleted)');
+    expect(action).toContain('selectedTemplateWorkflowRunId.value = destination.workflowRunId');
+    expect(action).toContain("emit('templateDeleted', receipt)");
+    expect(action).not.toContain("emit('workflowRunChange')");
+    expect(action).not.toContain('await load()');
+    expect(action).not.toContain('await loadEffectTemplateMixWorkspace');
     expect(action).not.toContain('while (');
+  });
+  it('does not lock other template selection or show a parent branch-publication curtain', () => {
+    const handler = parent
+      .split('const handleTemplateDeleted =')[1]!
+      .split('const flushGlobalConfig')[0]!;
+    expect(handler).toContain('showCurtain: false');
+    expect(handler).toContain('if (currentRemoved)');
+    expect(page).toContain(':disabled="mutating || deletingTemplateId === entry.id"');
+    expect(page).toContain('正在提交删除…');
+    expect(action).toContain('if (wasSelected)');
+    expect(action).toContain('templateNavigationPending.value = false');
+  });
+  it('removes output previews/settings and prevents late output reads from reviving the template', () => {
+    expect(output).toContain('readTemplateDeleted(value)');
+    expect(output).toContain('!deletedTemplateIds().has(entry.templateId)');
+    expect(output).toContain('withoutDeletedMixCatalog(directory, deletedTemplateIds())');
+    expect(output).toContain('settingsByTemplate.value.delete(receipt.templateId)');
+    expect(output).toContain('if (wasSelected) {\n      closePreviewDialog(false)');
+    expect(output).toContain('其他成片可继续操作');
+  });
+  it('awaits the accepted deletion handoff before saving navigation into the surviving Run', () => {
+    const flush = parent.split('async function flushPendingEdits()')[1]!.split('const ')[0]!;
+    expect(flush.indexOf('await templateDeletionRefresh')).toBeGreaterThan(-1);
+    expect(parent).toContain('templateDeletionRefresh = refresh');
+    const save = parent
+      .split('const saveWorkflowNodeState =')[1]!
+      .split('const isCurrentContext')[0]!;
+    expect(save.split('workspace.value?.workflowRunId !== workflowRunId')).toHaveLength(4);
+    expect(
+      save.indexOf(
+        'workspace.value?.workflowRunId !== workflowRunId',
+        save.indexOf('await putWorkflowNodeState'),
+      ),
+    ).toBeLessThan(save.indexOf('nodeStateRevision.value = response'));
   });
 });

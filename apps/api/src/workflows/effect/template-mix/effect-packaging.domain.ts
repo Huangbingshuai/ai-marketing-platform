@@ -3,6 +3,7 @@ import {
   effectVideoTransformValid,
   EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION,
   PACKAGING_AUDIO_GAIN_CEILING,
+  PACKAGING_STAGES,
   effectTemplateMixContentDuration,
   packagingTimelineClips,
   packagingTimelineDuration,
@@ -19,7 +20,10 @@ import type {
 } from '@ai-marketing/contracts';
 import { BadRequestException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { publishedRenderSource, hasAdoptedRenderPrompt } from '../../../platform/workflow/effect-published-render-source';
+import {
+  publishedRenderSource,
+  hasAdoptedRenderPrompt,
+} from '../../../platform/workflow/effect-published-render-source';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { validSpeechRanges } from './effect-packaging-audio';
 
@@ -66,12 +70,23 @@ const packagingVisualSource = (variant: EffectTemplateMixVariant) => {
 };
 
 export const slotVisionKey = (clip: PackagingSnapshot['clips'][number]) =>
-  createHash('sha256').update(JSON.stringify(['slot-frames-3-320-v1', clip.contentHash,
-    clip.offset.toFixed(6), clip.duration.toFixed(6)])).digest('hex');
+  createHash('sha256')
+    .update(
+      JSON.stringify([
+        'slot-frames-3-320-v1',
+        clip.contentHash,
+        clip.offset.toFixed(6),
+        clip.duration.toFixed(6),
+      ]),
+    )
+    .digest('hex');
 
 /** Read legacy frozen hashes without rewriting checkpoints or revisions. */
-export function matchesVisualHash(variant: EffectTemplateMixVariant, hash: string | undefined,
-  frozen?: EffectTemplateMixVariant): boolean {
+export function matchesVisualHash(
+  variant: EffectTemplateMixVariant,
+  hash: string | undefined,
+  frozen?: EffectTemplateMixVariant,
+): boolean {
   if (visualHash(variant) === hash) return true;
   if (!frozen || visualHash(variant) !== visualHash(frozen)) return false;
   return (
@@ -101,8 +116,26 @@ export function artifactVisitor(artifacts: WorkingArtifact[]) {
     for (const d of a.dependencies)
       if (d.sourceType === 'WORKING_ARTIFACT' && d.sourceArtifactId) {
         const source = byId.get(d.sourceArtifactId);
-        if (a.nodeId === 'SEGMENT_RENDER' && a.artifactKey.startsWith('render-clip:') &&
-          hasAdoptedRenderPrompt(a.payload) && source?.nodeId === 'PROMPT_GENERATION') continue;
+        if (
+          a.nodeId === 'SEGMENT_RENDER' &&
+          a.artifactKey.startsWith('render-clip:') &&
+          hasAdoptedRenderPrompt(a.payload) &&
+          source?.nodeId === 'PROMPT_GENERATION'
+        ) {
+          // The clip owns its adopted text, not the mutable batch's latest text/revision.
+          // Packaging still consumes confirmed product facts through this explicit source
+          // edge. Do not lose them when skipping the batch, or scan unrelated insights.
+          if (source.freshness !== 'CURRENT' || source.availability !== 'AVAILABLE')
+            throw new BadRequestException('包装来源工作副本已失效，请先确认上游');
+          for (const fact of source.dependencies)
+            if (fact.sourceType === 'WORKING_ARTIFACT' && fact.sourceArtifactId) {
+              const insight = byId.get(fact.sourceArtifactId);
+              if (!insight || insight.revision !== fact.sourceRevision)
+                throw new BadRequestException('包装来源 revision 已改变');
+              visit(insight.id);
+            }
+          continue;
+        }
         if (!source || source.revision !== d.sourceRevision)
           throw new BadRequestException('包装来源 revision 已改变');
         visit(source.id);
@@ -127,72 +160,83 @@ export function packagingClips(
   allowUnboundSlots = false,
 ): PackagingSnapshot['clips'] {
   return packagingTimelineClips(variant)
-    .filter(({ slot }) => variant.bindings[slot.id] ||
-      (!allowUnboundSlots && !variant.intentionallyEmptySlotIds?.includes(slot.id)))
-    .map(({ slot, start, lane }) => {
-    const adopted = adoptedFiles ? variant.bindingSources?.[slot.id] : undefined;
-    const m = adopted ?? materials.find((m) => m.id === variant.bindings[slot.id]);
-    const offset = variant.offsets[slot.id] ?? 0;
-    if (
-      !m?.available ||
-      m.artifactRevision !== variant.bindingRevisions[slot.id] ||
-      !Number.isFinite(offset) ||
-      offset < 0 ||
-      !Number.isFinite(start) ||
-      start < 0 ||
-      !Number.isInteger(lane) ||
-      lane < 0 ||
-      lane > 20 ||
-      !Number.isFinite(slot.duration) ||
-      slot.duration <= 0 ||
-      (variant.videoTransforms?.[slot.id] !== undefined && !effectVideoTransformValid(variant.videoTransforms[slot.id])) ||
-      offset + slot.duration > m.duration + 0.05
+    .filter(
+      ({ slot }) =>
+        variant.bindings[slot.id] ||
+        (!allowUnboundSlots && !variant.intentionallyEmptySlotIds?.includes(slot.id)),
     )
-      throw new BadRequestException('成片存在空槽、失效素材或越界截取');
-    if (!adopted?.promptText) visit(m.artifactId);
-    const source = byId.get(m.artifactId)!;
-    const payload = record(source?.payload);
-    const promptId = payload.promptId;
-    // Imported clips own their confirmed reverse-description, just as the fill
-    // snapshot does. Read only the visited render artifact, never a UI draft.
-    let prompt = adopted?.promptText || (source?.nodeId === 'SEGMENT_RENDER' &&
-      source.artifactKey.startsWith('render-clip:') &&
-      payload.origin === 'EXTERNAL_IMPORT' &&
-      record(payload.importedMaterial).schemaVersion === 1 &&
-      typeof payload.promptText === 'string'
-        ? payload.promptText.trim() : '');
-    for (const a of used.values())
-      if (!prompt && a.artifactKey.startsWith('prompt-batch:')) {
-        const items = record(a.payload).items;
-        if (Array.isArray(items))
-          for (const item of items)
-            if (record(item).id === promptId) prompt = String(record(item).content ?? '');
-      }
-    if (!prompt) throw new BadRequestException('缺少素材对应的已确认原始 Prompt');
-    return {
-      slotId: slot.id,
-      ...(variant.videoTransforms?.[slot.id] ? { transform: variant.videoTransforms[slot.id] } : {}),
-      materialId: m.id,
-      materialCode: m.code,
-      materialName: m.name,
-      fileObjectId: m.fileObjectId,
-      contentHash: m.contentHash,
-      start,
-      lane,
-      offset,
-      duration: slot.duration,
-      prompt,
-      // The Worker narrates every clip unless it is told this one is picture only.
-      overlay: slot.overlay === true,
-      transition: slot.transition,
-      transitionDuration:
-        slot.transitionDuration ??
-        (slot.transition === '硬切' ? 0 : EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION),
-      originalAudioDetached: (variant.detachedAudios ?? []).some(
-        (audio) => audio.sourceSlotId === slot.id,
-      ),
-    };
-  }).sort((left, right) => left.start - right.start || left.slotId.localeCompare(right.slotId));
+    .map(({ slot, start, lane }) => {
+      const adopted = adoptedFiles ? variant.bindingSources?.[slot.id] : undefined;
+      const m = adopted ?? materials.find((m) => m.id === variant.bindings[slot.id]);
+      const offset = variant.offsets[slot.id] ?? 0;
+      if (
+        !m?.available ||
+        m.artifactRevision !== variant.bindingRevisions[slot.id] ||
+        !Number.isFinite(offset) ||
+        offset < 0 ||
+        !Number.isFinite(start) ||
+        start < 0 ||
+        !Number.isInteger(lane) ||
+        lane < 0 ||
+        lane > 20 ||
+        !Number.isFinite(slot.duration) ||
+        slot.duration <= 0 ||
+        (variant.videoTransforms?.[slot.id] !== undefined &&
+          !effectVideoTransformValid(variant.videoTransforms[slot.id])) ||
+        offset + slot.duration > m.duration + 0.05
+      )
+        throw new BadRequestException('成片存在空槽、失效素材或越界截取');
+      if (!adopted?.promptText) visit(m.artifactId);
+      const source = byId.get(m.artifactId)!;
+      const payload = record(source?.payload);
+      const promptId = payload.promptId;
+      // AI clips own their hash-verified adopted Prompt; imports own their confirmed
+      // reverse-description. Match fill's provenance policy, never use a UI draft.
+      let prompt =
+        adopted?.promptText ||
+        (source?.nodeId === 'SEGMENT_RENDER' &&
+        source.artifactKey.startsWith('render-clip:') &&
+        (hasAdoptedRenderPrompt(payload) ||
+          (payload.origin === 'EXTERNAL_IMPORT' &&
+            record(payload.importedMaterial).schemaVersion === 1)) &&
+        typeof payload.promptText === 'string'
+          ? payload.promptText.trim()
+          : '');
+      for (const a of used.values())
+        if (!prompt && a.artifactKey.startsWith('prompt-batch:')) {
+          const items = record(a.payload).items;
+          if (Array.isArray(items))
+            for (const item of items)
+              if (record(item).id === promptId) prompt = String(record(item).content ?? '');
+        }
+      if (!prompt) throw new BadRequestException('缺少素材对应的已确认原始 Prompt');
+      return {
+        slotId: slot.id,
+        ...(variant.videoTransforms?.[slot.id]
+          ? { transform: variant.videoTransforms[slot.id] }
+          : {}),
+        materialId: m.id,
+        materialCode: m.code,
+        materialName: m.name,
+        fileObjectId: m.fileObjectId,
+        contentHash: m.contentHash,
+        start,
+        lane,
+        offset,
+        duration: slot.duration,
+        prompt,
+        // The Worker narrates every clip unless it is told this one is picture only.
+        overlay: slot.overlay === true,
+        transition: slot.transition,
+        transitionDuration:
+          slot.transitionDuration ??
+          (slot.transition === '硬切' ? 0 : EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION),
+        originalAudioDetached: (variant.detachedAudios ?? []).some(
+          (audio) => audio.sourceSlotId === slot.id,
+        ),
+      };
+    })
+    .sort((left, right) => left.start - right.start || left.slotId.localeCompare(right.slotId));
 }
 
 export function packagingSnapshot(
@@ -311,20 +355,30 @@ export function packagingSnapshot(
     clips,
     ...(detachedAudios.length ? { detachedAudios } : {}),
     facts,
-    dependencies: sourceOperation ? [
-      ...sourceOperation.promptArtifacts.map((source) => ({ artifactId: source.id,
-        artifactKey: source.artifactKey, revision: source.revision, contentHash: source.contentHash,
-        nodeId: 'PROMPT_GENERATION' })),
-      ...Object.values(variant.bindingSources ?? {}).map((source) => ({ artifactId: source.artifactId,
-        artifactKey: source.artifactKey, revision: source.artifactRevision, contentHash: source.artifactContentHash ?? '',
-        nodeId: 'SEGMENT_RENDER' })),
-    ] : [...used.values()].map((a) => ({
-      artifactId: a.id,
-      artifactKey: a.artifactKey,
-      revision: a.revision,
-      contentHash: a.contentHash ?? '',
-      nodeId: a.nodeId,
-    })),
+    dependencies: sourceOperation
+      ? [
+          ...sourceOperation.promptArtifacts.map((source) => ({
+            artifactId: source.id,
+            artifactKey: source.artifactKey,
+            revision: source.revision,
+            contentHash: source.contentHash,
+            nodeId: 'PROMPT_GENERATION',
+          })),
+          ...Object.values(variant.bindingSources ?? {}).map((source) => ({
+            artifactId: source.artifactId,
+            artifactKey: source.artifactKey,
+            revision: source.artifactRevision,
+            contentHash: source.artifactContentHash ?? '',
+            nodeId: 'SEGMENT_RENDER',
+          })),
+        ]
+      : [...used.values()].map((a) => ({
+          artifactId: a.id,
+          artifactKey: a.artifactKey,
+          revision: a.revision,
+          contentHash: a.contentHash ?? '',
+          nodeId: a.nodeId,
+        })),
   };
 }
 
@@ -386,10 +440,15 @@ export function validatePackagingCheckpoint(
   const facts = new Set(snapshot.facts.map((f) => f.id));
   const slotLayout = checkpoint.narrationLayoutVersion === 'SLOT_V1';
   const speechCaptions = checkpoint.captionLayoutVersion === 'SPEECH_V1';
-  const segmentedCaptions = checkpoint.captionLayoutVersion === 'SEGMENT_V1' ||
-    checkpoint.captionLayoutVersion === 'SEGMENT_V2' || checkpoint.captionLayoutVersion === 'SEGMENT_V3' || speechCaptions;
-  const captionsV2 = checkpoint.captionLayoutVersion === 'SEGMENT_V2' ||
-    checkpoint.captionLayoutVersion === 'SEGMENT_V3' || speechCaptions;
+  const segmentedCaptions =
+    checkpoint.captionLayoutVersion === 'SEGMENT_V1' ||
+    checkpoint.captionLayoutVersion === 'SEGMENT_V2' ||
+    checkpoint.captionLayoutVersion === 'SEGMENT_V3' ||
+    speechCaptions;
+  const captionsV2 =
+    checkpoint.captionLayoutVersion === 'SEGMENT_V2' ||
+    checkpoint.captionLayoutVersion === 'SEGMENT_V3' ||
+    speechCaptions;
   const captionsV3 = checkpoint.captionLayoutVersion === 'SEGMENT_V3';
   if (checkpoint.narrationLayoutVersion !== undefined && !slotLayout) fail();
   if (checkpoint.captionLayoutVersion !== undefined && (!segmentedCaptions || !slotLayout)) fail();
@@ -414,7 +473,15 @@ export function validatePackagingCheckpoint(
           'captionLayoutVersion',
           'musicTaskId',
           'musicSubmissionPending',
-          'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'voiceSlotRetries', 'automaticRetries', 'narrationMetrics',
+          'narrationLayoutVersion',
+          'slotVision',
+          'timings',
+          'voiceFitAttempts',
+          'voiceSlotRetries',
+          'automaticRetries',
+          'recovery',
+          'voiceRecovery',
+          'narrationMetrics',
         ].includes(k),
     )
   )
@@ -426,41 +493,125 @@ export function validatePackagingCheckpoint(
       checkpoint.captionFontSize > 48)
   )
     fail();
-  if (checkpoint.automaticRetries !== undefined &&
-      (!Number.isInteger(checkpoint.automaticRetries) || checkpoint.automaticRetries < 0 || checkpoint.automaticRetries > 2)) fail();
+  if (
+    checkpoint.automaticRetries !== undefined &&
+    (!Number.isInteger(checkpoint.automaticRetries) ||
+      checkpoint.automaticRetries < 0 ||
+      checkpoint.automaticRetries > (snapshot.operation ? 5 : 2))
+  )
+    fail();
+  const timestamp = (value: unknown) => typeof value === 'string' && value.length <= 40 &&
+    /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+  const objectValue = (value: unknown): value is Record<string, unknown> =>
+    Boolean(value && typeof value === 'object' && !Array.isArray(value));
+  const stageValid = (value: unknown) => PACKAGING_STAGES.some((stage) => stage === value);
+  if (checkpoint.recovery !== undefined) {
+    const recovery = checkpoint.recovery;
+    if (!objectValue(recovery) || !timestamp(recovery.startedAt) ||
+        !objectValue(recovery.attempts) ||
+        Object.keys(recovery).some((key) => !['startedAt', 'attempts', 'waitingUntil', 'stage'].includes(key)) ||
+        Object.entries(recovery.attempts).some(([stage, count]) =>
+          !stageValid(stage) || !Number.isInteger(count) || count < 0 || count > 5) ||
+        (recovery.stage !== undefined && !stageValid(recovery.stage)) ||
+        (recovery.waitingUntil !== undefined && (!timestamp(recovery.waitingUntil) ||
+          !stageValid(recovery.stage)))) fail();
+  }
+  if (checkpoint.voiceRecovery !== undefined) {
+    if (!objectValue(checkpoint.voiceRecovery) || Object.keys(checkpoint.voiceRecovery).length > 120) fail();
+    for (const [key, value] of Object.entries(checkpoint.voiceRecovery)) {
+      if (!/^[a-f0-9]{64}$/.test(key) || !objectValue(value) || !timestamp(value.startedAt) ||
+          !Number.isInteger(value.attempts) || value.attempts < 0 || value.attempts > 20 ||
+          Object.keys(value).some((field) => !['startedAt', 'attempts', 'waitingUntil', 'pending'].includes(field)) ||
+          (value.waitingUntil !== undefined && !timestamp(value.waitingUntil)) ||
+          (value.pending !== undefined && typeof value.pending !== 'boolean')) fail();
+    }
+  }
   if (checkpoint.narrationMetrics) {
     for (const [slotId, row] of Object.entries(checkpoint.narrationMetrics)) {
       const clip = snapshot.clips.find((c) => c.slotId === slotId);
-      if (!clip || !row || Object.keys(row).length !== 7 ||
-        !['characters', 'minCharacters', 'targetCharacters', 'maxCharacters', 'slotSeconds', 'audioSeconds', 'utilization'].every(
-          (key) => Number.isFinite(row[key as keyof typeof row]) && row[key as keyof typeof row] >= 0) ||
-        row.minCharacters > row.targetCharacters || row.targetCharacters > row.maxCharacters ||
-        Math.abs(row.slotSeconds - clip.duration) > .001 || row.audioSeconds > row.slotSeconds + .001 ||
-        Math.abs(row.utilization - row.audioSeconds / row.slotSeconds) > .001) fail();
+      if (
+        !clip ||
+        !row ||
+        Object.keys(row).length !== 7 ||
+        ![
+          'characters',
+          'minCharacters',
+          'targetCharacters',
+          'maxCharacters',
+          'slotSeconds',
+          'audioSeconds',
+          'utilization',
+        ].every(
+          (key) =>
+            Number.isFinite(row[key as keyof typeof row]) && row[key as keyof typeof row] >= 0,
+        ) ||
+        row.minCharacters > row.targetCharacters ||
+        row.targetCharacters > row.maxCharacters ||
+        Math.abs(row.slotSeconds - clip.duration) > 0.001 ||
+        row.audioSeconds > row.slotSeconds + 0.001 ||
+        Math.abs(row.utilization - row.audioSeconds / row.slotSeconds) > 0.001
+      )
+        fail();
     }
   }
   if (checkpoint.slotVision) {
     for (const [slotId, row] of Object.entries(checkpoint.slotVision))
-      if (!snapshot.clips.some((c) => c.slotId === slotId) || !row ||
-          row.key !== slotVisionKey(snapshot.clips.find((c) => c.slotId === slotId)!) || typeof row.description !== 'string' ||
-          !row.description.trim() || row.description.length > 2000) fail();
+      if (
+        !snapshot.clips.some((c) => c.slotId === slotId) ||
+        !row ||
+        row.key !== slotVisionKey(snapshot.clips.find((c) => c.slotId === slotId)!) ||
+        typeof row.description !== 'string' ||
+        !row.description.trim() ||
+        row.description.length > 2000
+      )
+        fail();
   }
-  if (checkpoint.voiceFitAttempts && Object.entries(checkpoint.voiceFitAttempts).some(([id, count]) =>
-    !snapshot.clips.some((c) => c.slotId === id) || count !== 1)) fail();
-  if (checkpoint.voiceSlotRetries && Object.entries(checkpoint.voiceSlotRetries).some(([id, count]) =>
-    !snapshot.clips.some((c) => c.slotId === id) || count !== 1)) fail();
+  if (
+    checkpoint.voiceFitAttempts &&
+    Object.entries(checkpoint.voiceFitAttempts).some(
+      ([id, count]) => !snapshot.clips.some((c) => c.slotId === id) || count !== 1,
+    )
+  )
+    fail();
+  if (
+    checkpoint.voiceSlotRetries &&
+    Object.entries(checkpoint.voiceSlotRetries).some(
+      ([id, count]) => !snapshot.clips.some((c) => c.slotId === id) || count !== 1,
+    )
+  )
+    fail();
   if (checkpoint.timings) {
     for (const [id, row] of Object.entries(checkpoint.timings)) {
       if (id !== '_item' && !snapshot.clips.some((c) => c.slotId === id)) fail();
       if (!row || typeof row !== 'object') fail();
       for (const [key, value] of Object.entries(row)) {
-        if (key === 'cacheHit') { if (typeof value !== 'boolean') fail(); }
-        else if (key === 'scriptRepairSlots') { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(); }
-        else if (!['preprocessingSeconds', 'visionSeconds', 'scriptSeconds', 'voiceSeconds', 'voiceRepairSeconds',
-          'musicWaitSeconds', 'localQueueSeconds',
-          'apiHeartbeatSeconds', 'checkpointSeconds', 'voiceUploadSeconds', 'musicDownloadSeconds',
-          'musicPreprocessQueueSeconds', 'musicTranscodeSeconds', 'musicUploadSeconds', 'captionSeconds'].includes(key) ||
-          typeof value !== 'number' || !Number.isFinite(value) || value < 0) fail();
+        if (key === 'cacheHit') {
+          if (typeof value !== 'boolean') fail();
+        } else if (key === 'scriptRepairSlots') {
+          if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail();
+        } else if (
+          ![
+            'preprocessingSeconds',
+            'visionSeconds',
+            'scriptSeconds',
+            'voiceSeconds',
+            'voiceRepairSeconds',
+            'musicWaitSeconds',
+            'localQueueSeconds',
+            'apiHeartbeatSeconds',
+            'checkpointSeconds',
+            'voiceUploadSeconds',
+            'musicDownloadSeconds',
+            'musicPreprocessQueueSeconds',
+            'musicTranscodeSeconds',
+            'musicUploadSeconds',
+            'captionSeconds',
+          ].includes(key) ||
+          typeof value !== 'number' ||
+          !Number.isFinite(value) ||
+          value < 0
+        )
+          fail();
       }
     }
   }
@@ -511,8 +662,14 @@ export function validatePackagingCheckpoint(
     for (const row of checkpoint.script) {
       if (slotLayout) {
         const clip = snapshot.clips.find((c) => c.slotId === row.slotId);
-        if (!clip || !row.slotId || slots.has(row.slotId) ||
-          row.start !== clip.start || Math.abs(row.end - clip.start - clip.duration) > 0.001) fail();
+        if (
+          !clip ||
+          !row.slotId ||
+          slots.has(row.slotId) ||
+          row.start !== clip.start ||
+          Math.abs(row.end - clip.start - clip.duration) > 0.001
+        )
+          fail();
         slots.add(row.slotId!);
       }
       if (
@@ -541,9 +698,12 @@ export function validatePackagingCheckpoint(
     for (const [id, audio] of Object.entries(checkpoint.voices)) {
       const index = checkpoint.script?.findIndex((s) => s.id === id) ?? -1;
       const line = checkpoint.script?.[index];
-      const limit = slotLayout ? (line?.end ?? 0) : (checkpoint.script?.[index + 1]?.start ?? snapshot.duration);
+      const limit = slotLayout
+        ? (line?.end ?? 0)
+        : (checkpoint.script?.[index + 1]?.start ?? snapshot.duration);
       const offset = audio?.offset ?? 0;
-      const timingRequired = snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1' &&
+      const timingRequired =
+        snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1' &&
         (!snapshot.redoSlotId || line?.slotId === snapshot.redoSlotId) &&
         (!snapshot.redoSlotIds?.length || snapshot.redoSlotIds.includes(line?.slotId ?? ''));
       if (timingRequired && !audio?.speechRanges?.length) fail();
@@ -555,7 +715,8 @@ export function validatePackagingCheckpoint(
         !contentInterval(audio.start, audio.start + audio.duration) ||
         // The worker keeps a line inside its slot; the editor may carry it past the slot's end,
         // which is what extends the film.
-        (slotLayout && !edited &&
+        (slotLayout &&
+          !edited &&
           (audio.start < (line?.start ?? 0) || audio.start + audio.duration > limit + 0.001)) ||
         (!edited && (audio.start !== line.start || audio.start + audio.duration > limit + 0.001)) ||
         !Number.isFinite(audio.volume) ||
@@ -564,15 +725,29 @@ export function validatePackagingCheckpoint(
         !fades(audio)
       )
         fail();
-      if (audio.segmentFrames &&
-        (!Array.isArray(audio.segmentFrames) || !audio.segmentFrames.length || audio.segmentFrames.length > 500 ||
+      if (
+        audio.segmentFrames &&
+        (!Array.isArray(audio.segmentFrames) ||
+          !audio.segmentFrames.length ||
+          audio.segmentFrames.length > 500 ||
           audio.segmentFrames.some((frames) => !Number.isSafeInteger(frames) || frames <= 0) ||
           (edited
-            ? audio.duration + offset > audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 + .001
-            : Math.abs(audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 - audio.duration) > .001))) fail();
+            ? audio.duration + offset >
+              audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 + 0.001
+            : Math.abs(
+                audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 -
+                  audio.duration,
+              ) > 0.001))
+      )
+        fail();
       // Timing metadata belongs to the immutable source PCM, not an editor's trimmed window.
-      const sourceSeconds = (audio.segmentFrames?.reduce((sum, frames) => sum + frames, 0) ?? 0) / 24_000;
-      if (audio.speechRanges !== undefined && !validSpeechRanges(audio.speechRanges, sourceSeconds || audio.duration + offset)) fail();
+      const sourceSeconds =
+        (audio.segmentFrames?.reduce((sum, frames) => sum + frames, 0) ?? 0) / 24_000;
+      if (
+        audio.speechRanges !== undefined &&
+        !validSpeechRanges(audio.speechRanges, sourceSeconds || audio.duration + offset)
+      )
+        fail();
     }
   // A generated caption narration is editor-owned, so — like a caption box — it is checked for
   // shape and bounds and for nothing else. It has no script line to line up with and no slot to
@@ -595,17 +770,27 @@ export function validatePackagingCheckpoint(
         !fades(audio)
       )
         fail();
-      if (audio.segmentFrames &&
-        (!Array.isArray(audio.segmentFrames) || !audio.segmentFrames.length || audio.segmentFrames.length > 500 ||
+      if (
+        audio.segmentFrames &&
+        (!Array.isArray(audio.segmentFrames) ||
+          !audio.segmentFrames.length ||
+          audio.segmentFrames.length > 500 ||
           audio.segmentFrames.some((frames) => !Number.isSafeInteger(frames) || frames <= 0) ||
-          Math.abs(audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 - audio.duration) > .001)) fail();
+          Math.abs(
+            audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 - audio.duration,
+          ) > 0.001)
+      )
+        fail();
     }
   if (checkpoint.music) {
     const offset = checkpoint.music.offset ?? 0;
     if (
       !Number.isFinite(offset) ||
       offset < 0 ||
-      !contentInterval(checkpoint.music.start, checkpoint.music.start + checkpoint.music.duration) ||
+      !contentInterval(
+        checkpoint.music.start,
+        checkpoint.music.start + checkpoint.music.duration,
+      ) ||
       (!edited &&
         (checkpoint.music.start !== 0 ||
           Math.abs(checkpoint.music.duration - snapshot.duration) > 0.05)) ||
@@ -661,64 +846,134 @@ export function validatePackagingCheckpoint(
         // The editor may reword a subtitle without rewriting the narration it is voiced from.
         (!manual && !segmentedCaptions && !edited && c.text !== script!.text) ||
         // A deleted voice has nothing to align to, so the alignment rules only hold when one exists.
-        (!manual && !segmentedCaptions && !edited && audio &&
+        (!manual &&
+          !segmentedCaptions &&
+          !edited &&
+          audio &&
           (audio.speechRanges?.length
-            ? Math.abs(c.start - (audio.start + audio.speechRanges[0]!.startFrame / 24_000 - (audio.offset ?? 0))) > .001 ||
-              Math.abs(c.end - (audio.start + audio.speechRanges.at(-1)!.endFrame / 24_000 - (audio.offset ?? 0))) > .001
+            ? Math.abs(
+                c.start -
+                  (audio.start + audio.speechRanges[0]!.startFrame / 24_000 - (audio.offset ?? 0)),
+              ) > 0.001 ||
+              Math.abs(
+                c.end -
+                  (audio.start +
+                    audio.speechRanges.at(-1)!.endFrame / 24_000 -
+                    (audio.offset ?? 0)),
+              ) > 0.001
             : c.start !== audio.start || Math.abs(c.end - c.start - audio.duration) > 0.002)) ||
         (!manual &&
           segmentedCaptions &&
           !edited &&
           audio &&
           (c.start < audio.start - 0.001 || c.end > audio.start + audio.duration + 0.001)) ||
-        !contentInterval(c.start, c.end)
-        || (!manual && slotLayout && !edited &&
+        !contentInterval(c.start, c.end) ||
+        (!manual &&
+          slotLayout &&
+          !edited &&
           (c.start < (script?.start ?? 0) || c.end > (script?.end ?? 0) + 0.001))
       )
         fail();
       // A user-chosen row is a hard constraint. The implicit narration row is only a grouping:
       // overlapping captions are placed on additional display lanes, matching the timeline UI.
       if (c.trackId) {
-        if (checkpoint.captions.some((other) =>
-          other.id !== c.id && other.trackId === c.trackId &&
-          c.start < other.end - 0.001 && other.start < c.end - 0.001)) fail();
+        if (
+          checkpoint.captions.some(
+            (other) =>
+              other.id !== c.id &&
+              other.trackId === c.trackId &&
+              c.start < other.end - 0.001 &&
+              other.start < c.end - 0.001,
+          )
+        )
+          fail();
       }
-      if (segmentedCaptions && !manual && checkpoint.captions.some((other) =>
-        other.id !== c.id && !other.manual &&
-        (other.voiceLineId ?? other.id) === lineId &&
-        c.start < other.end - 0.001 && other.start < c.end - 0.001)) fail();
+      if (
+        segmentedCaptions &&
+        !manual &&
+        checkpoint.captions.some(
+          (other) =>
+            other.id !== c.id &&
+            !other.manual &&
+            (other.voiceLineId ?? other.id) === lineId &&
+            c.start < other.end - 0.001 &&
+            other.start < c.end - 0.001,
+        )
+      )
+        fail();
       if (segmentedCaptions && !manual) {
         const parts = segmentsByLine.get(lineId!) ?? [];
         parts.push(c);
         segmentsByLine.set(lineId!, parts);
       }
     }
-    if (segmentedCaptions && checkpoint.script?.some((line) => {
-      const parts = segmentsByLine.get(line.id);
-      const audio = checkpoint.voices?.[line.id];
-      return (ready && !parts?.length) || (parts?.length && (
-        parts.some((part, index) => part.segmentIndex !== index || part.segmentCount !== parts.length) ||
-        // The pipeline lays a line's cards edge to edge; the editor may pull one away, which opens
-        // a gap rather than breaking anything, so the rule only holds the worker write path.
-        (!edited && captionsV2 && !audio?.speechRanges && parts.some((part, index) => index > 0 &&
-          Math.abs(part.start - parts[index - 1]!.end) > 0.001)) ||
-        (!edited && parts.map((part) => part.text).join('').replace(/\s/gu, '') !==
-          line.text.replace(captionsV2 ? /[，,。.!！？?；;：:…\s]/gu : /[\p{P}\s]/gu, '')) ||
-        // Frame alignment is only meaningful for a line that still has its narration.
-        (captionsV3 && audio && !audio.speechRanges && (!audio.segmentFrames || parts.length !== audio.segmentFrames.length ||
-          (!edited && parts.some((part, index) => {
-            const startFrames = audio.segmentFrames!.slice(0, index).reduce((sum, n) => sum + n, 0);
-            const endFrames = startFrames + audio.segmentFrames![index]!;
-            return Math.abs(part.start - (audio.start + startFrames / 24_000)) > .001 ||
-              Math.abs(part.end - (audio.start + endFrames / 24_000)) > .001;
-          })))) ||
-        ((speechCaptions || audio?.speechRanges) && audio && (!audio.speechRanges || parts.length !== audio.speechRanges.length ||
-          (!edited && parts.some((part, index) => {
-            const range = audio.speechRanges![index]!;
-            return Math.abs(part.start - (audio.start + range.startFrame / 24_000 - (audio.offset ?? 0))) > .001 ||
-              Math.abs(part.end - (audio.start + range.endFrame / 24_000 - (audio.offset ?? 0))) > .001;
-          }))))));
-    })) fail();
+    if (
+      segmentedCaptions &&
+      checkpoint.script?.some((line) => {
+        const parts = segmentsByLine.get(line.id);
+        const audio = checkpoint.voices?.[line.id];
+        return (
+          (ready && !parts?.length) ||
+          (parts?.length &&
+            (parts.some(
+              (part, index) => part.segmentIndex !== index || part.segmentCount !== parts.length,
+            ) ||
+              // The pipeline lays a line's cards edge to edge; the editor may pull one away, which opens
+              // a gap rather than breaking anything, so the rule only holds the worker write path.
+              (!edited &&
+                captionsV2 &&
+                !audio?.speechRanges &&
+                parts.some(
+                  (part, index) =>
+                    index > 0 && Math.abs(part.start - parts[index - 1]!.end) > 0.001,
+                )) ||
+              (!edited &&
+                parts
+                  .map((part) => part.text)
+                  .join('')
+                  .replace(/\s/gu, '') !==
+                  line.text.replace(
+                    captionsV2 ? /[，,。.!！？?；;：:…\s]/gu : /[\p{P}\s]/gu,
+                    '',
+                  )) ||
+              // Frame alignment is only meaningful for a line that still has its narration.
+              (captionsV3 &&
+                audio &&
+                !audio.speechRanges &&
+                (!audio.segmentFrames ||
+                  parts.length !== audio.segmentFrames.length ||
+                  (!edited &&
+                    parts.some((part, index) => {
+                      const startFrames = audio
+                        .segmentFrames!.slice(0, index)
+                        .reduce((sum, n) => sum + n, 0);
+                      const endFrames = startFrames + audio.segmentFrames![index]!;
+                      return (
+                        Math.abs(part.start - (audio.start + startFrames / 24_000)) > 0.001 ||
+                        Math.abs(part.end - (audio.start + endFrames / 24_000)) > 0.001
+                      );
+                    })))) ||
+              ((speechCaptions || audio?.speechRanges) &&
+                audio &&
+                (!audio.speechRanges ||
+                  parts.length !== audio.speechRanges.length ||
+                  (!edited &&
+                    parts.some((part, index) => {
+                      const range = audio.speechRanges![index]!;
+                      return (
+                        Math.abs(
+                          part.start -
+                            (audio.start + range.startFrame / 24_000 - (audio.offset ?? 0)),
+                        ) > 0.001 ||
+                        Math.abs(
+                          part.end - (audio.start + range.endFrame / 24_000 - (audio.offset ?? 0)),
+                        ) > 0.001
+                      );
+                    }))))))
+        );
+      })
+    )
+      fail();
   }
   if (checkpoint.captionBoxes) {
     const boxes = Object.entries(checkpoint.captionBoxes);
@@ -762,19 +1017,38 @@ export function validatePackagingCheckpoint(
     fail();
   // Frame-split captions need the frames of the voice they were split from; a line whose voice the
   // editor deleted simply has no frames to match.
-  if (ready && captionsV3 && checkpoint.script?.some((line) => {
-    const audio = checkpoint.voices?.[line.id];
-    return audio && !audio.segmentFrames;
-  })) fail();
-  if (ready && speechCaptions && checkpoint.script?.some((line) => {
-    const audio = checkpoint.voices?.[line.id];
-    return audio && !audio.speechRanges;
-  })) fail();
-  if (ready && snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1' &&
-      !snapshot.redoSlotId && !snapshot.redoSlotIds?.length && !speechCaptions) fail();
+  if (
+    ready &&
+    captionsV3 &&
+    checkpoint.script?.some((line) => {
+      const audio = checkpoint.voices?.[line.id];
+      return audio && !audio.segmentFrames;
+    })
+  )
+    fail();
+  if (
+    ready &&
+    speechCaptions &&
+    checkpoint.script?.some((line) => {
+      const audio = checkpoint.voices?.[line.id];
+      return audio && !audio.speechRanges;
+    })
+  )
+    fail();
+  if (
+    ready &&
+    snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1' &&
+    !snapshot.redoSlotId &&
+    !snapshot.redoSlotIds?.length &&
+    !speechCaptions
+  )
+    fail();
 }
 
-export function requireSlotPackaging(snapshot: PackagingSnapshot, checkpoint: PackagingCheckpoint): void {
+export function requireSlotPackaging(
+  snapshot: PackagingSnapshot,
+  checkpoint: PackagingCheckpoint,
+): void {
   if (checkpoint.narrationLayoutVersion !== 'SLOT_V1')
     throw new BadRequestException('旧版整片口播仅可播放，请按槽位重新包装后进入成片输出');
   validatePackagingCheckpoint(snapshot, checkpoint, true, true);
@@ -792,9 +1066,19 @@ export function canonicalizeCheckpoint(
     ? Object.fromEntries(
         Object.entries(checkpoint.voices).map(([id, audio]) => {
           const line = checkpoint.script?.find((s) => s.id === id);
-          return [id, { ...audio, start: line?.start ?? audio.start, offset: 0,
-            ...(audio.speechRanges && audio.segmentFrames
-              ? { duration: audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 } : {}) }];
+          return [
+            id,
+            {
+              ...audio,
+              start: line?.start ?? audio.start,
+              offset: 0,
+              ...(audio.speechRanges && audio.segmentFrames
+                ? {
+                    duration: audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000,
+                  }
+                : {}),
+            },
+          ];
         }),
       )
     : checkpoint.voices;
@@ -810,8 +1094,12 @@ export function canonicalizeCheckpoint(
           if (!audio) return caption;
           if (audio.speechRanges && caption.segmentIndex !== undefined) {
             const range = audio.speechRanges[caption.segmentIndex];
-            if (range) return { ...caption, start: audio.start + range.startFrame / 24_000,
-              end: audio.start + range.endFrame / 24_000 };
+            if (range)
+              return {
+                ...caption,
+                start: audio.start + range.startFrame / 24_000,
+                end: audio.start + range.endFrame / 24_000,
+              };
           }
           if (!checkpoint.captionLayoutVersion)
             return { ...caption, start: audio.start, end: audio.start + audio.duration };

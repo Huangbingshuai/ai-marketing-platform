@@ -7,6 +7,7 @@ const props = withDefaults(
     attemptLabel?: string;
     progress: number;
     summary: string;
+    terminal?: boolean;
     tone?: 'default' | 'update';
     warning?: string;
   }>(),
@@ -14,6 +15,7 @@ const props = withDefaults(
     actionLabel: '查看节点进度',
     attemptLabel: '',
     tone: 'default',
+    terminal: false,
     warning: '',
   },
 );
@@ -28,10 +30,11 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 <template>
   <section
     class="workflow-run-progress"
-    :class="{ 'without-action': !actionLabel, 'is-update': tone === 'update' }"
+    :class="{ 'without-action': !actionLabel, 'is-update': tone === 'update', 'is-terminal': terminal }"
     aria-live="polite"
   >
     <div
+      v-if="!terminal"
       class="workflow-run-progress__track"
       role="progressbar"
       aria-label="任务执行进度"
@@ -44,7 +47,7 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
     <p>
       <span class="workflow-run-progress__summary">
         <span>{{ summary }}</span>
-        <strong>{{ normalizedProgress }}%</strong>
+        <strong v-if="!terminal">{{ normalizedProgress }}%</strong>
       </span>
       <small v-if="attemptLabel">{{ attemptLabel }}</small>
       <em v-if="warning">{{ warning }}</em>
@@ -94,6 +97,12 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 }
 .workflow-run-progress.without-action {
   grid-template-columns: minmax(120px, 1fr) auto;
+}
+.workflow-run-progress.is-terminal {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.workflow-run-progress.is-terminal.without-action {
+  grid-template-columns: minmax(0, 1fr);
 }
 .workflow-run-progress__track span {
   display: block;
@@ -146,6 +155,8 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 }
 @media (max-width: 760px) {
   .workflow-run-progress,
+  .workflow-run-progress.is-terminal,
+  .workflow-run-progress.is-terminal.without-action,
   .workflow-run-progress.without-action {
     grid-template-columns: 1fr;
   }

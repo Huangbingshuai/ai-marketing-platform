@@ -1,5 +1,31 @@
 import type { EffectTemplateMixAiRun } from '@ai-marketing/contracts';
 
+type UpdateProgress = { progress: number; detail: string };
+
+/** Two durable phases share one operation; reaching the handoff is not completion. */
+export const mixLocalUpdateProgress = (input: {
+  source: UpdateProgress | null;
+  hasAdditions: boolean;
+  handoff: boolean;
+  append: UpdateProgress | null;
+}): UpdateProgress | null => {
+  if (input.source)
+    return {
+      ...input.source,
+      progress: Math.min(99, input.source.progress * (input.hasAdditions ? 0.5 : 1)),
+    };
+  if (input.append)
+    return {
+      ...input.append,
+      progress: input.hasAdditions
+        ? Math.min(99, 50 + input.append.progress * 0.5)
+        : Math.min(99, input.append.progress),
+    };
+  return input.handoff
+    ? { progress: input.hasAdditions ? 50 : 99, detail: '正在衔接新增成片并同步更新结果' }
+    : null;
+};
+
 export const mixAppendProgress = (run: EffectTemplateMixAiRun | null) => {
   if (!run || run.operation !== 'APPEND' || !['QUEUED', 'RUNNING'].includes(run.status))
     return null;

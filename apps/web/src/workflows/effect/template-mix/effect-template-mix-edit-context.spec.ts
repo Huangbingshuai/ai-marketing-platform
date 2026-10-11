@@ -75,6 +75,13 @@ function loadHarness() {
     lastPreviewTarget: null,
   };
   const context = {
+    sourceProjectionEpoch: 0,
+    sourceProjectionEpochs: new Map(),
+    packagingTaskWorkspaceScope: '',
+    withoutDeletedMixTemplates: <T>(draft: T) => draft,
+    withoutDeletedMixCatalog: <T>(directory: T) => directory,
+    deletedTemplateIds: () => new Set(),
+    peekWorkbench: () => null,
     props: { projectId: 'project', workflowRunId: 'published', branchTemplateId: null },
     requestedWorkspaceScope: { value: null },
     installedWorkspaceScope: { value: 'project:published' },
@@ -345,7 +352,9 @@ describe('mix templates survive upstream isolation editing', () => {
     await h.execute();
     expect(h.context.installWorkspaceData).not.toHaveBeenCalled();
     expect(h.context.templateDirectory.value.entries).toEqual(['old']);
-    expect(h.context.pageState.value).toBe('ERROR');
+    expect(h.context.pageState.value).toBe('READY');
+    expect(h.context.showNotice).toHaveBeenCalledWith(
+      '后台同步暂未完成，当前工作台和编辑已保留，将继续读取任务进度', 'warning');
   });
   it('reroutes a normal open editor to the current directory without installing its cached snapshot', async () => {
     const h = loadHarness();

@@ -1,5 +1,5 @@
-import { PACKAGING_STAGES } from '@ai-marketing/contracts';
-import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
+import { PACKAGING_STAGES, packagingVisualTimeline } from '@ai-marketing/contracts';
+import type { EffectTemplateMixVariant, PackagingItem, PackagingRun } from '@ai-marketing/contracts';
 
 export type PackagingStage = (typeof PACKAGING_STAGES)[number];
 
@@ -162,7 +162,7 @@ export const packagingStageDetails: Record<
   },
   CAPTIONS: {
     description: '按实际配音时长对齐字幕',
-    input: '口播原文、真实配音起点与时长',
+    input: '口播原文、配音起点与时长',
     output: '不越界、与配音同步的字幕草稿',
   },
   READY: {
@@ -175,6 +175,38 @@ export const packagingStageDetails: Record<
 /** API returns newest first. The graph and its summary must follow the same current run. */
 export function currentPackagingRun(runs: PackagingRun[]) {
   return runs.find((run) => ['QUEUED', 'RUNNING'].includes(run.status)) ?? runs[0];
+}
+
+/** A terminal rollup is an outcome, not an indefinitely stalled execution percentage. */
+export function packagingTerminalResult(run?: PackagingRun) {
+  if (!run || run.status === 'QUEUED' || run.status === 'RUNNING') return null;
+  const labels = { COMPLETED: '全部完成', PARTIAL: '部分失败', FAILED: '失败', CANCELLED: '已取消' };
+  return {
+    summary: `智能成片包装 · 已结束（${labels[run.status]}）`,
+    detail: `成功 ${run.counts.completed} / ${run.counts.total} 条 · 失败 ${run.counts.failed} 条 · ${run.status === 'COMPLETED' ? '包装已就绪，最终视频需在成片输出主动导出' : '未完成成片已保留包装前原样，可单独包装或自行编辑'}`,
+  };
+}
+
+/** Compare frozen pictures, not names or positions; key insertion order is not content. */
+function canonicalPicture(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalPicture).join(',')}]`;
+  if (value && typeof value === 'object')
+    return `{${Object.entries(value).filter(([, entry]) => entry !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalPicture(entry)}`).join(',')}}`;
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** A child result can be previewed before publication, but never applied to a different edit. */
+export function livePackagingItem(run: PackagingRun | null, variant?: EffectTemplateMixVariant) {
+  if (!run || !variant) return null;
+  const item = run.items.find((entry) => entry.variantId === variant.id && entry.status === 'COMPLETED');
+  const picture = packagingVisualTimeline(variant);
+  const frozen = item?.sourceVisualTimeline;
+  const comparable = (value: typeof picture | undefined) => item?.operation && value
+    ? { ...value, detachedAudios: [], preservedTimelineEnd: undefined } : value;
+  return item && canonicalPicture(comparable(frozen)) === canonicalPicture(comparable(picture))
+    ? item : null;
 }
 
 /**

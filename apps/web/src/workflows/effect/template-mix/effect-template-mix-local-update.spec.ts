@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { transpileModule } from 'typescript';
 import { computed, ref } from 'vue';
 import page from './EffectTemplateMixNodePage.vue?raw';
+import { mixLocalUpdateProgress } from './effect-template-mix-operation-progress';
+
+const frozenOperation = { sourceOperationHasAdditions: true, sourceOperationId: 'frozen-operation' };
 
 function harness(changed = 0, added = 0) {
   const context = {
@@ -36,11 +39,13 @@ function harness(changed = 0, added = 0) {
 }
 
 describe('one local-update action for additions, replacements and deletions', () => {
-  it('uses APPEND only for new materials and never starts full refill', async () => {
+  it('freezes additions through the same source operation before APPEND and never starts full refill', async () => {
     const { context: c, execute } = harness(0, 2);
     await execute();
-    expect(c.updateSourceProjects).not.toHaveBeenCalled();
-    expect(c.startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true);
+    expect(c.updateSourceProjects).toHaveBeenCalledOnce();
+    expect(c.startAiFill).not.toHaveBeenCalled();
+    await c.updateSourceProjects.mock.calls[0]![0](frozenOperation);
+    expect(c.startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true, 'frozen-operation');
     expect(c.localUpdateStarting.value).toBe(false);
   });
   it.each(['replacement', 'deletion'])(
@@ -49,7 +54,7 @@ describe('one local-update action for additions, replacements and deletions', ()
       const { context: c, execute } = harness(3, 0);
       await execute();
       expect(c.updateSourceProjects).toHaveBeenCalledOnce();
-      await c.updateSourceProjects.mock.calls[0]![0]();
+      await c.updateSourceProjects.mock.calls[0]![0]({ sourceOperationHasAdditions: false });
       expect(c.startAiFill).not.toHaveBeenCalled();
     },
   );
@@ -58,8 +63,17 @@ describe('one local-update action for additions, replacements and deletions', ()
     await execute();
     expect(c.startAiFill).not.toHaveBeenCalled(); // Confirmation cancelled or task failed: no continuation.
     const afterSuccess = c.updateSourceProjects.mock.calls[0]![0];
-    await afterSuccess();
-    expect(c.startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true);
+    await afterSuccess(frozenOperation);
+    expect(c.startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true, 'frozen-operation');
+  });
+  it.each([
+    { sourceOperationHasAdditions: true },
+    { sourceOperationHasAdditions: false, sourceOperationId: 'frozen-operation' },
+  ])('does not append without a confirmed frozen addition set: %j', async (run) => {
+    const { context: c, execute } = harness(3, 2);
+    await execute();
+    await c.updateSourceProjects.mock.calls[0]![0](run);
+    expect(c.startAiFill).not.toHaveBeenCalled();
   });
   it.each(['project', 'workflow', 'template'])(
     'does not continue into a different %s scope',
@@ -69,7 +83,7 @@ describe('one local-update action for additions, replacements and deletions', ()
       if (scope === 'project') c.props.projectId = 'other';
       if (scope === 'workflow') c.props.workflowRunId = 'other';
       if (scope === 'template') c.activeTemplateId.value = 'other';
-      await c.updateSourceProjects.mock.calls[0]![0]();
+      await c.updateSourceProjects.mock.calls[0]![0](frozenOperation);
       expect(c.startAiFill).not.toHaveBeenCalled();
     },
   );
@@ -90,10 +104,11 @@ describe('one local-update action for additions, replacements and deletions', ()
     await execute();
     expect(c.openTemplateWorkspace).not.toHaveBeenCalled();
     expect(c.props.workflowRunId).toBe('workflow');
-    expect(c.startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true);
+    await c.updateSourceProjects.mock.calls[0]![0](frozenOperation);
+    expect(c.startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true, 'frozen-operation');
   });
   it('restores a local-update handoff through the unified action, never source-only orchestration', () => {
-    const recovery = page.split("if (handoff?.action === 'SOURCE_UPDATE'")[1]!
+    const recovery = page.split("handoff?.action === 'SOURCE_UPDATE'")[1]!
       .split('for (const run of running')[0]!;
     expect(recovery).toContain('void updateCurrentTemplate()');
     expect(recovery).not.toContain('void updateSourceProjects()');
@@ -106,6 +121,8 @@ describe('one local-update action for additions, replacements and deletions', ()
   it('chooses a single progress display for starting, source updates and APPEND, hiding at completion', () => {
     const context = {
       computed,
+      mixLocalUpdateProgress,
+      sourceUpdateHandoff: ref(false),
       sourceUpdateBusy: ref(false),
       sourceUpdateProgress: ref(40),
       sourceUpdateRun: ref({

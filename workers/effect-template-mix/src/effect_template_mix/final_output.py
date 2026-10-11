@@ -429,13 +429,9 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     # Editor edits may trim the source head (`offset`) and move clips along the timeline;
     # pipeline writes stay canonical, so absent keys mean the frozen timeline geometry.
     # A caption narration the editor generated is a narration line in every way the mixer cares
-    # about: it ducks the music, it takes one amix input, and it is moved by `offset`/`start`.
+    # about: it takes one amix input and is moved by `offset`/`start`, with independent gain.
     voices = [*cp['voices'].values(), *(cp.get('captionVoices') or {}).values(),
         *(audio for audio in timeline_audios if audio.get('audioKind') == 'VOICE')]
-    voice_windows = '+'.join(
-        f"between(t,{float(voice['start'])},{float(voice['start']) + float(voice['duration'])})"
-        for voice in voices
-    ) or '0'
     for index, voice in enumerate(voices):
         actual = float(media[voice['fileObjectId']]['format']['duration'])
         offset = float(voice.get('offset', 0.0))
@@ -486,12 +482,9 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
             raise PackagingError('音频片段淡入淡出时长无效')
         fades = (f',afade=t=in:st={start}:d={fade_in}' if fade_in > 0 else '') + (
             f',afade=t=out:st={start + length - fade_out}:d={fade_out}' if fade_out > 0 else '')
-        # A packaged music bed that was split at the playhead resumes as an independent clip; keep
-        # the bed's voice ducking for that continuation rather than changing its mix after the cut.
-        music_gain = (f"'{volume}*if(gt({voice_windows},0),0.35,1)':eval=frame"
-            if audio.get('audioKind') == 'MUSIC' else str(volume))
+        # Split music, imported audio and narration all retain their own configured gain.
         filters += [f'[{source_index}:a]aresample=48000,atrim=start={offset}:duration={length},'
-            f'asetpts=PTS-STARTPTS,volume={music_gain},adelay={round(start * 1000)}:all=1{fades}[detached{index}]']
+            f'asetpts=PTS-STARTPTS,volume={volume},adelay={round(start * 1000)}:all=1{fades}[detached{index}]']
     # The editor may delete the packaged bed outright, so its absence is a normal state rather than
     # a broken checkpoint: the mix simply has one input fewer and the film keeps its length.
     music = cp.get('music')
@@ -505,10 +498,8 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
                 or music_start + music_length > duration + .001):
             raise PackagingError('纯音乐时间范围与包装不一致')
         inputs += ['-stream_loop', '-1', '-i', str(files[music['fileObjectId']])]
-        # Time-window ducking is deterministic, including silent PCM and gaps.
-        windows = voice_windows
         music_index = source_count + len(voices) + len(detached)
-        # Ducking and fades run after `adelay`, so their time coordinates are timeline seconds.
+        # Fades run after `adelay`, so their time coordinates are timeline seconds.
         # The 0.5s easing is the pipeline default: a checkpoint the editor never touched has no fade
         # keys, and the fallback keeps its rendered audio identical to the pre-fade pipeline.
         fade_in = float(music.get('fadeIn', min(0.5, music_length / 2)) or 0.0)
@@ -516,9 +507,11 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         if (not math.isfinite(fade_in) or not math.isfinite(fade_out)
                 or fade_in < 0 or fade_out < 0 or fade_in + fade_out > music_length + .05):
             raise PackagingError('纯音乐淡入淡出时长无效')
+        # A zero duration does not disable FFmpeg's sample-count fade default: omit the filter.
+        fades = (f',afade=t=in:st={music_start}:d={fade_in}' if fade_in > 0 else '') + (
+            f',afade=t=out:st={music_start + music_length - fade_out}:d={fade_out}' if fade_out > 0 else '')
         filters += [f"[{music_index}:a]aresample=48000,atrim=start={music_offset},asetpts=PTS-STARTPTS,atrim=duration={music_length},"
-            f"adelay={round(music_start * 1000)}:all=1,volume='{music['volume']}*if(gt({windows},0),0.35,1)':eval=frame,"
-            f"afade=t=in:st={music_start}:d={fade_in},afade=t=out:st={music_start + music_length - fade_out}:d={fade_out}[music]"]
+            f"adelay={round(music_start * 1000)}:all=1,volume={music['volume']}{fades}[music]"]
         music_input = '[music]'
     filters += ['[original]' + music_input + ''.join(f'[voice{i}]' for i in range(len(voices))) +
         ''.join(f'[detached{i}]' for i in range(len(detached))) +

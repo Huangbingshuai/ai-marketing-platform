@@ -67,6 +67,8 @@ def test_full_batch_coverage_requirement_is_frozen_and_old_snapshots_still_parse
     }
     assert Snapshot.model_validate(source).requireAllMaterials is False
     assert Snapshot.model_validate(source).replaceExistingVariants is False
+    assert Snapshot.model_validate(source).durationFilteredMaterials is False
+    assert Snapshot.model_validate({**source, 'durationFilteredMaterials': True}).durationFilteredMaterials is True
     assert Snapshot.model_validate({**source, 'requireAllMaterials': True}).requireAllMaterials is True
     replacement = Snapshot.model_validate({**source, 'requireAllMaterials': True, 'replaceExistingVariants': True})
     assert replacement.replaceExistingVariants is True

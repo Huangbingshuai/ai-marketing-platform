@@ -85,7 +85,7 @@ watch([source, visible], ([nextSource, isVisible]) => {
     ]"
     :data-waveform-status="status"
     :data-waveform-samples="visibleBars.length"
-    :title="status === 'FAILED' ? '素材音轨不可用，未生成伪波形' : '素材真实音频波形'"
+    :title="status === 'FAILED' ? '素材音轨不可用，未生成伪波形' : '素材音频波形'"
     aria-hidden="true"
   >
     <i

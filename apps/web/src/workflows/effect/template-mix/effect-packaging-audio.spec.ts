@@ -20,10 +20,23 @@ describe('packaging audio playback wiring', () => {
     expect(packagingSource).toContain("checkpoint.narrationLayoutVersion !== 'SLOT_V1'");
     expect(packagingSource).toContain('selectedVariant.value?.voice');
     expect(packagingSource).toContain('selectedVariant.value?.bgm');
-    expect(packagingSource).toContain('() => props.seekVersion');
+    expect(packagingSource).not.toContain('watch(() => props.seekVersion');
+    expect(packagingSource).toContain("emit('playbackChanged')");
+    expect(pageSource).toContain('@playback-changed="onPlaybackAudioChanged"');
     expect(packagingSource).toContain('() => props.playing');
     expect(packagingSource).toContain('sampleClock.dispose()');
     expect(packagingSource).toContain('emit(\'playbackFailed\')');
+  });
+  it('keeps a single frame barrier and visibly settles failed playback', () => {
+    expect(packagingSource).not.toContain('void startPlaybackAudio(');
+    expect(packagingSource).toContain('request === audioPlaybackRequest');
+    expect(pageSource).toContain('@playback-failed="onPlaybackFailed"');
+    expect(pageSource).toContain('previewStartupReady(ready, soundReady, audioRequired)');
+    expect(pageSource).toContain('waitForNativePlayback(nativePlay, currentStart)');
+    expect(pageSource).toContain('if (failedVideo?.error)');
+    expect(pageSource).toContain('failedVideo.load()');
+    expect(pageSource).toContain('正在加载视频和音频，可点击暂停取消');
+    expect(pageSource).toContain('previewPlaybackError ? \'alert\' : \'status\'');
   });
   it('reads output time every frame for captions without advancing the full editor tree each frame', () => {
     expect(pageSource).toContain('packagingPanel.value?.playbackAudioTime()');

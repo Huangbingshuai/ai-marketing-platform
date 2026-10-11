@@ -3240,6 +3240,7 @@ onBeforeUnmount(() => {
           拖动片段换位</span
         >
       </div>
+      <slot name="packaging-action" />
       <div class="zoom-controls" aria-label="时间轴缩放">
         <button
           type="button"
@@ -3723,10 +3724,14 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   border-bottom: 1px solid var(--timeline-border);
   background: #fff;
+  gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 .timeline-tools,
 .zoom-controls {
   min-width: 0;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 5px;

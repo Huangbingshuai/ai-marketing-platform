@@ -2,6 +2,7 @@ import {
   effectTemplateBranchTips,
   type EffectTemplateMixTemplateEntry,
   type EffectTemplateMixWorkspaceData,
+  type EffectTemplateMixSourcesData,
   type EffectWorkflowBranchTreeData,
 } from '@ai-marketing/contracts';
 
@@ -62,6 +63,66 @@ export function mixTemplateCatalogPendingAdded(
   return owner && owner !== loadedRunId
     ? (directory.pendingAddedMaterialIds[templateId] ?? [])
     : (local[templateId] ?? []);
+}
+
+/** Refresh read-only projections, including the cache used by immediate template switches.
+ * Source polling never adopts a new baseline or serializes another Run into the writable draft.
+ */
+export function mixTemplateCatalogWithSources(
+  directory: MixTemplateCatalog,
+  workflowRunId: string,
+  sources: EffectTemplateMixSourcesData,
+  freshWorkspace?: EffectTemplateMixWorkspaceData,
+): MixTemplateCatalog {
+  const previous = directory.workspaces[workflowRunId];
+  if (!previous || (!freshWorkspace && previous.draftRevision !== sources.draftRevision))
+    return directory;
+  const workspace = freshWorkspace ?? {
+    ...previous,
+    materials: sources.materials,
+    pendingAddedMaterialIds: sources.pendingAddedMaterialIds ?? {},
+    classificationPools: sources.classificationPools ?? previous.classificationPools,
+    renderAspectRatio:
+      sources.renderAspectRatio !== undefined
+        ? sources.renderAspectRatio
+        : (previous.renderAspectRatio ?? null),
+    autoPackagingTemplateIds: sources.autoPackagingTemplateIds ?? [],
+  };
+  if ((workspace.draftRevision ?? 0) < (previous.draftRevision ?? 0)) return directory;
+  const pendingAddedMaterialIds = { ...directory.pendingAddedMaterialIds };
+  const entries = directory.entries.flatMap((entry) => {
+    if (directory.workflowRunIds[entry.id] !== workflowRunId) return [entry];
+    pendingAddedMaterialIds[entry.id] = workspace.pendingAddedMaterialIds?.[entry.id] ?? [];
+    const updated = freshWorkspace
+      ? workspace.draft.templates.find(({ id }) => id === entry.id)
+      : entry;
+    return updated
+      ? [{ ...updated, workspace: { ...updated.workspace, materials: workspace.materials } }]
+      : [];
+  });
+  return {
+    ...directory,
+    entries,
+    pendingAddedMaterialIds,
+    workspaces: { ...directory.workspaces, [workflowRunId]: workspace },
+  };
+}
+
+/** A directory request started before a source poll must not roll those sources back. */
+export function retainMixTemplateCatalogSources(
+  incoming: MixTemplateCatalog,
+  refreshed: MixTemplateCatalog,
+  refreshedRunIds: readonly string[],
+): MixTemplateCatalog {
+  let result = incoming;
+  for (const runId of refreshedRunIds) {
+    const workspace = refreshed.workspaces[runId];
+    const previous = incoming.workspaces[runId];
+    if (!workspace || !previous || (workspace.draftRevision ?? 0) < (previous.draftRevision ?? 0))
+      continue;
+    result = mixTemplateCatalogWithSources(result, runId, workspace, workspace);
+  }
+  return result;
 }
 
 /** Resolve the editor from the same directory as the list, without changing the global Run. */

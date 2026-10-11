@@ -8,6 +8,7 @@ const clip = (id: string, start: number, kind: 'VOICE' | 'MUSIC' = 'VOICE'): Sch
 function contextFixture() {
   const nodes: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; buffer: AudioBuffer | null }[] = [];
   const gains: ReturnType<typeof vi.fn>[] = [];
+  const ramps: ReturnType<typeof vi.fn>[] = [];
   const context = {
     state: 'running', currentTime: 100, baseLatency: .02, outputLatency: .03,
     getOutputTimestamp: vi.fn(() => ({ contextTime: 99.9, performanceTime: 1000 })),
@@ -18,14 +19,45 @@ function contextFixture() {
       nodes.push(node); return node;
     },
     createGain: () => {
-      const set = vi.fn(); gains.push(set);
-      return { gain: { setValueAtTime: set, linearRampToValueAtTime: vi.fn() },
+      const set = vi.fn(), ramp = vi.fn(); gains.push(set); ramps.push(ramp);
+      return { gain: { setValueAtTime: set, linearRampToValueAtTime: ramp },
         connect: vi.fn((to) => to), disconnect: vi.fn() };
     },
   };
-  return { context, nodes, gains };
+  return { context, nodes, gains, ramps };
 }
 describe('sample-scheduled packaged audio', () => {
+  it.each([0, 1.5, 3])('keeps music gain independent of overlapping narration and seeking (%s)', async (seconds) => {
+    const schedule = async (withVoices: boolean) => {
+      const { context, gains, ramps } = contextFixture();
+      const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext,
+        async () => new ArrayBuffer(2));
+      const music = clip('music', 0, 'MUSIC');
+      Object.assign(music.audio, { duration: 8, volume: .6, fadeIn: 0, fadeOut: 0 });
+      const voices = [clip('voice', 1), clip('caption-voice', 2), clip('moved-voice', 5)];
+      await clock.start([music, ...(withVoices ? voices : [])], seconds);
+      expect(gains).toHaveLength(withVoices ? 4 : 1);
+      return { gain: gains[0]!.mock.calls, ramps: ramps[0]!.mock.calls };
+    };
+    const alone = await schedule(false);
+    expect(await schedule(true)).toEqual(alone);
+    expect(alone.gain).toEqual([[.6, 100.05]]);
+    expect(alone.ramps).toEqual([[.6, 108.05 - seconds]]);
+  });
+  it('preserves per-clip fades and mute without changing other audio gains', async () => {
+    const { context, gains, ramps } = contextFixture();
+    const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext,
+      async () => new ArrayBuffer(2));
+    const music = clip('music', 0, 'MUSIC'), muted = clip('muted-music', 0, 'MUSIC');
+    Object.assign(music.audio, { duration: 8, volume: .6, fadeIn: 1, fadeOut: 2 });
+    muted.muted = true;
+    await clock.start([music, clip('voice', 1), muted], 0);
+    expect(gains[0]!.mock.calls).toEqual([[0, 100.05], [.6, 106.05]]);
+    expect(ramps[0]!.mock.calls).toEqual([[.6, 101.05], [0, 108.05]]);
+    expect(gains[1]!.mock.calls[0]).toEqual([1, 101.05]);
+    expect(gains[2]!.mock.calls.every(([value]) => value === 0)).toBe(true);
+    expect(ramps[2]!.mock.calls.every(([value]) => value === 0)).toBe(true);
+  });
   it('unlocks audio immediately but waits for the video frame before scheduling sound', async () => {
     const { context, nodes } = contextFixture();
     const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext,
@@ -64,7 +96,7 @@ describe('sample-scheduled packaged audio', () => {
     expect(nodes.map((node) => node.start.mock.calls[0])).toEqual([
       [100.05, 1, 2], [125.05, .7, 3], [100.05, 1, 37],
     ]);
-    expect(gains[2]!.mock.calls[0]).toEqual([2, 125.05]);
+    expect(gains[1]!.mock.calls[0]).toEqual([2, 125.05]);
     clock.stop(); expect(nodes.every((node) => node.stop.mock.calls.length === 1)).toBe(true);
     expect(clock.time()).toBeNull();
   });
@@ -93,5 +125,15 @@ describe('sample-scheduled packaged audio', () => {
     const clock = new PackagingSampleClock((id) => id, () => context as unknown as AudioContext, async () => { throw Error('unreadable'); });
     await expect(clock.start([clip('voice', 0)], 0)).rejects.toThrow('unreadable');
     expect(nodes).toHaveLength(0); expect(clock.time()).toBeNull();
+  });
+  it('evicts a failed preload so replay can recover instead of reusing the rejected promise', async () => {
+    const { context, nodes } = contextFixture();
+    const read = vi.fn().mockRejectedValueOnce(new TypeError('network failed'))
+      .mockResolvedValueOnce(new ArrayBuffer(2));
+    const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext, read);
+    await expect(clock.prepare([clip('voice', 0)])).rejects.toThrow('network failed');
+    expect(await clock.start([clip('voice', 0)], 0, Promise.resolve(true))).toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(nodes).toHaveLength(1);
   });
 });

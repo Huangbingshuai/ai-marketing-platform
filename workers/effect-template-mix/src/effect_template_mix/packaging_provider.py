@@ -11,6 +11,7 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
@@ -26,6 +27,21 @@ MUSIC_FAILED_STATUS = 3
 
 class PackagingError(RuntimeError):
     """Only sanitized, user-readable messages may cross the API boundary."""
+
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    raw = response.headers.get('Retry-After')
+    if not raw:
+        return None
+    try:
+        delay = float(raw) if raw.isdigit() else (parsedate_to_datetime(raw) - datetime.now(timezone.utc)).total_seconds()
+        return max(0, delay) if math.isfinite(delay) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 class MusicRateLimited(PackagingError):
@@ -140,7 +156,7 @@ class PackagingProvider:
                 if response.status_code in (401, 403):
                     raise VoicePermissionError('当前火山音色未获授权')
                 if response.status_code == 429 or response.status_code >= 500:
-                    raise PackagingTransientError('豆包配音暂时限流或不可用，正在自动恢复')
+                    raise PackagingTransientError('豆包配音暂时限流或不可用，正在自动恢复', retry_after_seconds=retry_after_seconds(response))
                 raise PackagingError('豆包配音请求失败，请检查服务权限和音色配置')
             async for line in response.aiter_lines():
                 if not line.startswith('data:'):
@@ -201,7 +217,7 @@ class PackagingProvider:
             headers=signed_headers(action, body, self.access_key, self.secret_key), content=body)
         if response.is_error:
             if action == 'QuerySong' and (response.status_code == 429 or response.status_code >= 500):
-                raise PackagingTransientError('音乐查询暂时不可用，保留原任务自动恢复')
+                raise PackagingTransientError('音乐查询暂时不可用，保留原任务自动恢复', retry_after_seconds=retry_after_seconds(response))
             raise PackagingError('火山纯音乐请求失败，请核查服务权限或任务状态')
         value = response.json()
         metadata = value.get('ResponseMetadata') or {}
@@ -213,7 +229,7 @@ class PackagingProvider:
             result = value.get('Result')
             if (value.get('Code') == 200023 and error.get('Code') == 'APIOutOfQps'
                     and (result is None or isinstance(result, dict) and not result.get('TaskID'))):
-                raise MusicRateLimited('火山音乐请求被限流拒绝，已保留成功步骤，可恢复未完成项')
+                raise MusicRateLimited('火山音乐请求被限流拒绝，正在自动等待', retry_after_seconds=retry_after_seconds(response))
             if value.get('Code') == 200028 or error.get('Code') == 'APINoSource':
                 raise PackagingError('火山音乐账号未找到可用服务资源（200028/APINoSource），请核查 AK 所属账号、音乐服务开通和计费模式')
             raise PackagingError('火山纯音乐服务返回失败')

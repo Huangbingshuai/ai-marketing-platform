@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   PACKAGING_AUDIO_GAIN_CEILING,
   packagingOverlayTimeline,
@@ -87,6 +88,20 @@ const sources = () => [
   ),
   artifact('facts', 'marketing-insight:f', { productName: '商品', sellingPoints: ['已确认卖点'] }),
 ];
+const adoptedSources = () => {
+  const rows = sources();
+  rows[0]!.nodeId = 'SEGMENT_RENDER';
+  rows[0]!.payload = {
+    origin: 'AI_GENERATED',
+    promptId: 'p',
+    promptText: ' 生成画面时采用的原始 Prompt ',
+    adoptedPrompt: {
+      promptContentHash: createHash('sha256').update('生成画面时采用的原始 Prompt').digest('hex'),
+    },
+  };
+  rows[1]!.nodeId = 'PROMPT_GENERATION';
+  return rows;
+};
 const snapshot = () => {
   const frozen = packagingSnapshot(variant(), materials, sources());
   delete frozen.narrationLayoutVersion; // Legacy playback/editor regression fixtures.
@@ -130,34 +145,137 @@ describe('slot-bound narration layout', () => {
     expect(frozen.duration).toBe(22);
     expect(frozen.variant.intentionallyEmptySlotIds).toEqual(['hole']);
   });
+  it('uses the clip-owned Prompt across repeated batch edits and retains only confirmed fact dependencies', () => {
+    const rows = adoptedSources();
+    const untouched = structuredClone(rows);
+    for (const revision of [2, 3]) {
+      rows[1]!.revision = revision;
+      rows[1]!.payload = { items: [{ id: 'p', content: `后来编辑的正文 ${revision}` }] };
+      const before = structuredClone(rows);
+      const frozen = packagingSnapshot(variant(), materials, rows);
+      expect(frozen.clips[0]!.prompt).toBe('生成画面时采用的原始 Prompt');
+      expect(frozen.facts.map((f) => f.artifactId)).toEqual(['facts', 'facts']);
+      expect(frozen.dependencies.map((d) => [d.artifactId, d.revision])).toEqual([
+        ['clip', 1],
+        ['facts', 1],
+      ]);
+      expect(rows).toEqual(before);
+    }
+    expect(rows[0]).toEqual(untouched[0]);
+  });
+
+  it('accepts the published consumer projection without changing the render node freshness', () => {
+    const rows = adoptedSources();
+    rows[0]!.freshness = 'STALE';
+    rows[0]!.metadata = { promptSourcePending: true };
+    rows[1]!.revision = 11;
+    expect(packagingSnapshot(variant(), materials, rows).clips[0]!.prompt).toBe(
+      '生成画面时采用的原始 Prompt',
+    );
+    expect(rows[0]!.freshness).toBe('STALE');
+  });
+
+  it.each(['STALE', 'MISSING', 'REVISION'] as const)(
+    'does not bypass confirmed product fact validation when a clip owns its Prompt (%s)',
+    (condition) => {
+      const rows = adoptedSources();
+      rows[1]!.revision = 2;
+      if (condition === 'STALE') rows[2]!.freshness = 'STALE';
+      if (condition === 'MISSING') rows.pop();
+      if (condition === 'REVISION') rows[2]!.revision = 2;
+      expect(() => packagingSnapshot(variant(), materials, rows)).toThrow(/包装来源/);
+    },
+  );
+
+  it('does not use unrelated confirmed facts when the explicit Prompt source has none', () => {
+    const rows = adoptedSources();
+    rows[1]!.dependencies = [];
+    expect(() => packagingSnapshot(variant(), materials, rows)).toThrow(
+      '缺少素材所消费的已确认商品信息',
+    );
+  });
+
+  it('keeps sibling source graphs separate even when they share a Prompt item id', () => {
+    const rows = adoptedSources();
+    const sibling = artifact(
+      'sibling',
+      'prompt-batch:sibling',
+      { items: [{ id: 'p', content: '兄弟分支正文' }] },
+      'other-facts',
+    );
+    const otherFacts = artifact('other-facts', 'marketing-insight:other', {
+      productName: '其他商品',
+    });
+    const frozen = packagingSnapshot(variant(), materials, [sibling, otherFacts, ...rows]);
+    expect(frozen.clips[0]!.prompt).toBe('生成画面时采用的原始 Prompt');
+    expect(frozen.dependencies.map((d) => d.artifactId)).toEqual(['clip', 'facts']);
+    expect(frozen.facts.some((f) => f.artifactId === 'other-facts')).toBe(false);
+  });
+
+  it.each([{}, { promptContentHash: 'wrong-hash' }])(
+    'rejects unverified clip-owned AI text without a confirmed legacy Prompt (%o)',
+    (adoptedPrompt) => {
+      const rows = adoptedSources();
+      rows[0]!.payload = { origin: 'AI_GENERATED', promptText: '未确认的文字', adoptedPrompt };
+      rows[0]!.dependencies = [
+        {
+          sourceType: 'WORKING_ARTIFACT',
+          sourceArtifactId: 'facts',
+          sourceNodeId: 'INFORMATION_EXTRACTION',
+          sourceKey: 'marketing-insight:f',
+          sourceRevision: 1,
+          sourceHash: null,
+        },
+      ];
+      expect(() => packagingSnapshot(variant(), materials, [rows[0]!, rows[2]!])).toThrow(
+        '缺少素材对应的已确认原始 Prompt',
+      );
+    },
+  );
+
   it('preserves packaging source hashes while freezing transforms for final rendering', () => {
-    const v = variant(), original = visualHash(v);
+    const v = variant(),
+      original = visualHash(v);
     v.canvasRatio = '4:3';
-    v.videoTransforms = { s: { x: .2, y: -.1, scaleX: .5, scaleY: .7, rotation: 90, uniform: false } };
+    v.videoTransforms = {
+      s: { x: 0.2, y: -0.1, scaleX: 0.5, scaleY: 0.7, rotation: 90, uniform: false },
+    };
     expect(visualHash(v)).toBe(original);
     const clip = packagingClips(v, materials, artifactVisitor(sources()))[0]!;
     expect(clip.transform).toEqual(v.videoTransforms.s);
   });
   it('freezes the confirmed reverse-description owned by an imported render clip', () => {
-    const imported = artifact('clip', 'render-clip:c', {
-      origin: 'EXTERNAL_IMPORT', promptId: 'not-a-generated-prompt',
-      promptText: ' 导入视频已确认描述 ', importedMaterial: { schemaVersion: 1 },
-    }, 'facts');
+    const imported = artifact(
+      'clip',
+      'render-clip:c',
+      {
+        origin: 'EXTERNAL_IMPORT',
+        promptId: 'not-a-generated-prompt',
+        promptText: ' 导入视频已确认描述 ',
+        importedMaterial: { schemaVersion: 1 },
+      },
+      'facts',
+    );
     imported.nodeId = 'SEGMENT_RENDER';
     const frozen = packagingSnapshot(variant(), materials, [imported, sources()[2]!]);
     expect(frozen.clips[0]!.prompt).toBe('导入视频已确认描述');
-    expect(frozen.dependencies.map(d=>d.artifactId)).toContain('clip');
+    expect(frozen.dependencies.map((d) => d.artifactId)).toContain('clip');
   });
 
   it.each([
-    { origin: 'AI_GENERATED', promptText: '不可作草稿兜底', importedMaterial: { schemaVersion: 1 } },
+    {
+      origin: 'AI_GENERATED',
+      promptText: '不可作草稿兜底',
+      importedMaterial: { schemaVersion: 1 },
+    },
     { origin: 'EXTERNAL_IMPORT', promptText: '未验证结构', importedMaterial: { schemaVersion: 2 } },
     { origin: 'EXTERNAL_IMPORT', promptText: ' ', importedMaterial: { schemaVersion: 1 } },
   ])('still rejects unconfirmed imported description provenance (%o)', (payload) => {
     const imported = artifact('clip', 'render-clip:c', payload, 'facts');
     imported.nodeId = 'SEGMENT_RENDER';
-    expect(()=>packagingSnapshot(variant(), materials, [imported, sources()[2]!]))
-      .toThrow('缺少素材对应的已确认原始 Prompt');
+    expect(() => packagingSnapshot(variant(), materials, [imported, sources()[2]!])).toThrow(
+      '缺少素材对应的已确认原始 Prompt',
+    );
   });
 
   it('freezes imported music assets as independent audio-track sources', () => {
@@ -282,6 +400,31 @@ describe('slot-bound narration layout', () => {
   });
   it.each([-1, 3, 0.5, NaN])('rejects invalid retry count %s', (automaticRetries) => {
     expect(() => validatePackagingCheckpoint(snapshot(), { automaticRetries })).toThrow();
+  });
+  it('accepts the worker recovery checkpoints before its first paid request and during waits', () => {
+    const frozen = { ...snapshot(), operation: 'BATCH_PACKAGE' as const };
+    const startedAt = '2026-10-11T06:00:00+00:00';
+    expect(() => validatePackagingCheckpoint(frozen, {
+      recovery: { startedAt, attempts: {} },
+    })).not.toThrow();
+    expect(() => validatePackagingCheckpoint(frozen, {
+      automaticRetries: 5,
+      recovery: { startedAt, attempts: { VOICE: 5, MUSIC: 2 }, stage: 'VOICE',
+        waitingUntil: '2026-10-11T06:00:30+00:00' },
+      voiceRecovery: { ['a'.repeat(64)]: { startedAt, attempts: 8, pending: false,
+        waitingUntil: '2026-10-11T06:00:30Z' } },
+    })).not.toThrow();
+  });
+  it.each([
+    { recovery: { startedAt: 'invalid', attempts: {} } },
+    { recovery: { startedAt: '2026-10-11T06:00:00Z', attempts: { UNKNOWN: 1 } } },
+    { recovery: { startedAt: '2026-10-11T06:00:00Z', attempts: { VOICE: 6 } } },
+    { recovery: { startedAt: '2026-10-11T06:00:00Z', attempts: {}, injected: true } },
+    { voiceRecovery: { invalid: { startedAt: '2026-10-11T06:00:00Z', attempts: 1 } } },
+    { voiceRecovery: { ['a'.repeat(64)]: { startedAt: '2026-10-11T06:00:00Z', attempts: 21 } } },
+    { voiceRecovery: { ['a'.repeat(64)]: { startedAt: '2026-10-11T06:00:00Z', attempts: 1, pending: 'yes' } } },
+  ])('rejects malformed durable recovery state %j', (cp) => {
+    expect(() => validatePackagingCheckpoint(snapshot(), cp as PackagingCheckpoint)).toThrow();
   });
   it('accepts one automatic voice recovery only for a frozen slot', () => {
     const { frozen, cp } = current();
@@ -441,9 +584,14 @@ describe('slot-bound narration layout', () => {
   it('validates spoken ranges including first-clause silence and gaps', () => {
     const { frozen, cp } = segmentedV2();
     cp.captionLayoutVersion = 'SPEECH_V1';
-    cp.voices!['line-1']!.speechRanges = [{ startFrame: 4800, endFrame: 24000 }, { startFrame: 33600, endFrame: 55200 }];
-    cp.captions![0]!.start = .2; cp.captions![0]!.end = 1;
-    cp.captions![1]!.start = 1.4; cp.captions![1]!.end = 2.3;
+    cp.voices!['line-1']!.speechRanges = [
+      { startFrame: 4800, endFrame: 24000 },
+      { startFrame: 33600, endFrame: 55200 },
+    ];
+    cp.captions![0]!.start = 0.2;
+    cp.captions![0]!.end = 1;
+    cp.captions![1]!.start = 1.4;
+    cp.captions![1]!.end = 2.3;
     expect(() => validatePackagingCheckpoint(frozen, cp, true)).not.toThrow();
     cp.captions![0]!.start = 0;
     expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
@@ -455,7 +603,10 @@ describe('slot-bound narration layout', () => {
     const { frozen, cp } = segmentedV2();
     frozen.captionTimingPolicy = 'SYNTHESIS_WORDS_V1';
     expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
-    cp.voices!['line-1']!.speechRanges = [{ startFrame: 0, endFrame: 28800 }, { startFrame: 28800, endFrame: 57600 }];
+    cp.voices!['line-1']!.speechRanges = [
+      { startFrame: 0, endFrame: 28800 },
+      { startFrame: 28800, endFrame: 57600 },
+    ];
     expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
     cp.captionLayoutVersion = 'SPEECH_V1';
     expect(() => validatePackagingCheckpoint(frozen, cp, true)).not.toThrow();
@@ -464,15 +615,21 @@ describe('slot-bound narration layout', () => {
     const { frozen, cp } = segmentedV2();
     cp.captionLayoutVersion = 'SPEECH_V1';
     cp.voices!['line-1']!.segmentFrames = [24_000, 33_600];
-    cp.voices!['line-1']!.speechRanges = [{ startFrame: 4800, endFrame: 24000 }, { startFrame: 33600, endFrame: 55200 }];
+    cp.voices!['line-1']!.speechRanges = [
+      { startFrame: 4800, endFrame: 24000 },
+      { startFrame: 33600, endFrame: 55200 },
+    ];
     cp.voices!['line-1']!.duration = 2;
     expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).not.toThrow();
     expect(() => validatePackagingCheckpoint(frozen, cp, true, false)).toThrow();
     const canonical = canonicalizeCheckpoint(frozen, cp);
     expect(canonical.voices!['line-1']!.duration).toBe(2.4);
-    expect(canonical.captions!.map(c => [c.start, c.end])).toEqual([[.2, 1], [1.4, 2.3]]);
+    expect(canonical.captions!.map((c) => [c.start, c.end])).toEqual([
+      [0.2, 1],
+      [1.4, 2.3],
+    ]);
     expect(() => validatePackagingCheckpoint(frozen, canonical, true)).not.toThrow();
-    cp.voices!['line-1']!.offset = .5;
+    cp.voices!['line-1']!.offset = 0.5;
     expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).toThrow();
   });
   it.each([4, 15])('accepts %s-second slots', (duration) => {
@@ -546,10 +703,15 @@ describe('slot-bound narration layout', () => {
     expect(visualHash({ ...apart, videoLanes: { s: 1, s2: 2 } })).toBe(visualHash(apart));
     expect(visualHash({ ...apart, videoLanes: { s: 1, s2: 0 } })).toBe(visualHash(apart));
     expect(visualHash({ ...apart, timelineStarts: { s: 2, s2: 12 } })).toBe(visualHash(apart));
-    expect(visualHash({ ...apart, slots: apart.slots.map((slot) => ({ ...slot, transition: '叠化' })) }))
-      .toBe(visualHash(apart));
-    expect(visualHash({ ...apart, slots: apart.slots.map((slot) => ({ ...slot, duration: slot.duration + 1 })) }))
-      .not.toBe(visualHash(apart));
+    expect(
+      visualHash({ ...apart, slots: apart.slots.map((slot) => ({ ...slot, transition: '叠化' })) }),
+    ).toBe(visualHash(apart));
+    expect(
+      visualHash({
+        ...apart,
+        slots: apart.slots.map((slot) => ({ ...slot, duration: slot.duration + 1 })),
+      }),
+    ).not.toBe(visualHash(apart));
   });
   it('reports the overlays separately, so the render can still tell two of them apart', () => {
     const stacked = overlaid();
@@ -805,9 +967,18 @@ describe('packaging snapshots and validation', () => {
     expect(() => validatePackagingCheckpoint(snapshot(), checkpoint(), true)).not.toThrow());
   it('accepts an integer count of repaired script slots and rejects forged timing metrics', () => {
     const cp = checkpoint();
-    cp.timings = { _item: { scriptSeconds: 18.5, scriptRepairSlots: 1,
-      musicDownloadSeconds: 1.2, musicTranscodeSeconds: 2.4, musicUploadSeconds: 3.6,
-      apiHeartbeatSeconds: 0.3, checkpointSeconds: 0.4, captionSeconds: 0.01 } };
+    cp.timings = {
+      _item: {
+        scriptSeconds: 18.5,
+        scriptRepairSlots: 1,
+        musicDownloadSeconds: 1.2,
+        musicTranscodeSeconds: 2.4,
+        musicUploadSeconds: 3.6,
+        apiHeartbeatSeconds: 0.3,
+        checkpointSeconds: 0.4,
+        captionSeconds: 0.01,
+      },
+    };
     expect(() => validatePackagingCheckpoint(snapshot(), cp)).not.toThrow();
     cp.timings._item!.musicUploadSeconds = -1;
     expect(() => validatePackagingCheckpoint(snapshot(), cp)).toThrow();
@@ -899,11 +1070,19 @@ describe('packaging snapshots and validation', () => {
     });
     expect(() => validatePackagingCheckpoint(snapshot(), edited, true, true)).not.toThrow();
     expect(() => validatePackagingCheckpoint(snapshot(), edited, true, false)).toThrow();
-    const invalidTrack = { ...edited, captions: edited.captions!.map((caption) =>
-      caption.id === 'manual-caption' ? { ...caption, trackId: 'not valid!' } : caption) };
+    const invalidTrack = {
+      ...edited,
+      captions: edited.captions!.map((caption) =>
+        caption.id === 'manual-caption' ? { ...caption, trackId: 'not valid!' } : caption,
+      ),
+    };
     expect(() => validatePackagingCheckpoint(snapshot(), invalidTrack, true, true)).toThrow();
-    const notManual = { ...edited, captions: edited.captions!.map((caption) =>
-      caption.id === 'manual-caption' ? { ...caption, manual: false } : caption) };
+    const notManual = {
+      ...edited,
+      captions: edited.captions!.map((caption) =>
+        caption.id === 'manual-caption' ? { ...caption, manual: false } : caption,
+      ),
+    };
     expect(() => validatePackagingCheckpoint(snapshot(), notManual, true, true)).toThrow();
   });
   it('accepts editor fades that fit inside the clip and keeps them through a redo', () => {

@@ -28,6 +28,7 @@ import { workflowStateHash } from './workflow-state-hash';
 import { effectArtifactSourceOwner, effectRenderClipHeads, effectRenderHead,
   projectEffectBranchFreshness } from './effect-branch-freshness';
 import { activeMixSourceUpdates, assertMixSourceUpdateDraftEditable, lockMixNodeForSourceUpdate } from './effect-mix-source-update-lock';
+import { assertPackagingDraftEditable } from './effect-packaging-lock';
 import {
   beginEffectEditInTransaction,
   exitEffectEditInTransaction,
@@ -720,8 +721,13 @@ export class WorkflowWorkingRepository {
         if (expectedRevision !== current.revision)
           return { record: current, unchanged: false, conflict: true };
         if (nodeId === 'TEMPLATE_MIX')
-          assertMixSourceUpdateDraftEditable(current.state, state,
-            await activeMixSourceUpdates(transaction, projectId, workflowRunId));
+          await assertPackagingDraftEditable(transaction, projectId, workflowRunId, current.state, state);
+        if (nodeId === 'TEMPLATE_MIX')
+          assertMixSourceUpdateDraftEditable(
+            current.state,
+            state,
+            await activeMixSourceUpdates(transaction, projectId, workflowRunId),
+          );
         const record = await transaction.workflowNodeState.update({
           where: { id: current.id },
           data: {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ref } from 'vue';
-import { transpileModule } from 'typescript';
+import { ScriptTarget, transpileModule } from 'typescript';
 import page from './EffectTemplateMixNodePage.vue?raw';
 
 function harness() {
@@ -19,7 +19,7 @@ function harness() {
       },
     }),
     aiRuns: ref([]),
-    mutating: ref(true),
+    mutating: ref(false),
     finishAiRun: vi.fn(),
     refreshMaterialSources: vi.fn().mockResolvedValue(undefined),
     showNotice: vi.fn(),
@@ -28,7 +28,9 @@ function harness() {
     DOMException,
   };
   const source = page.split('const pollAiRun =')[1]!.split("let loadedWorkspaceRunId = '';")[0]!;
-  const script = transpileModule(`const execute =${source}`, {}).outputText;
+  const script = transpileModule(`const execute =${source}`, {
+    compilerOptions: { target: ScriptTarget.ES2022 },
+  }).outputText;
   const execute = new Function(...Object.keys(context), `${script}\nreturn execute;`)(
     ...Object.values(context),
   );
@@ -40,6 +42,10 @@ function sourceHarness() {
     workbenchActive: true,
     pageState: ref('READY'),
     sourcePollController: undefined,
+    templateDirectory: ref({ workflowRunIds: {}, workspaces: {} }),
+    mixTemplateCatalogWithSources: vi.fn((directory) => directory),
+    sourceProjectionEpoch: 0,
+    sourceProjectionEpochs: new Map(),
     draftRace: { readToken: vi.fn(() => 1), canInstall: vi.fn(() => true) },
     workspaceRevisionFence: { isCurrent: vi.fn(() => true) },
     mutating: ref(false),
@@ -70,7 +76,9 @@ function sourceHarness() {
     load: vi.fn(),
   };
   const source = page.split('const refreshMaterialSources =')[1]!.split('onMounted(')[0]!;
-  const script = transpileModule(`const execute =${source}`, {}).outputText;
+  const script = transpileModule(`const execute =${source}`, {
+    compilerOptions: { target: ScriptTarget.ES2022 },
+  }).outputText;
   const execute = new Function(...Object.keys(c), `${script}\nreturn execute;`)(
     ...Object.values(c),
   );
@@ -89,13 +97,31 @@ describe('live APPEND classification uses existing lightweight library refresh',
     expect(c.finishAiRun).not.toHaveBeenCalled();
     expect(c.pollTimers.has('append')).toBe(true);
   });
-  it('keeps full fill on its own existing lifecycle', async () => {
+  it('keeps full fill polling without locking unrelated template navigation', async () => {
     const { c, execute } = harness();
     c.getEffectTemplateMixAiRun.mockResolvedValue({
       data: { id: 'fill', workflowRunId: 'workflow', operation: 'FILL', status: 'RUNNING', progress: 20 },
     });
     await execute('fill');
     expect(c.refreshMaterialSources).not.toHaveBeenCalled();
+    expect(c.mutating.value).toBe(false);
+    expect(c.aiRuns.value[0]).toMatchObject({ id: 'fill', status: 'RUNNING' });
+    expect(c.pollTimers.has('fill')).toBe(true);
+  });
+  it.each(['APPEND', 'FILL'])('does not release another committing request while polling %s', async (operation) => {
+    const { c, execute } = harness();
+    c.mutating.value = true;
+    c.getEffectTemplateMixAiRun.mockResolvedValue({
+      data: { id: 'task', workflowRunId: 'workflow', operation, status: 'RUNNING' },
+    });
+    await execute('task');
+    expect(c.mutating.value).toBe(true);
+  });
+  it('does not release a committing request on a transient poll failure', async () => {
+    const { c, execute } = harness();
+    c.mutating.value = true;
+    c.getEffectTemplateMixAiRun.mockRejectedValue(new Error('network unavailable'));
+    await execute('fill');
     expect(c.mutating.value).toBe(true);
   });
   it.each(['projectId', 'workflowRunId', 'abort'])(

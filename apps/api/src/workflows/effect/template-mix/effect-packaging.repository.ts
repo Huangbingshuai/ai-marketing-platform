@@ -2,6 +2,7 @@ import { Injectable, Inject, ConflictException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../../database/prisma.service';
 import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
+import { publishedRenderSource } from '../../../platform/workflow/effect-published-render-source';
 import type { Prisma } from '../../../generated/prisma/client';
 import type {
   PackagingCaptionVoiceQueueMessage,
@@ -18,6 +19,7 @@ import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
 import { templateConfigurationHash } from './template-mix-lifecycle';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { activeMixSourceUpdates, lockMixNodeForSourceUpdate } from '../../../platform/workflow/effect-mix-source-update-lock';
+import { activePackagingItems } from '../../../platform/workflow/effect-packaging-lock';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -52,7 +54,7 @@ export class EffectPackagingRepository {
     const wanted = new Set(artifactIds);
     const artifacts = await new WorkflowWorkingRepository(this.db)
       .listArtifacts(projectId, { workflowRunId });
-    return artifacts.filter((artifact) => wanted.has(artifact.id)).map((artifact) => ({
+    return artifacts.filter((artifact) => wanted.has(artifact.id)).map(publishedRenderSource).map((artifact) => ({
       id: artifact.id, revision: artifact.revision,
       freshness: artifact.freshness, availability: artifact.availability,
     }));
@@ -64,6 +66,12 @@ export class EffectPackagingRepository {
       distinct: ['variantId'],
       select: { id: true, runId: true },
     });
+    const confirmed = await this.db.effectPackagingItem.findMany({
+      where: { projectId, status: 'COMPLETED', run: { workflowRunId, templateId } },
+      orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }],
+      distinct: ['variantId'], select: { id: true, runId: true },
+    });
+    const retained = [...latest, ...confirmed];
     const recent = await this.db.effectPackagingRun.findMany({
       where: { projectId, workflowRunId, templateId },
       orderBy: { createdAt: 'desc' },
@@ -71,14 +79,14 @@ export class EffectPackagingRepository {
       include: PACKAGING_INCLUDE,
     });
     const recentIds = new Set(recent.map((r) => r.id));
-    const extraIds = [...new Set(latest.map((i) => i.runId))].filter((id) => !recentIds.has(id));
+    const extraIds = [...new Set(retained.map((i) => i.runId))].filter((id) => !recentIds.has(id));
     const older = extraIds.length
       ? await this.db.effectPackagingRun.findMany({
           where: { projectId, workflowRunId, templateId, id: { in: extraIds } },
           orderBy: { createdAt: 'desc' },
           include: {
             items: {
-              where: { id: { in: latest.map((i) => i.id) } },
+              where: { id: { in: retained.map((i) => i.id) } },
               orderBy: [{ shardIndex: 'asc' }, { id: 'asc' }],
             },
           },
@@ -97,10 +105,10 @@ export class EffectPackagingRepository {
           { workflowRun: { parentWorkflowRunId: workflowRunId, forkNodeId: 'TEMPLATE_MIX' } },
         ],
       },
-      distinct: ['templateId'],
-      select: { templateId: true },
+      select: { templateId: true, items: { select: { snapshot: true } } },
     });
-    return rows.map(({ templateId }) => templateId);
+    return rows.filter((row) => row.items.some((item) => !(item.snapshot as unknown as PackagingSnapshot).operation))
+      .map(({ templateId }) => templateId);
   }
   latestChild(projectId: string, workflowRunId: string, templateId: string) {
     return this.db.effectPackagingRun.findFirst({
@@ -198,6 +206,7 @@ export class EffectPackagingRepository {
     checkpoints: PackagingCheckpoint[];
     expectedDraftRevision: number;
     expectedTemplateHash: string;
+    sourceWorkflowRunId?: string;
   }) {
     const shards = packagingShardIndexes(input.snapshots);
     return this.db.$transaction(async (tx) => {
@@ -215,6 +224,21 @@ export class EffectPackagingRepository {
         if (replay.requestHash !== input.requestHash)
           throw new ConflictException('幂等键对应的包装请求已改变');
         return replay.id;
+      }
+      if (input.sourceWorkflowRunId) {
+        // Serialize the source fence with both source edits and another child task creation.
+        await lockMixNodeForSourceUpdate(tx, input.projectId, input.sourceWorkflowRunId);
+        const held = await activePackagingItems(tx, input.projectId, input.sourceWorkflowRunId);
+        if (held.some((item) => item.run.templateId === input.templateId &&
+            input.snapshots.some((snapshot) => snapshot.variant.id === item.variantId)))
+          throw new ConflictException('当前成片已有包装任务运行中');
+        if (input.sourceWorkflowRunId !== input.workflowRunId) {
+          const source = await tx.workflowNodeState.findUnique({ where: { projectId_workflowRunId_nodeId: {
+            projectId: input.projectId, workflowRunId: input.sourceWorkflowRunId, nodeId: 'TEMPLATE_MIX',
+          } } });
+          if (!source || source.revision !== input.expectedDraftRevision)
+            throw new ConflictException('包装前原工程已改变，请刷新后重试');
+        }
       }
       await tx.$queryRaw`SELECT "id" FROM "workflow_node_states"
         WHERE "projectId"=${input.projectId}::uuid AND "workflowRunId"=${input.workflowRunId}::uuid
@@ -262,18 +286,21 @@ export class EffectPackagingRepository {
         })
       )
         throw new ConflictException('智能填充正在运行，暂不能开始智能成片包装');
-      if (
-        await tx.effectPackagingRun.count({
+      const overlapping = await tx.effectPackagingRun.count({
           where: {
             projectId: input.projectId,
             workflowRunId: input.workflowRunId,
             templateId: input.templateId,
             status: { in: ['QUEUED', 'RUNNING'] },
+            ...(input.snapshots.every((snapshot) => snapshot.operation) ? {
+              items: { some: { variantId: { in: input.snapshots.map((snapshot) => snapshot.variant.id) },
+                status: { in: ['QUEUED', 'RUNNING'] } } },
+            } : {}),
           },
-        })
-      )
+        });
+      if (overlapping)
         throw new ConflictException('当前模板已有包装任务运行中');
-      const rebound = input.snapshots.filter((snapshot) => snapshot.sourceTrimMaterials?.length);
+      const rebound = input.snapshots.filter((snapshot) => !snapshot.operation && snapshot.sourceTrimMaterials?.length);
       if (rebound.length) {
         currentEntry.workspace.variants = currentEntry.workspace.variants.map((variant) =>
           rebound.find((snapshot) => snapshot.variant.id === variant.id)?.variant ?? variant);
@@ -326,15 +353,16 @@ export class EffectPackagingRepository {
           startedAt: run.startedAt ?? new Date(),
         },
       });
+      const modern = run.items.some((item) => (item.snapshot as unknown as PackagingSnapshot).operation);
       await tx.effectPackagingItem.updateMany({
-        where: { projectId, runId: id, status: { not: 'COMPLETED' } },
+        where: { projectId, runId: id, status: modern ? { in: ['QUEUED', 'RUNNING'] } : { not: 'COMPLETED' } },
         data: { status: 'QUEUED', errorMessage: null },
       });
       return {
         terminal: false,
         attemptToken,
         items: run.items.map((item) =>
-          item.status === 'COMPLETED' ? item : { ...item, status: 'QUEUED' },
+          item.status === 'COMPLETED' || (modern && ['FAILED', 'CANCELLED'].includes(item.status)) ? item : { ...item, status: 'QUEUED' },
         ),
       };
     });
@@ -409,6 +437,8 @@ export class EffectPackagingRepository {
       });
       if (!item) throw new ConflictException('包装成片不存在');
       if (item.status === 'COMPLETED') return { accepted: true };
+      if ((item.snapshot as unknown as PackagingSnapshot).operation && ['FAILED', 'CANCELLED'].includes(item.status))
+        return { accepted: true };
       const old = item.checkpoint as PackagingCheckpoint;
       const next = { ...old, ...checkpoint, voices: { ...old.voices, ...checkpoint.voices } };
       await tx.effectPackagingItem.update({
@@ -416,10 +446,10 @@ export class EffectPackagingRepository {
         data: {
           stage,
           checkpoint: json(next),
-          status: errorMessage ? 'FAILED' : stage === 'READY' ? 'COMPLETED' : 'RUNNING',
+          status: errorMessage ? 'FAILED' : stage === 'READY' && !(item.snapshot as unknown as PackagingSnapshot).operation ? 'COMPLETED' : 'RUNNING',
           errorMessage: errorMessage ?? null,
           startedAt: item.startedAt ?? new Date(),
-          completedAt: errorMessage || stage === 'READY' ? new Date() : null,
+          completedAt: errorMessage || stage === 'READY' && !(item.snapshot as unknown as PackagingSnapshot).operation ? new Date() : null,
         },
       });
       return { accepted: true };
@@ -442,6 +472,9 @@ export class EffectPackagingRepository {
         include: { run: { select: { workflowRunId: true, templateId: true } } } });
       if (!item) throw new ConflictException('包装结果已被修改，请刷新');
       await lockMixNodeForSourceUpdate(tx, projectId, item.run.workflowRunId);
+      const packaging = await activePackagingItems(tx, projectId, item.run.workflowRunId);
+      if (packaging.some((active) => active.run.templateId === item.run.templateId && active.variantId === item.variantId))
+        throw new ConflictException('当前成片正在包装，完成后自动解锁');
       const updates = await activeMixSourceUpdates(tx, projectId, item.run.workflowRunId);
       if (updates.some((update) => update.templateId === item.run.templateId &&
           update.baselineVariant.id === item.variantId))

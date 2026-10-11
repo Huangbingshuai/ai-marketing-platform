@@ -19,6 +19,10 @@ export const rememberWorkbench = (next: EffectTemplateMixWorkbenchHandoff): void
   handoff = next;
 };
 
+/** Resolve the destination before catalog routing; consume only after its workspace is installed. */
+export const peekWorkbench = (workflowRunId: string): EffectTemplateMixWorkbenchHandoff | null =>
+  handoff?.workflowRunId === workflowRunId ? handoff : null;
+
 /**
  * 只交接一次：无论取回时 Run 是否对得上都会清掉，否则一次没落地的切换会让这份交接留到用户
  * 之后手动切到那个分支时才生效，把人家莫名其妙带进工作台。

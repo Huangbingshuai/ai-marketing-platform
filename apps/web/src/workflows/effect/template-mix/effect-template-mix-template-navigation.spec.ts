@@ -9,6 +9,8 @@ const source = page.split('async function openTemplateWorkspace(')[1]!
   .split('\nconst selectVariant =')[0]!;
 function harness() {
   const context = {
+    saveState: { value: 'dirty' }, pendingSave: null,
+    controller: null, requestedWorkspaceScope: { value: null },
     runSwitching: { value: false }, mutating: { value: false }, projectEditLocked: { value: false },
     pageState: { value: 'READY' }, installedWorkspaceScope: { value: 'project:t3' },
     currentWorkspaceScope: { value: 'project:t3' }, props: { projectId: 'project', workflowRunId: 't3' },
@@ -76,7 +78,7 @@ describe('template workbench selects the template current workspace without glob
 
   it('does not install a cached directory response as the destination writable draft', async () => {
     const { context: c, execute } = harness();
-    const cached = { draftRevision: 7, draft: { activeTemplateId: 'template2' } };
+    const cached = { draftRevision: 7, draft: { activeTemplateId: 'template2', templates: [] } };
     c.templateDirectory.value.workspaces['t2-package'] = cached;
     await execute('template2', 'CONFIG');
     expect(c.installWorkspaceData).not.toHaveBeenCalled();
@@ -127,7 +129,7 @@ describe('template workbench selects the template current workspace without glob
     const { context: c, execute } = harness();
     await execute('new', 'CONFIG');
     expect(c.activateEffectWorkflowBranch).not.toHaveBeenCalled();
-    expect(c.selectTemplate).toHaveBeenCalledWith('new');
+    expect(c.selectTemplate).toHaveBeenCalledWith('new', false);
     expect(c.view.value).toBe('CONFIG');
     expect(c.templateNavigationPending.value).toBe(false);
   });

@@ -23,7 +23,7 @@ const failureCounts = new Map<string, number>();
 const jobs = new Map<string, ThumbnailJob>();
 const queue: ThumbnailJob[] = [];
 const activeCaptures = new Map<string, () => void>();
-let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let retryTimer: number | undefined;
 let diskCache: Promise<Cache | null> | undefined;
 let persistedWrites = 0;
 let capturesPaused = false;

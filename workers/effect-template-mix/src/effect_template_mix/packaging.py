@@ -7,6 +7,7 @@ import re
 import tempfile
 import hashlib
 import time
+from datetime import datetime, timezone
 from contextlib import suppress, asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from .api import ApiError, InternalApi
 from .packaging_media import slot_frames, music_wav, pcm_wav, visible_intervals
 from .packaging_captions import captions_for_voice, voice_text_parts, speech_aligned_segment_frames
 from .packaging_provider import MusicRateLimited, MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError, TimedVoicePcm
+from .packaging_voice_recovery import recover_voice_connection
 from .provider import ArkProvider, ProviderError, ProviderOutputError, ProviderIncompleteError
 from .models import Material, Slot
 from .video import sample_frames
@@ -65,7 +67,7 @@ class VoiceFitRewrite(PackagingError):
 
 async def recover_packaging_item(item: dict[str, Any], process: Callable[[], Awaitable[None]],
                                 persist: Callable[[int], Awaitable[None]],
-                                backoff_seconds: float = 5) -> None:
+                                backoff_seconds: float = 5, max_retries: int = 2) -> None:
     """Retry only this item's missing work, with a durable, bounded budget."""
     while True:
         try:
@@ -73,18 +75,29 @@ async def recover_packaging_item(item: dict[str, Any], process: Callable[[], Awa
             return
         except Exception as exc:
             cp = item['checkpoint']
-            retryable = (isinstance(exc, (PackagingTransientError, MusicTaskFailed, VoiceFitRewrite,
+            retryable = (isinstance(exc, (PackagingTransientError, MusicRateLimited, MusicTaskFailed, VoiceFitRewrite,
                                           httpx.TransportError, ProviderOutputError)) or
                          isinstance(exc, ProviderError) and exc.retryable)
-            count = cp.get('automaticRetries', 0)
-            if not retryable or count >= 2 or cp.get('musicSubmissionPending'):
+            modern = bool(item.get('snapshot', {}).get('operation'))
+            stage = item['stage']
+            recovery = cp.get('recovery', {})
+            count = recovery.get('attempts', {}).get(stage, 0) if modern else cp.get('automaticRetries', 0)
+            if not retryable or count >= max_retries or cp.get('musicSubmissionPending'):
                 raise
+            delay = min(30, backoff_seconds * (2 ** count))
+            supplier_delay = getattr(exc, 'retry_after_seconds', None)
+            if isinstance(supplier_delay, (int, float)) and math.isfinite(supplier_delay):
+                delay = max(delay, supplier_delay)
+            if modern:
+                recovery = {**recovery, 'attempts': {**recovery.get('attempts', {}), stage: count + 1},
+                            'stage': stage, 'waitingUntil': datetime.fromtimestamp(time.time() + delay, timezone.utc).isoformat()}
+                cp['recovery'] = recovery
             # API/lease failures propagate; do not spend before this write succeeds.
             await persist(count + 1)
             cp['automaticRetries'] = count + 1
             LOGGER.info('packaging automatic retry item=%s retry=%s stage=%s',
                         item['id'], count + 1, item['stage'])
-            await asyncio.sleep(backoff_seconds * (2 ** count))
+            await asyncio.sleep(delay)
 
 
 async def submit_music_safely(provider: PackagingProvider, checkpoint: dict[str, Any], duration: float,
@@ -476,12 +489,20 @@ async def shorten_voice_line(ark: ArkProvider, snapshot: dict[str, Any], cp: dic
 
 class PackagingHandler:
     def __init__(self, api: InternalApi, ark: ArkProvider, provider: PackagingProvider, max_video_bytes: int,
-                 concurrency: int = 6, model_concurrency: int = 4, tts_concurrency: int = 4) -> None:
+                 concurrency: int = 6, model_concurrency: int = 4, tts_concurrency: int = 4, *,
+                 tts_connection_max_attempts: int = 8, tts_connection_timeout_seconds: float = 600,
+                 tts_connection_max_delay_seconds: float = 30, item_timeout_seconds: float = 2400,
+                 step_retry_attempts: int = 2) -> None:
         self.api, self.ark, self.provider, self.max_video_bytes = api, ark, provider, max_video_bytes
         self.concurrency = max(1, min(8, concurrency))
         self.preprocessing = asyncio.Semaphore(2)
         self.model_requests = asyncio.Semaphore(max(1, min(8, model_concurrency)))
         self.requests = asyncio.Semaphore(max(1, min(12, tts_concurrency)))
+        self.tts_connection_max_attempts = tts_connection_max_attempts
+        self.tts_connection_timeout_seconds = tts_connection_timeout_seconds
+        self.tts_connection_max_delay_seconds = tts_connection_max_delay_seconds
+        self.item_timeout_seconds = item_timeout_seconds
+        self.step_retry_attempts = step_retry_attempts
         self.vision_cache: dict[str, str] = {}
         self.vision_pending: dict[str, asyncio.Future[str]] = {}
 
@@ -515,10 +536,21 @@ class PackagingHandler:
                         async def persist_retry(count: int) -> None:
                             await self.api.request('PUT', f"{root}/items/{item['id']}/checkpoint", headers=headers,
                                 json={'projectId': project_id, 'stage': item['stage'],
-                                      'checkpoint': {'automaticRetries': count}})
-                        async with asyncio.timeout(2400):
+                                      'checkpoint': {'automaticRetries': count,
+                                        **({'recovery': item['checkpoint']['recovery']} if item['checkpoint'].get('recovery') else {})}})
+                        remaining = self.item_timeout_seconds
+                        if item['snapshot'].get('operation'):
+                            recovery = item['checkpoint'].setdefault('recovery', {
+                                'startedAt': datetime.now(timezone.utc).isoformat(), 'attempts': {}})
+                            await self.api.request('PUT', f"{root}/items/{item['id']}/checkpoint", headers=headers,
+                                json={'projectId': project_id, 'stage': item['stage'], 'checkpoint': {'recovery': recovery}})
+                            remaining -= time.time() - datetime.fromisoformat(recovery['startedAt']).timestamp()
+                        if remaining <= 0:
+                            raise TimeoutError('packaging deadline exhausted')
+                        async with asyncio.timeout(remaining):
                             await recover_packaging_item(item,
-                                lambda: self.process_item(root, headers, project_id, item), persist_retry)
+                                lambda: self.process_item(root, headers, project_id, item), persist_retry,
+                                max_retries=self.step_retry_attempts)
                     except ApiError as exc:
                         if exc.retryable:
                             raise  # Lease recovery resumes saved progress; do not mark successful work failed.
@@ -527,14 +559,15 @@ class PackagingHandler:
                         await self.api.request('PUT', f"{root}/items/{item['id']}/checkpoint", headers=headers,
                             json={'projectId': project_id, 'stage': item['stage'], 'checkpoint': {}, 'errorMessage': '包装来源或结果校验失败，请检查时间轴后重试'})
                     except Exception as exc:
-                        LOGGER.warning('packaging item failed item=%s error=%s', item['id'], type(exc).__name__)
+                        LOGGER.warning('packaging item failed item=%s error=%s', item['id'], safe_error_chain(exc))
                         reason = str(exc) if isinstance(exc, (PackagingError, ProviderError)) else (
-                            '包装服务响应超时，已保留成功步骤，请恢复未完成项'
+                            '包装服务响应超时，已保留包装前原样'
                             if isinstance(exc, (TimeoutError, httpx.TimeoutException))
                             else '包装生成失败，请检查配置或重试本条成片')
                         await self.api.request('PUT', f"{root}/items/{item['id']}/checkpoint", headers=headers,
                             json={'projectId': project_id, 'stage': item['stage'], 'checkpoint': {}, 'errorMessage': reason})
-                await run_packaging_shards(claim['items'], self.concurrency, execute)
+                await run_packaging_shards([item for item in claim['items']
+                    if item['status'] not in ['COMPLETED', 'FAILED', 'CANCELLED']], self.concurrency, execute)
                 await self.api.request('POST', f'{root}/finish', headers=headers, json={'projectId': project_id})
 
             beat = asyncio.create_task(heartbeat())
@@ -593,6 +626,8 @@ class PackagingHandler:
 
     async def process_item(self, root: str, headers: dict[str, str], project_id: str, item: dict[str, Any]) -> None:
         snapshot, cp = item['snapshot'], item['checkpoint']
+        # Claim-local bytes survive a step retry, never enter a checkpoint or cross project scope.
+        voice_cache = item.setdefault('_voicePcm', {})
         endpoint = f"{root}/items/{item['id']}"
         if snapshot.get('sourceTrimMaterials') and not snapshot.get('sourceTrimsReady'):
             trims = await self.select_source_trims(root, endpoint, headers, project_id, snapshot, snapshot['sourceTrimMaterials'])
@@ -621,6 +656,9 @@ class PackagingHandler:
 
         async def save(stage: str, patch: dict[str, Any]) -> None:
             async with write_lock:
+                if cp.get('recovery', {}).get('waitingUntil'):
+                    cp['recovery'].pop('waitingUntil', None)
+                    patch = {**patch, 'recovery': cp['recovery']}
                 started = time.monotonic()
                 try:
                     saved = await self.api.request('PUT', f'{endpoint}/checkpoint', headers=headers,
@@ -632,6 +670,8 @@ class PackagingHandler:
                     row['checkpointSeconds'] = row.get('checkpointSeconds', 0) + time.monotonic() - started
                 merged_voices = {**cp.get('voices', {}), **patch.get('voices', {})}
                 cp.update(patch)
+                if cp.get('recovery', {}).get('waitingUntil') and stage != cp['recovery'].get('stage'):
+                    cp['recovery'].pop('waitingUntil', None)
                 if merged_voices:
                     cp['voices'] = merged_voices
                 item['stage'] = stage
@@ -706,8 +746,22 @@ class PackagingHandler:
                 if len(clauses) > 32:
                     raise PackagingError('本槽位口播断句过多，请重做文案后再配音')
                 for clause in clauses:
-                    async with paid_request(line['slotId'], 'voiceSeconds'):
-                        pcm = await voice_pcm(clause)
+                    recovery_key = hashlib.sha256((line['slotId'] + ':' + clause).encode()).hexdigest()
+                    recovery_state = cp.setdefault('voiceRecovery', {}).setdefault(recovery_key, {}) if snapshot.get('operation') else None
+                    async def persist_voice_recovery() -> None:
+                        await save('VOICE', {'voiceRecovery': cp['voiceRecovery']})
+                    async def request_voice() -> bytes:
+                        async with paid_request(line['slotId'], 'voiceSeconds'):
+                            return await voice_pcm(clause)
+                    pcm = voice_cache.get(recovery_key)
+                    if pcm is None:
+                        pcm = await recover_voice_connection(request_voice, guard,
+                            item_id=item['id'], slot_id=line['slotId'],
+                            max_attempts=self.tts_connection_max_attempts,
+                            timeout_seconds=self.tts_connection_timeout_seconds,
+                            max_delay_seconds=self.tts_connection_max_delay_seconds,
+                            state=recovery_state, persist=persist_voice_recovery if recovery_state is not None else None)
+                        voice_cache[recovery_key] = pcm
                     if not pcm or len(pcm) % 2:
                         raise PackagingError('配音片段 PCM 数据无效')
                     if not isinstance(pcm, TimedVoicePcm):
@@ -785,7 +839,8 @@ class PackagingHandler:
                 music_started = time.monotonic()
                 await save('MUSIC', {})
                 if not cp.get('musicTaskId'):
-                    await submit_music_safely(self.provider, cp, snapshot['duration'], save, guard)
+                    await submit_music_safely(self.provider, cp, snapshot['duration'], save, guard,
+                                             attempts=1 if snapshot.get('operation') else 3)
                 async with asyncio.timeout(1800):
                     while True:
                         await guard()
@@ -800,6 +855,8 @@ class PackagingHandler:
                         except MusicRateLimited:
                             # Query is read-only; keep the saved TaskID and bounded
                             # polling deadline, rather than submitting another song.
+                            if snapshot.get('operation'):
+                                raise
                             await asyncio.sleep(10)
                             continue
                         if url:
@@ -831,6 +888,8 @@ class PackagingHandler:
                 other_errors = [outcome for outcome in outcomes
                     if isinstance(outcome, BaseException) and not isinstance(outcome, VoiceFitOverrun)]
                 if other_errors:
+                    if snapshot.get('operation'):
+                        item['stage'] = 'MUSIC' if outcomes[-1] is other_errors[0] else 'VOICE'
                     raise other_errors[0]
                 overruns = [outcome for outcome in outcomes if isinstance(outcome, VoiceFitOverrun)]
                 if not overruns:
@@ -968,25 +1027,33 @@ class PackagingHandler:
                     for clip in group:
                         content.extend(frame_content[clip['slotId']])
                     queued = time.monotonic()
-                    try:
-                        async with self.model_requests:
-                            started = time.monotonic()
-                            await guard()
-                            result = await self.ark.structured(content, SlotVisionOutput, 'packaging_vision',
-                                max_output_tokens=4096, max_attempts=1)
-                    except ProviderIncompleteError:
-                        if len(group) == 1:
-                            raise
-                        # No output is salvaged from an incomplete response. Reuse downloaded
-                        # frames, split mechanically, and publish only complete validated groups.
-                        middle = len(group) // 2
-                        await describe(group[:middle])
-                        await describe(group[middle:])
-                        return
-                    if len(result.slots) != len(group) or {r.slotId for r in result.slots} != {c['slotId'] for c in group} or any(
-                        not r.description.strip() or len(r.description) > 2000 for r in result.slots):
-                        raise PackagingTransientError('槽位视觉返回缺失、重复或无效')
+                    for repair in range(2):
+                        try:
+                            async with self.model_requests:
+                                started = time.monotonic()
+                                await guard()
+                                result = await self.ark.structured(content, SlotVisionOutput, 'packaging_vision',
+                                    max_output_tokens=4096, max_attempts=1)
+                            if len(result.slots) != len(group) or {r.slotId for r in result.slots} != {c['slotId'] for c in group} or any(
+                                not r.description.strip() or len(r.description) > 2000 for r in result.slots):
+                                raise ProviderOutputError('槽位视觉返回缺失、重复或无效', retryable=False)
+                            break
+                        except (ProviderIncompleteError, ProviderOutputError) as exc:
+                            if len(group) > 1:
+                                # Reuse frames, reduce output complexity, never salvage invalid rows.
+                                middle = len(group) // 2
+                                await describe(group[:middle])
+                                await describe(group[middle:])
+                                return
+                            if repair:
+                                raise PackagingError('单槽位视觉结果格式修正后仍无效，已保留其他成功槽位') from exc
+                            content.append({'type': 'input_text', 'text':
+                                '上次响应未通过结构校验。只返回符合给定schema的JSON对象，恰好一条槽位描述，slotId原样返回，不要代码块或额外说明。'})
                     descriptions = {r.slotId: r.description for r in result.slots}
+                    persisted = {**cp.get('slotVision', {}), **{
+                        clip['slotId']: {'key': slot_vision_key(clip), 'description': descriptions[clip['slotId']]}
+                        for clip in group}}
+                    await save('VISION', {'slotVision': persisted})
                     for clip in group:
                         key = slot_vision_key(clip)
                         self.vision_cache[key] = descriptions[clip['slotId']]
