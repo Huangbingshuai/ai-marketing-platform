@@ -160,6 +160,7 @@ import {
   effectTemplateMixFlashPlaybackKeyframes,
   effectTemplateMixTransitionPresentation,
 } from './effect-template-mix-transition';
+import { PreparedVideoHandoff } from './effect-template-mix-native-handoff';
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
@@ -668,6 +669,7 @@ const outputSyncChannel =
 const queuedOutputRevision = (): number | null => queuedOutputSync?.revision ?? null;
 let playbackAnimationFrame: number | undefined;
 let playerScrubberAnimations: Animation[] = [];
+const preparedVideoHandoff = new PreparedVideoHandoff();
 let dissolvePlaybackAnimation: Animation | null = null;
 let flashPlaybackAnimation: Animation | null = null;
 let dissolvePlaybackSignature = '';
@@ -4626,7 +4628,7 @@ const syncTimelineVideo = (
     positionedTimelinePlayers.add(video);
   }
   if (resume && timelineVideoSeeks.isSettled(video) && video.paused) {
-    void video.play().catch(() => undefined);
+    startPreparedTimelineVideo(slotId, video);
   }
   return video;
 };
@@ -7192,6 +7194,7 @@ const stopPlaybackClock = (resumeBackgroundMediaWork = true, freezeVisualClock =
   playbackStarting = false;
   playbackBuffering.value = false;
   playbackStartVersion++;
+  preparedVideoHandoff.cancel();
   if (playbackAnimationFrame !== undefined) cancelAnimationFrame(playbackAnimationFrame);
   playbackAnimationFrame = undefined;
   stopTransitionPlaybackAnimation();
@@ -7267,6 +7270,18 @@ const resetPlaybackSyncBoundaries = (): void => {
   if (nextPlaybackBoundaryIndex < 0) nextPlaybackBoundaryIndex = playbackSyncBoundaries.length;
 };
 const currentPlaybackClockSeconds = (): number => Math.max(0, packagingPlaybackTime());
+const startPreparedTimelineVideo = (slotId: string, video: HTMLVideoElement): void => {
+  const scope = currentWorkspaceScope.value;
+  const variantId = selectedVariant.value?.id;
+  const source = video.src;
+  preparedVideoHandoff.start(video, () => {
+    const transition = transitionPreviewAt(currentPlaybackClockSeconds());
+    return playing.value && !playbackStarting && currentWorkspaceScope.value === scope &&
+      selectedVariant.value?.id === variantId && video.src === source &&
+      (activePlaybackSlotId === slotId || transition?.outgoingSlot.id === slotId ||
+        transition?.incomingSlot.id === slotId);
+  }, onPlaybackFailed);
+};
 const syncPlayingVideoFrame = (): void => {
   if (playbackStarting) return;
   const playbackTime = currentPlaybackClockSeconds();
@@ -7279,6 +7294,12 @@ const syncPlayingVideoFrame = (): void => {
     // outgoing native clock or invalidate the incoming decoded first frame.
     const outgoing = syncTimelineVideo(transition.outgoingSlot.id, true, 'once', playbackTime);
     const incoming = syncTimelineVideo(transition.incomingSlot.id, true, 'once', playbackTime);
+    const unready = [outgoing, incoming].find(video => video &&
+      (video.readyState < 3 || !timelineVideoSeeks.isSettled(video)));
+    if (unready) {
+      holdTimelinePlayback(unready === incoming ? transition.incomingSlot.id : transition.outgoingSlot.id, unready);
+      return;
+    }
     const incomingRange = currentTiming.value.slots.find(
       ({ id }) => id === transition.incomingSlot.id,
     );
@@ -7330,9 +7351,11 @@ const syncPlayingVideoFrame = (): void => {
   if (timelineVideoSeeks.isSettled(video)) {
     playerUnavailableSlotId.value = '';
     presentTimelineFrame(slot.id, video);
-    // play() can stay pending even with a decoded frame. Do not let the
-    // shared clock consume part of the incoming clip before it actually starts.
-    if (video.paused) holdTimelinePlayback(slot.id, video);
+    // A prepared cut is a video handoff, not an audio seek. Keep the sample
+    // transport scheduled; only genuine decoder buffering holds it.
+    startPreparedTimelineVideo(slot.id, video);
+  } else {
+    holdTimelinePlayback(slot.id, video);
   }
 };
 const updatePlaybackFrame = (now: number): void => {
@@ -7341,6 +7364,10 @@ const updatePlaybackFrame = (now: number): void => {
     return;
   }
   const activeVideo = timelinePlayers.get(activePlaybackSlotId);
+  if (activeVideo && !playbackStarting && preparedVideoHandoff.stalled(activeVideo)) {
+    holdTimelinePlayback(activePlaybackSlotId, activeVideo);
+    return;
+  }
   if (activeVideo && !playbackStarting && !transitionPreviewAt(currentPlaybackClockSeconds()) &&
     nativePlaybackProgress.stalled(activeVideo, activeVideo.currentTime, now,
       !activeVideo.paused && !activeVideo.seeking && !activeVideo.ended)) {
@@ -7544,7 +7571,7 @@ const togglePlay = async (): Promise<void> => {
   playing.value = true;
   await startPreparedPlayback(true);
 };
-const startPreparedPlayback = async (reposition: boolean): Promise<void> => {
+const startPreparedPlayback = async (reposition: boolean, heldAudio?: Promise<void>): Promise<void> => {
   playbackStarting = true;
   playbackBuffering.value = true;
   const startVersion = ++playbackStartVersion;
@@ -7559,32 +7586,42 @@ const startPreparedPlayback = async (reposition: boolean): Promise<void> => {
   // player's user gesture. The child continues syncing it to the shared playhead afterwards.
   captionPresentationTime.value = playhead.value;
   const positioned = reposition ? syncPlayerToPlayhead(false) : Promise.resolve();
-  const frameReady = positioned.then(() => waitForPlaybackFrame(
-    () => !previewMaterial.value || (!!activeTimelinePlayer() && activeTimelinePlayer()!.readyState >= 3 &&
-      timelineVideoSeeks.isSettled(activeTimelinePlayer()!)), currentStart,
-  ));
+  const requiredPlayers = (): HTMLVideoElement[] => {
+    const transition = transitionPreviewAt(playhead.value);
+    const ids = transition ? [transition.outgoingSlot.id, transition.incomingSlot.id]
+      : previewSlot.value ? [previewSlot.value.id] : [];
+    return ids.flatMap(id => timelinePlayers.get(id) ?? []);
+  };
+  const frameReady = positioned.then(() => waitForPlaybackFrame(() => {
+    if (!previewMaterial.value) return true;
+    const videos = requiredPlayers();
+    const expected = transitionPreviewAt(playhead.value) ? 2 : 1;
+    return videos.length === expected && videos.every(video => video.readyState >= 3 &&
+      timelineVideoSeeks.isSettled(video));
+  }, currentStart));
   const audioPrepared = packagingPanel.value?.preparePlaybackAudio();
-  const videoReady = Promise.all([frameReady, audioPrepared]).then(async ([ready]) => {
+  const videoReady = Promise.all([frameReady, audioPrepared, heldAudio]).then(async ([ready]) => {
     if (!ready || !currentStart()) return false;
-    const video = activeTimelinePlayer();
-    if (video) {
+    const started = await Promise.all(requiredPlayers().map(async video => {
       const nativePlay = video.play();
       void nativePlay.then(() => {
-        if (!playing.value || activeTimelinePlayer() !== video) video.pause();
+        if (!playing.value || !requiredPlayers().includes(video)) video.pause();
       }, () => undefined);
       if (!(await waitForNativePlayback(nativePlay, currentStart))) return false;
-    }
-    if (!currentStart()) {
-      // A newer start may already own this same element. A late play promise
-      // must not pause that newer transport while cleaning up the old request.
-      if (!playing.value || activeTimelinePlayer() !== video) video?.pause();
-      return false;
-    }
-    return true;
+      if (!currentStart()) {
+        // Never pause a newer transport using the same media element.
+        if (!playing.value || !requiredPlayers().includes(video)) video.pause();
+        return false;
+      }
+      return true;
+    }));
+    return started.every(Boolean) && currentStart();
   });
   // Resume the audio context inside the gesture, but schedule sound only once
   // the video is decoded. Audio and video preparation still run concurrently.
-  const audioReady = packagingPanel.value?.startPlaybackAudio(playhead.value, videoReady);
+  const audioReady = heldAudio
+    ? packagingPanel.value?.continuePlaybackAudio(videoReady)
+    : packagingPanel.value?.startPlaybackAudio(playhead.value, videoReady);
   const audioRequired = packagingPanel.value?.hasPlaybackAudio() ?? false;
   try {
     const [ready, soundReady] = await Promise.all([videoReady, audioReady]);
@@ -7621,23 +7658,27 @@ const onPlaybackAudioChanged = (): void => {
 };
 const onTimelinePlayerWaiting = (slotId: string, event: Event): void => {
   const video = timelinePlayers.get(slotId);
+  const transition = transitionPreviewAt(currentPlaybackClockSeconds());
+  const active = slotId === activePlaybackSlotId || transition?.incomingSlot.id === slotId ||
+    transition?.outgoingSlot.id === slotId;
   if (!video || event.currentTarget !== video || !playing.value || playbackStarting ||
-    slotId !== activePlaybackSlotId || transitionPreviewAt(currentPlaybackClockSeconds())) return;
+    !active || video.readyState >= 3) return;
   holdTimelinePlayback(slotId, video);
 };
 const holdTimelinePlayback = (slotId: string, video: HTMLVideoElement): void => {
   if (playbackStarting) return;
   const range = currentTiming.value.slots.find(({ id }) => id === slotId);
   if (!range || !selectedVariant.value) return;
-  // A stalled decoder still has a valid last frame. Hold all clocks there,
-  // not just the image, so buffering cannot silently skip the rest of a clip.
-  playhead.value = Math.max(range.start, Math.min(range.end,
-    range.start + video.currentTime - (selectedVariant.value.offsets[slotId] ?? 0)));
+  // Never rewind the mix to the incoming decoder's preloaded timestamp.
+  // Suspend the same sources, preserving the song and future narration.
+  playhead.value = Math.min(currentDuration.value, currentPlaybackClockSeconds());
+  const heldAudio = packagingPanel.value?.holdPlaybackAudio() ?? Promise.resolve();
   captionPresentationTime.value = playhead.value;
   stopPlaybackClock(false);
   pauseTimelinePlayers();
-  packagingPanel.value?.stopPlaybackAudio();
-  void startPreparedPlayback(false);
+  // Real buffering can leave a decoder behind the authoritative audio cursor.
+  // Reposition pictures only; resume the retained audio sources without a seek.
+  void startPreparedPlayback(true, heldAudio);
   syncDetachedAudio();
 };
 const onTimelinePlayerReady = (slotId: string, event: Event, seeked = false): void => {

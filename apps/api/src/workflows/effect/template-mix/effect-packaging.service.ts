@@ -1103,7 +1103,7 @@ export class EffectPackagingService {
     const { run, snapshot } = await this.workerItem(projectId, runId, token, itemId);
     if (!file || file.size > 100 * 1024 * 1024 || !/^(music|voice-[a-zA-Z0-9_-]{1,50})$/.test(role))
       throw new BadRequestException('包装音频无效');
-    const duration = await wavDuration(file.path, file.size);
+    const duration = await wavDuration(file.path, file.size, role === 'music' ? 'MUSIC' : 'VOICE');
     if ((segmentFramesJson !== undefined || speechRangesJson !== undefined) && role === 'music')
       throw new BadRequestException('音乐不支持口播片段边界');
     const segmentFrames = parseVoiceSegmentFrames(segmentFramesJson, duration);

@@ -115,6 +115,24 @@ export class PackagingSampleClock {
     return this.heldTime;
   }
 
+  /** Decoder buffering pauses the transport, not each independently scheduled clip. */
+  async hold(): Promise<void> {
+    if (!this.active || !this.context || this.pending) return;
+    this.time();
+    this.pending = true;
+    await this.context.suspend();
+  }
+
+  async continue(frameReady: Promise<boolean>): Promise<boolean> {
+    const version = this.version;
+    if (!this.active || !this.context) return false;
+    if (!await frameReady || version !== this.version) return false;
+    await this.context.resume();
+    if (version !== this.version) return false;
+    this.pending = false;
+    return true;
+  }
+
   stop(): void {
     this.time();
     this.version++;

@@ -12,7 +12,8 @@ function contextFixture() {
   const context = {
     state: 'running', currentTime: 100, baseLatency: .02, outputLatency: .03,
     getOutputTimestamp: vi.fn(() => ({ contextTime: 99.9, performanceTime: 1000 })),
-    resume: vi.fn(async () => undefined), close: vi.fn(async () => undefined),
+    resume: vi.fn(async () => { context.state = 'running'; }),
+    suspend: vi.fn(async () => { context.state = 'suspended'; }), close: vi.fn(async () => undefined),
     decodeAudioData: vi.fn(async () => ({ duration: 40 } as AudioBuffer)), destination: {},
     createBufferSource: () => {
       const node = { start: vi.fn(), stop: vi.fn(), disconnect: vi.fn(), connect: vi.fn((to) => to), buffer: null };
@@ -27,6 +28,46 @@ function contextFixture() {
   return { context, nodes, gains, ramps };
 }
 describe('sample-scheduled packaged audio', () => {
+  it('holds and resumes a whole song through repeated video waits without rebuilding sources or fades', async () => {
+    const { context, nodes, gains, ramps } = contextFixture();
+    const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext,
+      async () => new ArrayBuffer(2));
+    const music = clip('music', 0, 'MUSIC'); music.audio.duration = 30;
+    await clock.start([music, clip('later-voice', 20)], 0);
+    const gainCalls = gains.map(gain => gain.mock.calls.slice());
+    const fadeCalls = ramps.map(gain => gain.mock.calls.slice());
+    for (const boundary of [4, 10, 16, 22, 26]) {
+      context.currentTime = 100.05 + boundary;
+      context.getOutputTimestamp.mockReturnValue({ contextTime: context.currentTime, performanceTime: performance.now() });
+      const before = clock.time();
+      await clock.hold();
+      expect(clock.time()).toBe(before);
+      expect(await clock.continue(Promise.resolve(true))).toBe(true);
+      expect(clock.time()).toBeGreaterThanOrEqual(before!);
+    }
+    expect(nodes).toHaveLength(2);
+    expect(nodes.every(node => node.start.mock.calls.length === 1 && !node.stop.mock.calls.length)).toBe(true);
+    expect(gains.map(gain => gain.mock.calls)).toEqual(gainCalls);
+    expect(ramps.map(gain => gain.mock.calls)).toEqual(fadeCalls);
+    clock.stop();
+    expect(nodes.every(node => node.stop.mock.calls.length === 1)).toBe(true);
+  });
+  it('does not resume old audio after a cancelled wait or newer explicit seek', async () => {
+    const { context, nodes } = contextFixture();
+    const clock = new PackagingSampleClock(id => id, () => context as unknown as AudioContext,
+      async () => new ArrayBuffer(2));
+    const music = clip('music', 0, 'MUSIC'); music.audio.duration = 30;
+    await clock.start([music], 0);
+    await clock.hold();
+    let release!: (value: boolean) => void;
+    const old = clock.continue(new Promise(resolve => { release = resolve; }));
+    await clock.start([music], 12);
+    release(true);
+    expect(await old).toBe(false);
+    expect(context.resume).toHaveBeenCalledTimes(2);
+    expect(nodes[1]!.start.mock.calls[0]).toEqual([100.05, 12, 18]);
+    expect(nodes[0]!.stop).toHaveBeenCalledOnce();
+  });
   it.each([0, 1.5, 3])('keeps music gain independent of overlapping narration and seeking (%s)', async (seconds) => {
     const schedule = async (withVoices: boolean) => {
       const { context, gains, ramps } = contextFixture();

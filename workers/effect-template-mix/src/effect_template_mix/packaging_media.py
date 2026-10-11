@@ -75,8 +75,10 @@ async def music_wav(data: bytes, directory: Path, duration: float) -> bytes:
     source = directory / 'music-source.bin'
     source.write_bytes(data)
     output = directory / 'music.wav'
-    await ffmpeg('-stream_loop', '-1', '-i', str(source), '-t', str(duration), '-vn', '-ac', '1', '-ar', '24000',
-                 '-af', f'afade=t=out:st={max(0, duration - .5)}:d=0.5', '-c:a', 'pcm_s16le', '-y', str(output))
+    # Music is not speech PCM: retain stereo detail. Timeline fades are applied
+    # once by preview/export, never baked a second time into the reusable file.
+    await ffmpeg('-stream_loop', '-1', '-i', str(source), '-t', str(duration), '-vn', '-ac', '2', '-ar', '48000',
+                 '-c:a', 'pcm_s16le', '-y', str(output))
     return output.read_bytes()
 
 

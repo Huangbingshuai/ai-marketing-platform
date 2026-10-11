@@ -377,6 +377,8 @@ function close() {
   dialog.value?.close();
 }
 defineExpose({
+  holdPlaybackAudio,
+  continuePlaybackAudio,
   createSingle: () => create(props.selectedVariantId),
   startingVariantId,
   refresh,
@@ -528,6 +530,17 @@ async function startPlaybackAudio(seconds = props.playhead, frameReady?: Promise
 function stopPlaybackAudio(): void {
   audioPlaybackRequest++;
   sampleClock.stop();
+}
+function holdPlaybackAudio(): Promise<void> {
+  return sampleClock.hold();
+}
+async function continuePlaybackAudio(frameReady: Promise<boolean>): Promise<boolean> {
+  try {
+    return await sampleClock.continue(frameReady);
+  } catch {
+    emit('playbackFailed');
+    return false;
+  }
 }
 watch(() => JSON.stringify(previewAudioClips.value), () => {
   // The parent owns the frame barrier, including seeks and changed audio.

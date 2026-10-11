@@ -20,10 +20,10 @@ describe('template mix compositor playback clock', () => {
     expect(start).toContain('previewStartupReady(ready, soundReady, audioRequired)');
     expect(start).toContain('startPlaybackAudio(playhead.value, videoReady)');
     expect(start).toContain('preparePlaybackAudio()');
-    expect(start).toContain('Promise.all([frameReady, audioPrepared])');
+    expect(start).toContain('Promise.all([frameReady, audioPrepared, heldAudio])');
     expect(start).toContain('cancelAnimationFrame(pendingSeekSyncFrame)');
     expect(start).toContain('if (!ready || !currentStart()) return');
-    expect(start).toContain('if (!playing.value || activeTimelinePlayer() !== video) video?.pause()');
+    expect(start).toContain('if (!playing.value || !requiredPlayers().includes(video)) video.pause()');
   });
   it('retries late decoded handoffs every frame without republishing the editor playhead', () => {
     const retry = pageSource
@@ -40,13 +40,16 @@ describe('template mix compositor playback clock', () => {
     const waiting = pageSource.split('const onTimelinePlayerWaiting =')[1]!
       .split('const onTimelinePlayerReady =')[0]!;
     expect(pageSource).toContain('@waiting="onTimelinePlayerWaiting(slot.id, $event)"');
-    expect(waiting).toContain('video.currentTime - (selectedVariant.value.offsets[slotId] ?? 0)');
+    expect(waiting).toContain('currentPlaybackClockSeconds()');
     expect(waiting).toContain('stopPlaybackClock(false)');
-    expect(waiting).toContain('stopPlaybackAudio()');
-    expect(waiting).toContain('startPreparedPlayback(false)');
-    expect(pageSource).toContain('activeTimelinePlayer()!.readyState >= 3');
+    expect(waiting).toContain('holdPlaybackAudio()');
+    expect(waiting).toContain('startPreparedPlayback(true, heldAudio)');
+    expect(pageSource).toContain('videos.every(video => video.readyState >= 3');
+    expect(pageSource).toContain('const expected = transitionPreviewAt(playhead.value) ? 2 : 1');
     expect(pageSource).toContain('playing.value && !playbackStarting');
-    expect(pageSource).toContain('if (video.paused) holdTimelinePlayback(slot.id, video)');
+    expect(pageSource).not.toContain('if (video.paused) holdTimelinePlayback(slot.id, video)');
+    expect(pageSource).toContain('startPreparedTimelineVideo(slot.id, video)');
+    expect(pageSource).toContain('preparedVideoHandoff.stalled(activeVideo)');
     expect(pageSource).toContain('if (!playbackStarting) playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame)');
   });
   it('warms the next clip without reloads and reuses positioned frames at natural boundaries', () => {

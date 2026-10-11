@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .api import ApiError, InternalApi
 from .packaging_media import slot_frames, music_wav, pcm_wav, visible_intervals
+from .packaging_music import film_music_context
 from .packaging_captions import captions_for_voice, voice_text_parts, speech_aligned_segment_frames
 from .packaging_provider import MusicRateLimited, MusicTaskFailed, PackagingError, PackagingProvider, PackagingTransientError, TimedVoicePcm
 from .packaging_voice_recovery import recover_voice_connection
@@ -427,7 +428,8 @@ async def plan_script(ark: ArkProvider, snapshot: dict[str, Any], vision: list[d
                       diagnostics: dict[str, int] | None = None,
                       voice_retry: list[dict[str, Any]] | None = None, *,
                       story_snapshot: dict[str, Any] | None = None,
-                      existing_script: list[dict[str, Any]] | None = None) -> ScriptOutput:
+                      existing_script: list[dict[str, Any]] | None = None,
+                      music_identity: str | None = None) -> ScriptOutput:
     windows = narration_windows(snapshot)
     expected_slots = {row['slotId'] for row in windows}
     full_snapshot = story_snapshot if story_snapshot is not None else snapshot
@@ -446,11 +448,16 @@ async def plan_script(ark: ArkProvider, snapshot: dict[str, Any], vision: list[d
             'HOOK 抓注意力，不做完整产品介绍；END 自然收束。二者简洁程度仍应符合本槽位目标容量。其它角色根据各自素材画面及确认事实写口播。',
             '不得把推荐吃法写成镜头已实际呈现，不把画面内容当作产品功效证明。',
             '不要额外添加确认事实没有的绝对化、效果承诺或口感评价；不要为每个镜头强造一个商品卖点。',
-            'musicBrief 用中文写纯器乐曲风、乐器、情绪与节奏，无歌词、无人声、不仿制音乐人，不指定时长。',
+            'musicBrief 只为 wholeFilmMusic 中整条成片创作一首连续纯器乐：统一曲风、主旋律与节奏，整体自然发展和收束。绝不能为每个素材单独配乐或在切镜、转场、空白处重新播放前奏。',
+            'musicBrief 根据整片画面总体氛围和动势选择曲风、主要配器、律动及速度、旋律与编曲发展；画面时间仅供理解整片，不输出分镜配乐清单、切点或逐槽情绪变化。',
+            'creativeReference 是本次整片的差异化编曲参考，不是商品分类或必须照抄的答案；根据整片适配调整，避免所有成片一律温暖家常、竹笛古筝、舒缓轻快的同质描述。保持同一首曲子的连贯性，不拼接多种风格。',
+            'musicBrief 用中文完整描述整曲，无歌词、无人声、不仿制音乐人，不指定时长，避免冗长前奏和突兀重启；口播之下保持清晰简洁的配器。',
         ],
         'confirmedFacts': snapshot['facts'], 'shots': sorted(narrated_clips(snapshot), key=lambda row: row['start']),
         'vision': vision, 'duration': snapshot['duration'], 'narrationWindows': windows,
         'storyContext': narration_story_context(full_snapshot, vision, existing, expected_slots),
+        'wholeFilmMusic': film_music_context(music_identity or full_snapshot.get('sourceTimelineHash', ''),
+                                            full_snapshot, vision),
     }
     if voice_retry:
         context['voiceRetry'] = voice_retry
@@ -774,7 +781,7 @@ class PackagingHandler:
                 async with paid_request('_item', 'scriptSeconds'):
                     script_result = await plan_script(self.ark, partial,
                         cp['vision'], guard, script_diagnostics,
-                        story_snapshot=snapshot, existing_script=cp.get('script', []))
+                        story_snapshot=snapshot, existing_script=cp.get('script', []), music_identity=item['id'])
                 elapsed = timings['_item']['scriptSeconds']
                 timings['_item']['scriptRepairSlots'] = timings['_item'].get('scriptRepairSlots', 0) + script_diagnostics.get('scriptRepairSlots', 0)
                 for slot_id in missing_slots:
@@ -965,7 +972,7 @@ class PackagingHandler:
                 async with paid_request('_item', 'scriptSeconds'):
                     replanned = await plan_script(self.ark, partial,
                         cp['vision'], guard, voice_retry=retry_context,
-                        story_snapshot=snapshot, existing_script=cp['script'])
+                        story_snapshot=snapshot, existing_script=cp['script'], music_identity=item['id'])
                 replacements = {line.slotId: line.model_dump() for line in replanned.lines}
                 for slot_id, line in replacements.items():
                     line['id'] = 'slot-' + hashlib.sha256(slot_id.encode()).hexdigest()[:24]
