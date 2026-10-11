@@ -168,8 +168,13 @@ async def test_redo_only_changed_slots_preserves_deleted_sibling_audio_captions_
                      _project: str, _directory: Any, _guard: Any, save: Any) -> None:
         selected_visions.extend(clip['slotId'] for clip in snapshot['clips'])
         await save('SCRIPT', {'vision': [*cp['vision'], {'slotId': 'a', 'start': 0, 'end': 4, 'description': '新镜头'}]})
-    async def plan(_ark: Any, snapshot: dict[str, Any], _vision: Any, _guard: Any, _diagnostics: Any) -> ScriptOutput:
+    async def plan(_ark: Any, snapshot: dict[str, Any], _vision: Any, _guard: Any, _diagnostics: Any,
+                   *, story_snapshot: dict[str, Any], existing_script: list[dict[str, Any]],
+                   **_context: Any) -> ScriptOutput:
         assert [clip['slotId'] for clip in snapshot['clips']] == ['a']
+        assert {clip['slotId'] for clip in story_snapshot['clips']} == {'a', 'b'}
+        assert existing_script == baseline['script']
+        assert {v['slotId'] for v in _vision} == {'a', 'b'}
         return ScriptOutput.model_validate({'lines': [{'id': 'a', 'slotId': 'a', 'start': 0,
             'end': 4, 'text': '新口播', 'factIds': ['f']}], 'musicBrief': '无需改动'})
     monkeypatch.setattr(module, 'plan_script', plan)

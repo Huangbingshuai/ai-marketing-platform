@@ -386,12 +386,13 @@ def test_planning_length_is_soft_but_slot_boundaries_remain_hard() -> None:
     assert script_structure_issues(script, script_snapshot()) == ['TIME_BOUNDARY']
 
 
-async def test_item_resume_skips_saved_voice_and_creates_exact_captions() -> None:
+@pytest.mark.parametrize('saved_volume', [0, .35, 1, 4])
+async def test_item_resume_skips_saved_voice_and_creates_exact_captions(saved_volume: float) -> None:
     api = AsyncMock(spec=InternalApi)
     ark = AsyncMock(spec=ArkProvider)
     adapter = AsyncMock(spec=PackagingProvider)
     row = item()
-    row['checkpoint']['voices'] = {'line-1': {'fileObjectId': 'voice', 'start': 1, 'duration': 2.123, 'volume': 1,
+    row['checkpoint']['voices'] = {'line-1': {'fileObjectId': 'voice', 'start': 1, 'duration': 2.123, 'volume': saved_volume,
         'speechRanges': [{'startFrame': 0, 'endFrame': 50952}]}}
     worker = PackagingHandler(api, ark, adapter, 1000)
     await worker.process_item('/run', {}, 'project', row)
@@ -404,6 +405,35 @@ async def test_item_resume_skips_saved_voice_and_creates_exact_captions() -> Non
         'segmentIndex': 0, 'segmentCount': 1,
         'text': '口播', 'start': 1, 'end': 3.123}]
     assert row['stage'] == 'READY'
+    assert row['checkpoint']['voices']['line-1']['volume'] == saved_volume
+    assert row['checkpoint']['music']['volume'] == .12
+
+
+@pytest.mark.parametrize('music_volume', [.12, 1])
+async def test_new_packaging_voice_defaults_to_double_gain_without_changing_music(music_volume: float) -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.request.return_value = {'fileObjectId': 'saved-voice'}
+    ark = AsyncMock(spec=ArkProvider)
+    adapter = AsyncMock(spec=PackagingProvider)
+    pcm = b'\x01\x00' * 48_000
+    adapter.voice.return_value = TimedVoicePcm(pcm, 0, 48_000)
+    row = item()
+    row['checkpoint']['music']['volume'] = music_volume
+    saved_music = copy.deepcopy(row['checkpoint']['music'])
+    worker = PackagingHandler(api, ark, adapter, 1000)
+    await worker.process_item('/run', {}, 'project', row)
+    voice = row['checkpoint']['voices']['line-1']
+    assert voice['volume'] == 2.0
+    assert voice['start'] == 1 and voice['duration'] == 2
+    assert voice['segmentFrames'] == [48_000]
+    assert row['checkpoint']['music'] == saved_music
+    assert row['checkpoint']['captions'][0]['start'] == 1
+    assert row['checkpoint']['captions'][0]['end'] == 3
+    adapter.submit_music.assert_not_called()
+    ark.structured.assert_not_called()
+    await worker.process_item('/run', {}, 'project', row)
+    assert adapter.voice.await_count == 1
+    assert row['checkpoint']['voices']['line-1'] == voice
 
 
 async def test_music_wait_overlaps_tts_and_reuses_both_checkpoints(monkeypatch: Any) -> None:
@@ -552,6 +582,12 @@ async def test_voice_fit_auto_replans_only_failed_slot_and_preserves_siblings() 
     assert row['checkpoint']['script'][0]['text'] == '新短句'
     assert row['checkpoint']['captionLayoutVersion'] == 'SPEECH_V1'
     adapter.submit_music.assert_not_called()
+    # Both the measured shortening and the bounded replan retain the saved sibling's context.
+    for call in ark.structured.call_args_list:
+        story = json.loads(call.args[0][0]['text'])['storyContext']['segments']
+        assert [segment['slotId'] for segment in story] == ['s1', 's2']
+        assert story[1]['existingLines'][0]['text'] == '已存口播'
+        assert story[1]['editable'] is False
 
 
 async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_repair() -> None:
