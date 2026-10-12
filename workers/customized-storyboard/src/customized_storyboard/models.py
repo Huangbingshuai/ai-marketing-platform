@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Annotated, Literal, Self
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 Text = Annotated[str, Field(max_length=20000)]
 Id = Annotated[str, Field(min_length=1, max_length=200)]
@@ -80,7 +80,7 @@ class Script(Model):
     assets: Annotated[list[Asset], Field(max_length=1000)]
 
     @model_validator(mode="after")
-    def valid(self) -> Self:
+    def valid(self, info: ValidationInfo) -> Self:
         if not self.name.strip() or not self.synopsis.strip():
             raise ValueError("missing script identity")
         if len({s.id for s in self.shots}) != len(self.shots) or len(
@@ -99,7 +99,11 @@ class Script(Model):
                 group: AssetGroup = getattr(shot.assetRequirements, kind)
                 if any(catalog.get(r.assetId) != kind for r in group.items):
                     raise ValueError("invalid asset reference")
-        if not any(s.assetRequirements.products.items for s in self.shots):
+        # An opening segment may contain no product. The full script still must
+        # reference the product before it can be reviewed or published.
+        if not (info.context or {}).get("partial") and not any(
+            s.assetRequirements.products.items for s in self.shots
+        ):
             raise ValueError("no product reference")
         return self
 

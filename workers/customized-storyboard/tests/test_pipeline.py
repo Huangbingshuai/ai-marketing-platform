@@ -18,7 +18,8 @@ from customized_storyboard.models import (
     Repair,
     Beat,
 )
-from customized_storyboard.pipeline import Pipeline
+from customized_storyboard.pipeline import Pipeline, group_shot_beats
+from ai_runtime.responses import ProviderError, ProviderErrorType
 
 
 def inputs(count=3, duration=30, product="陶瓷杯"):
@@ -71,6 +72,7 @@ class FakeApi:
         self.saved = {}
         self.published = {}
         self.finished = False
+        self.finish_options = None
         self.first_published = asyncio.Event()
 
     async def call(self, method, path, value=None):
@@ -87,6 +89,7 @@ class FakeApi:
             self.published[script.id] = script
             self.first_published.set()
         elif path == "finish":
+            self.finish_options = value
             self.finished = True
         return {}
 
@@ -151,6 +154,7 @@ class ControlledProvider:
                 ]
             )
         if stage == "SHOTS":
+            assert "beats" not in context["story"]
             if self.fail_chunk == context["beatIndex"]:
                 raise TimeoutError()
             return ShotChunk(
@@ -213,6 +217,24 @@ async def test_complete_scripts(count, duration, product):
     )
 
 
+@pytest.mark.parametrize("product_later", [True, False])
+async def test_opening_without_product_does_not_trigger_a_paid_correction(
+    product_later,
+):
+    class OpeningProvider(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            value = await super().generate(stage, model, result, context, instruction)
+            if stage == "SHOTS" and (context["beatIndex"] == 0 or not product_later):
+                value.shots[0].assetRequirements.products.state = "NONE"
+                value.shots[0].assetRequirements.products.items = []
+            return value
+
+    api, provider = FakeApi(), OpeningProvider()
+    await Pipeline(api, provider, inputs(1, 60), [], []).run()
+    assert provider.calls["SHOTS"] == 2
+    assert len(api.published) == int(product_later)
+
+
 async def test_first_publication_does_not_wait_for_other_scripts():
     api, provider, value = FakeApi(), ControlledProvider(), inputs(3)
     provider.block_id = value["scriptIds"][1]
@@ -259,6 +281,136 @@ async def test_unresolved_facts_never_publish_or_repeat_repair():
         and provider.calls["REPAIR"] == 1
         and provider.calls["RECHECK"] == 1
     )
+
+
+def test_adjacent_beats_batch_without_losing_content_or_time():
+    beats = [
+        Beat(id=f"b{i}", content=f"段落{i}", durationSeconds=n)
+        for i, n in enumerate([5, 10, 15, 20, 10, 30])
+    ]
+    grouped = group_shot_beats(beats)
+    assert [b.durationSeconds for b in grouped] == [30, 30, 30]
+    assert "\n\n".join(b.content for b in grouped) == "\n\n".join(
+        b.content for b in beats
+    )
+    assert [b.durationSeconds for b in beats] == [5, 10, 15, 20, 10, 30]
+
+
+async def test_legacy_chunks_keep_their_original_story_plan():
+    api, provider, value = FakeApi(), ControlledProvider(), inputs(1, 30)
+    sid = value["scriptIds"][0]
+    checkpoints = [
+        {
+            "nodeId": "STORY",
+            "scriptId": sid,
+            "status": "SUCCEEDED",
+            "output": {
+                "title": "故事",
+                "content": "完整故事",
+                "opening": "开场",
+                "development": "发展",
+                "ending": "收束",
+                "dialoguePlan": "无对白",
+                "beats": [
+                    {"id": f"b{i}", "content": f"段落{i}", "durationSeconds": 10}
+                    for i in range(3)
+                ],
+            },
+        },
+        {
+            "nodeId": "SHOTS",
+            "scriptId": sid,
+            "status": "FAILED",
+            "output": {"chunks": [{"shots": [shot("legacy", 10)]}]},
+        },
+    ]
+    await Pipeline(api, provider, value, checkpoints, []).run()
+    assert provider.calls["SHOTS"] == 2
+    assert [s.id for s in api.published[sid].shots] == ["legacy", "s1", "s2"]
+
+
+@pytest.mark.parametrize("retryable", [True, False])
+async def test_only_transient_model_failures_request_automatic_recovery(retryable):
+    class FailingProvider(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            if stage == "STORY":
+                raise ProviderError(
+                    "safe error",
+                    retryable=retryable,
+                    error_type=ProviderErrorType.RATE_LIMIT
+                    if retryable
+                    else ProviderErrorType.REQUEST_REJECTED,
+                )
+            return await super().generate(stage, model, result, context, instruction)
+
+    api = FakeApi()
+    value = inputs(1)
+    await Pipeline(api, FailingProvider(), value, [], []).run()
+    assert api.finish_options == {
+        "retryable": retryable,
+        "retryScriptIds": value["scriptIds"] if retryable else [],
+    }
+    assert not api.published
+
+
+async def test_automatic_recovery_does_not_rerun_permanent_failure_siblings():
+    api, provider, value = FakeApi(), ControlledProvider(), inputs(3)
+    await Pipeline(api, provider, value, [], [], [value["scriptIds"][1]]).run()
+    assert list(api.published) == [value["scriptIds"][1]]
+    assert provider.calls["STORY"] == 1
+
+
+async def test_wrong_duration_is_corrected_once_using_paid_result():
+    class WrongDuration(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            if stage == "SHOTS" and not context.get("previousInvalidChunk"):
+                self.calls[stage] += 1
+                return ShotChunk(shots=[Shot.model_validate(shot("s0", 5))])
+            if stage == "SHOTS":
+                assert context["validationIssues"][0] == {
+                    "code": "DURATION_SUM",
+                    "expected": 30,
+                    "actual": 5,
+                }
+            return await super().generate(stage, model, result, context, instruction)
+
+    api, provider = FakeApi(), WrongDuration()
+    await Pipeline(api, provider, inputs(1), [], []).run()
+    assert provider.calls["SHOTS"] == 2 and provider.calls["STORY"] == 1
+    assert len(api.published) == 1
+
+
+async def test_invalid_chunk_recovery_is_bounded_and_preserved_across_restart():
+    class AlwaysWrong(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            if stage == "SHOTS":
+                self.calls[stage] += 1
+                return ShotChunk(shots=[Shot.model_validate(shot("s0", 5))])
+            return await super().generate(stage, model, result, context, instruction)
+
+    api, provider, value = FakeApi(), AlwaysWrong(), inputs(1)
+    await Pipeline(api, provider, value, [], []).run()
+    assert not api.published and provider.calls["SHOTS"] == 2
+    await Pipeline(api, provider, value, list(api.saved.values()), []).run()
+    assert not api.published and provider.calls["SHOTS"] == 2
+    await Pipeline(api, provider, value, list(api.saved.values()), []).run()
+    assert not api.published and provider.calls["SHOTS"] == 2
+
+
+async def test_review_context_excludes_own_obsolete_concept():
+    class InspectReview(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            if stage in {"REVIEW", "RECHECK"}:
+                assert all(
+                    c["scriptId"] != context["script"]["id"]
+                    for c in context["otherConcepts"]["concepts"]
+                )
+            return await super().generate(stage, model, result, context, instruction)
+
+    api, provider = FakeApi(), InspectReview()
+    provider.review_errors = True
+    await Pipeline(api, provider, inputs(3), [], []).run()
+    assert len(api.published) == 3 and provider.calls["RECHECK"] == 3
 
 
 def test_contract_schema_and_python_stay_in_sync():

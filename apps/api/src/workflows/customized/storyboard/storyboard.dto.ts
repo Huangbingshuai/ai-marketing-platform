@@ -1,6 +1,9 @@
 import { Type } from 'class-transformer';
 import {
   IsIn,
+  IsBoolean,
+  IsArray,
+  ArrayMaxSize,
   IsInt,
   IsObject,
   IsOptional,
@@ -15,6 +18,7 @@ import type {
   CustomizedStoryboardScript,
   StoryboardSettings,
   StoryboardStep,
+  StoryboardFinish,
 } from '@ai-marketing/contracts';
 export class StoryboardScopeDto {
   @IsUUID() workflowRunId!: string;
@@ -51,6 +55,10 @@ export class EditScriptDto {
 }
 export class StoryboardWorkerDto {
   @IsUUID() projectId!: string;
+}
+export class StoryboardFinishDto extends StoryboardWorkerDto implements StoryboardFinish {
+  @IsOptional() @IsBoolean() retryable?: boolean;
+  @IsOptional() @IsArray() @ArrayMaxSize(5) @IsUUID('4', { each: true }) retryScriptIds?: string[];
 }
 export class StoryboardStepDto extends StoryboardWorkerDto {
   @IsIn(['SNAPSHOT', 'CONCEPT', 'STORY', 'ASSETS', 'SHOTS', 'REVIEW', 'REPAIR'])

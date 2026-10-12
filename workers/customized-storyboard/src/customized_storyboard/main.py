@@ -4,10 +4,11 @@ import logging
 import os
 import aio_pika
 from ai_runtime.http import InternalApiError
+from ai_runtime.responses import ProviderError
 from .api import Api
 from .models import QueueMessage
 from .pipeline import Pipeline
-from .provider import Provider
+from .provider import Provider, task_context
 
 
 def required(name: str) -> str:
@@ -45,6 +46,7 @@ async def consume() -> None:
                         logging.error("Invalid storyboard event")
                         continue
                     api = Api(url, token, event.projectId, event.runId)
+                    task_context.set(event.runId)
                     tasks: list[asyncio.Task[None]] = []
                     try:
                         claim = await api.call("POST", "claim")
@@ -57,6 +59,7 @@ async def consume() -> None:
                             claim["input"],
                             claim["checkpoints"],
                             claim["completedScriptIds"],
+                            claim.get("retryScriptIds"),
                         )
                         tasks = [
                             asyncio.create_task(pipeline.heartbeat()),
@@ -75,7 +78,14 @@ async def consume() -> None:
                             "Storyboard incomplete type=%s", type(error).__name__
                         )
                         if api.token:
-                            await api.call("POST", "finish")
+                            await api.call(
+                                "POST",
+                                "finish",
+                                {
+                                    "retryable": isinstance(error, ProviderError)
+                                    and error.retryable,
+                                },
+                            )
                     finally:
                         for task in tasks:
                             if not task.done():

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import {
   validateStoryboardSettings,
   type StoryboardWorkspace,
@@ -140,8 +140,19 @@ function apply(value: StoryboardWorkspace, initial = false) {
     props.workflowRunId === value.sourceRunId &&
     selected.source.artifactId === value.source?.artifactId &&
     selected.source.revision === value.source?.revision
-  )
-    emit('path', selected.workflowRunId);
+  ) {
+    // The parent's branch switch flushes this page. Wait until the loading
+    // placeholder has been replaced so its editor guard is available.
+    const selectedRunId = selected.workflowRunId;
+    void nextTick(() => {
+      if (
+        !disposed &&
+        props.workflowRunId === value.sourceRunId &&
+        currentRecord.value?.id === selected.id
+      )
+        emit('path', selectedRunId);
+    });
+  }
 }
 async function load() {
   controller.abort();

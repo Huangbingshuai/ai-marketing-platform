@@ -108,16 +108,13 @@ async function load(append = false) {
     if (scope === controller) loading.value = false;
   }
 }
-watch(
-  () => [props.open, props.projectId, props.task?.id, props.scriptId],
-  () => {
-    selectedScript.value =
-      props.scriptId && scriptIds.value.includes(props.scriptId) ? props.scriptId : '';
-    selected.value = null;
-    controller?.abort();
-    detail.value = null;
-  },
-);
+watch([() => props.open, () => props.projectId, () => props.task?.id, () => props.scriptId], () => {
+  selectedScript.value =
+    props.scriptId && scriptIds.value.includes(props.scriptId) ? props.scriptId : '';
+  selected.value = null;
+  controller?.abort();
+  detail.value = null;
+});
 watch([selected, selectedScript], () => void load());
 watch(
   () => props.task?.updatedAt,

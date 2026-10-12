@@ -1656,6 +1656,7 @@ model CustomizedStoryboardTask {
   status String @default("QUEUED") @db.VarChar(24)
   attemptToken String? @db.Uuid
   attemptCount Int @default(0)
+  autoRetryScriptIds String[] @default([])
   leaseExpiresAt DateTime?
   errorMessage String? @db.VarChar(1000)
   createdAt DateTime @default(now())

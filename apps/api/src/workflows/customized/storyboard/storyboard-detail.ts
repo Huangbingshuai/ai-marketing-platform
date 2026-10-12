@@ -62,14 +62,36 @@ function shots(v: unknown): Row[] {
     };
   });
 }
+function readableShotText(value: unknown, script: unknown): string {
+  let text = str(value);
+  for (const [index, shot] of list(record(script).shots).entries()) {
+    const id = str(record(shot).id);
+    if (id)
+      text = text.replace(
+        new RegExp(
+          `(?<![\\p{L}\\p{N}_])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`,
+          'gu',
+        ),
+        `镜头 ${index + 1}`,
+      );
+  }
+  return text.replace(/\bshot[-_]0*(\d+)\b/gi, (match, number: string) => {
+    const index = Number(number);
+    return index > 0 && index <= list(record(script).shots).length ? `镜头 ${index}` : match;
+  });
+}
 function review(v: unknown, script: unknown): Row[] {
   const r = record(v);
+  const readable = (value: unknown) => readableShotText(value, script);
   return [
-    ...fields(r, { summary: '审校结论' }),
+    ...fields(r, { summary: '审校结论' }).map((row) => ({
+      ...row,
+      content: readable(row.content),
+    })),
     ...list(r.findings).map((f) => {
       const x = record(f);
       return {
-        title: str(x.message),
+        title: readable(x.message),
         content: [
           list(x.shotIds)
             .map((id) => {
@@ -79,8 +101,8 @@ function review(v: unknown, script: unknown): Row[] {
                 : '整体脚本';
             })
             .join('、'),
-          str(x.evidence),
-          str(x.suggestion),
+          readable(x.evidence),
+          readable(x.suggestion),
         ]
           .filter(Boolean)
           .join('\n'),
@@ -150,7 +172,30 @@ export function storyboardDetail(
         };
       });
     }
-    if (nodeId === 'SHOTS') rows = shots(o);
+    if (nodeId === 'SHOTS') {
+      const assets = steps.find((v) => v.nodeId === 'ASSETS' && v.scriptId === s.scriptId)?.output;
+      rows = shots(
+        o.shots
+          ? o
+          : {
+              shots: list(o.chunks).flatMap((c) => list(record(c).shots)),
+              assets: record(assets).assets,
+            },
+      );
+      const rejected = record(o.rejectedChunk);
+      for (const issue of list(rejected.issues).map(record)) {
+        if (issue.code === 'DURATION_SUM')
+          rows.push({
+            title: '片段时长待纠正',
+            content: `本片段目标 ${str(issue.expected)} 秒，当前镜头合计 ${str(issue.actual)} 秒。${rejected.correctionComplete ? '自动纠正仍未通过，当前脚本尚未发布。' : '将保留合理内容，自动纠正时长。'}`,
+          });
+        if (issue.code === 'SHOT_IDS_OR_ASSET_REFERENCES')
+          rows.push({
+            title: '镜头引用待纠正',
+            content: '检测到重复镜头标识或不属于对象目录的引用，当前片段尚未采用。',
+          });
+      }
+    }
     if (nodeId === 'REVIEW')
       rows = review(
         o,
@@ -161,9 +206,15 @@ export function storyboardDetail(
         s.status === 'SKIPPED'
           ? [{ title: '无需修订', content: '独立审校未发现需要修订的问题。' }]
           : [
-              ...fields(o, { reason: '修改原因' }),
+              ...fields(o, { reason: '修改原因' }).map((row) => ({
+                ...row,
+                content: readableShotText(row.content, o.script),
+              })),
               ...list(o.changes).flatMap((c) =>
-                fields(c, { before: '修改前', after: '修改后', reason: '修改依据' }),
+                fields(c, { before: '修改前', after: '修改后', reason: '修改依据' }).map((row) => ({
+                  ...row,
+                  content: readableShotText(row.content, o.script),
+                })),
               ),
               ...review(o.review, o.script),
               ...shots(o.script),
@@ -214,7 +265,9 @@ export function storyboardDetail(
             title: stage.label,
             content:
               state === 'PENDING'
-                ? '等待执行，尚无生成结果'
+                ? outputs.length
+                  ? '等待继续执行，已保存内容显示在下方'
+                  : '等待执行，尚无生成结果'
                 : state === 'RUNNING'
                   ? '正在处理，已保存内容显示在下方'
                   : state === 'FAILED'

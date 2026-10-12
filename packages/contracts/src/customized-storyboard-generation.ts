@@ -21,6 +21,8 @@ export type StoryboardStatus =
   'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED';
 export type StoryboardStepStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
 export type StoryboardSource = { artifactId: string; revision: number; fingerprint: string };
+/** Internal worker completion: only transient model failures request recovery. */
+export type StoryboardFinish = { retryable?: boolean; retryScriptIds?: string[] };
 export type StoryboardFinding = {
   severity: 'ERROR' | 'WARNING';
   category: 'FACT' | 'STORY' | 'STRUCTURE';

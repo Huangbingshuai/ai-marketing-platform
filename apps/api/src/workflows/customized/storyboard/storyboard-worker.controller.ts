@@ -17,7 +17,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StoryboardRepository } from './storyboard.repository';
-import { PublishScriptDto, StoryboardStepDto, StoryboardWorkerDto } from './storyboard.dto';
+import {
+  PublishScriptDto,
+  StoryboardStepDto,
+  StoryboardWorkerDto,
+  StoryboardFinishDto,
+} from './storyboard.dto';
 @Injectable()
 export class StoryboardWorkerGuard implements CanActivate {
   constructor(@Inject(ConfigService) private readonly config: ConfigService) {}
@@ -70,8 +75,8 @@ export class StoryboardWorkerController {
   @Post('tasks/:id/finish') finish(
     @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-attempt-token') token: string,
-    @Body() b: StoryboardWorkerDto,
+    @Body() b: StoryboardFinishDto,
   ) {
-    return this.repository.finish(b.projectId, id, token);
+    return this.repository.finish(b.projectId, id, token, b);
   }
 }

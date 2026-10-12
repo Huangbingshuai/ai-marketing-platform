@@ -234,17 +234,62 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
       );
       const again = await repo.create(projectId, root.id, 0, randomUUID(), models);
       const secondClaim = await repo.claim(projectId, again.id);
+      const resumedScriptId = (secondClaim.input as unknown as StoryboardInput).scriptIds[0]!;
+      const partialChunks = { chunks: [{ shots: script(resumedScriptId).shots }] };
+      await repo.step(projectId, again.id, secondClaim.attemptToken!, {
+        nodeId: 'SHOTS',
+        scriptId: resumedScriptId,
+        status: 'RUNNING',
+        output: partialChunks,
+        errorMessage: null,
+      });
       await db.customizedStoryboardTask.update({
         where: { id: again.id },
         data: { leaseExpiresAt: new Date(0) },
       });
       await repo.recoverExpired();
       expect((await repo.task(projectId, again.id)).status).toBe('QUEUED');
+      const recoveredStep = (await repo.task(projectId, again.id)).steps.find(
+        (s) => s.nodeId === 'SHOTS' && s.scriptId === resumedScriptId,
+      );
+      expect(recoveredStep?.status).toBe('PENDING');
+      expect(recoveredStep?.output).toEqual(partialChunks);
       const nextAttempt = await repo.claim(projectId, again.id);
       expect(nextAttempt.attemptToken).not.toBe(secondClaim.attemptToken);
       await expect(
         repo.heartbeat(projectId, again.id, secondClaim.attemptToken!),
       ).rejects.toThrow();
+      await repo.step(projectId, again.id, nextAttempt.attemptToken!, {
+        nodeId: 'SHOTS',
+        scriptId: resumedScriptId,
+        status: 'FAILED',
+        output: null,
+        errorMessage: '服务暂时不可用',
+      });
+      await repo.finish(projectId, again.id, nextAttempt.attemptToken!, {
+        retryable: true,
+        retryScriptIds: [resumedScriptId],
+      });
+      expect((await repo.task(projectId, again.id)).status).toBe('QUEUED');
+      const scheduled = await db.jobOutbox.findFirstOrThrow({
+        where: { projectId, aggregateId: again.id },
+      });
+      expect(scheduled.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 25000);
+      await repo.finish(projectId, again.id, nextAttempt.attemptToken!, { retryable: true });
+      expect(
+        (await db.jobOutbox.findUniqueOrThrow({ where: { id: scheduled.id } })).nextAttemptAt,
+      ).toEqual(scheduled.nextAttemptAt);
+      const lastAttempt = await repo.claim(projectId, again.id);
+      expect(lastAttempt.retryScriptIds).toEqual([resumedScriptId]);
+      expect(
+        lastAttempt.checkpoints?.find((s) => s.nodeId === 'SHOTS' && s.scriptId === resumedScriptId)
+          ?.output,
+      ).toEqual(partialChunks);
+      await repo.finish(projectId, again.id, lastAttempt.attemptToken!, {
+        retryable: true,
+        retryScriptIds: [resumedScriptId],
+      });
+      expect((await repo.task(projectId, again.id)).status).toBe('FAILED');
       await repo.retry(projectId, again.id, true);
       await expect(
         repo.heartbeat(projectId, again.id, secondClaim.attemptToken!),

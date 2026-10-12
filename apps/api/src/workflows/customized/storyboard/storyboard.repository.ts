@@ -18,6 +18,7 @@ import {
   type CustomizedStoryboardScript as Script,
   type StoryboardStep,
   type StoryboardReview,
+  type StoryboardFinish,
 } from '@ai-marketing/contracts';
 import {
   Prisma,
@@ -131,92 +132,97 @@ export class StoryboardRepository {
     };
   }
   async workspace(projectId: string, runId: string): Promise<StoryboardWorkspace> {
-    return this.db.$transaction(async (tx) => {
-      const run = await this.sourceRun(tx, projectId, runId),
-        b = await this.brief(tx, projectId, run.id),
-        state = await this.state(tx, projectId, run.id);
-      const records = await tx.customizedStoryboardScript.findMany({
-        where: { projectId },
-        orderBy: { createdAt: 'asc' },
-      });
-      const branches = await tx.workflowRun.findMany({
-        where: { projectId, forkScriptId: { in: records.map((s) => s.id) } },
-        select: { forkScriptId: true, branchPublishedAt: true },
-      });
-      const publishedAt = (id: string) =>
-        branches.find((b) => b.forkScriptId === id)?.branchPublishedAt?.getTime() ??
-        Number.MAX_SAFE_INTEGER;
-      records.sort((a, b) => publishedAt(a.id) - publishedAt(b.id));
-      const artifacts = await tx.workingArtifact.findMany({
-        where: {
-          projectId,
-          artifactKey: { in: records.map((s) => `customized-script:${s.id}`) },
-          availability: 'AVAILABLE',
-        },
-      });
-      const scripts = records
-        .filter((s) => s.origin !== 'AI' || s.status === 'COMPLETED')
-        .map((s) => {
-          const a = artifacts.find(
-              (a) =>
-                a.workflowRunId === s.workflowRunId &&
-                a.artifactKey === `customized-script:${s.id}`,
-            ),
-            source = s.sourceSnapshot as unknown as StoryboardSource;
-          return {
-            id: s.id,
-            workflowRunId: s.workflowRunId,
-            source,
-            status: s.status as 'DRAFT',
-            origin: s.origin as 'AI',
-            revision: s.revision,
-            editing: s.editing,
-            stale:
-              !b ||
-              b.freshness !== 'CURRENT' ||
-              source.artifactId !== b.id ||
-              source.revision !== b.revision ||
-              a?.freshness === 'STALE',
-            script: (s.editing ? s.draft : (a?.payload ?? s.draft)) as unknown as Script,
-            confirmedRevision: a?.revision ?? null,
-            taskId: s.taskId,
-          };
+    return this.db.$transaction(
+      async (tx) => {
+        const run = await this.sourceRun(tx, projectId, runId),
+          b = await this.brief(tx, projectId, run.id),
+          state = await this.state(tx, projectId, run.id);
+        const records = await tx.customizedStoryboardScript.findMany({
+          where: { projectId },
+          orderBy: { createdAt: 'asc' },
         });
-      const task = await tx.customizedStoryboardTask.findFirst({
-        where: { projectId, workflowRunId: run.id },
-        orderBy: { createdAt: 'desc' },
-        include: { steps: true },
-      });
-      const legacy = await tx.workflowNodeState.findUnique({
-        where: {
-          projectId_workflowRunId_nodeId: {
+        const branches = await tx.workflowRun.findMany({
+          where: { projectId, forkScriptId: { in: records.map((s) => s.id) } },
+          select: { forkScriptId: true, branchPublishedAt: true },
+        });
+        const publishedAt = (id: string) =>
+          branches.find((b) => b.forkScriptId === id)?.branchPublishedAt?.getTime() ??
+          Number.MAX_SAFE_INTEGER;
+        records.sort((a, b) => publishedAt(a.id) - publishedAt(b.id));
+        const artifacts = await tx.workingArtifact.findMany({
+          where: {
             projectId,
-            workflowRunId: run.id,
-            nodeId: 'STORYBOARD',
+            artifactKey: { in: records.map((s) => `customized-script:${s.id}`) },
+            availability: 'AVAILABLE',
           },
-        },
-      });
-      const viewed = await this.scope(tx, projectId, runId);
-      return {
-        sourceRunId: run.id,
-        source: b ? this.source(b) : null,
-        brief: b && isCustomizedBrief(b.payload) ? b.payload : null,
-        sourceReady: !!b && b.freshness === 'CURRENT' && isCustomizedBrief(b.payload),
-        settings: state.settings,
-        settingsRevision: state.revision,
-        scripts,
-        selectedScriptId: scripts.some((s) => s.id === viewed.forkScriptId)
-          ? viewed.forkScriptId
-          : scripts.some((s) => s.id === state.selectedScriptId)
-            ? state.selectedScriptId
-            : (scripts[0]?.id ?? null),
-        task: task ? presentStoryboardTask(task) : null,
-        legacyDraft:
-          !records.length && isCustomizedStoryboardDraft(legacy?.state)
-            ? (legacy!.state as unknown as CustomizedStoryboardDraft)
-            : null,
-      };
-    });
+        });
+        const scripts = records
+          .filter((s) => s.origin !== 'AI' || s.status === 'COMPLETED')
+          .map((s) => {
+            const a = artifacts.find(
+                (a) =>
+                  a.workflowRunId === s.workflowRunId &&
+                  a.artifactKey === `customized-script:${s.id}`,
+              ),
+              source = s.sourceSnapshot as unknown as StoryboardSource;
+            return {
+              id: s.id,
+              workflowRunId: s.workflowRunId,
+              source,
+              status: s.status as 'DRAFT',
+              origin: s.origin as 'AI',
+              revision: s.revision,
+              editing: s.editing,
+              stale:
+                !b ||
+                b.freshness !== 'CURRENT' ||
+                source.artifactId !== b.id ||
+                source.revision !== b.revision ||
+                a?.freshness === 'STALE',
+              script: (s.editing ? s.draft : (a?.payload ?? s.draft)) as unknown as Script,
+              confirmedRevision: a?.revision ?? null,
+              taskId: s.taskId,
+            };
+          });
+        const task = await tx.customizedStoryboardTask.findFirst({
+          where: { projectId, workflowRunId: run.id },
+          orderBy: { createdAt: 'desc' },
+          include: { steps: true },
+        });
+        const legacy = await tx.workflowNodeState.findUnique({
+          where: {
+            projectId_workflowRunId_nodeId: {
+              projectId,
+              workflowRunId: run.id,
+              nodeId: 'STORYBOARD',
+            },
+          },
+        });
+        const viewed = await this.scope(tx, projectId, runId);
+        return {
+          sourceRunId: run.id,
+          source: b ? this.source(b) : null,
+          brief: b && isCustomizedBrief(b.payload) ? b.payload : null,
+          sourceReady: !!b && b.freshness === 'CURRENT' && isCustomizedBrief(b.payload),
+          settings: state.settings,
+          settingsRevision: state.revision,
+          scripts,
+          selectedScriptId: scripts.some((s) => s.id === viewed.forkScriptId)
+            ? viewed.forkScriptId
+            : scripts.some((s) => s.id === state.selectedScriptId)
+              ? state.selectedScriptId
+              : (scripts[0]?.id ?? null),
+          task: task ? presentStoryboardTask(task) : null,
+          legacyDraft:
+            !records.length && isCustomizedStoryboardDraft(legacy?.state)
+              ? (legacy!.state as unknown as CustomizedStoryboardDraft)
+              : null,
+        };
+        // Read-only projection: no advisory/row locks. Keep a bounded budget under
+        // concurrent generation instead of expiring the default 5 s transaction.
+      },
+      { timeout: 15000, maxWait: 3000 },
+    );
   }
   async settings(
     projectId: string,
@@ -467,6 +473,7 @@ export class StoryboardRepository {
           (s) => s.output !== null || ['SUCCEEDED', 'SKIPPED'].includes(s.status),
         ),
         completedScriptIds: t.scripts.filter((s) => s.status === 'COMPLETED').map((s) => s.id),
+        retryScriptIds: t.autoRetryScriptIds.length ? t.autoRetryScriptIds : null,
       };
     });
   }
@@ -771,29 +778,58 @@ export class StoryboardRepository {
       { timeout: 30000 },
     );
   }
-  finish(projectId: string, id: string, token: string) {
+  finish(projectId: string, id: string, token: string, failure: StoryboardFinish = {}) {
     return this.db.$transaction(async (tx) => {
       await lockCustomizedProject(tx, projectId);
       const old = await tx.customizedStoryboardTask.findFirst({
         where: { projectId, id, attemptToken: token },
       });
-      if (old && ['COMPLETED', 'PARTIAL', 'FAILED'].includes(old.status)) return { accepted: true };
+      if (old && ['COMPLETED', 'PARTIAL', 'FAILED', 'QUEUED'].includes(old.status))
+        return { accepted: true };
       const t = await this.lease(tx, projectId, id, token),
         count = await tx.customizedStoryboardScript.count({
           where: { projectId, taskId: id, status: 'COMPLETED' },
         });
+      const retryIds = [...new Set(failure.retryScriptIds ?? [])];
+      if (retryIds.some((scriptId) => !inputOf(t).scriptIds.includes(scriptId)))
+        invalid('恢复方案不属于当前任务');
+      const automatic =
+        failure.retryable === true && count < inputOf(t).scriptIds.length && t.attemptCount < 3;
       await tx.customizedStoryboardTask.update({
         where: { id },
         data: {
-          status:
-            count === inputOf(t).scriptIds.length ? 'COMPLETED' : count ? 'PARTIAL' : 'FAILED',
+          status: automatic
+            ? 'QUEUED'
+            : count === inputOf(t).scriptIds.length
+              ? 'COMPLETED'
+              : count
+                ? 'PARTIAL'
+                : 'FAILED',
           leaseExpiresAt: null,
-          errorMessage:
-            count === inputOf(t).scriptIds.length
+          autoRetryScriptIds: automatic ? retryIds : [],
+          errorMessage: automatic
+            ? '服务暂时繁忙，稍后自动恢复未完成方案；已完成内容保留'
+            : count === inputOf(t).scriptIds.length
               ? null
               : '部分脚本未完成，已成功的脚本保留，可重试未完成部分',
         },
       });
+      if (automatic) {
+        await tx.customizedStoryboardStep.updateMany({
+          where: {
+            projectId,
+            taskId: id,
+            status: { in: ['RUNNING', 'FAILED'] },
+            ...(retryIds.length ? { OR: [{ scriptId: { in: retryIds } }, { scriptId: '' }] } : {}),
+          },
+          data: { status: 'PENDING', errorMessage: null },
+        });
+        const outbox = await this.enqueue(tx, t);
+        await tx.jobOutbox.update({
+          where: { id: outbox.id },
+          data: { nextAttemptAt: new Date(Date.now() + 15000 * t.attemptCount) },
+        });
+      }
       return { accepted: true };
     });
   }
@@ -814,7 +850,17 @@ export class StoryboardRepository {
         await this.validSource(tx, t);
         await tx.customizedStoryboardTask.update({
           where: { id },
-          data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null, errorMessage: null },
+          data: {
+            status: 'QUEUED',
+            attemptToken: null,
+            leaseExpiresAt: null,
+            errorMessage: null,
+            autoRetryScriptIds: [],
+          },
+        });
+        await tx.customizedStoryboardStep.updateMany({
+          where: { projectId, taskId: id, status: 'RUNNING' },
+          data: { status: 'PENDING' },
         });
         await this.enqueue(tx, t);
       }
@@ -944,7 +990,13 @@ export class StoryboardRepository {
             errorMessage: '执行中断，可重试恢复',
           },
         });
-        if (result.count && t.attemptCount < 3) await this.enqueue(tx, t);
+        if (result.count) {
+          await tx.customizedStoryboardStep.updateMany({
+            where: { projectId: t.projectId, taskId: t.id, status: 'RUNNING' },
+            data: { status: t.attemptCount < 3 ? 'PENDING' : 'FAILED' },
+          });
+          if (t.attemptCount < 3) await this.enqueue(tx, t);
+        }
       });
   }
 }

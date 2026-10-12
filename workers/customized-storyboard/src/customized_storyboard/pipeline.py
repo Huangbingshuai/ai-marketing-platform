@@ -4,6 +4,7 @@ import logging
 from typing import Any, TypeVar
 from pydantic import BaseModel
 from ai_runtime.http import InternalApiError
+from ai_runtime.responses import ProviderError
 from .api import Api
 from .provider import Provider
 from .models import (
@@ -16,9 +17,30 @@ from .models import (
     Script,
     Review,
     Repair,
+    Beat,
 )
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def group_shot_beats(beats: list[Beat]) -> list[Beat]:
+    """Batch adjacent story beats without changing their order or duration."""
+    groups: list[Beat] = []
+    for beat in beats:
+        if (
+            groups
+            and groups[-1].durationSeconds + beat.durationSeconds <= 30
+            and len(groups[-1].content) + len(beat.content) + 2 <= 20000
+        ):
+            previous = groups[-1]
+            groups[-1] = Beat(
+                id=previous.id,
+                content=previous.content + "\n\n" + beat.content,
+                durationSeconds=previous.durationSeconds + beat.durationSeconds,
+            )
+        else:
+            groups.append(beat.model_copy())
+    return groups
 
 
 class Pipeline:
@@ -29,10 +51,14 @@ class Pipeline:
         value: dict[str, Any],
         checkpoints: list[dict[str, Any]],
         completed: list[str],
+        retry_script_ids: list[str] | None = None,
     ) -> None:
         self.api, self.provider, self.input = api, provider, value
         self.checkpoints = {(s["nodeId"], s["scriptId"]): s for s in checkpoints}
         self.completed = set(completed)
+        self.retry_script_ids = (
+            set(retry_script_ids) if retry_script_ids is not None else None
+        )
         # Brand references remain frozen on API; never feed images or opaque refs to a model.
         self.context = {k: value[k] for k in ("brief", "settings", "existingConcepts")}
 
@@ -157,12 +183,14 @@ class Pipeline:
             self.input["scriptIds"]
         ):
             raise ValueError("concept identity mismatch")
+        pending = [
+            c
+            for c in concepts.concepts
+            if c.scriptId not in self.completed
+            and (self.retry_script_ids is None or c.scriptId in self.retry_script_ids)
+        ]
         outcomes = await asyncio.gather(
-            *(
-                self.script(c, concepts)
-                for c in concepts.concepts
-                if c.scriptId not in self.completed
-            ),
+            *(self.script(c, concepts) for c in pending),
             return_exceptions=True,
         )
         for outcome in outcomes:
@@ -170,7 +198,21 @@ class Pipeline:
                 raise outcome
             if isinstance(outcome, BaseException):
                 logging.warning("script incomplete type=%s", type(outcome).__name__)
-        await self.api.call("POST", "finish")
+        retry_ids = [
+            c.scriptId
+            for c, outcome in zip(pending, outcomes)
+            if isinstance(outcome, ProviderError) and outcome.retryable
+        ]
+        await self.api.call(
+            "POST",
+            "finish",
+            {"retryable": bool(retry_ids), "retryScriptIds": retry_ids},
+        )
+
+    def other_concepts(self, concepts: Concepts, sid: str) -> dict[str, Any]:
+        return {
+            "concepts": [c.model_dump() for c in concepts.concepts if c.scriptId != sid]
+        }
 
     async def script(self, concept: Concept, concepts: Concepts) -> None:
         sid = concept.scriptId
@@ -182,7 +224,7 @@ class Pipeline:
                 Story,
                 {
                     "concept": concept.model_dump(),
-                    "otherConcepts": concepts.model_dump(),
+                    "otherConcepts": self.other_concepts(concepts, sid),
                 },
                 "为本方案写完整故事，包含开场、发展、收束与对白安排；按连续叙事段落分 beats，每段不超过30秒，所有段落时长之和等于目标时长。",
             )
@@ -214,37 +256,142 @@ class Pipeline:
                     if saved and isinstance(saved["output"], dict)
                     else []
                 )
-                for index, beat in enumerate(story.beats):
+                # Freeze the grouping with the first checkpoint. Legacy chunks
+                # retain the original per-beat plan so a deploy cannot reinterpret
+                # paid results as a different segment or bill for them twice.
+                output = saved.get("output") if saved else None
+                chunk_plan = (
+                    [Beat.model_validate(b) for b in output["chunkPlan"]]
+                    if isinstance(output, dict) and "chunkPlan" in output
+                    else story.beats
+                    if chunks
+                    else group_shot_beats(story.beats)
+                )
+                plan = [b.model_dump() for b in chunk_plan]
+                await self.step(
+                    "SHOTS",
+                    sid,
+                    "RUNNING",
+                    {
+                        "chunks": chunks,
+                        "chunkPlan": plan,
+                        **(
+                            {"rejectedChunk": output["rejectedChunk"]}
+                            if isinstance(output, dict) and "rejectedChunk" in output
+                            else {}
+                        ),
+                    },
+                )
+                for index, beat in enumerate(chunk_plan):
                     chunk = (
                         ShotChunk.model_validate(chunks[index])
                         if index < len(chunks)
-                        else await self.model(
-                            "SHOTS",
-                            ShotChunk,
-                            {
-                                "story": story.model_dump(),
-                                "assets": assets.model_dump(),
-                                "beat": beat.model_dump(),
-                                "beatIndex": index,
-                                "previousShots": [s.model_dump() for s in shots[-3:]],
-                                "usedShotIds": [s.id for s in shots],
-                            },
-                            "只细化指定 beat 的镜头，前后衔接参考完整故事及相邻镜头，时长之和等于该段时长，不增删对象目录，只引用已有id。每镜明确三类资产，无使用选NONE。镜头与对白id不能重复。",
-                            detail=True,
-                        )
+                        else None
                     )
-                    if (
-                        abs(
-                            sum(s.durationSeconds for s in chunk.shots)
-                            - beat.durationSeconds
+                    rejected = (
+                        output.get("rejectedChunk")
+                        if isinstance(output, dict)
+                        else None
+                    )
+                    if chunk is None:
+                        rejected = (
+                            rejected
+                            if isinstance(rejected, dict)
+                            and rejected.get("index") == index
+                            else None
                         )
-                        > 0.01
-                    ):
-                        raise ValueError("shot chunk duration mismatch")
+                        for correction in range(2):
+                            if rejected and rejected.get("correctionComplete"):
+                                raise ValueError("shot chunk correction exhausted")
+                            chunk = await self.model(
+                                "SHOTS",
+                                ShotChunk,
+                                {
+                                    "story": story.model_dump(exclude={"beats"}),
+                                    "assets": assets.model_dump(),
+                                    "beat": beat.model_dump(),
+                                    "beatIndex": index,
+                                    "previousShots": [
+                                        s.model_dump() for s in shots[-3:]
+                                    ],
+                                    "usedShotIds": [s.id for s in shots],
+                                    **(
+                                        {
+                                            "previousInvalidChunk": rejected["chunk"],
+                                            "validationIssues": rejected["issues"],
+                                        }
+                                        if rejected
+                                        else {}
+                                    ),
+                                },
+                                "只细化当前 beat.content 指定的完整片段。beat.durationSeconds 是本次镜头总时长，beatIndex 仅为请求序号，不是 story.beats 索引。"
+                                "前后衔接参考完整故事及相邻镜头，不增删对象目录，只引用已有id。每镜明确三类资产，无使用选NONE。镜头与对白id不能重复。"
+                                "如提供 previousInvalidChunk，保留合理内容，纠正 validationIssues 中的机械错误；所有镜头时长之和必须准确等于 beat.durationSeconds。",
+                                detail=True,
+                            )
+                            issues = []
+                            duration = sum(s.durationSeconds for s in chunk.shots)
+                            if abs(duration - beat.durationSeconds) > 0.01:
+                                issues.append(
+                                    {
+                                        "code": "DURATION_SUM",
+                                        "expected": beat.durationSeconds,
+                                        "actual": duration,
+                                    }
+                                )
+                            try:
+                                Script.model_validate(
+                                    {
+                                        "id": sid,
+                                        "name": concept.name,
+                                        "synopsis": concept.synopsis,
+                                        "structure": concept.structure,
+                                        "productFocus": concept.productFocus,
+                                        "assets": assets.assets,
+                                        "shots": [*shots, *chunk.shots],
+                                    },
+                                    context={"partial": True},
+                                )
+                            except ValueError:
+                                issues.append(
+                                    {
+                                        "code": "SHOT_IDS_OR_ASSET_REFERENCES",
+                                        "allowedAssetIds": [
+                                            a.id for a in assets.assets
+                                        ],
+                                        "usedShotIds": [s.id for s in shots],
+                                    }
+                                )
+                            if not issues:
+                                break
+                            rejected = {
+                                "index": index,
+                                "chunk": chunk.model_dump(),
+                                "issues": issues,
+                                "correctionComplete": bool(rejected) or correction == 1,
+                            }
+                            await self.step(
+                                "SHOTS",
+                                sid,
+                                "RUNNING",
+                                {
+                                    "chunks": chunks,
+                                    "chunkPlan": plan,
+                                    "rejectedChunk": rejected,
+                                },
+                            )
+                            if rejected["correctionComplete"]:
+                                raise ValueError("shot chunk correction exhausted")
+                    assert chunk is not None
                     shots.extend(chunk.shots)
                     if index >= len(chunks):
                         chunks.append(chunk.model_dump())
-                        await self.step("SHOTS", sid, "RUNNING", {"chunks": chunks})
+                        await self.step(
+                            "SHOTS",
+                            sid,
+                            "RUNNING",
+                            {"chunks": chunks, "chunkPlan": plan},
+                        )
                 script = Script(
                     id=sid,
                     name=concept.name,
@@ -264,7 +411,7 @@ class Pipeline:
                 {
                     "script": script.model_dump(),
                     "story": story.model_dump(),
-                    "otherConcepts": concepts.model_dump(),
+                    "otherConcepts": self.other_concepts(concepts, sid),
                 },
                 "独立审校脚本：核对事实依据、品牌约束、故事连贯、镜头可执行、对象引用和方案差异。问题必须具体并关联有效镜头id，正常则给清楚结论。事实/结构/引用错误为ERROR，创意优化建议为WARNING。不要求穷尽全部卖点。",
             )
@@ -314,16 +461,19 @@ class Pipeline:
                     )
                     review = (
                         Review.model_validate(partial["review"])
-                        if isinstance(partial, dict) and "review" in partial
+                        if isinstance(partial, dict)
+                        and "review" in partial
+                        and partial.get("reviewContextVersion") == 2
                         else await self.model(
                             "RECHECK",
                             Review,
                             {
                                 "script": script.model_dump(),
                                 "originalReview": review.model_dump(),
-                                "otherConcepts": concepts.model_dump(),
+                                "otherConcepts": self.other_concepts(concepts, sid),
                             },
-                            "独立复核修订后的完整脚本，检查问题是否解决，以及新增事实、结构或引用错误；不要因为上一轮已修改就默认通过。",
+                            "独立复核当前 script 修订后的完整脚本，检查问题是否解决，以及新增事实、结构或引用错误；不要因为上一轮已修改就默认通过。"
+                            "originalReview 仅是旧问题清单，otherConcepts 仅用于方案差异比较；不要把旧描述或其他方案当成当前稿内容，也不要要求当前脚本修订其他方案。",
                         )
                     )
                     if any(
@@ -341,6 +491,7 @@ class Pipeline:
                                 **repair.model_dump(),
                                 "repair": repair.model_dump(),
                                 "review": review.model_dump(),
+                                "reviewContextVersion": 2,
                             },
                             "修订后仍有需要处理的问题，脚本尚未发布。可调整设置后再次创作。",
                         )
@@ -349,7 +500,11 @@ class Pipeline:
                         "REPAIR",
                         sid,
                         "SUCCEEDED",
-                        {**repair.model_dump(), "review": review.model_dump()},
+                        {
+                            **repair.model_dump(),
+                            "review": review.model_dump(),
+                            "reviewContextVersion": 2,
+                        },
                     )
             script.check_duration(target)
             stage = "SAVE"

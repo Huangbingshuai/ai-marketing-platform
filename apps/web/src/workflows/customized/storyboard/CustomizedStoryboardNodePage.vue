@@ -104,9 +104,6 @@ const editable = computed(() => props.preview || (props.editing && !props.readon
 const left = computed(() => draft.value.scripts.find((s) => s.id === compareLeft.value));
 const right = computed(() => draft.value.scripts.find((s) => s.id === compareRight.value));
 const duration = computed(() => (active.value ? scriptDuration(active.value) : 0));
-const durationMismatch = computed(
-  () => active.value?.shots.length && duration.value !== draft.value.settings.targetDurationSeconds,
-);
 const running = computed(() => !!props.task && ['QUEUED', 'RUNNING'].includes(props.task.status));
 const settingsEditable = computed(
   () => props.preview || (props.sourceReady && !props.readonly && !running.value),
@@ -263,7 +260,7 @@ defineExpose({ guardEditor });
         <WorkflowNodeEditActions
           :editing="editing || preview"
           :temporary="true"
-          :disabled="saving || (!editing && readonly && !preview)"
+          :disabled="saving || (!editing && !preview && (readonly || !active))"
           :saving="saving"
           :save-disabled="preview || readonly"
           save-label="保存修改"
@@ -524,9 +521,8 @@ defineExpose({ guardEditor });
           <h3>逐镜脚本</h3>
           <span>{{ active.shots.length }} 镜</span>
         </div>
-        <div class="duration-summary" :class="{ warning: durationMismatch }">
-          <Clock3 :size="14" /><strong>{{ duration }} 秒</strong
-          ><span>/ 目标 {{ draft.settings.targetDurationSeconds }} 秒</span>
+        <div class="duration-summary">
+          <Clock3 :size="14" /><strong>{{ duration }} 秒</strong>
         </div>
         <button type="button" :disabled="!editable" @click="addShot">
           <Plus :size="14" />添加镜头
