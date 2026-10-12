@@ -54,6 +54,7 @@ import {
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
+import { useProjectContext } from '../../../platform/project/project-context';
 import {
   beginEffectWorkflowNodeEdit,
   cancelEffectWorkflowNodeEdit,
@@ -100,6 +101,8 @@ const props = defineProps<{
   workflowRunId: string;
   products: EffectImportProduct[];
 }>();
+
+const projectContext = useProjectContext();
 
 const emit = defineEmits<{ back: []; next: []; branchActivated: [] }>();
 
@@ -1251,6 +1254,7 @@ const requestDeleteItem = async (item: EffectPromptItem): Promise<void> => {
 };
 
 const exportBatch = async (): Promise<void> => {
+  const projectId = props.projectId;
   const state = currentState.value;
   if (
     !state?.resultId ||
@@ -1267,20 +1271,31 @@ const exportBatch = async (): Promise<void> => {
   const productId = state.productId;
   exporting.value = true;
   try {
+    const projectName = (
+      projectContext.currentProject.value?.id === projectId
+        ? projectContext.currentProject.value.name
+        : projectContext.projects.value.find((project) => project.id === projectId)?.name
+    )?.trim();
+    if (!projectName) {
+      showNotice('项目名称尚未加载，请稍后重试', 'warning');
+      return;
+    }
     const exported = await downloadEffectPromptBatch(
-      props.projectId,
+      projectId,
       state.resultId,
-      currentProduct.value.name,
+      projectName,
       controller.signal,
     );
-    if (controller.signal.aborted || currentProductId.value !== productId) return;
+    if (controller.signal.aborted || props.projectId !== projectId || currentProductId.value !== productId) return;
     const url = URL.createObjectURL(exported.blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = exported.fileName;
+    document.body.appendChild(anchor);
     anchor.click();
-    requestAnimationFrame(() => URL.revokeObjectURL(url));
-    showNotice(`已从服务端导出 ${resultData.value?.total ?? 0} 条 Prompt`);
+    anchor.remove();
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    showNotice('提示词已发起下载，解压后可查看表格和阅读版');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, 'Prompt 导出失败'), 'error');
   } finally {
@@ -2118,6 +2133,7 @@ onBeforeUnmount(() => {
             class="primary-button"
             type="button"
             :disabled="!resultData || currentRunning || exporting"
+            title="导出提示词表格和阅读版"
             @click="exportBatch"
           >
             <LoaderCircle v-if="exporting" class="spin" :size="15" /><Download

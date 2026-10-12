@@ -177,6 +177,15 @@ describe('effect prompt generation current layout', () => {
       expect(pageSource).not.toContain(removed);
   });
 
+  it('uses the scoped project name for exports without a format-count suffix', () => {
+    const exportSource = pageSource.slice(pageSource.indexOf('const exportBatch ='), pageSource.indexOf('const validatePromptBatch ='));
+    expect(exportSource).toContain('projectContext.currentProject.value?.id === projectId');
+    expect(exportSource).toContain('projectContext.projects.value.find((project) => project.id === projectId)?.name');
+    expect(exportSource).toContain('projectName,');
+    expect(exportSource).not.toContain('product.name');
+    expect(pageSource).not.toContain('双格式');
+  });
+
   it('restores the latest completed regeneration preview after a page refresh', () => {
     expect(pageSource).toContain(
       'isPromptRunActive(state) || state.productId === currentProductId.value',

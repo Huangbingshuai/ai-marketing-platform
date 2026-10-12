@@ -1,9 +1,11 @@
 import type { EffectPromptRun, GetEffectPromptWorkspaceData } from '@ai-marketing/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import JSZip from 'jszip';
 
 import {
   autoFillEffectPromptCreativeStructure,
   buildEffectPromptCsv,
+  downloadEffectPromptBatch,
   loadEffectPromptNodeDetail,
   loadEffectPromptWorkspace,
   pollEffectPromptRun,
@@ -41,6 +43,33 @@ const run = (status: EffectPromptRun['status'], progress: number): EffectPromptR
 afterEach(() => vi.unstubAllGlobals());
 
 describe('effect prompt generation HTTP service', () => {
+  it('一次导出读取产生同一快照的 CSV 与 HTML，不发送写请求', async () => {
+    const batch = {
+      renderProfile: { ratio: '9:16', resolution: '1080p' },
+      items: [{ code: 'P037', origin: 'MANUAL', content: '导出测试\n第二行',
+        targetDurationSeconds: 20, primaryPurpose: 'EFFECT', compatiblePurposes: ['EFFECT'],
+        dimensions: { narrative: '', scene: '', persona: '', productRelation: '', camera: '', emotion: '' },
+        creativeCore: '', insightBindings: [] }],
+    } as unknown as EffectPromptBatchResult;
+    const fetchMock = vi.fn().mockResolvedValue(response({ result: batch, exportedAt: '2026-10-12T00:00:00Z' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const exported = await downloadEffectPromptBatch('project-1', 'result-1', '  项目/测试  ');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/results/result-1/export');
+    expect(fetchMock.mock.calls[0]![1]?.method ?? 'GET').toBe('GET');
+    expect(exported.fileName).toBe('项目_测试_提示词_1条.zip');
+    expect(exported.blob.type).toBe('application/zip');
+    const archive = await JSZip.loadAsync(await exported.blob.arrayBuffer(), { checkCRC32: true });
+    expect(Object.keys(archive.files)).toEqual(['项目_测试_提示词_1条.csv', '项目_测试_提示词_1条_阅读版.html']);
+    const csv = await archive.file('项目_测试_提示词_1条.csv')!.async('string');
+    const html = await archive.file('项目_测试_提示词_1条_阅读版.html')!.async('string');
+    expect(csv).toBe(buildEffectPromptCsv('项目/测试', batch));
+    expect(Array.from((await archive.file('项目_测试_提示词_1条.csv')!.async('uint8array')).slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+    expect(html).toContain('项目/测试');
+    expect(html).toContain('导出测试\n第二行');
+    expect(html).toContain('外部导入 1 条');
+  });
+
   it('exports a spreadsheet-friendly CSV without internal fields', () => {
     const result = {
       renderProfile: {

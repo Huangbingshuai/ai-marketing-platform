@@ -42,6 +42,8 @@ import {
   type EffectWorkspaceSnapshot,
 } from '../../shared/effect-workspace-prefetch';
 
+import { buildEffectPromptHtml } from './effect-prompt-html-export';
+
 export type EffectPromptContext = {
   projectId: string;
   workflowRunId: string;
@@ -416,15 +418,25 @@ export const buildEffectPromptCsv = (
 export const downloadEffectPromptBatch = async (
   projectId: string,
   resultId: string,
-  productName: string,
+  projectName: string,
   signal?: AbortSignal,
 ): Promise<{ blob: Blob; fileName: string }> => {
   const exported = (await exportEffectPromptResult(projectId, resultId, signal)).data;
-  const safeProductName = (productName.trim() || '当前商品').replace(/[\\/:*?"<>|]/gu, '_');
+  const name = projectName.trim() || '项目';
+  const safeProjectName = name.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, '_');
+  const baseName = `${safeProjectName}_提示词_${exported.result.items.length}条`;
+  // Lazy-load the existing workspace ZIP library only for an explicit export.
+  // One archive avoids browsers silently blocking the second automatic download.
+  const { default: JSZip } = await import('jszip');
+  const archive = new JSZip();
+  archive.file(`${baseName}.csv`, buildEffectPromptCsv(name, exported.result));
+  archive.file(
+    `${baseName}_阅读版.html`,
+    buildEffectPromptHtml(name, exported.result, exported.exportedAt),
+  );
+  const bytes = await archive.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
   return {
-    blob: new Blob([buildEffectPromptCsv(productName, exported.result)], {
-      type: 'text/csv;charset=utf-8',
-    }),
-    fileName: `${safeProductName}-Prompt-${exported.result.items.length}条.csv`,
+    blob: new Blob([bytes], { type: 'application/zip' }),
+    fileName: `${baseName}.zip`,
   };
 };
