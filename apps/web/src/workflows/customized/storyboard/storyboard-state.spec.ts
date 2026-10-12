@@ -157,13 +157,14 @@ describe('storyboard workspace boundaries', () => {
         saveMessage: '尚无脚本草稿',
         error: '',
         stale: false,
+        projectId: "test-project", task: null, brief: null, sourceRevision: null, nextReady: false,
       }),
     );
     expect(html).toContain('从一个完整的故事开始');
     expect(html).toContain('查看界面示例');
     expect(html).not.toContain('晚餐多一点滋味');
     expect(html).toMatch(/disabled[^>]*>[^]*?AI 创作脚本/);
-    expect(html).toContain('正式脚本版本确认尚未接通');
+    expect(html).toContain('每份脚本独立保存与制作');
   });
   it('renders the seven storyboard fields without prematurely binding media', async () => {
     const html = await renderToString(
@@ -179,6 +180,7 @@ describe('storyboard workspace boundaries', () => {
         saveMessage: '',
         error: '',
         stale: false,
+        projectId: "test-project", task: null, brief: null, sourceRevision: null, nextReady: false,
       }),
     );
     for (const text of [
@@ -188,7 +190,7 @@ describe('storyboard workspace boundaries', () => {
       '画面内容描述',
       '台词 / 口播',
       '音效 / 音乐',
-      '主脚本候选',
+      '每份脚本拥有独立制作路径',
     ])
       expect(html).toContain(text);
     expect(html).not.toContain('音色库');

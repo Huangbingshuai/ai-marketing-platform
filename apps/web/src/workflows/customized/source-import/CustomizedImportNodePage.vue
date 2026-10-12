@@ -1022,6 +1022,9 @@ onBeforeUnmount(() => {
         :brief-confirmed="confirmedSteps.includes(1)"
         :scope-readonly="Boolean(activeRun?.isTemporaryBranch)"
         @back="selectStep(1)"
+        @path="selectBranch({ workflowRunId: $event, nodeId: 'STORYBOARD' })"
+        @next="selectBranch({ workflowRunId: $event, nodeId: 'SHOT_PROMPT' })"
+        @published="loadBranchTree()"
       />
       <section v-else class="import-workspace-card next-node">
         <header class="node-heading">

@@ -24,6 +24,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
+ai-runtime = { path = "../shared/ai-runtime", editable = true }
 torch = [{ index = "pytorch-cpu" }]
 torchvision = [{ index = "pytorch-cpu" }]
 extraction-runtime = { path = "../shared/extraction-runtime", editable = true }

@@ -36,6 +36,7 @@ export const BRANCH_TREE_ROW_GAP = 124;
 export const BRANCH_TREE_TOP = 184;
 
 export type BranchTreeNode = {
+  displayLabel?: string | undefined;
   key: string;
   workflowRunId: string;
   stageKey: BranchStageKey;

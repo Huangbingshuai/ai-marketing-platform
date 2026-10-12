@@ -144,10 +144,7 @@
 }
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(140px, 0.9fr) minmax(160px, 1.1fr) minmax(
-      220px,
-      1.5fr
-    );
+  grid-template-columns: minmax(120px, 1fr) minmax(140px, 1fr) minmax(220px, 1.5fr);
   gap: 24px;
   padding: 20px 22px;
 }

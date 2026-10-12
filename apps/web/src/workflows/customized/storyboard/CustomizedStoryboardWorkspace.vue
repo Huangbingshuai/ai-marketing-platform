@@ -1,16 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
-  isCustomizedStoryboardDraft,
-  CUSTOMIZED_BRIEF_ARTIFACT_KEY,
-  type WorkingArtifact,
+  validateStoryboardSettings,
+  type StoryboardWorkspace,
+  type CustomizedStoryboardScript,
 } from '@ai-marketing/contracts';
 import { ApiClientError, isAbortError } from '../../../api/http-client';
-import {
-  getWorkflowNodeState,
-  listWorkingArtifacts,
-  putWorkflowNodeState,
-} from '../../../platform/workflow/api/workflow-working.api';
+import { pollAsyncTask } from '../../../platform/workflow/poll-async-task';
 import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import WorkflowExtractionFeedback from '../../../platform/workflow/components/WorkflowExtractionFeedback.vue';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
@@ -18,246 +14,518 @@ import CustomizedStoryboardNodePage from './CustomizedStoryboardNodePage.vue';
 import {
   emptyStoryboardDraft,
   snapshotStoryboard,
-  storyboardContentFingerprint,
+  importStoryboardScript,
 } from './storyboard-state';
 import { storyboardPreview } from './storyboard-preview';
-import { createStoryboardDraftSaver } from './storyboard-draft-saver';
+import { storyboardApi } from './storyboard.api';
 const props = defineProps<{
   projectId: string;
   workflowRunId: string;
   briefConfirmed: boolean;
   scopeReadonly: boolean;
 }>();
-const emit = defineEmits<{ back: [] }>();
-const draft = ref(emptyStoryboardDraft()),
+const emit = defineEmits<{
+  back: [];
+  path: [runId: string];
+  next: [runId: string];
+  published: [];
+}>();
+const workspace = ref<StoryboardWorkspace | null>(null),
+  draft = ref(emptyStoryboardDraft()),
   previewDraft = ref(emptyStoryboardDraft());
 const preview = ref(false),
-  editing = ref(false),
   loading = ref(true),
   saving = ref(false),
   loadError = ref(''),
-  saveError = ref(''),
-  savedMessage = ref('尚无脚本草稿');
-const brief = ref<WorkingArtifact | null>(null),
-  page = ref<InstanceType<typeof CustomizedStoryboardNodePage> | null>(null);
-let controller = new AbortController(),
-  disposed = false,
-  saver: ReturnType<typeof createStoryboardDraftSaver> | null = null;
-const baseline = ref(emptyStoryboardDraft());
+  error = ref(''),
+  savedMessage = ref('');
+const page = ref<InstanceType<typeof CustomizedStoryboardNodePage> | null>(null);
+const graphTask = computed(() => workspace.value?.task ?? null);
+const currentRecord = computed(() =>
+  workspace.value?.scripts.find((s) => s.id === draft.value.activeScriptId),
+);
+const editing = computed(() => currentRecord.value?.editing ?? false);
+const sourceReady = computed(() => !!workspace.value?.sourceReady);
+const readonly = computed(() => props.scopeReadonly || !sourceReady.value || saving.value);
+const active = computed(() => draft.value.scripts.find((s) => s.id === draft.value.activeScriptId));
+const dirty = computed(
+  () =>
+    !!active.value && JSON.stringify(active.value) !== JSON.stringify(currentRecord.value?.script),
+);
+const running = computed(
+  () => !!graphTask.value && ['QUEUED', 'RUNNING'].includes(graphTask.value.status),
+);
+const progress = computed(() =>
+  graphTask.value
+    ? {
+        value: graphTask.value.progress,
+        summary: {
+          QUEUED: '等待创作',
+          RUNNING: '正在创作，完成的脚本会逐份显示',
+          COMPLETED: '本次脚本均已保存',
+          PARTIAL: '部分方案已完成，其余可恢复重试',
+          FAILED: '本次创作未完成，可恢复重试',
+          CANCELLED: '本次创作已取消，已完成脚本保留',
+        }[graphTask.value.status],
+        terminal: !running.value,
+      }
+    : undefined,
+);
 const displayDraft = computed({
   get: () => (preview.value ? previewDraft.value : draft.value),
-  set: (value) => {
-    if (preview.value) previewDraft.value = value;
-    else draft.value = value;
+  set: (v) => {
+    if (preview.value) previewDraft.value = v;
+    else draft.value = v;
   },
 });
-const sourceReady = computed(
-  () =>
-    props.briefConfirmed &&
-    !!brief.value &&
-    brief.value.freshness === 'CURRENT' &&
-    brief.value.availability === 'AVAILABLE',
-);
-const readonly = computed(() => props.scopeReadonly || !sourceReady.value);
-const dirty = computed(
-  () => storyboardContentFingerprint(draft.value) !== storyboardContentFingerprint(baseline.value),
-);
-const stale = computed(
-  () =>
-    !!draft.value.source &&
-    (draft.value.source.artifactId !== brief.value?.id ||
-      draft.value.source.revision !== brief.value?.revision ||
-      !sourceReady.value),
-);
-const productName = computed(() => {
-  const payload = brief.value?.payload;
-  if (!payload || typeof payload !== 'object') return '';
-  const fields = 'fields' in payload ? payload.fields : payload;
-  return fields &&
-    typeof fields === 'object' &&
-    'productName' in fields &&
-    typeof fields.productName === 'string'
-    ? fields.productName
-    : '';
-});
+let controller = new AbortController(),
+  pollController: AbortController | undefined,
+  disposed = false,
+  timer: ReturnType<typeof setTimeout> | undefined;
+let writing: Promise<boolean> = Promise.resolve(true),
+  settingsBaseline = '',
+  conflict = false;
 const current = (scope: AbortController) =>
-  !disposed && controller === scope && !scope.signal.aborted;
-const safeError = (e: unknown) =>
-  e instanceof ApiClientError && e.status < 500 ? e.message : '暂时无法读取项目脚本，请重试';
+  !disposed && scope === controller && !scope.signal.aborted;
+function failure(e: unknown) {
+  if (isAbortError(e)) return;
+  conflict = e instanceof ApiClientError && e.status === 409;
+  error.value = conflict
+    ? '内容已在其他窗口更新，本地修改仍保留。可导出备份，或主动重新加载最新内容。'
+    : e instanceof ApiClientError && e.status < 500
+      ? e.message
+      : '请求暂未完成，本地修改仍保留，请重试。';
+}
+function apply(value: StoryboardWorkspace, initial = false) {
+  const local = active.value,
+    wasEditing = editing.value,
+    oldSettings = snapshotStoryboard(draft.value.settings),
+    oldSelection = draft.value.activeScriptId;
+  const oldCount = workspace.value?.scripts.filter((s) => s.confirmedRevision).length ?? 0;
+  if (!initial && workspace.value) {
+    value.scripts = value.scripts.map((s) => {
+      const existing = workspace.value!.scripts.find((old) => old.id === s.id);
+      return existing && existing.revision > s.revision ? existing : s;
+    });
+    if (workspace.value.settingsRevision > value.settingsRevision) {
+      value.settingsRevision = workspace.value.settingsRevision;
+      value.selectedScriptId = workspace.value.selectedScriptId;
+    }
+  }
+  workspace.value = value;
+  if (initial) {
+    draft.value = value.legacyDraft
+      ? snapshotStoryboard(value.legacyDraft)
+      : emptyStoryboardDraft();
+    draft.value.settings = snapshotStoryboard(value.settings);
+    settingsBaseline = JSON.stringify(value.settings);
+  }
+  draft.value.source = value.source;
+  if (!value.legacyDraft)
+    draft.value.scripts = value.scripts.map((s) =>
+      !initial && wasEditing && local?.id === s.id
+        ? snapshotStoryboard(local)
+        : snapshotStoryboard(s.script),
+    );
+  if (!initial) draft.value.settings = oldSettings;
+  draft.value.activeScriptId =
+    !initial && draft.value.scripts.some((s) => s.id === oldSelection)
+      ? oldSelection
+      : (value.selectedScriptId ?? draft.value.scripts[0]?.id ?? null);
+  if (value.scripts.filter((s) => s.confirmedRevision).length > oldCount) emit('published');
+  const selected = currentRecord.value;
+  if (
+    (initial || !oldSelection) &&
+    selected?.workflowRunId &&
+    props.workflowRunId === value.sourceRunId &&
+    selected.source.artifactId === value.source?.artifactId &&
+    selected.source.revision === value.source?.revision
+  )
+    emit('path', selected.workflowRunId);
+}
 async function load() {
   controller.abort();
+  pollController?.abort();
   controller = new AbortController();
   const scope = controller;
-  preview.value = false;
-  editing.value = false;
   loading.value = true;
   loadError.value = '';
-  saveError.value = '';
-  saver = null;
-  const projectId = props.projectId,
-    runId = props.workflowRunId;
+  error.value = '';
+  preview.value = false;
+  conflict = false;
   try {
-    const [state, artifacts] = await Promise.all([
-      getWorkflowNodeState(projectId, runId, 'STORYBOARD', scope.signal).catch((e) => {
-        if (e instanceof ApiClientError && e.status === 404) return null;
-        throw e;
-      }),
-      listWorkingArtifacts(
-        projectId,
-        {
-          workflowRunId: runId,
-          workflow: 'CUSTOMIZED',
-          space: 'CUSTOMIZED_PROJECT',
-          nodeId: 'INFORMATION_EXTRACTION',
-        },
-        scope.signal,
-      ),
-    ]);
+    const value = await storyboardApi.workspace(props.projectId, props.workflowRunId, scope.signal);
     if (!current(scope)) return;
-    if (
-      state &&
-      (state.data.projectId !== projectId ||
-        state.data.workflowRunId !== runId ||
-        state.data.nodeId !== 'STORYBOARD')
-    )
-      throw new Error('脚本草稿作用域不匹配');
-    const value = state?.data.state;
-    if (value !== undefined && value !== null && !isCustomizedStoryboardDraft(value))
-      throw new Error('脚本草稿格式不兼容，原内容未被覆盖');
-    brief.value =
-      artifacts.data.items.find(
-        (a) =>
-          a.artifactKey === CUSTOMIZED_BRIEF_ARTIFACT_KEY &&
-          a.projectId === projectId &&
-          a.workflowRunId === runId,
-      ) ?? null;
-    draft.value = value ? snapshotStoryboard(value) : emptyStoryboardDraft();
-    baseline.value = snapshotStoryboard(draft.value);
-    savedMessage.value = state ? '项目草稿已载入' : '尚无脚本草稿';
-    saver = createStoryboardDraftSaver(
-      {
-        snapshot: () => draft.value,
-        put: async (revision, value) => {
-          if (!current(scope)) throw new DOMException('Aborted', 'AbortError');
-          const response = await putWorkflowNodeState(
-            projectId,
-            runId,
-            'STORYBOARD',
-            { expectedRevision: revision, schemaVersion: 1, state: value },
-            { signal: scope.signal },
-          );
-          if (!current(scope)) throw new DOMException('Aborted', 'AbortError');
-          return response.data.nodeState.revision;
-        },
-      },
-      state?.data.revision ?? null,
-      draft.value,
-    );
+    apply(value, true);
+    savedMessage.value = currentRecord.value?.confirmedRevision
+      ? `当前脚本版本 ${currentRecord.value.confirmedRevision}`
+      : '尚未保存正式脚本';
+    if (running.value) startPolling();
   } catch (e) {
-    if (current(scope) && !isAbortError(e))
-      loadError.value =
-        e instanceof Error && !(e instanceof ApiClientError) ? e.message : safeError(e);
+    if (current(scope) && !isAbortError(e)) loadError.value = '分镜工作区读取失败，请重试';
   } finally {
     if (current(scope)) loading.value = false;
   }
 }
-async function save() {
-  if (preview.value || readonly.value || !saver) return false;
-  if (!isCustomizedStoryboardDraft(draft.value)) {
-    saveError.value = '请检查时长与脚本内容，目标时长需为 1–3600 秒。';
-    return false;
-  }
+function flush(): Promise<boolean> {
+  clearTimeout(timer);
   const scope = controller;
+  writing = writing
+    .catch(() => false)
+    .then(async () => {
+      if (!current(scope) || preview.value || !workspace.value || conflict) return false;
+      try {
+        if (
+          JSON.stringify(draft.value.settings) !== settingsBaseline ||
+          workspace.value.selectedScriptId !== draft.value.activeScriptId
+        ) {
+          const settings = snapshotStoryboard(draft.value.settings),
+            selected = currentRecord.value ? draft.value.activeScriptId : null;
+          const saved = await storyboardApi.settings(
+            props.projectId,
+            workspace.value.sourceRunId,
+            workspace.value.settingsRevision,
+            settings,
+            selected,
+            scope.signal,
+          );
+          if (!current(scope)) return false;
+          workspace.value.settingsRevision = saved.revision;
+          workspace.value.selectedScriptId = selected;
+          settingsBaseline = JSON.stringify(settings);
+        }
+        const record = currentRecord.value;
+        if (record?.editing && active.value && dirty.value) {
+          const value = snapshotStoryboard(active.value),
+            saved = await storyboardApi.edit(
+              props.projectId,
+              record.id,
+              'draft',
+              record.revision,
+              value,
+              scope.signal,
+            );
+          if (!current(scope)) return false;
+          record.revision = saved.revision!;
+          record.script = value;
+          savedMessage.value = '编辑草稿已自动保存';
+        }
+        return true;
+      } catch (e) {
+        if (current(scope)) failure(e);
+        return false;
+      }
+    });
+  return writing;
+}
+async function refresh() {
+  const scope = controller;
+  const value = await storyboardApi.workspace(props.projectId, props.workflowRunId, scope.signal);
+  if (current(scope)) apply(value);
+}
+function startPolling() {
+  pollController?.abort();
+  pollController = new AbortController();
+  const polling = pollController,
+    scope = controller;
+  void pollAsyncTask(
+    () => storyboardApi.workspace(props.projectId, props.workflowRunId, polling.signal),
+    (v) => !v.task || !['QUEUED', 'RUNNING'].includes(v.task.status),
+    {
+      intervalMs: 1600,
+      signal: polling.signal,
+      onUpdate: (v) => {
+        if (current(scope) && polling === pollController) apply(v);
+      },
+    },
+  ).catch((e) => {
+    if (current(scope) && !isAbortError(e))
+      error.value = '任务查询中断，后台仍可能继续执行。点击重新加载恢复查询。';
+  });
+}
+async function generate() {
+  if (running.value || editing.value || readonly.value) return;
+  const problem = validateStoryboardSettings(draft.value.settings);
+  if (problem) {
+    error.value = problem;
+    return;
+  }
+  if (
+    draft.value.scripts.length &&
+    !(await requestActionConfirmation({
+      title: '新增脚本方案？',
+      description: '本次将基于当前信息卡创作新方案，已有脚本及人工修改会保留。',
+      confirmLabel: '开始创作',
+    }))
+  )
+    return;
+  if (!(await flush()) || !workspace.value) return;
   saving.value = true;
-  saveError.value = '';
+  const scope = controller;
+  error.value = '';
   try {
-    await saver.flush();
+    const task = await storyboardApi.start(
+      props.projectId,
+      workspace.value.sourceRunId,
+      workspace.value.settingsRevision,
+      crypto.randomUUID(),
+      scope.signal,
+    );
+    if (current(scope)) {
+      workspace.value.task = task;
+      startPolling();
+    }
+  } catch (e) {
+    if (current(scope)) failure(e);
+  } finally {
+    if (current(scope)) saving.value = false;
+  }
+}
+async function retry(cancel = false) {
+  if (!graphTask.value) return;
+  const scope = controller;
+  if (
+    cancel &&
+    !(await requestActionConfirmation({
+      title: '取消本次创作？',
+      description: '已发布脚本会保留，尚未完成的方案停止继续执行。',
+      confirmLabel: '取消创作',
+    }))
+  )
+    return;
+  try {
+    await storyboardApi.retry(props.projectId, graphTask.value.id, cancel, scope.signal);
+    if (!current(scope)) return;
+    await refresh();
+    if (!cancel) startPolling();
+  } catch (e) {
+    if (current(scope)) failure(e);
+  }
+}
+async function begin() {
+  if (!currentRecord.value && workspace.value?.legacyDraft && !readonly.value) {
+    const copies = draft.value.scripts.map((s) => ({
+        oldId: s.id,
+        script: importStoryboardScript(s),
+      })),
+      selected = draft.value.activeScriptId;
+    const scope = controller;
+    try {
+      for (const c of copies) {
+        await storyboardApi.manual(
+          props.projectId,
+          props.workflowRunId,
+          c.script,
+          'IMPORT',
+          scope.signal,
+        );
+        if (!current(scope)) return;
+      }
+      await refresh();
+      draft.value.activeScriptId =
+        copies.find((c) => c.oldId === selected)?.script.id ?? copies[0]?.script.id ?? null;
+      await flush();
+    } catch (e) {
+      if (current(scope)) failure(e);
+    }
+    return;
+  }
+  if (!currentRecord.value || readonly.value || !(await flush())) return;
+  const scope = controller,
+    record = currentRecord.value;
+  try {
+    const value = await storyboardApi.edit(
+      props.projectId,
+      record.id,
+      'begin',
+      record.revision,
+      undefined,
+      scope.signal,
+    );
+    if (current(scope)) {
+      record.editing = true;
+      record.revision = value.revision!;
+    }
+  } catch (e) {
+    if (current(scope)) failure(e);
+  }
+}
+async function save() {
+  if (preview.value || readonly.value || !(await flush())) return false;
+  if (!currentRecord.value || !active.value) return false;
+  const scope = controller,
+    record = currentRecord.value;
+  saving.value = true;
+  try {
+    const result = await storyboardApi.edit(
+      props.projectId,
+      record.id,
+      'save',
+      record.revision,
+      snapshotStoryboard(active.value),
+      scope.signal,
+    );
     if (!current(scope)) return false;
-    baseline.value = snapshotStoryboard(draft.value);
-    savedMessage.value = '草稿已保存到当前项目';
-    editing.value = false;
+    record.editing = false;
+    await refresh();
+    savedMessage.value = result.unchanged ? '内容未变化，版本保持不变' : '当前脚本已保存';
+    emit('published');
+    if (result.workflowRunId && result.workflowRunId !== props.workflowRunId)
+      emit('path', result.workflowRunId);
     return true;
   } catch (e) {
-    if (current(scope) && !isAbortError(e))
-      saveError.value =
-        e instanceof ApiClientError && e.status === 409
-          ? '草稿已在其他页面更新，当前修改仍保留。可先导出备份，再主动重新加载。'
-          : '草稿保存失败，当前修改仍保留，请重试。';
+    if (current(scope)) failure(e);
     return false;
   } finally {
     if (current(scope)) saving.value = false;
   }
 }
-function begin() {
-  if (readonly.value) return;
-  editing.value = true;
-  if (!draft.value.source && brief.value)
-    draft.value.source = { artifactId: brief.value.id, revision: brief.value.revision };
-}
 async function cancel() {
-  const scope = controller;
   if (preview.value) {
     preview.value = false;
     return;
   }
   if (
-    dirty.value &&
     !(await requestActionConfirmation({
       title: '取消脚本编辑？',
-      description: '尚未保存的修改会被放弃，已保存的草稿保留。',
+      description: '编辑草稿会恢复为已确认脚本，其他脚本不受影响。',
       confirmLabel: '取消编辑',
     }))
   )
     return;
-  if (!current(scope)) return;
-  draft.value = snapshotStoryboard(baseline.value);
-  editing.value = false;
-  saveError.value = '';
+  await writing;
+  if (!currentRecord.value) return;
+  const scope = controller,
+    record = currentRecord.value;
+  clearTimeout(timer);
+  try {
+    await storyboardApi.edit(
+      props.projectId,
+      record.id,
+      'cancel',
+      record.revision,
+      undefined,
+      scope.signal,
+    );
+    if (!current(scope)) return;
+    record.editing = false;
+    await refresh();
+    error.value = '';
+  } catch (e) {
+    if (current(scope)) failure(e);
+  }
+}
+async function create(script: CustomizedStoryboardScript, origin: 'MANUAL' | 'IMPORT') {
+  if (!(await flush())) return;
+  const scope = controller;
+  saving.value = true;
+  try {
+    await storyboardApi.manual(props.projectId, props.workflowRunId, script, origin, scope.signal);
+    if (!current(scope)) return;
+    await refresh();
+    draft.value.activeScriptId = script.id;
+    if (
+      (await flush()) &&
+      workspace.value?.sourceRunId &&
+      workspace.value.sourceRunId !== props.workflowRunId
+    )
+      emit('path', workspace.value.sourceRunId);
+  } catch (e) {
+    if (current(scope)) failure(e);
+  } finally {
+    if (current(scope)) saving.value = false;
+  }
+}
+async function discard() {
+  const record = currentRecord.value;
+  if (!record || record.confirmedRevision || !active.value || active.value.shots.length) return;
+  if (
+    !(await requestActionConfirmation({
+      title: '删除空白脚本？',
+      description: '仅删除当前尚未发布的空白草稿。',
+      confirmLabel: '删除空白脚本',
+    })) ||
+    !(await flush())
+  )
+    return;
+  const scope = controller;
+  try {
+    await storyboardApi.edit(
+      props.projectId,
+      record.id,
+      'discard',
+      record.revision,
+      undefined,
+      scope.signal,
+    );
+    if (current(scope)) await refresh();
+  } catch (e) {
+    if (current(scope)) failure(e);
+  }
+}
+async function select(id: string) {
+  if (!(await flush())) return;
+  draft.value.activeScriptId = id;
+  if (!(await flush())) return;
+  const run = currentRecord.value?.workflowRunId ?? workspace.value?.sourceRunId;
+  if (run && run !== props.workflowRunId) emit('path', run);
+}
+async function flushPendingEdits() {
+  if (!(await page.value?.guardEditor())) return false;
+  return preview.value ? true : flush();
 }
 async function reload() {
-  const scope = controller;
   if (
-    dirty.value &&
+    (dirty.value || conflict) &&
     !(await requestActionConfirmation({
-      title: '重新加载脚本草稿？',
-      description: '这会替换当前尚未保存的修改，请先导出需要保留的脚本。',
-      confirmLabel: '重新加载',
+      title: '加载最新脚本？',
+      description: '这会替换本地修改，可先导出需要保留的内容。',
+      confirmLabel: '加载最新内容',
     }))
   )
     return;
-  if (!current(scope)) return;
   await load();
-}
-async function showPreview() {
-  const scope = controller;
-  if (!(await page.value?.guardEditor())) return;
-  if (!current(scope)) return;
-  previewDraft.value = storyboardPreview();
-  preview.value = true;
-}
-async function flushPendingEdits() {
-  const scope = controller;
-  if (!(await page.value?.guardEditor())) return false;
-  if (!current(scope)) return false;
-  if (preview.value || !saver?.dirty()) return true;
-  return save();
 }
 async function back() {
   if (await flushPendingEdits()) emit('back');
 }
+async function next() {
+  const record = currentRecord.value;
+  if (
+    record?.workflowRunId &&
+    record.confirmedRevision &&
+    !record.stale &&
+    !record.editing &&
+    (await flushPendingEdits())
+  )
+    emit('next', record.workflowRunId);
+}
+async function showPreview() {
+  if (!(await page.value?.guardEditor())) return;
+  previewDraft.value = storyboardPreview();
+  preview.value = true;
+}
+watch(
+  () => [draft.value.settings, active.value],
+  () => {
+    if (loading.value || preview.value || conflict) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      void flush();
+    }, 700);
+  },
+  { deep: true },
+);
 watch(
   () => [props.projectId, props.workflowRunId],
-  () => {
-    saving.value = false;
-    brief.value = null;
-    draft.value = emptyStoryboardDraft();
-    void load();
-  },
+  () => void load(),
   { immediate: true },
 );
 onBeforeUnmount(() => {
   disposed = true;
   controller.abort();
+  pollController?.abort();
+  clearTimeout(timer);
 });
 defineExpose({ flushPendingEdits });
 </script>
@@ -265,34 +533,50 @@ defineExpose({ flushPendingEdits });
   <WorkflowPageLoading
     v-if="loading"
     title="正在加载分镜脚本…"
-    description="正在读取当前项目的脚本草稿与已确认信息卡"
+    description="正在读取脚本目录与已确认信息卡"
     icon="extraction"
-  /><WorkflowExtractionFeedback
+  />
+  <WorkflowExtractionFeedback
     v-else-if="loadError"
-    title="分镜草稿加载失败"
+    title="分镜工作区加载失败"
     :message="loadError"
     action="重新加载"
     @action="load"
-  /><CustomizedStoryboardNodePage
+  />
+  <CustomizedStoryboardNodePage
     v-else
     ref="page"
     v-model:draft="displayDraft"
     :preview="preview"
     :editing="editing"
     :source-ready="sourceReady"
-    :readonly="readonly || saving"
+    :readonly="readonly"
     :saving="saving"
     :dirty="dirty"
-    :product-name="preview ? '梅里青梅酱 · 虚构示例' : productName"
-    :save-message="dirty ? '有尚未保存的修改' : savedMessage"
-    :error="saveError"
-    :stale="stale"
+    :product-name="workspace?.brief?.productName ?? ''"
+    :save-message="savedMessage"
+    :error="error"
+    :stale="currentRecord?.stale ?? false"
+    :progress="progress"
+    :project-id="projectId"
+    :task="graphTask"
+    :brief="workspace?.brief ?? null"
+    :source-revision="workspace?.source?.revision ?? null"
+    :can-discard="!!currentRecord && !currentRecord.confirmedRevision"
+    :next-ready="!!currentRecord?.confirmedRevision && !currentRecord?.stale"
     @begin="begin"
     @cancel="cancel"
     @save="save"
     @back="back"
+    @next="next"
     @preview="showPreview"
     @exit-preview="preview = false"
     @reload="reload"
+    @generate="generate"
+    @retry="retry()"
+    @stop="retry(true)"
+    @select="select"
+    @create="create"
+    @discard="discard"
   />
 </template>

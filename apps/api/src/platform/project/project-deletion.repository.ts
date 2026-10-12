@@ -19,6 +19,7 @@ const storageReferences = Prisma.join(
 );
 
 const activityTables = [
+  'customized_storyboard_tasks',
   'customized_extraction_tasks',
   'effect_extraction_runs',
   'effect_prompt_runs',
@@ -46,6 +47,7 @@ async function assertProjectInactive(
   };
   const now = new Date();
   const counts = await Promise.all([
+    tx.customizedStoryboardTask.count({ where: active }),
     tx.customizedExtractionTask.count({ where: active }),
     tx.effectExtractionRun.count({ where: enumActive }),
     tx.effectPromptRun.count({ where: enumActive }),

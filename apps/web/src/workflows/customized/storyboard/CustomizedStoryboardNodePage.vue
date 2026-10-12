@@ -21,14 +21,15 @@ import type {
   CustomizedStoryboardScript,
   CustomizedStoryboardShot,
   CustomizedStoryboardAsset,
-  ExtractionGraphNode,
+  StoryboardTask,
+  CustomizedBrief,
 } from '@ai-marketing/contracts';
-import { isCustomizedStoryboardScript } from '@ai-marketing/contracts';
+import { CUSTOMIZED_BRIEF_LABELS, isCustomizedStoryboardScript } from '@ai-marketing/contracts';
 import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import WorkflowNodeEditActions from '../../../platform/workflow/components/WorkflowNodeEditActions.vue';
 import WorkflowEditingBanner from '../../../platform/workflow/components/WorkflowEditingBanner.vue';
 import WorkflowExtractionActions from '../../../platform/workflow/components/WorkflowExtractionActions.vue';
-import WorkflowExtractionGraphDialog from '../../../platform/workflow/components/WorkflowExtractionGraphDialog.vue';
+import StoryboardExecutionDialog from './StoryboardExecutionDialog.vue';
 import WorkflowInformationCard from '../../../platform/workflow/components/WorkflowInformationCard.vue';
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
@@ -39,7 +40,6 @@ import StoryboardAssetRequirements from './StoryboardAssetRequirements.vue';
 import {
   createStoryboardScript,
   createStoryboardShot,
-  removeStoryboardScript,
   reorderStoryboardShot,
   scriptDuration,
   snapshotStoryboard,
@@ -57,7 +57,13 @@ const props = defineProps<{
   saveMessage: string;
   error: string;
   stale: boolean;
-  progress?: { value: number; summary: string };
+  projectId: string;
+  task: StoryboardTask | null;
+  brief: CustomizedBrief | null;
+  sourceRevision: number | null;
+  nextReady: boolean;
+  canDiscard?: boolean;
+  progress?: { value: number; summary: string; terminal: boolean } | undefined;
 }>();
 const draft = defineModel<CustomizedStoryboardDraft>('draft', { required: true });
 const emit = defineEmits<{
@@ -68,11 +74,18 @@ const emit = defineEmits<{
   preview: [];
   exitPreview: [];
   reload: [];
+  generate: [];
+  retry: [];
+  stop: [];
+  select: [id: string];
+  create: [script: CustomizedStoryboardScript, origin: 'MANUAL' | 'IMPORT'];
+  next: [];
+  discard: [];
 }>();
 const settingsExpanded = ref(false),
   compareOpen = ref(false),
   graphOpen = ref(false),
-  selectedGraphNode = ref<string | null>(null),
+  briefOpen = ref(false),
   scriptEditor = ref<CustomizedStoryboardScript | null>(null),
   importOpen = ref(false),
   notice = ref('');
@@ -94,62 +107,9 @@ const duration = computed(() => (active.value ? scriptDuration(active.value) : 0
 const durationMismatch = computed(
   () => active.value?.shots.length && duration.value !== draft.value.settings.targetDurationSeconds,
 );
-const nodes: ExtractionGraphNode[] = [
-  {
-    id: 'BRIEF',
-    label: '信息卡快照',
-    group: 'BRIEF',
-    description: '读取已确认品牌、产品与视觉约束',
-  },
-  {
-    id: 'CONCEPT',
-    label: '多方案构思',
-    group: 'CONCEPT',
-    description: '围绕同一产品与制作目标设计不同叙事',
-  },
-  {
-    id: 'STORY',
-    label: '完整故事创作',
-    group: 'STORY',
-    description: '展开故事结构、人物关系与产品呈现',
-  },
-  {
-    id: 'SHOTS',
-    label: '逐镜脚本编写',
-    group: 'SHOTS',
-    description: '细化画面、景别、运镜、对白与时长',
-  },
-  {
-    id: 'REVIEW',
-    label: '连贯性与事实检查',
-    group: 'REVIEW',
-    description: '检查事实依据、前后镜头与品牌约束',
-  },
-  {
-    id: 'SAVE',
-    label: '脚本结果保存',
-    group: 'SAVE',
-    description: '保存候选方案，等待人工审阅与选择',
-  },
-];
-const graphDetail = computed(() =>
-  selectedGraphNode.value
-    ? {
-        nodeId: selectedGraphNode.value,
-        status: 'PENDING' as const,
-        summary: nodes.find((n) => n.id === selectedGraphNode.value)?.description ?? '',
-        fields: [],
-        sources: [],
-        warnings: [
-          {
-            code: 'NOT_CONNECTED',
-            message: '这是分镜创作的预定执行步骤，生成服务尚未接通，当前没有运行任务。',
-          },
-        ],
-        errorMessage: null,
-        updatedAt: null,
-      }
-    : null,
+const running = computed(() => !!props.task && ['QUEUED', 'RUNNING'].includes(props.task.status));
+const settingsEditable = computed(
+  () => props.preview || (props.sourceReady && !props.readonly && !running.value),
 );
 async function guardEditor() {
   const scope = draft.value;
@@ -167,26 +127,20 @@ async function guardEditor() {
   return true;
 }
 async function selectScript(id: string) {
-  if (id !== draft.value.activeScriptId && (await guardEditor())) draft.value.activeScriptId = id;
+  if (id !== draft.value.activeScriptId && (await guardEditor())) {
+    if (props.preview) draft.value.activeScriptId = id;
+    else emit('select', id);
+  }
 }
 async function addScript() {
-  if (!editable.value || draft.value.scripts.length >= 100 || !(await guardEditor())) return;
+  if (!settingsEditable.value || draft.value.scripts.length >= 100 || !(await guardEditor()))
+    return;
   const script = createStoryboardScript(`自定义脚本 ${draft.value.scripts.length + 1}`);
-  draft.value.scripts.push(script);
-  draft.value.activeScriptId = script.id;
-  scriptEditor.value = snapshotStoryboard(script);
-}
-async function deleteScript() {
-  if (!active.value || !editable.value || !(await guardEditor())) return;
-  if (
-    await requestActionConfirmation({
-      title: '删除这套脚本草稿？',
-      description: `“${active.value.name}”的镜头和文字将一并移除。`,
-      confirmLabel: '删除脚本',
-      tone: 'danger',
-    })
-  )
-    removeStoryboardScript(draft.value, active.value.id);
+  if (props.preview) {
+    draft.value.scripts.push(script);
+    draft.value.activeScriptId = script.id;
+    scriptEditor.value = snapshotStoryboard(script);
+  } else emit('create', script, 'MANUAL');
 }
 function saveScriptMeta() {
   if (!scriptEditor.value?.name.trim()) return;
@@ -238,15 +192,6 @@ async function addShot() {
   if (active.value && editable.value && active.value.shots.length < 500 && (await guardEditor()))
     active.value.shots.push(createStoryboardShot());
 }
-async function chooseMain() {
-  if (!active.value || !editable.value || !(await guardEditor())) return;
-  if (!active.value.shots.length || active.value.shots.some((s) => !s.visual.trim())) {
-    notice.value = '请先补充镜头画面内容，再选择主脚本候选。';
-    return;
-  }
-  draft.value.mainCandidateId = active.value.id;
-  notice.value = '已选择主脚本候选。正式版本确认接通后，才会用于后续 Prompt。';
-}
 function openCompare() {
   compareLeft.value = active.value?.id ?? draft.value.scripts[0]?.id ?? '';
   compareRight.value = draft.value.scripts.find((s) => s.id !== compareLeft.value)?.id ?? '';
@@ -275,18 +220,20 @@ async function importScript(event: Event) {
   if (!file) return;
   const destination = draft.value;
   try {
-    if (!editable.value || draft.value.scripts.length >= 100) return;
+    if (!settingsEditable.value || draft.value.scripts.length >= 100) return;
     if (file.size > 2 * 1024 * 1024) throw new Error('脚本文件不能超过 2 MB');
     const value: unknown = JSON.parse(await file.text());
-    if (disposed || draft.value !== destination || !editable.value) return;
+    if (disposed || draft.value !== destination || !settingsEditable.value) return;
     const script = value && typeof value === 'object' && 'script' in value ? value.script : value;
     if (!isCustomizedStoryboardScript(script))
       throw new Error('文件结构不符合分镜脚本格式，请使用本节点导出的 JSON 文件');
     if (!(await guardEditor())) return;
-    if (disposed || draft.value !== destination || !editable.value) return;
+    if (disposed || draft.value !== destination || !settingsEditable.value) return;
     const copy = importStoryboardScript(script);
-    draft.value.scripts.push(copy);
-    draft.value.activeScriptId = copy.id;
+    if (props.preview) {
+      draft.value.scripts.push(copy);
+      draft.value.activeScriptId = copy.id;
+    } else emit('create', copy, 'IMPORT');
     importOpen.value = false;
   } catch (e) {
     notice.value = e instanceof Error ? e.message : '脚本读取失败';
@@ -309,7 +256,7 @@ defineExpose({ guardEditor });
         <span class="node-index">03</span>
         <div>
           <h2>分镜脚本</h2>
-          <p>探索完整叙事，逐镜打磨画面，选定后续制作的主脚本</p>
+          <p>探索完整叙事，逐镜打磨画面，每份脚本拥有独立制作路径</p>
         </div>
       </div>
       <div class="heading-actions extraction-heading__actions">
@@ -318,15 +265,18 @@ defineExpose({ guardEditor });
           :temporary="true"
           :disabled="saving || (!editing && readonly && !preview)"
           :saving="saving"
-          :save-disabled="preview || !dirty || readonly"
-          save-label="保存草稿"
+          :save-disabled="preview || readonly"
+          save-label="保存修改"
           saving-label="正在保存…"
           @begin="emit('begin')"
           @cancel="cancel"
           @save="save"
         /><WorkflowExtractionActions
-          label="AI 创作脚本"
-          :disabled="true"
+          :label="running ? '正在 AI 创作' : draft.scripts.length ? '再次 AI 创作' : 'AI 创作脚本'"
+          :reextract="draft.scripts.length > 0"
+          :running="running"
+          :disabled="!settingsEditable || preview || editing"
+          @extract="emit('generate')"
           @details="graphOpen = true"
         />
       </div>
@@ -349,7 +299,7 @@ defineExpose({ guardEditor });
     <WorkflowEditingBanner
       v-else-if="editing"
       node-label="分镜脚本"
-      description="修改保存为项目草稿；正式版本确认与 AI 创作将在后续接通。"
+      description="修改会自动保存为独立草稿；保存修改更新当前脚本版本，取消恢复原脚本。"
     />
     <WorkflowExtractionFeedback
       v-if="stale && !preview"
@@ -361,9 +311,20 @@ defineExpose({ guardEditor });
       v-if="progress"
       :progress="progress.value"
       :summary="progress.summary"
+      :terminal="progress.terminal"
       action-label="查看工作流"
       @show-details="graphOpen = true"
     />
+    <div v-if="task && !preview" class="toolbar-actions task-actions">
+      <button v-if="running" type="button" @click="emit('stop')">取消本次创作</button
+      ><button
+        v-else-if="['FAILED', 'PARTIAL', 'CANCELLED'].includes(task.status)"
+        type="button"
+        @click="emit('retry')"
+      >
+        恢复未完成方案
+      </button>
+    </div>
     <WorkflowInformationCard class="creation-settings"
       ><div class="settings-head">
         <span class="section-symbol"><ListOrdered :size="17" /></span>
@@ -387,34 +348,28 @@ defineExpose({ guardEditor });
             ><input
               v-model.number="draft.settings.targetDurationSeconds"
               type="number"
-              min="1"
-              max="3600"
-              :disabled="!editable"
+              min="15"
+              max="180"
+              :disabled="!settingsEditable"
               aria-label="目标时长"
             /><span>秒</span></span
           ></label
         ><label
           >方案数量<select
             v-model.number="draft.settings.variantCount"
-            :disabled="!editable"
+            :disabled="!settingsEditable"
             aria-label="方案数量"
           >
             <option v-for="n in 5" :key="n" :value="n">{{ n }} 套方案</option>
           </select></label
-        ><label
-          >叙事结构<select
-            v-model="draft.settings.structureMode"
-            :disabled="!editable"
-            aria-label="叙事结构"
-          >
-            <option value="AI">AI 设计</option>
-            <option value="REFERENCE">参考结构</option>
-            <option value="CUSTOM">自定义结构</option>
-          </select></label
         >
         <div class="settings-context">
           <span>创作依据</span>
-          <p>已确认的视频创作信息卡</p>
+          <p>
+            {{ productName || '视频创作信息卡' }} ·
+            {{ sourceRevision ? `版本 ${sourceRevision}` : '尚未确认' }}
+          </p>
+          <button type="button" :disabled="!brief" @click="briefOpen = true">查看创作依据</button>
           <small>不提前锁定各方案的故事方向</small>
         </div>
       </div>
@@ -422,8 +377,19 @@ defineExpose({ guardEditor });
         v-if="settingsExpanded || draft.settings.structureMode !== 'AI'"
         class="advanced-settings"
       >
+        <label
+          >叙事结构<select
+            v-model="draft.settings.structureMode"
+            :disabled="!settingsEditable"
+            aria-label="叙事结构"
+          >
+            <option value="AI">AI 设计</option>
+            <option value="REFERENCE">参考结构</option>
+            <option value="CUSTOM">自定义结构</option>
+          </select></label
+        >
         <label v-if="draft.settings.structureMode === 'REFERENCE'"
-          >参考结构<select v-model="draft.settings.structure" :disabled="!editable">
+          >参考结构<select v-model="draft.settings.structure" :disabled="!settingsEditable">
             <option value="">选择参考结构</option>
             <option>产品细节 → 使用情境 → 价值呈现 → 品牌收束</option>
             <option>人物困境 → 产品介入 → 状态变化 → 情绪收束</option>
@@ -433,12 +399,12 @@ defineExpose({ guardEditor });
           v-if="draft.settings.structureMode === 'CUSTOM'"
           v-model="draft.settings.structure"
           label="自定义叙事结构"
-          :readonly="!editable"
+          :readonly="!settingsEditable"
           placeholder="例如：归家 → 准备晚餐 → 一勺点睛 → 落座享用"
         /><WorkflowInformationField
           v-model="draft.settings.instructions"
           label="创作要求（选填）"
-          :readonly="!editable"
+          :readonly="!settingsEditable"
           multiline
           placeholder="例如：人物动作自然克制，三个方案分别探索不同的叙事切入，不使用夸张表演。"
         /></div
@@ -450,9 +416,9 @@ defineExpose({ guardEditor });
         <span>{{ draft.scripts.length }} 套</span>
       </div>
       <div class="toolbar-actions">
-        <button type="button" :disabled="!editable" @click="importOpen = true">
+        <button type="button" :disabled="!settingsEditable" @click="importOpen = true">
           <Upload :size="14" />导入脚本</button
-        ><button type="button" :disabled="!editable" @click="addScript">
+        ><button type="button" :disabled="!settingsEditable" @click="addScript">
           <Plus :size="14" />自定义脚本</button
         ><button type="button" :disabled="draft.scripts.length < 2" @click="openCompare">
           <GitCompareArrows :size="14" />方案对比
@@ -471,8 +437,7 @@ defineExpose({ guardEditor });
       >
         <div class="option-top">
           <span class="option-index">方案 {{ String(i + 1).padStart(2, '0') }}</span
-          ><span v-if="s.id === draft.mainCandidateId" class="candidate-tag">主脚本候选</span
-          ><Check v-else-if="s.id === draft.activeScriptId" :size="15" />
+          ><Check v-if="s.id === draft.activeScriptId" :size="15" />
         </div>
         <h4>{{ s.name }}</h4>
         <p>{{ s.synopsis || '尚未填写故事概述' }}</p>
@@ -490,17 +455,22 @@ defineExpose({ guardEditor });
       <p>围绕产品与品牌信息，探索不同叙事，再把每一镜打磨清楚。</p>
       <div class="empty-steps">
         <span><b>01</b>比较脚本方案</span><i /><span><b>02</b>逐镜调整内容</span><i /><span
-          ><b>03</b>选定主脚本</span
+          ><b>03</b>进入独立制作</span
         >
       </div>
       <div class="empty-actions">
-        <button type="button" class="primary-button" :disabled="!editable" @click="addScript">
+        <button
+          type="button"
+          class="primary-button"
+          :disabled="!settingsEditable"
+          @click="addScript"
+        >
           <Plus :size="15" />创建空白脚本</button
         ><button type="button" @click="emit('preview')"><BookOpen :size="15" />查看界面示例</button>
       </div>
       <small>{{
         sourceReady
-          ? 'AI 创作尚未接通，可先编写手工脚本并保存草稿。'
+          ? '设置时长与数量后开始 AI 创作，也可以创建空白脚本。'
           : '请先保存信息提炼版本；也可查看独立界面示例。'
       }}</small>
     </section>
@@ -513,24 +483,25 @@ defineExpose({ guardEditor });
           </div>
           <div class="overview-actions">
             <button
+              v-if="canDiscard && !active.shots.length"
+              type="button"
+              :disabled="!editable"
+              @click="emit('discard')"
+            >
+              删除空白脚本
+            </button>
+            <button
               type="button"
               :disabled="!editable"
               @click="scriptEditor = snapshotStoryboard(active)"
             >
-              <Pencil :size="13" />编辑概述</button
-            ><button type="button" :disabled="!editable" @click="chooseMain">
-              <Check :size="13" />{{
-                draft.mainCandidateId === active.id ? '已选为候选' : '选为主脚本候选'
-              }}
+              <Pencil :size="13" />编辑概述
             </button>
             <details class="export-menu">
               <summary><Download :size="13" />导出当前版本</summary>
               <div>
                 <button type="button" @click="download('txt')">文字脚本 · TXT</button
-                ><button type="button" @click="download('json')">可编辑脚本 · JSON</button
-                ><button type="button" :disabled="!editable" @click="deleteScript">
-                  删除脚本草稿
-                </button>
+                ><button type="button" @click="download('json')">可编辑脚本 · JSON</button>
               </div>
             </details>
           </div>
@@ -597,13 +568,14 @@ defineExpose({ guardEditor });
     </p>
     <div class="draft-footnote">
       <span>{{ preview ? '示例内容不会保存到项目' : saveMessage }}</span
-      ><span v-if="!preview">正式脚本版本确认尚未接通</span>
+      ><span v-if="!preview">每份脚本独立保存与制作</span>
     </div>
     <WorkflowNodeFooter
       back-label="上一步：信息提炼"
       next-label="下一步：Prompt"
       :show-validate="false"
-      :next-disabled="true"
+      :next-disabled="!nextReady || editing || preview"
+      @next="emit('next')"
       @back="emit('back')"
     />
     <WorkflowInformationDialog
@@ -700,24 +672,37 @@ defineExpose({ guardEditor });
         ><Upload :size="24" /><strong>选择脚本文件</strong><span>JSON · 最大 2 MB</span
         ><input type="file" accept=".json,application/json" @change="importScript"
       /></label>
-      <p class="muted">
-        Word、PDF 等自由文档的脚本解析将在后端接通后提供。
-      </p></WorkflowInformationDialog
+      <p class="muted">导入将创建独立方案，保留原有方案及其版本。</p></WorkflowInformationDialog
     >
-    <WorkflowExtractionGraphDialog
+    <StoryboardExecutionDialog
       :open="graphOpen"
-      title="分镜创作工作流"
-      eyebrow="创作流程预览"
-      graph-label="分镜创作节点执行图"
-      :refreshable="false"
-      subtitle="预定执行步骤 · AI 创作尚未接通，当前没有运行任务"
-      :nodes="nodes"
-      :executions="[]"
-      :selected-node-id="selectedGraphNode"
-      :detail="graphDetail"
+      :project-id="projectId"
+      :task="task"
+      :script-id="draft.activeScriptId"
+      :scripts="draft.scripts"
       @close="graphOpen = false"
-      @select="selectedGraphNode = $event"
+      @open-script="
+        graphOpen = false;
+        selectScript($event);
+      "
     />
+    <WorkflowInformationDialog
+      :open="briefOpen"
+      title="视频创作信息卡"
+      :description="`本次创作依据 · 版本 ${sourceRevision ?? '未确认'}`"
+      @close="briefOpen = false"
+      ><div v-if="brief" class="dialog-form">
+        <WorkflowInformationField
+          v-for="(label, key) in CUSTOMIZED_BRIEF_LABELS"
+          :key="key"
+          :label="label"
+          :model-value="
+            Array.isArray(brief[key]) ? (brief[key] as string[]).join('\n') : String(brief[key])
+          "
+          readonly
+          multiline
+        /></div
+    ></WorkflowInformationDialog>
   </section>
 </template>
 <style scoped src="./storyboard.css"></style>

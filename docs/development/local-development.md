@@ -83,6 +83,24 @@ pnpm --filter @ai-marketing/api exec vitest run src/workflows/customized/informa
 
 两类 Python 验证分别在 `workers/effect-extraction` 和 `workers/customized-extraction` 使用各自锁文件运行 pytest / mypy；效果类付费集成标记需排除。真实本地 Docling 验证入口见[定制 Worker](../../workers/customized-extraction/README.md)。
 
+## 定制类分镜 Worker
+
+```powershell
+docker compose --profile customized-storyboard build customized-storyboard-worker
+docker compose --profile customized-storyboard up -d customized-storyboard-worker
+```
+
+独立 Token 为 `CUSTOMIZED_STORYBOARD_WORKER_TOKEN`，API 与 Worker 必须一致。API 将 `CUSTOMIZED_STORYBOARD_CREATIVE_MODEL` 与 `CUSTOMIZED_STORYBOARD_DETAIL_MODEL` 冻结在任务中；默认分别为 `doubao-seed-2-1-pro-260915` 和 `doubao-seed-2-1-turbo-260628`。Worker 只依赖轻量 `shared/ai-runtime`，不安装解析模型或挂载 Docling 卷。并发默认 2，单调用超时 300 秒、最多尝试 2 次；分别用 `CUSTOMIZED_STORYBOARD_CONCURRENCY`、`CUSTOMIZED_STORYBOARD_TIMEOUT_SECONDS`、`CUSTOMIZED_STORYBOARD_MAX_ATTEMPTS` 配置。构建后须在无活动任务时更新容器；启动会消费真实队列。
+
+无付费分支数据库验证（随机项目，测试内禁止 Outbox 发送）：
+
+```powershell
+$env:CUSTOMIZED_STORYBOARD_DATABASE_TEST='1'
+pnpm --filter @ai-marketing/api exec vitest run src/workflows/customized/storyboard
+```
+
+Worker 受控验证在 `workers/customized-storyboard` 执行 `uv sync --frozen`、`uv run pytest`、`uv run mypy src`。运行及故障恢复见[分镜 Worker](../../workers/customized-storyboard/README.md)。
+
 ## 常规验证
 
 API 的 `dev` 脚本先运行 `apps/api/scripts/dev-api.mjs`。该入口按工作区持有进程互斥，重复启动会复用现有服务；Windows 进程退出时内核释放互斥。请经上述 pnpm 入口启动，不再直接运行 `nest start --watch`。迁移前直接启动的 Nest watcher 会被检查并提示 PID，入口不会自动终止它。停止开发入口会结束它启动的 Nest 与运行进程。

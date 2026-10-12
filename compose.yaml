@@ -209,6 +209,26 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  customized-storyboard-worker:
+    profiles: ['customized-storyboard']
+    build:
+      context: ./workers
+      dockerfile: customized-storyboard/Dockerfile
+    environment:
+      INTERNAL_API_BASE_URL: http://host.docker.internal:${API_PORT:-3000}/api
+      CUSTOMIZED_STORYBOARD_WORKER_TOKEN: ${CUSTOMIZED_STORYBOARD_WORKER_TOKEN:-}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      CUSTOMIZED_STORYBOARD_QUEUE: customized.storyboard.requested
+      CUSTOMIZED_STORYBOARD_CONCURRENCY: ${CUSTOMIZED_STORYBOARD_CONCURRENCY:-2}
+      CUSTOMIZED_STORYBOARD_TIMEOUT_SECONDS: ${CUSTOMIZED_STORYBOARD_TIMEOUT_SECONDS:-300}
+      CUSTOMIZED_STORYBOARD_MAX_ATTEMPTS: ${CUSTOMIZED_STORYBOARD_MAX_ATTEMPTS:-2}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
   seedance-worker:
     profiles: ['effect-segment-render']
     build:

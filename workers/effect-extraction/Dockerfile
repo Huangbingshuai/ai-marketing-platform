@@ -15,6 +15,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/effect-extraction
+COPY shared/ai-runtime /app/shared/ai-runtime
 COPY shared/extraction-runtime /app/shared/extraction-runtime
 COPY effect-extraction/pyproject.toml effect-extraction/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project

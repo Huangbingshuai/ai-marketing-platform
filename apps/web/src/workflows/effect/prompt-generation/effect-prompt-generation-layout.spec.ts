@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import sharedGraph from '../../../platform/workflow/components/WorkflowExecutionGraphDialog.vue?raw';
 
 import viteConfigSource from '../../../../vite.config.ts?raw';
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
@@ -246,7 +247,7 @@ describe('effect prompt generation current layout', () => {
 
   it('shows live worker summaries and refreshes the selected running-node detail', () => {
     expect(pageSource).toContain('if (executionSummary) return executionSummary');
-    expect(pageSource).toContain('graphNodeDescription(nodeId)');
+    expect(pageSource).toContain('graphNodeDescription(id)');
     expect(pageSource).toContain(
       'promptGraphDetailRefreshKey(displayedGraphRun.value, selectedGraphNodeId.value)',
     );
@@ -296,7 +297,9 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('保存到项目资产库');
     expect(pageSource).toContain('currentAttemptLabel');
     expect(pageSource).toContain('currentRetryWarning');
-    expect(pageSource).toContain('@keydown.esc="closeGraph"');
+    expect(pageSource).toContain('WorkflowExecutionGraphDialog');
+    expect(sharedGraph).toContain("event.key === 'Escape'");
+    expect(sharedGraph).toContain("event.key === 'Tab'");
     expect(pageSource).toContain('@media (max-width: 760px)');
   });
 

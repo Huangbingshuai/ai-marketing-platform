@@ -1175,7 +1175,8 @@ export class WorkflowWorkingRepository {
       where: { id: workflowRunId, projectId, status: { in: [...openRunStatuses] } },
     });
     if (!run) throw new Error('WORKFLOW_RUN_NOT_FOUND');
-    const captureEffectRevision = run.workflow === 'EFFECT' && run.workflowSpace === 'EFFECT';
+    const captureEffectRevision = (run.workflow === 'EFFECT' && run.workflowSpace === 'EFFECT') ||
+      (run.workflow === 'CUSTOMIZED' && run.workflowSpace === 'CUSTOMIZED_PROJECT' && nodeId === 'STORYBOARD');
     const unique = { projectId, workflowRunId, nodeId, artifactKey };
     const previous = await transaction.workingArtifact.findUnique({
       where: { projectId_workflowRunId_nodeId_artifactKey: unique },

@@ -508,8 +508,8 @@ onBeforeUnmount(() => {
                       width: `${BRANCH_TREE_NODE_WIDTH}px`,
                       height: `${BRANCH_TREE_NODE_HEIGHT}px`,
                     }"
-                    :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node)}${node.onActivePath ? '，当前工作流路径' : ''}`"
-                    :title="`${stageName(node.stageKey)} · ${node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status)} · ${nodeStatusText(node)}`"
+                    :aria-label="`${stageName(node.stageKey)}${node.templateName && node.stageKey !== 'MIX_TEMPLATE' ? `，${node.templateName}` : ''}，${node.displayLabel ?? (node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status))}，${node.stageKey === 'MIX_TEMPLATE' || (node.artifactCount > 0 && node.status !== 'PENDING') ? `${artifactCreatedAtText(node.createdAt)}，` : ''}${nodeStatusText(node)}${node.onActivePath ? '，当前工作流路径' : ''}`"
+                    :title="`${stageName(node.stageKey)} · ${node.displayLabel ?? (node.stageKey === 'MIX_TEMPLATE' ? (node.templateName ?? '模板') : versionText(node.revision, node.revisions, node.artifactCount, node.status))} · ${nodeStatusText(node)}`"
                     @click="selectNode(node)"
                   >
                     <span class="branch-node__heading">
@@ -519,7 +519,7 @@ onBeforeUnmount(() => {
                       <span class="branch-node__identity">
                         <small>{{ stageName(node.stageKey) }}</small>
                         <strong>{{
-                          node.stageKey === 'MIX_TEMPLATE'
+                          node.displayLabel ?? (node.stageKey === 'MIX_TEMPLATE'
                             ? (node.templateName ?? '模板')
                             : versionText(
                                 node.revision,

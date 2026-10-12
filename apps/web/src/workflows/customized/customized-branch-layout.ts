@@ -55,6 +55,10 @@ export function buildCustomizedBranchLayout(tree: CustomizedWorkflowBranchTreeDa
         stageIndex,
         templateId: null,
         templateName: null,
+        displayLabel:
+          stage.nodeId === 'STORYBOARD' && branch.forkNodeId === 'STORYBOARD'
+            ? branch.label
+            : undefined,
         createdAt: state.artifactCreatedAt,
         x: 0,
         y: BRANCH_TREE_TOP + stageIndex * BRANCH_TREE_ROW_GAP,

@@ -34,6 +34,20 @@ const tree = (branches: CustomizedWorkflowBranch[]): CustomizedWorkflowBranchTre
   branches,
 });
 describe('customized adapter for the shared effect branch tree', () => {
+  it('shows independent script names and sibling lanes without borrowing template identity', () => {
+    const layout = buildCustomizedBranchLayout(
+      tree([
+        branch('root', null, null, [0, 1]),
+        { ...branch('script-a', 'root', 'STORYBOARD', [0, 1, 2], true), label: '晨光' },
+        { ...branch('script-b', 'root', 'STORYBOARD', [0, 1, 2]), label: '归家' },
+      ]),
+    );
+    const scripts = layout.nodes.filter((n) => n.nodeId === 'STORYBOARD');
+    expect(scripts.map((s) => s.displayLabel)).toEqual(['晨光', '归家']);
+    expect(scripts.every((s) => s.templateId === null && s.templateName === null)).toBe(true);
+    expect(scripts[0]!.x).not.toBe(scripts[1]!.x);
+    expect(scripts[0]!.y).toBe(scripts[1]!.y);
+  });
   it('keeps six stage bands but draws no fake versions for an empty draft', () => {
     expect(customizedBranchStages.map((stage) => stage.nodeId)).toEqual(CUSTOMIZED_WORKFLOW_NODES);
     expect(buildCustomizedBranchLayout(tree([branch('a', null, null, [])])).nodes).toEqual([]);

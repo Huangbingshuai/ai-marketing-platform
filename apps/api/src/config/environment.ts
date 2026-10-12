@@ -23,6 +23,9 @@ export type EnvironmentVariables = {
   RABBITMQ_URL: string;
   EFFECT_EXTRACTION_WORKER_TOKEN: string | undefined;
   CUSTOMIZED_EXTRACTION_WORKER_TOKEN: string | undefined;
+  CUSTOMIZED_STORYBOARD_WORKER_TOKEN: string | undefined;
+  CUSTOMIZED_STORYBOARD_CREATIVE_MODEL: string | undefined;
+  CUSTOMIZED_STORYBOARD_DETAIL_MODEL: string | undefined;
   EFFECT_PROMPT_WORKER_TOKEN: string | undefined;
   EFFECT_SEGMENT_RENDER_WORKER_TOKEN: string | undefined;
   EFFECT_TEMPLATE_MIX_WORKER_TOKEN: string | undefined;
@@ -193,6 +196,9 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),
     EFFECT_EXTRACTION_WORKER_TOKEN: effectExtractionWorkerToken,
     CUSTOMIZED_EXTRACTION_WORKER_TOKEN: optionalString(raw.CUSTOMIZED_EXTRACTION_WORKER_TOKEN),
+    CUSTOMIZED_STORYBOARD_WORKER_TOKEN: optionalString(raw.CUSTOMIZED_STORYBOARD_WORKER_TOKEN),
+    CUSTOMIZED_STORYBOARD_CREATIVE_MODEL: optionalString(raw.CUSTOMIZED_STORYBOARD_CREATIVE_MODEL),
+    CUSTOMIZED_STORYBOARD_DETAIL_MODEL: optionalString(raw.CUSTOMIZED_STORYBOARD_DETAIL_MODEL),
     EFFECT_PROMPT_WORKER_TOKEN: effectPromptWorkerToken,
     EFFECT_SEGMENT_RENDER_WORKER_TOKEN: effectSegmentRenderWorkerToken,
     EFFECT_TEMPLATE_MIX_WORKER_TOKEN: effectTemplateMixWorkerToken,

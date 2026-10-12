@@ -28,6 +28,21 @@ wheels = [
 ]
 
 [[package]]
+name = "ai-runtime"
+version = "0.1.0"
+source = { editable = "../shared/ai-runtime" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1,<1" },
+    { name = "pydantic", specifier = ">=2.12.5,<3" },
+]
+
+[[package]]
 name = "aio-pika"
 version = "9.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -432,6 +447,7 @@ name = "extraction-runtime"
 version = "0.1.0"
 source = { editable = "../shared/extraction-runtime" }
 dependencies = [
+    { name = "ai-runtime" },
     { name = "docling" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -439,6 +455,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ai-runtime", editable = "../shared/ai-runtime" },
     { name = "docling", specifier = "==2.117.0" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "pydantic", specifier = ">=2.12.5,<3" },

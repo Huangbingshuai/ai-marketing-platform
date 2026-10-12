@@ -1,0 +1,236 @@
+{
+  "$defs": {
+    "Asset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": ["characters", "products", "scenes"],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": ["id", "kind", "name", "description"],
+      "title": "Asset",
+      "type": "object"
+    },
+    "AssetGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": ["NONE", "DEFINED"],
+          "title": "State",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/AssetRef"
+          },
+          "maxItems": 100,
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": ["state", "items"],
+      "title": "AssetGroup",
+      "type": "object"
+    },
+    "AssetRef": {
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Assetid",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": ["assetId", "description"],
+      "title": "AssetRef",
+      "type": "object"
+    },
+    "AssetRequirements": {
+      "additionalProperties": false,
+      "properties": {
+        "characters": {
+          "$ref": "#/$defs/AssetGroup"
+        },
+        "products": {
+          "$ref": "#/$defs/AssetGroup"
+        },
+        "scenes": {
+          "$ref": "#/$defs/AssetGroup"
+        }
+      },
+      "required": ["characters", "products", "scenes"],
+      "title": "AssetRequirements",
+      "type": "object"
+    },
+    "Dialogue": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "speaker": {
+          "maxLength": 200,
+          "title": "Speaker",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 20000,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": ["id", "speaker", "text"],
+      "title": "Dialogue",
+      "type": "object"
+    },
+    "Shot": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "shotType": {
+          "maxLength": 200,
+          "title": "Shottype",
+          "type": "string"
+        },
+        "cameraMovement": {
+          "maxLength": 200,
+          "title": "Cameramovement",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Durationseconds",
+          "type": "number"
+        },
+        "visual": {
+          "maxLength": 20000,
+          "title": "Visual",
+          "type": "string"
+        },
+        "dialogues": {
+          "items": {
+            "$ref": "#/$defs/Dialogue"
+          },
+          "maxItems": 100,
+          "title": "Dialogues",
+          "type": "array"
+        },
+        "audio": {
+          "maxLength": 20000,
+          "title": "Audio",
+          "type": "string"
+        },
+        "continuity": {
+          "maxLength": 20000,
+          "title": "Continuity",
+          "type": "string"
+        },
+        "assetRequirements": {
+          "$ref": "#/$defs/AssetRequirements"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "shotType",
+        "cameraMovement",
+        "durationSeconds",
+        "visual",
+        "dialogues",
+        "audio",
+        "continuity",
+        "assetRequirements"
+      ],
+      "title": "Shot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 200,
+      "title": "Name",
+      "type": "string"
+    },
+    "synopsis": {
+      "maxLength": 20000,
+      "title": "Synopsis",
+      "type": "string"
+    },
+    "structure": {
+      "maxLength": 20000,
+      "title": "Structure",
+      "type": "string"
+    },
+    "productFocus": {
+      "maxLength": 20000,
+      "title": "Productfocus",
+      "type": "string"
+    },
+    "shots": {
+      "items": {
+        "$ref": "#/$defs/Shot"
+      },
+      "maxItems": 500,
+      "minItems": 1,
+      "title": "Shots",
+      "type": "array"
+    },
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/Asset"
+      },
+      "maxItems": 1000,
+      "title": "Assets",
+      "type": "array"
+    }
+  },
+  "required": ["id", "name", "synopsis", "structure", "productFocus", "shots", "assets"],
+  "title": "Script",
+  "type": "object"
+}

@@ -9,6 +9,7 @@ import type { RedisConnectionService } from '../cache/redis-connection.service';
 import type { ConfigService } from '@nestjs/config';
 
 const activeModels = [
+  'customizedStoryboardTask',
   'customizedExtractionTask',
   'effectExtractionRun',
   'effectPromptRun',
