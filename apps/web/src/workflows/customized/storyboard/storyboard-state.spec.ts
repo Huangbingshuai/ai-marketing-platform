@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createSSRApp } from 'vue';
 import { renderToString } from 'vue/server-renderer';
-import { isCustomizedStoryboardDraft } from '@ai-marketing/contracts';
+import { isCustomizedStoryboardDraft, type StoryboardTask } from '@ai-marketing/contracts';
 import {
   createStoryboardScript,
   createStoryboardShot,
@@ -14,9 +14,10 @@ import {
   importStoryboardScript,
   storyboardAssetText,
 } from './storyboard-state';
-import { storyboardPreview } from './storyboard-preview';
+import { storyboardFixture } from './__fixtures__/storyboard.fixture';
 import { createStoryboardDraftSaver } from './storyboard-draft-saver';
 import Page from './CustomizedStoryboardNodePage.vue';
+import ShotCard from './StoryboardShotCard.vue';
 describe('storyboard workspace boundaries', () => {
   it('creates genuinely empty custom scripts with independent IDs', () => {
     const a = createStoryboardScript('a'),
@@ -28,7 +29,7 @@ describe('storyboard workspace boundaries', () => {
     expect(s.dialogues).toEqual([]);
   });
   it('reorders stable shot identities without losing their contents', () => {
-    const script = storyboardPreview().scripts[0]!;
+    const script = storyboardFixture().scripts[0]!;
     const before = snapshotStoryboard(script.shots);
     reorderStoryboardShot(script, before[0]!.id, before[3]!.id);
     expect(script.shots[3]).toEqual(before[0]);
@@ -36,7 +37,7 @@ describe('storyboard workspace boundaries', () => {
     expect(new Set(script.shots.map((s) => s.id)).size).toBe(before.length);
   });
   it('clears removed candidate selection but keeps sibling scripts', () => {
-    const draft = storyboardPreview();
+    const draft = storyboardFixture();
     draft.mainCandidateId = draft.activeScriptId;
     removeStoryboardScript(draft, draft.activeScriptId!);
     expect(draft.mainCandidateId).toBeNull();
@@ -44,7 +45,7 @@ describe('storyboard workspace boundaries', () => {
     expect(draft.activeScriptId).toBe(draft.scripts[0]!.id);
   });
   it('exports the whole chosen script with dialogues and ordered shots', () => {
-    const script = storyboardPreview().scripts[0]!;
+    const script = storyboardFixture().scripts[0]!;
     const text = storyboardText(script);
     expect(text).toContain('镜头 06');
     expect(text).toContain('共 6 镜 · 30 秒');
@@ -54,7 +55,7 @@ describe('storyboard workspace boundaries', () => {
     expect(text).toContain('本镜要求：标签自然露出');
   });
   it('remaps imported object identities while preserving reuse and independent per-shot requirements', () => {
-    const source = storyboardPreview().scripts[0]!;
+    const source = storyboardFixture().scripts[0]!;
     const copy = importStoryboardScript(source);
     const other = importStoryboardScript(source);
     expect(isCustomizedStoryboardDraft({ ...emptyStoryboardDraft(), scripts: [copy, other] })).toBe(
@@ -72,7 +73,7 @@ describe('storyboard workspace boundaries', () => {
     expect(storyboardAssetText(source, source.shots[2]!)).not.toContain('新的公共名称');
   });
   it('preserves every object and requirement through draft saving and reload', async () => {
-    const draft = storyboardPreview();
+    const draft = storyboardFixture();
     let stored: unknown;
     const saver = createStoryboardDraftSaver(
       {
@@ -90,9 +91,9 @@ describe('storyboard workspace boundaries', () => {
     expect(stored).toEqual(draft);
     expect(isCustomizedStoryboardDraft(stored)).toBe(true);
   });
-  it('keeps preview snapshots detached and never creates a source reference', () => {
-    const a = storyboardPreview(),
-      b = storyboardPreview();
+  it('keeps test fixtures detached and production initial state genuinely empty', () => {
+    const a = storyboardFixture(),
+      b = storyboardFixture();
     a.scripts[0]!.shots[0]!.visual = 'modified';
     expect(b.scripts[0]!.shots[0]!.visual).not.toBe('modified');
     expect(b.source).toBeNull();
@@ -135,7 +136,7 @@ describe('storyboard workspace boundaries', () => {
     expect(put.mock.calls.map((args) => args[0])).toEqual([8, 8]);
   });
   it('does not save or dirty a draft when only viewing another candidate', async () => {
-    const draft = storyboardPreview();
+    const draft = storyboardFixture();
     const put = vi.fn();
     const saver = createStoryboardDraftSaver({ snapshot: () => draft, put }, 3, draft);
     draft.activeScriptId = draft.scripts[1]!.id;
@@ -147,63 +148,184 @@ describe('storyboard workspace boundaries', () => {
     const html = await renderToString(
       createSSRApp(Page, {
         draft: emptyStoryboardDraft(),
-        preview: false,
         editing: false,
         sourceReady: false,
         readonly: true,
         saving: false,
-        dirty: false,
         productName: '',
         saveMessage: '尚无脚本草稿',
         error: '',
         stale: false,
-        projectId: "test-project", task: null, brief: null, sourceRevision: null, nextReady: false,
+        projectId: 'test-project',
+        task: null,
+        brief: null,
+        sourceRevision: null,
+        nextReady: false,
       }),
     );
-    expect(html).toContain('从一个完整的故事开始');
-    expect(html).toContain('查看界面示例');
+    expect(html).toContain('还没有完整脚本');
+    expect(html).toContain('请先保存信息提炼版本');
+    expect(html).not.toContain('查看界面示例');
+    expect(html).not.toMatch(/<button[^>]*>[^<]*(?:<svg[^]*?<\/svg>)?方案对比/);
+    expect(html).not.toContain('进入编辑');
     expect(html).not.toContain('晚餐多一点滋味');
     expect(html).toMatch(/disabled[^>]*>[^]*?AI 创作脚本/);
-    expect(html).toContain('每份脚本独立保存与制作');
+    expect(html).not.toContain('每份脚本独立保存与制作');
   });
-  it('renders the seven storyboard fields without prematurely binding media', async () => {
+  it('renders story choices without editing shots in the story node', async () => {
     const html = await renderToString(
       createSSRApp(Page, {
-        draft: storyboardPreview(),
-        preview: true,
+        draft: storyboardFixture(),
         editing: false,
         sourceReady: true,
         readonly: false,
         saving: false,
-        dirty: false,
         productName: '虚构示例',
         saveMessage: '',
         error: '',
         stale: false,
-        projectId: "test-project", task: null, brief: null, sourceRevision: null, nextReady: false,
+        projectId: 'test-project',
+        task: null,
+        brief: null,
+        sourceRevision: null,
+        nextReady: false,
       }),
     );
-    for (const text of [
-      '晚餐多一点滋味',
-      '一勺之间',
-      '熟悉的一餐',
-      '画面内容描述',
-      '台词 / 口播',
-      '音效 / 音乐',
-      '每份脚本拥有独立制作路径',
-    ])
+    for (const text of ['晚餐多一点滋味', '一勺之间', '熟悉的一餐', '完整故事', '下一步：资产准备'])
       expect(html).toContain(text);
-    expect(html).not.toContain('音色库');
-    expect(html).not.toContain('生成资产');
-    expect(html).toContain('不写入项目');
-    for (const label of [
-      '人物资产',
-      '产品资产',
-      '场景资产',
-      '本镜不需要产品资产',
-      '归家者',
-      '6 镜复用',
-    ])
-      expect(html).toContain(label);
+    expect(html).not.toContain('添加镜头');
+    expect(html).not.toContain('资产目录 ·');
   });
+
+  it.each([false, true])(
+    'shows shot edit controls only in real editing mode: %s',
+    async (editable) => {
+      const script = storyboardFixture().scripts[0]!;
+      const html = await renderToString(
+        createSSRApp(ShotCard, {
+          shot: script.shots[0]!,
+          index: 0,
+          total: script.shots.length,
+          editable,
+          assets: script.assets!,
+          shots: script.shots,
+        }),
+      );
+      expect(html.includes('删除镜头')).toBe(editable);
+      expect(html.includes('上移镜头')).toBe(editable);
+      expect(html.includes('drag-handle')).toBe(editable);
+      expect(html).not.toContain('重新创作');
+    },
+  );
+
+  it('preserves legacy shot and asset data while showing the story overview', async () => {
+    const draft = storyboardFixture(),
+      script = draft.scripts[0]!;
+    script.assets!.push({
+      id: 'unused',
+      kind: 'products',
+      name: '未引用的产品对象',
+      description: '完整且未截断的后端对象定义',
+    });
+    const html = await renderToString(
+      createSSRApp(Page, {
+        draft,
+        editing: false,
+        sourceReady: true,
+        readonly: false,
+        saving: false,
+        productName: '测试产品',
+        saveMessage: '',
+        error: '',
+        stale: false,
+        projectId: 'test-project',
+        task: null,
+        brief: null,
+        sourceRevision: 1,
+        nextReady: true,
+      }),
+    );
+    for (const text of [script.name, script.synopsis, script.structure, script.productFocus])
+      expect(html).toContain(text);
+    // Legacy data remains intact but shot/asset editing belongs to production now.
+    expect(html).not.toContain('删除镜头');
+    expect(script.shots.length).toBeGreaterThan(0);
+    expect(script.assets!.find((a) => a.id === 'unused')?.description).toBe(
+      '完整且未截断的后端对象定义',
+    );
+  });
+
+  it('omits empty optional panels without hiding any supplied shot content', async () => {
+    const shot = { ...createStoryboardShot(), title: '测试镜头', visual: '完整画面' };
+    const render = () =>
+      renderToString(
+        createSSRApp(ShotCard, {
+          shot,
+          index: 0,
+          total: 1,
+          editable: false,
+          assets: [],
+          shots: [shot],
+        }),
+      );
+    const empty = await render();
+    expect(empty).toContain('完整画面');
+    for (const label of ['台词 / 口播', '音效 / 音乐', '衔接说明'])
+      expect(empty).not.toContain(label);
+    shot.dialogues = [{ id: 'voice', speaker: '旁白', text: '完整对白' }];
+    shot.audio = '真实声音提示';
+    shot.continuity = '后端完整衔接说明';
+    const filled = await render();
+    for (const text of ['完整对白', '真实声音提示', '衔接说明']) expect(filled).toContain(text);
+    // The expandable content remains in the component, never removed from the data.
+    expect(shot.continuity).toBe('后端完整衔接说明');
+  });
+
+  it.each(['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'] as const)(
+    'renders actual task status and recovery rather than a mock completion: %s',
+    async (status) => {
+      const running = ['QUEUED', 'RUNNING'].includes(status);
+      const task: StoryboardTask = {
+        id: 'task',
+        workflowRunId: 'run',
+        status,
+        progress: status === 'COMPLETED' ? 100 : 30,
+        steps: [],
+        errorMessage: status === 'FAILED' ? '真实失败原因' : null,
+        createdAt: '2026-10-12T00:00:00Z',
+        updatedAt: '2026-10-12T00:01:00Z',
+      };
+      const html = await renderToString(
+        createSSRApp(Page, {
+          draft: emptyStoryboardDraft(),
+          editing: false,
+          sourceReady: true,
+          readonly: false,
+          saving: false,
+          productName: '测试产品',
+          saveMessage: '',
+          error: '',
+          stale: false,
+          projectId: 'test-project',
+          task,
+          brief: null,
+          sourceRevision: 1,
+          nextReady: false,
+          progress: {
+            value: task.progress,
+            summary: `真实任务 ${status}`,
+            terminal: !running,
+          },
+        }),
+      );
+      expect(html.includes(`真实任务 ${status}`)).toBe(running);
+      expect(html.includes('取消本次创作')).toBe(running);
+      expect(html).toContain('查看工作流');
+      expect(html.includes('恢复未完成方案')).toBe(
+        ['FAILED', 'PARTIAL', 'CANCELLED'].includes(status),
+      );
+      expect(html.includes('真实失败原因')).toBe(status === 'FAILED');
+      expect(html).not.toContain('界面示例');
+    },
+  );
 });

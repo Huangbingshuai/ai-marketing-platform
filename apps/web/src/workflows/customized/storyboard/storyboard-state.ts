@@ -51,6 +51,14 @@ export const createStoryboardScript = (name: string): CustomizedStoryboardScript
   synopsis: '',
   structure: '',
   productFocus: '',
+  story: {
+    content: '',
+    opening: '',
+    development: '',
+    ending: '',
+    dialoguePlan: '',
+    beats: [{ id: crypto.randomUUID(), content: '', durationSeconds: 30 }],
+  },
   shots: [],
   assets: [],
 });
@@ -98,7 +106,9 @@ export function storyboardAssetText(
     .join('\n');
 }
 export const scriptDuration = (script: CustomizedStoryboardScript) =>
-  script.shots.reduce((sum, s) => sum + s.durationSeconds, 0);
+  script.story
+    ? script.story.beats.reduce((sum, b) => sum + b.durationSeconds, 0)
+    : script.shots.reduce((sum, s) => sum + s.durationSeconds, 0);
 export function reorderStoryboardShot(
   script: CustomizedStoryboardScript,
   sourceId: string,
@@ -119,9 +129,20 @@ export function storyboardText(script: CustomizedStoryboardScript) {
   return [
     script.name,
     script.synopsis,
+    ...(script.story
+      ? [
+          script.story.content,
+          `开场：${script.story.opening}`,
+          `发展：${script.story.development}`,
+          `收束：${script.story.ending}`,
+          `对白安排：${script.story.dialoguePlan}`,
+        ]
+      : []),
     `叙事结构：${script.structure || '未填写'}`,
     `产品呈现：${script.productFocus || '未填写'}`,
-    `共 ${script.shots.length} 镜 · ${scriptDuration(script)} 秒`,
+    script.story
+      ? `目标时长：${scriptDuration(script)} 秒`
+      : `共 ${script.shots.length} 镜 · ${scriptDuration(script)} 秒`,
     ...script.shots.map(
       (s, i) =>
         `\n镜头 ${String(i + 1).padStart(2, '0')}\u3000${s.title}\n${s.shotType} · ${s.cameraMovement} · ${s.durationSeconds} 秒\n画面：${s.visual}\n台词 / 口播：${s.dialogues.map((d) => `${d.speaker}：${d.text}`).join('\n') || '无'}\n音效 / 音乐：${s.audio || '无'}\n衔接：${s.continuity || '未填写'}\n${storyboardAssetText(script, s)}`,

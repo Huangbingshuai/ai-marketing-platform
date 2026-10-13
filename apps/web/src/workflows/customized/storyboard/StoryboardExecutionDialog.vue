@@ -15,6 +15,7 @@ import {
 } from '@ai-marketing/contracts';
 import WorkflowExecutionGraphDialog from '../../../platform/workflow/components/WorkflowExecutionGraphDialog.vue';
 import { isAbortError } from '../../../api/http-client';
+import { BaseButton } from '@ai-marketing/ui';
 import { storyboardApi } from './storyboard.api';
 const props = defineProps<{
   open: boolean;
@@ -31,12 +32,22 @@ const selected = ref<string | null>(null),
   error = ref(''),
   page = ref(0);
 let controller: AbortController | undefined;
-const rows = CUSTOMIZED_STORYBOARD_STAGES.map((n) => [n.id]);
+const storyOnly = computed(() => !props.task || props.task.outputMode === 'STORY_ONLY');
+const stages = computed(() =>
+  CUSTOMIZED_STORYBOARD_STAGES.filter(
+    (n) => !storyOnly.value || !['ASSETS', 'SHOTS'].includes(n.id),
+  ).map((n) =>
+    storyOnly.value && n.id === 'REVIEW'
+      ? { ...n, description: '核对事实、故事容量与叙事一致性' }
+      : n,
+  ),
+);
+const rows = computed(() => stages.value.map((n) => [n.id]));
 const scriptIds = computed(() => [
   ...new Set(props.task?.steps.map((s) => s.scriptId).filter(Boolean) ?? []),
 ]);
 const nodes = computed(() =>
-  CUSTOMIZED_STORYBOARD_STAGES.map((n) => {
+  stages.value.map((n) => {
     const steps =
       props.task?.steps.filter(
         (s) =>
@@ -127,13 +138,17 @@ onBeforeUnmount(() => controller?.abort());
 <template>
   <WorkflowExecutionGraphDialog
     :open="open"
-    title="分镜创作工作流"
-    eyebrow="STORYBOARD WORKFLOW"
-    description="从完整故事到逐镜脚本，每份方案独立审校与保存。"
+    :title="storyOnly ? '脚本创作工作流' : '分镜创作工作流'"
+    :eyebrow="storyOnly ? 'SCRIPT WORKFLOW' : 'STORYBOARD WORKFLOW'"
+    :description="
+      storyOnly
+        ? '从差异化构思到完整故事，每份方案独立审校与保存。'
+        : '从完整故事到逐镜脚本，每份方案独立审校与保存。'
+    "
     :rows="rows"
     :nodes="nodes"
     :selected="selected"
-    :edge-count="7"
+    :edge-count="Math.max(0, stages.length - 1)"
     :empty-message="!task ? '尚未开始 AI 创作，执行后可在此查看每个阶段的实际内容。' : undefined"
     @close="emit('close')"
     @select="selected = $event"
@@ -153,7 +168,9 @@ onBeforeUnmount(() => controller?.abort());
     >
     <div v-if="!selected" class="node-detail-empty">
       <Workflow :size="30" /><strong>选择节点查看结果</strong>
-      <p>阅读故事、镜头与具体审校意见。</p>
+      <p>
+        {{ storyOnly ? '阅读故事、创作安排与具体审校意见。' : '阅读故事、镜头与具体审校意见。' }}
+      </p>
     </div>
     <template v-else
       ><header class="node-detail-header">
@@ -192,7 +209,7 @@ onBeforeUnmount(() => controller?.abort());
             <p v-if="!section.items.length" class="node-detail-no-fields">尚无已保存结果</p>
           </div>
         </details>
-        <button
+        <BaseButton
           v-if="
             selected === 'SAVE' &&
             selectedScript &&
@@ -205,8 +222,8 @@ onBeforeUnmount(() => controller?.abort());
           @click="emit('openScript', selectedScript)"
         >
           打开该脚本
-        </button>
-        <button
+        </BaseButton>
+        <BaseButton
           v-if="detail.hasMore"
           type="button"
           :disabled="loading"
@@ -216,7 +233,7 @@ onBeforeUnmount(() => controller?.abort());
           "
         >
           继续阅读
-        </button></template
+        </BaseButton></template
       >
       <p v-else-if="!task" class="node-detail-no-fields">尚未执行，暂无业务产物。</p>
     </template>

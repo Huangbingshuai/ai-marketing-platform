@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createSSRApp } from 'vue';
+import { renderToString } from 'vue/server-renderer';
+import BranchTree from '../effect/source-import/components/EffectWorkflowBranchTree.vue';
 import {
   CUSTOMIZED_WORKFLOW_NODES,
   type CustomizedWorkflowBranch,
@@ -51,6 +54,76 @@ describe('customized adapter for the shared effect branch tree', () => {
   it('keeps six stage bands but draws no fake versions for an empty draft', () => {
     expect(customizedBranchStages.map((stage) => stage.nodeId)).toEqual(CUSTOMIZED_WORKFLOW_NODES);
     expect(buildCustomizedBranchLayout(tree([branch('a', null, null, [])])).nodes).toEqual([]);
+  });
+  it('includes all sibling scripts under the active brief, with only the viewed script marked current', () => {
+    const data = tree([
+      branch('root', null, null, [0, 1]),
+      branch('script-a', 'root', 'STORYBOARD', [0, 1, 2, 3], true),
+      branch('script-b', 'root', 'STORYBOARD', [0, 1, 2, 3]),
+      branch('new-brief', 'root', 'INFORMATION_EXTRACTION', [0, 1]),
+      branch('other-script', 'new-brief', 'STORYBOARD', [0, 1, 2]),
+    ]);
+    const layout = buildCustomizedBranchLayout(data, {
+      nodeId: 'STORYBOARD',
+      scriptRunId: 'script-b',
+    });
+    expect(
+      layout.nodes
+        .filter((n) => n.nodeId === 'STORYBOARD' && n.onActivePath)
+        .map((n) => n.workflowRunId),
+    ).toEqual(['script-a', 'script-b']);
+    expect(layout.nodes.filter((n) => n.isCurrentStage).map((n) => n.workflowRunId)).toEqual([
+      'script-b',
+    ]);
+    expect(
+      layout.nodes
+        .filter((n) => n.nodeId === 'SHOT_PROMPT' && n.onActivePath)
+        .map((n) => n.workflowRunId),
+    ).toEqual(['script-a']);
+    expect(data.activeWorkflowRunId).toBe('script-a');
+    expect(data.branches.find((b) => b.isActive)?.workflowRunId).toBe('script-a');
+  });
+  it('includes the script collection when the active Run is still the brief head', () => {
+    const layout = buildCustomizedBranchLayout(
+      tree([
+        branch('root', null, null, [0, 1], true),
+        branch('script-a', 'root', 'STORYBOARD', [0, 1, 2]),
+        branch('script-b', 'root', 'STORYBOARD', [0, 1, 2]),
+      ]),
+    );
+    expect(layout.nodes.filter((n) => n.nodeId === 'STORYBOARD').every((n) => n.onActivePath)).toBe(
+      true,
+    );
+    expect(layout.nodes.filter((n) => n.nodeId === 'STORYBOARD' && n.isCurrentStage)).toEqual([]);
+  });
+  it('does not label an arbitrary sibling current when the viewed downstream node has no artifact', async () => {
+    const layout = buildCustomizedBranchLayout(
+      tree([
+        branch('root', null, null, [0, 1]),
+        branch('script-a', 'root', 'STORYBOARD', [0, 1, 2], true),
+        branch('script-b', 'root', 'STORYBOARD', [0, 1, 2]),
+      ]),
+      { nodeId: 'SHOT_PROMPT', scriptRunId: null },
+    );
+    const context: { teleports?: Record<string, string> } = {};
+    await renderToString(
+      createSSRApp(BranchTree, {
+        projectName: '测试项目',
+        tree: null,
+        alternateLayout: layout,
+        alternateStages: customizedBranchStages,
+        loading: false,
+        error: '',
+        switching: false,
+        forkDisabled: true,
+        activeTemplateId: null,
+        navigationDescription: '点击脚本只切换查看',
+      }),
+      context,
+    );
+    const html = Object.values(context.teleports ?? {}).join('');
+    expect(html).not.toContain('当前查看');
+    expect(html).toContain('点击脚本只切换查看');
   });
   it('inherits upstream heads and draws changed versions in separate lanes', () => {
     const layout = buildCustomizedBranchLayout(

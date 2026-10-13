@@ -48,6 +48,8 @@ import EffectUpwardCreatableSelect from '../../effect/source-import/components/E
 import { customizedWorkflowNodes } from '../customized-workflow';
 import CustomizedInfoExtractionNodePage from '../information-extraction/CustomizedExtractionWorkspace.vue';
 import CustomizedStoryboardWorkspace from '../storyboard/CustomizedStoryboardWorkspace.vue';
+import CustomizedProductionWorkspace from '../production/CustomizedProductionWorkspace.vue';
+import { storyboardApi } from '../storyboard/storyboard.api';
 import type { CustomizedExtractionSource } from '../information-extraction/customized-extraction-view';
 import {
   initializeCustomizedDraft,
@@ -79,6 +81,7 @@ const projectId = context.currentProject.value!.id;
 const draft = ref<CustomizedImportDraftState>(emptyCustomizedImportDraft());
 const workflowRunId = ref('');
 const activeStep = ref(0);
+const storyboardViewedRunId = ref<string | null>(null);
 const activeRun = ref<WorkflowRun | null>(null);
 const branchTree = ref<CustomizedWorkflowBranchTreeData | null>(null);
 const branchOpen = ref(false);
@@ -89,7 +92,12 @@ const versionSaving = ref(false);
 const editBusy = ref(false);
 let branchController: AbortController | undefined;
 const branchLayout = computed(() =>
-  branchTree.value ? buildCustomizedBranchLayout(branchTree.value) : undefined,
+  branchTree.value
+    ? buildCustomizedBranchLayout(branchTree.value, {
+        nodeId: customizedWorkflowNodes[activeStep.value]!.id,
+        scriptRunId: storyboardViewedRunId.value,
+      })
+    : undefined,
 );
 const publishedBranch = computed(() =>
   branchTree.value?.branches.find((branch) => branch.isActive),
@@ -400,7 +408,10 @@ const save = async (): Promise<boolean> => {
 };
 const extractionWorkspace = ref<InstanceType<typeof CustomizedInfoExtractionNodePage> | null>(null);
 const storyboardWorkspace = ref<InstanceType<typeof CustomizedStoryboardWorkspace> | null>(null);
+const productionWorkspace = ref<InstanceType<typeof CustomizedProductionWorkspace> | null>(null);
 const flushPendingEdits = async (): Promise<boolean> => {
+  if (productionWorkspace.value && !(await productionWorkspace.value.flushPendingEdits()))
+    return false;
   if (storyboardWorkspace.value && !(await storyboardWorkspace.value.flushPendingEdits()))
     return false;
   if (extractionWorkspace.value && !(await extractionWorkspace.value.flushPendingEdits()))
@@ -435,6 +446,37 @@ const selectStep = async (step: number) => {
     step === activeStep.value
   )
     return;
+  if (activeStep.value === 2 && step > 2) {
+    const runId = await storyboardWorkspace.value?.nextRunId();
+    if (runId)
+      await selectBranch({ workflowRunId: runId, nodeId: customizedWorkflowNodes[step]!.id });
+    else actionError.value = '请先保存当前脚本，并确认其来源有效，再进入后续节点。';
+    return;
+  }
+  if (step > 2 && activeStep.value < 2) {
+    if (!(await flushPendingEdits())) return;
+    try {
+      const catalog = await storyboardApi.workspace(projectId, workflowRunId.value);
+      const selected =
+        catalog.scripts.find((s) => s.id === catalog.selectedScriptId) ?? catalog.scripts[0];
+      if (
+        !selected?.workflowRunId ||
+        !selected.confirmedRevision ||
+        selected.stale ||
+        selected.editing
+      ) {
+        actionError.value = '请先选择并保存完整脚本，再进入制作。';
+        return;
+      }
+      await selectBranch({
+        workflowRunId: selected.workflowRunId,
+        nodeId: customizedWorkflowNodes[step]!.id,
+      });
+    } catch (e) {
+      actionError.value = e instanceof Error ? e.message : '脚本目录暂时不可用';
+    }
+    return;
+  }
   pendingStep.value = step;
   transitioning.value = true;
   try {
@@ -555,13 +597,30 @@ const selectBranch = async (target: { workflowRunId: string; nodeId: string }) =
   try {
     if (!(await flushPendingEdits())) return;
     await nodeActivation.drain();
+    // A script card selects a view in the shared workspace. Only navigation
+    // into a downstream node activates the selected script's storage Run.
+    if (target.nodeId === 'STORYBOARD') {
+      if (storyboardWorkspace.value) {
+        if (!(await storyboardWorkspace.value.selectByRun(target.workflowRunId))) return;
+      } else {
+        storyboardViewedRunId.value = target.workflowRunId;
+        activeStep.value = step;
+        nodeActivation.enqueue({ runId: workflowRunId.value, step });
+      }
+      branchOpen.value = false;
+      branchController?.abort();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
     const switchedRun = workflowRunId.value !== target.workflowRunId;
     if (switchedRun) await activateCustomizedBranch(projectId, target.workflowRunId, target.nodeId);
     if (disposed) return;
     branchOpen.value = false;
     branchController?.abort();
-    if (switchedRun) await load();
-    else {
+    if (switchedRun) {
+      storyboardViewedRunId.value = null;
+      await load();
+    } else {
       activeStep.value = step;
       nodeActivation.enqueue({ runId: target.workflowRunId, step });
     }
@@ -790,6 +849,7 @@ onBeforeUnmount(() => {
       :project-name="context.currentProject.value?.name ?? '当前项目'"
       :tree="null"
       :alternate-layout="branchLayout"
+      navigation-description="同一信息卡下的脚本共同属于当前工作流。点击脚本查看，进入下一节点时使用所选脚本。"
       :alternate-stages="customizedBranchStages"
       workflow-label="定制类"
       :active-workflow-run-id="branchTree?.activeWorkflowRunId"
@@ -1021,10 +1081,22 @@ onBeforeUnmount(() => {
         :workflow-run-id="workflowRunId"
         :brief-confirmed="confirmedSteps.includes(1)"
         :scope-readonly="Boolean(activeRun?.isTemporaryBranch)"
+        :viewed-run-id="storyboardViewedRunId"
         @back="selectStep(1)"
-        @path="selectBranch({ workflowRunId: $event, nodeId: 'STORYBOARD' })"
+        @viewing="storyboardViewedRunId = $event"
         @next="selectBranch({ workflowRunId: $event, nodeId: 'SHOT_PROMPT' })"
         @published="loadBranchTree()"
+      />
+      <CustomizedProductionWorkspace
+        v-else-if="activeStep === 3 || activeStep === 4"
+        ref="productionWorkspace"
+        :key="`${projectId}:${workflowRunId}:${activeStep}`"
+        :project-id="projectId"
+        :workflow-run-id="workflowRunId"
+        :mode="activeStep === 3 ? 'ASSETS' : 'SHOTS'"
+        @back="selectStep(activeStep - 1)"
+        @next="selectStep(activeStep + 1)"
+        @saved="loadBranchTree()"
       />
       <section v-else class="import-workspace-card next-node">
         <header class="node-heading">

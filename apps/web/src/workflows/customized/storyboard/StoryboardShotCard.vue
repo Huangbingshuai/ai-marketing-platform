@@ -8,7 +8,6 @@ import {
   GripVertical,
   Pencil,
   Plus,
-  RefreshCw,
   Trash2,
   X,
   Check,
@@ -34,7 +33,6 @@ const emit = defineEmits<{
   edit: [];
   remove: [];
   move: [offset: number];
-  regenerate: [];
   dragStart: [id: string];
   drop: [id: string];
 }>();
@@ -112,6 +110,7 @@ defineExpose({
   >
     <header>
       <span
+        v-if="editable"
         class="drag-handle"
         :draggable="editable && !editing"
         :title="editable ? '拖动调整镜头顺序' : '镜头顺序'"
@@ -125,7 +124,7 @@ defineExpose({
         ><span>{{ shot.cameraMovement }}</span
         ><span><Clock3 :size="12" />{{ shot.durationSeconds }} 秒</span>
       </div>
-      <div class="shot-actions">
+      <div v-if="editing || editable" class="shot-actions">
         <template v-if="editing"
           ><button type="button" @click="local = null"><X :size="13" />取消</button
           ><button class="accent" type="button" :disabled="!validShot" @click="save">
@@ -135,8 +134,6 @@ defineExpose({
         <template v-else
           ><button type="button" :disabled="!editable" @click="emit('edit')">
             <Pencil :size="13" />编辑</button
-          ><button type="button" :disabled="!editable" @click="emit('regenerate')">
-            <RefreshCw :size="13" />重新创作</button
           ><button
             type="button"
             :disabled="!editable || index === 0"
@@ -239,24 +236,28 @@ defineExpose({
               <div class="field-heading">画面内容描述</div>
               <p>{{ shot.visual || '尚未填写画面内容' }}</p>
             </section>
-            <section class="dialogue">
+            <section v-if="shot.dialogues.length" class="dialogue">
               <div class="field-heading">台词 / 口播</div>
               <div v-for="d in shot.dialogues" :key="d.id" class="dialogue-line">
                 <span>{{ d.speaker || '未指定说话者' }}</span>
                 <p>{{ d.text }}</p>
               </div>
-              <p v-if="!shot.dialogues.length" class="muted">无台词，以画面与环境声表达</p>
             </section>
           </div>
-          <div class="audio">
-            <span>音效 / 音乐</span>
-            <p>{{ shot.audio || '尚未设置' }}</p>
-            <button type="button" :aria-expanded="expanded" @click="expanded = !expanded">
+          <div v-if="shot.audio || shot.continuity" class="audio">
+            <span v-if="shot.audio">音效 / 音乐</span>
+            <p v-if="shot.audio">{{ shot.audio }}</p>
+            <button
+              v-if="shot.continuity"
+              type="button"
+              :aria-expanded="expanded"
+              @click="expanded = !expanded"
+            >
               衔接说明<ChevronDown :size="14" :class="{ rotated: expanded }" />
             </button>
           </div>
-          <p v-if="expanded" class="continuity">
-            {{ shot.continuity || '尚未填写衔接说明，可在编辑中补充。' }}
+          <p v-if="expanded && shot.continuity" class="continuity">
+            {{ shot.continuity }}
           </p></template
         >
       </div>

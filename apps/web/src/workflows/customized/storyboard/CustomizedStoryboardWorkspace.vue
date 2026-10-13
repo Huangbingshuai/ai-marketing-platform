@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
   validateStoryboardSettings,
   type StoryboardWorkspace,
@@ -16,25 +16,23 @@ import {
   snapshotStoryboard,
   importStoryboardScript,
 } from './storyboard-state';
-import { storyboardPreview } from './storyboard-preview';
 import { storyboardApi } from './storyboard.api';
 const props = defineProps<{
   projectId: string;
   workflowRunId: string;
   briefConfirmed: boolean;
   scopeReadonly: boolean;
+  viewedRunId?: string | null;
 }>();
 const emit = defineEmits<{
   back: [];
-  path: [runId: string];
+  viewing: [runId: string | null];
   next: [runId: string];
   published: [];
 }>();
 const workspace = ref<StoryboardWorkspace | null>(null),
-  draft = ref(emptyStoryboardDraft()),
-  previewDraft = ref(emptyStoryboardDraft());
-const preview = ref(false),
-  loading = ref(true),
+  draft = ref(emptyStoryboardDraft());
+const loading = ref(true),
   saving = ref(false),
   loadError = ref(''),
   error = ref(''),
@@ -56,28 +54,15 @@ const running = computed(
   () => !!graphTask.value && ['QUEUED', 'RUNNING'].includes(graphTask.value.status),
 );
 const progress = computed(() =>
-  graphTask.value
+  graphTask.value && running.value
     ? {
         value: graphTask.value.progress,
-        summary: {
-          QUEUED: '等待创作',
-          RUNNING: '正在创作，完成的脚本会逐份显示',
-          COMPLETED: '本次脚本均已保存',
-          PARTIAL: '部分方案已完成，其余可恢复重试',
-          FAILED: '本次创作未完成，可恢复重试',
-          CANCELLED: '本次创作已取消，已完成脚本保留',
-        }[graphTask.value.status],
-        terminal: !running.value,
+        summary:
+          graphTask.value.status === 'QUEUED' ? '等待创作' : '正在创作，完成的脚本会逐份显示',
+        terminal: false,
       }
     : undefined,
 );
-const displayDraft = computed({
-  get: () => (preview.value ? previewDraft.value : draft.value),
-  set: (v) => {
-    if (preview.value) previewDraft.value = v;
-    else draft.value = v;
-  },
-});
 let controller = new AbortController(),
   pollController: AbortController | undefined,
   disposed = false,
@@ -133,25 +118,9 @@ function apply(value: StoryboardWorkspace, initial = false) {
       ? oldSelection
       : (value.selectedScriptId ?? draft.value.scripts[0]?.id ?? null);
   if (value.scripts.filter((s) => s.confirmedRevision).length > oldCount) emit('published');
-  const selected = currentRecord.value;
-  if (
-    (initial || !oldSelection) &&
-    selected?.workflowRunId &&
-    props.workflowRunId === value.sourceRunId &&
-    selected.source.artifactId === value.source?.artifactId &&
-    selected.source.revision === value.source?.revision
-  ) {
-    // The parent's branch switch flushes this page. Wait until the loading
-    // placeholder has been replaced so its editor guard is available.
-    const selectedRunId = selected.workflowRunId;
-    void nextTick(() => {
-      if (
-        !disposed &&
-        props.workflowRunId === value.sourceRunId &&
-        currentRecord.value?.id === selected.id
-      )
-        emit('path', selectedRunId);
-    });
+  if (initial && props.viewedRunId) {
+    const requested = value.scripts.find((s) => s.workflowRunId === props.viewedRunId);
+    if (requested) draft.value.activeScriptId = requested.id;
   }
 }
 async function load() {
@@ -162,12 +131,12 @@ async function load() {
   loading.value = true;
   loadError.value = '';
   error.value = '';
-  preview.value = false;
   conflict = false;
   try {
     const value = await storyboardApi.workspace(props.projectId, props.workflowRunId, scope.signal);
     if (!current(scope)) return;
     apply(value, true);
+    if (value.selectedScriptId !== draft.value.activeScriptId) await flush();
     savedMessage.value = currentRecord.value?.confirmedRevision
       ? `当前脚本版本 ${currentRecord.value.confirmedRevision}`
       : '尚未保存正式脚本';
@@ -184,7 +153,7 @@ function flush(): Promise<boolean> {
   writing = writing
     .catch(() => false)
     .then(async () => {
-      if (!current(scope) || preview.value || !workspace.value || conflict) return false;
+      if (!current(scope) || !workspace.value || conflict) return false;
       try {
         if (
           JSON.stringify(draft.value.settings) !== settingsBaseline ||
@@ -362,7 +331,7 @@ async function begin() {
   }
 }
 async function save() {
-  if (preview.value || readonly.value || !(await flush())) return false;
+  if (readonly.value || !(await flush())) return false;
   if (!currentRecord.value || !active.value) return false;
   const scope = controller,
     record = currentRecord.value;
@@ -381,8 +350,6 @@ async function save() {
     await refresh();
     savedMessage.value = result.unchanged ? '内容未变化，版本保持不变' : '当前脚本已保存';
     emit('published');
-    if (result.workflowRunId && result.workflowRunId !== props.workflowRunId)
-      emit('path', result.workflowRunId);
     return true;
   } catch (e) {
     if (current(scope)) failure(e);
@@ -392,10 +359,6 @@ async function save() {
   }
 }
 async function cancel() {
-  if (preview.value) {
-    preview.value = false;
-    return;
-  }
   if (
     !(await requestActionConfirmation({
       title: '取消脚本编辑？',
@@ -435,12 +398,7 @@ async function create(script: CustomizedStoryboardScript, origin: 'MANUAL' | 'IM
     if (!current(scope)) return;
     await refresh();
     draft.value.activeScriptId = script.id;
-    if (
-      (await flush()) &&
-      workspace.value?.sourceRunId &&
-      workspace.value.sourceRunId !== props.workflowRunId
-    )
-      emit('path', workspace.value.sourceRunId);
+    await flush();
   } catch (e) {
     if (current(scope)) failure(e);
   } finally {
@@ -475,15 +433,17 @@ async function discard() {
   }
 }
 async function select(id: string) {
-  if (!(await flush())) return;
+  if (!draft.value.scripts.some((s) => s.id === id) || !(await flushPendingEdits())) return false;
   draft.value.activeScriptId = id;
-  if (!(await flush())) return;
-  const run = currentRecord.value?.workflowRunId ?? workspace.value?.sourceRunId;
-  if (run && run !== props.workflowRunId) emit('path', run);
+  return flush();
+}
+async function selectByRun(runId: string) {
+  const record = workspace.value?.scripts.find((s) => s.workflowRunId === runId);
+  return record ? select(record.id) : false;
 }
 async function flushPendingEdits() {
   if (!(await page.value?.guardEditor())) return false;
-  return preview.value ? true : flush();
+  return flush();
 }
 async function reload() {
   if (
@@ -500,7 +460,7 @@ async function reload() {
 async function back() {
   if (await flushPendingEdits()) emit('back');
 }
-async function next() {
+async function nextRunId() {
   const record = currentRecord.value;
   if (
     record?.workflowRunId &&
@@ -509,17 +469,21 @@ async function next() {
     !record.editing &&
     (await flushPendingEdits())
   )
-    emit('next', record.workflowRunId);
+    return record.workflowRunId;
+  return null;
 }
-async function showPreview() {
-  if (!(await page.value?.guardEditor())) return;
-  previewDraft.value = storyboardPreview();
-  preview.value = true;
+async function next() {
+  const runId = await nextRunId();
+  if (runId) emit('next', runId);
 }
+watch(
+  () => currentRecord.value?.workflowRunId ?? null,
+  (runId) => emit('viewing', runId),
+);
 watch(
   () => [draft.value.settings, active.value],
   () => {
-    if (loading.value || preview.value || conflict) return;
+    if (loading.value || conflict) return;
     clearTimeout(timer);
     timer = setTimeout(() => {
       void flush();
@@ -538,18 +502,18 @@ onBeforeUnmount(() => {
   pollController?.abort();
   clearTimeout(timer);
 });
-defineExpose({ flushPendingEdits });
+defineExpose({ flushPendingEdits, selectByRun, nextRunId });
 </script>
 <template>
   <WorkflowPageLoading
     v-if="loading"
-    title="正在加载分镜脚本…"
+    title="正在加载完整脚本…"
     description="正在读取脚本目录与已确认信息卡"
     icon="extraction"
   />
   <WorkflowExtractionFeedback
     v-else-if="loadError"
-    title="分镜工作区加载失败"
+    title="脚本工作区加载失败"
     :message="loadError"
     action="重新加载"
     @action="load"
@@ -557,13 +521,11 @@ defineExpose({ flushPendingEdits });
   <CustomizedStoryboardNodePage
     v-else
     ref="page"
-    v-model:draft="displayDraft"
-    :preview="preview"
+    v-model:draft="draft"
     :editing="editing"
     :source-ready="sourceReady"
     :readonly="readonly"
     :saving="saving"
-    :dirty="dirty"
     :product-name="workspace?.brief?.productName ?? ''"
     :save-message="savedMessage"
     :error="error"
@@ -580,8 +542,6 @@ defineExpose({ flushPendingEdits });
     @save="save"
     @back="back"
     @next="next"
-    @preview="showPreview"
-    @exit-preview="preview = false"
     @reload="reload"
     @generate="generate"
     @retry="retry()"

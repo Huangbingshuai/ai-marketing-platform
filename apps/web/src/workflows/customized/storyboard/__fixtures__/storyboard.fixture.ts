@@ -1,7 +1,7 @@
 import type { CustomizedStoryboardDraft, CustomizedStoryboardShot } from '@ai-marketing/contracts';
-import { emptyStoryboardAssetRequirements, emptyStoryboardDraft } from './storyboard-state';
-/** Explicit UI fixture. Never used by the workspace loader or draft persistence. */
-export function storyboardPreview(): CustomizedStoryboardDraft {
+import { emptyStoryboardAssetRequirements, emptyStoryboardDraft } from '../storyboard-state';
+/** Test-only data. Production pages never import this fixture. */
+export function storyboardFixture(): CustomizedStoryboardDraft {
   const shot = (
     id: string,
     title: string,

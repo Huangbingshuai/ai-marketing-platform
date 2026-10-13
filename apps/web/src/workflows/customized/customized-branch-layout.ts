@@ -20,7 +20,10 @@ export type CustomizedBranchDisplayNode = Omit<BranchTreeNode, 'nodeId' | 'stage
   nodeId: CustomizedWorkflowNodeId;
   stageKey: CustomizedWorkflowNodeId;
 };
-export function buildCustomizedBranchLayout(tree: CustomizedWorkflowBranchTreeData | null) {
+export function buildCustomizedBranchLayout(
+  tree: CustomizedWorkflowBranchTreeData | null,
+  viewing?: { nodeId: CustomizedWorkflowNodeId; scriptRunId: string | null },
+) {
   const branches = tree?.branches ?? [];
   const byId = new Map(branches.map((branch) => [branch.workflowRunId, branch]));
   const active = branches.find((branch) => branch.isActive);
@@ -45,7 +48,11 @@ export function buildCustomizedBranchLayout(tree: CustomizedWorkflowBranchTreeDa
       const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
       if (!state?.artifactCount) continue;
       const onActivePath = Boolean(
-        active && ownerAt(active.workflowRunId, stageIndex)?.workflowRunId === branch.workflowRunId,
+        active &&
+        (stage.nodeId === 'STORYBOARD'
+          ? ownerAt(active.workflowRunId, 1)?.workflowRunId ===
+            ownerAt(branch.workflowRunId, 1)?.workflowRunId
+          : ownerAt(active.workflowRunId, stageIndex)?.workflowRunId === branch.workflowRunId),
       );
       nodes.push({
         key: `${branch.workflowRunId}:${stage.key}:-`,
@@ -68,7 +75,12 @@ export function buildCustomizedBranchLayout(tree: CustomizedWorkflowBranchTreeDa
         revision: state.revision,
         revisions: undefined,
         onActivePath,
-        isCurrentStage: onActivePath && active?.currentNodeId === stage.nodeId,
+        isCurrentStage:
+          (viewing?.nodeId ?? active?.currentNodeId) === stage.nodeId &&
+          (stage.nodeId === 'STORYBOARD'
+            ? ownerAt(viewing ? (viewing.scriptRunId ?? '') : (active?.workflowRunId ?? ''), 2)
+                ?.workflowRunId === branch.workflowRunId
+            : onActivePath),
       });
     }
   const keys = new Set(nodes.map((node) => node.key));
