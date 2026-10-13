@@ -1,6 +1,8 @@
+import { workerNodeForPath, type ProductionWorkerNode } from './production-worker-policy';
 import { timingSafeEqual } from 'node:crypto';
 import {
   Body,
+  Req,
   Controller,
   Get,
   Post,
@@ -186,14 +188,23 @@ export class ProductionController {
     return this.service.action(p, id, true);
   }
 }
+interface NodeWorkerRequest {
+  path: string;
+  headers: Record<string, unknown>;
+  workerNode: ProductionWorkerNode;
+}
 @Injectable()
 export class ProductionWorkerGuard implements CanActivate {
   constructor(@Inject(ConfigService) private readonly config: ConfigService) {}
   canActivate(c: ExecutionContext) {
-    const expected = this.config.get<string>('CUSTOMIZED_PRODUCTION_WORKER_TOKEN'),
-      actual = c.switchToHttp().getRequest<{ headers: Record<string, unknown> }>().headers[
-        'x-worker-token'
-      ];
+    const request = c.switchToHttp().getRequest<NodeWorkerRequest>();
+    const node = workerNodeForPath(request.path);
+    if (!node) throw new UnauthorizedException('Worker 路径无效');
+    request.workerNode = node;
+    const expected = this.config.get<string>(
+        node === 'ASSETS' ? 'CUSTOMIZED_ASSETS_WORKER_TOKEN' : 'CUSTOMIZED_PRODUCTION_WORKER_TOKEN',
+      ),
+      actual = request.headers['x-worker-token'];
     if (
       !expected ||
       typeof actual !== 'string' ||
@@ -204,39 +215,56 @@ export class ProductionWorkerGuard implements CanActivate {
     return true;
   }
 }
-@Controller('internal/workers/customized-production')
+@Controller(['internal/workers/customized-production', 'internal/workers/customized-assets'])
 @UseGuards(ProductionWorkerGuard)
 export class ProductionWorkerController {
   constructor(private readonly repository: ProductionRepository) {}
-  @Post('tasks/:id/claim') claim(@Param('id', ParseUUIDPipe) id: string, @Body() b: Worker) {
-    return this.repository.claim(b.projectId, id);
+  @Post('tasks/:id/route') route(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() b: Worker,
+    @Req() request: NodeWorkerRequest,
+  ) {
+    if (request.workerNode !== 'VIDEO')
+      throw new UnauthorizedException('仅旧视频队列允许迁移资产消息');
+    return this.repository.rerouteLegacyAssets(b.projectId, id);
+  }
+  @Post('tasks/:id/claim') claim(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() b: Worker,
+    @Req() request: NodeWorkerRequest,
+  ) {
+    return this.repository.claim(b.projectId, id, request.workerNode);
   }
   @Put('tasks/:id/heartbeat') heartbeat(
     @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-attempt-token') token: string,
     @Body() b: Worker,
+    @Req() request: NodeWorkerRequest,
   ) {
-    return this.repository.heartbeat(b.projectId, id, token);
+    return this.repository.heartbeat(b.projectId, id, token, request.workerNode);
   }
   @Put('tasks/:id/checkpoint') checkpoint(
     @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-attempt-token') token: string,
     @Body() b: Checkpoint,
+    @Req() request: NodeWorkerRequest,
   ) {
-    return this.repository.checkpoint(b.projectId, id, token, b.step, b.output);
+    return this.repository.checkpoint(b.projectId, id, token, b.step, b.output, request.workerNode);
   }
   @Post('tasks/:id/complete') complete(
     @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-attempt-token') token: string,
     @Body() b: Complete,
+    @Req() request: NodeWorkerRequest,
   ) {
-    return this.repository.complete(b.projectId, id, token, b.output);
+    return this.repository.complete(b.projectId, id, token, b.output, request.workerNode);
   }
   @Post('tasks/:id/fail') fail(
     @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-attempt-token') token: string,
     @Body() b: Failure,
+    @Req() request: NodeWorkerRequest,
   ) {
-    return this.repository.fail(b.projectId, id, token, b.retryable);
+    return this.repository.fail(b.projectId, id, token, b.retryable, request.workerNode);
   }
 }

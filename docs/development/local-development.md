@@ -101,6 +101,21 @@ pnpm --filter @ai-marketing/api exec vitest run src/workflows/customized/storybo
 
 Worker 受控验证在 `workers/customized-storyboard` 执行 `uv sync --frozen`、`uv run pytest`、`uv run mypy src`。运行及故障恢复见[分镜 Worker](../../workers/customized-storyboard/README.md)。
 
+## 定制类资产准备与视频制作 Worker
+
+两个节点分别部署；资产准备不再由视频制作消费者执行。API 与两个 Worker 分别配置 `CUSTOMIZED_ASSETS_WORKER_TOKEN`、`CUSTOMIZED_PRODUCTION_WORKER_TOKEN`，不能互用。配置调整后核对实际运行进程已加载新值；仅在无活动任务时更新对应服务，不因构建成功推断运行配置已更新。
+
+```powershell
+docker compose --profile customized-assets --profile customized-production config --quiet
+docker compose --profile customized-assets --profile customized-production build customized-assets-worker customized-production-worker
+docker compose --profile customized-assets --profile customized-production up -d --no-deps customized-assets-worker customized-production-worker
+docker compose --profile customized-assets --profile customized-production ps customized-assets-worker customized-production-worker
+```
+
+两者使用各自目录的 Dockerfile 和 uv.lock，只安装轻量共享执行依赖。资产队列为 `customized.assets.requested`；视频制作队列仍为 `customized.production.requested`，仅处理分镜/逐镜 Prompt。并发、超时和请求次数分别由 `CUSTOMIZED_ASSETS_*` / `CUSTOMIZED_PRODUCTION_*` 配置，默认 2 / 300 秒 / 2 次。启动消费者会消费真实消息；旧队列资产任务由 API Outbox 转交，不重新创建业务任务。
+
+受控测试与启动边界见[资产 Worker](../../workers/customized-assets/README.md)、[视频制作 Worker](../../workers/customized-production/README.md)。素材交付后端尚未实现，暂不启动空消费者。资产图片和视频渲染尚未接通。
+
 ## 常规验证
 
 API 的 `dev` 脚本先运行 `apps/api/scripts/dev-api.mjs`。该入口按工作区持有进程互斥，重复启动会复用现有服务；Windows 进程退出时内核释放互斥。请经上述 pnpm 入口启动，不再直接运行 `nest start --watch`。迁移前直接启动的 Nest watcher 会被检查并提示 PID，入口不会自动终止它。停止开发入口会结束它启动的 Nest 与运行进程。

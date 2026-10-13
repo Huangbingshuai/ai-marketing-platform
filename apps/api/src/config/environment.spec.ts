@@ -9,6 +9,18 @@ const validEnvironment = {
 };
 
 describe('validateEnvironment', () => {
+  it('keeps the asset worker credential independent', () => {
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        CUSTOMIZED_ASSETS_WORKER_TOKEN: 'assets-test-token',
+        CUSTOMIZED_PRODUCTION_WORKER_TOKEN: 'video-test-token',
+      }),
+    ).toMatchObject({
+      CUSTOMIZED_ASSETS_WORKER_TOKEN: 'assets-test-token',
+      CUSTOMIZED_PRODUCTION_WORKER_TOKEN: 'video-test-token',
+    });
+  });
   it('keeps the independent production worker credential available to its guard', () => {
     expect(
       validateEnvironment({

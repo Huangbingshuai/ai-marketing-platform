@@ -2,7 +2,7 @@
 name = "customized-storyboard-worker"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["ai-runtime", "aio-pika>=9.5.7,<10"]
+dependencies = ["customized-production-runtime", "ai-runtime", "aio-pika>=9.5.7,<10"]
 [project.scripts]
 customized-storyboard-worker = "customized_storyboard.main:main"
 [dependency-groups]
@@ -13,6 +13,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/customized_storyboard"]
 [tool.uv.sources]
+customized-production-runtime = { path = "../shared/customized-production-runtime", editable = true }
 ai-runtime = { path = "../shared/ai-runtime", editable = true }
 [tool.pytest.ini_options]
 addopts = "-q"

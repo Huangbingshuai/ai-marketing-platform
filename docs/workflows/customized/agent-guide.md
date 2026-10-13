@@ -12,7 +12,18 @@
 
 资产/分镜生成先写草稿，用户保存修改确认；Prompt完整生成并审校通过自动提交。key为 customized-asset-catalog、customized-object:<id>、customized-video-plan、customized-shot:<id>、customized-shot-prompt:<shotId>。同内容不增revision；只将实际依赖改变对象的Prompt标为待更新。旧脚本只读投影，明确保存才建立新产物。
 
-制作使用独立 customized-production-worker 服务/队列/Token，调用受保护 API，不直接访问数据库。运行方式见[Worker说明](../../../workers/customized-storyboard/README.md)。UI继续复用效果类共享卡片、字段、编辑动作、进度条、工作流图、确认和底部导航。
+各已接通异步节点使用独立 Worker，调用受保护 API，不直接访问数据库：
+
+| 节点 | Worker | 队列 |
+| --- | --- | --- |
+| 资料导入 | 无 Worker | 无 |
+| 信息提炼 | customized-extraction-worker | customized.extraction.requested |
+| 脚本创作 | customized-storyboard-worker | customized.storyboard.requested |
+| 资产准备 | customized-assets-worker | customized.assets.requested |
+| 视频制作 | customized-production-worker | customized.production.requested |
+| 素材交付 | 异步交付尚未实现，接通时独立部署 | 尚未创建 |
+
+资产 Worker 只处理 ASSETS，视频 Worker 只处理 SHOTS / PROMPT；独立入口、镜像、锁文件、队列和凭据，两者复用共享执行底座。内部 API 在领取及所有回调校验节点归属；旧视频队列的排队资产任务通过 Outbox 转交。来源快照、草稿、正式提交和下游待更新规则保持不变。运行见[资产 Worker](../../../workers/customized-assets/README.md)及[视频制作 Worker](../../../workers/customized-production/README.md)，隔离依据与验证见[实施计划](plans/2026-10-13-节点Worker隔离与资产Worker补齐.md)和[验收记录](evidence/2026-10-13-资产Worker隔离验收.md)。UI继续复用效果类共享卡片、字段、编辑动作、进度条、工作流图、确认和底部导航。
 
 本轮止于提示词生成，资产图片生成/上传替换、视频渲染、成片及交付未接通；不得以节点存在声称渲染可用。验收结果单独记录，不用历史付费测试代表新链路质量。
 

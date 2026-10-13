@@ -229,15 +229,36 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  customized-assets-worker:
+    profiles: ['customized-assets']
+    build:
+      context: ./workers
+      dockerfile: customized-assets/Dockerfile
+    environment:
+      INTERNAL_API_BASE_URL: http://host.docker.internal:${API_PORT:-3000}/api
+      CUSTOMIZED_ASSETS_WORKER_TOKEN: ${CUSTOMIZED_ASSETS_WORKER_TOKEN:-}
+      CUSTOMIZED_ASSETS_CONCURRENCY: ${CUSTOMIZED_ASSETS_CONCURRENCY:-2}
+      CUSTOMIZED_ASSETS_TIMEOUT_SECONDS: ${CUSTOMIZED_ASSETS_TIMEOUT_SECONDS:-300}
+      CUSTOMIZED_ASSETS_MAX_ATTEMPTS: ${CUSTOMIZED_ASSETS_MAX_ATTEMPTS:-2}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
   customized-production-worker:
     profiles: ['customized-production']
     build:
       context: ./workers
-      dockerfile: customized-storyboard/Dockerfile
-    command: ['/app/customized-storyboard/.venv/bin/python', '-m', 'customized_storyboard.production_main']
+      dockerfile: customized-production/Dockerfile
     environment:
       INTERNAL_API_BASE_URL: http://host.docker.internal:${API_PORT:-3000}/api
       CUSTOMIZED_PRODUCTION_WORKER_TOKEN: ${CUSTOMIZED_PRODUCTION_WORKER_TOKEN:-}
+      CUSTOMIZED_PRODUCTION_CONCURRENCY: ${CUSTOMIZED_PRODUCTION_CONCURRENCY:-2}
+      CUSTOMIZED_PRODUCTION_TIMEOUT_SECONDS: ${CUSTOMIZED_PRODUCTION_TIMEOUT_SECONDS:-300}
+      CUSTOMIZED_PRODUCTION_MAX_ATTEMPTS: ${CUSTOMIZED_PRODUCTION_MAX_ATTEMPTS:-2}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
       ARK_API_KEY: ${ARK_API_KEY:-}

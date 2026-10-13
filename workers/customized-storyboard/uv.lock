@@ -93,12 +93,28 @@ wheels = [
 ]
 
 [[package]]
+name = "customized-production-runtime"
+version = "0.1.0"
+source = { editable = "../shared/customized-production-runtime" }
+dependencies = [
+    { name = "ai-runtime" },
+    { name = "aio-pika" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ai-runtime", editable = "../shared/ai-runtime" },
+    { name = "aio-pika", specifier = ">=9.5.7,<10" },
+]
+
+[[package]]
 name = "customized-storyboard-worker"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "ai-runtime" },
     { name = "aio-pika" },
+    { name = "customized-production-runtime" },
 ]
 
 [package.dev-dependencies]
@@ -113,6 +129,7 @@ dev = [
 requires-dist = [
     { name = "ai-runtime", editable = "../shared/ai-runtime" },
     { name = "aio-pika", specifier = ">=9.5.7,<10" },
+    { name = "customized-production-runtime", editable = "../shared/customized-production-runtime" },
 ]
 
 [package.metadata.requires-dev]

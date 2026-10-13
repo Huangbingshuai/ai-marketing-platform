@@ -218,6 +218,7 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       const models = { creative: 'controlled', detail: 'controlled' },
         key = randomUUID();
       const t = await repo.start(p, r, revision, 'PROMPT', key, 's1', models);
+      await expect(repo.claim(p, t.id, 'ASSETS')).rejects.toThrow('任务不属于');
       expect((await repo.start(p, r, revision, 'PROMPT', key, 's1', models)).id).toBe(t.id);
       await expect(repo.save(p, r, revision, doc, 'SHOTS', true)).rejects.toThrow();
       const claim = await repo.claim(p, t.id);
@@ -259,7 +260,44 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       await expect(repo.heartbeat(p, canceled.id, lease.attemptToken!)).rejects.toThrow();
       // Transient failures preserve checkpoints, issue a new lease, and never reuse the old token.
       const recovery = await repo.start(p, r, revision, 'ASSETS', randomUUID(), null, models);
-      const firstLease = await repo.claim(p, recovery.id);
+      const queued = await db.jobOutbox.findFirstOrThrow({ where: { aggregateId: recovery.id } });
+      expect(queued.routingKey).toBe('customized.assets.requested');
+      await db.jobOutbox.update({
+        where: { id: queued.id },
+        data: { routingKey: 'customized.production.requested' },
+      });
+      expect(await repo.rerouteLegacyAssets(p, recovery.id)).toEqual({ forwarded: true });
+      expect(await repo.rerouteLegacyAssets(p, recovery.id)).toEqual({ forwarded: true });
+      expect(await db.jobOutbox.count({ where: { aggregateId: recovery.id } })).toBe(1);
+      expect((await db.jobOutbox.findUniqueOrThrow({ where: { id: queued.id } })).routingKey).toBe(
+        'customized.assets.requested',
+      );
+      await expect(repo.claim(p, recovery.id, 'VIDEO')).rejects.toThrow('任务不属于');
+      expect(
+        (await db.customizedProductionTask.findUniqueOrThrow({ where: { id: recovery.id } }))
+          .attemptCount,
+      ).toBe(0);
+      const firstLease = await repo.claim(p, recovery.id, 'ASSETS');
+      expect(await repo.rerouteLegacyAssets(p, recovery.id)).toEqual({ forwarded: false });
+      await expect(
+        repo.heartbeat(p, recovery.id, firstLease.attemptToken!, 'VIDEO'),
+      ).rejects.toThrow('任务不属于');
+      await expect(
+        repo.checkpoint(
+          p,
+          recovery.id,
+          firstLease.attemptToken!,
+          { id: 'SNAPSHOT', status: 'SUCCEEDED', title: '', content: '' },
+          undefined,
+          'VIDEO',
+        ),
+      ).rejects.toThrow('任务不属于');
+      await expect(
+        repo.complete(p, recovery.id, firstLease.attemptToken!, {}, 'VIDEO'),
+      ).rejects.toThrow('任务不属于');
+      await expect(
+        repo.fail(p, recovery.id, firstLease.attemptToken!, false, 'VIDEO'),
+      ).rejects.toThrow('任务不属于');
       await repo.checkpoint(p, recovery.id, firstLease.attemptToken!, {
         id: 'SNAPSHOT',
         status: 'SUCCEEDED',
@@ -274,6 +312,9 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
         { plan: { summary: '已保存规划' } },
       );
       await repo.fail(p, recovery.id, firstLease.attemptToken!, true);
+      expect((await db.jobOutbox.findUniqueOrThrow({ where: { id: queued.id } })).routingKey).toBe(
+        'customized.assets.requested',
+      );
       expect((await repo.getTask(p, recovery.id)).status).toBe('QUEUED');
       const secondLease = await repo.claim(p, recovery.id);
       expect(secondLease.attemptToken).not.toBe(firstLease.attemptToken);
@@ -289,6 +330,9 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
           { final: catalogResult },
         );
       await repo.complete(p, recovery.id, secondLease.attemptToken!, catalogResult);
+      await expect(
+        repo.complete(p, recovery.id, secondLease.attemptToken!, catalogResult, 'VIDEO'),
+      ).rejects.toThrow('任务不属于');
       expect((await repo.workspace(p, r)).document.shots).toHaveLength(2);
       // A second object change must now affect only its dependent prompt.
       doc.assets[1]!.description = '阅读室，窗边有木桌';

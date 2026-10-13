@@ -69,12 +69,12 @@ uv run mypy src
 
 新建脚本任务使用 STORY_ONLY：完整故事成功后发布，不在脚本任务中拆资产和镜头。已有不带 outputMode 的任务继续按历史步骤恢复。
 
-新增独立 `customized-production-worker`，代码共用本目录轻量 Python 包，入口为 `python -m customized_storyboard.production_main`，队列为 `customized.production.requested`，使用独立 `CUSTOMIZED_PRODUCTION_WORKER_TOKEN`，无 Docling/Torch/视频运行时和解析模型卷。
+资产准备和视频制作各自使用独立 Worker：[customized-assets](../customized-assets/README.md) 只处理 ASSETS，[customized-production](../customized-production/README.md) 只处理 SHOTS / PROMPT。两者拥有独立入口、镜像、锁文件、队列和 Token，共同依赖 shared/customized-production-runtime，不依赖本目录内部模块。本目录 production.py / production_main.py 仅保留兼容入口；production_main 限制为视频制作角色。无 Docling/Torch/视频运行时和解析模型卷。
 
 ```powershell
-docker compose --profile customized-production --profile customized-storyboard build customized-production-worker customized-storyboard-worker
-docker compose --profile customized-production --profile customized-storyboard up -d --no-deps customized-production-worker customized-storyboard-worker
-docker compose --profile customized-production ps customized-production-worker
+docker compose --profile customized-assets --profile customized-production build customized-assets-worker customized-production-worker
+docker compose --profile customized-assets --profile customized-production up -d --no-deps customized-assets-worker customized-production-worker
+docker compose --profile customized-assets --profile customized-production ps customized-assets-worker customized-production-worker
 ```
 
 启动前核对 API 已加载同一 Token，以及无等待/活动任务；启动消费者会消费已有消息。API 使用 `pnpm dev:api`，构建不等于运行进程已更新。首次部署先执行对应数据库 migration。

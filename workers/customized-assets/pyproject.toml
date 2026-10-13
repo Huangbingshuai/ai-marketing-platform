@@ -1,0 +1,22 @@
+[project]
+name = "customized-assets-worker"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["customized-production-runtime"]
+[project.scripts]
+customized-assets-worker = "customized_assets.main:main"
+[dependency-groups]
+dev = ["pytest>=8.4.2,<10", "pytest-asyncio>=1.2,<2", "mypy>=1.18,<2", "jsonschema>=4.23,<5"]
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+[tool.hatch.build.targets.wheel]
+packages = ["src/customized_assets"]
+[tool.uv.sources]
+customized-production-runtime = { path = "../shared/customized-production-runtime", editable = true }
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+[tool.mypy]
+python_version = "3.12"
+strict = true

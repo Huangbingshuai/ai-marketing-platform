@@ -1,3 +1,8 @@
+import {
+  assertWorkerOperation,
+  productionQueue,
+  type ProductionWorkerNode,
+} from './production-worker-policy';
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
@@ -386,11 +391,12 @@ export class ProductionRepository {
         projectId: t.projectId,
         jobType: 'CUSTOMIZED_PRODUCTION',
         aggregateId: t.id,
-        routingKey: 'customized.production.requested',
+        routingKey: productionQueue(t.operation),
         payload: { schemaVersion: 1, projectId: t.projectId, runId: t.id, requestId: randomUUID() },
         nextAttemptAt: new Date(Date.now() + delay),
       },
       update: {
+        routingKey: productionQueue(t.operation),
         status: 'PENDING',
         attempts: 0,
         nextAttemptAt: new Date(Date.now() + delay),
@@ -565,10 +571,11 @@ export class ProductionRepository {
       return presentProductionTask(t);
     });
   }
-  claim(p: string, id: string) {
+  claim(p: string, id: string, node?: ProductionWorkerNode) {
     return this.db.$transaction(async (tx) => {
       await lockCustomizedProject(tx, p);
       const t = await this.task(tx, p, id);
+      assertWorkerOperation(t.operation, node);
       if (!['QUEUED', 'RUNNING'].includes(t.status)) return { terminal: true };
       if (t.status === 'RUNNING' && t.leaseExpiresAt && t.leaseExpiresAt > new Date())
         return { busy: true };
@@ -601,9 +608,19 @@ export class ProductionRepository {
       return { attemptToken: token, input: t.inputSnapshot, output: t.output, steps: t.steps };
     });
   }
-  private async lease(tx: Tx, p: string, id: string, token: string) {
+  rerouteLegacyAssets(p: string, id: string) {
+    return this.db.$transaction(async (tx) => {
+      await lockCustomizedProject(tx, p);
+      const t = await this.task(tx, p, id);
+      if (t.operation !== 'ASSETS' || t.status !== 'QUEUED') return { forwarded: false };
+      await this.enqueue(tx, t);
+      return { forwarded: true };
+    });
+  }
+  private async lease(tx: Tx, p: string, id: string, token: string, node?: ProductionWorkerNode) {
     await lockCustomizedProject(tx, p);
     const t = await this.task(tx, p, id);
+    assertWorkerOperation(t.operation, node);
     if (
       t.status !== 'RUNNING' ||
       !token ||
@@ -615,9 +632,9 @@ export class ProductionRepository {
     await this.valid(tx, t);
     return t;
   }
-  heartbeat(p: string, id: string, token: string) {
+  heartbeat(p: string, id: string, token: string, node?: ProductionWorkerNode) {
     return this.db.$transaction(async (tx) => {
-      await this.lease(tx, p, id, token);
+      await this.lease(tx, p, id, token, node);
       await tx.customizedProductionTask.update({
         where: { id },
         data: { leaseExpiresAt: new Date(Date.now() + 90000) },
@@ -625,9 +642,16 @@ export class ProductionRepository {
       return { accepted: true };
     });
   }
-  checkpoint(p: string, id: string, token: string, step: ProductionStep, output?: unknown) {
+  checkpoint(
+    p: string,
+    id: string,
+    token: string,
+    step: ProductionStep,
+    output?: unknown,
+    node?: ProductionWorkerNode,
+  ) {
     return this.db.$transaction(async (tx) => {
-      const t = await this.lease(tx, p, id, token);
+      const t = await this.lease(tx, p, id, token, node);
       if (
         !PRODUCTION_STAGES.some((s) => s.id === step.id) ||
         step.id === 'SAVE' ||
@@ -649,13 +673,14 @@ export class ProductionRepository {
       return { accepted: true };
     });
   }
-  complete(p: string, id: string, token: string, output: unknown) {
+  complete(p: string, id: string, token: string, output: unknown, node?: ProductionWorkerNode) {
     return this.db.$transaction(
       async (tx) => {
         await lockCustomizedProject(tx, p);
         const prior = await this.task(tx, p, id);
+        assertWorkerOperation(prior.operation, node);
         if (prior.status === 'COMPLETED' && prior.attemptToken === token) return { accepted: true };
-        const t = await this.lease(tx, p, id, token),
+        const t = await this.lease(tx, p, id, token, node),
           input = snapshot(t),
           steps = t.steps as unknown as ProductionStep[];
         if (
@@ -746,9 +771,9 @@ export class ProductionRepository {
       { timeout: 30000 },
     );
   }
-  fail(p: string, id: string, token: string, retryable: boolean) {
+  fail(p: string, id: string, token: string, retryable: boolean, node?: ProductionWorkerNode) {
     return this.db.$transaction(async (tx) => {
-      const t = await this.lease(tx, p, id, token),
+      const t = await this.lease(tx, p, id, token, node),
         retry = retryable && t.attemptCount < 3;
       await tx.customizedProductionTask.update({
         where: { id },
