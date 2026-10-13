@@ -4,6 +4,7 @@ import {
   validateStoryboardSettings,
   type StoryboardWorkspace,
   type CustomizedStoryboardScript,
+  type DeleteStoryboardScriptResult,
 } from '@ai-marketing/contracts';
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { pollAsyncTask } from '../../../platform/workflow/poll-async-task';
@@ -29,10 +30,12 @@ const emit = defineEmits<{
   viewing: [runId: string | null];
   next: [runId: string];
   published: [];
+  deleted: [result: DeleteStoryboardScriptResult];
 }>();
 const workspace = ref<StoryboardWorkspace | null>(null),
   draft = ref(emptyStoryboardDraft());
 const loading = ref(true),
+  deletingId = ref<string | null>(null),
   saving = ref(false),
   loadError = ref(''),
   error = ref(''),
@@ -44,7 +47,13 @@ const currentRecord = computed(() =>
 );
 const editing = computed(() => currentRecord.value?.editing ?? false);
 const sourceReady = computed(() => !!workspace.value?.sourceReady);
-const readonly = computed(() => props.scopeReadonly || !sourceReady.value || saving.value);
+const readonly = computed(
+  () =>
+    props.scopeReadonly ||
+    !sourceReady.value ||
+    saving.value ||
+    (!!deletingId.value && deletingId.value === currentRecord.value?.id),
+);
 const active = computed(() => draft.value.scripts.find((s) => s.id === draft.value.activeScriptId));
 const dirty = computed(
   () =>
@@ -70,6 +79,7 @@ let controller = new AbortController(),
 let writing: Promise<boolean> = Promise.resolve(true),
   settingsBaseline = '',
   conflict = false;
+const removedScripts = new Set<string>();
 const current = (scope: AbortController) =>
   !disposed && scope === controller && !scope.signal.aborted;
 function failure(e: unknown) {
@@ -82,6 +92,9 @@ function failure(e: unknown) {
       : '请求暂未完成，本地修改仍保留，请重试。';
 }
 function apply(value: StoryboardWorkspace, initial = false) {
+  value.scripts = value.scripts.filter((s) => !removedScripts.has(s.id));
+  if (value.selectedScriptId && removedScripts.has(value.selectedScriptId))
+    value.selectedScriptId = null;
   const local = active.value,
     wasEditing = editing.value,
     oldSettings = snapshotStoryboard(draft.value.settings),
@@ -132,6 +145,7 @@ async function load() {
   loadError.value = '';
   error.value = '';
   conflict = false;
+  deletingId.value = null;
   try {
     const value = await storyboardApi.workspace(props.projectId, props.workflowRunId, scope.signal);
     if (!current(scope)) return;
@@ -175,7 +189,7 @@ function flush(): Promise<boolean> {
           settingsBaseline = JSON.stringify(settings);
         }
         const record = currentRecord.value;
-        if (record?.editing && active.value && dirty.value) {
+        if (record?.editing && record.id !== deletingId.value && active.value && dirty.value) {
           const value = snapshotStoryboard(active.value),
             saved = await storyboardApi.edit(
               props.projectId,
@@ -405,35 +419,86 @@ async function create(script: CustomizedStoryboardScript, origin: 'MANUAL' | 'IM
     if (current(scope)) saving.value = false;
   }
 }
-async function discard() {
+async function remove() {
   const record = currentRecord.value;
-  if (!record || record.confirmedRevision || !active.value || active.value.shots.length) return;
+  if (!record || props.scopeReadonly || saving.value || deletingId.value) return;
+  const scope = controller;
   if (
     !(await requestActionConfirmation({
-      title: '删除空白脚本？',
-      description: '仅删除当前尚未发布的空白草稿。',
-      confirmLabel: '删除空白脚本',
+      title: '永久删除此脚本？',
+      description: `“${record.script.name}”及其全部子分支将永久删除，包括关联的资产、视频、草稿和历史版本。此操作无法撤销，其他脚本不受影响。`,
+      confirmLabel: '永久删除',
+      tone: 'danger',
     })) ||
-    !(await flush())
+    !current(scope) ||
+    currentRecord.value?.id !== record.id
   )
     return;
-  const scope = controller;
-  try {
-    await storyboardApi.edit(
-      props.projectId,
-      record.id,
-      'discard',
-      record.revision,
-      undefined,
-      scope.signal,
-    );
-    if (current(scope)) await refresh();
-  } catch (e) {
-    if (current(scope)) failure(e);
-  }
+  clearTimeout(timer);
+  deletingId.value = record.id;
+  pollController?.abort();
+  // Serialize deletion behind dispatched writes; later selection/autosave waits for the refresh.
+  // Unsaved changes in the deleted script need not create one final redundant draft revision.
+  writing = writing
+    .catch(() => false)
+    .then(async () => {
+      try {
+        if (!current(scope) || conflict) return false;
+        const latest = workspace.value?.scripts.find((s) => s.id === record.id);
+        if (!latest) return false;
+        const result = await storyboardApi.remove(
+          props.projectId,
+          record.id,
+          props.workflowRunId,
+          latest.revision,
+          scope.signal,
+        );
+        if (!current(scope)) return false;
+        // Stop late polling responses from reintroducing the removed selection.
+        result.removedScriptIds.forEach((id) => removedScripts.add(id));
+        workspace.value!.scripts = workspace.value!.scripts.filter(
+          (s) => !result.removedScriptIds.includes(s.id),
+        );
+        draft.value.scripts = draft.value.scripts.filter(
+          (s) => !result.removedScriptIds.includes(s.id),
+        );
+        if (draft.value.activeScriptId && removedScripts.has(draft.value.activeScriptId))
+          draft.value.activeScriptId = draft.value.scripts[0]?.id ?? null;
+        if (draft.value.mainCandidateId && removedScripts.has(draft.value.mainCandidateId))
+          draft.value.mainCandidateId = null;
+        let refreshed = true;
+        if (!result.removedRunIds.includes(props.workflowRunId)) {
+          try {
+            await refresh();
+          } catch (e) {
+            if (isAbortError(e)) return true;
+            refreshed = false;
+            if (current(scope)) {
+              conflict = true;
+              error.value = '脚本及其子分支已删除，目录刷新暂未完成，请重新加载。';
+            }
+          }
+        }
+        if (!current(scope)) return true;
+        if (refreshed) error.value = '';
+        savedMessage.value = '脚本及其子分支已永久删除，关联文件正在后台清理';
+        emit('deleted', result);
+        return true;
+      } catch (e) {
+        if (current(scope)) failure(e);
+        return false;
+      } finally {
+        if (current(scope)) {
+          deletingId.value = null;
+          if (running.value && !scope.signal.aborted) startPolling();
+        }
+      }
+    });
+  await writing;
 }
 async function select(id: string) {
   if (!draft.value.scripts.some((s) => s.id === id) || !(await flushPendingEdits())) return false;
+  if (!draft.value.scripts.some((s) => s.id === id)) return false;
   draft.value.activeScriptId = id;
   return flush();
 }
@@ -535,7 +600,8 @@ defineExpose({ flushPendingEdits, selectByRun, nextRunId });
     :task="graphTask"
     :brief="workspace?.brief ?? null"
     :source-revision="workspace?.source?.revision ?? null"
-    :can-discard="!!currentRecord && !currentRecord.confirmedRevision"
+    :can-delete="!!currentRecord && !scopeReadonly"
+    :deleting="!!deletingId"
     :next-ready="!!currentRecord?.confirmedRevision && !currentRecord?.stale"
     @begin="begin"
     @cancel="cancel"
@@ -548,6 +614,6 @@ defineExpose({ flushPendingEdits, selectByRun, nextRunId });
     @stop="retry(true)"
     @select="select"
     @create="create"
-    @discard="discard"
+    @remove="remove"
   />
 </template>

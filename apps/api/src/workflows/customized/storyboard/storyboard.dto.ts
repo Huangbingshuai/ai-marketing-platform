@@ -53,6 +53,9 @@ export class EditScriptDto {
   @IsInt() @Min(1) expectedRevision!: number;
   @IsOptional() @IsObject() script?: CustomizedStoryboardScript;
 }
+export class DeleteStoryboardScriptDto extends StoryboardScopeDto {
+  @IsInt() @Min(1) expectedRevision!: number;
+}
 export class StoryboardWorkerDto {
   @IsUUID() projectId!: string;
 }

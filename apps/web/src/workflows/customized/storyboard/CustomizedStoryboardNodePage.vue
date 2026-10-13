@@ -12,6 +12,7 @@ import {
   Pencil,
   BookOpen,
   Clapperboard,
+  Trash2,
 } from '@lucide/vue';
 import type {
   CustomizedStoryboardDraft,
@@ -50,7 +51,8 @@ const props = defineProps<{
   brief: CustomizedBrief | null;
   sourceRevision: number | null;
   nextReady: boolean;
-  canDiscard?: boolean;
+  canDelete?: boolean;
+  deleting?: boolean;
   progress?: { value: number; summary: string; terminal: boolean } | undefined;
 }>();
 const draft = defineModel<CustomizedStoryboardDraft>('draft', { required: true });
@@ -66,7 +68,7 @@ const emit = defineEmits<{
   select: [id: string];
   create: [script: CustomizedStoryboardScript, origin: 'MANUAL' | 'IMPORT'];
   next: [];
-  discard: [];
+  remove: [];
 }>();
 const settingsExpanded = ref(false),
   compareOpen = ref(false),
@@ -386,12 +388,13 @@ defineExpose({ guardEditor });
           </div>
           <div class="overview-actions">
             <button
-              v-if="canDiscard && !active.shots.length"
+              v-if="canDelete"
               type="button"
-              :disabled="!editable"
-              @click="emit('discard')"
+              class="script-delete-button"
+              :disabled="deleting || saving"
+              @click="emit('remove')"
             >
-              删除空白脚本
+              <Trash2 :size="14" />{{ deleting ? '正在删除…' : '删除脚本' }}
             </button>
             <button
               v-if="editable"

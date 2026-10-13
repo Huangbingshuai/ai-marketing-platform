@@ -5,19 +5,34 @@ import type {
   StoryboardTask,
   StoryboardDetail,
   CustomizedStoryboardScript,
+  DeleteStoryboardScriptResult,
 } from '@ai-marketing/contracts';
 import { requestJson } from '../../../api/http-client';
 const base = (p: string) => `/projects/${encodeURIComponent(p)}/workflows/customized/storyboard`;
 async function call<T>(
   p: string,
   path: string,
-  method: 'GET' | 'PUT' | 'POST',
+  method: 'GET' | 'PUT' | 'POST' | 'DELETE',
   body?: unknown,
   signal?: AbortSignal,
 ) {
   return (await requestJson<ApiResponse<T>>(`${base(p)}${path}`, { method, body, signal })).data;
 }
 export const storyboardApi = {
+  remove: (
+    p: string,
+    scriptId: string,
+    workflowRunId: string,
+    expectedRevision: number,
+    signal?: AbortSignal,
+  ) =>
+    call<DeleteStoryboardScriptResult>(
+      p,
+      `/scripts/${scriptId}`,
+      'DELETE',
+      { workflowRunId, expectedRevision },
+      signal,
+    ),
   workspace: (p: string, run: string, signal?: AbortSignal) =>
     call<StoryboardWorkspace>(
       p,

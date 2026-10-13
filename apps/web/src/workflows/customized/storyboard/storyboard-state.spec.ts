@@ -19,6 +19,30 @@ import { createStoryboardDraftSaver } from './storyboard-draft-saver';
 import Page from './CustomizedStoryboardNodePage.vue';
 import ShotCard from './StoryboardShotCard.vue';
 describe('storyboard workspace boundaries', () => {
+  it('offers permanent deletion for a selected published script without entering edit mode', async () => {
+    const html = await renderToString(
+      createSSRApp(Page, {
+        draft: storyboardFixture(),
+        editing: false,
+        sourceReady: true,
+        readonly: false,
+        saving: false,
+        productName: '测试产品',
+        saveMessage: '',
+        error: '',
+        stale: false,
+        projectId: 'test-project',
+        task: null,
+        brief: null,
+        sourceRevision: 1,
+        nextReady: true,
+        canDelete: true,
+      }),
+    );
+    expect(html).toContain('删除脚本');
+    expect(html).not.toContain('删除空白脚本');
+    expect(html).toContain('script-delete-button');
+  });
   it('creates genuinely empty custom scripts with independent IDs', () => {
     const a = createStoryboardScript('a'),
       b = createStoryboardScript('b');

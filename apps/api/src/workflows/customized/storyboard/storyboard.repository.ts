@@ -35,6 +35,7 @@ import {
 } from '../../../platform/workflow/customized-branches';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { ApiHttpException } from '../../../common/api-http-exception';
+import { deleteStoryboardScript } from './storyboard-deletion';
 
 const json = (v: unknown) => v as Prisma.InputJsonValue;
 const missing = () => new ApiHttpException('分镜记录不存在', 404, 'ASSET_NOT_FOUND');
@@ -341,7 +342,9 @@ export class StoryboardRepository {
             (a) =>
               a.workflowRunId === s.workflowRunId && a.artifactKey === `customized-script:${s.id}`,
           )?.payload;
-          return isCustomizedStoryboardScript(v) ? [{ name: v.name, synopsis: v.synopsis }] : [];
+          return isCustomizedStoryboardScript(v)
+            ? [{ scriptId: s.id, name: v.name, synopsis: v.synopsis }]
+            : [];
         }),
       };
       const t = await tx.customizedStoryboardTask.create({
@@ -514,6 +517,20 @@ export class StoryboardRepository {
   step(projectId: string, id: string, token: string, value: Omit<StoryboardStep, 'updatedAt'>) {
     return this.db.$transaction(async (tx) => {
       const t = await this.lease(tx, projectId, id, token);
+      // A batch may still be running when one published sibling is permanently removed.
+      if (value.scriptId && !inputOf(t).scriptIds.includes(value.scriptId))
+        return { accepted: true, removed: true };
+      if (value.nodeId === 'CONCEPT' && value.output && typeof value.output === 'object') {
+        const output = value.output as { concepts?: { scriptId: string }[] };
+        if (Array.isArray(output.concepts))
+          value = {
+            ...value,
+            output: {
+              ...output,
+              concepts: output.concepts.filter((c) => inputOf(t).scriptIds.includes(c.scriptId)),
+            },
+          };
+      }
       if (inputOf(t).outputMode === 'STORY_ONLY' && ['ASSETS', 'SHOTS'].includes(value.nodeId))
         invalid('完整故事任务不执行资产整理或分镜');
       if (
@@ -727,9 +744,11 @@ export class StoryboardRepository {
         const s = await tx.customizedStoryboardScript.findFirst({
           where: { projectId, taskId, id: script.id },
         });
-        if (!s) throw missing();
         const t = await this.lease(tx, projectId, taskId, token),
           input = inputOf(t);
+        if (!s && !input.scriptIds.includes(script.id))
+          return { workflowRunId: null, unchanged: true, removed: true };
+        if (!s) throw missing();
         if (s.status === 'COMPLETED') return { workflowRunId: s.workflowRunId, unchanged: true };
         const error = validateStoryboardPublication(script, input.settings.targetDurationSeconds);
         if (error) invalid(error);
@@ -815,9 +834,9 @@ export class StoryboardRepository {
         count = await tx.customizedStoryboardScript.count({
           where: { projectId, taskId: id, status: 'COMPLETED' },
         });
-      const retryIds = [...new Set(failure.retryScriptIds ?? [])];
-      if (retryIds.some((scriptId) => !inputOf(t).scriptIds.includes(scriptId)))
-        invalid('恢复方案不属于当前任务');
+      const retryIds = [...new Set(failure.retryScriptIds ?? [])].filter((scriptId) =>
+        inputOf(t).scriptIds.includes(scriptId),
+      );
       const automatic =
         failure.retryable === true && count < inputOf(t).scriptIds.length && t.attemptCount < 3;
       await tx.customizedStoryboardTask.update({
@@ -918,6 +937,16 @@ export class StoryboardRepository {
         },
       });
     });
+  }
+  remove(projectId: string, scriptId: string, runId: string, revision: number) {
+    return this.db.$transaction(
+      async (tx) => {
+        await lockCustomizedProject(tx, projectId);
+        await this.scope(tx, projectId, runId);
+        return deleteStoryboardScript(tx, projectId, scriptId, revision);
+      },
+      { timeout: 30000 },
+    );
   }
   edit(
     projectId: string,

@@ -18,6 +18,7 @@ import { StoryboardRepository, presentStoryboardTask } from './storyboard.reposi
 import { storyboardDetail } from './storyboard-detail';
 import type {
   CreateScriptDto,
+  DeleteStoryboardScriptDto,
   EditScriptDto,
   SaveStoryboardSettingsDto,
   StartStoryboardDto,
@@ -103,5 +104,9 @@ export class StoryboardService implements OnModuleInit, OnModuleDestroy {
   async edit(p: string, id: string, b: EditScriptDto) {
     await this.projects.get(p);
     return this.repository.edit(p, id, b.action, b.expectedRevision, b.script);
+  }
+  async remove(p: string, id: string, b: DeleteStoryboardScriptDto) {
+    await this.projects.get(p);
+    return this.repository.remove(p, id, b.workflowRunId, b.expectedRevision);
   }
 }

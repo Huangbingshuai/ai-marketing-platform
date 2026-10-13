@@ -1,0 +1,224 @@
+{
+  "projectId": "2863b2c6-927a-48de-8327-b367e21fc64f",
+  "expectedProjectName": "充电器",
+  "startedAt": "2026-10-13T05:25:23.782Z",
+  "deletions": [
+    {
+      "scriptId": "844c5cdb-e782-4110-974b-ffe4e690389e",
+      "elapsedMs": 540,
+      "removedScriptIds": ["844c5cdb-e782-4110-974b-ffe4e690389e"],
+      "removedRunIds": ["7010e343-5800-4354-b3ef-0833b7212b2c"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": true
+    },
+    {
+      "scriptId": "fb4aa5c8-0dc4-43d1-8f45-15875edc65af",
+      "elapsedMs": 68,
+      "removedScriptIds": ["fb4aa5c8-0dc4-43d1-8f45-15875edc65af"],
+      "removedRunIds": [],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "7882e4fc-8cde-45d0-a282-81debeee9d80",
+      "elapsedMs": 358,
+      "removedScriptIds": ["7882e4fc-8cde-45d0-a282-81debeee9d80"],
+      "removedRunIds": ["94ac2068-ff72-4598-83f4-89981fa1ad82"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "90e43fab-92a2-4455-972a-1621acf9d188",
+      "elapsedMs": 306,
+      "removedScriptIds": ["90e43fab-92a2-4455-972a-1621acf9d188"],
+      "removedRunIds": ["80f35029-383c-43de-9d2c-8a5861db9b96"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "6648f164-1222-4990-a8c8-25ae570253fa",
+      "elapsedMs": 181,
+      "removedScriptIds": ["6648f164-1222-4990-a8c8-25ae570253fa"],
+      "removedRunIds": ["5fe72cca-966c-4abd-9f12-2e83f4c8f465"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "7ab65e92-e6f3-4b5f-88a8-ca8572645636",
+      "elapsedMs": 146,
+      "removedScriptIds": ["7ab65e92-e6f3-4b5f-88a8-ca8572645636"],
+      "removedRunIds": ["e5eb3965-73c4-428b-90fc-29990dce98f9"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "7e57c49c-38a2-4f12-92d6-831b431e1572",
+      "elapsedMs": 149,
+      "removedScriptIds": ["7e57c49c-38a2-4f12-92d6-831b431e1572"],
+      "removedRunIds": ["9deb3b2c-a208-4216-9784-7b879f77d90a"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "71a2314c-2b73-4f8a-aa96-6462b00042f2",
+      "elapsedMs": 119,
+      "removedScriptIds": ["71a2314c-2b73-4f8a-aa96-6462b00042f2"],
+      "removedRunIds": ["4cbac0d9-fd41-4a90-832a-8815d05c6a69"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "3a8dc4b5-fdff-49fa-978f-fe444346bbb8",
+      "elapsedMs": 118,
+      "removedScriptIds": ["3a8dc4b5-fdff-49fa-978f-fe444346bbb8"],
+      "removedRunIds": ["96428d0d-271b-4e8a-9618-1cf4e54457c9"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "f71eb981-de66-4b31-9d96-035391405a33",
+      "elapsedMs": 58,
+      "removedScriptIds": ["f71eb981-de66-4b31-9d96-035391405a33"],
+      "removedRunIds": [],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "c908d878-1e06-4783-b2c2-b9f14eed159d",
+      "elapsedMs": 113,
+      "removedScriptIds": ["c908d878-1e06-4783-b2c2-b9f14eed159d"],
+      "removedRunIds": ["80508602-a3ba-4598-8e3a-453165e63755"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "1351430c-f6bc-45e3-8206-482d2342582a",
+      "elapsedMs": 116,
+      "removedScriptIds": ["1351430c-f6bc-45e3-8206-482d2342582a"],
+      "removedRunIds": ["b682541f-15e3-4389-9c72-b0cc0f13de7c"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "d279c6bd-ec1a-44c4-b03b-5ae95bf591e7",
+      "elapsedMs": 108,
+      "removedScriptIds": ["d279c6bd-ec1a-44c4-b03b-5ae95bf591e7"],
+      "removedRunIds": ["a23c95bb-2f22-4264-9d84-a4e542882f87"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "43f9ba2b-34a6-4232-a541-2f8c373932ff",
+      "elapsedMs": 105,
+      "removedScriptIds": ["43f9ba2b-34a6-4232-a541-2f8c373932ff"],
+      "removedRunIds": ["ab3b38c1-fa5d-459d-8dcd-698bf763e60b"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "d68837d6-07ec-4c99-a7eb-69a156cac451",
+      "elapsedMs": 99,
+      "removedScriptIds": ["d68837d6-07ec-4c99-a7eb-69a156cac451"],
+      "removedRunIds": ["051346f6-0c17-43a2-8dd4-79fabc4d7be2"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "0db98431-cf26-4291-b513-613cefc27e00",
+      "elapsedMs": 79,
+      "removedScriptIds": ["0db98431-cf26-4291-b513-613cefc27e00"],
+      "removedRunIds": ["2f6b46b0-abb3-44f7-b1de-9210b924e60c"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "d9678af3-1e72-4d61-8885-3be3ab1fbb9b",
+      "elapsedMs": 42,
+      "removedScriptIds": ["d9678af3-1e72-4d61-8885-3be3ab1fbb9b"],
+      "removedRunIds": [],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "493bdd64-6c5a-440e-b52a-ebaa755ca344",
+      "elapsedMs": 68,
+      "removedScriptIds": ["493bdd64-6c5a-440e-b52a-ebaa755ca344"],
+      "removedRunIds": ["5b6396b4-cccf-4d75-a2d0-5722185e48ae"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "62a9245e-ba4c-4d58-920e-a91af878d661",
+      "elapsedMs": 72,
+      "removedScriptIds": ["62a9245e-ba4c-4d58-920e-a91af878d661"],
+      "removedRunIds": ["b5daca84-e36b-42c0-b7f6-7af7cda69b49"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    },
+    {
+      "scriptId": "7d84d286-75d2-4020-b27b-c5596df5ebff",
+      "elapsedMs": 60,
+      "removedScriptIds": ["7d84d286-75d2-4020-b27b-c5596df5ebff"],
+      "removedRunIds": ["f6c57671-71c8-42bb-87b3-cff4cd326c2b"],
+      "fallbackRunId": "a9ab91cb-991b-448d-a194-102b9fabf602",
+      "activeRunChanged": false
+    }
+  ],
+  "before": {
+    "scripts": 20,
+    "publishedScripts": 17,
+    "runs": 18,
+    "removedRunIds": [
+      "94ac2068-ff72-4598-83f4-89981fa1ad82",
+      "80f35029-383c-43de-9d2c-8a5861db9b96",
+      "5fe72cca-966c-4abd-9f12-2e83f4c8f465",
+      "e5eb3965-73c4-428b-90fc-29990dce98f9",
+      "9deb3b2c-a208-4216-9784-7b879f77d90a",
+      "4cbac0d9-fd41-4a90-832a-8815d05c6a69",
+      "96428d0d-271b-4e8a-9618-1cf4e54457c9",
+      "7010e343-5800-4354-b3ef-0833b7212b2c",
+      "80508602-a3ba-4598-8e3a-453165e63755",
+      "b682541f-15e3-4389-9c72-b0cc0f13de7c",
+      "a23c95bb-2f22-4264-9d84-a4e542882f87",
+      "ab3b38c1-fa5d-459d-8dcd-698bf763e60b",
+      "051346f6-0c17-43a2-8dd4-79fabc4d7be2",
+      "2f6b46b0-abb3-44f7-b1de-9210b924e60c",
+      "5b6396b4-cccf-4d75-a2d0-5722185e48ae",
+      "b5daca84-e36b-42c0-b7f6-7af7cda69b49",
+      "f6c57671-71c8-42bb-87b3-cff4cd326c2b"
+    ],
+    "retainedRunIds": ["a9ab91cb-991b-448d-a194-102b9fabf602"],
+    "upstreamArtifactCount": 2,
+    "retainedProjectAssets": 5,
+    "productionTasks": 13,
+    "activeStoryboardTasks": 0
+  },
+  "after": {
+    "customized_storyboard_scripts": 0,
+    "customized_storyboard_tasks": 0,
+    "customized_storyboard_steps": 0,
+    "customized_production_tasks": 0,
+    "job_outbox": 1,
+    "workflow_node_states_in_deleted_runs": 0,
+    "working_artifacts_in_deleted_runs": 0,
+    "working_artifact_revision_snapshots_in_deleted_runs": 0,
+    "customized_production_tasks_in_deleted_runs": 0,
+    "file_objects_in_deleted_runs": 0,
+    "upstreamUnchanged": true,
+    "retainedProjectAssetsUnchanged": true,
+    "otherProjectScriptsUnchanged": true,
+    "storageCleanupTasks": 0,
+    "runs": [
+      {
+        "id": "a9ab91cb-991b-448d-a194-102b9fabf602",
+        "activeKey": "ACTIVE",
+        "currentNodeId": "STORYBOARD"
+      }
+    ],
+    "apiScriptCount": 0,
+    "apiSourceReady": true,
+    "treeExcludesAllDeletedRuns": true
+  },
+  "finishedAt": "2026-10-13T05:25:26.858Z",
+  "passed": true
+}

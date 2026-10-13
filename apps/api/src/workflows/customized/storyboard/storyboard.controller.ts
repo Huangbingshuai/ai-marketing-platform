@@ -2,6 +2,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
@@ -13,6 +14,7 @@ import {
 import { StoryboardService } from './storyboard.service';
 import {
   CreateScriptDto,
+  DeleteStoryboardScriptDto,
   EditScriptDto,
   SaveStoryboardSettingsDto,
   StartStoryboardDto,
@@ -75,5 +77,12 @@ export class StoryboardController {
     @Body() b: EditScriptDto,
   ) {
     return this.service.edit(p, id, b);
+  }
+  @Delete('scripts/:id') remove(
+    @Param('projectId', ParseUUIDPipe) p: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() b: DeleteStoryboardScriptDto,
+  ) {
+    return this.service.remove(p, id, b);
   }
 }

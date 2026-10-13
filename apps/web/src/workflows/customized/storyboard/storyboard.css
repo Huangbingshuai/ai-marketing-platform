@@ -845,3 +845,10 @@
     transition: none;
   }
 }
+.script-delete-button {
+  color: #b64040 !important;
+}
+.script-delete-button:hover:not(:disabled) {
+  background: #fff5f4;
+  border-color: #edc8c5;
+}

@@ -10,6 +10,7 @@ import {
   type CustomizedWorkflowBranchTreeData,
   type CustomizedImportDraftState,
   type CustomizedMaterialCategory,
+  type DeleteStoryboardScriptResult,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
@@ -562,14 +563,15 @@ const saveVersion = async () => {
     if (!disposed) versionSaving.value = false;
   }
 };
-const loadBranchTree = async () => {
+const loadBranchTree = async (skipFlush = false) => {
   branchController?.abort();
   const controller = new AbortController();
   branchController = controller;
   branchLoading.value = true;
   branchError.value = '';
   try {
-    if (!(await flushPendingEdits())) throw new Error('节点草稿保存失败，请处理后查看版本树');
+    if (!skipFlush && !(await flushPendingEdits()))
+      throw new Error('节点草稿保存失败，请处理后查看版本树');
     await nodeActivation.drain();
     const { data } = await getCustomizedBranchTree(projectId, controller.signal);
     if (!disposed && branchController === controller && !controller.signal.aborted)
@@ -584,6 +586,14 @@ const loadBranchTree = async () => {
 const openBranchTree = () => {
   branchOpen.value = true;
   void loadBranchTree();
+};
+const onStoryboardDeleted = async (result: DeleteStoryboardScriptResult) => {
+  if (disposed) return;
+  if (result.removedRunIds.includes(workflowRunId.value)) {
+    storyboardViewedRunId.value = null;
+    await load();
+  }
+  await loadBranchTree(true);
 };
 const closeBranchTree = () => {
   if (branchSwitching.value) return;
@@ -1086,6 +1096,7 @@ onBeforeUnmount(() => {
         @viewing="storyboardViewedRunId = $event"
         @next="selectBranch({ workflowRunId: $event, nodeId: 'SHOT_PROMPT' })"
         @published="loadBranchTree()"
+        @deleted="onStoryboardDeleted"
       />
       <CustomizedProductionWorkspace
         v-else-if="activeStep === 3 || activeStep === 4"

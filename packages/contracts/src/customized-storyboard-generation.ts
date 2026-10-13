@@ -56,9 +56,17 @@ export type StoryboardInput = {
   brief: CustomizedBrief;
   settings: StoryboardSettings;
   scriptIds: string[];
-  existingConcepts: { name: string; synopsis: string }[];
+  existingConcepts: { scriptId?: string; name: string; synopsis: string }[];
   models: { creative: string; detail: string };
   brandReferences: unknown[];
+};
+/** Permanent database deletion; unreferenced objects are cleaned by the durable storage queue. */
+export type DeleteStoryboardScriptResult = {
+  scriptId: string;
+  removedScriptIds: string[];
+  removedRunIds: string[];
+  fallbackRunId: string;
+  activeRunChanged: boolean;
 };
 export type StoryboardStep = {
   nodeId: StoryboardStage;
