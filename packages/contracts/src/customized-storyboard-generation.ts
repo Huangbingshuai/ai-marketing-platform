@@ -51,6 +51,7 @@ export type StoryboardStory = {
 };
 export type StoryboardInput = {
   schemaVersion: 1;
+  outputMode?: 'STORY_ONLY';
   source: StoryboardSource;
   brief: CustomizedBrief;
   settings: StoryboardSettings;
@@ -68,6 +69,7 @@ export type StoryboardStep = {
   updatedAt: string;
 };
 export type StoryboardTask = {
+  outputMode?: 'STORY_ONLY';
   id: string;
   workflowRunId: string;
   status: StoryboardStatus;
@@ -137,6 +139,12 @@ export function validateStoryboardSettings(value: StoryboardSettings): string | 
 }
 export function validateStoryboardPublication(value: unknown, target?: number): string | null {
   if (!isCustomizedStoryboardScript(value)) return '脚本结构或资产引用不完整';
+  if (value.story) {
+    if (!value.name.trim() || !value.synopsis.trim() || !value.story.content.trim()) return '请填写脚本名称、故事概述和完整故事';
+    if (!value.story.beats.length || new Set(value.story.beats.map(b => b.id)).size !== value.story.beats.length) return '故事段落不完整';
+    if (target !== undefined && Math.abs(value.story.beats.reduce((n, b) => n + b.durationSeconds, 0) - target) > 1.00001) return '故事总时长与目标偏差超过 1 秒';
+    return null;
+  }
   if (
     !value.name.trim() ||
     !value.synopsis.trim() ||
@@ -165,6 +173,7 @@ export function storyboardProgress(
   steps: Pick<StoryboardStep, 'nodeId' | 'scriptId' | 'status'>[],
   scriptIds: string[],
   complete: boolean,
+  storyOnly = false,
 ): number {
   if (complete) return 100;
   const done = (nodeId: string, scriptId: string) =>
@@ -177,10 +186,10 @@ export function storyboardProgress(
   return Math.min(
     99,
     Math.floor(
-      CUSTOMIZED_STORYBOARD_STAGES.reduce(
+      CUSTOMIZED_STORYBOARD_STAGES.filter(s => !storyOnly || !['ASSETS', 'SHOTS'].includes(s.id)).reduce(
         (total, stage) =>
           total +
-          stage.weight *
+          stage.weight * (storyOnly ? 100 / 65 : 1) *
             (['SNAPSHOT', 'CONCEPT'].includes(stage.id)
               ? Number(done(stage.id, ''))
               : scriptIds.filter((id) => done(stage.id, id)).length /

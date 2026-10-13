@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "shotId": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Shotid",
+      "type": "string"
+    },
+    "content": {
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Content",
+      "type": "string"
+    },
+    "assetIds": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Assetids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "shotId",
+    "content",
+    "assetIds"
+  ],
+  "title": "Prompt",
+  "type": "object"
+}

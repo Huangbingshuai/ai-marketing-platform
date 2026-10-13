@@ -65,6 +65,14 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
         data: { status: 'PUBLISHED', publishedAt: new Date() },
       });
     });
+    const originalCreate=repo.create.bind(repo);
+    const legacyCreate=vi.spyOn(repo,'create').mockImplementation(async(...args)=>{
+      const task=await originalCreate(...args);
+      const row=await db.customizedStoryboardTask.findUniqueOrThrow({where:{id:task.id}});
+      const input={...(row.inputSnapshot as Record<string,unknown>)};delete input.outputMode;
+      await db.customizedStoryboardTask.update({where:{id:row.id},data:{inputSnapshot:input as Prisma.InputJsonValue}});
+      return task;
+    });
     try {
       await db.project.createMany({
         data: [
@@ -338,11 +346,40 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
       expect(
         (await repo.workspace(projectId, publishedImport.workflowRunId)).selectedScriptId,
       ).toBe(imported.id);
+      // Viewing preferences belong to the collection, not to its active branch.
+      const beforeBrowsing = await db.workflowRun.findMany({ where: { projectId } });
+      const beforeArtifacts = await db.workingArtifact.findMany({ where: { projectId } });
+      const collection = await repo.workspace(projectId, root.id);
+      const preferenceRevision = await repo.settings(
+        projectId,
+        root.id,
+        collection.settingsRevision,
+        collection.settings,
+        workspace.scripts[1]!.id,
+      );
+      expect(
+        (await repo.workspace(projectId, publishedImport.workflowRunId)).selectedScriptId,
+      ).toBe(workspace.scripts[1]!.id);
+      expect((await repo.workspace(projectId, root.id)).selectedScriptId).toBe(
+        workspace.scripts[1]!.id,
+      );
+      expect(
+        await repo.settings(
+          projectId,
+          root.id,
+          preferenceRevision,
+          collection.settings,
+          workspace.scripts[1]!.id,
+        ),
+      ).toBe(preferenceRevision);
+      expect(await db.workflowRun.findMany({ where: { projectId } })).toEqual(beforeBrowsing);
+      expect(await db.workingArtifact.findMany({ where: { projectId } })).toEqual(beforeArtifacts);
       expect(await db.workflowRun.count({ where: { projectId, forkNodeId: 'STORYBOARD' } })).toBe(
         4,
       );
     } finally {
       delivery.mockRestore();
+      legacyCreate.mockRestore();
       await db.workingArtifactDependency.deleteMany({ where: { projectId } });
       await db.project.deleteMany({ where: { id: { in: [projectId, otherId] } } });
       await db.$disconnect();

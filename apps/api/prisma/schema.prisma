@@ -293,6 +293,7 @@ enum JobOutboxStatus {
 }
 
 model Project {
+  customizedProductionTasks CustomizedProductionTask[]
   customizedStoryboardTasks CustomizedStoryboardTask[]
   customizedStoryboardScripts CustomizedStoryboardScript[]
   customizedExtractionTasks CustomizedExtractionTask[]
@@ -389,6 +390,7 @@ model Asset {
 }
 
 model WorkflowRun {
+  customizedProductionTasks CustomizedProductionTask[]
   customizedStoryboardTasks CustomizedStoryboardTask[]
   customizedStoryboardScripts CustomizedStoryboardScript[]
   customizedExtractionTasks CustomizedExtractionTask[]
@@ -1706,4 +1708,30 @@ model CustomizedStoryboardScript {
   @@unique([projectId, id])
   @@index([projectId, sourceRunId, createdAt])
   @@map("customized_storyboard_scripts")
+}
+
+// Independent asset preparation and video workbench tasks.
+model CustomizedProductionTask {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  workflowRunId String @db.Uuid
+  operation String @db.VarChar(24)
+  shotId String? @db.VarChar(200)
+  idempotencyKey String @db.VarChar(200)
+  status String @default("QUEUED") @db.VarChar(24)
+  inputSnapshot Json
+  steps Json
+  output Json?
+  attemptToken String? @db.Uuid
+  attemptCount Int @default(0)
+  leaseExpiresAt DateTime?
+  errorMessage String? @db.VarChar(1000)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun WorkflowRun @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, workflowRunId, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@map("customized_production_tasks")
 }

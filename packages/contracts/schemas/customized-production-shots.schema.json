@@ -1,0 +1,117 @@
+{
+  "$defs": {
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Assetid",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetId",
+        "description"
+      ],
+      "title": "Binding",
+      "type": "object"
+    },
+    "ProductionShot": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "shotType": {
+          "maxLength": 200,
+          "title": "Shottype",
+          "type": "string"
+        },
+        "cameraMovement": {
+          "maxLength": 200,
+          "title": "Cameramovement",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Durationseconds",
+          "type": "number"
+        },
+        "visual": {
+          "maxLength": 20000,
+          "title": "Visual",
+          "type": "string"
+        },
+        "dialogue": {
+          "maxLength": 20000,
+          "title": "Dialogue",
+          "type": "string"
+        },
+        "audio": {
+          "maxLength": 20000,
+          "title": "Audio",
+          "type": "string"
+        },
+        "atmosphere": {
+          "maxLength": 20000,
+          "title": "Atmosphere",
+          "type": "string"
+        },
+        "bindings": {
+          "items": {
+            "$ref": "#/$defs/Binding"
+          },
+          "maxItems": 100,
+          "title": "Bindings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "shotType",
+        "cameraMovement",
+        "durationSeconds",
+        "visual",
+        "dialogue",
+        "audio",
+        "atmosphere",
+        "bindings"
+      ],
+      "title": "ProductionShot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "shots": {
+      "items": {
+        "$ref": "#/$defs/ProductionShot"
+      },
+      "maxItems": 500,
+      "minItems": 1,
+      "title": "Shots",
+      "type": "array"
+    }
+  },
+  "required": [
+    "shots"
+  ],
+  "title": "ShotList",
+  "type": "object"
+}

@@ -7,9 +7,9 @@ from ai_runtime.http import InternalApiError, request, unwrap
 
 
 class Api:
-    def __init__(self, url: str, secret: str, project: str, task: str) -> None:
+    def __init__(self, url: str, secret: str, project: str, task: str, namespace: str = 'customized-storyboard') -> None:
         self.client = httpx.AsyncClient(
-            base_url=f"{url.rstrip('/')}/internal/workers/customized-storyboard/tasks/{task}/",
+            base_url=f"{url.rstrip('/')}/internal/workers/{namespace}/tasks/{task}/",
             headers={"x-worker-token": secret},
             timeout=60,
         )

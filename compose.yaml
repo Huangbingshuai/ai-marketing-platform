@@ -229,6 +229,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  customized-production-worker:
+    profiles: ['customized-production']
+    build:
+      context: ./workers
+      dockerfile: customized-storyboard/Dockerfile
+    command: ['/app/customized-storyboard/.venv/bin/python', '-m', 'customized_storyboard.production_main']
+    environment:
+      INTERNAL_API_BASE_URL: http://host.docker.internal:${API_PORT:-3000}/api
+      CUSTOMIZED_PRODUCTION_WORKER_TOKEN: ${CUSTOMIZED_PRODUCTION_WORKER_TOKEN:-}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
   seedance-worker:
     profiles: ['effect-segment-render']
     build:

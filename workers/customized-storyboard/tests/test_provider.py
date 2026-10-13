@@ -92,6 +92,59 @@ async def test_all_stages_share_one_concurrency_budget():
         await provider.close()
 
 
+@pytest.mark.parametrize("stage", ["REVIEW", "RECHECK"])
+async def test_review_ids_are_constrained_to_current_script_and_retry_invalid_reply(
+    stage,
+):
+    calls = []
+
+    async def handler(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        schema = payload["text"]["format"]["schema"]
+        assert schema["$defs"]["Finding"]["properties"]["shotIds"]["items"]["enum"] == [
+            "actual-1",
+            "actual-2",
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "output_text": json.dumps(
+                    {
+                        "summary": "独立审校",
+                        "findings": [
+                            {
+                                "severity": "ERROR",
+                                "category": "STORY",
+                                "shotIds": [
+                                    "wrong-1" if len(calls) == 1 else "actual-2"
+                                ],
+                                "message": "物品连续性错误",
+                                "evidence": "前后画面",
+                                "suggestion": "补充动作",
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+
+    provider = await configured(handler)
+    try:
+        review = await provider.generate(
+            stage,
+            "fixed-model",
+            Review,
+            {"script": {"shots": [{"id": "actual-1"}, {"id": "actual-2"}]}},
+            "独立审校",
+        )
+        assert len(calls) == 2
+        assert review.findings[0].shotIds == ["actual-2"]
+        assert review.findings[0].severity == "ERROR"
+    finally:
+        await provider.close()
+
+
 def test_missing_configuration_fails_explicitly(monkeypatch):
     monkeypatch.delenv("CUSTOMIZED_STORYBOARD_WORKER_TOKEN", raising=False)
     with pytest.raises(ValueError, match="required"):

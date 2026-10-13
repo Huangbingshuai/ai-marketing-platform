@@ -36,6 +36,8 @@ export type CustomizedStoryboardScript = {
   synopsis: string;
   structure: string;
   productFocus: string;
+  /** Full story; absent only in scripts created before the production split. */
+  story?: { content: string; opening: string; development: string; ending: string; dialoguePlan: string; beats: { id: string; content: string; durationSeconds: number }[] };
   shots: CustomizedStoryboardShot[];
   assets?: CustomizedStoryboardAsset[];
 };
@@ -100,6 +102,11 @@ export function isCustomizedStoryboardScript(v: unknown): v is CustomizedStorybo
     v.shots.length > 500
   )
     return false;
+  const story = v.story;
+  if (story !== undefined && (!record(story) ||
+    !['content', 'opening', 'development', 'ending', 'dialoguePlan'].every(k => text(story[k])) ||
+    !Array.isArray(story.beats) || story.beats.length > 60 ||
+    !story.beats.every((b: unknown) => record(b) && id(b.id) && text(b.content) && seconds(b.durationSeconds)))) return false;
   if (
     v.assets !== undefined &&
     (!Array.isArray(v.assets) ||

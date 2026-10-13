@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel
 from ai_runtime.responses import StructuredResponsesMixin
+from .models import Review, scoped_review
 
 T = TypeVar("T", bound=BaseModel)
 task_context: ContextVar[str | None] = ContextVar("storyboard_task", default=None)
@@ -49,6 +50,11 @@ class Provider(StructuredResponsesMixin):
         instruction: str,
     ) -> T:
         async with self._semaphore:
+            schema: type[BaseModel] = (
+                scoped_review([s["id"] for s in context["script"]["shots"]])
+                if result is Review and "script" in context
+                else result
+            )
             value = await self._structured(
                 [
                     {"role": "system", "content": POLICY + "\n" + instruction},
@@ -57,23 +63,23 @@ class Provider(StructuredResponsesMixin):
                         "content": json.dumps(context, ensure_ascii=False),
                     },
                 ],
-                result,
+                schema,
                 schema_name="customized_storyboard_" + stage.lower(),
                 stage=stage,
                 model=model,
-                prompt_version="customized-storyboard-20261012",
+                prompt_version="customized-storyboard-20261012-sparse-repair",
                 max_output_tokens=16384,
                 retry_max_output_tokens=32768,
                 request_timeout=self._timeout,
                 reasoning_effort="medium"
-                if stage in {"CONCEPT", "STORY", "REVIEW", "RECHECK"}
+                if stage in {"CONCEPT", "STORY", "REVIEW", "RECHECK", "PRODUCTION_REVIEW", "PRODUCTION_RECHECK"}
                 else "low",
             )
             logging.info(
                 "storyboard_model_usage %s",
                 json.dumps({"taskId": task_context.get(), **value.metadata.as_dict()}),
             )
-            return value.value
+            return result.model_validate(value.value.model_dump())
 
     async def close(self) -> None:
         await self._client.aclose()

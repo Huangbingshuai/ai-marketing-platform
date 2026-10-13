@@ -69,6 +69,35 @@ it('does not fabricate outputs before a stage runs', () => {
   expect(result.status).toBe('PENDING');
   expect(result.sections[2]!.items).toEqual([]);
 });
+it('projects actual and proposed asset identifiers into readable business objects without changing checkpoints', () => {
+  const steps = [
+    step('STORY', { beats: [{ id: 'B3' }] }),
+    step('SHOTS', { assets: [{ id: 'prod_phone', name: '不具名智能手机' }], shots: [] }),
+    step('REPAIR', { script: { assets: [{ id: 'prod_client_phone', name: '负责人的手机' }] } }),
+    step('REVIEW', {
+      summary: '同一prod_phone被用于两台设备，Beat B3需同步assetRequirements',
+      findings: [
+        {
+          message: 'prod_phone引用混乱',
+          evidence: 'prod_phone与prod_client_phone不同',
+          suggestion: '拆分为prod_xuhe_phone和prod_client_phone，保留USB-C端口说明',
+          shotIds: [],
+        },
+      ],
+    }),
+  ];
+  const original = JSON.stringify(steps);
+  const text = JSON.stringify(storyboardDetail(input, steps, 'REVIEW', 'script-id'));
+  expect(text).not.toMatch(/prod_(phone|client_phone|xuhe_phone)/);
+  expect(text).toContain('同一不具名智能手机被用于两台设备');
+  expect(text).toContain('负责人的手机');
+  expect(text).toContain('待定义产品对象');
+  expect(text).toContain('USB-C端口说明');
+  expect(text).toContain('故事段落 1需同步资产关联');
+  expect(text).not.toContain('Beat B3');
+  expect(text).not.toContain('assetRequirements');
+  expect(JSON.stringify(steps)).toBe(original);
+});
 it('renders model shot labels and repair references as user-facing shot numbers', () => {
   const script = { shots: [{ id: 'stable-shot', title: '倒水' }] };
   const detail = storyboardDetail(

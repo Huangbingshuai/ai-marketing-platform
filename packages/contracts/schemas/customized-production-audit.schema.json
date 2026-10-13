@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "issues": {
+      "items": {
+        "maxLength": 20000,
+        "type": "string"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "affectedIds": {
+      "default": [],
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Affectedids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary",
+    "issues"
+  ],
+  "title": "Audit",
+  "type": "object"
+}

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 Text = Annotated[str, Field(max_length=20000)]
@@ -111,6 +111,23 @@ class Script(Model):
         if abs(sum(s.durationSeconds for s in self.shots) - target) > 1.00001:
             raise ValueError("duration differs from target")
 
+    def timeline(self) -> list[dict[str, str | int | float]]:
+        elapsed = 0.0
+        rows: list[dict[str, str | int | float]] = []
+        for number, shot in enumerate(self.shots, 1):
+            end = elapsed + shot.durationSeconds
+            rows.append(
+                {
+                    "shotId": shot.id,
+                    "shotNumber": number,
+                    "title": shot.title,
+                    "startSeconds": elapsed,
+                    "endSeconds": end,
+                }
+            )
+            elapsed = end
+        return rows
+
 
 class Concept(Model):
     scriptId: Id
@@ -141,6 +158,10 @@ class Story(Model):
     beats: Annotated[list[Beat], Field(min_length=1, max_length=60)]
 
 
+class StorySegments(Model):
+    beats: Annotated[list[Beat], Field(min_length=1, max_length=60)]
+
+
 class Finding(Model):
     severity: Literal["ERROR", "WARNING"]
     category: Literal["FACT", "STORY", "STRUCTURE"]
@@ -153,6 +174,30 @@ class Finding(Model):
 class Review(Model):
     summary: Text
     findings: list[Finding]
+
+
+def scoped_review(shot_ids: list[str]) -> type[Review]:
+    """Narrow the same review contract to the actual frozen script identities."""
+    allowed = frozenset(shot_ids)
+    if not allowed:
+        raise ValueError("review requires script shots")
+
+    class ScopedReview(Review):
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            schema = super().model_json_schema(*args, **kwargs)
+            schema["$defs"]["Finding"]["properties"]["shotIds"]["items"]["enum"] = (
+                sorted(allowed)
+            )
+            return schema
+
+        @model_validator(mode="after")
+        def known_shots(self) -> Self:
+            if any(sid not in allowed for f in self.findings for sid in f.shotIds):
+                raise ValueError("review references unknown shots")
+            return self
+
+    return ScopedReview
 
 
 class Change(Model):

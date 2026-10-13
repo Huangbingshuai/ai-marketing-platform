@@ -9,6 +9,14 @@ const validEnvironment = {
 };
 
 describe('validateEnvironment', () => {
+  it('keeps the independent production worker credential available to its guard', () => {
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        CUSTOMIZED_PRODUCTION_WORKER_TOKEN: 'production-test-token',
+      }).CUSTOMIZED_PRODUCTION_WORKER_TOKEN,
+    ).toBe('production-test-token');
+  });
   it('validates bounded cache options and supports a no-cache rollback', () => {
     expect(validateEnvironment(validEnvironment)).toMatchObject({
       EFFECT_READ_CACHE_ENABLED: true,

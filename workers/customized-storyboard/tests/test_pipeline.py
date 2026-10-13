@@ -11,6 +11,7 @@ from customized_storyboard.models import (
     Concepts,
     Concept,
     Story,
+    StorySegments,
     ShotChunk,
     Shot,
     Script,
@@ -19,6 +20,7 @@ from customized_storyboard.models import (
     Beat,
 )
 from customized_storyboard.pipeline import Pipeline, group_shot_beats
+from customized_storyboard.repair import RepairPatch
 from ai_runtime.responses import ProviderError, ProviderErrorType
 
 
@@ -108,6 +110,14 @@ class ControlledProvider:
         assert "brandReferences" not in context
         assert "must-not-reach-model" not in json.dumps(context)
         self.calls[stage] += 1
+        if stage in {"REVIEW", "REPAIR", "RECHECK"}:
+            timeline = context["shotTimeline"]
+            assert [row["shotId"] for row in timeline] == [
+                s["id"] for s in context["script"]["shots"]
+            ]
+            assert timeline[-1]["endSeconds"] == sum(
+                s["durationSeconds"] for s in context["script"]["shots"]
+            )
         target = context["settings"]["targetDurationSeconds"]
         if stage == "CONCEPT":
             return Concepts(
@@ -130,6 +140,13 @@ class ControlledProvider:
             if sid == self.fail_id:
                 raise TimeoutError()
             lengths = [30] * (target // 30) + ([target % 30] if target % 30 else [])
+            if result is StorySegments:
+                return StorySegments(
+                    beats=[
+                        Beat(id=f"b{i}", content=f"故事段落{i}", durationSeconds=n)
+                        for i, n in enumerate(lengths)
+                    ]
+                )
             return Story(
                 title=sid,
                 content="完整故事",
@@ -185,12 +202,24 @@ class ControlledProvider:
                 else [],
             )
         if stage == "REPAIR":
-            return Repair(
-                script=Script.model_validate(context["script"]),
+            return RepairPatch(
                 reason="删除未知规格",
-                changes=[
-                    {"before": "未知规格", "after": "已知事实", "reason": "简报依据"}
+                scriptFields=[],
+                shotFields=[
+                    {
+                        "shotId": context["script"]["shots"][0]["id"],
+                        "field": "visual",
+                        "value": "已知事实",
+                        "reason": "简报依据",
+                    }
                 ],
+                shotTimings=[],
+                shotDialogues=[],
+                shotReferences=[],
+                assetFields=[],
+                insertShots=[],
+                removeShots=[],
+                newAssets=[],
             )
         raise AssertionError(stage)
 
@@ -230,7 +259,7 @@ async def test_opening_without_product_does_not_trigger_a_paid_correction(
             return value
 
     api, provider = FakeApi(), OpeningProvider()
-    await Pipeline(api, provider, inputs(1, 60), [], []).run()
+    await Pipeline(api, provider, inputs(1, 120), [], []).run()
     assert provider.calls["SHOTS"] == 2
     assert len(api.published) == int(product_later)
 
@@ -267,7 +296,7 @@ async def test_long_story_resumes_validated_chunks_without_rebilling_them():
     assert not api.published
     provider.fail_chunk = None
     await Pipeline(api, provider, value, list(api.saved.values()), []).run()
-    assert provider.calls["SHOTS"] == 7 and len(api.published) == 1
+    assert provider.calls["SHOTS"] == 4 and len(api.published) == 1
 
 
 async def test_unresolved_facts_never_publish_or_repeat_repair():
@@ -289,7 +318,7 @@ def test_adjacent_beats_batch_without_losing_content_or_time():
         for i, n in enumerate([5, 10, 15, 20, 10, 30])
     ]
     grouped = group_shot_beats(beats)
-    assert [b.durationSeconds for b in grouped] == [30, 30, 30]
+    assert [b.durationSeconds for b in grouped] == [60, 30]
     assert "\n\n".join(b.content for b in grouped) == "\n\n".join(
         b.content for b in beats
     )
@@ -327,6 +356,97 @@ async def test_legacy_chunks_keep_their_original_story_plan():
     await Pipeline(api, provider, value, checkpoints, []).run()
     assert provider.calls["SHOTS"] == 2
     assert [s.id for s in api.published[sid].shots] == ["legacy", "s1", "s2"]
+
+
+async def test_frozen_thirty_second_plan_survives_sixty_second_default():
+    api, provider, value = FakeApi(), ControlledProvider(), inputs(1, 180)
+    sid = value["scriptIds"][0]
+    await Pipeline(
+        api,
+        provider,
+        value,
+        [
+            {
+                "nodeId": "SHOTS",
+                "scriptId": sid,
+                "status": "FAILED",
+                "output": {
+                    "chunks": [{"shots": [shot("legacy", 30)]}],
+                    "chunkPlan": [
+                        {"id": f"b{i}", "content": f"原边界{i}", "durationSeconds": 30}
+                        for i in range(6)
+                    ],
+                },
+            }
+        ],
+        [],
+    ).run()
+    assert len(api.published[sid].shots) == 6 and provider.calls["SHOTS"] == 5
+    assert api.published[sid].shots[0].id == "legacy"
+
+
+@pytest.mark.parametrize("problem", ["sum", "segment", "duplicate"])
+async def test_story_structure_corrected_once_without_rewriting_full_story(problem):
+    class WrongStory(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            value = await super().generate(stage, model, result, context, instruction)
+            if stage == "STORY" and result is Story:
+                if problem == "sum":
+                    value.beats[0].durationSeconds += 2
+                elif problem == "segment":
+                    value.beats = [
+                        Beat(id="b0", content="故事段落0", durationSeconds=60)
+                    ]
+                else:
+                    value.beats[1].id = value.beats[0].id
+            if result is StorySegments:
+                assert (
+                    context["story"]["content"] == "完整故事"
+                    and context["validationIssues"]
+                )
+            return value
+
+    api, provider, value = FakeApi(), WrongStory(), inputs(1, 60)
+    await Pipeline(api, provider, value, [], []).run()
+    assert len(api.published) == 1 and provider.calls["STORY"] == 2
+    assert api.saved["STORY", value["scriptIds"][0]]["output"]["content"] == "完整故事"
+
+
+async def test_invalid_story_correction_budget_survives_restarts():
+    class WrongStory(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            value = await super().generate(stage, model, result, context, instruction)
+            if stage == "STORY":
+                value.beats[0].durationSeconds += 2
+            return value
+
+    api, provider, value = FakeApi(), WrongStory(), inputs(1, 60)
+    await Pipeline(api, provider, value, [], []).run()
+    assert not api.published and provider.calls["STORY"] == 2
+    await Pipeline(api, provider, value, list(api.saved.values()), []).run()
+    assert not api.published and provider.calls["STORY"] == 2
+
+
+async def test_story_correction_transient_failure_reuses_paid_original_story():
+    class Interrupted(ControlledProvider):
+        interrupt = True
+        originals = 0
+
+        async def generate(self, stage, model, result, context, instruction):
+            if result is StorySegments and self.interrupt:
+                raise ProviderError("temporary", retryable=True)
+            value = await super().generate(stage, model, result, context, instruction)
+            if stage == "STORY" and result is Story:
+                self.originals += 1
+                value.beats[0].durationSeconds += 2
+            return value
+
+    api, provider, value = FakeApi(), Interrupted(), inputs(1, 60)
+    await Pipeline(api, provider, value, [], []).run()
+    assert not api.published and api.finish_options["retryable"]
+    provider.interrupt = False
+    await Pipeline(api, provider, value, list(api.saved.values()), []).run()
+    assert len(api.published) == 1 and provider.originals == 1
 
 
 @pytest.mark.parametrize("retryable", [True, False])
@@ -411,6 +531,59 @@ async def test_review_context_excludes_own_obsolete_concept():
     provider.review_errors = True
     await Pipeline(api, provider, inputs(3), [], []).run()
     assert len(api.published) == 3 and provider.calls["RECHECK"] == 3
+
+
+async def test_recheck_transient_failure_resumes_materialized_repair_without_rebilling():
+    class InterruptedRecheck(ControlledProvider):
+        interrupt = True
+
+        async def generate(self, stage, model, result, context, instruction):
+            if stage == "RECHECK" and self.interrupt:
+                raise ProviderError("temporary", retryable=True)
+            return await super().generate(stage, model, result, context, instruction)
+
+    api, provider, value = FakeApi(), InterruptedRecheck(), inputs(1)
+    provider.review_errors = True
+    await Pipeline(api, provider, value, [], []).run()
+    assert not api.published and provider.calls["REPAIR"] == 1
+    assert "repair" in api.saved["REPAIR", value["scriptIds"][0]]["output"]
+    provider.interrupt = False
+    await Pipeline(api, provider, value, list(api.saved.values()), []).run()
+    assert len(api.published) == 1 and provider.calls["REPAIR"] == 1
+    assert provider.calls["REVIEW"] == 1 and provider.calls["RECHECK"] == 1
+
+
+async def test_invalid_patch_is_preserved_and_does_not_trigger_repeated_paid_repair():
+    class InvalidPatch(ControlledProvider):
+        async def generate(self, stage, model, result, context, instruction):
+            value = await super().generate(stage, model, result, context, instruction)
+            if stage == "REPAIR":
+                value.shotFields[0].shotId = "unknown"
+            return value
+
+    api, provider, value = FakeApi(), InvalidPatch(), inputs(1)
+    provider.review_errors = True
+    await Pipeline(api, provider, value, [], []).run()
+    await Pipeline(api, provider, value, list(api.saved.values()), []).run()
+    assert not api.published and provider.calls["REPAIR"] == 1
+    assert provider.calls["RECHECK"] == 0
+
+
+async def test_legacy_full_repair_checkpoint_is_reused():
+    api, provider, value = FakeApi(), ControlledProvider(), inputs(1)
+    provider.review_errors = True
+    await Pipeline(api, provider, value, [], []).run()
+    sid = value["scriptIds"][0]
+    repaired = api.saved["REPAIR", sid]
+    repaired["status"] = "RUNNING"
+    repaired["output"] = {
+        "repair": Repair.model_validate(
+            {k: repaired["output"][k] for k in ("script", "reason", "changes")}
+        ).model_dump()
+    }
+    api.published.clear()
+    await Pipeline(api, provider, value, list(api.saved.values()), []).run()
+    assert len(api.published) == 1 and provider.calls["REPAIR"] == 1
 
 
 def test_contract_schema_and_python_stay_in_sync():

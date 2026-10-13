@@ -74,3 +74,4 @@ export * from './customized-extraction';
 export * from './customized-storyboard';
 
 export * from './customized-storyboard-generation';
+export * from './customized-production';

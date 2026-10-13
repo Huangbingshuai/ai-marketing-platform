@@ -80,6 +80,44 @@ function readableShotText(value: unknown, script: unknown): string {
     return index > 0 && index <= list(record(script).shots).length ? `镜头 ${index}` : match;
   });
 }
+function readableObjectText(value: string, scripts: unknown[]): string {
+  let text = value;
+  const names = new Map<string, string>();
+  for (const script of scripts) {
+    for (const [index, beat] of list(record(script).beats).map(record).entries()) {
+      const id = str(beat.id);
+      if (id && !names.has(id)) names.set(id, `故事段落 ${index + 1}`);
+    }
+    for (const asset of list(record(script).assets).map(record)) {
+      const id = str(asset.id),
+        name = str(asset.name);
+      if (id && name && !names.has(id)) names.set(id, name);
+    }
+  }
+  for (const [id, name] of [...names].sort(([a], [b]) => b.length - a.length))
+    text = text.replace(
+      new RegExp(
+        `(?<![A-Za-z0-9_-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`,
+        'g',
+      ),
+      () => name,
+    );
+  // Proposed objects may not exist in either catalog yet. Do not invent their identity.
+  return text
+    .replace(
+      /\b(char|prod|scene)_[A-Za-z0-9_]+\b/g,
+      (_id, kind: string) =>
+        ({ char: '待定义人物对象', prod: '待定义产品对象', scene: '待定义场景对象' })[kind]!,
+    )
+    .replace(/\bassetRequirements\b/g, '资产关联')
+    .replace(/\bshotIds\b/g, '关联镜头')
+    .replace(/\bsynopsis\b/g, '剧情概述')
+    .replace(/\bvisual\b/g, '画面内容')
+    .replace(/\bBeat\s*(?=故事段落)/gi, '')
+    .replace(/\bbeat\b/gi, '故事段落')
+    .replace(/资产ID/g, '资产定义')
+    .replace(/稳定ID/g, '稳定身份');
+}
 function review(v: unknown, script: unknown): Row[] {
   const r = record(v);
   const readable = (value: unknown) => readableShotText(value, script);
@@ -227,7 +265,19 @@ export function storyboardDetail(
         },
       ];
     if (s.errorMessage) rows.push({ title: '本阶段未完成', content: s.errorMessage });
-    return rows.map((r) => ({ ...r, title: prefix ? `${str(prefix)} · ${r.title}` : r.title }));
+    const catalogs = [
+      steps.find((v) => v.nodeId === 'SHOTS' && v.scriptId === s.scriptId)?.output,
+      record(steps.find((v) => v.nodeId === 'REPAIR' && v.scriptId === s.scriptId)?.output).script,
+      steps.find((v) => v.nodeId === 'ASSETS' && v.scriptId === s.scriptId)?.output,
+      steps.find((v) => v.nodeId === 'STORY' && v.scriptId === s.scriptId)?.output,
+    ];
+    return rows.map((r) => ({
+      title: readableObjectText(
+        prefix && prefix !== r.title ? `${str(prefix)} · ${r.title}` : r.title,
+        catalogs,
+      ),
+      content: readableObjectText(r.content, catalogs),
+    }));
   });
   const state = chosen.some((s) => s.status === 'RUNNING')
     ? 'RUNNING'

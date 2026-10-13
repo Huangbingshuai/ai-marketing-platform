@@ -51,6 +51,7 @@ const defaults: StoryboardSettings = {
 type Task = CustomizedStoryboardTask & { steps: CustomizedStoryboardStep[] };
 const inputOf = (t: CustomizedStoryboardTask) => t.inputSnapshot as unknown as StoryboardInput;
 export const presentStoryboardTask = (t: Task): StoryboardTask => ({
+  ...(inputOf(t).outputMode ? { outputMode: inputOf(t).outputMode! } : {}),
   id: t.id,
   workflowRunId: t.workflowRunId,
   status: t.status as StoryboardTask['status'],
@@ -58,6 +59,7 @@ export const presentStoryboardTask = (t: Task): StoryboardTask => ({
     t.steps as Pick<StoryboardStep, 'nodeId' | 'scriptId' | 'status'>[],
     inputOf(t).scriptIds,
     t.status === 'COMPLETED',
+    inputOf(t).outputMode === 'STORY_ONLY',
   ),
   steps: t.steps.map((s) => ({
     nodeId: s.nodeId as StoryboardStep['nodeId'],
@@ -207,10 +209,10 @@ export class StoryboardRepository {
           settings: state.settings,
           settingsRevision: state.revision,
           scripts,
-          selectedScriptId: scripts.some((s) => s.id === viewed.forkScriptId)
-            ? viewed.forkScriptId
-            : scripts.some((s) => s.id === state.selectedScriptId)
-              ? state.selectedScriptId
+          selectedScriptId: scripts.some((s) => s.id === state.selectedScriptId)
+            ? state.selectedScriptId
+            : scripts.some((s) => s.id === viewed.forkScriptId)
+              ? viewed.forkScriptId
               : (scripts[0]?.id ?? null),
           task: task ? presentStoryboardTask(task) : null,
           legacyDraft:
@@ -322,9 +324,13 @@ export class StoryboardRepository {
         (sourcePackage?.payload as { materials?: unknown[] } | null)?.materials ?? [];
       const input: StoryboardInput = {
         schemaVersion: 1,
+        outputMode: 'STORY_ONLY',
         source: this.source(b),
         brief: b.payload,
-        settings: state.settings,
+        settings: {
+          ...state.settings,
+          structure: state.settings.structureMode === 'AI' ? '' : state.settings.structure,
+        },
         scriptIds: Array.from({ length: state.settings.variantCount }, () => randomUUID()),
         models,
         brandReferences: materials.filter(
@@ -370,7 +376,9 @@ export class StoryboardRepository {
           },
         });
       await tx.customizedStoryboardStep.createMany({
-        data: CUSTOMIZED_STORYBOARD_STAGES.flatMap((stage) =>
+        data: CUSTOMIZED_STORYBOARD_STAGES.filter(
+          (s) => !['ASSETS', 'SHOTS'].includes(s.id),
+        ).flatMap((stage) =>
           (['SNAPSHOT', 'CONCEPT'].includes(stage.id) ? [''] : input.scriptIds).map((scriptId) => ({
             projectId,
             taskId: t.id,
@@ -506,6 +514,8 @@ export class StoryboardRepository {
   step(projectId: string, id: string, token: string, value: Omit<StoryboardStep, 'updatedAt'>) {
     return this.db.$transaction(async (tx) => {
       const t = await this.lease(tx, projectId, id, token);
+      if (inputOf(t).outputMode === 'STORY_ONLY' && ['ASSETS', 'SHOTS'].includes(value.nodeId))
+        invalid('完整故事任务不执行资产整理或分镜');
       if (
         !CUSTOMIZED_STORYBOARD_STAGES.some((s) => s.id === value.nodeId) ||
         (['SNAPSHOT', 'CONCEPT'].includes(value.nodeId)
@@ -542,9 +552,9 @@ export class StoryboardRepository {
         const review =
           value.nodeId === 'REPAIR' ? output.review! : (value.output as StoryboardReview);
         if (
-          !reviewedScript?.shots ||
+          (inputOf(t).outputMode !== 'STORY_ONLY' && !reviewedScript?.shots) ||
           review.findings.some((f) =>
-            f.shotIds.some((id) => !reviewedScript.shots.some((s) => s.id === id)),
+            f.shotIds.some((id) => !reviewedScript?.shots?.some((s) => s.id === id)),
           )
         )
           invalid('审校引用了未知镜头');
@@ -723,8 +733,17 @@ export class StoryboardRepository {
         if (s.status === 'COMPLETED') return { workflowRunId: s.workflowRunId, unchanged: true };
         const error = validateStoryboardPublication(script, input.settings.targetDurationSeconds);
         if (error) invalid(error);
+        if (
+          input.outputMode === 'STORY_ONLY' &&
+          (!script.story || script.shots.length || script.assets?.length)
+        )
+          invalid('当前任务只接受完整故事');
         const steps = await tx.customizedStoryboardStep.findMany({ where: { projectId, taskId } });
-        for (const stage of CUSTOMIZED_STORYBOARD_STAGES.filter((n) => n.id !== 'SAVE')) {
+        for (const stage of CUSTOMIZED_STORYBOARD_STAGES.filter(
+          (n) =>
+            n.id !== 'SAVE' &&
+            (input.outputMode !== 'STORY_ONLY' || !['ASSETS', 'SHOTS'].includes(n.id)),
+        )) {
           const step = steps.find(
             (v) =>
               v.nodeId === stage.id &&
@@ -747,7 +766,13 @@ export class StoryboardRepository {
           return customizedConflict('脚本仍有待处理问题');
         const checkpoint =
           repair.status === 'SKIPPED'
-            ? steps.find((s) => s.nodeId === 'SHOTS' && s.scriptId === script.id)!.output
+            ? input.outputMode === 'STORY_ONLY'
+              ? {
+                  ...script,
+                  story: steps.find((s) => s.nodeId === 'STORY' && s.scriptId === script.id)!
+                    .output,
+                }
+              : steps.find((s) => s.nodeId === 'SHOTS' && s.scriptId === script.id)!.output
             : (repair.output as { script?: unknown }).script;
         if (workflowStateHash(script) !== workflowStateHash(checkpoint))
           return customizedConflict('提交内容与已审校脚本不一致');

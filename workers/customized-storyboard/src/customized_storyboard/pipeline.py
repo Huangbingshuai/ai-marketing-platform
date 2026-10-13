@@ -7,11 +7,13 @@ from ai_runtime.http import InternalApiError
 from ai_runtime.responses import ProviderError
 from .api import Api
 from .provider import Provider
+from .repair import RepairPatch, REPAIR_INSTRUCTION, apply_repair
 from .models import (
     AssetCatalog,
     Concepts,
     Concept,
     Story,
+    StorySegments,
     Shot,
     ShotChunk,
     Script,
@@ -29,7 +31,7 @@ def group_shot_beats(beats: list[Beat]) -> list[Beat]:
     for beat in beats:
         if (
             groups
-            and groups[-1].durationSeconds + beat.durationSeconds <= 30
+            and groups[-1].durationSeconds + beat.durationSeconds <= 60
             and len(groups[-1].content) + len(beat.content) + 2 <= 20000
         ):
             previous = groups[-1]
@@ -41,6 +43,18 @@ def group_shot_beats(beats: list[Beat]) -> list[Beat]:
         else:
             groups.append(beat.model_copy())
     return groups
+
+
+def story_issues(story: Story, target: int) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    duration = sum(b.durationSeconds for b in story.beats)
+    if abs(duration - target) > 1:
+        issues.append({"code": "DURATION_SUM", "expected": target, "actual": duration})
+    if any(b.durationSeconds > 30 for b in story.beats):
+        issues.append({"code": "SEGMENT_DURATION", "maximum": 30})
+    if len({b.id for b in story.beats}) != len(story.beats):
+        issues.append({"code": "DUPLICATE_SEGMENT_ID"})
+    return issues
 
 
 class Pipeline:
@@ -60,7 +74,10 @@ class Pipeline:
             set(retry_script_ids) if retry_script_ids is not None else None
         )
         # Brand references remain frozen on API; never feed images or opaque refs to a model.
-        self.context = {k: value[k] for k in ("brief", "settings", "existingConcepts")}
+        settings = dict(value["settings"])
+        if settings.get("structureMode") == "AI":
+            settings["structure"] = ""
+        self.context = {"brief": value["brief"], "settings": settings}
 
     async def heartbeat(self) -> None:
         while True:
@@ -98,6 +115,11 @@ class Pipeline:
         *,
         detail: bool = False,
     ) -> T:
+        if stage in {"REVIEW", "REPAIR", "RECHECK"} and "script" in context:
+            context = {
+                **context,
+                "shotTimeline": Script.model_validate(context["script"]).timeline(),
+            }
         return await self.provider.generate(
             stage,
             self.input["models"]["detail" if detail else "creative"],
@@ -121,21 +143,67 @@ class Pipeline:
             return schema.model_validate(saved["output"])
         await self.step(node, script, "RUNNING")
         try:
-            result = await self.model(node, schema, context, instruction, detail=detail)
+            previous_output = saved.get("output") if saved else None
+            previous_story = (
+                previous_output.get("rejectedStory")
+                if isinstance(previous_output, dict) and schema is Story
+                else None
+            )
+            result = (
+                schema.model_validate(previous_story)
+                if previous_story
+                else await self.model(node, schema, context, instruction, detail=detail)
+            )
             if isinstance(result, Concepts) and sorted(
                 c.scriptId for c in result.concepts
             ) != sorted(self.input["scriptIds"]):
                 raise ValueError("concept identity mismatch")
-            if isinstance(result, Story) and (
-                abs(
-                    sum(b.durationSeconds for b in result.beats)
-                    - self.input["settings"]["targetDurationSeconds"]
-                )
-                > 1
-                or any(b.durationSeconds > 30 for b in result.beats)
-                or len({b.id for b in result.beats}) != len(result.beats)
-            ):
-                raise ValueError("invalid story segments")
+            if isinstance(result, Story):
+                target = self.input["settings"]["targetDurationSeconds"]
+                issues = story_issues(result, target)
+                if issues:
+                    exhausted = isinstance(
+                        previous_output, dict
+                    ) and previous_output.get("correctionComplete")
+                    if exhausted:
+                        raise ValueError("story segment correction exhausted")
+                    await self.step(
+                        node,
+                        script,
+                        "RUNNING",
+                        {
+                            "rejectedStory": result.model_dump(),
+                            "validationIssues": issues,
+                            "correctionComplete": False,
+                        },
+                    )
+                    correction = await self.model(
+                        node,
+                        StorySegments,
+                        {
+                            **context,
+                            "story": result.model_dump(),
+                            "validationIssues": issues,
+                        },
+                        "仅修正 story.beats 的机械结构错误，完整故事正文保持不变。返回完整段落列表，保持全部故事事件与顺序，必要时拆分过长段落；每段时长大于0且不超过30秒，id唯一，总时长准确等于 settings.targetDurationSeconds。不要重写或删减故事。",
+                    )
+                    result = schema.model_validate(
+                        {
+                            **result.model_dump(),
+                            "beats": [b.model_dump() for b in correction.beats],
+                        }
+                    )
+                    await self.step(
+                        node,
+                        script,
+                        "RUNNING",
+                        {
+                            "rejectedStory": result.model_dump(),
+                            "correctionComplete": True,
+                        },
+                    )
+                    if not isinstance(result, Story) or story_issues(result, target):
+                        raise ValueError("story segment correction exhausted")
             if isinstance(result, AssetCatalog) and (
                 len({a.id for a in result.assets}) != len(result.assets)
                 or not any(a.kind == "products" for a in result.assets)
@@ -176,8 +244,8 @@ class Pipeline:
             "CONCEPT",
             "",
             Concepts,
-            {"scriptIds": self.input["scriptIds"]},
-            "为给定每个 scriptId 规划一个完整视频方案，数量准确。联合考虑全部方案与已有方案，写清真实差异，不只改名字和镜头顺序。",
+            {"scriptIds": self.input["scriptIds"], "existingConcepts": self.input["existingConcepts"]},
+            "为给定每个 scriptId 规划一个完整视频方案，数量准确。existingConcepts仅用于避免重复，不是情节范本或本次必须遵循的要求。联合规划本批不同的观看事件和叙事发展，不只改名字、职业和地点。以本次目标时长控制事件数量，短片集中一个可看懂的事件和合适的产品关联，禁止压缩照搬历史长片的所有环节和规格。structureMode为AI时独立设计结构。",
         )
         if sorted(c.scriptId for c in concepts.concepts) != sorted(
             self.input["scriptIds"]
@@ -215,6 +283,20 @@ class Pipeline:
         }
 
     async def script(self, concept: Concept, concepts: Concepts) -> None:
+        if self.input.get("outputMode") == "STORY_ONLY":
+            from .story_creation import create_story
+            try:
+                await create_story(self, concept, concepts)
+            except InternalApiError:
+                raise
+            except Exception:
+                failed = next((node for node in ("STORY", "REVIEW", "REPAIR")
+                    if self.checkpoints.get((node, concept.scriptId), {}).get("status") not in {"SUCCEEDED", "SKIPPED"}), None)
+                if failed:
+                    await self.step(failed, concept.scriptId, "FAILED",
+                        error="本故事尚未完整完成，已保留内容，可恢复重试。")
+                raise
+            return
         sid = concept.scriptId
         stage = "STORY"
         try:
@@ -436,22 +518,29 @@ class Pipeline:
                 else:
                     await self.step("REPAIR", sid, "RUNNING")
                     partial = repaired.get("output") if repaired else None
-                    repair = (
-                        Repair.model_validate(partial["repair"])
-                        if isinstance(partial, dict) and "repair" in partial
-                        else await self.model(
-                            "REPAIR",
-                            Repair,
-                            {
-                                "script": script.model_dump(),
-                                "review": review.model_dump(),
-                            },
-                            "只针对审校问题修改，保留正常部分及对象身份；返回完整脚本、修改原因和逐项前后对照，脚本id不变。",
-                            detail=all(
-                                f.category == "STRUCTURE" for f in review.findings
-                            ),
+                    if isinstance(partial, dict) and "repair" in partial:
+                        repair = Repair.model_validate(partial["repair"])
+                    else:
+                        patch = (
+                            RepairPatch.model_validate(partial["patch"])
+                            if isinstance(partial, dict) and "patch" in partial
+                            else await self.model(
+                                "REPAIR",
+                                RepairPatch,
+                                {
+                                    "script": script.model_dump(),
+                                    "review": review.model_dump(),
+                                },
+                                REPAIR_INSTRUCTION,
+                                detail=all(
+                                    f.category == "STRUCTURE" for f in review.findings
+                                ),
+                            )
                         )
-                    )
+                        await self.step(
+                            "REPAIR", sid, "RUNNING", {"patch": patch.model_dump()}
+                        )
+                        repair = apply_repair(script, patch, target)
                     script = repair.script
                     if script.id != sid:
                         raise ValueError("repair changed script identity")

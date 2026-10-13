@@ -88,7 +88,9 @@ async def run():
  try:
   claim=await api.call('POST','claim')
   api.token=claim['attemptToken']
-  await Pipeline(api,ControlledProvider(),claim['input'],claim['checkpoints'],claim['completedScriptIds']).run()
+  provider=ControlledProvider()
+  provider.review_errors=True
+  await Pipeline(api,provider,claim['input'],claim['checkpoints'],claim['completedScriptIds']).run()
  finally: await api.close()
 asyncio.run(run())`;
       await new Promise<void>((done, reject) => {
@@ -126,6 +128,16 @@ asyncio.run(run())`;
       expect(
         JSON.stringify(((await detail.json()) as { data: { sections: unknown } }).data.sections),
       ).toContain('自然侧光');
+      const repairDetail = await fetch(
+        `${api}/tasks/${task.id}/nodes/REPAIR?page=0&scriptId=${workspace.scripts[0]!.id}`,
+      );
+      expect(repairDetail.status).toBe(200);
+      const repairSections = JSON.stringify(
+        ((await repairDetail.json()) as { data: { sections: unknown } }).data.sections,
+      );
+      expect(repairSections).toContain('第 01 镜 · 画面内容');
+      expect(repairSections).toContain('已知事实');
+      expect(workspace.scripts.every((s) => s.script.shots[0]?.visual === '已知事实')).toBe(true);
       expect(await db.jobOutbox.count({ where: { projectId } })).toBe(0);
     } finally {
       await db.workingArtifactDependency.deleteMany({ where: { projectId } });

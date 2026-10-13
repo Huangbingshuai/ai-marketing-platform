@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "Segment": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "maxLength": 20000,
+          "title": "Content",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Durationseconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "content",
+        "durationSeconds"
+      ],
+      "title": "Segment",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "segments": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Segment"
+      },
+      "maxItems": 60,
+      "title": "Segments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary"
+  ],
+  "title": "Plan",
+  "type": "object"
+}
