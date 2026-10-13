@@ -1,0 +1,263 @@
+"""Versioned asset preparation. All paid work and checkpoints are task-local."""
+from __future__ import annotations
+import asyncio
+import copy
+from typing import Any
+from .api import Api
+from .provider import Provider
+from .asset_models import Inventory, Definitions, AssetAudit, AssetRepair, DETAIL_KEYS
+
+EDITABLE = ('name', 'description', 'knownFacts', 'designNotes', 'sourceText', 'imageRequirements', 'preparation')
+KIND_NAMES = {'PRODUCT': '产品', 'CHARACTER': '人物', 'SCENE': '场景', 'PROP': '道具'}
+FIELD_NAMES = {'structure': '结构与形态', 'material': '材质与颜色', 'markings': '标识与位置', 'appearance': '外形特征', 'styling': '服装与造型', 'layout': '空间与陈设', 'lighting': '光线与氛围', 'name': '名称', 'description': '公共形象', 'knownFacts': '已确认信息', 'designNotes': '设计内容', 'sourceText': '依据说明', 'imageRequirements': '图片制作要求', 'preparation': '分类定义'}
+
+def source_rows(value: Any, path: str = '') -> list[dict[str, str]]:
+    if isinstance(value, str):
+        return [{'path': path, 'text': value}] if value.strip() else []
+    if isinstance(value, list):
+        return [row for i, v in enumerate(value) for row in source_rows(v, f'{path}/{i}')]
+    if isinstance(value, dict):
+        return [row for k, v in value.items() for row in source_rows(v, path + '/' + k.replace('~', '~0').replace('/', '~1'))]
+    return []
+
+def evidence_index(snapshot: dict[str, Any]) -> dict[tuple[str, str], str]:
+    script = {k: v for k, v in snapshot['script'].items() if k not in ('assets', 'shots')}
+    return {(source, row['path']): row['text'] for source, value in [('BRIEF', snapshot['brief']), ('SCRIPT', script)] for row in source_rows(value)}
+
+def check_evidence(refs: list[dict[str, Any]], index: dict[tuple[str, str], str], kind: str) -> None:
+    if not refs:
+        raise ValueError('asset evidence required')
+    for ref in refs:
+        quote = ref['quote']
+        if not quote.strip() or quote not in index.get((ref['source'], ref['path']), ''):
+            raise ValueError('asset evidence quote not found')
+        if kind == 'PRODUCT' and ref['field'] in ('description', 'knownFacts', 'structure', 'material', 'markings') and ref['source'] != 'BRIEF':
+            raise ValueError('product fact must cite brief')
+
+def align_inventory(raw: dict[str, Any], snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = Inventory.model_validate(raw).model_dump()['objects']
+    existing = {a['id']: a for a in snapshot['document']['assets']}
+    keys = [a['key'] for a in candidates]
+    if len(set(keys)) != len(keys):
+        raise ValueError('duplicate inventory key')
+    ids: dict[str, str] = {}
+    for i, a in enumerate(candidates):
+        old = existing.get(a['existingId'])
+        if a['existingId'] is not None and (old is None or old['kind'] != a['kind']):
+            raise ValueError('invalid existing identity')
+        ids[a['key']] = a['existingId'] or f"asset-{snapshot['identitySeed']}-{i+1}"
+    if len(set(ids.values())) != len(ids):
+        raise ValueError('inventory duplicated an identity')
+    target = snapshot.get('targetAssetId')
+    if target and (len(candidates) != 1 or candidates[0]['existingId'] != target):
+        raise ValueError('single asset scope changed')
+    if not target and not any(a['kind'] == 'PRODUCT' for a in candidates):
+        raise ValueError('missing product')
+    index = evidence_index(snapshot)
+    result = []
+    for a in candidates:
+        check_evidence(a['sources'], index, a['kind'])
+        parent = ids.get(a['parentKey']) or (a['parentKey'] if a['parentKey'] in existing else None)
+        if a['treatment'] == 'INDEPENDENT':
+            if a['parentKey'] is not None:
+                raise ValueError('independent object has parent')
+        else:
+            expected = 'SCENE' if a['treatment'] == 'SCENE_DETAIL' else 'CHARACTER'
+            parent_object = next((v for v in candidates if ids[v['key']] == parent), existing.get(parent))
+            if not parent or parent == ids[a['key']] or not parent_object or parent_object['kind'] != expected:
+                raise ValueError('invalid detail parent')
+        if a['kind'] == 'PRODUCT' and a['treatment'] != 'INDEPENDENT':
+            raise ValueError('product must be independent')
+        result.append({**a, 'id': ids[a['key']], 'parentId': parent})
+    return result
+
+def protected_fields(a: dict[str, Any]) -> list[str]:
+    return list(a.get('manualFields', [] if a.get('preparation') else [k for k in EDITABLE if a.get(k)]))
+
+def preserve_manual(assets: list[dict[str, Any]], snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    result = copy.deepcopy(assets)
+    previous = {a['id']: a for a in snapshot['document']['assets']}
+    for a in result:
+        old = previous.get(a['id'])
+        if old:
+            for field in protected_fields(old):
+                if field in old:
+                    a[field] = copy.deepcopy(old[field])
+    return result
+
+def validate_definitions(assets: list[dict[str, Any]], inventory: list[dict[str, Any]], snapshot: dict[str, Any]) -> None:
+    Definitions.model_validate({'assets': assets})
+    expected = {a['id']: a for a in inventory}
+    if len(assets) != len(expected) or {a['id'] for a in assets} != set(expected):
+        raise ValueError('definition changed inventory identities')
+    index = evidence_index(snapshot)
+    for a in assets:
+        original = expected[a['id']]
+        if a['kind'] != original['kind']:
+            raise ValueError('definition changed category')
+        prep = a['preparation']
+        if prep['treatment'] != original['treatment'] or prep['parentId'] != original['parentId']:
+            raise ValueError('definition changed inclusion relationship')
+        keys = [d['key'] for d in prep['details']]
+        if len(keys) != len(set(keys)) or any(k not in DETAIL_KEYS[a['kind']] for k in keys):
+            raise ValueError('invalid category field')
+        check_evidence(prep['sources'], index, a['kind'])
+
+def validate_audit(audit: dict[str, Any], assets: list[dict[str, Any]]) -> None:
+    AssetAudit.model_validate(audit)
+    ids = {a['id'] for a in assets}
+    if any(f['assetId'] not in ids for f in audit['findings']):
+        raise ValueError('audit outside asset scope')
+
+def apply_repair(assets: list[dict[str, Any]], repair: dict[str, Any], audit: dict[str, Any], snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    patches = AssetRepair.model_validate(repair).model_dump()['patches']
+    allowed = {(f['assetId'], f['field']) for f in audit['findings'] if f['severity'] == 'REQUIRED'}
+    used: set[tuple[str, str]] = set()
+    result = copy.deepcopy(assets)
+    by_id = {a['id']: a for a in result}
+    old = {a['id']: a for a in snapshot['document']['assets']}
+    for p in patches:
+        key = (p['assetId'], p['field'])
+        if key not in allowed or key in used or p['field'] in protected_fields(old.get(p['assetId'], {})):
+            raise ValueError('repair outside editable findings')
+        used.add(key)
+        if p['field'] == 'preparation':
+            if p['preparation'] is None or p['text'] is not None:
+                raise ValueError('invalid structured patch')
+            by_id[p['assetId']]['preparation'] = p['preparation']
+        else:
+            if p['text'] is None or p['preparation'] is not None:
+                raise ValueError('invalid text patch')
+            by_id[p['assetId']][p['field']] = p['text']
+    if used != allowed:
+        raise ValueError('repair omitted required field')
+    return result
+
+def describe(assets: list[dict[str, Any]]) -> str:
+    return '\n\n'.join(f"{a['name']}\n{a['description']}\n已确认信息：{a['knownFacts']}\n设计内容：{a['designNotes']}\n" +
+        '\n'.join(f"{FIELD_NAMES[d['key']]}：{d['value']}" for d in a['preparation']['details']) +
+        '\n制作要求：'+a['imageRequirements']+'\n待确认：'+'；'.join(q['question'] for q in a['preparation']['questions']) for a in assets)
+
+async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> None:
+    snapshot = claim['input']
+    steps = {s['id']: s for s in claim['steps']}
+    stored = copy.deepcopy(claim.get('output') or {})
+    index = evidence_index(snapshot)
+    sources = [{'source': source, 'path': path, 'text': value} for (source, path), value in index.items()]
+    existing = snapshot['document']['assets']
+    identity = [{'id': a['id'], 'kind': a['kind'], 'name': a['name'], 'aliases': a.get('preparation', {}).get('aliases', [])} for a in existing]
+    locked = [{'id': a['id'], 'fields': {k: a[k] for k in protected_fields(a) if k in a}} for a in existing]
+    context = {'sources': sources, 'existingIdentities': identity, 'protectedDefinitions': locked, 'targetAssetId': snapshot.get('targetAssetId')}
+
+    async def checkpoint(node: str, status: str, title: str, content: str) -> None:
+        await api.call('PUT', 'checkpoint', {'step': {'id': node, 'status': status, 'title': title, 'content': content}, 'output': stored})
+        steps[node]['status'] = status
+
+    if steps['SNAPSHOT']['status'] != 'SUCCEEDED':
+        await checkpoint('SNAPSHOT', 'SUCCEEDED', '本次创作依据', snapshot['script']['name']+'\n'+snapshot['script'].get('story', {}).get('content', snapshot['script'].get('synopsis', '')))
+    if steps['INVENTORY']['status'] != 'SUCCEEDED':
+        await checkpoint('INVENTORY', 'RUNNING', '识别对象与原文', '正在对照完整脚本和信息卡识别必要对象')
+        inventory = await provider.generate('ASSET_INVENTORY', snapshot['models']['creative'], Inventory, context,
+            '先识别故事实际涉及的产品、人物、场景、道具，不写完整外观，不拆分镜。每项给出用途与原文引用，source/path来自sources，quote必须逐字复制连续原文，field标明支持的内容。产品始终独立；不要按数量删掉动作必需道具。普通陈设可标SCENE_DETAIL归属场景，服饰可标CHARACTER_DETAIL归属人物；INDEPENDENT的parentKey为null。相同身份复用已有id，不按近名猜测；新对象existingId为null，key为本次唯一代号。父对象使用key；单项整理允许父对象使用existingIdentities的id。若targetAssetId非空只整理该对象，必须保留id和kind。未知事实保持未知，不根据已有生成描述发明产品事实。')
+        stored['inventoryRaw'] = inventory.model_dump()
+        aligned = align_inventory(stored['inventoryRaw'], snapshot)
+        stored['inventory'] = aligned
+        await checkpoint('INVENTORY', 'SUCCEEDED', '对象与原文依据', '\n\n'.join(a['name']+'：'+a['usage']+'\n'+'\n'.join(r['quote'] for r in a['sources']) for a in aligned))
+    inventory = stored['inventory']
+    if steps['IDENTITY']['status'] != 'SUCCEEDED':
+        stored['inventory'] = align_inventory(stored['inventoryRaw'], snapshot)
+        retained = [a['name'] for a in existing if a['id'] not in {v['id'] for v in inventory}]
+        await checkpoint('IDENTITY', 'SUCCEEDED', '身份与制作归属', '\n'.join(a['name']+' · '+('复用已有对象' if a['existingId'] else '新对象')+' · '+{'INDEPENDENT':'独立对象','SCENE_DETAIL':'场景细节','CHARACTER_DETAIL':'人物细节'}[a['treatment']] for a in inventory)+ ('\n原有对象保留，未在本次重新整理：'+'、'.join(retained) if retained else ''))
+    lock = asyncio.Lock()
+    semaphore = asyncio.Semaphore(2)
+    stored.setdefault('batches', {})
+    instruction = ('为指定objects生成分类定义，精确保留id、kind、treatment、parentId，不新增或遗漏对象。'
+        'preparation包含aliases、usage、来源sources、分类details、待确认questions和按需图片images。'
+        'PRODUCT的details只用structure/material/markings；CHARACTER只用appearance/styling；SCENE只用layout/lighting；PROP只用appearance/material。'
+        '公共外观与事实分开，产品事实只以BRIEF为准，结构位置未知时写待确认，允许创作的内容放designNotes；人物、场景可按故事合理设计。'
+        '每条关键事实引用sources中的准确path与连续quote，产品description/knownFacts/结构材质标识仅引用BRIEF。'
+        'questions写具体问题和对制作的影响；不足以确定的产品结构不要自行补全。'
+        'images列出实际需要的图片及用途，陈设通常并入所属场景，不强迫每个对象单独生图；软件按界面与状态制作，不套三视图。'
+        '保护protectedDefinitions中的人工内容；旧AI描述不是事实来源。不要生成图片或声称看过图片。')
+
+    async def category(kind: str) -> None:
+        if steps[kind]['status'] == 'SUCCEEDED':
+            return
+        objects = [a for a in inventory if a['kind'] == kind]
+        async with lock:
+            await checkpoint(kind, 'RUNNING', KIND_NAMES[kind]+'定义', '正在整理'+KIND_NAMES[kind]+'的共用特征')
+        for offset in range(0, len(objects), 6):
+            key = f'{kind}:{offset}'
+            batch = objects[offset:offset+6]
+            if key in stored['batches']:
+                validate_definitions(stored['batches'][key], batch, snapshot)
+                continue
+            async with semaphore:
+                result = await provider.generate('ASSET_DEFINE_'+kind, snapshot['models']['detail'], Definitions,
+                    {**context, 'objects': batch, 'catalog': [{'id': a['id'], 'name': a['name'], 'kind': a['kind']} for a in inventory]}, instruction)
+            assets = preserve_manual(result.model_dump()['assets'], snapshot)
+            validate_definitions(assets, batch, snapshot)
+            async with lock:
+                stored['batches'][key] = assets
+                completed = [a for k, values in stored['batches'].items() if k.startswith(kind+':') for a in values]
+                await checkpoint(kind, 'RUNNING', KIND_NAMES[kind]+'已整理内容', describe(completed))
+        async with lock:
+            completed = [a for k, values in stored['batches'].items() if k.startswith(kind+':') for a in values]
+            await checkpoint(kind, 'SUCCEEDED', KIND_NAMES[kind]+'定义', describe(completed) if objects else '当前脚本无需此类对象，已跳过模型调用。')
+
+    results = await asyncio.gather(*(category(k) for k in KIND_NAMES), return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    assets_by_id = {a['id']: a for values in stored['batches'].values() for a in values}
+    assets = [assets_by_id[a['id']] for a in inventory]
+    validate_definitions(assets, inventory, snapshot)
+    if steps['IMAGE_PLAN']['status'] != 'SUCCEEDED':
+        await checkpoint('IMAGE_PLAN', 'SUCCEEDED', '按需图片制作清单', '\n\n'.join(a['name']+'\n'+('\n'.join(i['name']+'：'+i['purpose']+'；'+i['requirements'] for i in a['preparation']['images']) or '暂不需要独立制作图片') for a in assets))
+    audit_instruction = ('独立核对资产与完整脚本和BRIEF。检查必要对象遗漏、重复身份、产品事实及结构断言、分类特征、空间关系、未知信息、来源语义与图片需求。'
+        '每个问题必须定位assetId和允许修改的字段，basis说明原文依据。必要修正标REQUIRED，一般优化标SUGGESTION。'
+        '缺少资料但已明确待确认不是必须返修；合理人物场景设计不是产品事实错误。不要要求凭空补产品细节。'
+        '发现遗漏时定位最相关对象preparation字段并说明缺失对象；遗漏动作必需的独立对象仍属于必须修正的问题，不能用待确认说明掩盖。受保护字段存在冲突应指出，不允许自动重写。')
+    if steps['REVIEW']['status'] != 'SUCCEEDED':
+        await checkpoint('REVIEW', 'RUNNING', '全局独立审校', '正在核对实际对象、事实依据和制作要求')
+        audit = await provider.generate('ASSET_REVIEW', snapshot['models']['creative'], AssetAudit,
+            {**context, 'inventory': inventory, 'assets': assets}, audit_instruction)
+        stored['audit'] = audit.model_dump()
+        validate_audit(stored['audit'], assets)
+        await checkpoint('REVIEW', 'SUCCEEDED', '审校结论', audit.summary+'\n'+'\n'.join(next(a['name'] for a in assets if a['id']==f.assetId)+'：'+f.issue+'；依据：'+f.basis for f in audit.findings))
+    if steps['REPAIR']['status'] != 'SUCCEEDED':
+        required = [f for f in stored['audit']['findings'] if f['severity'] == 'REQUIRED']
+        if required:
+            # Never repeatedly pay for a repair/recheck that already failed semantic review.
+            if stored.get('recheck', {}).get('findings') and any(f['severity']=='REQUIRED' for f in stored['recheck']['findings']):
+                raise ValueError('asset review still has unresolved issues')
+            if 'revised' not in stored:
+                old = {a['id']: a for a in existing}
+                if any(f['field'] in protected_fields(old.get(f['assetId'], {})) for f in required):
+                    await checkpoint('REPAIR', 'FAILED', '人工内容需要核对', '审校发现受保护内容存在问题，请查看审校依据后人工修改。')
+                    raise ValueError('protected asset field requires manual review')
+                await checkpoint('REPAIR', 'RUNNING', '修订具体字段', '\n'.join(f['issue'] for f in required))
+                patch = await provider.generate('ASSET_REPAIR', snapshot['models']['creative'], AssetRepair,
+                    {**context, 'assets': assets, 'findings': required},
+                    '仅返回findings指定assetId和field的补丁，每个准确字段一次，不返回整份目录。正常字段不改。preparation字段填结构对象、text为null；其他字段填text、preparation为null。保留身份、归属和来源引用规则。未知信息明确待确认，不编造产品事实。')
+                revised = apply_repair(assets, patch.model_dump(), stored['audit'], snapshot)
+                validate_definitions(revised, inventory, snapshot)
+                stored['revised'] = revised
+                stored['patches'] = patch.model_dump()
+                def field_text(asset: dict[str, Any], field: str) -> str:
+                    return describe([asset]) if field == 'preparation' else str(asset[field])
+                changes = '\n\n'.join(next(a['name'] for a in assets if a['id']==p.assetId)+' · '+FIELD_NAMES[p.field]+'\n修改前：'+field_text(next(a for a in assets if a['id']==p.assetId), p.field)+'\n修改后：'+field_text(next(a for a in revised if a['id']==p.assetId), p.field) for p in patch.patches)
+                stored['repairChanges'] = changes
+                await checkpoint('REPAIR', 'RUNNING', '修改内容', changes)
+            assets = stored['revised']
+            if 'recheck' not in stored:
+                audit = await provider.generate('ASSET_RECHECK', snapshot['models']['creative'], AssetAudit,
+                    {**context, 'assets': assets, 'previousFindings': required}, '核查原问题是否解决，复核修订后的完整目录。'+audit_instruction)
+                stored['recheck'] = audit.model_dump()
+                validate_audit(stored['recheck'], assets)
+                await checkpoint('REPAIR', 'RUNNING', '复核结论', stored.get('repairChanges', '')+'\n\n'+audit.summary+'\n'+'\n'.join(f.issue for f in audit.findings))
+            if any(f['severity'] == 'REQUIRED' for f in stored['recheck']['findings']):
+                raise ValueError('asset review still has unresolved issues')
+        stored['final'] = {'assets': assets, 'shots': []}
+        await checkpoint('REPAIR', 'SUCCEEDED', '修订与复核结果', (stored.get('recheck', {}).get('summary') or '没有必须修改的问题，无需修订。')+'\n\n'+stored.get('repairChanges', '')+'\n\n'+describe(assets))
+    await api.call('POST', 'complete', {'output': stored['final']})

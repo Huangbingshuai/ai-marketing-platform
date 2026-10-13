@@ -17,7 +17,7 @@ const props = defineProps<{
   nodes: ExecutionGraphNode[];
   rowTitles?: string[];
   selected: string | null;
-  edgeCount: number;
+  edgeCount?: number;
   loading?: boolean;
   error?: string;
   emptyMessage?: string | undefined;
@@ -156,7 +156,7 @@ onBeforeUnmount(() => {
         <footer>
           <span><i class="running" />执行中</span><span><i class="success" />已完成</span
           ><span><i class="warning" />需关注</span><span><i class="danger" />失败</span
-          ><span class="edge-count">{{ edgeCount }} 条执行边</span
+          ><span v-if="edgeCount !== undefined" class="edge-count">{{ edgeCount }} 条执行边</span
           ><button type="button" @click="emit('close')">
             <CheckCircle2 :size="14" />返回工作区
           </button>

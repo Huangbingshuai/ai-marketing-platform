@@ -4,12 +4,17 @@ import {
   type ProductionWorkerNode,
 } from './production-worker-policy';
 import { randomUUID } from 'node:crypto';
+import { assetExecutionDetail } from './asset-execution-detail';
+import {
+  recordAssetEdits,
+  mergePreparedAssets,
+  validatePreparedAssets,
+} from './asset-preparation.domain';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   isCustomizedStoryboardScript,
   isProductionDocument,
   isProductionPrompt,
-  PRODUCTION_STAGES,
   productionStages,
   type ProductionDocument,
   type ProductionOperation,
@@ -52,7 +57,16 @@ export const presentProductionTask = (t: CustomizedProductionTask): ProductionTa
     shotId: t.shotId,
     status: t.status as ProductionTask['status'],
     errorMessage: t.errorMessage,
-    steps,
+    steps: steps.map((step) => {
+      const detail = assetExecutionDetail(step, snapshot(t), t.output);
+      return detail ? { ...step, detail } : step;
+    }),
+    ...(snapshot(t).assetWorkflowVersion
+      ? {
+          assetWorkflowVersion: snapshot(t).assetWorkflowVersion,
+          targetAssetId: snapshot(t).targetAssetId,
+        }
+      : {}),
     progress:
       t.status === 'COMPLETED'
         ? 100
@@ -263,7 +277,7 @@ export class ProductionRepository {
         const value =
           section === 'ASSETS'
             ? {
-                assets: document.assets,
+                assets: recordAssetEdits(w.document.assets, document.assets),
                 shots: w.document.shots.map((s) => ({
                   ...s,
                   bindings: (
@@ -296,12 +310,21 @@ export class ProductionRepository {
           const artifacts = await this.artifacts(tx, p, r),
             story = artifacts.find((a) => a.id === w.source.artifactId)!;
           if (section === 'ASSETS') {
+            const brief = artifacts.find((a) => a.artifactKey === 'customized-brief');
+            const dependencies = brief ? [story, brief] : [story];
             if (!value.assets.some((a) => a.kind === 'PRODUCT'))
               invalid('请保留独立的产品资产定义');
             for (const a of value.assets)
-              await this.commit(tx, p, r, 'SHOT_PROMPT', `customized-object:${a.id}`, a.name, a, [
-                story,
-              ]);
+              await this.commit(
+                tx,
+                p,
+                r,
+                'SHOT_PROMPT',
+                `customized-object:${a.id}`,
+                a.name,
+                a,
+                dependencies,
+              );
             // Removed objects invalidate only their actual dependent shots/prompts.
             for (const a of artifacts.filter(
               (a) =>
@@ -319,7 +342,7 @@ export class ProductionRepository {
               'customized-asset-catalog',
               '资产目录',
               { assets: value.assets },
-              [story],
+              dependencies,
             );
           } else {
             if (
@@ -459,6 +482,7 @@ export class ProductionRepository {
     key: string,
     shotId: string | null,
     models: Snapshot['models'],
+    targetAssetId: string | null = null,
   ) {
     return this.db.$transaction(
       async (tx) => {
@@ -471,7 +495,8 @@ export class ProductionRepository {
           if (
             previous.workflowRunId !== r ||
             previous.operation !== operation ||
-            previous.shotId !== shotId
+            previous.shotId !== shotId ||
+            (snapshot(previous).targetAssetId ?? null) !== targetAssetId
           )
             return customizedConflict('请求标识已用于其他操作');
           return presentProductionTask(previous);
@@ -484,6 +509,17 @@ export class ProductionRepository {
         if (active) return customizedConflict('已有制作任务执行中，请等待完成');
         const artifacts = await this.artifacts(tx, p, r);
         const source = [artifacts.find((a) => a.id === w.source.artifactId)!];
+        if (
+          targetAssetId &&
+          (operation !== 'ASSETS' || !w.document.assets.some((a) => a.id === targetAssetId))
+        )
+          invalid('选定资产不存在');
+        const brief = artifacts.find((a) => a.artifactKey === 'customized-brief');
+        if (operation === 'ASSETS') {
+          if (!brief || brief.freshness !== 'CURRENT')
+            return customizedConflict('信息卡已变化，请先确认创作依据');
+          source.push(brief);
+        }
         if (operation !== 'ASSETS') {
           const catalog = artifacts.find(
             (a) => a.artifactKey === 'customized-asset-catalog' && a.freshness === 'CURRENT',
@@ -513,6 +549,9 @@ export class ProductionRepository {
           models,
           operation,
           shotId,
+          ...(operation === 'ASSETS'
+            ? { assetWorkflowVersion: 2 as const, targetAssetId, identitySeed: randomUUID() }
+            : {}),
         };
         const t = await tx.customizedProductionTask.create({
           data: {
@@ -523,7 +562,7 @@ export class ProductionRepository {
             idempotencyKey: key,
             inputSnapshot: json(input),
             steps: json(
-              productionStages(operation).map((s) => ({
+              productionStages(operation, input.assetWorkflowVersion).map((s) => ({
                 id: s.id,
                 status: 'PENDING',
                 title: s.label,
@@ -653,7 +692,7 @@ export class ProductionRepository {
     return this.db.$transaction(async (tx) => {
       const t = await this.lease(tx, p, id, token, node);
       if (
-        !PRODUCTION_STAGES.some((s) => s.id === step.id) ||
+        !(t.steps as unknown as ProductionStep[]).some((s) => s.id === step.id) ||
         step.id === 'SAVE' ||
         !['RUNNING', 'SUCCEEDED', 'FAILED'].includes(step.status)
       )
@@ -712,8 +751,15 @@ export class ProductionRepository {
           );
         } else {
           const value = output as ProductionDocument;
-          if (!isProductionDocument(value) || !value.assets.some((a) => a.kind === 'PRODUCT'))
+          if (
+            !isProductionDocument(value) ||
+            (!input.targetAssetId && !value.assets.some((a) => a.kind === 'PRODUCT'))
+          )
             invalid('资产或分镜结果不完整');
+          if (input.assetWorkflowVersion === 2) {
+            const issue = validatePreparedAssets(value, input);
+            if (issue) invalid(issue);
+          }
           if (
             input.operation === 'SHOTS' &&
             (!value.shots.length ||
@@ -735,10 +781,11 @@ export class ProductionRepository {
             input.operation === 'ASSETS'
               ? {
                   ...value,
+                  assets: mergePreparedAssets(input.document.assets, value.assets),
                   shots: input.document.shots.map((s) => ({
                     ...s,
                     bindings: s.bindings.filter((b) =>
-                      value.assets.some((a) => a.id === b.assetId),
+                      [...input.document.assets, ...value.assets].some((a) => a.id === b.assetId),
                     ),
                   })),
                 }

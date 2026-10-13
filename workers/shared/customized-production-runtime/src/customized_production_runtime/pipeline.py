@@ -116,7 +116,8 @@ def target_duration(snapshot: dict[str, Any]) -> float:
 def story_context(script: dict[str, Any]) -> dict[str, Any]:
     # Narrative beat timings are an outline, not locked shot durations. The full
     # story remains authoritative; production must fit its own actual actions.
-    value = {k: v for k, v in script.items() if k not in ('shots', 'assets', 'structure')}
+    excluded = ('shots', 'assets') if script.get('creation') else ('shots', 'assets', 'structure')
+    value = {k: v for k, v in script.items() if k not in excluded}
     if 'story' in value:
         value['story'] = {k: v for k, v in value['story'].items() if k != 'beats'}
     return value
@@ -157,6 +158,10 @@ def describe(operation: str, value: dict[str, Any]) -> str:
 
 
 async def run(api: Api, provider: Provider, claim: dict[str, Any]) -> None:
+    if claim['input'].get('assetWorkflowVersion') == 2 and claim['input']['operation'] == 'ASSETS':
+        from .asset_pipeline import run_assets
+        await run_assets(api, provider, claim)
+        return
     snapshot = claim['input']
     operation = snapshot['operation']
     checkpoints = {s['id']: s for s in claim['steps']}
@@ -183,6 +188,8 @@ async def run(api: Api, provider: Provider, claim: dict[str, Any]) -> None:
         schema = ShotList
         instruction = '根据完整故事和已确认资产目录拆分为连续分镜，时长合计与目标相等。镜头之间动作和空间衔接自然，给出画面、景别、运镜、对白、声音、氛围。产品事实与结构位置以brief及已确认资产为准，故事或plan中的未经确认细节不能覆盖它们。先核对每镜实际时间容量，不在短镜头塞入长广播、对白与多步操作；可以缩短广播或调整各镜时长。省略耗时操作时必须明确实际剪辑切点、哪些操作不展示、切后哪种完成状态可见，不能只写快速利落、压缩动作或跟拍来假装时间省略。接线需说明两端已连接或实际接入过程，收纳前须先将充电器从电源插座拔离，再合插脚；省略动作须明确交代省略后的状态，不能让物体瞬移。bindings仅绑定当前镜头实际出场或需要参考的对象，禁止把全部目录塞进每镜。只引用给定资产id，共用外观不能随镜头跳变。'
     context['operation'] = operation
+    if snapshot['script'].get('creation'):
+        instruction += '保留脚本所选视频类型、核心创意和有序篇章表达，按正文预计时长制作；creation.referenceDurationSeconds只是原参考，不能强套回分镜。品牌广告可以无人无对白，不改写成产品操作短剧。'
     audit_instruction = {
         'ASSETS': '本次仅审校result.assets资产目录，不审校或复述脚本分镜。逐项核对description、knownFacts、designNotes、imageRequirements与简报/故事的具体依据，检查必要对象遗漏、重复身份、产品结构位置与接口细节的无依据断言、连接关系和场景设计矛盾。产品未知细节须留待确认，不能由常识补成事实；允许的人物与场景创作设定不误判为产品事实错误。summary说明实际资产字段的核查结论。',
         'SHOTS': '本次仅审校result.shots完整分镜，逐镜而非凭故事概述判断。必须核对：每镜广播/对白的实际说话时间与操作耗时是否容纳于durationSeconds；接线两端是否明确已连接；从墙插拔离充电器之后才能合脚和收纳；省略过程是否明确状态衔接；插脚与端口具体位置是否有brief依据。另核对空间连续性、资产定义一致性及本镜实际绑定子集。summary提供这些实际检查的结论，不以“基本匹配”掩盖未检查项。',

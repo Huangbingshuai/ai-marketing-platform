@@ -1,5 +1,12 @@
 import type { CustomizedStoryboardScript } from './customized-storyboard';
 import type { StoryboardSource, StoryboardStatus } from './customized-storyboard-generation';
+import {
+  ASSET_STAGES,
+  ASSET_EDITABLE_FIELDS,
+  isAssetPreparation,
+  type AssetPreparation,
+} from './customized-asset-preparation';
+export * from './customized-asset-preparation';
 
 export const PRODUCTION_ASSET_KINDS = ['PRODUCT', 'CHARACTER', 'SCENE', 'PROP'] as const;
 export type ProductionAsset = {
@@ -13,6 +20,9 @@ export type ProductionAsset = {
   /** Future image deliverables, not generated files. Optional for historical records. */
   imageRequirements?: string;
   image?: { assetId: string; version: number } | null;
+  preparation?: AssetPreparation;
+  /** Maintained by the API; model output cannot clear these locks. */
+  manualFields?: string[];
 };
 export type ProductionShot = {
   id: string;
@@ -38,6 +48,9 @@ export type ProductionInput = {
   models: { creative: string; detail: string };
   operation: ProductionOperation;
   shotId: string | null;
+  assetWorkflowVersion?: 2;
+  targetAssetId?: string | null;
+  identitySeed?: string;
 };
 export const PRODUCTION_STAGES = [
   { id: 'SNAPSHOT', label: '创作依据', description: '读取本次选定的故事与已确认资料' },
@@ -47,7 +60,8 @@ export const PRODUCTION_STAGES = [
   { id: 'REPAIR', label: '定向修订', description: '针对具体问题修订并复核；无需修改时说明原因' },
   { id: 'SAVE', label: '保存结果', description: '保存通过校验的实际产物' },
 ] as const;
-export function productionStages(operation: ProductionOperation) {
+export function productionStages(operation: ProductionOperation, assetWorkflowVersion?: number) {
+  if (operation === 'ASSETS' && assetWorkflowVersion === 2) return ASSET_STAGES;
   const names =
     operation === 'ASSETS'
       ? { PLAN: '实体与依据规划', GENERATE: '统一定义与制作要求' }
@@ -59,13 +73,28 @@ export function productionStages(operation: ProductionOperation) {
     label: names[stage.id as keyof typeof names] ?? stage.label,
   }));
 }
-export type ProductionStep = { id: string; status: string; title: string; content: string };
+/** Read-only business projection. Not part of Worker checkpoint writes. */
+export type ProductionExecutionDetail = {
+  title: string;
+  summary: string;
+  sections: { title: string; fields: { label: string; value: string }[] }[];
+  emptyMessage?: string;
+};
+export type ProductionStep = {
+  id: string;
+  status: string;
+  title: string;
+  content: string;
+  detail?: ProductionExecutionDetail;
+};
 export type ProductionTask = {
   id: string;
   operation: ProductionOperation;
   status: StoryboardStatus;
   progress: number;
   steps: ProductionStep[];
+  assetWorkflowVersion?: 2;
+  targetAssetId?: string | null;
   errorMessage: string | null;
   shotId: string | null;
 };
@@ -93,6 +122,10 @@ export function isProductionAsset(v: unknown): v is ProductionAsset {
     id(v.name) &&
     PRODUCTION_ASSET_KINDS.includes(v.kind as ProductionAsset['kind']) &&
     ['description', 'knownFacts', 'designNotes', 'sourceText'].every((k) => text(v[k])) &&
+    (v.preparation === undefined || isAssetPreparation(v.preparation)) &&
+    (v.manualFields === undefined ||
+      (Array.isArray(v.manualFields) &&
+        v.manualFields.every((k) => ASSET_EDITABLE_FIELDS.includes(k)))) &&
     (v.imageRequirements === undefined || text(v.imageRequirements)) &&
     (v.image == null ||
       (obj(v.image) &&

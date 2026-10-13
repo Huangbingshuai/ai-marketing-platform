@@ -21,6 +21,7 @@ import WorkflowInformationDialog from '../../../platform/workflow/components/Wor
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
+import ProductionAssetPreparation from './ProductionAssetPreparation.vue';
 const props = defineProps<{
   projectId: string;
   assets: ProductionAsset[];
@@ -34,6 +35,7 @@ const emit = defineEmits<{
   remove: [id: string];
   merge: [id: string];
   edit: [];
+  regenerate: [id: string];
 }>();
 const categories = [
   { id: 'PRODUCT', name: '产品', icon: Box, description: '产品形象、结构与标识' },
@@ -77,6 +79,12 @@ function openDetail(a: ProductionAsset) {
 function beginEdit() {
   emit('edit');
   detailEditing.value = true;
+}
+function regenerateSelected() {
+  const id = selected.value?.id;
+  if (!id || props.locked) return;
+  detailId.value = '';
+  emit('regenerate', id);
 }
 function apply() {
   if (!draft.value?.name.trim() || props.locked) return;
@@ -256,6 +264,14 @@ watch(
       </div>
       <div class="detail-heading">
         <h3>资产定义</h3>
+        <button
+          v-if="!detailEditing"
+          class="studio-button"
+          :disabled="locked"
+          @click="regenerateSelected"
+        >
+          重新整理此项
+        </button>
         <button v-if="!detailEditing" class="studio-button" :disabled="locked" @click="beginEdit">
           <Pencil :size="14" />编辑定义
         </button>
@@ -266,7 +282,10 @@ watch(
           label="资产名称"
           :readonly="!detailEditing || locked"
         /><label class="category-field"
-          >资产类别<select v-model="draft.kind" :disabled="!detailEditing || locked">
+          >资产类别<select
+            v-model="draft.kind"
+            :disabled="!detailEditing || locked || !!draft.preparation"
+          >
             <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select></label
         >
@@ -296,6 +315,11 @@ watch(
         multiline
         :readonly="!detailEditing || locked"
         @update:model-value="draft.imageRequirements = $event"
+      />
+      <ProductionAssetPreparation
+        :asset="draft"
+        :readonly="!detailEditing || locked"
+        @update="draft.preparation = $event"
       />
       <details>
         <summary>来源依据与使用镜头</summary>

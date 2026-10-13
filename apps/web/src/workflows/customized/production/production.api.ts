@@ -50,6 +50,7 @@ export const productionApi = {
     operation: ProductionOperation,
     shotId?: string,
     signal?: AbortSignal,
+    targetAssetId?: string,
   ) =>
     call<ProductionTask>(
       p,
@@ -60,6 +61,7 @@ export const productionApi = {
         expectedRevision,
         operation,
         shotId,
+        targetAssetId,
         idempotencyKey: crypto.randomUUID(),
       },
       signal,

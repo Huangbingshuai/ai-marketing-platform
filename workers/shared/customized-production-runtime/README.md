@@ -2,7 +2,8 @@
 
 共用代码不等于共用消费者。`customized-assets` 与 `customized-production` 分别拥有入口、锁文件、镜像、队列和凭据；角色在入口固定，不通过环境变量开放任意 operation。
 
-- `pipeline.py`：沿用原定制制作流程、Pydantic Schema、审校、修订和分片检查点。
+- `pipeline.py`：视频制作与历史资产任务的审校、修订和分片检查点；按输入版本分发新资产任务。
+- `asset_pipeline.py` / `asset_models.py`：资产 v2 对象识别、四类定义、精确来源、独立审校与字段补丁；保留人工内容和任务内检查点。
 - `provider.py`：结构化模型请求、有限重试、超时和有界并发；不依赖脚本 Worker 内部模块。
 - `consumer.py`：角色限制、领取、心跳、取消、失败回调与旧队列资产消息转交。
 - `ai_runtime.internal_api`：共用受保护 HTTP 请求，携带 attempt token，保留原有有限请求重试。

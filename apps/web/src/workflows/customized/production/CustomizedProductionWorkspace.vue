@@ -36,6 +36,7 @@ import ProductionAssetStudio from './ProductionAssetStudio.vue';
 import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
 import ProductionShotRenderPanel from './ProductionShotRenderPanel.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
+import ProductionAssetPreparation from './ProductionAssetPreparation.vue';
 const props = defineProps<{ projectId: string; workflowRunId: string; mode: 'ASSETS' | 'SHOTS' }>();
 const emit = defineEmits<{ back: []; next: []; saved: [] }>();
 const workspace = ref<ProductionWorkspace | null>(null),
@@ -95,13 +96,33 @@ const shot = computed(
 const prompt = computed(() =>
   workspace.value?.prompts.find((p) => p.value.shotId === shot.value?.id),
 );
+const graphTasks = computed(() =>
+  tasks.value.filter((t) =>
+    props.mode === 'ASSETS' ? t.operation === 'ASSETS' : t.operation !== 'ASSETS',
+  ),
+);
 const graphTask = computed(
-  () => tasks.value.find((t) => t.id === graphTaskId.value) ?? tasks.value[0],
+  () => graphTasks.value.find((t) => t.id === graphTaskId.value) ?? graphTasks.value[0],
 );
 const graphStages = computed(() =>
-  productionStages(graphTask.value?.operation ?? props.mode).filter(
-    (s) => !graphTask.value || graphTask.value.steps.some((step) => step.id === s.id),
-  ),
+  productionStages(
+    graphTask.value?.operation ?? props.mode,
+    graphTask.value?.assetWorkflowVersion ?? (graphTask.value ? undefined : 2),
+  ).filter((s) => !graphTask.value || graphTask.value.steps.some((step) => step.id === s.id)),
+);
+const graphRows = computed(() =>
+  graphTask.value?.assetWorkflowVersion === 2 || (!graphTask.value && props.mode === 'ASSETS')
+    ? [
+        ['SNAPSHOT'],
+        ['INVENTORY'],
+        ['IDENTITY'],
+        ['PRODUCT', 'CHARACTER', 'SCENE', 'PROP'],
+        ['IMAGE_PLAN'],
+        ['REVIEW'],
+        ['REPAIR'],
+        ['SAVE'],
+      ]
+    : graphStages.value.map((s) => [s.id]),
 );
 const graphNodes = computed(() =>
   graphStages.value.map((n) => {
@@ -129,6 +150,9 @@ const graphNodes = computed(() =>
   }),
 );
 const graphDetail = computed(() => graphTask.value?.steps.find((s) => s.id === graphNode.value));
+watch(graphStages, (stages) => {
+  if (!stages.some((s) => s.id === graphNode.value)) graphNode.value = stages[0]?.id ?? 'SNAPSHOT';
+});
 const boundAssets = computed(
   () =>
     shot.value?.bindings
@@ -283,7 +307,7 @@ async function save(confirm = true) {
     if (scope === controller) busy.value = false;
   }
 }
-async function generate(operation: ProductionOperation, shotId?: string) {
+async function generate(operation: ProductionOperation, shotId?: string, targetAssetId?: string) {
   if (!workspace.value || busy.value || running.value) return;
   if (promptDirty.value && !(await savePrompt())) return;
   if (dirty.value && !(await save())) return;
@@ -293,7 +317,12 @@ async function generate(operation: ProductionOperation, shotId?: string) {
   ) {
     if (
       !(await requestActionConfirmation({
-        title: operation === 'ASSETS' ? '重新整理资产目录？' : '重新生成分镜？',
+        title:
+          operation === 'ASSETS'
+            ? targetAssetId
+              ? '重新整理选定资产？'
+              : '重新整理资产目录？'
+            : '重新生成分镜？',
         description: '新结果完成后保存为可编辑草稿，现有已确认内容保留到你再次保存。',
         confirmLabel: '开始生成',
       }))
@@ -311,6 +340,7 @@ async function generate(operation: ProductionOperation, shotId?: string) {
       operation,
       shotId,
       scope.signal,
+      targetAssetId,
     );
     if (scope !== controller) return;
     workspace.value.tasks = [t, ...workspace.value.tasks];
@@ -580,6 +610,7 @@ defineExpose({ flushPendingEdits });
         @add="createAsset"
         @remove="removeAsset"
         @merge="mergeSource = $event"
+        @regenerate="generate('ASSETS', undefined, $event)"
       />
       <div v-else class="video-workspace">
         <aside class="shot-directory">
@@ -784,6 +815,7 @@ defineExpose({ flushPendingEdits });
       @close="inspectAsset = null"
     >
       <div v-if="inspectAsset" class="asset-inspection">
+        <ProductionAssetPreparation :asset="inspectAsset" readonly />
         <WorkflowInformationField
           :model-value="inspectAsset.description"
           label="公共形象与特征"
@@ -848,43 +880,85 @@ defineExpose({ flushPendingEdits });
     </WorkflowInformationDialog>
     <WorkflowExecutionGraphDialog
       :open="graphOpen"
-      title="当前制作工作流"
+      :title="mode === 'ASSETS' ? '当前资产整理工作流' : '当前制作工作流'"
       eyebrow="执行详情"
       description="查看本次任务的实际内容与审校结果"
-      :rows="graphStages.map((s) => [s.id])"
+      :rows="graphRows"
       :nodes="graphNodes"
       :selected="graphNode"
-      :edge-count="Math.max(0, graphStages.length - 1)"
       @select="graphNode = $event"
       @close="graphOpen = false"
-      ><template #toolbar
-        ><select v-model="graphTaskId">
-          <option value="">最近一次任务</option>
-          <option v-for="t in tasks" :key="t.id" :value="t.id">
-            {{
-              t.operation === 'ASSETS'
-                ? '资产整理'
-                : t.operation === 'SHOTS'
-                  ? '分镜创作'
-                  : '镜头提示词'
-            }}
-            <template v-if="t.operation === 'PROMPT'">
-              · {{ document.shots.find((s) => s.id === t.shotId)?.title ?? '历史镜头' }}
-            </template>
-            ·
-            {{ t.status === 'COMPLETED' ? '已完成' : t.status === 'RUNNING' ? '执行中' : '未完成' }}
-          </option>
-        </select></template
-      >
+    >
       <article v-if="graphDetail" class="execution-content">
-        <h3>{{ graphDetail.title }}</h3>
-        <p>{{ graphDetail.content || '此步骤尚未产生内容' }}</p>
+        <template v-if="graphDetail.detail">
+          <h3>{{ graphDetail.detail.title }}</h3>
+          <p v-if="graphDetail.detail.summary" class="execution-summary">
+            {{ graphDetail.detail.summary }}
+          </p>
+          <section
+            v-for="(section, index) in graphDetail.detail.sections"
+            :key="index"
+            class="execution-business-section"
+          >
+            <h4>{{ section.title }}</h4>
+            <dl>
+              <template v-for="(field, fieldIndex) in section.fields" :key="fieldIndex">
+                <dt>{{ field.label }}</dt>
+                <dd>{{ field.value }}</dd>
+              </template>
+            </dl>
+          </section>
+          <p
+            v-if="!graphDetail.detail.sections.length && graphDetail.detail.emptyMessage"
+            class="execution-empty"
+          >
+            {{ graphDetail.detail.emptyMessage }}
+          </p>
+        </template>
+        <template v-else>
+          <h3>{{ graphDetail.title }}</h3>
+          <p>{{ graphDetail.content || '此步骤尚未产生内容' }}</p>
+        </template>
       </article>
-      <p v-else>尚无执行记录。开始制作后可查看真实内容。</p></WorkflowExecutionGraphDialog
+      <p v-else>开始整理后，可查看每一步生成的内容与核对结果。</p></WorkflowExecutionGraphDialog
     >
   </section>
 </template>
 <style scoped>
+.execution-summary {
+  color: #73829a;
+  font-size: 13px;
+}
+.execution-business-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #e5ebf3;
+}
+.execution-business-section h4 {
+  margin: 0 0 14px;
+  color: #253751;
+  font-size: 15px;
+}
+.execution-business-section dl {
+  margin: 0;
+}
+.execution-business-section dt {
+  margin-top: 14px;
+  color: #75859c;
+  font-size: 12px;
+}
+.execution-business-section dd {
+  margin: 5px 0 0;
+  color: #42526a;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.execution-empty {
+  color: #8190a7;
+  font-size: 13px;
+}
 .production-page {
   padding: 26px 28px;
   color: #23344d;

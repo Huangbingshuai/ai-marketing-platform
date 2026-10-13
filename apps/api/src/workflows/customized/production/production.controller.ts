@@ -61,12 +61,27 @@ class Start extends Scope {
   @IsIn(['ASSETS', 'SHOTS', 'PROMPT']) operation!: ProductionOperation;
   @IsString() @MaxLength(200) idempotencyKey!: string;
   @IsOptional() @IsString() @MaxLength(200) shotId?: string;
+  @IsOptional() @IsString() @MaxLength(200) targetAssetId?: string;
 }
 class Worker {
   @IsUUID() projectId!: string;
 }
 class Step implements ProductionStep {
-  @IsIn(['SNAPSHOT', 'PLAN', 'GENERATE', 'REVIEW', 'REPAIR']) id!: string;
+  @IsIn([
+    'SNAPSHOT',
+    'PLAN',
+    'GENERATE',
+    'INVENTORY',
+    'IDENTITY',
+    'PRODUCT',
+    'CHARACTER',
+    'SCENE',
+    'PROP',
+    'IMAGE_PLAN',
+    'REVIEW',
+    'REPAIR',
+  ])
+  id!: string;
   @IsIn(['RUNNING', 'SUCCEEDED', 'FAILED']) status!: string;
   @IsString() @MaxLength(200) title!: string;
   @IsString() @MaxLength(100000) content!: string;
@@ -139,6 +154,7 @@ export class ProductionService implements OnModuleInit, OnModuleDestroy {
           this.config.get<string>('CUSTOMIZED_STORYBOARD_DETAIL_MODEL') ||
           'doubao-seed-2-1-turbo-260628',
       },
+      b.targetAssetId ?? null,
     );
   }
   async task(p: string, id: string) {

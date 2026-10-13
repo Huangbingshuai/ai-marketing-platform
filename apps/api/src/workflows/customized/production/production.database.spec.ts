@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { it, expect, vi } from 'vitest';
 import {
   emptyCustomizedBrief,
+  PRODUCTION_STAGES,
   type CustomizedStoryboardScript,
   type ProductionDocument,
 } from '@ai-marketing/contracts';
@@ -97,6 +98,17 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       const storyTask = await stories.create(p, root.id, 1, randomUUID(), {
         creative: 'controlled',
         detail: 'controlled',
+      });
+      // Keep this downstream isolation fixture independent of new writing formats.
+      const sourceTask = await db.customizedStoryboardTask.findUniqueOrThrow({
+        where: { id: storyTask.id },
+      });
+      const sourceInput = { ...(sourceTask.inputSnapshot as Record<string, unknown>) };
+      delete sourceInput.storyFormat;
+      delete sourceInput.graphVersion;
+      await db.customizedStoryboardTask.update({
+        where: { id: storyTask.id },
+        data: { inputSnapshot: sourceInput as Prisma.InputJsonValue },
       });
       const storyClaim = await stories.claim(p, storyTask.id);
       const storyInput = storyClaim.input as unknown as {
@@ -260,6 +272,24 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       await expect(repo.heartbeat(p, canceled.id, lease.attemptToken!)).rejects.toThrow();
       // Transient failures preserve checkpoints, issue a new lease, and never reuse the old token.
       const recovery = await repo.start(p, r, revision, 'ASSETS', randomUUID(), null, models);
+      // A task queued before the v2 deployment must retain its original six checkpoints.
+      const legacyTask = await db.customizedProductionTask.findUniqueOrThrow({
+        where: { id: recovery.id },
+      });
+      const legacyInput = { ...(legacyTask.inputSnapshot as Record<string, unknown>) };
+      delete legacyInput.assetWorkflowVersion;
+      await db.customizedProductionTask.update({
+        where: { id: recovery.id },
+        data: {
+          inputSnapshot: legacyInput as Prisma.InputJsonValue,
+          steps: PRODUCTION_STAGES.map((s) => ({
+            id: s.id,
+            status: 'PENDING',
+            title: s.label,
+            content: '',
+          })),
+        },
+      });
       const queued = await db.jobOutbox.findFirstOrThrow({ where: { aggregateId: recovery.id } });
       expect(queued.routingKey).toBe('customized.assets.requested');
       await db.jobOutbox.update({
@@ -339,6 +369,53 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       revision = (await repo.save(p, r, revision, doc, 'ASSETS', true)).revision;
       const secondChange = await repo.workspace(p, r);
       expect(secondChange.prompts.find((v) => v.value.shotId === 's2')?.stale).toBe(true);
+      const modern = await repo.start(p, r, revision, 'ASSETS', randomUUID(), null, models, 'cup');
+      expect(modern.assetWorkflowVersion).toBe(2);
+      expect(modern.steps.some((s) => s.id === 'INVENTORY')).toBe(true);
+      const modernLease = await repo.claim(p, modern.id, 'ASSETS');
+      const modernInput = modernLease.input as unknown as {
+        document: ProductionDocument;
+        sources: { id: string }[];
+      };
+      expect(modernInput.sources).toHaveLength(2);
+      const cup = modernInput.document.assets.find((a) => a.id === 'cup')!;
+      const result = {
+        assets: [
+          {
+            ...cup,
+            preparation: {
+              aliases: [],
+              usage: '故事产品',
+              treatment: 'INDEPENDENT' as const,
+              parentId: null,
+              sources: [
+                { source: 'BRIEF' as const, path: '/productName', quote: '陶瓷杯', field: 'name' },
+              ],
+              details: [{ key: 'material', value: '陶瓷' }],
+              questions: [],
+              images: [],
+            },
+          },
+        ],
+        shots: [],
+      };
+      for (const step of modern.steps.filter((s) => s.id !== 'SAVE'))
+        await repo.checkpoint(
+          p,
+          modern.id,
+          modernLease.attemptToken!,
+          { ...step, status: 'SUCCEEDED', title: '受控结果', content: '实际测试对象' },
+          { final: result },
+          'ASSETS',
+        );
+      await repo.complete(p, modern.id, modernLease.attemptToken!, result, 'ASSETS');
+      await repo.complete(p, modern.id, modernLease.attemptToken!, result, 'ASSETS');
+      const restored = await repo.workspace(p, r);
+      expect(restored.document.assets).toHaveLength(2);
+      expect(restored.document.shots).toHaveLength(2);
+      expect(restored.document.assets.find((a) => a.id === 'cup')?.description).toBe(
+        cup.description,
+      );
       expect(await db.jobOutbox.count({ where: { projectId: p, status: 'PENDING' } })).toBe(0);
     } finally {
       delivery.mockRestore();
