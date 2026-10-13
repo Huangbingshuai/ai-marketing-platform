@@ -574,7 +574,6 @@ defineExpose({ guardEditor });
       :open="graphOpen"
       :project-id="projectId"
       :task="task"
-      :script-id="draft.activeScriptId"
       :scripts="draft.scripts"
       @close="graphOpen = false"
       @open-script="

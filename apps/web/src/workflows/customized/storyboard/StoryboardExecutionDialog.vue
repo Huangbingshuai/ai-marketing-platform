@@ -21,12 +21,10 @@ const props = defineProps<{
   open: boolean;
   projectId: string;
   task: StoryboardTask | null;
-  scriptId: string | null;
   scripts: { id: string; name: string }[];
 }>();
 const emit = defineEmits<{ close: []; openScript: [id: string] }>();
 const selected = ref<string | null>(null),
-  selectedScript = ref(''),
   detail = ref<StoryboardDetail | null>(null),
   loading = ref(false),
   error = ref(''),
@@ -43,17 +41,17 @@ const stages = computed(() =>
   ),
 );
 const rows = computed(() => stages.value.map((n) => [n.id]));
-const scriptIds = computed(() => [
-  ...new Set(props.task?.steps.map((s) => s.scriptId).filter(Boolean) ?? []),
+const savedScripts = computed(() => [
+  ...new Set(
+    props.task?.steps
+      .filter((step) => step.nodeId === 'SAVE' && step.status === 'SUCCEEDED')
+      .map((step) => step.scriptId)
+      .filter((id): id is string => !!id) ?? [],
+  ),
 ]);
 const nodes = computed(() =>
   stages.value.map((n) => {
-    const steps =
-      props.task?.steps.filter(
-        (s) =>
-          s.nodeId === n.id &&
-          (!selectedScript.value || !s.scriptId || s.scriptId === selectedScript.value),
-      ) ?? [];
+    const steps = props.task?.steps.filter((s) => s.nodeId === n.id) ?? [];
     const status = steps.some((s) => s.status === 'RUNNING')
       ? 'RUNNING'
       : steps.some((s) => s.status === 'FAILED')
@@ -99,7 +97,7 @@ async function load(append = false) {
       props.projectId,
       props.task.id,
       selected.value,
-      selectedScript.value,
+      '',
       page.value,
       scope.signal,
     );
@@ -119,14 +117,12 @@ async function load(append = false) {
     if (scope === controller) loading.value = false;
   }
 }
-watch([() => props.open, () => props.projectId, () => props.task?.id, () => props.scriptId], () => {
-  selectedScript.value =
-    props.scriptId && scriptIds.value.includes(props.scriptId) ? props.scriptId : '';
+watch([() => props.open, () => props.projectId, () => props.task?.id], () => {
   selected.value = null;
   controller?.abort();
   detail.value = null;
 });
-watch([selected, selectedScript], () => void load());
+watch(selected, () => void load());
 watch(
   () => props.task?.updatedAt,
   () => {
@@ -153,19 +149,6 @@ onBeforeUnmount(() => controller?.abort());
     @close="emit('close')"
     @select="selected = $event"
   >
-    <template #toolbar
-      ><div v-if="task" class="storyboard-graph-filter">
-        <label
-          >查看方案
-          <select v-model="selectedScript">
-            <option value="">全部方案</option>
-            <option v-for="(id, index) in scriptIds" :key="id" :value="id">
-              {{ scripts.find((s) => s.id === id)?.name || `创作方案 ${index + 1}` }}
-            </option>
-          </select></label
-        >
-      </div></template
-    >
     <div v-if="!selected" class="node-detail-empty">
       <Workflow :size="30" /><strong>选择节点查看结果</strong>
       <p>
@@ -209,20 +192,16 @@ onBeforeUnmount(() => controller?.abort());
             <p v-if="!section.items.length" class="node-detail-no-fields">尚无已保存结果</p>
           </div>
         </details>
-        <BaseButton
-          v-if="
-            selected === 'SAVE' &&
-            selectedScript &&
-            task?.steps.some(
-              (s) =>
-                s.nodeId === 'SAVE' && s.scriptId === selectedScript && s.status === 'SUCCEEDED',
-            )
-          "
-          type="button"
-          @click="emit('openScript', selectedScript)"
-        >
-          打开该脚本
-        </BaseButton>
+        <div v-if="selected === 'SAVE' && savedScripts.length" class="saved-script-actions">
+          <BaseButton
+            v-for="(id, index) in savedScripts"
+            :key="id"
+            type="button"
+            @click="emit('openScript', id)"
+          >
+            打开{{ scripts.find((s) => s.id === id)?.name || `创作方案 ${index + 1}` }}
+          </BaseButton>
+        </div>
         <BaseButton
           v-if="detail.hasMore"
           type="button"
@@ -240,17 +219,10 @@ onBeforeUnmount(() => controller?.abort());
   </WorkflowExecutionGraphDialog>
 </template>
 <style scoped>
-.storyboard-graph-filter {
-  padding: 0 20px 12px;
-  color: #61738c;
-  font-size: 12px;
-}
-.storyboard-graph-filter select {
-  padding: 8px 12px;
-  margin-left: 12px;
-  border: 1px solid #dbe4f6;
-  border-radius: 8px;
-  background: white;
+.saved-script-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .storyboard-result-text {
   white-space: pre-wrap;
