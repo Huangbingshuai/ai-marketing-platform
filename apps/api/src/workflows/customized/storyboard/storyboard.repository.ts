@@ -2,7 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   storyboardStages,
-  SCRIPT_ROUTE_VERSION,
+  scriptStrategyVersion,
+  COMMERCE_CREATION_VERSIONS,
+  DRAMA_CREATION_VERSIONS,
+  isDramaStrategy,
+  validateDramaDevelopment,
+  validateDramaSelection,
+  isCommerceStrategy,
+  isPresenterStrategy,
+  validatePresenterDevelopment,
+  validateCommerceDevelopment,
+  validateCommerceSelection,
   validateBrandDevelopment,
   validateBrandSelection,
   isSharedScriptStage,
@@ -50,6 +60,11 @@ const missing = () => new ApiHttpException('分镜记录不存在', 404, 'ASSET_
 const invalid = (message: string): never => {
   throw new ApiHttpException(message, 400, 'VALIDATION_ERROR');
 };
+export function storyboardHistoryConcept(scriptId: string, value: unknown, route?: StoryboardInput['routeId']) {
+  if (!isCustomizedStoryboardScript(value)) return [];
+  if ((route === 'ECOMMERCE' || route === 'DRAMA') && value.creation?.videoType && value.creation.videoType !== route) return [];
+  return [{ scriptId, name: value.name, synopsis: value.synopsis }];
+}
 const defaults: StoryboardSettings = {
   videoType: 'BRAND_AD',
   structureSections: [],
@@ -345,10 +360,10 @@ export class StoryboardRepository {
         routeId: state.settings.videoType ?? 'DRAMA',
         // Freeze strategy versions: a resumed task never adopts a newer creative policy.
         strategyVersions: {
-          concept: SCRIPT_ROUTE_VERSION,
-          story: SCRIPT_ROUTE_VERSION,
-          review: SCRIPT_ROUTE_VERSION,
-          repair: SCRIPT_ROUTE_VERSION,
+          concept: scriptStrategyVersion(state.settings.videoType ?? 'DRAMA'),
+          story: scriptStrategyVersion(state.settings.videoType ?? 'DRAMA'),
+          review: scriptStrategyVersion(state.settings.videoType ?? 'DRAMA'),
+          repair: scriptStrategyVersion(state.settings.videoType ?? 'DRAMA'),
         },
         source: this.source(b),
         brief: b.payload,
@@ -379,9 +394,7 @@ export class StoryboardRepository {
             (a) =>
               a.workflowRunId === s.workflowRunId && a.artifactKey === `customized-script:${s.id}`,
           )?.payload;
-          return isCustomizedStoryboardScript(v)
-            ? [{ scriptId: s.id, name: v.name, synopsis: v.synopsis }]
-            : [];
+          return storyboardHistoryConcept(s.id, v, state.settings.videoType);
         }),
       };
       const t = await tx.customizedStoryboardTask.create({
@@ -647,6 +660,18 @@ export class StoryboardRepository {
           if (!validateBrandDevelopment(development, input.brief, Math.min(8, Math.max(6, input.scriptIds.length + 3))) ||
               !validateBrandSelection(decision, development, input.scriptIds, input.brief)) invalid('品牌创意选择或事实引用无效');
         }
+        if (value.nodeId === 'ECOMMERCE_CONCEPT' && value.status === 'SUCCEEDED' && isCommerceStrategy(input.strategyVersions?.concept)) {
+          const decision = value.output as Record<string, unknown>;
+          const development = decision.redevelopment ?? find('ECOMMERCE_MOTIVATION')?.output;
+          if (!validateCommerceDevelopment(development, input.brief) ||
+              (isPresenterStrategy(input.strategyVersions?.concept) && !validatePresenterDevelopment(development, input.brief)) ||
+              !validateCommerceSelection(decision, development, input.scriptIds)) invalid('口播讲述、演示依据或方案归属无效');
+        }
+        if (value.nodeId === 'DRAMA_CONCEPT' && value.status === 'SUCCEEDED' && isDramaStrategy(input.strategyVersions?.concept)) {
+          const decision = value.output as Record<string, unknown>;
+          if (!validateDramaDevelopment(decision.development, input.brief, input.scriptIds.length) ||
+              !validateDramaSelection(decision, decision.development, input.scriptIds)) invalid('剧情开发、事实依据或独立择优结果无效');
+        }
         if (role === 'STORY') {
           const planning = find(`${input.routeId}_CONCEPT`)?.output as {
             readiness?: { status?: string };
@@ -668,6 +693,9 @@ export class StoryboardRepository {
           if (
             !body ||
             ([
+              ...COMMERCE_CREATION_VERSIONS,
+              ...DRAMA_CREATION_VERSIONS,
+              '2026-10-14.7',
               '2026-10-13.4',
               '2026-10-13.5',
               '2026-10-13.6',

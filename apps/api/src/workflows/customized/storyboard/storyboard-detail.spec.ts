@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { emptyCustomizedBrief, type StoryboardInput } from '@ai-marketing/contracts';
 import { storyboardDetail } from './storyboard-detail';
 import brandFixture from '../../../../../../packages/contracts/fixtures/customized-brand-creation.json';
+import dramaFixture from '../../../../../../packages/contracts/fixtures/customized-drama-creation.json';
 const input: StoryboardInput = {
   schemaVersion: 1,
   source: { artifactId: 'internal-id', revision: 2, fingerprint: 'hash' },
@@ -25,6 +26,18 @@ const step = (nodeId: string, output: unknown) => ({
   output,
   errorMessage: null,
   updatedAt: new Date(),
+});
+it('shows original drama methods and independent selection, including partial progress',()=>{
+  const input=dramaFixture.input as unknown as StoryboardInput;
+  for(const output of [dramaFixture.selection,{developmentResult:{value:dramaFixture.selection.development}}]){
+    const content=JSON.stringify(storyboardDetail(input,[{...step('DRAMA_CONCEPT',output),scriptId:''}],'DRAMA_CONCEPT'));
+    expect(content).toContain('信息揭示安排');
+    expect(content).toContain('对话试探');
+    expect(content).toContain('具体人物行动0');
+    expect(content).not.toContain('F01');
+    expect(content).not.toContain('I0');
+  }
+  expect(JSON.stringify(storyboardDetail(input,[{...step('DRAMA_CONCEPT',dramaFixture.selection),scriptId:''}],'DRAMA_CONCEPT'))).toContain('正文需要兑现');
 });
 it('shows real brand propositions, ideas and selection reasons without internal references', () => {
   const input = brandFixture.input as unknown as StoryboardInput;
@@ -224,4 +237,59 @@ it('translates leaked creative hypothesis and candidate labels without changing 
   expect(JSON.stringify(storyboardDetail(input, steps, 'BRAND_AD_PROPOSITION'))).not.toContain('CREATIVE_HYPOTHESIS');
   expect(JSON.stringify([0,1,2,3].map(page => storyboardDetail(input, steps, 'BRAND_AD_CONCEPT', undefined, page)))).toContain('候选创意 1有具体画面');
   expect(JSON.stringify(steps)).toBe(original);
+});
+
+
+it('shows real commerce motives, demonstration boundaries and independent selection', async () => {
+  const fixture = (await import('../../../../../../packages/contracts/fixtures/customized-commerce-creation.json')).default;
+  const source = fixture.input as unknown as StoryboardInput;
+  const steps = [
+    { ...step('ECOMMERCE_MOTIVATION', fixture.development), scriptId: '' },
+    { ...step('ECOMMERCE_CONCEPT', fixture.selection), scriptId: '' },
+  ];
+  const development = JSON.stringify(storyboardDetail(source, steps, 'ECOMMERCE_MOTIVATION'));
+  expect(development).toContain('购买理由');
+  expect(development).toContain('可观察结果');
+  expect(development).toContain('不据此推导未知性能');
+  expect(development).toContain('未经受众调研验证');
+  const choice = JSON.stringify(storyboardDetail(source, steps, 'ECOMMERCE_CONCEPT'));
+  expect(choice).toContain('独立择优结论');
+  expect(choice).toContain('需要兑现的演示');
+  for (const detail of [development, choice]) {
+    expect(detail).not.toContain('F02');
+    expect(detail).not.toContain('O01');
+  }
+});
+
+
+it('shows the retained reason when every commerce opportunity is rejected', async () => {
+  const fixture = (await import('../../../../../../packages/contracts/fixtures/customized-commerce-creation.json')).default;
+  const source = fixture.input as unknown as StoryboardInput;
+  const decision = { status: 'REWORK', reason: '没有可观察的购买利益', missing: [], choices: [], concepts: [], evaluations: fixture.selection.evaluations.map(e => ({ ...e, verdict: 'REJECT', reason: '只有参数目录' })) };
+  const steps = [
+    { ...step('ECOMMERCE_MOTIVATION', fixture.development), scriptId: '' },
+    { ...step('ECOMMERCE_CONCEPT', { secondSelection: { value: decision }, exhausted: true }), status: 'FAILED', scriptId: '' },
+  ];
+  const detail = JSON.stringify(storyboardDetail(source, steps, 'ECOMMERCE_CONCEPT'));
+  expect(detail).toContain('没有可观察的购买利益');
+  expect(detail).toContain('只有参数目录');
+  expect(detail).not.toContain('需要兑现的演示');
+});
+
+it('shows presenter and creative arrangements in both development and selected details', async () => {
+  const fixture = (await import('../../../../../../packages/contracts/fixtures/customized-commerce-creation.json')).default;
+  const development = structuredClone(fixture.development);
+  const opportunity = development.opportunities[0]!;
+  Object.assign(opportunity, { creativeIdea: '把购买疑问变成可观察选择', approach: { speaker: '讲述者自然面对观众', recommendation: '从实际需要讲解选择', speechAndVisual: '人物口播与实物近景互补' } });
+  const source = { ...fixture.input, strategyVersions: Object.fromEntries(['concept','story','review','repair'].map(k => [k,'2026-10-14-presenter.1'])) } as unknown as StoryboardInput;
+  const selection = { ...fixture.selection, reason: `${opportunity.id}有实际讲述关系` };
+  const steps = [{ ...step('ECOMMERCE_MOTIVATION', development), scriptId: '' }, { ...step('ECOMMERCE_CONCEPT', selection), scriptId: '' }];
+  for (const node of ['ECOMMERCE_MOTIVATION', 'ECOMMERCE_CONCEPT'] as const) {
+    const detail = JSON.stringify(storyboardDetail(source, steps, node));
+    expect(detail).toContain('讲述者自然面对观众');
+    expect(detail).toContain('人物口播与实物近景互补');
+    expect(detail).toContain('把购买疑问变成可观察选择');
+    expect(detail).not.toContain('speechAndVisual');
+    expect(detail).not.toContain(opportunity.id);
+  }
 });

@@ -20,7 +20,7 @@ import type {
   StoryboardStep,
   StoryboardFinish,
 } from '@ai-marketing/contracts';
-import { CUSTOMIZED_VIDEO_TYPES, typedScriptStages, SCRIPT_ROUTE_VERSION } from '@ai-marketing/contracts';
+import { CUSTOMIZED_VIDEO_TYPES, typedScriptStages, scriptStrategyVersion } from '@ai-marketing/contracts';
 export class StoryboardScopeDto {
   @IsUUID() workflowRunId!: string;
 }
@@ -83,7 +83,7 @@ export class StoryboardStepDto extends StoryboardWorkerDto {
     'REVIEW',
     'REPAIR',
     ...CUSTOMIZED_VIDEO_TYPES.flatMap((t) =>
-      typedScriptStages(t, SCRIPT_ROUTE_VERSION)
+      typedScriptStages(t, scriptStrategyVersion(t))
         .filter((s) => s.id !== 'SAVE')
         .map((s) => s.id),
     ),

@@ -10,6 +10,7 @@ import {
 } from '@lucide/vue';
 import {
   storyboardStages,
+  isCommerceStrategy,
   typedScriptStages,
   CUSTOMIZED_VIDEO_TYPES,
   type StoryboardTask,
@@ -51,6 +52,7 @@ const rows = computed(() =>
         ['PREPARE'],
         ['ROUTE'],
         ...(['2026-10-14.1','2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(props.task?.strategyVersions?.concept ?? '') ? [['BRAND_AD_PROPOSITION'], ['BRAND_AD_IDEAS']] : []),
+        ...(isCommerceStrategy(props.task?.strategyVersions?.concept) ? [['ECOMMERCE_MOTIVATION']] : []),
         ...['CONCEPT', 'STORY', 'REVIEW'].map((stage) =>
           CUSTOMIZED_VIDEO_TYPES.map((t) => `${t}_${stage}`),
         ),

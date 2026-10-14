@@ -11,9 +11,9 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import { StoryboardRepository } from './storyboard.repository';
 
 // Real HTTP + PostgreSQL + Python pipeline, with model calls replaced only in this test.
-it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1')(
-  'publishes through protected HTTP using the real Python pipeline without model charges',
-  async () => {
+it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1').each(['BRAND_AD', 'ECOMMERCE', 'DRAMA'] as const)(
+  'publishes %s through protected HTTP using the real Python pipeline without model charges',
+  async (route) => {
     const rootPath = resolve(process.cwd(), '../..');
     const envFile = await readFile(resolve(rootPath, '.env'), 'utf8');
     const setting = (name: string) =>
@@ -55,8 +55,9 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1')(
           contentHash: workflowStateHash(brief),
         },
       });
+      const revision = route !== 'BRAND_AD' ? await repo.settings(projectId, run.id, 0, { videoType: route, targetDurationSeconds: 30, variantCount: 3, structureMode: 'AI', structure: '', structureSections: [], instructions: '' }) : 0;
       const key = randomUUID(),
-        task = await repo.create(projectId, run.id, 0, key, {
+        task = await repo.create(projectId, run.id, revision, key, {
           creative: 'controlled-pro',
           detail: 'controlled-turbo',
         });
@@ -73,13 +74,15 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1')(
       const duplicate = await fetch(`${api}/tasks`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workflowRunId: run.id, expectedRevision: 0, idempotencyKey: key }),
+        body: JSON.stringify({ workflowRunId: run.id, expectedRevision: revision, idempotencyKey: key }),
       });
       expect(duplicate.status).toBe(202);
       expect(((await duplicate.json()) as { data: { id: string } }).data.id).toBe(task.id);
       const python = `import asyncio,json,sys
 sys.path.insert(0,'tests')
 from test_typed_creation import Provider
+from test_presenter_development import PresenterProvider
+from test_drama_development import DramaProvider
 from customized_storyboard.api import Api
 from customized_storyboard.pipeline import Pipeline
 async def run():
@@ -88,7 +91,7 @@ async def run():
  try:
   claim=await api.call('POST','claim')
   api.token=claim['attemptToken']
-  provider=Provider('BRAND_AD',repair=True)
+  provider=PresenterProvider(repair=True) if claim['input']['routeId']=='ECOMMERCE' else DramaProvider(repair=True) if claim['input']['routeId']=='DRAMA' else Provider('BRAND_AD',repair=True)
   await Pipeline(api,provider,claim['input'],claim['checkpoints'],claim['completedScriptIds']).run()
  finally: await api.close()
 asyncio.run(run())`;
@@ -121,7 +124,7 @@ asyncio.run(run())`;
       expect(workspace.scripts).toHaveLength(3);
       expect(new Set(workspace.scripts.map((s) => s.workflowRunId)).size).toBe(3);
       const detail = await fetch(
-        `${api}/tasks/${task.id}/nodes/BRAND_AD_STORY?page=0&scriptId=${workspace.scripts[0]!.id}`,
+        `${api}/tasks/${task.id}/nodes/${route}_STORY?page=0&scriptId=${workspace.scripts[0]!.id}`,
       );
       expect(detail.status).toBe(200);
       expect(
