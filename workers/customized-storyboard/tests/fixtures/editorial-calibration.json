@@ -1,0 +1,122 @@
+[
+  {
+    "id": "detergent-catalogue",
+    "route": "BRAND_AD",
+    "expect": { "VISIBLE_CONCEPT": "FAIL", "VISUAL_PROGRESSION": "FAIL" },
+    "brief": {
+      "brandName": "澄日",
+      "productName": "澄日餐具清洁液",
+      "productDescription": "虚构测试品牌的餐具清洁液",
+      "sellingPoints": ["按压泵头", "用于餐具日常清洁"],
+      "productAppearance": "白色瓶身，蓝色泵头",
+      "brandTone": "干净、克制",
+      "avoidedElements": "不宣称杀菌、不宣称可清洗食品"
+    },
+    "beats": [
+      {
+        "id": "P01",
+        "durationSeconds": 10,
+        "content": "P01｜晨间台面\n\n白色清洁液瓶在灰色厨房台面缓慢转动，蓝色泵头在柔光中显现。字幕：澄日餐具清洁液。"
+      },
+      {
+        "id": "P02",
+        "durationSeconds": 12,
+        "content": "P02｜按压与清洗\n\n一只手按下泵头，清洁液落到海绵上。手用海绵清洗碗盘，然后以流水冲净。文字依次出现：按压泵头，日常清洁。"
+      },
+      {
+        "id": "P03",
+        "durationSeconds": 8,
+        "content": "P03｜归位\n\n碗盘放入沥水架，清洁液瓶摆回原处，蓝色泵头被一道光强调。品牌标识和字幕出现：把清爽，还给生活。"
+      }
+    ]
+  },
+  {
+    "id": "coffee-visible-return",
+    "route": "BRAND_AD",
+    "expect": { "VISIBLE_CONCEPT": "PASS", "VISUAL_PROGRESSION": "PASS", "BRAND_MEMORY": "PASS" },
+    "brief": {
+      "brandName": "圆间",
+      "productName": "圆间挂耳咖啡",
+      "productDescription": "虚构测试品牌的挂耳咖啡",
+      "sellingPoints": ["挂耳冲泡形式"],
+      "productAppearance": "米白包装，圆形品牌标记",
+      "brandTone": "日常、温暖、克制",
+      "avoidedElements": "不宣称提神时效或健康功效"
+    },
+    "beats": [
+      {
+        "id": "P01",
+        "durationSeconds": 10,
+        "content": "P01｜留下的圆\n\n清晨桌上，女儿拿开刚喝过的咖啡杯，木桌留下一圈浅浅水印。父亲抬起抹布，女儿伸手拦住，笑着把一颗小橘子放到圆心。父亲低头看了看，放下抹布。无对白。"
+      },
+      {
+        "id": "P02",
+        "durationSeconds": 12,
+        "content": "P02｜接住这个圆\n\n傍晚，水印已经干了，小橘子还在。父亲从纸上剪出一枚与水印大小相同的圆，把橘子放回圆心。女儿回来拿起橘子，看到纸圆背面画着两只手柄相对的杯子。父亲在另一边桌上打开圆间挂耳袋，挂在自己的杯沿；女儿把另一只杯子推过去。"
+      },
+      {
+        "id": "P03",
+        "durationSeconds": 12,
+        "content": "P03｜两个圆\n\n水注入挂耳，两人坐在木桌两侧。女儿将橘子分成两半，各放在一只杯子旁。杯子抬起，桌上并列留下两个浅圆。米白挂耳包装平放在两圆之间，圆形品牌标记与水印呼应。没有解释主题的字幕，只听见剥橘子的细声和杯子放回桌面的轻响。"
+      }
+    ]
+  },
+  {
+    "id": "software-preaching",
+    "route": "DRAMA",
+    "expect": { "NATURAL_DIALOGUE": "FAIL" },
+    "brief": {
+      "brandName": "共页",
+      "productName": "共页团队文档",
+      "productDescription": "虚构测试软件，支持多人编辑与评论",
+      "sellingPoints": ["共享文档", "段落评论"],
+      "avoidedElements": "不宣称提升效率百分比"
+    },
+    "beats": [
+      {
+        "id": "P01",
+        "durationSeconds": 25,
+        "content": "P01｜意见不同\n\n办公室午后，林与周在同一份活动文案上争论。林把共页文档分享给周。\n\n林：我们总想占据整页，其实合作就是给彼此留出空白。\n\n周：你是说，文档可以共享，心也应该共享？"
+      },
+      {
+        "id": "P02",
+        "durationSeconds": 30,
+        "content": "P02｜评论之后\n\n周在段落旁留下评论，林看完点头，按评论修改了一句文案。\n\n林：每一条评论都是一座桥，先学会倾听，才有真正的共创。\n\n周：原来共同编辑的不只是文字，更是我们彼此的信任。\n\n两人相视一笑，一起合上电脑。旁白：在共页，翻开的每一页，都是理解的新起点。"
+      }
+    ]
+  },
+  {
+    "id": "backpack-unspoken-choice",
+    "route": "DRAMA",
+    "expect": {
+      "CHARACTER_CAUSALITY": "PASS",
+      "NATURAL_DIALOGUE": "PASS",
+      "PRODUCT_CAUSALITY": "PASS"
+    },
+    "brief": {
+      "brandName": "折野",
+      "productName": "折野双肩包",
+      "productDescription": "虚构测试双肩包，主仓与独立前袋",
+      "sellingPoints": ["独立前袋"],
+      "productAppearance": "深绿色布面",
+      "avoidedElements": "不宣称防水、防盗"
+    },
+    "beats": [
+      {
+        "id": "P01",
+        "durationSeconds": 30,
+        "content": "P01｜门口的钥匙\n\n周六早晨，姐姐背着深绿色折野包准备出门，弟弟抱着球坐在门边。姐姐从前袋取出钥匙。\n\n弟弟：又去图书馆？\n\n姐姐：嗯。\n\n弟弟低头转球，没再说话。姐姐跨出门，看到门后贴着他画的球赛名单，自己的名字被圈了两次。她停了停，手机上同学催她占座。"
+      },
+      {
+        "id": "P02",
+        "durationSeconds": 28,
+        "content": "P02｜绕一下\n\n姐姐回复同学：今天别帮我占了。她把钥匙放回包的独立前袋，拉开主仓，腾出位置装入弟弟的水壶，又把弟弟手里的入场票放到前袋。\n\n姐姐：几点开始？\n\n弟弟：九点。你不是……\n\n姐姐：先绕一下。\n\n弟弟起身抓起球，跑了两步又回来替她关门。"
+      },
+      {
+        "id": "P03",
+        "durationSeconds": 20,
+        "content": "P03｜看台\n\n球场入口，姐姐从前袋抽出票递过去。看台上，她把包放在脚边，取出水壶。场内弟弟投球没进，先扭头找看台。姐姐举了举水壶，没说话。弟弟笑一下，转身追球。手机再次震动，她看一眼，将手机扣在腿上。"
+      }
+    ]
+  }
+]

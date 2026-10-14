@@ -18,6 +18,19 @@ def test_binding_and_duration_validation() -> None:
     with pytest.raises(ValueError):
         check_output('PROMPT',{'shotId':'s1','content':'倒水','assetIds':['cup','unrelated']},snapshot('PROMPT'))
 
+def test_reference_duration_is_not_reapplied_by_downstream_shots() -> None:
+    from customized_storyboard.production import target_duration
+    value = snapshot('SHOTS')
+    value['script']['creation'] = {'videoType': 'BRAND_AD', 'referenceDurationSeconds': 30, 'structureSections': ['视觉开场']}
+    value['script']['structure'] = '视觉开场'
+    value['script']['story']['beats'][0]['durationSeconds'] = 42
+    assert target_duration(value) == 42
+    check_output('SHOTS', {'shots': [{**SHOT, 'durationSeconds': 42}]}, value)
+    with pytest.raises(ValueError):
+        check_output('SHOTS', {'shots': [SHOT]}, value)
+    assert story_context(value['script'])['creation']['videoType'] == 'BRAND_AD'
+    assert story_context(value['script'])['structure'] == '视觉开场'
+
 
 def test_adjacent_beats_share_a_request_without_changing_content_or_time() -> None:
     original = [Segment(content=f'事件{i}', durationSeconds=d) for i, d in enumerate([6, 6, 6, 7, 5, 40, 20, 60])]

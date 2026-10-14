@@ -18,7 +18,7 @@ async def configured(handler):
 
 
 @pytest.mark.parametrize("failure", ["rate_limit", "timeout", "invalid", "rejected"])
-async def test_bounded_retries_schema_and_timeout(failure):
+async def test_bounded_retries_schema_and_timeout(failure, caplog):
     calls = []
 
     async def handler(request):
@@ -54,6 +54,10 @@ async def test_bounded_retries_schema_and_timeout(failure):
                 await provider.generate("REVIEW", "fixed-model", Review, {}, "审校")
             ).summary == "通过"
         assert len(calls) == (1 if failure == "rejected" else 2)
+        if failure == "invalid":
+            report = next(record.message for record in caplog.records if 'storyboard_model_failure' in record.message)
+            assert 'AI_RESPONSE_INVALID' in report and 'extra_forbidden' in report
+            assert 'input' not in report and 'test-only' not in report and 'Authorization' not in report
     finally:
         await provider.close()
 
@@ -149,3 +153,69 @@ def test_missing_configuration_fails_explicitly(monkeypatch):
     monkeypatch.delenv("CUSTOMIZED_STORYBOARD_WORKER_TOKEN", raising=False)
     with pytest.raises(ValueError, match="required"):
         required("CUSTOMIZED_STORYBOARD_WORKER_TOKEN")
+
+
+@pytest.mark.parametrize("modern", [False, True])
+async def test_video_script_repair_uses_capacity_reasoning_without_changing_legacy(modern):
+    async def handler(request):
+        payload = json.loads(request.content)
+        assert payload["reasoning"]["effort"] == ("medium" if modern else "low")
+        policy = payload["input"][0]["content"]
+        assert ("参考时长仅指导信息规模" in policy) is modern
+        return httpx.Response(
+            200, json={"output_text": '{"summary":"通过","findings":[]}'}
+        )
+
+    provider = await configured(handler)
+    try:
+        context = {"storyFormat": "VIDEO_SCRIPT_V2"} if modern else {}
+        await provider.generate("REPAIR", "fixed-model", Review, context, "修订")
+    finally:
+        await provider.close()
+
+
+@pytest.mark.parametrize(('version', 'stage', 'role', 'route', 'effort'), [
+    ('2026-10-14.6', 'BRAND_AD_CONCEPT', 'IDEA_SELECTION', 'BRAND_AD', 'medium'),
+    ('2026-10-14.6', 'BRAND_AD_REVIEW', 'EDITORIAL', 'BRAND_AD', 'medium'),
+    ('2026-10-14.6', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'high'),
+    ('2026-10-14.7', 'BRAND_AD_REVIEW', 'EDITORIAL', 'BRAND_AD', 'medium'),
+    ('2026-10-14.7', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'high'),
+    ('2026-10-14.5', 'BRAND_AD_CONCEPT', 'IDEA_SELECTION', 'BRAND_AD', 'medium'),
+    ('2026-10-14.5', 'BRAND_AD_REVIEW', 'EDITORIAL', 'BRAND_AD', 'high'),
+    ('2026-10-14.5', 'BRAND_AD_PROPOSITION', None, 'BRAND_AD', 'medium'),
+    ('2026-10-14.4', 'BRAND_AD_PROPOSITION', None, 'BRAND_AD', 'medium'),
+    ('2026-10-14.4', 'BRAND_AD_CONCEPT', 'IDEA_SELECTION', 'BRAND_AD', 'high'),
+    ('2026-10-14.3', 'BRAND_AD_CONCEPT', 'IDEA_SELECTION', 'BRAND_AD', 'high'),
+    ('2026-10-14.2', 'BRAND_AD_CONCEPT', 'IDEA_SELECTION', 'BRAND_AD', 'medium'),
+    ('2026-10-14.2', 'BRAND_AD_PROPOSITION', None, 'BRAND_AD', 'medium'),
+    ('2026-10-14.2', 'BRAND_AD_REVIEW', 'EDITORIAL', 'BRAND_AD', 'high'),
+    ('2026-10-14.1', 'BRAND_AD_CONCEPT', 'IDEA_SELECTION', 'BRAND_AD', 'medium'),
+    ('2026-10-13.11', 'BRAND_AD_CONCEPT', None, 'BRAND_AD', 'medium'),
+    ('2026-10-13.11', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'high'),
+    ('2026-10-13.11', 'DRAMA_REVIEW', 'FACTS', 'DRAMA', 'medium'),
+    ('2026-10-13.10', 'BRAND_AD_CONCEPT', None, 'BRAND_AD', 'medium'),
+    ('2026-10-13.10', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'high'),
+    ('2026-10-13.10', 'DRAMA_REVIEW', 'FACTS', 'DRAMA', 'medium'),
+    ('2026-10-13.9', 'BRAND_AD_CONCEPT', None, 'BRAND_AD', 'high'),
+    ('2026-10-13.9', 'DRAMA_CONCEPT', None, 'DRAMA', 'high'),
+    ('2026-10-13.9', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'high'),
+    ('2026-10-13.9', 'RECHECK', 'EDITORIAL', 'BRAND_AD', 'high'),
+    ('2026-10-13.9', 'BRAND_AD_REVIEW', 'FACTS', 'BRAND_AD', 'medium'),
+    ('2026-10-13.9', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-13.9', 'ECOMMERCE_CONCEPT', None, 'ECOMMERCE', 'medium'),
+    ('2026-10-13.8', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+])
+async def test_reasoning_budget_follows_frozen_stage_not_every_call(version, stage, role, route, effort):
+    async def handler(request):
+        payload = json.loads(request.content)
+        assert payload['reasoning']['effort'] == effort
+        return httpx.Response(200, json={'output_text': '{"summary":"通过","findings":[]}'})
+    provider = await configured(handler)
+    try:
+        await provider.generate(stage, 'fixed-model', Review, {
+            'storyFormat': 'VIDEO_SCRIPT_V3', 'strategyVersion': version,
+            'settings': {'videoType': route}, 'auditRole': role,
+            **({'candidateCount': 6} if stage == 'BRAND_AD_PROPOSITION' else {}),
+        }, '审校')
+    finally:
+        await provider.close()

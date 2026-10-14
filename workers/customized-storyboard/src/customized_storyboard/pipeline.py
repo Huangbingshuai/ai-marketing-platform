@@ -45,13 +45,13 @@ def group_shot_beats(beats: list[Beat]) -> list[Beat]:
     return groups
 
 
-def story_issues(story: Story, target: int) -> list[dict[str, Any]]:
+def story_issues(story: Story, target: int, *, segment_limit: int = 30) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     duration = sum(b.durationSeconds for b in story.beats)
     if abs(duration - target) > 1:
         issues.append({"code": "DURATION_SUM", "expected": target, "actual": duration})
-    if any(b.durationSeconds > 30 for b in story.beats):
-        issues.append({"code": "SEGMENT_DURATION", "maximum": 30})
+    if any(b.durationSeconds > segment_limit for b in story.beats):
+        issues.append({"code": "SEGMENT_DURATION", "maximum": segment_limit})
     if len({b.id for b in story.beats}) != len(story.beats):
         issues.append({"code": "DUPLICATE_SEGMENT_ID"})
     return issues
@@ -75,9 +75,12 @@ class Pipeline:
         )
         # Brand references remain frozen on API; never feed images or opaque refs to a model.
         settings = dict(value["settings"])
+        if value.get("storyFormat") in {"VIDEO_SCRIPT_V2", "VIDEO_SCRIPT_V3"}:
+            settings.pop("instructions", None)
         if settings.get("structureMode") == "AI":
             settings["structure"] = ""
-        self.context = {"brief": value["brief"], "settings": settings}
+        self.context = {"brief": value["brief"], "settings": settings, "storyFormat": value.get('storyFormat')}
+        self.brand_commitments: dict[str, dict[str, Any]] = {}
 
     async def heartbeat(self) -> None:
         while True:
@@ -229,6 +232,10 @@ class Pipeline:
             raise
 
     async def run(self) -> None:
+        if self.input.get("graphVersion") == "TYPED_CREATION_V1":
+            from .typed_creation import run
+            await run(self)
+            return
         if ("SNAPSHOT", "") not in self.checkpoints:
             await self.step(
                 "SNAPSHOT",
@@ -240,12 +247,14 @@ class Pipeline:
                     "settings": self.input["settings"],
                 },
             )
+        from .video_script import CONCEPT, profile
+        modern = self.input.get("storyFormat") == "VIDEO_SCRIPT_V2"
         concepts = await self.generate(
             "CONCEPT",
             "",
             Concepts,
             {"scriptIds": self.input["scriptIds"], "existingConcepts": self.input["existingConcepts"]},
-            "为给定每个 scriptId 规划一个完整视频方案，数量准确。existingConcepts仅用于避免重复，不是情节范本或本次必须遵循的要求。联合规划本批不同的观看事件和叙事发展，不只改名字、职业和地点。以本次目标时长控制事件数量，短片集中一个可看懂的事件和合适的产品关联，禁止压缩照搬历史长片的所有环节和规格。structureMode为AI时独立设计结构。",
+            profile(self.input['settings']) + CONCEPT if modern else "为给定每个 scriptId 规划一个完整视频方案，数量准确。existingConcepts仅用于避免重复，不是情节范本或本次必须遵循的要求。联合规划本批不同的观看事件和叙事发展，不只改名字、职业和地点。以本次目标时长控制事件数量，短片集中一个可看懂的事件和合适的产品关联，禁止压缩照搬历史长片的所有环节和规格。structureMode为AI时独立设计结构。",
         )
         if sorted(c.scriptId for c in concepts.concepts) != sorted(
             self.input["scriptIds"]

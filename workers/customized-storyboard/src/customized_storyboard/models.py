@@ -136,6 +136,10 @@ class Concept(Model):
     productFocus: Text
     structure: Text
     difference: Text
+    coreIdea: Text = ""
+    openingHook: Text = ""
+    productRole: Text = ""
+    memoryPoint: Text = ""
 
 
 class Concepts(Model):
@@ -146,6 +150,12 @@ class Beat(Model):
     id: Id
     content: Text
     durationSeconds: Seconds
+
+
+class VideoScriptCreation(Model):
+    videoType: Literal["ECOMMERCE", "LOCAL_STORE", "BRAND_AD", "DRAMA"]
+    referenceDurationSeconds: Seconds
+    structureSections: Annotated[list[Id], Field(max_length=20)]
 
 
 class Story(Model):
