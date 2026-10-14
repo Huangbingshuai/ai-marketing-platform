@@ -1,0 +1,242 @@
+[
+  {
+    "taskId": "b5021aae-790f-4e91-b1dd-190724cb8036",
+    "status": "PARTIAL",
+    "elapsedSeconds": 294,
+    "targetSeconds": 30,
+    "count": 2,
+    "sourceRevision": 1,
+    "published": [
+      {
+        "name": "《舞蹈教室外的半小时》",
+        "scriptId": "c908d878-1e06-4783-b2c2-b9f14eed159d",
+        "revision": 1,
+        "observedAt": "2026-10-13T02:19:56.874Z"
+      }
+    ],
+    "scripts": [
+      {
+        "name": "《舞蹈教室外的半小时》",
+        "bodyCharacters": 735,
+        "scenes": 5,
+        "duration": 30
+      }
+    ],
+    "usage": [],
+    "observedUsageSummary": {
+      "outputTokens": 15413,
+      "calls": 9,
+      "totalTokens": 44807,
+      "source": "更新前容器日志已读取；逐条原始日志未留存，usage 空数组不代表零调用。",
+      "inputTokens": 29394
+    }
+  },
+  {
+    "taskId": "d60771b8-7c38-45f3-9acb-447e01d48bf4",
+    "status": "COMPLETED",
+    "elapsedSeconds": 247,
+    "targetSeconds": 180,
+    "count": 1,
+    "sourceRevision": 1,
+    "published": [
+      {
+        "name": "《靠岸前的三口整理》",
+        "scriptId": "1351430c-f6bc-45e3-8206-482d2342582a",
+        "revision": 1,
+        "observedAt": "2026-10-13T02:26:52.434Z"
+      }
+    ],
+    "scripts": [
+      {
+        "name": "《靠岸前的三口整理》",
+        "bodyCharacters": 1460,
+        "scenes": 5,
+        "duration": 180
+      }
+    ],
+    "usage": [
+      {
+        "taskId": "d60771b8-7c38-45f3-9acb-447e01d48bf4",
+        "stage": "CONCEPT",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3520,
+        "outputTokens": 1675,
+        "totalTokens": 5195,
+        "latencyMs": 72878,
+        "attempts": 1,
+        "reasoningTokens": 800
+      },
+      {
+        "taskId": "d60771b8-7c38-45f3-9acb-447e01d48bf4",
+        "stage": "STORY",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 2400,
+        "outputTokens": 2291,
+        "totalTokens": 4691,
+        "latencyMs": 60603,
+        "attempts": 1,
+        "reasoningTokens": 850
+      },
+      {
+        "taskId": "d60771b8-7c38-45f3-9acb-447e01d48bf4",
+        "stage": "REVIEW",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3572,
+        "outputTokens": 1200,
+        "totalTokens": 4772,
+        "latencyMs": 57501,
+        "attempts": 1,
+        "reasoningTokens": 949
+      },
+      {
+        "taskId": "d60771b8-7c38-45f3-9acb-447e01d48bf4",
+        "stage": "REPAIR",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 4459,
+        "outputTokens": 2391,
+        "totalTokens": 6850,
+        "latencyMs": 42947,
+        "attempts": 1,
+        "reasoningTokens": 75
+      },
+      {
+        "taskId": "d60771b8-7c38-45f3-9acb-447e01d48bf4",
+        "stage": "RECHECK",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3868,
+        "outputTokens": 371,
+        "totalTokens": 4239,
+        "latencyMs": 11130,
+        "attempts": 1,
+        "reasoningTokens": 245
+      }
+    ]
+  },
+  {
+    "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+    "status": "COMPLETED",
+    "elapsedSeconds": 235,
+    "targetSeconds": 30,
+    "count": 2,
+    "sourceRevision": 1,
+    "published": [
+      {
+        "name": "《安检托盘里的登机前五分钟》",
+        "scriptId": "d279c6bd-ec1a-44c4-b03b-5ae95bf591e7",
+        "revision": 1,
+        "observedAt": "2026-10-13T02:30:30.176Z"
+      },
+      {
+        "name": "《便利店窗边，雨停之前》",
+        "scriptId": "43f9ba2b-34a6-4232-a541-2f8c373932ff",
+        "revision": 1,
+        "observedAt": "2026-10-13T02:31:10.428Z"
+      }
+    ],
+    "scripts": [
+      {
+        "name": "《安检托盘里的登机前五分钟》",
+        "bodyCharacters": 529,
+        "scenes": 2,
+        "duration": 30
+      },
+      {
+        "name": "《便利店窗边，雨停之前》",
+        "bodyCharacters": 568,
+        "scenes": 3,
+        "duration": 30
+      }
+    ],
+    "usage": [
+      {
+        "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+        "stage": "CONCEPT",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3880,
+        "outputTokens": 3076,
+        "totalTokens": 6956,
+        "latencyMs": 105310,
+        "attempts": 1,
+        "reasoningTokens": 1936
+      },
+      {
+        "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+        "stage": "STORY",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 2647,
+        "outputTokens": 1378,
+        "totalTokens": 4025,
+        "latencyMs": 36063,
+        "attempts": 1,
+        "reasoningTokens": 741
+      },
+      {
+        "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+        "stage": "STORY",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 2647,
+        "outputTokens": 1582,
+        "totalTokens": 4229,
+        "latencyMs": 41539,
+        "attempts": 1,
+        "reasoningTokens": 887
+      },
+      {
+        "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+        "stage": "REVIEW",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3096,
+        "outputTokens": 1479,
+        "totalTokens": 4575,
+        "latencyMs": 45118,
+        "attempts": 1,
+        "reasoningTokens": 871
+      },
+      {
+        "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+        "stage": "REVIEW",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3046,
+        "outputTokens": 1601,
+        "totalTokens": 4647,
+        "latencyMs": 50838,
+        "attempts": 1,
+        "reasoningTokens": 1456
+      },
+      {
+        "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+        "stage": "REPAIR",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3732,
+        "outputTokens": 1391,
+        "totalTokens": 5123,
+        "latencyMs": 23115,
+        "attempts": 1,
+        "reasoningTokens": 193
+      },
+      {
+        "taskId": "8b6efe76-d430-423b-96d5-3b97d334eeac",
+        "stage": "RECHECK",
+        "model": "doubao-seed-2-1-pro-260915",
+        "promptVersion": "customized-storyboard-20261013-screenplay",
+        "inputTokens": 3066,
+        "outputTokens": 608,
+        "totalTokens": 3674,
+        "latencyMs": 18823,
+        "attempts": 1,
+        "reasoningTokens": 419
+      }
+    ]
+  }
+]
