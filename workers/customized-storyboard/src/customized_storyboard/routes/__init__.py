@@ -36,4 +36,3 @@ def strategy_for(route: str, version: str) -> ModuleType:
     if route == 'DRAMA' and version in {'2026-10-13.1', '2026-10-13.2', '2026-10-13.3'}:
         return drama_v3
     return STRATEGIES[route]
-
