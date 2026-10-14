@@ -78,3 +78,6 @@ export * from './customized-production';
 
 export * from './customized-script-routes';
 export * from './customized-brand-creation';
+
+export * from './customized-commerce-creation';
+export * from './customized-drama-creation';

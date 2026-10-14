@@ -1,0 +1,179 @@
+{
+  "$defs": {
+    "CommerceOpportunity": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "audienceSituation": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Audiencesituation",
+          "type": "string"
+        },
+        "situationBasis": {
+          "enum": [
+            "BRIEF",
+            "CREATIVE_HYPOTHESIS"
+          ],
+          "title": "Situationbasis",
+          "type": "string"
+        },
+        "buyingReason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Buyingreason",
+          "type": "string"
+        },
+        "purchaseQuestion": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Purchasequestion",
+          "type": "string"
+        },
+        "factIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Factids",
+          "type": "array"
+        },
+        "demonstration": {
+          "$ref": "#/$defs/Demonstration"
+        },
+        "progression": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Progression",
+          "type": "string"
+        },
+        "ending": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Ending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "audienceSituation",
+        "situationBasis",
+        "buyingReason",
+        "purchaseQuestion",
+        "factIds",
+        "demonstration",
+        "progression",
+        "ending"
+      ],
+      "title": "CommerceOpportunity",
+      "type": "object"
+    },
+    "Demonstration": {
+      "additionalProperties": false,
+      "properties": {
+        "setup": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Setup",
+          "type": "string"
+        },
+        "action": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Action",
+          "type": "string"
+        },
+        "observableResult": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Observableresult",
+          "type": "string"
+        },
+        "claimBoundary": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Claimboundary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "setup",
+        "action",
+        "observableResult",
+        "claimBoundary"
+      ],
+      "title": "Demonstration",
+      "type": "object"
+    },
+    "Readiness": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "READY",
+            "NEEDS_INFORMATION"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 20000,
+          "title": "Reason",
+          "type": "string"
+        },
+        "missing": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Missing",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "reason",
+        "missing"
+      ],
+      "title": "Readiness",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "readiness": {
+      "$ref": "#/$defs/Readiness"
+    },
+    "opportunities": {
+      "items": {
+        "$ref": "#/$defs/CommerceOpportunity"
+      },
+      "maxItems": 6,
+      "title": "Opportunities",
+      "type": "array"
+    }
+  },
+  "required": [
+    "readiness",
+    "opportunities"
+  ],
+  "title": "CommerceDevelopment",
+  "type": "object"
+}

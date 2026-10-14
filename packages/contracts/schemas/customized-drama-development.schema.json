@@ -1,0 +1,216 @@
+{
+  "$defs": {
+    "DramaIdea": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "devices": {
+          "items": {
+            "maxLength": 240,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Devices",
+          "type": "array"
+        },
+        "plan": {
+          "$ref": "#/$defs/DramaticPlan"
+        },
+        "viewingPromise": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Viewingpromise",
+          "type": "string"
+        },
+        "informationDesign": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Informationdesign",
+          "type": "string"
+        },
+        "dialogueIntent": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Dialogueintent",
+          "type": "string"
+        },
+        "emotionalMovement": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Emotionalmovement",
+          "type": "string"
+        },
+        "factIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Factids",
+          "type": "array"
+        },
+        "weakness": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Weakness",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "devices",
+        "plan",
+        "viewingPromise",
+        "informationDesign",
+        "dialogueIntent",
+        "emotionalMovement",
+        "factIds",
+        "weakness"
+      ],
+      "title": "DramaIdea",
+      "type": "object"
+    },
+    "DramaticPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "DRAMA",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "desire": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Desire",
+          "type": "string"
+        },
+        "obstacle": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Obstacle",
+          "type": "string"
+        },
+        "relationships": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Relationships",
+          "type": "string"
+        },
+        "trigger": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Trigger",
+          "type": "string"
+        },
+        "escalation": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Escalation",
+          "type": "string"
+        },
+        "choice": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Choice",
+          "type": "string"
+        },
+        "consequence": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Consequence",
+          "type": "string"
+        },
+        "productCausality": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Productcausality",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "desire",
+        "obstacle",
+        "relationships",
+        "trigger",
+        "escalation",
+        "choice",
+        "consequence",
+        "productCausality"
+      ],
+      "title": "DramaticPlan",
+      "type": "object"
+    },
+    "Readiness": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "READY",
+            "NEEDS_INFORMATION"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 20000,
+          "title": "Reason",
+          "type": "string"
+        },
+        "missing": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Missing",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "reason",
+        "missing"
+      ],
+      "title": "Readiness",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "readiness": {
+      "$ref": "#/$defs/Readiness"
+    },
+    "ideas": {
+      "items": {
+        "$ref": "#/$defs/DramaIdea"
+      },
+      "maxItems": 7,
+      "title": "Ideas",
+      "type": "array"
+    }
+  },
+  "required": [
+    "readiness",
+    "ideas"
+  ],
+  "title": "DramaDevelopment",
+  "type": "object"
+}

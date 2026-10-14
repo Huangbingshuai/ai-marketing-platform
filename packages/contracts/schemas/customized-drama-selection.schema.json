@@ -1,0 +1,124 @@
+{
+  "$defs": {
+    "DramaChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "scriptId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Scriptid",
+          "type": "string"
+        },
+        "ideaId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Ideaid",
+          "type": "string"
+        },
+        "mustPreserve": {
+          "items": {
+            "maxLength": 240,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "title": "Mustpreserve",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scriptId",
+        "ideaId",
+        "mustPreserve"
+      ],
+      "title": "DramaChoice",
+      "type": "object"
+    },
+    "DramaEvaluation": {
+      "additionalProperties": false,
+      "properties": {
+        "ideaId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Ideaid",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "ADVANCE",
+            "REJECT"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ideaId",
+        "verdict",
+        "reason"
+      ],
+      "title": "DramaEvaluation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "enum": [
+        "READY",
+        "REWORK",
+        "NEEDS_INFORMATION"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 240,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "missing": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Missing",
+      "type": "array"
+    },
+    "evaluations": {
+      "items": {
+        "$ref": "#/$defs/DramaEvaluation"
+      },
+      "maxItems": 7,
+      "title": "Evaluations",
+      "type": "array"
+    },
+    "choices": {
+      "items": {
+        "$ref": "#/$defs/DramaChoice"
+      },
+      "maxItems": 5,
+      "title": "Choices",
+      "type": "array"
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "missing",
+    "evaluations",
+    "choices"
+  ],
+  "title": "DramaSelection",
+  "type": "object"
+}

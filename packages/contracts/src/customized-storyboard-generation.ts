@@ -1,4 +1,6 @@
+import { COMMERCE_CREATION_VERSIONS, isPresenterStrategy, validatePresenterDevelopment, validateCommerceDevelopment } from './customized-commerce-creation';
 import { validateBrandDevelopment } from './customized-brand-creation';
+import { DRAMA_CREATION_VERSIONS, isDramaStrategy, validateDramaDevelopment, validateDramaSelection } from './customized-drama-creation';
 import {
   SCRIPT_PLAN_FIELDS,
   SCRIPT_QUALITY_CRITERIA,
@@ -411,9 +413,12 @@ export function validateStoryboardCheckpoint(
       );
     if (node === 'ROUTE')
       return value.routeId === input.routeId && value.graphVersion === input.graphVersion;
+    if (node === 'ECOMMERCE_MOTIVATION') return isPresenterStrategy(input.strategyVersions?.concept) ? validatePresenterDevelopment(value, input.brief) : validateCommerceDevelopment(value, input.brief);
     if (node === 'BRAND_AD_PROPOSITION' || node === 'BRAND_AD_IDEAS')
       return validateBrandDevelopment(value, input.brief, Math.min(8, Math.max(6, input.scriptIds.length + 3)));
     const role = scriptStageRole(node);
+    if (node === 'DRAMA_CONCEPT' && isDramaStrategy(input.strategyVersions?.concept))
+      return validateDramaDevelopment(value.development, input.brief, input.scriptIds.length) && validateDramaSelection(value, value.development, input.scriptIds);
     if (role === 'CONCEPT') {
       if (
         !object(value.readiness) ||
@@ -467,7 +472,7 @@ export function validateStoryboardCheckpoint(
       return (
         isStoryboardReview(value) &&
         value.findings.every((f) => !f.shotIds.length && Array.isArray(f.beatIds)) &&
-        (!['2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7', '2026-10-13.8', '2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(
+        (![...DRAMA_CREATION_VERSIONS, ...COMMERCE_CREATION_VERSIONS, '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7', '2026-10-13.8', '2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(
           input.strategyVersions?.review ?? '',
         ) ||
           isTypedQualityReview(value, input.routeId!))

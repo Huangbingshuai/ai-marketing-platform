@@ -1,0 +1,243 @@
+{
+  "input": {
+    "schemaVersion": 1,
+    "outputMode": "STORY_ONLY",
+    "storyFormat": "VIDEO_SCRIPT_V3",
+    "graphVersion": "TYPED_CREATION_V1",
+    "routeId": "ECOMMERCE",
+    "strategyVersions": {
+      "concept": "2026-10-14-commerce.1",
+      "story": "2026-10-14-commerce.1",
+      "review": "2026-10-14-commerce.1",
+      "repair": "2026-10-14-commerce.1"
+    },
+    "source": {
+      "artifactId": "brief",
+      "revision": 1,
+      "fingerprint": "fixed"
+    },
+    "brief": {
+      "productName": "充电器",
+      "sellingPoints": [
+        "已确认的适用特点"
+      ],
+      "targetAudience": "简报中的使用者"
+    },
+    "settings": {
+      "videoType": "ECOMMERCE",
+      "targetDurationSeconds": 30,
+      "variantCount": 1,
+      "structureMode": "CUSTOM",
+      "structureSections": [
+        "吸引注意",
+        "价值兑现"
+      ],
+      "instructions": "unused"
+    },
+    "scriptIds": [
+      "s0"
+    ],
+    "existingConcepts": [],
+    "models": {
+      "creative": "controlled",
+      "detail": "controlled"
+    }
+  },
+  "development": {
+    "readiness": {
+      "status": "READY",
+      "reason": "可依据产品资料设计演示",
+      "missing": []
+    },
+    "opportunities": [
+      {
+        "id": "O01",
+        "name": "购买问题1",
+        "audienceSituation": "需要完成具体任务",
+        "situationBasis": "CREATIVE_HYPOTHESIS",
+        "buyingReason": "已知特点支持需要1",
+        "purchaseQuestion": "如何选择1",
+        "factIds": [
+          "F02"
+        ],
+        "demonstration": {
+          "setup": "实际任务尚未完成",
+          "action": "产品按已知方式参与",
+          "observableResult": "看见任务中的具体改变",
+          "claimBoundary": "不据此推导未知性能"
+        },
+        "progression": "观察需要、产品参与、看到价值",
+        "ending": "回应这个购买问题"
+      },
+      {
+        "id": "O02",
+        "name": "购买问题2",
+        "audienceSituation": "需要完成具体任务",
+        "situationBasis": "CREATIVE_HYPOTHESIS",
+        "buyingReason": "已知特点支持需要2",
+        "purchaseQuestion": "如何选择2",
+        "factIds": [
+          "F02"
+        ],
+        "demonstration": {
+          "setup": "实际任务尚未完成",
+          "action": "产品按已知方式参与",
+          "observableResult": "看见任务中的具体改变",
+          "claimBoundary": "不据此推导未知性能"
+        },
+        "progression": "观察需要、产品参与、看到价值",
+        "ending": "回应这个购买问题"
+      },
+      {
+        "id": "O03",
+        "name": "购买问题3",
+        "audienceSituation": "需要完成具体任务",
+        "situationBasis": "CREATIVE_HYPOTHESIS",
+        "buyingReason": "已知特点支持需要3",
+        "purchaseQuestion": "如何选择3",
+        "factIds": [
+          "F02"
+        ],
+        "demonstration": {
+          "setup": "实际任务尚未完成",
+          "action": "产品按已知方式参与",
+          "observableResult": "看见任务中的具体改变",
+          "claimBoundary": "不据此推导未知性能"
+        },
+        "progression": "观察需要、产品参与、看到价值",
+        "ending": "回应这个购买问题"
+      },
+      {
+        "id": "O04",
+        "name": "购买问题4",
+        "audienceSituation": "需要完成具体任务",
+        "situationBasis": "CREATIVE_HYPOTHESIS",
+        "buyingReason": "已知特点支持需要4",
+        "purchaseQuestion": "如何选择4",
+        "factIds": [
+          "F02"
+        ],
+        "demonstration": {
+          "setup": "实际任务尚未完成",
+          "action": "产品按已知方式参与",
+          "observableResult": "看见任务中的具体改变",
+          "claimBoundary": "不据此推导未知性能"
+        },
+        "progression": "观察需要、产品参与、看到价值",
+        "ending": "回应这个购买问题"
+      },
+      {
+        "id": "O05",
+        "name": "购买问题5",
+        "audienceSituation": "需要完成具体任务",
+        "situationBasis": "CREATIVE_HYPOTHESIS",
+        "buyingReason": "已知特点支持需要5",
+        "purchaseQuestion": "如何选择5",
+        "factIds": [
+          "F02"
+        ],
+        "demonstration": {
+          "setup": "实际任务尚未完成",
+          "action": "产品按已知方式参与",
+          "observableResult": "看见任务中的具体改变",
+          "claimBoundary": "不据此推导未知性能"
+        },
+        "progression": "观察需要、产品参与、看到价值",
+        "ending": "回应这个购买问题"
+      },
+      {
+        "id": "O06",
+        "name": "购买问题6",
+        "audienceSituation": "需要完成具体任务",
+        "situationBasis": "CREATIVE_HYPOTHESIS",
+        "buyingReason": "已知特点支持需要6",
+        "purchaseQuestion": "如何选择6",
+        "factIds": [
+          "F02"
+        ],
+        "demonstration": {
+          "setup": "实际任务尚未完成",
+          "action": "产品按已知方式参与",
+          "observableResult": "看见任务中的具体改变",
+          "claimBoundary": "不据此推导未知性能"
+        },
+        "progression": "观察需要、产品参与、看到价值",
+        "ending": "回应这个购买问题"
+      }
+    ]
+  },
+  "selection": {
+    "status": "READY",
+    "reason": "独立检查动机和演示",
+    "missing": [],
+    "evaluations": [
+      {
+        "opportunityId": "O01",
+        "verdict": "ADVANCE",
+        "reason": "具体利益有可见过程与边界"
+      },
+      {
+        "opportunityId": "O02",
+        "verdict": "ADVANCE",
+        "reason": "具体利益有可见过程与边界"
+      },
+      {
+        "opportunityId": "O03",
+        "verdict": "ADVANCE",
+        "reason": "具体利益有可见过程与边界"
+      },
+      {
+        "opportunityId": "O04",
+        "verdict": "ADVANCE",
+        "reason": "具体利益有可见过程与边界"
+      },
+      {
+        "opportunityId": "O05",
+        "verdict": "ADVANCE",
+        "reason": "具体利益有可见过程与边界"
+      },
+      {
+        "opportunityId": "O06",
+        "verdict": "ADVANCE",
+        "reason": "具体利益有可见过程与边界"
+      }
+    ],
+    "choices": [
+      {
+        "scriptId": "s0",
+        "opportunityId": "O01",
+        "mustPreserve": [
+          "具体购买需要",
+          "实际观察结果"
+        ]
+      }
+    ],
+    "readiness": {
+      "status": "READY",
+      "reason": "独立检查动机和演示",
+      "missing": []
+    },
+    "concepts": [
+      {
+        "scriptId": "s0",
+        "name": "购买问题1",
+        "synopsis": "实际任务尚未完成\n产品按已知方式参与\n看见任务中的具体改变",
+        "productFocus": "已知特点支持需要1",
+        "structure": "观察需要、产品参与、看到价值",
+        "difference": "如何选择1",
+        "coreIdea": "已知特点支持需要1",
+        "openingHook": "实际任务尚未完成",
+        "productRole": "产品按已知方式参与",
+        "memoryPoint": "看见任务中的具体改变",
+        "plan": {
+          "videoType": "ECOMMERCE",
+          "buyingReason": "已知特点支持需要1",
+          "audienceSituation": "需要完成具体任务",
+          "demonstration": "实际任务尚未完成\n产品按已知方式参与\n看见任务中的具体改变\n表达边界：不据此推导未知性能",
+          "progression": "观察需要、产品参与、看到价值",
+          "ending": "回应这个购买问题"
+        }
+      }
+    ]
+  }
+}

@@ -2,7 +2,7 @@
 export const CUSTOMIZED_VIDEO_TYPES = ['ECOMMERCE', 'LOCAL_STORE', 'BRAND_AD', 'DRAMA'] as const;
 export type CustomizedVideoType = (typeof CUSTOMIZED_VIDEO_TYPES)[number];
 export const CUSTOMIZED_VIDEO_TYPE_LABELS: Record<CustomizedVideoType, string> = {
-  ECOMMERCE: '电商带货',
+  ECOMMERCE: '口播带货',
   LOCAL_STORE: '同城到店',
   BRAND_AD: '品牌广告',
   DRAMA: '剧情短片',

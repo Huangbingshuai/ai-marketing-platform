@@ -1,0 +1,197 @@
+{
+  "input": {
+    "schemaVersion": 1,
+    "outputMode": "STORY_ONLY",
+    "storyFormat": "VIDEO_SCRIPT_V3",
+    "graphVersion": "TYPED_CREATION_V1",
+    "routeId": "DRAMA",
+    "strategyVersions": {
+      "concept": "2026-10-14-drama.1",
+      "story": "2026-10-14-drama.1",
+      "review": "2026-10-14-drama.1",
+      "repair": "2026-10-14-drama.1"
+    },
+    "source": {
+      "artifactId": "brief",
+      "revision": 1,
+      "fingerprint": "fixed"
+    },
+    "brief": {
+      "productName": "充电器",
+      "sellingPoints": [
+        "资料中的真实特点"
+      ]
+    },
+    "settings": {
+      "videoType": "DRAMA",
+      "targetDurationSeconds": 30,
+      "variantCount": 1,
+      "structureMode": "CUSTOM",
+      "structureSections": [
+        "吸引注意",
+        "价值兑现"
+      ],
+      "instructions": "unused"
+    },
+    "scriptIds": [
+      "s0"
+    ],
+    "existingConcepts": [],
+    "models": {
+      "creative": "controlled",
+      "detail": "controlled"
+    }
+  },
+  "selection": {
+    "status": "READY",
+    "reason": "人物选择有实际后果",
+    "missing": [],
+    "evaluations": [
+      {
+        "ideaId": "I0",
+        "verdict": "ADVANCE",
+        "reason": "伏笔有实际回收"
+      },
+      {
+        "ideaId": "I1",
+        "verdict": "ADVANCE",
+        "reason": "伏笔有实际回收"
+      },
+      {
+        "ideaId": "I2",
+        "verdict": "ADVANCE",
+        "reason": "伏笔有实际回收"
+      }
+    ],
+    "choices": [
+      {
+        "scriptId": "s0",
+        "ideaId": "I0",
+        "mustPreserve": [
+          "先出现具体伏笔",
+          "人物选择带来不同结果"
+        ]
+      }
+    ],
+    "development": {
+      "readiness": {
+        "status": "READY",
+        "reason": "已有资料足够",
+        "missing": []
+      },
+      "ideas": [
+        {
+          "id": "I0",
+          "name": "人物选择0",
+          "devices": [
+            "对话试探",
+            "信息反转"
+          ],
+          "plan": {
+            "videoType": "DRAMA",
+            "desire": "具体人物行动0",
+            "obstacle": "具体人物行动0",
+            "relationships": "具体人物行动0",
+            "trigger": "具体人物行动0",
+            "escalation": "具体人物行动0",
+            "choice": "具体人物行动0",
+            "consequence": "具体人物行动0",
+            "productCausality": "具体人物行动0"
+          },
+          "viewingPromise": "包里留下的东西是谁放的",
+          "informationDesign": "观众先看到标记，人物稍后发现",
+          "dialogueIntent": "试探对方有没有改变决定",
+          "emotionalMovement": "由防备到发现被默默理解",
+          "factIds": [
+            "F01"
+          ],
+          "weakness": "避免对白提前说破"
+        },
+        {
+          "id": "I1",
+          "name": "人物选择1",
+          "devices": [
+            "对话试探",
+            "信息反转"
+          ],
+          "plan": {
+            "videoType": "DRAMA",
+            "desire": "具体人物行动1",
+            "obstacle": "具体人物行动1",
+            "relationships": "具体人物行动1",
+            "trigger": "具体人物行动1",
+            "escalation": "具体人物行动1",
+            "choice": "具体人物行动1",
+            "consequence": "具体人物行动1",
+            "productCausality": "具体人物行动1"
+          },
+          "viewingPromise": "包里留下的东西是谁放的",
+          "informationDesign": "观众先看到标记，人物稍后发现",
+          "dialogueIntent": "试探对方有没有改变决定",
+          "emotionalMovement": "由防备到发现被默默理解",
+          "factIds": [
+            "F01"
+          ],
+          "weakness": "避免对白提前说破"
+        },
+        {
+          "id": "I2",
+          "name": "人物选择2",
+          "devices": [
+            "对话试探",
+            "信息反转"
+          ],
+          "plan": {
+            "videoType": "DRAMA",
+            "desire": "具体人物行动2",
+            "obstacle": "具体人物行动2",
+            "relationships": "具体人物行动2",
+            "trigger": "具体人物行动2",
+            "escalation": "具体人物行动2",
+            "choice": "具体人物行动2",
+            "consequence": "具体人物行动2",
+            "productCausality": "具体人物行动2"
+          },
+          "viewingPromise": "包里留下的东西是谁放的",
+          "informationDesign": "观众先看到标记，人物稍后发现",
+          "dialogueIntent": "试探对方有没有改变决定",
+          "emotionalMovement": "由防备到发现被默默理解",
+          "factIds": [
+            "F01"
+          ],
+          "weakness": "避免对白提前说破"
+        }
+      ]
+    },
+    "readiness": {
+      "status": "READY",
+      "reason": "人物选择有实际后果",
+      "missing": []
+    },
+    "concepts": [
+      {
+        "scriptId": "s0",
+        "name": "人物选择0",
+        "synopsis": "具体人物行动0\n具体人物行动0\n具体人物行动0",
+        "productFocus": "具体人物行动0",
+        "structure": "具体人物行动0\n具体人物行动0\n具体人物行动0",
+        "difference": "对话试探、信息反转\n观众先看到标记，人物稍后发现",
+        "coreIdea": "包里留下的东西是谁放的",
+        "openingHook": "具体人物行动0",
+        "productRole": "具体人物行动0",
+        "memoryPoint": "具体人物行动0",
+        "plan": {
+          "videoType": "DRAMA",
+          "desire": "具体人物行动0",
+          "obstacle": "具体人物行动0",
+          "relationships": "具体人物行动0",
+          "trigger": "具体人物行动0",
+          "escalation": "具体人物行动0",
+          "choice": "具体人物行动0",
+          "consequence": "具体人物行动0",
+          "productCausality": "具体人物行动0"
+        }
+      }
+    ]
+  }
+}
