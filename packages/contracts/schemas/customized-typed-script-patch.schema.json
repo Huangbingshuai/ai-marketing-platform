@@ -1,0 +1,443 @@
+{
+  "$defs": {
+    "BodyMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "enum": [
+            "title",
+            "opening",
+            "development",
+            "ending",
+            "dialoguePlan"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 20000,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "value"
+      ],
+      "title": "BodyMetadata",
+      "type": "object"
+    },
+    "BodyReplacement": {
+      "additionalProperties": false,
+      "properties": {
+        "beatId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Beatid",
+          "type": "string"
+        },
+        "content": {
+          "maxLength": 20000,
+          "title": "Content",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Durationseconds",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "beatId",
+        "content",
+        "durationSeconds",
+        "reason"
+      ],
+      "title": "BodyReplacement",
+      "type": "object"
+    },
+    "BrandPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "BRAND_AD",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "brandImpression": {
+          "maxLength": 20000,
+          "title": "Brandimpression",
+          "type": "string"
+        },
+        "visualConcept": {
+          "maxLength": 20000,
+          "title": "Visualconcept",
+          "type": "string"
+        },
+        "visualProgression": {
+          "maxLength": 20000,
+          "title": "Visualprogression",
+          "type": "string"
+        },
+        "productConnection": {
+          "maxLength": 20000,
+          "title": "Productconnection",
+          "type": "string"
+        },
+        "ending": {
+          "maxLength": 20000,
+          "title": "Ending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "brandImpression",
+        "visualConcept",
+        "visualProgression",
+        "productConnection",
+        "ending"
+      ],
+      "title": "BrandPlan",
+      "type": "object"
+    },
+    "DramaPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "DRAMA",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "desire": {
+          "maxLength": 20000,
+          "title": "Desire",
+          "type": "string"
+        },
+        "obstacle": {
+          "maxLength": 20000,
+          "title": "Obstacle",
+          "type": "string"
+        },
+        "relationships": {
+          "maxLength": 20000,
+          "title": "Relationships",
+          "type": "string"
+        },
+        "trigger": {
+          "maxLength": 20000,
+          "title": "Trigger",
+          "type": "string"
+        },
+        "escalation": {
+          "maxLength": 20000,
+          "title": "Escalation",
+          "type": "string"
+        },
+        "choice": {
+          "maxLength": 20000,
+          "title": "Choice",
+          "type": "string"
+        },
+        "consequence": {
+          "maxLength": 20000,
+          "title": "Consequence",
+          "type": "string"
+        },
+        "productCausality": {
+          "maxLength": 20000,
+          "title": "Productcausality",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "desire",
+        "obstacle",
+        "relationships",
+        "trigger",
+        "escalation",
+        "choice",
+        "consequence",
+        "productCausality"
+      ],
+      "title": "DramaPlan",
+      "type": "object"
+    },
+    "EcommercePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "ECOMMERCE",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "buyingReason": {
+          "maxLength": 20000,
+          "title": "Buyingreason",
+          "type": "string"
+        },
+        "audienceSituation": {
+          "maxLength": 20000,
+          "title": "Audiencesituation",
+          "type": "string"
+        },
+        "demonstration": {
+          "maxLength": 20000,
+          "title": "Demonstration",
+          "type": "string"
+        },
+        "progression": {
+          "maxLength": 20000,
+          "title": "Progression",
+          "type": "string"
+        },
+        "ending": {
+          "maxLength": 20000,
+          "title": "Ending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "buyingReason",
+        "audienceSituation",
+        "demonstration",
+        "progression",
+        "ending"
+      ],
+      "title": "EcommercePlan",
+      "type": "object"
+    },
+    "LocalStorePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "LOCAL_STORE",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "visitReason": {
+          "maxLength": 20000,
+          "title": "Visitreason",
+          "type": "string"
+        },
+        "venueEvidence": {
+          "maxLength": 20000,
+          "title": "Venueevidence",
+          "type": "string"
+        },
+        "experiencePath": {
+          "maxLength": 20000,
+          "title": "Experiencepath",
+          "type": "string"
+        },
+        "serviceValue": {
+          "maxLength": 20000,
+          "title": "Servicevalue",
+          "type": "string"
+        },
+        "ending": {
+          "maxLength": 20000,
+          "title": "Ending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "visitReason",
+        "venueEvidence",
+        "experiencePath",
+        "serviceValue",
+        "ending"
+      ],
+      "title": "LocalStorePlan",
+      "type": "object"
+    },
+    "StructureMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "requirementId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Requirementid",
+          "type": "string"
+        },
+        "beatIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 60,
+          "minItems": 1,
+          "title": "Beatids",
+          "type": "array"
+        },
+        "evidence": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirementId",
+        "beatIds",
+        "evidence"
+      ],
+      "title": "StructureMapping",
+      "type": "object"
+    },
+    "TypedConcept": {
+      "additionalProperties": false,
+      "properties": {
+        "scriptId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Scriptid",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "title": "Name",
+          "type": "string"
+        },
+        "synopsis": {
+          "maxLength": 20000,
+          "title": "Synopsis",
+          "type": "string"
+        },
+        "productFocus": {
+          "maxLength": 20000,
+          "title": "Productfocus",
+          "type": "string"
+        },
+        "structure": {
+          "maxLength": 20000,
+          "title": "Structure",
+          "type": "string"
+        },
+        "difference": {
+          "maxLength": 20000,
+          "title": "Difference",
+          "type": "string"
+        },
+        "coreIdea": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Coreidea",
+          "type": "string"
+        },
+        "openingHook": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Openinghook",
+          "type": "string"
+        },
+        "productRole": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Productrole",
+          "type": "string"
+        },
+        "memoryPoint": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Memorypoint",
+          "type": "string"
+        },
+        "plan": {
+          "discriminator": {
+            "mapping": {
+              "BRAND_AD": "#/$defs/BrandPlan",
+              "DRAMA": "#/$defs/DramaPlan",
+              "ECOMMERCE": "#/$defs/EcommercePlan",
+              "LOCAL_STORE": "#/$defs/LocalStorePlan"
+            },
+            "propertyName": "videoType"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/EcommercePlan"
+            },
+            {
+              "$ref": "#/$defs/LocalStorePlan"
+            },
+            {
+              "$ref": "#/$defs/BrandPlan"
+            },
+            {
+              "$ref": "#/$defs/DramaPlan"
+            }
+          ],
+          "title": "Plan"
+        }
+      },
+      "required": [
+        "scriptId",
+        "name",
+        "synopsis",
+        "productFocus",
+        "structure",
+        "difference",
+        "plan"
+      ],
+      "title": "TypedConcept",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "reason": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "replacements": {
+      "items": {
+        "$ref": "#/$defs/BodyReplacement"
+      },
+      "maxItems": 60,
+      "minItems": 1,
+      "title": "Replacements",
+      "type": "array"
+    },
+    "metadata": {
+      "items": {
+        "$ref": "#/$defs/BodyMetadata"
+      },
+      "maxItems": 5,
+      "title": "Metadata",
+      "type": "array"
+    },
+    "concept": {
+      "$ref": "#/$defs/TypedConcept"
+    },
+    "structureMapping": {
+      "items": {
+        "$ref": "#/$defs/StructureMapping"
+      },
+      "maxItems": 20,
+      "title": "Structuremapping",
+      "type": "array"
+    }
+  },
+  "required": [
+    "reason",
+    "replacements",
+    "metadata",
+    "concept",
+    "structureMapping"
+  ],
+  "title": "TypedPatch",
+  "type": "object"
+}

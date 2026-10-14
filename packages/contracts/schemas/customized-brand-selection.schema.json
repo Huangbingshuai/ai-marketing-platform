@@ -1,0 +1,467 @@
+{
+  "$defs": {
+    "BrandCommitment": {
+      "additionalProperties": false,
+      "properties": {
+        "scriptId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Scriptid",
+          "type": "string"
+        },
+        "ideaId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Ideaid",
+          "type": "string"
+        },
+        "approach": {
+          "enum": [
+            "LIFE_OBSERVATION",
+            "PRODUCT_DESIGN",
+            "VISUAL_EXPRESSION",
+            "DOCUMENTARY",
+            "OTHER"
+          ],
+          "title": "Approach",
+          "type": "string"
+        },
+        "mustPreserve": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 5,
+          "minItems": 2,
+          "title": "Mustpreserve",
+          "type": "array"
+        },
+        "essentialFactIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Essentialfactids",
+          "type": "array"
+        },
+        "reason": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": ["scriptId", "ideaId", "approach", "mustPreserve", "essentialFactIds", "reason"],
+      "title": "BrandCommitment",
+      "type": "object"
+    },
+    "BrandEvaluation": {
+      "additionalProperties": false,
+      "properties": {
+        "ideaId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Ideaid",
+          "type": "string"
+        },
+        "attraction": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Attraction",
+          "type": "integer"
+        },
+        "productConnection": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Productconnection",
+          "type": "integer"
+        },
+        "clarity": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Clarity",
+          "type": "integer"
+        },
+        "distinctiveness": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Distinctiveness",
+          "type": "integer"
+        },
+        "verdict": {
+          "enum": ["ADVANCE", "REJECT"],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ideaId",
+        "attraction",
+        "productConnection",
+        "clarity",
+        "distinctiveness",
+        "verdict",
+        "reason"
+      ],
+      "title": "BrandEvaluation",
+      "type": "object"
+    },
+    "BrandPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "BRAND_AD",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "brandImpression": {
+          "maxLength": 20000,
+          "title": "Brandimpression",
+          "type": "string"
+        },
+        "visualConcept": {
+          "maxLength": 20000,
+          "title": "Visualconcept",
+          "type": "string"
+        },
+        "visualProgression": {
+          "maxLength": 20000,
+          "title": "Visualprogression",
+          "type": "string"
+        },
+        "productConnection": {
+          "maxLength": 20000,
+          "title": "Productconnection",
+          "type": "string"
+        },
+        "ending": {
+          "maxLength": 20000,
+          "title": "Ending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "brandImpression",
+        "visualConcept",
+        "visualProgression",
+        "productConnection",
+        "ending"
+      ],
+      "title": "BrandPlan",
+      "type": "object"
+    },
+    "DramaPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "DRAMA",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "desire": {
+          "maxLength": 20000,
+          "title": "Desire",
+          "type": "string"
+        },
+        "obstacle": {
+          "maxLength": 20000,
+          "title": "Obstacle",
+          "type": "string"
+        },
+        "relationships": {
+          "maxLength": 20000,
+          "title": "Relationships",
+          "type": "string"
+        },
+        "trigger": {
+          "maxLength": 20000,
+          "title": "Trigger",
+          "type": "string"
+        },
+        "escalation": {
+          "maxLength": 20000,
+          "title": "Escalation",
+          "type": "string"
+        },
+        "choice": {
+          "maxLength": 20000,
+          "title": "Choice",
+          "type": "string"
+        },
+        "consequence": {
+          "maxLength": 20000,
+          "title": "Consequence",
+          "type": "string"
+        },
+        "productCausality": {
+          "maxLength": 20000,
+          "title": "Productcausality",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "desire",
+        "obstacle",
+        "relationships",
+        "trigger",
+        "escalation",
+        "choice",
+        "consequence",
+        "productCausality"
+      ],
+      "title": "DramaPlan",
+      "type": "object"
+    },
+    "EcommercePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "ECOMMERCE",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "buyingReason": {
+          "maxLength": 20000,
+          "title": "Buyingreason",
+          "type": "string"
+        },
+        "audienceSituation": {
+          "maxLength": 20000,
+          "title": "Audiencesituation",
+          "type": "string"
+        },
+        "demonstration": {
+          "maxLength": 20000,
+          "title": "Demonstration",
+          "type": "string"
+        },
+        "progression": {
+          "maxLength": 20000,
+          "title": "Progression",
+          "type": "string"
+        },
+        "ending": {
+          "maxLength": 20000,
+          "title": "Ending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "buyingReason",
+        "audienceSituation",
+        "demonstration",
+        "progression",
+        "ending"
+      ],
+      "title": "EcommercePlan",
+      "type": "object"
+    },
+    "LocalStorePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "videoType": {
+          "const": "LOCAL_STORE",
+          "title": "Videotype",
+          "type": "string"
+        },
+        "visitReason": {
+          "maxLength": 20000,
+          "title": "Visitreason",
+          "type": "string"
+        },
+        "venueEvidence": {
+          "maxLength": 20000,
+          "title": "Venueevidence",
+          "type": "string"
+        },
+        "experiencePath": {
+          "maxLength": 20000,
+          "title": "Experiencepath",
+          "type": "string"
+        },
+        "serviceValue": {
+          "maxLength": 20000,
+          "title": "Servicevalue",
+          "type": "string"
+        },
+        "ending": {
+          "maxLength": 20000,
+          "title": "Ending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoType",
+        "visitReason",
+        "venueEvidence",
+        "experiencePath",
+        "serviceValue",
+        "ending"
+      ],
+      "title": "LocalStorePlan",
+      "type": "object"
+    },
+    "TypedConcept": {
+      "additionalProperties": false,
+      "properties": {
+        "scriptId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Scriptid",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "title": "Name",
+          "type": "string"
+        },
+        "synopsis": {
+          "maxLength": 20000,
+          "title": "Synopsis",
+          "type": "string"
+        },
+        "productFocus": {
+          "maxLength": 20000,
+          "title": "Productfocus",
+          "type": "string"
+        },
+        "structure": {
+          "maxLength": 20000,
+          "title": "Structure",
+          "type": "string"
+        },
+        "difference": {
+          "maxLength": 20000,
+          "title": "Difference",
+          "type": "string"
+        },
+        "coreIdea": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Coreidea",
+          "type": "string"
+        },
+        "openingHook": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Openinghook",
+          "type": "string"
+        },
+        "productRole": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Productrole",
+          "type": "string"
+        },
+        "memoryPoint": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Memorypoint",
+          "type": "string"
+        },
+        "plan": {
+          "discriminator": {
+            "mapping": {
+              "BRAND_AD": "#/$defs/BrandPlan",
+              "DRAMA": "#/$defs/DramaPlan",
+              "ECOMMERCE": "#/$defs/EcommercePlan",
+              "LOCAL_STORE": "#/$defs/LocalStorePlan"
+            },
+            "propertyName": "videoType"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/EcommercePlan"
+            },
+            {
+              "$ref": "#/$defs/LocalStorePlan"
+            },
+            {
+              "$ref": "#/$defs/BrandPlan"
+            },
+            {
+              "$ref": "#/$defs/DramaPlan"
+            }
+          ],
+          "title": "Plan"
+        }
+      },
+      "required": [
+        "scriptId",
+        "name",
+        "synopsis",
+        "productFocus",
+        "structure",
+        "difference",
+        "plan"
+      ],
+      "title": "TypedConcept",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "enum": ["READY", "REWORK", "NEEDS_INFORMATION"],
+      "title": "Status",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 320,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "missing": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Missing",
+      "type": "array"
+    },
+    "evaluations": {
+      "items": {
+        "$ref": "#/$defs/BrandEvaluation"
+      },
+      "maxItems": 8,
+      "minItems": 6,
+      "title": "Evaluations",
+      "type": "array"
+    },
+    "concepts": {
+      "items": {
+        "$ref": "#/$defs/TypedConcept"
+      },
+      "maxItems": 5,
+      "title": "Concepts",
+      "type": "array"
+    },
+    "commitments": {
+      "items": {
+        "$ref": "#/$defs/BrandCommitment"
+      },
+      "maxItems": 5,
+      "title": "Commitments",
+      "type": "array"
+    }
+  },
+  "required": ["status", "reason", "missing", "evaluations", "concepts", "commitments"],
+  "title": "BrandSelection",
+  "type": "object"
+}

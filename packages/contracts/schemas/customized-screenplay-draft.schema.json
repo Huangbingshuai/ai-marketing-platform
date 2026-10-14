@@ -1,0 +1,69 @@
+{
+  "$defs": {
+    "Beat": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "content": {
+          "maxLength": 20000,
+          "title": "Content",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Durationseconds",
+          "type": "number"
+        }
+      },
+      "required": ["id", "content", "durationSeconds"],
+      "title": "Beat",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "maxLength": 200,
+      "title": "Title",
+      "type": "string"
+    },
+    "opening": {
+      "maxLength": 20000,
+      "title": "Opening",
+      "type": "string"
+    },
+    "development": {
+      "maxLength": 20000,
+      "title": "Development",
+      "type": "string"
+    },
+    "ending": {
+      "maxLength": 20000,
+      "title": "Ending",
+      "type": "string"
+    },
+    "dialoguePlan": {
+      "maxLength": 20000,
+      "title": "Dialogueplan",
+      "type": "string"
+    },
+    "beats": {
+      "items": {
+        "$ref": "#/$defs/Beat"
+      },
+      "maxItems": 60,
+      "minItems": 1,
+      "title": "Beats",
+      "type": "array"
+    }
+  },
+  "required": ["title", "opening", "development", "ending", "dialoguePlan", "beats"],
+  "title": "ScreenplayDraft",
+  "type": "object"
+}

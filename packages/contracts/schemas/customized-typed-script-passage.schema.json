@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "Beat": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "content": {
+          "maxLength": 20000,
+          "title": "Content",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Durationseconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "durationSeconds"
+      ],
+      "title": "Beat",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "beat": {
+      "$ref": "#/$defs/Beat"
+    }
+  },
+  "required": [
+    "beat"
+  ],
+  "title": "Passage",
+  "type": "object"
+}

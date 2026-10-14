@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "Part": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "development": {
+          "maxLength": 20000,
+          "title": "Development",
+          "type": "string"
+        },
+        "continuity": {
+          "maxLength": 20000,
+          "title": "Continuity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "development",
+        "continuity"
+      ],
+      "title": "Part",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "opening": {
+      "maxLength": 20000,
+      "title": "Opening",
+      "type": "string"
+    },
+    "development": {
+      "maxLength": 20000,
+      "title": "Development",
+      "type": "string"
+    },
+    "ending": {
+      "maxLength": 20000,
+      "title": "Ending",
+      "type": "string"
+    },
+    "dialoguePlan": {
+      "maxLength": 20000,
+      "title": "Dialogueplan",
+      "type": "string"
+    },
+    "parts": {
+      "items": {
+        "$ref": "#/$defs/Part"
+      },
+      "maxItems": 60,
+      "minItems": 2,
+      "title": "Parts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "title",
+    "opening",
+    "development",
+    "ending",
+    "dialoguePlan",
+    "parts"
+  ],
+  "title": "Outline",
+  "type": "object"
+}

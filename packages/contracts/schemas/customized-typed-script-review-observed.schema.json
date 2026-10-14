@@ -1,0 +1,161 @@
+{
+  "$defs": {
+    "ObservedDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "criterion": {
+          "enum": [
+            "BUYING_REASON",
+            "VALUE_DEMONSTRATION",
+            "INFORMATION_CAPACITY",
+            "VENUE_EVIDENCE",
+            "VISIT_EXPERIENCE",
+            "TRUSTWORTHY_DETAIL",
+            "VISIBLE_CONCEPT",
+            "VISUAL_PROGRESSION",
+            "BRAND_MEMORY",
+            "CHARACTER_CAUSALITY",
+            "NATURAL_DIALOGUE",
+            "PRODUCT_CAUSALITY"
+          ],
+          "title": "Criterion",
+          "type": "string"
+        },
+        "evidenceId": {
+          "maxLength": 20000,
+          "title": "Evidenceid",
+          "type": "string"
+        },
+        "observed": {
+          "maxLength": 20000,
+          "title": "Observed",
+          "type": "string"
+        },
+        "limitation": {
+          "maxLength": 20000,
+          "title": "Limitation",
+          "type": "string"
+        },
+        "suggestion": {
+          "maxLength": 20000,
+          "title": "Suggestion",
+          "type": "string"
+        },
+        "defectScope": {
+          "enum": ["NONE", "LOCAL_PREFERENCE", "STRUCTURAL"],
+          "title": "Defectscope",
+          "type": "string"
+        },
+        "assessment": {
+          "enum": ["DEMONSTRATED", "CONTRADICTED", "NOT_DEMONSTRATED", "NOT_APPLICABLE"],
+          "title": "Assessment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "criterion",
+        "evidenceId",
+        "observed",
+        "limitation",
+        "suggestion",
+        "defectScope",
+        "assessment"
+      ],
+      "title": "ObservedDecision",
+      "type": "object"
+    },
+    "TypedFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "enum": ["ERROR", "WARNING"],
+          "title": "Severity",
+          "type": "string"
+        },
+        "category": {
+          "enum": ["FACT", "STORY", "STRUCTURE"],
+          "title": "Category",
+          "type": "string"
+        },
+        "shotIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Shotids",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 20000,
+          "title": "Message",
+          "type": "string"
+        },
+        "evidence": {
+          "maxLength": 20000,
+          "title": "Evidence",
+          "type": "string"
+        },
+        "suggestion": {
+          "maxLength": 20000,
+          "title": "Suggestion",
+          "type": "string"
+        },
+        "beatIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 60,
+          "title": "Beatids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "severity",
+        "category",
+        "shotIds",
+        "message",
+        "evidence",
+        "suggestion",
+        "beatIds"
+      ],
+      "title": "TypedFinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "routeId": {
+      "enum": ["ECOMMERCE", "LOCAL_STORE", "BRAND_AD", "DRAMA"],
+      "title": "Routeid",
+      "type": "string"
+    },
+    "qualityChecks": {
+      "items": {
+        "$ref": "#/$defs/ObservedDecision"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "title": "Qualitychecks",
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/TypedFinding"
+      },
+      "maxItems": 1000,
+      "title": "Findings",
+      "type": "array"
+    },
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": ["routeId", "qualityChecks", "findings", "summary"],
+  "title": "ObservedReview",
+  "type": "object"
+}

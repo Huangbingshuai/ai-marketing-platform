@@ -1,0 +1,82 @@
+{
+  "$defs": {
+    "Concept": {
+      "additionalProperties": false,
+      "properties": {
+        "scriptId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Scriptid",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "title": "Name",
+          "type": "string"
+        },
+        "synopsis": {
+          "maxLength": 20000,
+          "title": "Synopsis",
+          "type": "string"
+        },
+        "productFocus": {
+          "maxLength": 20000,
+          "title": "Productfocus",
+          "type": "string"
+        },
+        "structure": {
+          "maxLength": 20000,
+          "title": "Structure",
+          "type": "string"
+        },
+        "difference": {
+          "maxLength": 20000,
+          "title": "Difference",
+          "type": "string"
+        },
+        "coreIdea": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Coreidea",
+          "type": "string"
+        },
+        "openingHook": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Openinghook",
+          "type": "string"
+        },
+        "productRole": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Productrole",
+          "type": "string"
+        },
+        "memoryPoint": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Memorypoint",
+          "type": "string"
+        }
+      },
+      "required": ["scriptId", "name", "synopsis", "productFocus", "structure", "difference"],
+      "title": "Concept",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "concepts": {
+      "items": {
+        "$ref": "#/$defs/Concept"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Concepts",
+      "type": "array"
+    }
+  },
+  "required": ["concepts"],
+  "title": "Concepts",
+  "type": "object"
+}

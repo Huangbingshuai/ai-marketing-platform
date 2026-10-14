@@ -1,0 +1,181 @@
+{
+  "$defs": {
+    "QualityCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "criterion": {
+          "enum": [
+            "BUYING_REASON",
+            "VALUE_DEMONSTRATION",
+            "INFORMATION_CAPACITY",
+            "VENUE_EVIDENCE",
+            "VISIT_EXPERIENCE",
+            "TRUSTWORTHY_DETAIL",
+            "VISIBLE_CONCEPT",
+            "VISUAL_PROGRESSION",
+            "BRAND_MEMORY",
+            "CHARACTER_CAUSALITY",
+            "NATURAL_DIALOGUE",
+            "PRODUCT_CAUSALITY"
+          ],
+          "title": "Criterion",
+          "type": "string"
+        },
+        "beatIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 60,
+          "title": "Beatids",
+          "type": "array"
+        },
+        "evidence": {
+          "maxLength": 20000,
+          "title": "Evidence",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 20000,
+          "title": "Reason",
+          "type": "string"
+        },
+        "suggestion": {
+          "maxLength": 20000,
+          "title": "Suggestion",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_APPLICABLE"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "criterion",
+        "beatIds",
+        "evidence",
+        "reason",
+        "suggestion",
+        "verdict"
+      ],
+      "title": "QualityCheck",
+      "type": "object"
+    },
+    "TypedFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "enum": [
+            "ERROR",
+            "WARNING"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "FACT",
+            "STORY",
+            "STRUCTURE"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "shotIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Shotids",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 20000,
+          "title": "Message",
+          "type": "string"
+        },
+        "evidence": {
+          "maxLength": 20000,
+          "title": "Evidence",
+          "type": "string"
+        },
+        "suggestion": {
+          "maxLength": 20000,
+          "title": "Suggestion",
+          "type": "string"
+        },
+        "beatIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 60,
+          "title": "Beatids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "severity",
+        "category",
+        "shotIds",
+        "message",
+        "evidence",
+        "suggestion",
+        "beatIds"
+      ],
+      "title": "TypedFinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/TypedFinding"
+      },
+      "maxItems": 1000,
+      "title": "Findings",
+      "type": "array"
+    },
+    "routeId": {
+      "enum": [
+        "ECOMMERCE",
+        "LOCAL_STORE",
+        "BRAND_AD",
+        "DRAMA"
+      ],
+      "title": "Routeid",
+      "type": "string"
+    },
+    "qualityChecks": {
+      "items": {
+        "$ref": "#/$defs/QualityCheck"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "title": "Qualitychecks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary",
+    "findings",
+    "routeId",
+    "qualityChecks"
+  ],
+  "title": "TypedReviewV4",
+  "type": "object"
+}

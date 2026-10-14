@@ -1,0 +1,276 @@
+{
+  "input": {
+    "schemaVersion": 1,
+    "outputMode": "STORY_ONLY",
+    "storyFormat": "VIDEO_SCRIPT_V3",
+    "graphVersion": "TYPED_CREATION_V1",
+    "routeId": "BRAND_AD",
+    "strategyVersions": {
+      "concept": "2026-10-14.1",
+      "story": "2026-10-14.1",
+      "review": "2026-10-14.1",
+      "repair": "2026-10-14.1"
+    },
+    "source": {
+      "artifactId": "brief",
+      "revision": 1,
+      "fingerprint": "fixed"
+    },
+    "brief": {
+      "productName": "测试产品",
+      "sellingPoints": ["资料中的真实特点"]
+    },
+    "settings": {
+      "videoType": "BRAND_AD",
+      "targetDurationSeconds": 30,
+      "variantCount": 3,
+      "structureMode": "CUSTOM",
+      "structureSections": ["吸引注意", "价值兑现"],
+      "instructions": "unused"
+    },
+    "scriptIds": ["s0", "s1", "s2"],
+    "existingConcepts": [],
+    "models": {
+      "creative": "controlled",
+      "detail": "controlled"
+    }
+  },
+  "development": {
+    "proposition": {
+      "message": "体现产品特点",
+      "audienceObservation": "一个创作观察",
+      "observationBasis": "CREATIVE_HYPOTHESIS",
+      "supportingFactIds": ["F01"],
+      "requiredFactIds": [],
+      "requiredReason": "未要求全部展示"
+    },
+    "ideas": [
+      {
+        "id": "C01",
+        "name": "短创意0",
+        "approach": "PRODUCT_DESIGN",
+        "viewingHook": "可见轮廓",
+        "mechanism": "光线节奏",
+        "keyImages": ["建立轮廓", "橙色显现"],
+        "productRole": "真实特点参与",
+        "factIds": ["F01"],
+        "memory": "识别产品",
+        "risk": "避免抽象"
+      },
+      {
+        "id": "C02",
+        "name": "短创意1",
+        "approach": "PRODUCT_DESIGN",
+        "viewingHook": "可见轮廓",
+        "mechanism": "光线节奏",
+        "keyImages": ["建立轮廓", "橙色显现"],
+        "productRole": "真实特点参与",
+        "factIds": ["F01"],
+        "memory": "识别产品",
+        "risk": "避免抽象"
+      },
+      {
+        "id": "C03",
+        "name": "短创意2",
+        "approach": "PRODUCT_DESIGN",
+        "viewingHook": "可见轮廓",
+        "mechanism": "光线节奏",
+        "keyImages": ["建立轮廓", "橙色显现"],
+        "productRole": "真实特点参与",
+        "factIds": ["F01"],
+        "memory": "识别产品",
+        "risk": "避免抽象"
+      },
+      {
+        "id": "C04",
+        "name": "短创意3",
+        "approach": "PRODUCT_DESIGN",
+        "viewingHook": "可见轮廓",
+        "mechanism": "光线节奏",
+        "keyImages": ["建立轮廓", "橙色显现"],
+        "productRole": "真实特点参与",
+        "factIds": ["F01"],
+        "memory": "识别产品",
+        "risk": "避免抽象"
+      },
+      {
+        "id": "C05",
+        "name": "短创意4",
+        "approach": "PRODUCT_DESIGN",
+        "viewingHook": "可见轮廓",
+        "mechanism": "光线节奏",
+        "keyImages": ["建立轮廓", "橙色显现"],
+        "productRole": "真实特点参与",
+        "factIds": ["F01"],
+        "memory": "识别产品",
+        "risk": "避免抽象"
+      },
+      {
+        "id": "C06",
+        "name": "短创意5",
+        "approach": "PRODUCT_DESIGN",
+        "viewingHook": "可见轮廓",
+        "mechanism": "光线节奏",
+        "keyImages": ["建立轮廓", "橙色显现"],
+        "productRole": "真实特点参与",
+        "factIds": ["F01"],
+        "memory": "识别产品",
+        "risk": "避免抽象"
+      }
+    ]
+  },
+  "selection": {
+    "status": "READY",
+    "reason": "独立择优",
+    "missing": [],
+    "evaluations": [
+      {
+        "ideaId": "C01",
+        "attraction": 4,
+        "productConnection": 4,
+        "clarity": 4,
+        "distinctiveness": 4,
+        "verdict": "ADVANCE",
+        "reason": "可执行的观看机制"
+      },
+      {
+        "ideaId": "C02",
+        "attraction": 4,
+        "productConnection": 4,
+        "clarity": 4,
+        "distinctiveness": 4,
+        "verdict": "ADVANCE",
+        "reason": "可执行的观看机制"
+      },
+      {
+        "ideaId": "C03",
+        "attraction": 4,
+        "productConnection": 4,
+        "clarity": 4,
+        "distinctiveness": 4,
+        "verdict": "ADVANCE",
+        "reason": "可执行的观看机制"
+      },
+      {
+        "ideaId": "C04",
+        "attraction": 4,
+        "productConnection": 4,
+        "clarity": 4,
+        "distinctiveness": 4,
+        "verdict": "ADVANCE",
+        "reason": "可执行的观看机制"
+      },
+      {
+        "ideaId": "C05",
+        "attraction": 4,
+        "productConnection": 4,
+        "clarity": 4,
+        "distinctiveness": 4,
+        "verdict": "ADVANCE",
+        "reason": "可执行的观看机制"
+      },
+      {
+        "ideaId": "C06",
+        "attraction": 4,
+        "productConnection": 4,
+        "clarity": 4,
+        "distinctiveness": 4,
+        "verdict": "ADVANCE",
+        "reason": "可执行的观看机制"
+      }
+    ],
+    "concepts": [
+      {
+        "scriptId": "s0",
+        "name": "晨光",
+        "synopsis": "光线展开",
+        "productFocus": "轮廓",
+        "structure": "显现、展开",
+        "difference": "光线关系",
+        "coreIdea": "晨光",
+        "openingHook": "轮廓",
+        "productRole": "显现",
+        "memoryPoint": "橙色",
+        "plan": {
+          "videoType": "BRAND_AD",
+          "brandImpression": "具体依据与创作安排",
+          "visualConcept": "具体依据与创作安排",
+          "visualProgression": "具体依据与创作安排",
+          "productConnection": "具体依据与创作安排",
+          "ending": "具体依据与创作安排"
+        }
+      },
+      {
+        "scriptId": "s1",
+        "name": "晨光",
+        "synopsis": "光线展开",
+        "productFocus": "轮廓",
+        "structure": "显现、展开",
+        "difference": "光线关系",
+        "coreIdea": "晨光",
+        "openingHook": "轮廓",
+        "productRole": "显现",
+        "memoryPoint": "橙色",
+        "plan": {
+          "videoType": "BRAND_AD",
+          "brandImpression": "具体依据与创作安排",
+          "visualConcept": "具体依据与创作安排",
+          "visualProgression": "具体依据与创作安排",
+          "productConnection": "具体依据与创作安排",
+          "ending": "具体依据与创作安排"
+        }
+      },
+      {
+        "scriptId": "s2",
+        "name": "晨光",
+        "synopsis": "光线展开",
+        "productFocus": "轮廓",
+        "structure": "显现、展开",
+        "difference": "光线关系",
+        "coreIdea": "晨光",
+        "openingHook": "轮廓",
+        "productRole": "显现",
+        "memoryPoint": "橙色",
+        "plan": {
+          "videoType": "BRAND_AD",
+          "brandImpression": "具体依据与创作安排",
+          "visualConcept": "具体依据与创作安排",
+          "visualProgression": "具体依据与创作安排",
+          "productConnection": "具体依据与创作安排",
+          "ending": "具体依据与创作安排"
+        }
+      }
+    ],
+    "commitments": [
+      {
+        "scriptId": "s0",
+        "ideaId": "C01",
+        "approach": "PRODUCT_DESIGN",
+        "mustPreserve": ["建立轮廓", "橙色显现"],
+        "essentialFactIds": ["F01"],
+        "reason": "保留关键表达"
+      },
+      {
+        "scriptId": "s1",
+        "ideaId": "C02",
+        "approach": "PRODUCT_DESIGN",
+        "mustPreserve": ["建立轮廓", "橙色显现"],
+        "essentialFactIds": ["F01"],
+        "reason": "保留关键表达"
+      },
+      {
+        "scriptId": "s2",
+        "ideaId": "C03",
+        "approach": "PRODUCT_DESIGN",
+        "mustPreserve": ["建立轮廓", "橙色显现"],
+        "essentialFactIds": ["F01"],
+        "reason": "保留关键表达"
+      }
+    ],
+    "readiness": {
+      "status": "READY",
+      "reason": "独立择优",
+      "missing": []
+    }
+  }
+}

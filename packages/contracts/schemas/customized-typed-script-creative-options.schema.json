@@ -1,0 +1,72 @@
+{
+  "$defs": {
+    "CreativeOption": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "openingEvent": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Openingevent",
+          "type": "string"
+        },
+        "development": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Development",
+          "type": "string"
+        },
+        "endingEvent": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Endingevent",
+          "type": "string"
+        },
+        "productParticipation": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Productparticipation",
+          "type": "string"
+        },
+        "weakness": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Weakness",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "openingEvent",
+        "development",
+        "endingEvent",
+        "productParticipation",
+        "weakness"
+      ],
+      "title": "CreativeOption",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "options": {
+      "items": {
+        "$ref": "#/$defs/CreativeOption"
+      },
+      "maxItems": 7,
+      "minItems": 3,
+      "title": "Options",
+      "type": "array"
+    }
+  },
+  "required": [
+    "options"
+  ],
+  "title": "CreativeSlate",
+  "type": "object"
+}

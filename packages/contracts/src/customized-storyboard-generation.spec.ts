@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import creationSchema from '../schemas/customized-video-script-creation.schema.json';
+import conceptSchema from '../schemas/customized-storyboard-concepts.schema.json';
 import { emptyCustomizedBrief } from './customized-extraction';
 import {
   CUSTOMIZED_STORYBOARD_STAGES,
@@ -6,10 +8,24 @@ import {
   validateStoryboardCheckpoint,
   validateStoryboardSettings,
   validateStoryboardPublication,
+  validateStoryboardScreenplay,
+  validateStoryboardVideoScript,
   type StoryboardInput,
   type StoryboardStep,
 } from './customized-storyboard-generation';
-import type { CustomizedStoryboardScript } from './customized-storyboard';
+import { CUSTOMIZED_VIDEO_TYPES, type CustomizedStoryboardScript } from './customized-storyboard';
+
+it('keeps video types and model creative fields aligned with the Python schemas', () => {
+  expect(creationSchema.properties.videoType.enum).toEqual([...CUSTOMIZED_VIDEO_TYPES]);
+  expect(creationSchema.required).toEqual([
+    'videoType',
+    'referenceDurationSeconds',
+    'structureSections',
+  ]);
+  expect(creationSchema.properties.structureSections.maxItems).toBe(20);
+  for (const field of ['coreIdea', 'openingHook', 'productRole', 'memoryPoint'])
+    expect(conceptSchema.$defs.Concept.properties).toHaveProperty(field);
+});
 
 const input: StoryboardInput = {
   schemaVersion: 1,
@@ -55,6 +71,116 @@ const script: CustomizedStoryboardScript = {
 };
 
 describe('storyboard generation boundaries', () => {
+  it('follows ordered custom sections while treating reference duration as soft in V2 only', () => {
+    const content = 'P01｜产品亮相\n\n橙色端口从深灰轮廓中显现。';
+    const story = {
+      title: '亮相',
+      content,
+      opening: '',
+      development: '',
+      ending: '',
+      dialoguePlan: '',
+      beats: [{ id: 'P01', content, durationSeconds: 42 }],
+    };
+    const next: StoryboardInput = {
+      ...input,
+      outputMode: 'STORY_ONLY',
+      storyFormat: 'VIDEO_SCRIPT_V2',
+      settings: { ...input.settings, videoType: 'BRAND_AD', structureSections: ['产品亮相'] },
+    };
+    expect(validateStoryboardCheckpoint('STORY', story, next, 'a')).toBe(true);
+    expect(
+      validateStoryboardCheckpoint('STORY', story, { ...next, storyFormat: 'SCREENPLAY_V1' }, 'a'),
+    ).toBe(false);
+    expect(validateStoryboardVideoScript(story, ['主题回扣'])).not.toBeNull();
+    expect(validateStoryboardVideoScript(story, ['产品亮相', '主题回扣'])).not.toBeNull();
+    expect(validateStoryboardVideoScript({ ...story, content: '概述' })).not.toBeNull();
+    const concepts = input.scriptIds.map((scriptId) => ({
+      scriptId,
+      name: '亮相',
+      synopsis: '完整视觉篇章',
+      productFocus: '轮廓',
+      structure: '亮相',
+      difference: '视觉',
+      coreIdea: '明暗交界',
+      openingHook: '橙色',
+      productRole: '视觉主体',
+      memoryPoint: '轮廓',
+    }));
+    expect(validateStoryboardCheckpoint('CONCEPT', { concepts }, next, '')).toBe(true);
+    expect(
+      validateStoryboardCheckpoint(
+        'CONCEPT',
+        { concepts: concepts.map((c) => ({ ...c, coreIdea: '' })) },
+        next,
+        '',
+      ),
+    ).toBe(false);
+    expect(
+      validateStoryboardSettings({ ...next.settings, structureSections: [''] }),
+    ).not.toBeNull();
+  });
+  it('requires complete scene text for new AI tasks while keeping historical and manual publication compatible', () => {
+    const content = 'S01｜内景 · 候车区｜傍晚\n\n周越合上电脑，将充电线收进包里。';
+    const story = {
+      title: '候车',
+      content,
+      opening: '',
+      development: '',
+      ending: '',
+      dialoguePlan: '',
+      beats: [{ id: 'b1', content, durationSeconds: 30 }],
+    };
+    const next: StoryboardInput = {
+      ...input,
+      outputMode: 'STORY_ONLY',
+      storyFormat: 'SCREENPLAY_V1',
+    };
+    expect(validateStoryboardCheckpoint('STORY', story, next, 'a')).toBe(true);
+    expect(validateStoryboardScreenplay(story)).toBeNull();
+    const overview = { ...story, content: '候车时使用充电器' };
+    expect(validateStoryboardCheckpoint('STORY', overview, next, 'a')).toBe(false);
+    expect(validateStoryboardCheckpoint('STORY', overview, input, 'a')).toBe(true);
+    expect(
+      validateStoryboardPublication({ ...script, story: overview, shots: [], assets: [] }, 30),
+    ).toBeNull();
+    const malformed = {
+      ...story,
+      content: '概述',
+      beats: [{ ...story.beats[0]!, content: '概述' }],
+    };
+    expect(validateStoryboardCheckpoint('STORY', malformed, next, 'a')).toBe(false);
+    expect(
+      validateStoryboardCheckpoint(
+        'REPAIR',
+        {
+          script: { ...script, story: malformed, shots: [], assets: [] },
+          review: { summary: '通过', findings: [] },
+          reason: '修改',
+          changes: [],
+        },
+        next,
+        'a',
+      ),
+    ).toBe(false);
+    const long = { ...story, beats: [{ ...story.beats[0]!, durationSeconds: 60 }] };
+    expect(
+      validateStoryboardCheckpoint(
+        'STORY',
+        long,
+        { ...next, settings: { ...next.settings, targetDurationSeconds: 60 } },
+        'a',
+      ),
+    ).toBe(true);
+    expect(
+      validateStoryboardCheckpoint(
+        'STORY',
+        long,
+        { ...input, settings: { ...input.settings, targetDurationSeconds: 60 } },
+        'a',
+      ),
+    ).toBe(false);
+  });
   it.each([15, 30, 180])('accepts AI duration %s', (duration) =>
     expect(
       validateStoryboardSettings({ ...input.settings, targetDurationSeconds: duration }),

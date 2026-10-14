@@ -1,4 +1,24 @@
 /** Editable STORYBOARD node state. This is not a confirmed script artifact. */
+export const CUSTOMIZED_VIDEO_TYPES = ['ECOMMERCE', 'LOCAL_STORE', 'BRAND_AD', 'DRAMA'] as const;
+export type CustomizedVideoType = (typeof CUSTOMIZED_VIDEO_TYPES)[number];
+export const CUSTOMIZED_VIDEO_TYPE_LABELS: Record<CustomizedVideoType, string> = {
+  ECOMMERCE: '电商带货',
+  LOCAL_STORE: '同城到店',
+  BRAND_AD: '品牌广告',
+  DRAMA: '剧情短片',
+};
+export const CUSTOMIZED_SCRIPT_STRUCTURES: Record<CustomizedVideoType, string[][]> = {
+  ECOMMERCE: [
+    ['黄金3秒钩子', '痛点', '产品亮相', '卖点拆解', '信任背书', '行动号召'],
+    ['问题提出', '产品解答', '价值呈现', '行动号召'],
+  ],
+  LOCAL_STORE: [['到店理由', '空间体验', '特色服务', '到店引导']],
+  BRAND_AD: [
+    ['视觉引入', '主题展开', '产品关联', '品牌收束'],
+    ['悬念建立', '逐步揭示', '产品亮相', '主题回扣'],
+  ],
+  DRAMA: [['人物与处境', '冲突推进', '转折', '情绪回收']],
+};
 export type CustomizedStoryboardDialogue = { id: string; speaker: string; text: string };
 export const CUSTOMIZED_STORYBOARD_ASSET_KINDS = ['characters', 'products', 'scenes'] as const;
 export type CustomizedStoryboardAssetKind = (typeof CUSTOMIZED_STORYBOARD_ASSET_KINDS)[number];
@@ -36,8 +56,21 @@ export type CustomizedStoryboardScript = {
   synopsis: string;
   structure: string;
   productFocus: string;
+  creation?: {
+    videoType: CustomizedVideoType;
+    referenceDurationSeconds: number;
+    structureSections: string[];
+  };
   /** Full story; absent only in scripts created before the production split. */
-  story?: { content: string; opening: string; development: string; ending: string; dialoguePlan: string; beats: { id: string; content: string; durationSeconds: number }[] };
+  story?: {
+    structureMapping?: import('./customized-script-routes').ScriptStructureMapping[];
+    content: string;
+    opening: string;
+    development: string;
+    ending: string;
+    dialoguePlan: string;
+    beats: { id: string; content: string; durationSeconds: number }[];
+  };
   shots: CustomizedStoryboardShot[];
   assets?: CustomizedStoryboardAsset[];
 };
@@ -50,6 +83,8 @@ export type CustomizedStoryboardDraft = {
     structureMode: 'AI' | 'REFERENCE' | 'CUSTOM';
     structure: string;
     instructions: string;
+    videoType?: CustomizedVideoType;
+    structureSections?: string[];
   };
   scripts: CustomizedStoryboardScript[];
   activeScriptId: string | null;
@@ -103,10 +138,29 @@ export function isCustomizedStoryboardScript(v: unknown): v is CustomizedStorybo
   )
     return false;
   const story = v.story;
-  if (story !== undefined && (!record(story) ||
-    !['content', 'opening', 'development', 'ending', 'dialoguePlan'].every(k => text(story[k])) ||
-    !Array.isArray(story.beats) || story.beats.length > 60 ||
-    !story.beats.every((b: unknown) => record(b) && id(b.id) && text(b.content) && seconds(b.durationSeconds)))) return false;
+  if (
+    v.creation !== undefined &&
+    (!record(v.creation) ||
+      !CUSTOMIZED_VIDEO_TYPES.includes(v.creation.videoType as CustomizedVideoType) ||
+      !seconds(v.creation.referenceDurationSeconds) ||
+      !Array.isArray(v.creation.structureSections) ||
+      v.creation.structureSections.length > 20 ||
+      !v.creation.structureSections.every((s: unknown) => id(s)))
+  )
+    return false;
+  if (
+    story !== undefined &&
+    (!record(story) ||
+      !['content', 'opening', 'development', 'ending', 'dialoguePlan'].every((k) =>
+        text(story[k]),
+      ) ||
+      !Array.isArray(story.beats) ||
+      story.beats.length > 60 ||
+      !story.beats.every(
+        (b: unknown) => record(b) && id(b.id) && text(b.content) && seconds(b.durationSeconds),
+      ))
+  )
+    return false;
   if (
     v.assets !== undefined &&
     (!Array.isArray(v.assets) ||
@@ -159,6 +213,12 @@ export function isCustomizedStoryboardDraft(v: unknown): v is CustomizedStoryboa
     !['AI', 'REFERENCE', 'CUSTOM'].includes(String(v.settings.structureMode)) ||
     !text(v.settings.structure) ||
     !text(v.settings.instructions) ||
+    (v.settings.videoType !== undefined &&
+      !CUSTOMIZED_VIDEO_TYPES.includes(v.settings.videoType as CustomizedVideoType)) ||
+    (v.settings.structureSections !== undefined &&
+      (!Array.isArray(v.settings.structureSections) ||
+        v.settings.structureSections.length > 20 ||
+        !v.settings.structureSections.every((s: unknown) => text(s, 200)))) ||
     !Array.isArray(v.scripts) ||
     v.scripts.length > 100 ||
     !v.scripts.every(isCustomizedStoryboardScript)

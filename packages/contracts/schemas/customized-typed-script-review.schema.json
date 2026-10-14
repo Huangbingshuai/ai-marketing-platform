@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "TypedFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "enum": [
+            "ERROR",
+            "WARNING"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "FACT",
+            "STORY",
+            "STRUCTURE"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "shotIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Shotids",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 20000,
+          "title": "Message",
+          "type": "string"
+        },
+        "evidence": {
+          "maxLength": 20000,
+          "title": "Evidence",
+          "type": "string"
+        },
+        "suggestion": {
+          "maxLength": 20000,
+          "title": "Suggestion",
+          "type": "string"
+        },
+        "beatIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 60,
+          "title": "Beatids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "severity",
+        "category",
+        "shotIds",
+        "message",
+        "evidence",
+        "suggestion",
+        "beatIds"
+      ],
+      "title": "TypedFinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/TypedFinding"
+      },
+      "maxItems": 1000,
+      "title": "Findings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary",
+    "findings"
+  ],
+  "title": "TypedReview",
+  "type": "object"
+}

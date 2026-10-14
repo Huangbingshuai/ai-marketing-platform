@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "videoType": {
+      "enum": ["ECOMMERCE", "LOCAL_STORE", "BRAND_AD", "DRAMA"],
+      "title": "Videotype",
+      "type": "string"
+    },
+    "referenceDurationSeconds": {
+      "exclusiveMinimum": 0,
+      "maximum": 3600,
+      "title": "Referencedurationseconds",
+      "type": "number"
+    },
+    "structureSections": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Structuresections",
+      "type": "array"
+    }
+  },
+  "required": ["videoType", "referenceDurationSeconds", "structureSections"],
+  "title": "VideoScriptCreation",
+  "type": "object"
+}

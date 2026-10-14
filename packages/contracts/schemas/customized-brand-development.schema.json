@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "BrandIdea": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "approach": {
+          "enum": [
+            "LIFE_OBSERVATION",
+            "PRODUCT_DESIGN",
+            "VISUAL_EXPRESSION",
+            "DOCUMENTARY",
+            "OTHER"
+          ],
+          "title": "Approach",
+          "type": "string"
+        },
+        "viewingHook": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Viewinghook",
+          "type": "string"
+        },
+        "mechanism": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Mechanism",
+          "type": "string"
+        },
+        "keyImages": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "title": "Keyimages",
+          "type": "array"
+        },
+        "productRole": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Productrole",
+          "type": "string"
+        },
+        "factIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Factids",
+          "type": "array"
+        },
+        "memory": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Memory",
+          "type": "string"
+        },
+        "risk": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Risk",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "approach",
+        "viewingHook",
+        "mechanism",
+        "keyImages",
+        "productRole",
+        "factIds",
+        "memory",
+        "risk"
+      ],
+      "title": "BrandIdea",
+      "type": "object"
+    },
+    "BrandProposition": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "audienceObservation": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Audienceobservation",
+          "type": "string"
+        },
+        "observationBasis": {
+          "enum": ["BRIEF", "CREATIVE_HYPOTHESIS"],
+          "title": "Observationbasis",
+          "type": "string"
+        },
+        "supportingFactIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Supportingfactids",
+          "type": "array"
+        },
+        "requiredFactIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Requiredfactids",
+          "type": "array"
+        },
+        "requiredReason": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Requiredreason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "audienceObservation",
+        "observationBasis",
+        "supportingFactIds",
+        "requiredFactIds",
+        "requiredReason"
+      ],
+      "title": "BrandProposition",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "proposition": {
+      "$ref": "#/$defs/BrandProposition"
+    },
+    "ideas": {
+      "items": {
+        "$ref": "#/$defs/BrandIdea"
+      },
+      "maxItems": 8,
+      "minItems": 6,
+      "title": "Ideas",
+      "type": "array"
+    }
+  },
+  "required": ["proposition", "ideas"],
+  "title": "BrandDevelopment",
+  "type": "object"
+}
