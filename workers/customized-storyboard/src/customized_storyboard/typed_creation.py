@@ -10,7 +10,7 @@ from ai_runtime.responses import ProviderError, ProviderErrorType
 from .models import Model, Concept, Story, Finding, Text, Id, Seconds
 from .screenplay import ScreenplayDraft, review_context
 from .video_script import video_script_issues
-from .routes import STRATEGIES, VERSION, strategy_for
+from .routes import STRATEGIES, VERSION, COMMERCE_VERSIONS, PRESENTER_VERSIONS, DRAMA_VERSIONS, strategy_for
 
 if TYPE_CHECKING:
     from .pipeline import Pipeline
@@ -263,10 +263,13 @@ def materialize_quality_findings(review: TypedReviewV4) -> None:
 
 async def generate_review(p: Pipeline, stage: str, sid: str, context: dict[str, Any], instruction: str,
         story: TypedStory) -> TypedReview:
-    if p.input['strategyVersions']['review'] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8'} and p.input['routeId'] in {'BRAND_AD', 'DRAMA'}:
+    if p.input['routeId'] == 'ECOMMERCE' and p.input['strategyVersions']['review'] in COMMERCE_VERSIONS:
         from .editorial_review import review_editorial
         return await review_editorial(p, stage, sid, context, story)
-    if p.input['strategyVersions']['review'] not in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
+    if p.input['strategyVersions']['review'] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8'} and p.input['routeId'] in {'BRAND_AD', 'DRAMA'}:
+        from .editorial_review import review_editorial
+        return await review_editorial(p, stage, sid, context, story)
+    if p.input['strategyVersions']['review'] not in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
         review = await p.generate(stage, sid, TypedReview, context, instruction)
         check_review(review, story)
         return review
@@ -275,13 +278,13 @@ async def generate_review(p: Pipeline, stage: str, sid: str, context: dict[str, 
         modern = TypedReviewV4.model_validate(saved['output'])
     else:
         await p.step(stage, sid, 'RUNNING')
-        if p.input['strategyVersions']['review'] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
+        if p.input['strategyVersions']['review'] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
             # A plan is not evidence of what the finished body actually achieves.
             context = {k: v for k, v in context.items() if k in {'story', 'otherConcepts', 'originalReview'}}
             instruction += '\n先逐字引用实际正文，再写判断理由，最后判定。不要反过来为通过结论寻找理由。产品操作的状态变化、参数标注的更新、轮廓线和高亮的装饰本身不等于品牌表达；判断它们是否改变观众对产品或品牌的理解。剧情对白中技术解释即使正确，也不能用“人物负责准确”替代对当前对话目的的核查。'
         from .review_evidence import EvidenceReview, evidence_context, resolve_evidence, EVIDENCE_INSTRUCTION
-        indexed = p.input['strategyVersions']['review'] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.6', '2026-10-13.7'}
-        calibrated = p.input['strategyVersions']['review'] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.7'}
+        indexed = p.input['strategyVersions']['review'] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.6', '2026-10-13.7'}
+        calibrated = p.input['strategyVersions']['review'] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.7'}
         from .review_calibration import ObservedReview, resolve_observations, OBSERVATION_INSTRUCTION
         sources: dict[str, tuple[str, str]] = {}
         if indexed:
@@ -331,8 +334,12 @@ async def generate_review(p: Pipeline, stage: str, sid: str, context: dict[str, 
 async def run(p: Pipeline) -> None:
     route = p.input['routeId']
     versions = [p.input.get('strategyVersions', {}).get(k) for k in ('concept', 'story', 'review', 'repair')]
-    if route != p.input['settings']['videoType'] or route not in STRATEGIES or len(set(versions)) != 1 or versions[0] not in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.1', '2026-10-13.2', '2026-10-13.3', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
+    if route != p.input['settings']['videoType'] or route not in STRATEGIES or len(set(versions)) != 1 or versions[0] not in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.1', '2026-10-13.2', '2026-10-13.3', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
         raise ValueError('unsupported frozen creative strategy')
+    if versions[0] in COMMERCE_VERSIONS and route != 'ECOMMERCE':
+        raise ValueError('commerce strategy belongs to commerce route only')
+    if versions[0] in DRAMA_VERSIONS and route != 'DRAMA':
+        raise ValueError('drama strategy belongs to drama route only')
     p.context['strategyVersion'] = versions[0]
     strategy = strategy_for(route, versions[0])
     class ScopedConcepts(TypedConcepts):
@@ -352,11 +359,11 @@ async def run(p: Pipeline) -> None:
             await p.step(node, '', 'SUCCEEDED', output)
     node = f'{route}_CONCEPT'
     proposal_context: dict[str, Any] = {}
-    if not (versions[0] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1'} and route == 'BRAND_AD') and versions[0] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8'} and route in {'BRAND_AD', 'DRAMA'} and p.checkpoints.get((node, ''), {}).get('status') != 'SUCCEEDED':
+    if versions[0] not in DRAMA_VERSIONS and not (versions[0] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1'} and route == 'BRAND_AD') and versions[0] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8'} and route in {'BRAND_AD', 'DRAMA'} and p.checkpoints.get((node, ''), {}).get('status') != 'SUCCEEDED':
         from .creative_options import CreativeSlate, INSTRUCTION
         partial = p.checkpoints.get((node, ''), {}).get('output') or {}
         development_instruction = ''
-        if versions[0] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9'}:
+        if versions[0] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9'}:
             from .creative_options import DEVELOPMENT
             development_instruction = DEVELOPMENT
         if 'creativeOptions' in partial:
@@ -364,7 +371,7 @@ async def run(p: Pipeline) -> None:
         else:
             await p.step(node, '', 'RUNNING')
             from .creative_challenges import creative_challenges
-            challenges = {'developmentQuestions': creative_challenges(route), 'developmentInstruction': '至少探索这些不同问题，可以提出更好的路径；每份候选用具体事件回答，不能全走同一个资源不足—使用—收回流程。问题不是必须照抄的故事结构。'} if versions[0] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11'} else {}
+            challenges = {'developmentQuestions': creative_challenges(route), 'developmentInstruction': '至少探索这些不同问题，可以提出更好的路径；每份候选用具体事件回答，不能全走同一个资源不足—使用—收回流程。问题不是必须照抄的故事结构。'} if versions[0] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11'} else {}
             slate = await p.model(node, CreativeSlate, {
                 **challenges,
                 'candidateCount': min(7, len(p.input['scriptIds']) + 2),
@@ -375,13 +382,22 @@ async def run(p: Pipeline) -> None:
             raise ValueError('creative candidate count mismatch')
         proposal_context = {'creativeOptions': slate.model_dump(),
             'selectionInstruction': '对照已有方案淘汰重复和薄弱候选，只深化足量的优选方向；保留其核心事件与视觉变化，不退回产品目录。可以修正弱点，不得重新照搬历史方案。'}
-    if versions[0] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1'} and route == 'BRAND_AD':
+    if route == 'DRAMA' and versions[0] in DRAMA_VERSIONS:
+        from .drama_development import develop_drama
+        concepts = await develop_drama(p)
+    elif route == 'ECOMMERCE' and versions[0] in PRESENTER_VERSIONS:
+        from .presenter_development import develop
+        concepts = await develop(p)
+    elif route == 'ECOMMERCE' and versions[0] in COMMERCE_VERSIONS:
+        from .commerce_development import develop_commerce
+        concepts = await develop_commerce(p)
+    elif versions[0] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1'} and route == 'BRAND_AD':
         from .brand_development import develop_brand
         concepts = await develop_brand(p)
     else:
         concepts = await p.generate(node, '', ScopedConcepts,
         {'scriptIds': p.input['scriptIds'], 'existingConcepts': p.input['existingConcepts'], **proposal_context},
-        strategy.PLAN + (development_instruction if proposal_context else '') + (('\n用以下成稿门槛筛选候选，尚无正文时检查计划是否确实安排了承担这些标准的事件，不是凭命名许诺：\n' + strategy.REVIEW) if versions[0] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10'} and proposal_context else '') + '\n联合构思本次所有方案，身份与scriptIds一一对应。先判断资料足够支持本类型；足够时readiness=READY，missing为空；不足则NEEDS_INFORMATION，给出具体缺口和依据，concepts为空。已有方案仅避重，不照搬。每份写出coreIdea/openingHook/productRole/memoryPoint及本类型plan，各项具体充分；structureRequirements只约束推进，不机械复制为正文标题。构思不写秒级时间表、不提前分镜或安排机位；按参考时长选择可承载的内容规模，预计时长留给正文按实际容量估算。')
+        strategy.PLAN + (development_instruction if proposal_context else '') + (('\n用以下成稿门槛筛选候选，尚无正文时检查计划是否确实安排了承担这些标准的事件，不是凭命名许诺：\n' + strategy.REVIEW) if versions[0] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10'} and proposal_context else '') + '\n联合构思本次所有方案，身份与scriptIds一一对应。先判断资料足够支持本类型；足够时readiness=READY，missing为空；不足则NEEDS_INFORMATION，给出具体缺口和依据，concepts为空。已有方案仅避重，不照搬。每份写出coreIdea/openingHook/productRole/memoryPoint及本类型plan，各项具体充分；structureRequirements只约束推进，不机械复制为正文标题。构思不写秒级时间表、不提前分镜或安排机位；按参考时长选择可承载的内容规模，预计时长留给正文按实际容量估算。')
     if concepts.readiness.status == 'NEEDS_INFORMATION':
         if concepts.concepts or not concepts.readiness.missing:
             raise ValueError('invalid readiness result')
@@ -390,7 +406,15 @@ async def run(p: Pipeline) -> None:
     if sorted(c.scriptId for c in concepts.concepts) != sorted(p.input['scriptIds']) or any(c.plan.videoType != route for c in concepts.concepts):
         raise ValueError('concept scope mismatch')
     pending = [c for c in concepts.concepts if c.scriptId not in p.completed and (p.retry_script_ids is None or c.scriptId in p.retry_script_ids)]
-    results = await asyncio.gather(*(create(p, c, concepts, requirements) for c in pending), return_exceptions=True)
+    if (route == 'DRAMA' and versions[0] in DRAMA_VERSIONS) or (route == 'ECOMMERCE' and versions[0] in {'2026-10-14-commerce.3', '2026-10-14-commerce.4', '2026-10-14-commerce.5', *PRESENTER_VERSIONS}):
+        # Finish active scripts before queueing every later story ahead of their audits.
+        slots = asyncio.Semaphore(2)
+        async def bounded_create(concept: TypedConcept) -> None:
+            async with slots:
+                await create(p, concept, concepts, requirements)
+        results = await asyncio.gather(*(bounded_create(c) for c in pending), return_exceptions=True)
+    else:
+        results = await asyncio.gather(*(create(p, c, concepts, requirements) for c in pending), return_exceptions=True)
     for result in results:
         if isinstance(result, InternalApiError):
             raise result
@@ -401,9 +425,9 @@ async def run(p: Pipeline) -> None:
 async def create(p: Pipeline, concept: TypedConcept, concepts: TypedConcepts, requirements: list[dict[str, str]]) -> None:
     sid, route = concept.scriptId, p.input['routeId']
     strategy = strategy_for(route, p.input['strategyVersions']['story'])
-    body_format = FORMAT if p.input['strategyVersions']['story'] not in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.7'} else FORMAT.replace('不能把仍插在电源上的充电器折脚收纳。', '设备、食物、服饰、工具及软件操作均遵守其实际状态和能力；不添加当前产品以外的品类示例。')
+    body_format = FORMAT if p.input['strategyVersions']['story'] not in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.7'} else FORMAT.replace('不能把仍插在电源上的充电器折脚收纳。', '设备、食物、服饰、工具及软件操作均遵守其实际状态和能力；不添加当前产品以外的品类示例。')
     stage = f'{route}_STORY'
-    context = {'concept': concept.model_dump(), **({'brandCommitment': p.brand_commitments[sid]} if sid in p.brand_commitments else {}), 'otherConcepts': [
+    context = {'concept': concept.model_dump(), **({'dramaCommitment':p.drama_commitments[sid]} if sid in p.drama_commitments else {}), **({'commerceCommitment': p.commerce_commitments[sid]} if sid in p.commerce_commitments else {}), **({'brandCommitment': p.brand_commitments[sid]} if sid in p.brand_commitments else {}), 'otherConcepts': [
         {k: v for k, v in c.model_dump().items() if k in {'name', 'coreIdea', 'difference', 'productRole'}}
         for c in concepts.concepts if c.scriptId != sid]}
     try:
@@ -423,7 +447,7 @@ async def create(p: Pipeline, concept: TypedConcept, concepts: TypedConcepts, re
                     try:
                         story = (await p.model(stage, TypedDraft, context, strategy.WRITE + body_format)).story()
                     except ProviderError as exc:
-                        if exc.error_type != ProviderErrorType.OUTPUT_TRUNCATED or p.input['strategyVersions']['story'] not in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.3', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
+                        if exc.error_type != ProviderErrorType.OUTPUT_TRUNCATED or p.input['strategyVersions']['story'] not in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.3', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
                             raise
                         story = await generate_parts(p, sid, stage, context, strategy.WRITE + body_format)
             issues = mapping_issues(story, requirements)
@@ -448,8 +472,10 @@ async def create(p: Pipeline, concept: TypedConcept, concepts: TypedConcepts, re
             else:
                 partial = saved.get('output') or {}
                 await p.step(stage, sid, 'RUNNING')
-                if p.input['strategyVersions']['repair'] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.3', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
-                    capacity_note = ('\n逐项解决全部ERROR。容量不足时按修订后的实际对白、动作与停顿重新估时；参考时长不是总量上限，不必从其他正常篇章扣秒，也不能删少量文字后反而缩短该段估时。优先保留戏剧关键行为、删除重复解释。' if p.input['strategyVersions']['repair'] in {VERSION, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.6', '2026-10-13.7'} else '')
+                if p.input['strategyVersions']['repair'] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.3', '2026-10-13.4', '2026-10-13.5', '2026-10-13.6', '2026-10-13.7'}:
+                    capacity_note = ('\n逐项解决全部ERROR。容量不足时按修订后的实际对白、动作与停顿重新估时；参考时长不是总量上限，不必从其他正常篇章扣秒，也不能删少量文字后反而缩短该段估时。优先保留戏剧关键行为、删除重复解释。' if p.input['strategyVersions']['repair'] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.6', '2026-10-13.7'} else '')
+                    if p.input['strategyVersions']['repair'] in COMMERCE_VERSIONS:
+                        capacity_note = '\n逐项解决全部ERROR，保留核心购买动机与可观察结果；先删无关参数、重复旁白及不必要动作，再按真实容量估时，不能仅靠加秒数逃避短片聚焦。'
                     patch = TypedPatch.model_validate(partial['patch']) if 'patch' in partial else await p.model(stage, TypedPatch,
                         {**context, 'story': review_context(story, True), 'review': review.model_dump()},
                         strategy.WRITE + body_format + '\n仅返回需要修改的正文单元replacements，按原beatId替换其完整content和实际时长，不输出未改正文。不得新增、删除或重编号；必要的内容重组在原有篇章内完成。metadata只列确实变化的辅助字段。保留未受影响段落；同步concept和structureMapping，引用最终正文。不变更scriptId或视频类型。' + capacity_note)
@@ -471,7 +497,7 @@ async def create(p: Pipeline, concept: TypedConcept, concepts: TypedConcepts, re
                 await p.step(stage, sid, 'SUCCEEDED', {'script': script, 'reason': review.summary, 'changes': changes})
             stage = 'RECHECK'
             revised = TypedStory.model_validate(script['story'])
-            checked = await generate_review(p, stage, sid, {'story': review_context(revised, True), 'originalReview': review.model_dump(), 'concept': {k: script[k] for k in ('name', 'synopsis', 'structure', 'productFocus')}, 'otherConcepts': context['otherConcepts'], **({'brandCommitment': context['brandCommitment']} if 'brandCommitment' in context else {})}, strategy.REVIEW + REVIEW + '独立核对修订全文，不能因已修改就默认通过。', revised)
+            checked = await generate_review(p, stage, sid, {'story': review_context(revised, True), 'originalReview': review.model_dump(), 'concept': {k: script[k] for k in ('name', 'synopsis', 'structure', 'productFocus')}, 'otherConcepts': context['otherConcepts'], **({'brandCommitment': context['brandCommitment']} if 'brandCommitment' in context else {}), **({'commerceCommitment': context['commerceCommitment']} if 'commerceCommitment' in context else {})}, strategy.REVIEW + REVIEW + '独立核对修订全文，不能因已修改就默认通过。', revised)
             if any(f.severity == 'ERROR' for f in checked.findings):
                 return
         else:
@@ -483,5 +509,5 @@ async def create(p: Pipeline, concept: TypedConcept, concepts: TypedConcepts, re
         raise
     except Exception:
         if stage != 'SAVE':
-            await p.step(stage, sid, 'FAILED', error='本方案尚未完整完成，已保留内容，可恢复重试。')
+            await p.step(stage, sid, 'FAILED', p.checkpoints.get((stage, sid), {}).get('output'), error='本方案尚未完整完成，已保留内容，可恢复重试。')
         raise

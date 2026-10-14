@@ -80,7 +80,9 @@ class Pipeline:
         if settings.get("structureMode") == "AI":
             settings["structure"] = ""
         self.context = {"brief": value["brief"], "settings": settings, "storyFormat": value.get('storyFormat')}
+        self.commerce_commitments: dict[str, dict[str, Any]] = {}
         self.brand_commitments: dict[str, dict[str, Any]] = {}
+        self.drama_commitments: dict[str, dict[str, Any]] = {}
 
     async def heartbeat(self) -> None:
         while True:

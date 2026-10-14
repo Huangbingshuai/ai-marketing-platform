@@ -62,7 +62,7 @@ async def main():
         pipeline.context['structureRequirements'] = [{'id': f'R{i+1:02d}', 'title': title} for i, title in enumerate(data['settings'].get('structureSections', []))]
         story = TypedStory.model_validate(fixture['story'])
         result = await generate_review(pipeline, data['routeId'] + '_REVIEW', data['scriptIds'][0],
-            {'story': review_context(story, True)}, strategy_for(data['routeId'], data['strategyVersions']['review']).REVIEW + REVIEW, story)
+            {'story': review_context(story, True), **({'commerceCommitment': fixture['commerceCommitment']} if 'commerceCommitment' in fixture else {})}, strategy_for(data['routeId'], data['strategyVersions']['review']).REVIEW + REVIEW, story)
         state['result'] = result.model_dump()
         if 'failure' in state:
             state['recoveredFailure'] = state.pop('failure')

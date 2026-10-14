@@ -1,0 +1,184 @@
+[
+  {
+    "id": "skincare-unfounded-result",
+    "label": "护肤负例：质地演示冒充即时去纹",
+    "expected": "FACT_ERROR",
+    "brief": {
+      "productName": "柔润乳霜",
+      "productDescription": "乳霜质地的日常护肤产品",
+      "sellingPoints": [
+        "乳霜质地",
+        "不添加香精"
+      ],
+      "targetAudience": "喜欢无香配方的日常护肤使用者",
+      "avoidedElements": [
+        "不得声称即时消除细纹"
+      ]
+    },
+    "input": {
+      "schemaVersion": 1,
+      "outputMode": "STORY_ONLY",
+      "storyFormat": "VIDEO_SCRIPT_V3",
+      "graphVersion": "TYPED_CREATION_V1",
+      "routeId": "ECOMMERCE",
+      "strategyVersions": {
+        "concept": "2026-10-14-commerce.4",
+        "story": "2026-10-14-commerce.4",
+        "review": "2026-10-14-commerce.4",
+        "repair": "2026-10-14-commerce.4"
+      },
+      "source": {
+        "artifactId": "brief",
+        "revision": 1,
+        "fingerprint": "fixed"
+      },
+      "brief": {
+        "productName": "柔润乳霜",
+        "productDescription": "乳霜质地的日常护肤产品",
+        "sellingPoints": [
+          "乳霜质地",
+          "不添加香精"
+        ],
+        "targetAudience": "喜欢无香配方的日常护肤使用者",
+        "avoidedElements": [
+          "不得声称即时消除细纹"
+        ]
+      },
+      "settings": {
+        "videoType": "ECOMMERCE",
+        "targetDurationSeconds": 30,
+        "variantCount": 1,
+        "structureMode": "AI",
+        "structureSections": [],
+        "instructions": "unused",
+        "structure": ""
+      },
+      "scriptIds": [
+        "calibration"
+      ],
+      "existingConcepts": [],
+      "models": {
+        "creative": "doubao-seed-2-1-pro-260915",
+        "detail": "doubao-seed-2-1-turbo-260628"
+      }
+    },
+    "story": {
+      "title": "护肤负例：质地演示冒充即时去纹",
+      "content": "P01｜一抹前后\n\n分屏展示同一只手，左侧细纹明显，右侧涂乳霜后所有细纹立即消失。画面字：一次抹平细纹。\n\nP02｜直接承诺\n\n演员看向镜头：不用等，柔润乳霜一次就让细纹消失。画面停在光滑手背与产品瓶上。",
+      "opening": "",
+      "development": "",
+      "ending": "",
+      "dialoguePlan": "",
+      "beats": [
+        {
+          "id": "P01",
+          "content": "P01｜一抹前后\n\n分屏展示同一只手，左侧细纹明显，右侧涂乳霜后所有细纹立即消失。画面字：一次抹平细纹。",
+          "durationSeconds": 8
+        },
+        {
+          "id": "P02",
+          "content": "P02｜直接承诺\n\n演员看向镜头：不用等，柔润乳霜一次就让细纹消失。画面停在光滑手背与产品瓶上。",
+          "durationSeconds": 7
+        }
+      ],
+      "structureMapping": []
+    },
+    "sampleType": "手工编写的合成审校样本，不是实际产品或完整生成结果"
+  },
+  {
+    "id": "software-capacity-decision",
+    "label": "软件正例：以真实容量与剩余席位完成接单判断",
+    "expected": "PASS",
+    "brief": {
+      "productName": "时位预约",
+      "productDescription": "供小型工作室手工登记预约的工具",
+      "sellingPoints": [
+        "允许设置时段容量并显示剩余名额",
+        "名额已满时系统禁止在该时段追加预约"
+      ],
+      "targetAudience": "需要回答预约余位的小型工作室负责人",
+      "avoidedElements": [
+        "不声称可自动读取聊天记录或对接外部平台"
+      ]
+    },
+    "input": {
+      "schemaVersion": 1,
+      "outputMode": "STORY_ONLY",
+      "storyFormat": "VIDEO_SCRIPT_V3",
+      "graphVersion": "TYPED_CREATION_V1",
+      "routeId": "ECOMMERCE",
+      "strategyVersions": {
+        "concept": "2026-10-14-commerce.4",
+        "story": "2026-10-14-commerce.4",
+        "review": "2026-10-14-commerce.4",
+        "repair": "2026-10-14-commerce.4"
+      },
+      "source": {
+        "artifactId": "brief",
+        "revision": 1,
+        "fingerprint": "fixed"
+      },
+      "brief": {
+        "productName": "时位预约",
+        "productDescription": "供小型工作室手工登记预约的工具",
+        "sellingPoints": [
+          "允许设置时段容量并显示剩余名额",
+          "名额已满时系统禁止在该时段追加预约"
+        ],
+        "targetAudience": "需要回答预约余位的小型工作室负责人",
+        "avoidedElements": [
+          "不声称可自动读取聊天记录或对接外部平台"
+        ]
+      },
+      "settings": {
+        "videoType": "ECOMMERCE",
+        "targetDurationSeconds": 30,
+        "variantCount": 1,
+        "structureMode": "AI",
+        "structureSections": [],
+        "instructions": "unused",
+        "structure": ""
+      },
+      "scriptIds": [
+        "calibration"
+      ],
+      "existingConcepts": [],
+      "models": {
+        "creative": "doubao-seed-2-1-pro-260915",
+        "detail": "doubao-seed-2-1-turbo-260628"
+      }
+    },
+    "story": {
+      "title": "软件正例：以真实容量与剩余席位完成接单判断",
+      "content": "P01｜问的是同一个时段\n\n负责人收到两张手写预约纸条，都是今天下午三点。她打开时位预约，在当天三点设置容量两人。旁白：这个时段，还能接几位？\n\nP02｜登记一位，少一个余位\n\n她按已收到的纸条手工登记第一人，界面剩余名额从二变一；再登记第二人，余位变成零。两个姓名和对应时段停留在同一页面。\n\nP03｜先看余位再答复\n\n第三位来客询问同一时段，她尝试添加，界面显示名额已满，记录未增加。她转身回答：三点满了，我给您看下一个时段。\n\nP04｜答案留在时段里\n\n画面保留三点的两条预约和零个余位。旁白：时位预约，登记与余位放在一起看。",
+      "opening": "",
+      "development": "",
+      "ending": "",
+      "dialoguePlan": "",
+      "beats": [
+        {
+          "id": "P01",
+          "content": "P01｜问的是同一个时段\n\n负责人收到两张手写预约纸条，都是今天下午三点。她打开时位预约，在当天三点设置容量两人。旁白：这个时段，还能接几位？",
+          "durationSeconds": 8
+        },
+        {
+          "id": "P02",
+          "content": "P02｜登记一位，少一个余位\n\n她按已收到的纸条手工登记第一人，界面剩余名额从二变一；再登记第二人，余位变成零。两个姓名和对应时段停留在同一页面。",
+          "durationSeconds": 10
+        },
+        {
+          "id": "P03",
+          "content": "P03｜先看余位再答复\n\n第三位来客询问同一时段，她尝试添加，界面显示名额已满，记录未增加。她转身回答：三点满了，我给您看下一个时段。",
+          "durationSeconds": 10
+        },
+        {
+          "id": "P04",
+          "content": "P04｜答案留在时段里\n\n画面保留三点的两条预约和零个余位。旁白：时位预约，登记与余位放在一起看。",
+          "durationSeconds": 4
+        }
+      ],
+      "structureMapping": []
+    },
+    "sampleType": "手工编写的合成审校样本，不是实际产品或完整生成结果"
+  }
+]

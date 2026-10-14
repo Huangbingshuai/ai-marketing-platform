@@ -175,6 +175,15 @@ async def test_video_script_repair_uses_capacity_reasoning_without_changing_lega
 
 
 @pytest.mark.parametrize(('version', 'stage', 'role', 'route', 'effort'), [
+    ('2026-10-14-drama.3', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
+    ('2026-10-14-drama.3', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-14-drama.3', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-14-drama.1', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
+    ('2026-10-14-drama.1', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-14-drama.1', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-14-drama.1', 'DRAMA_REVIEW', 'FACTS', 'DRAMA', 'medium'),
+    ('2026-10-14-drama.1', 'REPAIR', None, 'DRAMA', 'medium'),
+    ('2026-10-14-drama.1', 'RECHECK', 'EDITORIAL', 'DRAMA', 'medium'),
     ('2026-10-14.6', 'BRAND_AD_CONCEPT', 'IDEA_SELECTION', 'BRAND_AD', 'medium'),
     ('2026-10-14.6', 'BRAND_AD_REVIEW', 'EDITORIAL', 'BRAND_AD', 'medium'),
     ('2026-10-14.6', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'high'),
@@ -217,5 +226,49 @@ async def test_reasoning_budget_follows_frozen_stage_not_every_call(version, sta
             'settings': {'videoType': route}, 'auditRole': role,
             **({'candidateCount': 6} if stage == 'BRAND_AD_PROPOSITION' else {}),
         }, '审校')
+    finally:
+        await provider.close()
+
+
+async def test_drama_short_development_uses_low_budget_without_weakening_independent_selection():
+    async def handler(request):
+        payload=json.loads(request.content)
+        assert payload['reasoning']['effort']=='low'
+        assert payload['max_output_tokens']==8192
+        return httpx.Response(200,json={'output_text':'{"summary":"通过","findings":[]}'})
+    provider=await configured(handler)
+    try:
+        await provider.generate('DRAMA_CONCEPT','fixed-pro',Review,{
+            'storyFormat':'VIDEO_SCRIPT_V3','strategyVersion':'2026-10-14-drama.3',
+            'settings':{'videoType':'DRAMA'},'candidateCount':3},'短故事开发')
+    finally:
+        await provider.close()
+
+
+@pytest.mark.parametrize('version', ['2026-10-14-commerce.1', '2026-10-14-commerce.2', '2026-10-14-commerce.3', '2026-10-14-commerce.4', '2026-10-14-commerce.5', '2026-10-14-presenter.1', '2026-10-14-presenter.2', '2026-10-14-presenter.3'])
+@pytest.mark.parametrize('stage,role,compact', [
+    ('ECOMMERCE_MOTIVATION', None, True),
+    ('ECOMMERCE_CONCEPT', 'COMMERCE_SELECTION', True),
+    ('ECOMMERCE_REVIEW', 'EDITORIAL', False),
+    ('ECOMMERCE_REVIEW', 'FACTS', False),
+])
+async def test_commerce_uses_medium_and_scoped_roles_without_brand_gate(stage, role, compact, version):
+    async def handler(request):
+        payload = json.loads(request.content)
+        assert payload['reasoning']['effort'] == ('low' if version in {'2026-10-14-commerce.4', '2026-10-14-commerce.5', '2026-10-14-presenter.1', '2026-10-14-presenter.2', '2026-10-14-presenter.3'} and stage == 'ECOMMERCE_MOTIVATION' else 'medium')
+        assert payload['max_output_tokens'] == (8192 if compact else 16384)
+        system = payload['input'][0]['content']
+        if role == 'EDITORIAL':
+            assert '电商商业表达' in system
+            assert '不将品牌广告' in system
+        if role == 'FACTS': assert '独立事实与执行' in system
+        return httpx.Response(200, json={'output_text': '{"summary":"通过","findings":[]}'})
+    provider = await configured(handler)
+    try:
+        await provider.generate(stage, 'fixed-model', Review, {
+            'storyFormat': 'VIDEO_SCRIPT_V3', 'strategyVersion': version,
+            'settings': {'videoType': 'ECOMMERCE'}, 'auditRole': role,
+            **({'candidateCount': 6} if stage == 'ECOMMERCE_MOTIVATION' else {}),
+        }, '专项检查')
     finally:
         await provider.close()

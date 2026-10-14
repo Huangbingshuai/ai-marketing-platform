@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from .review_calibration import ObservedReview, EditorialReview, resolve_observations, OBSERVATION_INSTRUCTION
 from .review_evidence import evidence_context, EVIDENCE_INSTRUCTION
 from .typed_creation import TypedStory, TypedReview, TypedReviewV4, check_review, materialize_quality_findings
-from .routes import strategy_for
+from .routes import COMMERCE_VERSIONS, PRESENTER_VERSIONS, DRAMA_VERSIONS, strategy_for
 
 if TYPE_CHECKING:
     from .pipeline import Pipeline
@@ -41,10 +41,19 @@ async def review_editorial(p: Pipeline, stage: str, sid: str, context: dict[str,
         if 'factReview' in partial:
             result = TypedReview.model_validate(partial['factReview'])
         else:
-            result = await p.model(stage, TypedReview, {
+            factual_context: dict[str, Any] = {
                 'auditRole': 'FACTS', 'story': story.model_dump(exclude={'content'}),
                 'originalReview': context.get('originalReview'),
-            }, FACT_REVIEW)
+            }
+            if (p.input['routeId'] == 'DRAMA' and p.input['strategyVersions']['review'] in DRAMA_VERSIONS) or (p.input['routeId'] == 'ECOMMERCE' and p.input['strategyVersions']['review'] in {'2026-10-14-commerce.5', *PRESENTER_VERSIONS}):
+                # Reference duration guides writing; it is not factual audit evidence.
+                # Preserve actual beat durations and the immutable generation settings.
+                settings = dict(p.context['settings'])
+                settings.pop('targetDurationSeconds', None)
+                factual_context.update(settings=settings, durationPolicy=(
+                    '只检查正文各篇章实际估时能否容纳动作、对白、停顿和字幕；'
+                    '不以任何参考总时长判定过短、过长或覆盖不足。'))
+            result = await p.model(stage, TypedReview, factual_context, FACT_REVIEW)
             check_review(result, story)
             await checkpoint('factReview', result.model_dump())
         check_review(result, story)
@@ -69,14 +78,24 @@ async def review_editorial(p: Pipeline, stage: str, sid: str, context: dict[str,
             if p.input['strategyVersions']['review'] == '2026-10-14.7':
                 observation = OBSERVATION_INSTRUCTION
             evaluation.update({'brandProposition': p.context.get('brandProposition'), 'brandCommitment': context.get('brandCommitment'), 'brandFactCatalog': []})
+        commerce = p.input['routeId'] == 'ECOMMERCE' and p.input['strategyVersions']['review'] in COMMERCE_VERSIONS
+        drama = p.input['routeId'] == 'DRAMA' and p.input['strategyVersions']['review'] in DRAMA_VERSIONS
+        if commerce or drama:
+            observation = strategy.OBSERVATION
         instruction = (strategy.REVIEW + '\n' + EVIDENCE_INSTRUCTION + '\n' + observation +
             '\n只验收叙事/品牌表达，事实和技术正确性由独立检查处理，不能拿规格完整、操作正确作为创意证据。'
             '不要求看遍卖点，不重评产品值不值得买。拒绝依据须来自实际正文；findings只列额外的实质创意问题。')
         if not modern_brand and p.input['strategyVersions']['review'] in {'2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'}:
             instruction += '\nfindings.shotIds必须为空数组，本节点没有镜头；findings.beatIds只填实际篇章id如P01，不填P01:E01原文编号。品牌先区分常规功能演示的状态变化与实际表达关系，不把减少未使用数量、完成使用、恢复原状本身当作额外创意。'
+        if commerce or drama:
+            instruction = strategy.REVIEW + '\n' + EVIDENCE_INSTRUCTION + '\n' + observation
+        if commerce and p.input['strategyVersions']['review'] in {'2026-10-14-commerce.3', '2026-10-14-commerce.4', '2026-10-14-commerce.5', *PRESENTER_VERSIONS}:
+            commitment = context.get('commerceCommitment') or {}
+            opportunity = commitment.get('opportunity') or {}
+            evaluation['reviewScope'] = {'purchaseQuestion': opportunity.get('purchaseQuestion', '')}
         current = evaluation
         for attempt in range(2):
-            decision = await p.model(stage, EditorialReview if p.input['strategyVersions']['review'] in {'2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'} else ObservedReview, current, instruction)
+            decision = await p.model(stage, EditorialReview if commerce or drama or p.input['strategyVersions']['review'] in {'2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'} else ObservedReview, current, instruction)
             try:
                 result = resolve_observations(decision, sources)
                 if result.routeId != p.input['routeId']:
