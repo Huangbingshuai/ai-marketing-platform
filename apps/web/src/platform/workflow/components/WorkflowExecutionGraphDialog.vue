@@ -16,6 +16,7 @@ const props = defineProps<{
   rows: string[][];
   nodes: ExecutionGraphNode[];
   rowTitles?: string[];
+  edges?: { from: string; to: string; label?: string; muted?: boolean }[] | undefined;
   selected: string | null;
   edgeCount?: number;
   loading?: boolean;
@@ -26,6 +27,53 @@ const emit = defineEmits<{ close: []; select: [id: string] }>();
 const panel = ref<HTMLElement | null>(null),
   closeButton = ref<HTMLButtonElement | null>(null);
 const titleId = useId();
+const canvas = ref<HTMLElement | null>(null);
+const paths = ref<{ d: string; label: string; x: number; y: number; muted: boolean }[]>([]);
+let observer: ResizeObserver | undefined;
+function measureEdges() {
+  if (!canvas.value || !props.edges) {
+    paths.value = [];
+    return;
+  }
+  const rect = canvas.value.getBoundingClientRect();
+  const buttons = [...canvas.value.querySelectorAll<HTMLElement>('[data-node-id]')];
+  paths.value = props.edges.flatMap((edge) => {
+    const from = buttons.find((b) => b.dataset.nodeId === edge.from)?.getBoundingClientRect();
+    const to = buttons.find((b) => b.dataset.nodeId === edge.to)?.getBoundingClientRect();
+    if (!from || !to) return [];
+    const x = from.left + from.width / 2 - rect.left,
+      y = from.bottom - rect.top;
+    const tx = to.left + to.width / 2 - rect.left,
+      ty = to.top - rect.top;
+    const bend = y + Math.min(18, (ty - y) / 2);
+    const side = Math.max(from.right, to.right) - rect.left + 12;
+    return [
+      {
+        d:
+          ty - y > 100
+            ? `M ${x} ${y} V ${bend} H ${side} V ${ty - 14} H ${tx} V ${ty}`
+            : `M ${x} ${y} V ${bend} H ${tx} V ${ty}`,
+        label: edge.label ?? '',
+        x: ty - y > 100 ? side - 26 : (x + tx) / 2,
+        y: ty - y > 100 ? (y + ty) / 2 : bend - 4,
+        muted: !!edge.muted,
+      },
+    ];
+  });
+}
+watch(
+  [() => props.open, () => props.rows, () => props.edges],
+  async () => {
+    await nextTick();
+    observer?.disconnect();
+    if (canvas.value && props.edges) {
+      observer = new ResizeObserver(measureEdges);
+      observer.observe(canvas.value);
+    }
+    measureEdges();
+  },
+  { immediate: true },
+);
 let trigger: HTMLElement | null = null;
 const node = (id: string) => props.nodes.find((n) => n.id === id)!;
 function keydown(event: KeyboardEvent) {
@@ -78,6 +126,7 @@ watch(
   { immediate: true },
 );
 onBeforeUnmount(() => {
+  observer?.disconnect();
   if (props.open && trigger?.isConnected) trigger.focus();
 });
 </script>
@@ -126,30 +175,60 @@ onBeforeUnmount(() => {
         </div>
         <slot name="toolbar" />
         <div class="workflow-graph-content">
-          <div class="workflow-graph-canvas">
-            <template v-for="(row, index) in rows" :key="index"
-              ><div v-if="index" class="graph-connector"><i /></div>
-              <p v-if="rowTitles?.[index]" class="graph-row-title">{{ rowTitles[index] }}</p>
-              <div
-                class="graph-row"
-                :class="{ parallel: row.length > 1, 'six-branch': row.length === 6 }"
-              >
-                <button
-                  v-for="id in row"
-                  :key="id"
-                  class="graph-node"
-                  :class="`is-${node(id).tone}`"
-                  type="button"
-                  :aria-pressed="selected === id"
-                  @click="emit('select', id)"
-                >
-                  <span class="node-dot" /><span
-                    ><strong>{{ node(id).label }}</strong
-                    ><small>{{ node(id).description }}</small></span
-                  ><em>{{ node(id).statusLabel }}</em>
-                </button>
-              </div></template
+          <div class="workflow-graph-scroll">
+            <div
+              ref="canvas"
+              class="workflow-graph-canvas"
+              :class="{ 'has-explicit-edges': edges }"
             >
+              <svg v-if="edges" class="graph-explicit-edges" aria-hidden="true">
+                <defs>
+                  <marker
+                    :id="`${titleId}-arrow`"
+                    markerWidth="6"
+                    markerHeight="6"
+                    refX="5"
+                    refY="3"
+                    orient="auto"
+                  >
+                    <path d="M0,0 L6,3 L0,6" fill="currentColor" />
+                  </marker>
+                </defs>
+                <g v-for="(edge, i) in paths" :key="i" :class="{ muted: edge.muted }">
+                  <path :d="edge.d" :marker-end="`url(#${titleId}-arrow)`" />
+                  <text :x="edge.x" :y="edge.y" text-anchor="middle">{{ edge.label }}</text>
+                </g>
+              </svg>
+              <template v-for="(row, index) in rows" :key="index"
+                ><div v-if="index && !edges" class="graph-connector"><i /></div>
+                <p v-if="rowTitles?.[index]" class="graph-row-title">{{ rowTitles[index] }}</p>
+                <div
+                  class="graph-row"
+                  :class="{ parallel: row.length > 1, 'six-branch': row.length === 6 }"
+                  :style="
+                    edges && row.length > 1
+                      ? { gridTemplateColumns: `repeat(${row.length}, minmax(150px, 1fr))` }
+                      : undefined
+                  "
+                >
+                  <button
+                    v-for="id in row"
+                    :key="id"
+                    class="graph-node"
+                    :data-node-id="id"
+                    :class="`is-${node(id).tone}`"
+                    type="button"
+                    :aria-pressed="selected === id"
+                    @click="emit('select', id)"
+                  >
+                    <span class="node-dot" /><span
+                      ><strong>{{ node(id).label }}</strong
+                      ><small>{{ node(id).description }}</small></span
+                    ><em>{{ node(id).statusLabel }}</em>
+                  </button>
+                </div></template
+              >
+            </div>
           </div>
           <aside class="workflow-node-detail" aria-live="polite"><slot /></aside>
         </div>
@@ -166,3 +245,44 @@ onBeforeUnmount(() => {
   </Teleport>
 </template>
 <style src="./workflow-execution-graph.css"></style>
+
+<style scoped>
+.workflow-graph-scroll {
+  min-width: 0;
+  overflow: auto;
+}
+.has-explicit-edges {
+  position: relative;
+}
+.has-explicit-edges:has(.parallel) {
+  min-width: 720px;
+}
+.has-explicit-edges .graph-row {
+  position: relative;
+  margin-bottom: 32px;
+}
+.has-explicit-edges .graph-node.is-unselected {
+  opacity: 0.55;
+}
+.graph-explicit-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  color: #8ba9d4;
+  overflow: visible;
+}
+.graph-explicit-edges g > path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.graph-explicit-edges text {
+  fill: #61738c;
+  font-size: 10px;
+}
+.graph-explicit-edges .muted {
+  opacity: 0.35;
+}
+</style>

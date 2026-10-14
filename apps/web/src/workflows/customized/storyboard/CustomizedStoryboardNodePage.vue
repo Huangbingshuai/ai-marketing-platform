@@ -9,10 +9,11 @@ import {
   Plus,
   Upload,
   X,
-  Pencil,
   BookOpen,
   Clapperboard,
   Trash2,
+  ArrowUp,
+  ArrowDown,
 } from '@lucide/vue';
 import type {
   CustomizedStoryboardDraft,
@@ -20,12 +21,19 @@ import type {
   StoryboardTask,
   CustomizedBrief,
 } from '@ai-marketing/contracts';
-import { CUSTOMIZED_BRIEF_LABELS, isCustomizedStoryboardScript } from '@ai-marketing/contracts';
+import {
+  CUSTOMIZED_BRIEF_LABELS,
+  CUSTOMIZED_VIDEO_TYPE_LABELS,
+  CUSTOMIZED_VIDEO_TYPES,
+  CUSTOMIZED_SCRIPT_STRUCTURES,
+  isCustomizedStoryboardScript,
+} from '@ai-marketing/contracts';
 import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import WorkflowNodeEditActions from '../../../platform/workflow/components/WorkflowNodeEditActions.vue';
 import WorkflowEditingBanner from '../../../platform/workflow/components/WorkflowEditingBanner.vue';
 import WorkflowExtractionActions from '../../../platform/workflow/components/WorkflowExtractionActions.vue';
 import StoryboardExecutionDialog from './StoryboardExecutionDialog.vue';
+import StoryboardSchemeDirectory from './StoryboardSchemeDirectory.vue';
 import WorkflowInformationCard from '../../../platform/workflow/components/WorkflowInformationCard.vue';
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
@@ -36,6 +44,8 @@ import {
   snapshotStoryboard,
   storyboardText,
   importStoryboardScript,
+  storyboardStructure,
+  setStoryboardStructure,
 } from './storyboard-state';
 const props = defineProps<{
   editing: boolean;
@@ -91,6 +101,48 @@ const left = computed(() => draft.value.scripts.find((s) => s.id === compareLeft
 const right = computed(() => draft.value.scripts.find((s) => s.id === compareRight.value));
 const running = computed(() => !!props.task && ['QUEUED', 'RUNNING'].includes(props.task.status));
 const settingsEditable = computed(() => props.sourceReady && !props.readonly && !running.value);
+const videoType = computed({
+  get: () => draft.value.settings.videoType ?? 'DRAMA',
+  set: (value) => {
+    draft.value.settings.videoType = value;
+    draft.value.settings.instructions = '';
+  },
+});
+const structureSections = computed(() => storyboardStructure(draft.value.settings));
+const structurePresets = computed(() => CUSTOMIZED_SCRIPT_STRUCTURES[videoType.value]);
+const structurePresetValue = computed(() => {
+  if (!structureSections.value.length) return '';
+  const index = structurePresets.value.findIndex(
+    (preset) =>
+      preset.length === structureSections.value.length &&
+      preset.every((section, i) => section === structureSections.value[i]),
+  );
+  return index < 0 ? 'custom' : String(index);
+});
+function chooseStructure(event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  if (value === 'custom') return;
+  setStoryboardStructure(
+    draft.value.settings,
+    value === '' ? [] : structurePresets.value[Number(value)]!,
+  );
+}
+function editSection(index: number, event: Event) {
+  const sections = [...structureSections.value];
+  sections[index] = (event.target as HTMLInputElement).value;
+  setStoryboardStructure(draft.value.settings, sections);
+}
+function moveSection(index: number, delta: number) {
+  const sections = [...structureSections.value];
+  [sections[index], sections[index + delta]] = [sections[index + delta]!, sections[index]!];
+  setStoryboardStructure(draft.value.settings, sections);
+}
+function removeSection(index: number) {
+  setStoryboardStructure(
+    draft.value.settings,
+    structureSections.value.filter((_, i) => i !== index),
+  );
+}
 async function guardEditor() {
   return true;
 }
@@ -115,6 +167,12 @@ function saveScriptMeta() {
     target.synopsis = scriptEditor.value.synopsis;
     target.structure = scriptEditor.value.structure;
     target.productFocus = scriptEditor.value.productFocus;
+    if (target.story && scriptEditor.value.story) {
+      target.story.opening = scriptEditor.value.story.opening;
+      target.story.development = scriptEditor.value.story.development;
+      target.story.ending = scriptEditor.value.story.ending;
+      target.story.dialoguePlan = scriptEditor.value.story.dialoguePlan;
+    }
   }
   scriptEditor.value = null;
 }
@@ -179,7 +237,7 @@ defineExpose({ guardEditor });
         <span class="node-index">03</span>
         <div>
           <h2>完整脚本</h2>
-          <p>围绕产品创作完整故事，比较不同叙事与表达</p>
+          <p>围绕产品创作完整脚本，比较不同创意与表达</p>
         </div>
       </div>
       <div class="heading-actions extraction-heading__actions">
@@ -266,21 +324,28 @@ defineExpose({ guardEditor });
             :aria-expanded="settingsExpanded"
             @click="settingsExpanded = !settingsExpanded"
           >
-            {{ settingsExpanded ? '收起设置' : '更多设置'
+            {{ settingsExpanded ? '收起设置' : '高级设置'
             }}<ChevronDown :size="14" :class="{ rotated: settingsExpanded }" />
           </button>
         </div>
       </div>
       <div class="settings-grid">
         <label
-          >目标时长<span class="input-unit"
+          >视频类型<select v-model="videoType" :disabled="!settingsEditable" aria-label="视频类型">
+            <option v-for="type in CUSTOMIZED_VIDEO_TYPES" :key="type" :value="type">
+              {{ CUSTOMIZED_VIDEO_TYPE_LABELS[type] }}
+            </option>
+          </select></label
+        >
+        <label
+          >参考时长<span class="input-unit"
             ><input
               v-model.number="draft.settings.targetDurationSeconds"
               type="number"
               min="15"
               max="180"
               :disabled="!settingsEditable"
-              aria-label="目标时长"
+              aria-label="参考时长"
             /><span>秒</span></span
           ></label
         ><label
@@ -293,42 +358,76 @@ defineExpose({ guardEditor });
           </select></label
         >
       </div>
-      <div
-        v-if="settingsExpanded || draft.settings.structureMode !== 'AI'"
-        class="advanced-settings"
-      >
+      <div v-if="settingsExpanded" class="advanced-settings structure-editor">
         <label
-          >叙事结构<select
-            v-model="draft.settings.structureMode"
+          >脚本结构<select
             :disabled="!settingsEditable"
-            aria-label="叙事结构"
+            :value="structurePresetValue"
+            aria-label="脚本结构"
+            @change="chooseStructure"
           >
-            <option value="AI">AI 设计</option>
-            <option value="REFERENCE">参考结构</option>
-            <option value="CUSTOM">自定义结构</option>
+            <option value="">系统编排</option>
+            <option
+              v-for="(sections, index) in structurePresets"
+              :key="index"
+              :value="String(index)"
+            >
+              {{ sections.join(' → ') }}
+            </option>
+            <option v-if="structureSections.length" value="custom">自定义结构</option>
           </select></label
         >
-        <label v-if="draft.settings.structureMode === 'REFERENCE'"
-          >参考结构<select v-model="draft.settings.structure" :disabled="!settingsEditable">
-            <option value="">选择参考结构</option>
-            <option>产品细节 → 使用情境 → 价值呈现 → 品牌收束</option>
-            <option>人物困境 → 产品介入 → 状态变化 → 情绪收束</option>
-            <option>悬念开场 → 逐步揭示 → 产品亮相 → 主题回扣</option>
-          </select></label
-        ><WorkflowInformationField
-          v-if="draft.settings.structureMode === 'CUSTOM'"
-          v-model="draft.settings.structure"
-          label="自定义叙事结构"
-          :readonly="!settingsEditable"
-          placeholder="例如：归家 → 准备晚餐 → 一勺点睛 → 落座享用"
-        /><WorkflowInformationField
-          v-model="draft.settings.instructions"
-          label="创作要求（选填）"
-          :readonly="!settingsEditable"
-          multiline
-          placeholder="例如：人物动作自然克制，三个方案分别探索不同的叙事切入，不使用夸张表演。"
-        /></div
-    ></WorkflowInformationCard>
+        <p class="structure-hint">
+          默认由系统安排内容。指定结构后，各方案按要求推进，正文篇章和场景自然展开。
+        </p>
+        <div v-for="(section, index) in structureSections" :key="index" class="structure-row">
+          <span class="structure-number">{{ String(index + 1).padStart(2, '0') }}</span>
+          <input
+            :value="section"
+            :disabled="!settingsEditable"
+            maxlength="200"
+            :aria-label="`第 ${index + 1} 段名称`"
+            placeholder="段落名称"
+            @input="editSection(index, $event)"
+          />
+          <button
+            type="button"
+            :disabled="!settingsEditable || index === 0"
+            :aria-label="`上移第 ${index + 1} 段`"
+            @click="moveSection(index, -1)"
+          >
+            <ArrowUp :size="16" />
+          </button>
+          <button
+            type="button"
+            :disabled="!settingsEditable || index === structureSections.length - 1"
+            :aria-label="`下移第 ${index + 1} 段`"
+            @click="moveSection(index, 1)"
+          >
+            <ArrowDown :size="16" />
+          </button>
+          <button
+            type="button"
+            :disabled="!settingsEditable"
+            :aria-label="`删除第 ${index + 1} 段`"
+            @click="removeSection(index)"
+          >
+            <X :size="16" />
+          </button>
+        </div>
+        <button
+          type="button"
+          class="structure-add"
+          :disabled="!settingsEditable || structureSections.length >= 20"
+          @click="setStoryboardStructure(draft.settings, [...structureSections, '新段落'])"
+        >
+          <Plus :size="16" />添加段落
+        </button>
+      </div>
+      <p v-else-if="structureSections.length" class="structure-summary">
+        已启用自定义结构：{{ structureSections.join(' → ') }}
+      </p>
+    </WorkflowInformationCard>
     <div class="scripts-toolbar">
       <div class="section-title">
         <Layers3 :size="18" />
@@ -345,28 +444,13 @@ defineExpose({ guardEditor });
         </button>
       </div>
     </div>
-    <div v-if="draft.scripts.length" class="script-options" role="group" aria-label="脚本方案">
-      <button
-        v-for="(s, i) in draft.scripts"
-        :key="s.id"
-        type="button"
-        class="script-option"
-        :class="{ selected: s.id === draft.activeScriptId }"
-        :aria-pressed="s.id === draft.activeScriptId"
-        @click="selectScript(s.id)"
-      >
-        <div class="option-top">
-          <span class="option-index">方案 {{ String(i + 1).padStart(2, '0') }}</span
-          ><Check v-if="s.id === draft.activeScriptId" :size="15" />
-        </div>
-        <h4>{{ s.name }}</h4>
-        <p>{{ s.synopsis || '尚未填写故事概述' }}</p>
-        <div class="option-bottom">
-          <span>完整故事</span><i /> <span>{{ scriptDuration(s) }} 秒</span>
-        </div>
-      </button>
-    </div>
-    <section v-else class="empty-storyboard">
+    <StoryboardSchemeDirectory
+      :key="projectId"
+      :scripts="draft.scripts"
+      :active-id="draft.activeScriptId"
+      @select="selectScript"
+    />
+    <section v-if="!draft.scripts.length" class="empty-storyboard">
       <div class="empty-icon"><Clapperboard :size="30" /></div>
       <h3>{{ running ? '正在创作完整脚本' : '还没有完整脚本' }}</h3>
       <p>
@@ -375,96 +459,69 @@ defineExpose({ guardEditor });
             ? '请先保存信息提炼版本，再开始创作。'
             : running
               ? '完成的方案会逐份显示，无需等待全部结束。'
-              : '设置时长与数量后开始 AI 创作，也可以新建或导入脚本。'
+              : '选择视频类型与参考时长后开始 AI 创作，也可以新建或导入脚本。'
         }}
       </p>
     </section>
-    <template v-if="active"
-      ><WorkflowInformationCard class="script-overview"
-        ><div class="overview-heading">
-          <div>
-            <span class="eyebrow">当前脚本</span>
-            <h3>{{ active.name }}</h3>
-          </div>
-          <div class="overview-actions">
-            <button
-              v-if="canDelete"
-              type="button"
-              class="script-delete-button"
-              :disabled="deleting || saving"
-              @click="emit('remove')"
+    <WorkflowInformationCard v-if="active" :key="active.id" class="script-reader">
+      <div class="overview-heading">
+        <div>
+          <span class="eyebrow"
+            >{{
+              active.creation
+                ? CUSTOMIZED_VIDEO_TYPE_LABELS[active.creation.videoType]
+                : active.story
+                  ? '完整脚本'
+                  : '历史脚本'
+            }}
+            · 预计 {{ scriptDuration(active) }} 秒
+            <template v-if="active.creation">
+              · 参考 {{ active.creation.referenceDurationSeconds }} 秒</template
             >
-              <Trash2 :size="14" />{{ deleting ? '正在删除…' : '删除脚本' }}
-            </button>
-            <button
-              v-if="editable"
-              type="button"
-              @click="scriptEditor = snapshotStoryboard(active)"
-            >
-              <Pencil :size="13" />编辑故事概述
-            </button>
-            <details class="export-menu">
-              <summary><Download :size="13" />导出当前版本</summary>
-              <div>
-                <button type="button" @click="download('txt')">文字脚本 · TXT</button
-                ><button type="button" @click="download('json')">可编辑脚本 · JSON</button>
-              </div>
-            </details>
-          </div>
+            <template v-if="active.story?.content">
+              · {{ active.story.content.length }} 字</template
+            ></span
+          >
+          <h3>{{ active.name }}</h3>
         </div>
-        <p class="synopsis">{{ active.synopsis || '补充故事概述，让方案的表达重点更清晰。' }}</p>
-        <div class="overview-grid">
-          <div>
-            <span>叙事结构</span>
-            <p>{{ active.structure || '尚未填写' }}</p>
-          </div>
-          <div>
-            <span>产品呈现重点</span>
-            <p>{{ active.productFocus || '尚未填写' }}</p>
-          </div>
-        </div></WorkflowInformationCard
-      >
-      <WorkflowInformationCard class="full-story-card">
-        <h3>完整故事</h3>
+        <div class="overview-actions">
+          <button
+            v-if="canDelete"
+            type="button"
+            class="script-delete-button"
+            :disabled="deleting || saving"
+            @click="emit('remove')"
+          >
+            <Trash2 :size="14" />{{ deleting ? '正在删除…' : '删除脚本' }}
+          </button>
+          <button type="button" @click="scriptEditor = snapshotStoryboard(active)">
+            <BookOpen :size="13" />创作说明
+          </button>
+          <details class="export-menu">
+            <summary><Download :size="13" />导出当前版本</summary>
+            <div>
+              <button type="button" @click="download('txt')">文字脚本 · TXT</button
+              ><button type="button" @click="download('json')">可编辑脚本 · JSON</button>
+            </div>
+          </details>
+        </div>
+      </div>
+      <section class="story-content" aria-label="完整脚本">
         <WorkflowInformationField
-          v-if="active.story"
+          v-if="active.story && editable"
           v-model="active.story.content"
-          label="故事正文"
+          class="story-editor"
+          label="完整脚本"
           multiline
-          :readonly="!editable"
         />
-        <p v-else class="synopsis">{{ active.synopsis }}</p>
-        <div v-if="active.story" class="overview-grid">
-          <WorkflowInformationField
-            v-model="active.story.opening"
-            label="开场"
-            multiline
-            :readonly="!editable"
-          />
-          <WorkflowInformationField
-            v-model="active.story.development"
-            label="发展"
-            multiline
-            :readonly="!editable"
-          />
-          <WorkflowInformationField
-            v-model="active.story.ending"
-            label="收束"
-            multiline
-            :readonly="!editable"
-          />
-          <WorkflowInformationField
-            v-model="active.story.dialoguePlan"
-            label="对白安排"
-            multiline
-            :readonly="!editable"
-          />
-        </div>
-        <p v-if="!active.story" class="muted">
-          旧版脚本的镜头和资产已保留，可在资产准备与视频制作中继续使用。
+        <p v-else class="story-prose">
+          {{ active.story?.content || '此方案尚未保存完整剧本正文。' }}
         </p>
-      </WorkflowInformationCard></template
-    >
+        <p v-if="!active.story" class="muted">
+          概述可在创作说明中查看；已有镜头和资产仍可继续使用。再次 AI 创作将生成新的完整剧本。
+        </p>
+      </section>
+    </WorkflowInformationCard>
     <p v-if="notice" class="notice" role="status">
       {{ notice
       }}<button type="button" aria-label="关闭提示" @click="notice = ''"><X :size="13" /></button>
@@ -480,25 +537,43 @@ defineExpose({ guardEditor });
     />
     <WorkflowInformationDialog
       :open="!!scriptEditor"
-      title="编辑脚本概述"
-      description="概述用于比较方案，故事正文在页面中直接编辑。"
+      :title="editable ? '编辑创作说明' : '创作说明'"
+      :description="
+        editable
+          ? '概述用于比较方案，脚本正文在页面中直接编辑。'
+          : '查看本方案的结构安排与产品表达。'
+      "
       @close="scriptEditor = null"
-      ><div v-if="scriptEditor" class="dialog-form">
+      ><div v-if="scriptEditor && editable" class="dialog-form">
         <WorkflowInformationField
           v-model="scriptEditor.name"
           label="脚本名称"
         /><WorkflowInformationField
           v-model="scriptEditor.synopsis"
-          label="故事概述"
+          label="方案概述"
           multiline
         /><WorkflowInformationField
           v-model="scriptEditor.structure"
-          label="叙事结构"
+          label="脚本结构"
         /><WorkflowInformationField
           v-model="scriptEditor.productFocus"
           label="产品呈现重点"
           multiline
         />
+        <template v-if="scriptEditor.story">
+          <WorkflowInformationField v-model="scriptEditor.story.opening" label="开场" multiline />
+          <WorkflowInformationField
+            v-model="scriptEditor.story.development"
+            label="发展"
+            multiline
+          />
+          <WorkflowInformationField v-model="scriptEditor.story.ending" label="收束" multiline />
+          <WorkflowInformationField
+            v-model="scriptEditor.story.dialoguePlan"
+            label="对白安排"
+            multiline
+          />
+        </template>
         <div class="dialog-actions">
           <button type="button" @click="scriptEditor = null">取消</button
           ><button
@@ -507,15 +582,36 @@ defineExpose({ guardEditor });
             :disabled="!scriptEditor.name.trim()"
             @click="saveScriptMeta"
           >
-            保存概述
+            应用修改
           </button>
         </div>
+      </div>
+      <div v-else-if="scriptEditor" class="script-notes">
+        <section
+          v-for="item in [
+            { label: '方案概述', content: scriptEditor.synopsis },
+            { label: '脚本结构', content: scriptEditor.structure },
+            { label: '产品呈现重点', content: scriptEditor.productFocus },
+            ...(scriptEditor.story
+              ? [
+                  { label: '开场', content: scriptEditor.story.opening },
+                  { label: '发展', content: scriptEditor.story.development },
+                  { label: '收束', content: scriptEditor.story.ending },
+                  { label: '对白安排', content: scriptEditor.story.dialoguePlan },
+                ]
+              : []),
+          ]"
+          :key="item.label"
+        >
+          <h3>{{ item.label }}</h3>
+          <p>{{ item.content || '尚未填写' }}</p>
+        </section>
       </div></WorkflowInformationDialog
     >
     <WorkflowInformationDialog
       :open="compareOpen"
       title="脚本方案对比"
-      description="比较完整故事、叙事发展和产品表达，选择适合继续制作的方案。"
+      description="比较完整脚本、创意表达和产品呈现，选择适合继续制作的方案。"
       @close="compareOpen = false"
       ><div class="compare-grid">
         <section v-for="(s, side) in [left, right]" :key="side" class="compare-column">
@@ -533,16 +629,16 @@ defineExpose({ guardEditor });
             </option></select
           ><template v-if="s"
             ><div class="compare-summary">
-              <span>完整故事 · {{ scriptDuration(s) }} 秒</span>
+              <span>{{ s.story ? '完整脚本' : '历史脚本' }} · {{ scriptDuration(s) }} 秒</span>
               <h3>{{ s.name }}</h3>
-              <p>{{ s.synopsis || '未填写故事概述' }}</p>
-              <h4>叙事结构</h4>
+              <p>{{ s.synopsis || '未填写方案概述' }}</p>
+              <h4>脚本结构</h4>
               <p>{{ s.structure || '未填写' }}</p>
               <h4>产品呈现重点</h4>
               <p>{{ s.productFocus || '未填写' }}</p>
-              <h4>故事正文</h4>
+              <h4>脚本正文</h4>
               <p style="white-space: pre-wrap">
-                {{ s.story?.content || s.synopsis || '尚未填写' }}
+                {{ s.story?.content || '此方案尚未保存完整剧本正文。' }}
               </p>
               <template v-if="s.story">
                 <h4>开场</h4>

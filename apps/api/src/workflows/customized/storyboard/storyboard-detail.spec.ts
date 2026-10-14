@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { emptyCustomizedBrief, type StoryboardInput } from '@ai-marketing/contracts';
 import { storyboardDetail } from './storyboard-detail';
+import brandFixture from '../../../../../../packages/contracts/fixtures/customized-brand-creation.json';
 const input: StoryboardInput = {
   schemaVersion: 1,
   source: { artifactId: 'internal-id', revision: 2, fingerprint: 'hash' },
@@ -24,6 +25,21 @@ const step = (nodeId: string, output: unknown) => ({
   output,
   errorMessage: null,
   updatedAt: new Date(),
+});
+it('shows real brand propositions, ideas and selection reasons without internal references', () => {
+  const input = brandFixture.input as unknown as StoryboardInput;
+  const steps = [
+    {...step('BRAND_AD_PROPOSITION',brandFixture.development), scriptId:''},
+    {...step('BRAND_AD_IDEAS',brandFixture.development), scriptId:''},
+    {...step('BRAND_AD_CONCEPT',brandFixture.selection), scriptId:''},
+  ];
+  for (const node of ['BRAND_AD_PROPOSITION','BRAND_AD_IDEAS','BRAND_AD_CONCEPT'] as const) {
+    const detail = storyboardDetail(input,steps,node);
+    expect(detail.sections[2]!.items.length).toBeGreaterThan(0);
+    expect(JSON.stringify(detail)).not.toContain('F01');
+  }
+  expect(JSON.stringify(storyboardDetail(input,steps,'BRAND_AD_PROPOSITION'))).toContain('未经受众调研验证');
+  expect(JSON.stringify(storyboardDetail(input,steps,'BRAND_AD_CONCEPT'))).toContain('创意保留清单');
 });
 it('paginates all shots without truncating actual results or exposing internal IDs', () => {
   const shots = Array.from({ length: 45 }, (_, i) => ({
@@ -68,6 +84,50 @@ it('does not fabricate outputs before a stage runs', () => {
   const result = storyboardDetail(input, [], 'STORY');
   expect(result.status).toBe('PENDING');
   expect(result.sections[2]!.items).toEqual([]);
+});
+it('shows actual type, soft reference and custom section body without old instructions', () => {
+  const content = 'P01｜产品亮相\n\n橙色端口从深灰轮廓中显现。';
+  const result = storyboardDetail(
+    {
+      ...input,
+      outputMode: 'STORY_ONLY',
+      storyFormat: 'VIDEO_SCRIPT_V2',
+      settings: {
+        ...input.settings,
+        videoType: 'BRAND_AD',
+        structureMode: 'CUSTOM',
+        structureSections: ['产品亮相'],
+        instructions: '旧要求不得展示',
+      },
+    },
+    [
+      step('STORY', {
+        title: '亮相',
+        content,
+        beats: [{ id: 'P01', content, durationSeconds: 42 }],
+      }),
+    ],
+    'STORY',
+  );
+  expect(JSON.stringify(result)).toContain('品牌广告');
+  expect(JSON.stringify(result)).toContain('参考 30 秒');
+  expect(JSON.stringify(result)).not.toContain('旧要求不得展示');
+  expect(result.sections[2]!.items.find((row) => row.title === '剧本正文')?.content).toBe(content);
+});
+it('preserves public screenplay scene headings and the exact body in workflow details', () => {
+  const content = 'S01｜内景 · 候车区｜傍晚\n\n周越合上电脑。\n\n周越：走吧。';
+  const result = storyboardDetail(
+    { ...input, outputMode: 'STORY_ONLY', storyFormat: 'SCREENPLAY_V1' },
+    [
+      step('STORY', {
+        title: '候车时刻',
+        content,
+        beats: [{ id: 'S01', content, durationSeconds: 30 }],
+      }),
+    ],
+    'STORY',
+  );
+  expect(result.sections[2]!.items.find((row) => row.title === '剧本正文')?.content).toBe(content);
 });
 it('projects actual and proposed asset identifiers into readable business objects without changing checkpoints', () => {
   const steps = [
@@ -148,4 +208,20 @@ it('shows saved chunks and actionable validation errors without displaying rejec
   expect(text).toContain('当前镜头合计 5 秒');
   expect(text).not.toContain('未采用画面');
   expect(text).not.toContain('DURATION_SUM');
+});
+
+it('translates leaked creative hypothesis and candidate labels without changing stored output', () => {
+  const development = structuredClone(brandFixture.development);
+  development.proposition.audienceObservation = 'CREATIVE_HYPOTHESIS：具体观察';
+  const selection = {...brandFixture.selection, reason: development.ideas[0]!.id + '有具体画面'};
+  const steps = [
+    {...step('BRAND_AD_PROPOSITION',development),scriptId:''},
+    {...step('BRAND_AD_IDEAS',development),scriptId:''},
+    {...step('BRAND_AD_CONCEPT',selection),scriptId:''},
+  ];
+  const original = JSON.stringify(steps);
+  const input = brandFixture.input as unknown as StoryboardInput;
+  expect(JSON.stringify(storyboardDetail(input, steps, 'BRAND_AD_PROPOSITION'))).not.toContain('CREATIVE_HYPOTHESIS');
+  expect(JSON.stringify([0,1,2,3].map(page => storyboardDetail(input, steps, 'BRAND_AD_CONCEPT', undefined, page)))).toContain('候选创意 1有具体画面');
+  expect(JSON.stringify(steps)).toBe(original);
 });

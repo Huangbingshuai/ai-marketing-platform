@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  CUSTOMIZED_STORYBOARD_STAGES,
+  storyboardStages,
   type StoryboardInput,
   type StoryboardStage,
 } from '@ai-marketing/contracts';
@@ -87,10 +87,10 @@ export class StoryboardService implements OnModuleInit, OnModuleDestroy {
   }
   async detail(p: string, id: string, node: string, q: StoryboardDetailQueryDto) {
     await this.projects.get(p);
-    if (!CUSTOMIZED_STORYBOARD_STAGES.some((s) => s.id === node))
-      throw new ApiHttpException('执行节点不存在', 404, 'ASSET_NOT_FOUND');
     const t = await this.repository.task(p, id);
     const input = t.inputSnapshot as unknown as StoryboardInput;
+    if (!storyboardStages(input).some((s) => s.id === node))
+      throw new ApiHttpException('执行节点不存在', 404, 'ASSET_NOT_FOUND');
     if (q.scriptId && !input.scriptIds.includes(q.scriptId))
       throw new ApiHttpException('方案不属于此任务', 404, 'ASSET_NOT_FOUND');
     return storyboardDetail(input, t.steps, node as StoryboardStage, q.scriptId, q.page);

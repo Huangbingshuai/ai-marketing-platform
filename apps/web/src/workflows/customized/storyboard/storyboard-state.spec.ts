@@ -13,35 +13,28 @@ import {
   storyboardText,
   importStoryboardScript,
   storyboardAssetText,
+  storyboardStructure,
+  setStoryboardStructure,
 } from './storyboard-state';
 import { storyboardFixture } from './__fixtures__/storyboard.fixture';
 import { createStoryboardDraftSaver } from './storyboard-draft-saver';
 import Page from './CustomizedStoryboardNodePage.vue';
 import ShotCard from './StoryboardShotCard.vue';
 describe('storyboard workspace boundaries', () => {
-  it('offers permanent deletion for a selected published script without entering edit mode', async () => {
-    const html = await renderToString(
-      createSSRApp(Page, {
-        draft: storyboardFixture(),
-        editing: false,
-        sourceReady: true,
-        readonly: false,
-        saving: false,
-        productName: '测试产品',
-        saveMessage: '',
-        error: '',
-        stale: false,
-        projectId: 'test-project',
-        task: null,
-        brief: null,
-        sourceRevision: 1,
-        nextReady: true,
-        canDelete: true,
-      }),
-    );
-    expect(html).toContain('删除脚本');
-    expect(html).not.toContain('删除空白脚本');
-    expect(html).toContain('script-delete-button');
+  it('keeps ordered structure editable and clears retired creation instructions', () => {
+    const draft = emptyStoryboardDraft();
+    expect(draft.settings.videoType).toBe('BRAND_AD');
+    draft.settings.instructions = '历史内容';
+    setStoryboardStructure(draft.settings, ['黄金 3 秒钩子', '产品亮相']);
+    expect(storyboardStructure(draft.settings)).toEqual(['黄金 3 秒钩子', '产品亮相']);
+    expect(draft.settings.structure).toBe('黄金 3 秒钩子 → 产品亮相');
+    expect(draft.settings.instructions).toBe('');
+    setStoryboardStructure(draft.settings, []);
+    expect(draft.settings.structureMode).toBe('AI');
+    const { structureSections: _, ...legacy } = draft.settings;
+    expect(
+      storyboardStructure({ ...legacy, structureMode: 'CUSTOM', structure: '开场 → 收束' }),
+    ).toEqual(['开场', '收束']);
   });
   it('creates genuinely empty custom scripts with independent IDs', () => {
     const a = createStoryboardScript('a'),
@@ -77,6 +70,17 @@ describe('storyboard workspace boundaries', () => {
     expect(text).toContain('人物资产：');
     expect(text).toContain('公共定义：虚构包装方案');
     expect(text).toContain('本镜要求：标签自然露出');
+  });
+  it('exports screenplay text directly and keeps creative notes out of the body', () => {
+    const script = createStoryboardScript('候车时刻');
+    script.synopsis = '用于介绍方案的概述';
+    script.story!.content = 'S01｜内景 · 候车区｜傍晚\n\n周越收起电脑。\n\n周越：走吧。';
+    script.story!.opening = '辅助创作说明';
+    const text = storyboardText(script);
+    expect(text).toContain(script.story!.content);
+    expect(text).not.toContain(script.synopsis);
+    expect(text).not.toContain(script.story!.opening);
+    expect(text).not.toContain('历史方案');
   });
   it('remaps imported object identities while preserving reuse and independent per-shot requirements', () => {
     const source = storyboardFixture().scripts[0]!;
@@ -215,11 +219,86 @@ describe('storyboard workspace boundaries', () => {
         nextReady: false,
       }),
     );
-    for (const text of ['晚餐多一点滋味', '一勺之间', '熟悉的一餐', '完整故事', '下一步：资产准备'])
+    for (const text of [
+      '晚餐多一点滋味',
+      '完整脚本',
+      '历史脚本',
+      '此方案尚未保存完整剧本正文',
+      '下一步：资产准备',
+    ])
       expect(html).toContain(text);
+    const story = html.match(/<section[^>]*aria-label="完整脚本"[^]*?<\/section>/)?.[0];
+    expect(story).toBeDefined();
+    expect(story).not.toContain(storyboardFixture().scripts[0]!.synopsis);
+    expect(html).toContain(storyboardFixture().scripts[0]!.synopsis);
     expect(html).not.toContain('添加镜头');
     expect(html).not.toContain('资产目录 ·');
   });
+
+  it('offers permanent deletion for a selected published script without entering edit mode', async () => {
+    const html = await renderToString(
+      createSSRApp(Page, {
+        draft: storyboardFixture(),
+        editing: false,
+        sourceReady: true,
+        readonly: false,
+        saving: false,
+        productName: '测试产品',
+        saveMessage: '',
+        error: '',
+        stale: false,
+        projectId: 'test-project',
+        task: null,
+        brief: null,
+        sourceRevision: 1,
+        nextReady: true,
+        canDelete: true,
+      }),
+    );
+    expect(html).toContain('删除脚本');
+    expect(html).not.toContain('删除空白脚本');
+    expect(html).toContain('script-delete-button');
+  });
+
+  it.each([false, true])(
+    'keeps the final story complete in reading/editing mode: %s',
+    async (editing) => {
+      const draft = emptyStoryboardDraft();
+      const script = createStoryboardScript('完整脚本');
+      script.story!.content =
+        '第一场：候车区。\n\n周越：“我先接一下。”\n最后一场：收好充电器离开。';
+      script.story!.opening = '仅在创作说明中查看的开场';
+      script.synopsis = '不应重复展开的概述';
+      draft.scripts = [script];
+      draft.activeScriptId = script.id;
+      const before = snapshotStoryboard(draft);
+      const html = await renderToString(
+        createSSRApp(Page, {
+          draft,
+          editing,
+          sourceReady: true,
+          readonly: false,
+          saving: false,
+          productName: '充电器',
+          saveMessage: '',
+          error: '',
+          stale: false,
+          projectId: 'test-project',
+          task: null,
+          brief: null,
+          sourceRevision: 1,
+          nextReady: true,
+        }),
+      );
+      expect(html).toContain(script.story!.content);
+      expect(html).not.toContain(script.synopsis);
+      expect(html).not.toContain(script.story!.opening);
+      expect((html.match(/<textarea\b/g) ?? []).length).toBe(editing ? 1 : 0);
+      expect(html.includes('class="story-prose"')).toBe(!editing);
+      expect(html).toContain('选择脚本方案');
+      expect(draft).toEqual(before);
+    },
+  );
 
   it.each([false, true])(
     'shows shot edit controls only in real editing mode: %s',
@@ -269,8 +348,11 @@ describe('storyboard workspace boundaries', () => {
         nextReady: true,
       }),
     );
-    for (const text of [script.name, script.synopsis, script.structure, script.productFocus])
-      expect(html).toContain(text);
+    for (const text of [script.name, script.synopsis]) expect(html).toContain(text);
+    // Supporting notes are available on demand instead of repeating the story on the main page.
+    expect(html).toContain('创作说明');
+    expect(script.structure).toBe('归家 → 准备晚餐 → 一勺点睛 → 落座享用');
+    expect(script.productFocus).toBeTruthy();
     // Legacy data remains intact but shot/asset editing belongs to production now.
     expect(html).not.toContain('删除镜头');
     expect(script.shots.length).toBeGreaterThan(0);

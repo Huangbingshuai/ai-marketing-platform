@@ -9,7 +9,9 @@ import {
   Workflow,
 } from '@lucide/vue';
 import {
-  CUSTOMIZED_STORYBOARD_STAGES,
+  storyboardStages,
+  typedScriptStages,
+  CUSTOMIZED_VIDEO_TYPES,
   type StoryboardTask,
   type StoryboardDetail,
 } from '@ai-marketing/contracts';
@@ -31,16 +33,52 @@ const selected = ref<string | null>(null),
   page = ref(0);
 let controller: AbortController | undefined;
 const storyOnly = computed(() => !props.task || props.task.outputMode === 'STORY_ONLY');
-const stages = computed(() =>
-  CUSTOMIZED_STORYBOARD_STAGES.filter(
-    (n) => !storyOnly.value || !['ASSETS', 'SHOTS'].includes(n.id),
-  ).map((n) =>
-    storyOnly.value && n.id === 'REVIEW'
-      ? { ...n, description: '核对事实、故事容量与叙事一致性' }
-      : n,
-  ),
+const showAllRoutes = ref(false);
+const typed = computed(() => props.task?.graphVersion === 'TYPED_CREATION_V1');
+const stages = computed(() => {
+  const actual = storyboardStages(props.task ?? { outputMode: 'STORY_ONLY' });
+  if (!typed.value || !showAllRoutes.value) return actual;
+  return [
+    ...actual.slice(0, 3),
+    ...CUSTOMIZED_VIDEO_TYPES.flatMap((t) => typedScriptStages(t, props.task?.strategyVersions?.concept).slice(3, -3)),
+    ...actual.slice(-3),
+  ];
+});
+const rows = computed(() =>
+  typed.value && showAllRoutes.value
+    ? [
+        ['SNAPSHOT'],
+        ['PREPARE'],
+        ['ROUTE'],
+        ...(['2026-10-14.1','2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(props.task?.strategyVersions?.concept ?? '') ? [['BRAND_AD_PROPOSITION'], ['BRAND_AD_IDEAS']] : []),
+        ...['CONCEPT', 'STORY', 'REVIEW'].map((stage) =>
+          CUSTOMIZED_VIDEO_TYPES.map((t) => `${t}_${stage}`),
+        ),
+        ['REPAIR'],
+        ['RECHECK'],
+        ['SAVE'],
+      ]
+    : stages.value.map((n) => [n.id]),
 );
-const rows = computed(() => stages.value.map((n) => [n.id]));
+const edges = computed(() => {
+  if (!typed.value) return undefined;
+  const routes = showAllRoutes.value ? CUSTOMIZED_VIDEO_TYPES : [props.task!.routeId!];
+  return [
+    { from: 'SNAPSHOT', to: 'PREPARE' },
+    { from: 'PREPARE', to: 'ROUTE' },
+    ...routes.flatMap((route) => {
+      const muted = route !== props.task?.routeId;
+      const chain = ['ROUTE', ...typedScriptStages(route, props.task?.strategyVersions?.concept).slice(3, -3).map(n => n.id)];
+      return [
+        ...chain.slice(1).map((to, i) => ({ from: chain[i]!, to, muted })),
+        { from: `${route}_REVIEW`, to: 'REPAIR', label: muted ? '' : '需修订', muted },
+        { from: `${route}_REVIEW`, to: 'SAVE', label: muted ? '' : '通过', muted },
+      ];
+    }),
+    { from: 'REPAIR', to: 'RECHECK' },
+    { from: 'RECHECK', to: 'SAVE', label: '复核通过' },
+  ];
+});
 const savedScripts = computed(() => [
   ...new Set(
     props.task?.steps
@@ -52,6 +90,8 @@ const savedScripts = computed(() => [
 const nodes = computed(() =>
   stages.value.map((n) => {
     const steps = props.task?.steps.filter((s) => s.nodeId === n.id) ?? [];
+    const unselected = typed.value && !storyboardStages(props.task!).some((s) => s.id === n.id);
+    const skipped = steps.length > 0 && steps.every((s) => s.status === 'SKIPPED');
     const status = steps.some((s) => s.status === 'RUNNING')
       ? 'RUNNING'
       : steps.some((s) => s.status === 'FAILED')
@@ -61,22 +101,26 @@ const nodes = computed(() =>
           : 'PENDING';
     return {
       ...n,
-      tone:
-        status === 'RUNNING'
+      tone: unselected
+        ? 'unselected'
+        : status === 'RUNNING'
           ? 'running'
           : status === 'FAILED'
             ? 'danger'
             : status === 'SUCCEEDED'
               ? 'success'
               : 'pending',
-      statusLabel:
-        status === 'RUNNING'
-          ? '执行中'
-          : status === 'FAILED'
-            ? '未完成'
-            : status === 'SUCCEEDED'
-              ? '已完成'
-              : '等待执行',
+      statusLabel: unselected
+        ? '未选择'
+        : skipped
+          ? '已跳过'
+          : status === 'RUNNING'
+            ? '执行中'
+            : status === 'FAILED'
+              ? '未完成'
+              : status === 'SUCCEEDED'
+                ? '已完成'
+                : '等待执行',
     };
   }),
 );
@@ -90,7 +134,13 @@ async function load(append = false) {
   }
   error.value = '';
   loading.value = false;
-  if (!props.open || !props.task || !selected.value) return;
+  if (
+    !props.open ||
+    !props.task ||
+    !selected.value ||
+    nodes.value.find((n) => n.id === selected.value)?.tone === 'unselected'
+  )
+    return;
   loading.value = true;
   try {
     const value = await storyboardApi.detail(
@@ -138,21 +188,29 @@ onBeforeUnmount(() => controller?.abort());
     :eyebrow="storyOnly ? 'SCRIPT WORKFLOW' : 'STORYBOARD WORKFLOW'"
     :description="
       storyOnly
-        ? '从差异化构思到完整故事，每份方案独立审校与保存。'
+        ? '从差异化构思到完整脚本，每份方案独立审校与保存。'
         : '从完整故事到逐镜脚本，每份方案独立审校与保存。'
     "
     :rows="rows"
     :nodes="nodes"
     :selected="selected"
-    :edge-count="Math.max(0, stages.length - 1)"
+    :edge-count="edges?.length ?? Math.max(0, stages.length - 1)"
+    :edges="edges"
     :empty-message="!task ? '尚未开始 AI 创作，执行后可在此查看每个阶段的实际内容。' : undefined"
     @close="emit('close')"
     @select="selected = $event"
   >
+    <template #toolbar
+      ><div v-if="task && typed" class="storyboard-graph-filter">
+        <BaseButton type="button" @click="showAllRoutes = !showAllRoutes">{{
+          showAllRoutes ? '聚焦当前线路' : '查看全部线路'
+        }}</BaseButton>
+      </div></template
+    >
     <div v-if="!selected" class="node-detail-empty">
       <Workflow :size="30" /><strong>选择节点查看结果</strong>
       <p>
-        {{ storyOnly ? '阅读故事、创作安排与具体审校意见。' : '阅读故事、镜头与具体审校意见。' }}
+        {{ storyOnly ? '阅读正文、创意安排与具体审校意见。' : '阅读故事、镜头与具体审校意见。' }}
       </p>
     </div>
     <template v-else
@@ -214,11 +272,26 @@ onBeforeUnmount(() => controller?.abort());
           继续阅读
         </BaseButton></template
       >
+      <p
+        v-else-if="nodes.find((n) => n.id === selected)?.tone === 'unselected'"
+        class="node-detail-no-fields"
+      >
+        本次未选择此线路，不执行生成任务。
+      </p>
       <p v-else-if="!task" class="node-detail-no-fields">尚未执行，暂无业务产物。</p>
     </template>
   </WorkflowExecutionGraphDialog>
 </template>
 <style scoped>
+.storyboard-graph-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding: 0 20px 12px;
+  color: #61738c;
+  font-size: 12px;
+}
 .saved-script-actions {
   display: flex;
   flex-wrap: wrap;

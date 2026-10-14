@@ -65,12 +65,17 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
         data: { status: 'PUBLISHED', publishedAt: new Date() },
       });
     });
-    const originalCreate=repo.create.bind(repo);
-    const legacyCreate=vi.spyOn(repo,'create').mockImplementation(async(...args)=>{
-      const task=await originalCreate(...args);
-      const row=await db.customizedStoryboardTask.findUniqueOrThrow({where:{id:task.id}});
-      const input={...(row.inputSnapshot as Record<string,unknown>)};delete input.outputMode;
-      await db.customizedStoryboardTask.update({where:{id:row.id},data:{inputSnapshot:input as Prisma.InputJsonValue}});
+    const originalCreate = repo.create.bind(repo);
+    const legacyCreate = vi.spyOn(repo, 'create').mockImplementation(async (...args) => {
+      const task = await originalCreate(...args);
+      const row = await db.customizedStoryboardTask.findUniqueOrThrow({ where: { id: task.id } });
+      const input = { ...(row.inputSnapshot as Record<string, unknown>) };
+      delete input.outputMode;
+      delete input.storyFormat;
+      await db.customizedStoryboardTask.update({
+        where: { id: row.id },
+        data: { inputSnapshot: input as Prisma.InputJsonValue },
+      });
       return task;
     });
     try {
@@ -105,6 +110,40 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
       expect(a.id).toBe(b.id);
       expect(await db.jobOutbox.count({ where: { projectId, status: 'PENDING' } })).toBe(0);
       await expect(repo.task(otherId, a.id)).rejects.toThrow();
+      // Explicit historical fixture: verifies old unmarked checkpoints still resume after V3 deployment.
+      const historical = await db.customizedStoryboardTask.findUniqueOrThrow({
+        where: { id: a.id },
+      });
+      const legacyInput = { ...(historical.inputSnapshot as unknown as StoryboardInput) };
+      delete legacyInput.graphVersion;
+      delete legacyInput.routeId;
+      delete legacyInput.strategyVersions;
+      delete legacyInput.storyFormat;
+      delete legacyInput.outputMode;
+      await db.customizedStoryboardTask.update({
+        where: { id: a.id },
+        data: {
+          inputSnapshot: JSON.parse(JSON.stringify(legacyInput)),
+          inputHash: workflowStateHash(legacyInput),
+        },
+      });
+      await db.customizedStoryboardStep.deleteMany({ where: { taskId: a.id } });
+      await db.customizedStoryboardStep.createMany({
+        data: [
+          'SNAPSHOT',
+          'CONCEPT',
+          'STORY',
+          'ASSETS',
+          'SHOTS',
+          'REVIEW',
+          'REPAIR',
+          'SAVE',
+        ].flatMap((nodeId) =>
+          (['SNAPSHOT', 'CONCEPT'].includes(nodeId) ? [''] : legacyInput.scriptIds).map(
+            (scriptId) => ({ projectId, taskId: a.id, nodeId, scriptId, status: 'PENDING' }),
+          ),
+        ),
+      });
       const claim = await repo.claim(projectId, a.id),
         token = claim.attemptToken!,
         input = claim.input as unknown as StoryboardInput;
@@ -245,7 +284,7 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
       const resumedScriptId = (secondClaim.input as unknown as StoryboardInput).scriptIds[0]!;
       const partialChunks = { chunks: [{ shots: script(resumedScriptId).shots }] };
       await repo.step(projectId, again.id, secondClaim.attemptToken!, {
-        nodeId: 'SHOTS',
+        nodeId: 'BRAND_AD_STORY',
         scriptId: resumedScriptId,
         status: 'RUNNING',
         output: partialChunks,
@@ -258,7 +297,7 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
       await repo.recoverExpired();
       expect((await repo.task(projectId, again.id)).status).toBe('QUEUED');
       const recoveredStep = (await repo.task(projectId, again.id)).steps.find(
-        (s) => s.nodeId === 'SHOTS' && s.scriptId === resumedScriptId,
+        (s) => s.nodeId === 'BRAND_AD_STORY' && s.scriptId === resumedScriptId,
       );
       expect(recoveredStep?.status).toBe('PENDING');
       expect(recoveredStep?.output).toEqual(partialChunks);
@@ -268,7 +307,7 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
         repo.heartbeat(projectId, again.id, secondClaim.attemptToken!),
       ).rejects.toThrow();
       await repo.step(projectId, again.id, nextAttempt.attemptToken!, {
-        nodeId: 'SHOTS',
+        nodeId: 'BRAND_AD_STORY',
         scriptId: resumedScriptId,
         status: 'FAILED',
         output: null,
@@ -290,7 +329,7 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
       const lastAttempt = await repo.claim(projectId, again.id);
       expect(lastAttempt.retryScriptIds).toEqual([resumedScriptId]);
       expect(
-        lastAttempt.checkpoints?.find((s) => s.nodeId === 'SHOTS' && s.scriptId === resumedScriptId)
+        lastAttempt.checkpoints?.find((s) => s.nodeId === 'BRAND_AD_STORY' && s.scriptId === resumedScriptId)
           ?.output,
       ).toEqual(partialChunks);
       await repo.finish(projectId, again.id, lastAttempt.attemptToken!, {

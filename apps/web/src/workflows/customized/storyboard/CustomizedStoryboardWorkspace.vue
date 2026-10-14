@@ -130,7 +130,10 @@ function apply(value: StoryboardWorkspace, initial = false) {
     !initial && draft.value.scripts.some((s) => s.id === oldSelection)
       ? oldSelection
       : (value.selectedScriptId ?? draft.value.scripts[0]?.id ?? null);
-  if (value.scripts.filter((s) => s.confirmedRevision).length > oldCount) emit('published');
+  if (value.scripts.filter((s) => s.confirmedRevision).length > oldCount) {
+    savedMessage.value = currentRecord.value?.confirmedRevision ? `当前脚本版本 ${currentRecord.value.confirmedRevision}` : '';
+    emit('published');
+  }
   if (initial && props.viewedRunId) {
     const requested = value.scripts.find((s) => s.workflowRunId === props.viewedRunId);
     if (requested) draft.value.activeScriptId = requested.id;

@@ -79,6 +79,40 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
         creative: 'controlled',
         detail: 'controlled',
       });
+      // Explicit historical fixture: verifies old unmarked checkpoints still resume after V3 deployment.
+      const historical = await db.customizedStoryboardTask.findUniqueOrThrow({
+        where: { id: task.id },
+      });
+      const legacyInput = { ...(historical.inputSnapshot as unknown as StoryboardInput) };
+      delete legacyInput.graphVersion;
+      delete legacyInput.routeId;
+      delete legacyInput.strategyVersions;
+      delete legacyInput.storyFormat;
+      delete legacyInput.outputMode;
+      await db.customizedStoryboardTask.update({
+        where: { id: task.id },
+        data: {
+          inputSnapshot: JSON.parse(JSON.stringify(legacyInput)),
+          inputHash: workflowStateHash(legacyInput),
+        },
+      });
+      await db.customizedStoryboardStep.deleteMany({ where: { taskId: task.id } });
+      await db.customizedStoryboardStep.createMany({
+        data: [
+          'SNAPSHOT',
+          'CONCEPT',
+          'STORY',
+          'ASSETS',
+          'SHOTS',
+          'REVIEW',
+          'REPAIR',
+          'SAVE',
+        ].flatMap((nodeId) =>
+          (['SNAPSHOT', 'CONCEPT'].includes(nodeId) ? [''] : legacyInput.scriptIds).map(
+            (scriptId) => ({ projectId, taskId: task.id, nodeId, scriptId, status: 'PENDING' }),
+          ),
+        ),
+      });
       const claim = await repo.claim(projectId, task.id),
         token = claim.attemptToken!;
       const input = claim.input as unknown as StoryboardInput;

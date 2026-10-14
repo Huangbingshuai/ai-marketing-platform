@@ -176,7 +176,12 @@ export async function deleteStoryboardScript(
       },
     });
     const concept = await tx.customizedStoryboardStep.findFirst({
-      where: { projectId, taskId: task.id, nodeId: 'CONCEPT', scriptId: '' },
+      where: {
+        projectId,
+        taskId: task.id,
+        nodeId: input.graphVersion ? `${input.routeId}_CONCEPT` : 'CONCEPT',
+        scriptId: '',
+      },
     });
     if (concept?.output) {
       const value = concept.output as { concepts?: { scriptId: string }[] };

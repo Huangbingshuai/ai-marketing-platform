@@ -20,6 +20,7 @@ import type {
   StoryboardStep,
   StoryboardFinish,
 } from '@ai-marketing/contracts';
+import { CUSTOMIZED_VIDEO_TYPES, typedScriptStages, SCRIPT_ROUTE_VERSION } from '@ai-marketing/contracts';
 export class StoryboardScopeDto {
   @IsUUID() workflowRunId!: string;
 }
@@ -29,6 +30,15 @@ export class StoryboardSettingsDto implements StoryboardSettings {
   @IsIn(['AI', 'REFERENCE', 'CUSTOM']) structureMode!: StoryboardSettings['structureMode'];
   @IsString() @MaxLength(20000) structure!: string;
   @IsString() @MaxLength(20000) instructions!: string;
+  @IsOptional() @IsIn(CUSTOMIZED_VIDEO_TYPES) videoType?: NonNullable<
+    StoryboardSettings['videoType']
+  >;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  structureSections?: string[];
 }
 export class SaveStoryboardSettingsDto extends StoryboardScopeDto {
   @IsInt() @Min(0) expectedRevision!: number;
@@ -64,7 +74,20 @@ export class StoryboardFinishDto extends StoryboardWorkerDto implements Storyboa
   @IsOptional() @IsArray() @ArrayMaxSize(5) @IsUUID('4', { each: true }) retryScriptIds?: string[];
 }
 export class StoryboardStepDto extends StoryboardWorkerDto {
-  @IsIn(['SNAPSHOT', 'CONCEPT', 'STORY', 'ASSETS', 'SHOTS', 'REVIEW', 'REPAIR'])
+  @IsIn([
+    'SNAPSHOT',
+    'CONCEPT',
+    'STORY',
+    'ASSETS',
+    'SHOTS',
+    'REVIEW',
+    'REPAIR',
+    ...CUSTOMIZED_VIDEO_TYPES.flatMap((t) =>
+      typedScriptStages(t, SCRIPT_ROUTE_VERSION)
+        .filter((s) => s.id !== 'SAVE')
+        .map((s) => s.id),
+    ),
+  ])
   nodeId!: StoryboardStep['nodeId'];
   @IsString() @MaxLength(40) scriptId!: string;
   @IsIn(['RUNNING', 'SUCCEEDED', 'FAILED', 'SKIPPED']) status!: StoryboardStep['status'];

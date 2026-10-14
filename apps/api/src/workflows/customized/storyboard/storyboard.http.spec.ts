@@ -79,7 +79,7 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1')(
       expect(((await duplicate.json()) as { data: { id: string } }).data.id).toBe(task.id);
       const python = `import asyncio,json,sys
 sys.path.insert(0,'tests')
-from test_pipeline import ControlledProvider
+from test_typed_creation import Provider
 from customized_storyboard.api import Api
 from customized_storyboard.pipeline import Pipeline
 async def run():
@@ -88,8 +88,7 @@ async def run():
  try:
   claim=await api.call('POST','claim')
   api.token=claim['attemptToken']
-  provider=ControlledProvider()
-  provider.review_errors=True
+  provider=Provider('BRAND_AD',repair=True)
   await Pipeline(api,provider,claim['input'],claim['checkpoints'],claim['completedScriptIds']).run()
  finally: await api.close()
 asyncio.run(run())`;
@@ -122,12 +121,12 @@ asyncio.run(run())`;
       expect(workspace.scripts).toHaveLength(3);
       expect(new Set(workspace.scripts.map((s) => s.workflowRunId)).size).toBe(3);
       const detail = await fetch(
-        `${api}/tasks/${task.id}/nodes/SHOTS?page=0&scriptId=${workspace.scripts[0]!.id}`,
+        `${api}/tasks/${task.id}/nodes/BRAND_AD_STORY?page=0&scriptId=${workspace.scripts[0]!.id}`,
       );
       expect(detail.status).toBe(200);
       expect(
         JSON.stringify(((await detail.json()) as { data: { sections: unknown } }).data.sections),
-      ).toContain('自然侧光');
+      ).toContain('橙色端口');
       const repairDetail = await fetch(
         `${api}/tasks/${task.id}/nodes/REPAIR?page=0&scriptId=${workspace.scripts[0]!.id}`,
       );
@@ -135,9 +134,13 @@ asyncio.run(run())`;
       const repairSections = JSON.stringify(
         ((await repairDetail.json()) as { data: { sections: unknown } }).data.sections,
       );
-      expect(repairSections).toContain('第 01 镜 · 画面内容');
-      expect(repairSections).toContain('已知事实');
-      expect(workspace.scripts.every((s) => s.script.shots[0]?.visual === '已知事实')).toBe(true);
+      expect(repairSections).toContain('保留实际变化');
+      expect(workspace.scripts.every((s) => s.script.shots.length === 0 && s.script.story)).toBe(true);
+      const recheckDetail = await fetch(
+        `${api}/tasks/${task.id}/nodes/RECHECK?page=0&scriptId=${workspace.scripts[0]!.id}`,
+      );
+      expect(recheckDetail.status).toBe(200);
+      expect(JSON.stringify(await recheckDetail.json())).toContain('独立核对全文');
       expect(await db.jobOutbox.count({ where: { projectId } })).toBe(0);
     } finally {
       await db.workingArtifactDependency.deleteMany({ where: { projectId } });

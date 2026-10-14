@@ -5,6 +5,7 @@ import type {
   CustomizedStoryboardAssetKind,
   CustomizedStoryboardAssetRequirements,
 } from '@ai-marketing/contracts';
+import { CUSTOMIZED_VIDEO_TYPE_LABELS } from '@ai-marketing/contracts';
 export const storyboardAssetLabels: Record<CustomizedStoryboardAssetKind, string> = {
   characters: '人物',
   products: '产品',
@@ -24,12 +25,34 @@ export const emptyStoryboardDraft = (): CustomizedStoryboardDraft => ({
     structureMode: 'AI',
     structure: '',
     instructions: '',
+    videoType: 'BRAND_AD',
+    structureSections: [],
   },
   scripts: [],
   activeScriptId: null,
   mainCandidateId: null,
 });
 export const snapshotStoryboard = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+export function storyboardStructure(settings: CustomizedStoryboardDraft['settings']): string[] {
+  return (
+    settings.structureSections ??
+    (settings.structureMode === 'AI'
+      ? []
+      : settings.structure
+          .split(/→|\n/)
+          .map((v) => v.trim())
+          .filter(Boolean))
+  );
+}
+export function setStoryboardStructure(
+  settings: CustomizedStoryboardDraft['settings'],
+  sections: string[],
+) {
+  settings.structureSections = [...sections];
+  settings.structureMode = sections.length ? 'CUSTOM' : 'AI';
+  settings.structure = sections.join(' → ');
+  settings.instructions = '';
+}
 /** Viewing another candidate is navigation, not a content change. */
 export const storyboardContentFingerprint = (draft: CustomizedStoryboardDraft) =>
   JSON.stringify({ ...draft, activeScriptId: null });
@@ -126,23 +149,27 @@ export function removeStoryboardScript(draft: CustomizedStoryboardDraft, id: str
   if (draft.mainCandidateId === id) draft.mainCandidateId = null;
 }
 export function storyboardText(script: CustomizedStoryboardScript) {
+  if (script.story)
+    return [
+      script.name,
+      '',
+      script.story.content || '尚未填写剧本正文',
+      '',
+      `预计时长：${scriptDuration(script)} 秒`,
+      ...(script.creation
+        ? [
+            `视频类型：${CUSTOMIZED_VIDEO_TYPE_LABELS[script.creation.videoType]}`,
+            `参考时长：${script.creation.referenceDurationSeconds} 秒`,
+          ]
+        : []),
+    ].join('\n');
   return [
     script.name,
-    script.synopsis,
-    ...(script.story
-      ? [
-          script.story.content,
-          `开场：${script.story.opening}`,
-          `发展：${script.story.development}`,
-          `收束：${script.story.ending}`,
-          `对白安排：${script.story.dialoguePlan}`,
-        ]
-      : []),
+    `方案概述：${script.synopsis}`,
+    '历史方案未保存完整剧本正文；以下保留已有分镜。',
     `叙事结构：${script.structure || '未填写'}`,
     `产品呈现：${script.productFocus || '未填写'}`,
-    script.story
-      ? `目标时长：${scriptDuration(script)} 秒`
-      : `共 ${script.shots.length} 镜 · ${scriptDuration(script)} 秒`,
+    `共 ${script.shots.length} 镜 · ${scriptDuration(script)} 秒`,
     ...script.shots.map(
       (s, i) =>
         `\n镜头 ${String(i + 1).padStart(2, '0')}\u3000${s.title}\n${s.shotType} · ${s.cameraMovement} · ${s.durationSeconds} 秒\n画面：${s.visual}\n台词 / 口播：${s.dialogues.map((d) => `${d.speaker}：${d.text}`).join('\n') || '无'}\n音效 / 音乐：${s.audio || '无'}\n衔接：${s.continuity || '未填写'}\n${storyboardAssetText(script, s)}`,

@@ -13,6 +13,8 @@ const option = (name, fallback) =>
   process.argv.find((x) => x.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 const base = process.env.CUSTOMIZED_VERIFY_API_URL || 'http://localhost:3100/api';
 const manifest = resolve(option('manifest', 'tmp/customized-storyboard-paid-20261012.json'));
+// Bound this observer session, while retaining the original task wall time across outages.
+const observationStartedAt = Date.now();
 let state;
 try {
   state = JSON.parse(await readFile(manifest, 'utf8'));
@@ -64,6 +66,8 @@ if (!state) {
   await persist();
 }
 const root = `/projects/${state.projectId}/workflows/customized/storyboard`;
+const scriptDuration = (script) =>
+  (script.story?.beats ?? script.shots).reduce((sum, part) => sum + part.durationSeconds, 0);
 if (state.taskId && process.argv.includes('--retry')) {
   const previous = await request(`${root}/tasks/${state.taskId}`);
   assert.ok(
@@ -88,6 +92,14 @@ if (!state.taskId) {
     structureMode: option('mode', 'AI'),
     structure: option('structure', ''),
     instructions: option('instructions', ''),
+    videoType: option('type', 'BRAND_AD'),
+    structureSections:
+      option('mode', 'AI') === 'AI'
+        ? []
+        : option('structure', '')
+            .split('→')
+            .map((s) => s.trim())
+            .filter(Boolean),
   };
   const saved = await request(`${root}/settings`, 'PUT', {
     workflowRunId: state.workflowRunId,
@@ -158,7 +170,9 @@ for (;;) {
       workflowRunId: script.workflowRunId,
       revision: script.confirmedRevision,
       shots: script.script.shots.length,
-      duration: script.script.shots.reduce((sum, s) => sum + s.durationSeconds, 0),
+      duration: scriptDuration(script.script),
+      scenes: script.script.story?.beats.length ?? 0,
+      bodyCharacters: script.script.story?.content.length ?? 0,
       observedAt: new Date().toISOString(),
       batchStatus: task.status,
     };
@@ -175,19 +189,12 @@ for (;;) {
     );
     state.scripts = workspace.scripts.filter((s) => s.taskId === state.taskId);
     state.details = [];
-    for (const nodeId of [
-      'SNAPSHOT',
-      'CONCEPT',
-      'STORY',
-      'ASSETS',
-      'SHOTS',
-      'REVIEW',
-      'REPAIR',
-      'SAVE',
-    ]) {
-      for (const scriptId of nodeId === 'SNAPSHOT' || nodeId === 'CONCEPT'
-        ? [undefined]
-        : [...new Set(task.steps.map((s) => s.scriptId).filter(Boolean))]) {
+    for (const nodeId of [...new Set(task.steps.map((s) => s.nodeId))]) {
+      for (const scriptId of [
+        ...new Set(
+          task.steps.filter((s) => s.nodeId === nodeId).map((s) => s.scriptId || undefined),
+        ),
+      ]) {
         let page = 0,
           detail;
         do {
@@ -207,12 +214,21 @@ for (;;) {
     for (const script of state.scripts.filter((s) => s.workflowRunId)) {
       assert.equal(script.source.artifactId, state.source.artifactId);
       assert.equal(script.source.revision, state.source.revision);
-      assert.ok(
-        Math.abs(
-          script.script.shots.reduce((sum, s) => sum + s.durationSeconds, 0) -
-            state.settings.targetDurationSeconds,
-        ) <= 1,
-      );
+      if (script.script.creation) {
+        assert.equal(script.script.creation.videoType, state.settings.videoType);
+        assert.equal(
+          script.script.creation.referenceDurationSeconds,
+          state.settings.targetDurationSeconds,
+        );
+        assert.deepEqual(
+          script.script.creation.structureSections,
+          state.settings.structureSections,
+        );
+        assert.ok(scriptDuration(script.script) > 0 && scriptDuration(script.script) <= 3600);
+      } else
+        assert.ok(
+          Math.abs(scriptDuration(script.script) - state.settings.targetDurationSeconds) <= 1,
+        );
     }
     await persist();
     console.log(
@@ -227,7 +243,7 @@ for (;;) {
     if (task.status !== 'COMPLETED') process.exitCode = 2;
     break;
   }
-  if (Date.now() - Date.parse(state.startedAt) > 45 * 60 * 1000)
+  if (Date.now() - observationStartedAt > 45 * 60 * 1000)
     throw new Error(
       'Observation window exceeded; task remains recoverable, inspect manifest before restarting.',
     );

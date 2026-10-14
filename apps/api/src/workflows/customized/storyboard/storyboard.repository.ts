@@ -1,13 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
-  CUSTOMIZED_STORYBOARD_STAGES,
+  storyboardStages,
+  SCRIPT_ROUTE_VERSION,
+  validateBrandDevelopment,
+  validateBrandSelection,
+  isSharedScriptStage,
+  scriptStageRole,
+  validateScriptStructureMapping,
   validateStoryboardCheckpoint,
   isCustomizedBrief,
   isCustomizedStoryboardDraft,
   isCustomizedStoryboardScript,
   storyboardProgress,
   validateStoryboardPublication,
+  validateStoryboardScreenplay,
+  validateStoryboardVideoScript,
   validateStoryboardSettings,
   type CustomizedStoryboardDraft,
   type StoryboardInput,
@@ -43,6 +51,8 @@ const invalid = (message: string): never => {
   throw new ApiHttpException(message, 400, 'VALIDATION_ERROR');
 };
 const defaults: StoryboardSettings = {
+  videoType: 'BRAND_AD',
+  structureSections: [],
   targetDurationSeconds: 30,
   variantCount: 3,
   structureMode: 'AI',
@@ -53,6 +63,9 @@ type Task = CustomizedStoryboardTask & { steps: CustomizedStoryboardStep[] };
 const inputOf = (t: CustomizedStoryboardTask) => t.inputSnapshot as unknown as StoryboardInput;
 export const presentStoryboardTask = (t: Task): StoryboardTask => ({
   ...(inputOf(t).outputMode ? { outputMode: inputOf(t).outputMode! } : {}),
+  ...(inputOf(t).graphVersion
+    ? { graphVersion: inputOf(t).graphVersion!, routeId: inputOf(t).routeId!, ...(inputOf(t).strategyVersions ? { strategyVersions: inputOf(t).strategyVersions! } : {}) }
+    : {}),
   id: t.id,
   workflowRunId: t.workflowRunId,
   status: t.status as StoryboardTask['status'],
@@ -61,6 +74,7 @@ export const presentStoryboardTask = (t: Task): StoryboardTask => ({
     inputOf(t).scriptIds,
     t.status === 'COMPLETED',
     inputOf(t).outputMode === 'STORY_ONLY',
+    inputOf(t),
   ),
   steps: t.steps.map((s) => ({
     nodeId: s.nodeId as StoryboardStep['nodeId'],
@@ -326,11 +340,34 @@ export class StoryboardRepository {
       const input: StoryboardInput = {
         schemaVersion: 1,
         outputMode: 'STORY_ONLY',
+        storyFormat: 'VIDEO_SCRIPT_V3',
+        graphVersion: 'TYPED_CREATION_V1',
+        routeId: state.settings.videoType ?? 'DRAMA',
+        // Freeze strategy versions: a resumed task never adopts a newer creative policy.
+        strategyVersions: {
+          concept: SCRIPT_ROUTE_VERSION,
+          story: SCRIPT_ROUTE_VERSION,
+          review: SCRIPT_ROUTE_VERSION,
+          repair: SCRIPT_ROUTE_VERSION,
+        },
         source: this.source(b),
         brief: b.payload,
         settings: {
           ...state.settings,
-          structure: state.settings.structureMode === 'AI' ? '' : state.settings.structure,
+          videoType: state.settings.videoType ?? 'DRAMA',
+          instructions: '',
+          structureSections:
+            state.settings.structureMode === 'AI'
+              ? []
+              : (state.settings.structureSections ??
+                state.settings.structure
+                  .split(/→|\n/)
+                  .map((s) => s.trim())
+                  .filter(Boolean)),
+          structure:
+            state.settings.structureMode === 'AI'
+              ? ''
+              : state.settings.structureSections?.join(' → ') || state.settings.structure,
         },
         scriptIds: Array.from({ length: state.settings.variantCount }, () => randomUUID()),
         models,
@@ -379,10 +416,8 @@ export class StoryboardRepository {
           },
         });
       await tx.customizedStoryboardStep.createMany({
-        data: CUSTOMIZED_STORYBOARD_STAGES.filter(
-          (s) => !['ASSETS', 'SHOTS'].includes(s.id),
-        ).flatMap((stage) =>
-          (['SNAPSHOT', 'CONCEPT'].includes(stage.id) ? [''] : input.scriptIds).map((scriptId) => ({
+        data: storyboardStages(input).flatMap((stage) =>
+          (isSharedScriptStage(stage.id) ? [''] : input.scriptIds).map((scriptId) => ({
             projectId,
             taskId: t.id,
             nodeId: stage.id,
@@ -520,7 +555,11 @@ export class StoryboardRepository {
       // A batch may still be running when one published sibling is permanently removed.
       if (value.scriptId && !inputOf(t).scriptIds.includes(value.scriptId))
         return { accepted: true, removed: true };
-      if (value.nodeId === 'CONCEPT' && value.output && typeof value.output === 'object') {
+      if (
+        scriptStageRole(value.nodeId) === 'CONCEPT' &&
+        value.output &&
+        typeof value.output === 'object'
+      ) {
         const output = value.output as { concepts?: { scriptId: string }[] };
         if (Array.isArray(output.concepts))
           value = {
@@ -534,14 +573,15 @@ export class StoryboardRepository {
       if (inputOf(t).outputMode === 'STORY_ONLY' && ['ASSETS', 'SHOTS'].includes(value.nodeId))
         invalid('完整故事任务不执行资产整理或分镜');
       if (
-        !CUSTOMIZED_STORYBOARD_STAGES.some((s) => s.id === value.nodeId) ||
-        (['SNAPSHOT', 'CONCEPT'].includes(value.nodeId)
+        !storyboardStages(inputOf(t)).some((s) => s.id === value.nodeId) ||
+        (isSharedScriptStage(value.nodeId)
           ? value.scriptId !== ''
           : !inputOf(t).scriptIds.includes(value.scriptId))
       )
         invalid('执行节点或方案不属于当前任务');
       if (value.nodeId === 'SAVE') invalid('保存阶段只能由服务端提交');
-      if (value.status === 'SKIPPED' && value.nodeId !== 'REPAIR') invalid('此阶段不能跳过');
+      if (value.status === 'SKIPPED' && !['REPAIR', 'RECHECK'].includes(value.nodeId))
+        invalid('此阶段不能跳过');
       if (
         value.status === 'SUCCEEDED' &&
         !validateStoryboardCheckpoint(value.nodeId, value.output, inputOf(t), value.scriptId)
@@ -549,7 +589,11 @@ export class StoryboardRepository {
         invalid('阶段结果结构不完整');
       if (Buffer.byteLength(JSON.stringify(value.output ?? null)) > 2 * 1024 * 1024)
         invalid('阶段结果超过大小限制');
-      if (value.status === 'SUCCEEDED' && ['REVIEW', 'REPAIR'].includes(value.nodeId)) {
+      if (
+        !inputOf(t).graphVersion &&
+        value.status === 'SUCCEEDED' &&
+        ['REVIEW', 'REPAIR'].includes(value.nodeId)
+      ) {
         const output = value.output as { script?: Script; review?: StoryboardReview };
         const reviewedScript =
           value.nodeId === 'REPAIR'
@@ -575,6 +619,85 @@ export class StoryboardRepository {
           )
         )
           invalid('审校引用了未知镜头');
+      }
+      if (
+        inputOf(t).graphVersion === 'TYPED_CREATION_V1' &&
+        ['SUCCEEDED', 'SKIPPED'].includes(value.status)
+      ) {
+        const input = inputOf(t),
+          role = scriptStageRole(value.nodeId);
+        const all = await tx.customizedStoryboardStep.findMany({
+          where: { projectId, taskId: id },
+        });
+        const find = (node: string) =>
+          all.find(
+            (s) =>
+              s.nodeId === node && s.scriptId === (isSharedScriptStage(node) ? '' : value.scriptId),
+          );
+        const stages = storyboardStages(input),
+          index = stages.findIndex((s) => s.id === value.nodeId);
+        if (
+          index > 0 &&
+          !['SUCCEEDED', 'SKIPPED'].includes(find(stages[index - 1]!.id)?.status ?? '')
+        )
+          invalid('前置阶段尚未完成');
+        if (value.nodeId === 'BRAND_AD_CONCEPT' && value.status === 'SUCCEEDED' && ['2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(input.strategyVersions?.concept ?? '')) {
+          const decision = value.output as Record<string, unknown>;
+          const development = decision.redevelopment ?? find('BRAND_AD_IDEAS')?.output;
+          if (!validateBrandDevelopment(development, input.brief, Math.min(8, Math.max(6, input.scriptIds.length + 3))) ||
+              !validateBrandSelection(decision, development, input.scriptIds, input.brief)) invalid('品牌创意选择或事实引用无效');
+        }
+        if (role === 'STORY') {
+          const planning = find(`${input.routeId}_CONCEPT`)?.output as {
+            readiness?: { status?: string };
+          } | null;
+          if (planning?.readiness?.status !== 'READY') invalid('创作依据不足，不能提交正文');
+        }
+        if (['REPAIR', 'RECHECK'].includes(value.nodeId)) {
+          const initial = find(`${input.routeId}_REVIEW`)?.output as unknown as StoryboardReview;
+          const needsRepair = initial?.findings?.some((f) => f.severity === 'ERROR');
+          if ((value.status === 'SKIPPED') === !!needsRepair) invalid('修订状态与审校结论不一致');
+        }
+        if (value.status === 'SUCCEEDED' && (role === 'REVIEW' || value.nodeId === 'RECHECK')) {
+          const body = (
+            value.nodeId === 'RECHECK'
+              ? (find('REPAIR')?.output as unknown as { script?: Script })?.script?.story
+              : find(`${input.routeId}_STORY`)?.output
+          ) as Script['story'];
+          const review = value.output as StoryboardReview;
+          if (
+            !body ||
+            ([
+              '2026-10-13.4',
+              '2026-10-13.5',
+              '2026-10-13.6',
+              '2026-10-13.7',
+              '2026-10-13.8', '2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6',
+            ].includes(input.strategyVersions?.review ?? '') &&
+              review.qualityChecks?.some(
+                (check) =>
+                  check.beatIds.some((id) => !body.beats.some((b) => b.id === id)) ||
+                  (check.verdict !== 'NOT_APPLICABLE' &&
+                    !check.beatIds.some((id) =>
+                      body.beats.find((b) => b.id === id)?.content.includes(check.evidence),
+                    )) ||
+                  (check.verdict === 'FAIL' &&
+                    !review.findings.some(
+                      (finding) =>
+                        finding.severity === 'ERROR' &&
+                        finding.evidence === check.evidence &&
+                        JSON.stringify(finding.beatIds) === JSON.stringify(check.beatIds),
+                    )),
+              )) ||
+            review.findings.some(
+              (f) =>
+                f.shotIds.length ||
+                !f.beatIds ||
+                f.beatIds.some((id) => !body.beats.some((b) => b.id === id)),
+            )
+          )
+            invalid('审校引用了未知正文篇章');
+        }
       }
       const key = { projectId, taskId: id, nodeId: value.nodeId, scriptId: value.scriptId };
       const old = await tx.customizedStoryboardStep.findUnique({
@@ -750,23 +873,51 @@ export class StoryboardRepository {
           return { workflowRunId: null, unchanged: true, removed: true };
         if (!s) throw missing();
         if (s.status === 'COMPLETED') return { workflowRunId: s.workflowRunId, unchanged: true };
-        const error = validateStoryboardPublication(script, input.settings.targetDurationSeconds);
+        const error = validateStoryboardPublication(
+          script,
+          ['VIDEO_SCRIPT_V2', 'VIDEO_SCRIPT_V3'].includes(input.storyFormat ?? '')
+            ? undefined
+            : input.settings.targetDurationSeconds,
+        );
         if (error) invalid(error);
+        if (['VIDEO_SCRIPT_V2', 'VIDEO_SCRIPT_V3'].includes(input.storyFormat ?? '')) {
+          if (!script.story) invalid('完整剧本正文尚未生成');
+          const formatError = validateStoryboardVideoScript(
+            script.story!,
+            input.graphVersion ? [] : input.settings.structureSections,
+          );
+          if (formatError) invalid(formatError);
+          if (input.graphVersion) {
+            const mappingError = validateScriptStructureMapping(
+              script.story!,
+              input.settings.structureSections ?? [],
+            );
+            if (mappingError) invalid(mappingError);
+          }
+          if (
+            script.creation?.videoType !== input.settings.videoType ||
+            script.creation?.referenceDurationSeconds !== input.settings.targetDurationSeconds ||
+            JSON.stringify(script.creation?.structureSections) !==
+              JSON.stringify(input.settings.structureSections)
+          )
+            invalid('脚本创作设置与输入快照不一致');
+        }
+        if (input.outputMode === 'STORY_ONLY' && input.storyFormat === 'SCREENPLAY_V1') {
+          if (!script.story) invalid('完整剧本正文尚未生成');
+          const formatError = validateStoryboardScreenplay(script.story!);
+          if (formatError) invalid(formatError);
+        }
         if (
           input.outputMode === 'STORY_ONLY' &&
           (!script.story || script.shots.length || script.assets?.length)
         )
           invalid('当前任务只接受完整故事');
         const steps = await tx.customizedStoryboardStep.findMany({ where: { projectId, taskId } });
-        for (const stage of CUSTOMIZED_STORYBOARD_STAGES.filter(
-          (n) =>
-            n.id !== 'SAVE' &&
-            (input.outputMode !== 'STORY_ONLY' || !['ASSETS', 'SHOTS'].includes(n.id)),
-        )) {
+        for (const stage of storyboardStages(input).filter((n) => n.id !== 'SAVE')) {
           const step = steps.find(
             (v) =>
               v.nodeId === stage.id &&
-              v.scriptId === (['SNAPSHOT', 'CONCEPT'].includes(stage.id) ? '' : script.id),
+              v.scriptId === (isSharedScriptStage(stage.id) ? '' : script.id),
           );
           if (!step || !['SUCCEEDED', 'SKIPPED'].includes(step.status))
             return customizedConflict('脚本执行尚未完整完成');
@@ -774,8 +925,14 @@ export class StoryboardRepository {
         const repair = steps.find((s) => s.nodeId === 'REPAIR' && s.scriptId === script.id)!;
         const review = (
           repair.status === 'SKIPPED'
-            ? steps.find((s) => s.nodeId === 'REVIEW' && s.scriptId === script.id)!.output
-            : (repair.output as { review?: unknown })?.review
+            ? steps.find(
+                (s) =>
+                  s.nodeId === (input.graphVersion ? `${input.routeId}_REVIEW` : 'REVIEW') &&
+                  s.scriptId === script.id,
+              )!.output
+            : input.graphVersion
+              ? steps.find((s) => s.nodeId === 'RECHECK' && s.scriptId === script.id)?.output
+              : (repair.output as { review?: unknown })?.review
         ) as StoryboardReview;
         if (
           !review ||
@@ -788,8 +945,11 @@ export class StoryboardRepository {
             ? input.outputMode === 'STORY_ONLY'
               ? {
                   ...script,
-                  story: steps.find((s) => s.nodeId === 'STORY' && s.scriptId === script.id)!
-                    .output,
+                  story: steps.find(
+                    (s) =>
+                      s.nodeId === (input.graphVersion ? `${input.routeId}_STORY` : 'STORY') &&
+                      s.scriptId === script.id,
+                  )!.output,
                 }
               : steps.find((s) => s.nodeId === 'SHOTS' && s.scriptId === script.id)!.output
             : (repair.output as { script?: unknown }).script;
@@ -837,6 +997,18 @@ export class StoryboardRepository {
       const retryIds = [...new Set(failure.retryScriptIds ?? [])].filter((scriptId) =>
         inputOf(t).scriptIds.includes(scriptId),
       );
+      const concept = inputOf(t).graphVersion
+        ? await tx.customizedStoryboardStep.findFirst({
+            where: { projectId, taskId: id, nodeId: `${inputOf(t).routeId}_CONCEPT`, scriptId: '' },
+          })
+        : null;
+      const readiness = (
+        concept?.output as { readiness?: { status: string; missing: string[] } } | null
+      )?.readiness;
+      const informationError =
+        readiness?.status === 'NEEDS_INFORMATION'
+          ? `请补充创作依据：${readiness.missing.join('、')}`.slice(0, 1000)
+          : null;
       const automatic =
         failure.retryable === true && count < inputOf(t).scriptIds.length && t.attemptCount < 3;
       await tx.customizedStoryboardTask.update({
@@ -855,7 +1027,7 @@ export class StoryboardRepository {
             ? '服务暂时繁忙，稍后自动恢复未完成方案；已完成内容保留'
             : count === inputOf(t).scriptIds.length
               ? null
-              : '部分脚本未完成，已成功的脚本保留，可重试未完成部分',
+              : (informationError ?? '部分脚本未完成，已成功的脚本保留，可重试未完成部分'),
         },
       });
       if (automatic) {

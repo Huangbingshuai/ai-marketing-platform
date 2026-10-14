@@ -1,6 +1,12 @@
 import {
   CUSTOMIZED_BRIEF_LABELS,
-  CUSTOMIZED_STORYBOARD_STAGES,
+  storyboardStages,
+  scriptStageRole,
+  isSharedScriptStage,
+  SCRIPT_PLAN_FIELDS,
+  brandFactCatalog,
+  BRAND_EXPRESSION_LABELS,
+  CUSTOMIZED_VIDEO_TYPE_LABELS,
   type StoryboardDetail,
   type StoryboardInput,
   type StoryboardStage,
@@ -86,6 +92,8 @@ function readableObjectText(value: string, scripts: unknown[]): string {
   for (const script of scripts) {
     for (const [index, beat] of list(record(script).beats).map(record).entries()) {
       const id = str(beat.id);
+      // Scene headings are public screenplay labels, not opaque object identifiers.
+      if (/^[SP]\d{2,}$/.test(id) && new RegExp(`^${id}[｜|]`).test(str(beat.content))) continue;
       if (id && !names.has(id)) names.set(id, `故事段落 ${index + 1}`);
     }
     for (const asset of list(record(script).assets).map(record)) {
@@ -121,16 +129,47 @@ function readableObjectText(value: string, scripts: unknown[]): string {
 function review(v: unknown, script: unknown): Row[] {
   const r = record(v);
   const readable = (value: unknown) => readableShotText(value, script);
+  const qualityLabels: Record<string, string> = {
+    BUYING_REASON: '购买理由',
+    VALUE_DEMONSTRATION: '价值呈现',
+    INFORMATION_CAPACITY: '信息容量',
+    VENUE_EVIDENCE: '真实场所依据',
+    VISIT_EXPERIENCE: '到店体验',
+    TRUSTWORTHY_DETAIL: '可信细节',
+    VISIBLE_CONCEPT: '可见的视觉概念',
+    VISUAL_PROGRESSION: '画面推进',
+    BRAND_MEMORY: '品牌记忆',
+    CHARACTER_CAUSALITY: '人物因果',
+    NATURAL_DIALOGUE: '对白自然度',
+    PRODUCT_CAUSALITY: '产品参与因果',
+  };
   return [
     ...fields(r, { summary: '审校结论' }).map((row) => ({
       ...row,
       content: readable(row.content),
     })),
+    ...list(r.qualityChecks).map((value) => {
+      const check = record(value);
+      const status =
+        check.verdict === 'FAIL' ? '需修订' : check.verdict === 'PASS' ? '通过' : '不适用';
+      return {
+        title: `${qualityLabels[str(check.criterion)] ?? '创作质量'} · ${status}`,
+        content: [
+          list(check.beatIds).map(str).join('、'),
+          str(check.evidence),
+          str(check.reason),
+          str(check.suggestion),
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      };
+    }),
     ...list(r.findings).map((f) => {
       const x = record(f);
       return {
         title: readable(x.message),
         content: [
+          list(x.beatIds).map(str).join('、'),
           list(x.shotIds)
             .map((id) => {
               const i = list(record(script).shots).findIndex((s) => record(s).id === id);
@@ -155,38 +194,115 @@ export function storyboardDetail(
   scriptId?: string,
   page = 0,
 ): StoryboardDetail {
-  const shared = ['SNAPSHOT', 'CONCEPT'].includes(nodeId),
+  const role = scriptStageRole(nodeId);
+  const shared = isSharedScriptStage(nodeId),
     chosen = steps.filter(
       (s) =>
         s.nodeId === nodeId && (shared ? s.scriptId === '' : !scriptId || s.scriptId === scriptId),
     );
-  const stage = CUSTOMIZED_STORYBOARD_STAGES.find((s) => s.id === nodeId)!;
-  const conceptStep = steps.find((s) => s.nodeId === 'CONCEPT');
+  const stage = storyboardStages(input).find((s) => s.id === nodeId)!;
+  const conceptStep = steps.find((s) => scriptStageRole(s.nodeId) === 'CONCEPT');
   const concepts = list(record(conceptStep?.output).concepts).map(record);
   const outputs = chosen.flatMap((s) => {
     const o = record(s.output),
       prefix = concepts.find((c) => c.scriptId === s.scriptId)?.name;
     let rows: Row[] = [];
+    const brandFacts = brandFactCatalog(input.brief);
+    const factText = (refs: unknown) => list(refs).map(id => brandFacts.find(f => f.id === id)?.text ?? '').filter(Boolean).join('\n');
+    if (nodeId === 'BRAND_AD_PROPOSITION') {
+      rows = fields(o.proposition, { message: '主要传播命题', audienceObservation: '受众观察', requiredReason: '必须展示信息的判断' });
+      const proposition = record(o.proposition);
+      if (proposition.observationBasis) rows.push({ title: '观察依据', content: proposition.observationBasis === 'BRIEF' ? '来自已确认简报' : '用于创作探索的假设，未经受众调研验证' });
+      rows.push({ title: '产品依据', content: factText(proposition.supportingFactIds) });
+      if (list(proposition.requiredFactIds).length) rows.push({ title: '明确需要展示的信息', content: factText(proposition.requiredFactIds) });
+    }
+    if (nodeId === 'BRAND_AD_IDEAS') rows = list(o.ideas).map(record).map(idea => ({
+      title: str(idea.name), content: [BRAND_EXPRESSION_LABELS[str(idea.approach)],
+        ...fields(idea, { viewingHook: '观看吸引点', mechanism: '表达方式', keyImages: '关键画面', productRole: '产品参与', memory: '品牌记忆', risk: '需要警惕的问题' }).map(r => `${r.title}：${r.content}`),
+        `产品依据：${factText(idea.factIds)}`].filter(Boolean).join('\n'),
+    }));
     if (nodeId === 'SNAPSHOT' && s.output) rows = fields(input.brief, CUSTOMIZED_BRIEF_LABELS);
-    if (nodeId === 'CONCEPT')
+    if (role === 'CONCEPT')
       rows = list(o.concepts).flatMap((c) =>
         fields(c, {
           name: '方案名称',
-          synopsis: '故事切入',
+          synopsis: ['VIDEO_SCRIPT_V2', 'VIDEO_SCRIPT_V3'].includes(input.storyFormat ?? '')
+            ? '方案概述'
+            : '故事切入',
           productFocus: '产品关联',
-          structure: '叙事发展',
+          structure: ['VIDEO_SCRIPT_V2', 'VIDEO_SCRIPT_V3'].includes(input.storyFormat ?? '')
+            ? '脚本结构'
+            : '叙事发展',
           difference: '方案差异',
+          coreIdea: '核心创意',
+          openingHook: '开场吸引点',
+          productRole: '产品参与方式',
+          memoryPoint: '记忆点',
         }),
       );
-    if (nodeId === 'STORY')
+    if (role === 'CONCEPT' && input.routeId) {
+      const readiness = record(o.readiness);
+      rows.push(...fields(readiness, { reason: '资料充分性判断', missing: '需要补充的依据' }));
+      for (const c of list(o.concepts).map(record))
+        rows.push(
+          ...fields(c.plan, SCRIPT_PLAN_FIELDS[input.routeId]).map((r) => ({
+            ...r,
+            title: `${str(c.name)} · ${r.title}`,
+          })),
+        );
+    }
+    if (nodeId === 'BRAND_AD_CONCEPT' && ['2026-10-14.1','2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(input.strategyVersions?.concept ?? '')) {
+      const decision = o.status ? o : record(o.secondSelection ?? o.selection);
+      const development = record(o.redevelopment ?? steps.find(v => v.nodeId === 'BRAND_AD_IDEAS')?.output);
+      const ideas = list(development.ideas).map(record);
+      rows.push(...fields(decision, { reason: '独立择优结论', missing: '需补充依据' }));
+      rows.push(...list(decision.evaluations).map(record).map(e => ({
+        title: `${str(ideas.find(i => i.id === e.ideaId)?.name)} · ${e.verdict === 'ADVANCE' ? '适合展开' : '本次不采用'}`,
+        content: `${str(e.reason)}\n观看吸引力 ${str(e.attraction)}/5 · 产品关联 ${str(e.productConnection)}/5 · 表达清晰度 ${str(e.clarity)}/5 · 方案区别 ${str(e.distinctiveness)}/5`,
+      })));
+      rows.push(...list(decision.commitments).map(record).map(c => ({
+        title: `${str(list(decision.concepts).map(record).find(v => v.scriptId === c.scriptId)?.name)} · 创意保留清单`,
+        content: `${BRAND_EXPRESSION_LABELS[str(c.approach)] ?? ''}\n${list(c.mustPreserve).map(str).join('\n')}\n必要产品依据：${factText(c.essentialFactIds)}`,
+      })));
+      if (o.redevelopment) {
+        rows.push(...fields(record(o.initialSelection), {reason:'原组候选未采用的原因'}));
+        rows.push(...fields(development.proposition, {message:'替代传播命题', audienceObservation:'替代受众观察'}));
+      }
+      if (o.redevelopment) rows.push(...list(development.ideas).map(record).map(i => ({ title: `替代短创意 · ${str(i.name)}`, content: `${str(i.viewingHook)}\n${str(i.mechanism)}\n${list(i.keyImages).map(str).join('\n')}` })));
+    }
+    if (nodeId === 'PREPARE' && s.output)
+      rows = [
+        ...fields(o.brief, CUSTOMIZED_BRIEF_LABELS),
+        ...list(o.requirements).map((r, i) => ({
+          title: `结构要求 ${i + 1}`,
+          content: str(record(r).title),
+        })),
+      ];
+    if (nodeId === 'ROUTE' && s.output && input.routeId)
+      rows = [
+        {
+          title: '本次创作线路',
+          content: `${CUSTOMIZED_VIDEO_TYPE_LABELS[input.routeId]}：本批全部方案沿此线路构思、写作和审校。`,
+        },
+      ];
+    if (role === 'STORY')
       rows = fields(o, {
-        title: '故事名称',
-        content: '完整故事',
+        title: input.storyFormat ? '剧本名称' : '故事名称',
+        content: input.storyFormat ? '剧本正文' : '完整故事',
         opening: '开场',
         development: '发展',
         ending: '收束',
         dialoguePlan: '对白安排',
       });
+    if (role === 'STORY')
+      for (const [i, mapping] of list(o.structureMapping).map(record).entries())
+        rows.push({
+          title: `结构落实 · ${input.settings.structureSections?.[i] ?? ''}`,
+          content: `${list(mapping.beatIds).map(str).join('、')}
+${str(mapping.evidence)}`,
+        });
+    if (nodeId === 'RECHECK' && s.status === 'SKIPPED')
+      rows = [{ title: '无需复核', content: '正文未修订，沿用专项审校结论。' }];
     if (nodeId === 'ASSETS') {
       const script = record(
         steps.find((v) => v.nodeId === 'SHOTS' && v.scriptId === s.scriptId)?.output,
@@ -234,7 +350,7 @@ export function storyboardDetail(
           });
       }
     }
-    if (nodeId === 'REVIEW')
+    if (role === 'REVIEW' || (nodeId === 'RECHECK' && s.status !== 'SKIPPED'))
       rows = review(
         o,
         steps.find((v) => v.nodeId === 'SHOTS' && v.scriptId === s.scriptId)?.output,
@@ -269,14 +385,23 @@ export function storyboardDetail(
       steps.find((v) => v.nodeId === 'SHOTS' && v.scriptId === s.scriptId)?.output,
       record(steps.find((v) => v.nodeId === 'REPAIR' && v.scriptId === s.scriptId)?.output).script,
       steps.find((v) => v.nodeId === 'ASSETS' && v.scriptId === s.scriptId)?.output,
-      steps.find((v) => v.nodeId === 'STORY' && v.scriptId === s.scriptId)?.output,
+      steps.find((v) => scriptStageRole(v.nodeId) === 'STORY' && v.scriptId === s.scriptId)?.output,
     ];
+    const candidateIds = list(record(steps.find(v => v.nodeId === 'BRAND_AD_IDEAS')?.output).ideas).map(record);
+    const readableBrandText = (text: string) => {
+      let result = text.replace(/CREATIVE_HYPOTHESIS[：:]?\s*/g, '创作假设：');
+      for (const [index, idea] of candidateIds.entries()) {
+        const id = str(idea.id);
+        if (id) result = result.split(id).join(`候选创意 ${index + 1}`);
+      }
+      return result;
+    };
     return rows.map((r) => ({
       title: readableObjectText(
         prefix && prefix !== r.title ? `${str(prefix)} · ${r.title}` : r.title,
         catalogs,
       ),
-      content: readableObjectText(r.content, catalogs),
+      content: readableBrandText(readableObjectText(r.content, catalogs)),
     }));
   });
   const state = chosen.some((s) => s.status === 'RUNNING')
@@ -303,7 +428,7 @@ export function storyboardDetail(
         items: [
           {
             title: input.brief.productName,
-            content: `信息卡版本 ${input.source.revision} · 目标 ${input.settings.targetDurationSeconds} 秒\n${input.settings.structureMode === 'AI' ? '叙事结构由 AI 设计' : input.settings.structure}\n${input.settings.instructions}`,
+            content: `信息卡版本 ${input.source.revision} · ${['VIDEO_SCRIPT_V2', 'VIDEO_SCRIPT_V3'].includes(input.storyFormat ?? '') ? '参考' : '目标'} ${input.settings.targetDurationSeconds} 秒\n${input.settings.videoType ? CUSTOMIZED_VIDEO_TYPE_LABELS[input.settings.videoType] : ''}\n${input.settings.structureMode === 'AI' ? '脚本结构由系统编排' : input.settings.structureSections?.join(' → ') || input.settings.structure}${['VIDEO_SCRIPT_V2', 'VIDEO_SCRIPT_V3'].includes(input.storyFormat ?? '') ? '' : `\n${input.settings.instructions}`}`,
           },
         ],
       },
