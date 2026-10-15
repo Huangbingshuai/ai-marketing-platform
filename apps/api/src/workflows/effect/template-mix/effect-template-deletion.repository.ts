@@ -44,6 +44,7 @@ export class EffectTemplateDeletionRepository {
             templateId,
             workflowRunId: existing.fallbackRunId,
             status: existing.status as DeleteEffectTemplateMixData['status'],
+            removedWorkflowRunIds: existing.workflowRunIds,
           };
         const previousDeletions = await tx.effectTemplateDeletion.findMany({
           where: { projectId },
@@ -56,16 +57,14 @@ export class EffectTemplateDeletionRepository {
         const alreadyRemoved = new Set(previousDeletions.flatMap((d) => d.workflowRunIds));
         const runs = await tx.workflowRun.findMany({
           where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
-          include: {
-            workingArtifacts: {
-              where: { nodeId: 'TEMPLATE_MIX', artifactKey: { startsWith: 'mix-template:' } },
-              select: { artifactKey: true, contentHash: true },
-            },
-          },
         });
         const run = runs.find((r) => r.id === workflowRunId);
         if (!run || alreadyRemoved.has(run.id))
           throw new ApiHttpException('工作流不存在或已被删除', 404, 'VALIDATION_ERROR');
+        // Tombstoned Runs can remain as immutable provenance containers for siblings.
+        // Their copied artifacts must not infer live ownership for a second deletion.
+        // Keep the full ancestry only for resolving a safe navigation fallback below.
+        const liveRuns = runs.filter((r) => !alreadyRemoved.has(r.id));
         const state = await tx.workflowNodeState.findUnique({
           where: {
             projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId: 'TEMPLATE_MIX' },
@@ -94,7 +93,7 @@ export class EffectTemplateDeletionRepository {
           }),
         ]);
         const legacy = new Set(
-          runs
+          liveRuns
             .filter(
               (r) =>
                 !r.forkTemplateId &&
@@ -107,21 +106,15 @@ export class EffectTemplateDeletionRepository {
             )
             .map((r) => r.id),
         );
-        for (const candidate of runs.filter(
-          (r) => r.forkNodeId === 'TEMPLATE_MIX' && !r.forkTemplateId,
-        )) {
-          const parent = runs.find((r) => r.id === candidate.parentWorkflowRunId);
-          if (!parent) continue;
-          const changed = candidate.workingArtifacts.filter(
-            (a) =>
-              !parent.workingArtifacts.some(
-                (p) => p.artifactKey === a.artifactKey && p.contentHash === a.contentHash,
-              ),
-          );
-          if (changed.length === 1 && artifactTemplateId(changed[0]!.artifactKey) === templateId)
-            legacy.add(candidate.id);
-        }
-        const removed = templateDeletionRuns(runs, templateId, legacy);
+        const sharedOrForeignRuns = new Set(
+          taskRows
+            .flat()
+            .filter((task) => task.templateId !== templateId)
+            .map((task) => task.workflowRunId),
+        );
+        // Copied config hashes can change solely because upstream IDs were remapped.
+        // Without an explicit marker or task proof, retain the unknown container.
+        const removed = templateDeletionRuns(liveRuns, templateId, legacy, sharedOrForeignRuns);
         let fallback = run;
         const visited = new Set<string>();
         while (
@@ -161,6 +154,7 @@ export class EffectTemplateDeletionRepository {
           });
         // Only the selected draft is touched on the request path. All historical copies and
         // navigation records are projected through the tombstone until background cleanup.
+        let draftRevision = state?.revision ?? null;
         for (const row of state ? [state] : []) {
           const cleaned = pruneDeletedTemplates(row.state, deletedTemplateIds);
           const hash = workflowStateHash(cleaned);
@@ -176,6 +170,7 @@ export class EffectTemplateDeletionRepository {
             });
             if (!saved.count)
               throw new ApiHttpException('模板已修改，请刷新后确认删除', 409, 'CONFLICT');
+            draftRevision = row.revision + 1;
           }
         }
         await tx.effectTemplateDeletion.create({
@@ -187,7 +182,13 @@ export class EffectTemplateDeletionRepository {
             storageKeys: [],
           },
         });
-        return { templateId, workflowRunId: fallback.id, status: 'QUEUED' };
+        return {
+          templateId,
+          workflowRunId: fallback.id,
+          status: 'QUEUED',
+          draftRevision,
+          removedWorkflowRunIds: [...removed],
+        };
       },
       { timeout: 15_000 },
     );
@@ -224,6 +225,23 @@ export class EffectTemplateDeletionRepository {
         if (!job) return;
         await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('project-deletion-storage-ownership'))::text`;
         const { projectId, templateId, workflowRunIds: runIds } = job;
+        // Defense for receipts accepted by older code. Never clean a foreign template's
+        // container just because an old receipt recursively included its untagged Run.
+        const foreignScope = {
+          projectId,
+          workflowRunId: { in: runIds },
+          templateId: { not: templateId },
+        };
+        const foreignOwners = await Promise.all([
+          tx.effectTemplateMixAiRun.count({ where: foreignScope }),
+          tx.effectPackagingRun.count({ where: foreignScope }),
+          tx.effectFinalOutputRun.count({ where: foreignScope }),
+          tx.workflowRun.count({
+            where: { projectId, id: { in: runIds }, forkTemplateId: { not: templateId } },
+          }),
+        ]);
+        if (foreignOwners.some(Boolean))
+          throw new Error('TEMPLATE_DELETE_FOREIGN_RUN_REQUIRES_REVIEW');
         const deletions = await tx.effectTemplateDeletion.findMany({ where: { projectId } });
         // A second accepted deletion can remove this job's original navigation fallback.
         // Follow durable receipts rather than rehoming shared files into a deleted Run.
@@ -269,6 +287,7 @@ export class EffectTemplateDeletionRepository {
             storageKey: true,
             workflowRunId: true,
             contentHash: true,
+            nodeId: true,
           },
         });
         const target = artifacts.filter((a) => artifactTemplateId(a.artifactKey) === templateId);
@@ -366,7 +385,21 @@ export class EffectTemplateDeletionRepository {
         await tx.asset.deleteMany({ where: { projectId, id: { in: assets.map((a) => a.id) } } });
         // Restrict source edges may point at copied upstream snapshots. Keep those exact
         // historical sources if another template consumes them; never substitute today's head.
-        const retainedSources = new Set<string>();
+        // Upstream products are not template-owned, even when a saved source edit
+        // lives inside a mix/output Run. Deleting the last consumer must not drop
+        // the pool index (or its clips) and roll the render node back to an old pool.
+        const retainedSources = new Set(
+          deleted
+            .filter((a) =>
+              [
+                'SOURCE_IMPORT',
+                'INFORMATION_EXTRACTION',
+                'PROMPT_GENERATION',
+                'SEGMENT_RENDER',
+              ].includes(a.nodeId),
+            )
+            .map((a) => a.id),
+        );
         const sourceEdges = await tx.workingArtifactDependency.findMany({
           where: { projectId, sourceArtifactId: { in: artifactIds } },
           select: { sourceArtifactId: true, dependentArtifactId: true },

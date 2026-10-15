@@ -248,6 +248,62 @@ describe('effect Seedance request compiler', () => {
     ).toEqual([]);
   });
 
+  it.each(['3:4', '9:16', '16:9', '1:1', '121:211', '3：4', 'adaptive'])(
+    'accepts the actual ratio %s returned for an adaptive generation request',
+    (ratio) => {
+      const current = batch('SEEDANCE_1_0');
+      current.items[0] = { ...current.items[0]!, targetDurationSeconds: 15 };
+      const snapshot = compileEffectSeedanceRequest(
+        current,
+        item.id,
+        'doubao-seedance-2-0-mini-260615',
+        { ...renderSettings('SEEDANCE_1_0', '480p'), ratio: 'adaptive' },
+      );
+      expect(
+        validateEffectSeedanceTaskResult(snapshot, {
+          duration: 15,
+          ratio,
+          resolution: '480p',
+        }),
+      ).toEqual([]);
+    },
+  );
+
+  it.each(['', '0:4', '3:0', '-3:4', 'NaN:4', 'Infinity:4', '3:4:5', '3', 'foo', '1e3:4'])(
+    'rejects malformed actual ratio %s even when adaptive was requested',
+    (ratio) => {
+      const snapshot = compileEffectSeedanceRequest(batch('SEEDANCE_2_0'), item.id, 'model', {
+        ...renderSettings(),
+        ratio: 'adaptive',
+      });
+      expect(validateEffectSeedanceTaskResult(snapshot, { ratio })).toEqual(['RATIO_MISMATCH']);
+    },
+  );
+
+  it('does not relax duration or resolution checks for adaptive output', () => {
+    const snapshot = compileEffectSeedanceRequest(batch('SEEDANCE_2_0'), item.id, 'model', {
+      ...renderSettings(),
+      ratio: 'adaptive',
+    });
+    expect(
+      validateEffectSeedanceTaskResult(snapshot, {
+        duration: 4,
+        ratio: '3:4',
+        resolution: '480p',
+      }),
+    ).toEqual(['DURATION_MISMATCH', 'RESOLUTION_MISMATCH']);
+    expect(
+      validateEffectSeedanceTaskResult(
+        {
+          ...snapshot,
+          operation: 'REPAIR',
+          inputVideo: { ratio: '9:16' } as never,
+        },
+        { ratio: '3:4' },
+      ),
+    ).toEqual(['RATIO_MISMATCH']);
+  });
+
   it('compiles a full-video repair request without copying the original prompt', () => {
     const original = compileEffectSeedanceRequest(
       batch('SEEDANCE_2_0'),

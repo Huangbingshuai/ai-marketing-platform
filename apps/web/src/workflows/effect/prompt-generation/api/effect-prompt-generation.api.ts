@@ -3,6 +3,7 @@ import type {
   ApplyEffectPromptRegenerationRequest,
   EffectPromptBatchResult,
   EffectPromptFragmentType,
+  EffectPromptItemOrigin,
   EffectPromptPurposeMatchMode,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
@@ -71,6 +72,7 @@ export const getEffectPromptResult = (
   purpose?: EffectPromptFragmentType,
   purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
   signal?: AbortSignal,
+  origin?: EffectPromptItemOrigin,
 ): Promise<ApiResponse<GetEffectPromptResultData>> => {
   const search = new URLSearchParams({
     workflowRunId,
@@ -80,6 +82,7 @@ export const getEffectPromptResult = (
   if (query.trim()) search.set('query', query.trim());
   if (purpose) search.set('purpose', purpose);
   if (purpose) search.set('purposeMatch', purposeMatch);
+  if (origin) search.set('origin', origin);
   return requestJson(
     `${basePath(projectId)}/products/${encodeURIComponent(productId)}/result?${search.toString()}`,
     { operation: '加载 Prompt 结果', signal },

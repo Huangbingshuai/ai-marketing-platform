@@ -8,6 +8,8 @@ import type {
   EffectSegmentRenderExportFormat,
   EffectSegmentRenderImportMapping,
   EffectSegmentRenderSettings,
+  EffectSegmentRenderPromptSettings,
+  StartEffectSegmentRenderBatchRequest,
   RefreshEffectSegmentRenderBatchRequest,
   EffectSegmentRenderRepairDecision,
   EffectSegmentRenderRepairRegion,
@@ -28,6 +30,7 @@ import {
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_SEGMENT_RENDER_LIMITS,
   effectSegmentRenderSettingsNodeId,
+  effectPromptRenderSettingsIssues,
   resolveEffectImportedRenderSettings,
   SEEDANCE_RESOLUTION_SHORT_SIDES,
 } from '@ai-marketing/contracts';
@@ -65,6 +68,7 @@ import type { UploadedSegmentRenderFile } from './effect-segment-render.types';
 import { inspectImportVideo } from './effect-segment-import-media';
 import { confirmedPromptBaseline, renderPromptBaseline, renderPromptUpdateKind } from './effect-segment-render-prompt-update';
 import { parseEffectPromptBatchResult } from '../prompt-generation/effect-prompt.quality';
+import { renderUpdateCompletions } from './effect-segment-render-progress';
 
 const notFound = (message: string): NotFoundException => new NotFoundException(message);
 const conflict = (message: string): ConflictException => new ConflictException(message);
@@ -248,6 +252,49 @@ const activeMediaShortSide = (
       ? Math.min(snapshot.importedMaterial.width, snapshot.importedMaterial.height)
       : SEEDANCE_RESOLUTION_SHORT_SIDES[snapshot.request.resolution];
 
+const displayMediaAspectRatio = (value: string): string => {
+  const match = /^(\d+):(\d+)$/u.exec(value);
+  if (!match) return value;
+  const sourceWidth = Number(match[1]);
+  const sourceHeight = Number(match[2]);
+  if (!sourceWidth || !sourceHeight) return value;
+  const standardRatios = [
+    [16, 9],
+    [9, 16],
+    [4, 3],
+    [3, 4],
+    [1, 1],
+    [21, 9],
+  ] as const;
+  const matched = standardRatios.find(
+    ([width, height]) =>
+      Math.abs(sourceWidth / sourceHeight / (width / height) - 1) <= 0.025,
+  );
+  if (matched) return matched.join(':');
+  let width = sourceWidth;
+  let height = sourceHeight;
+  while (height) [width, height] = [height, width % height];
+  return `${sourceWidth / width}:${sourceHeight / width}`;
+};
+
+const activeMediaAspectRatio = (
+  task: { providerTaskId: string | null },
+  snapshot: EffectSegmentRenderRequestSnapshot,
+): string =>
+  displayMediaAspectRatio(
+    task.providerTaskId || !snapshot.importedMaterial
+      ? (snapshot.outputRatio ?? snapshot.request.ratio)
+      : `${snapshot.importedMaterial.width}:${snapshot.importedMaterial.height}`,
+  );
+
+const activeMediaResolution = (
+  task: { providerTaskId: string | null },
+  snapshot: EffectSegmentRenderRequestSnapshot,
+): string =>
+  task.providerTaskId || !snapshot.importedMaterial
+    ? snapshot.request.resolution
+    : `${Math.min(snapshot.importedMaterial.width, snapshot.importedMaterial.height)}p`;
+
 const presentTask = (
   task: EffectSegmentRenderBatchRecord['tasks'][number],
   productName: string,
@@ -256,6 +303,8 @@ const presentTask = (
 ): EffectSegmentRenderTask => {
   const requested = requestSnapshot(task.requestSnapshot);
   const snapshot = task.outputFileObjectId && requested.adoptedInput ? requested.adoptedInput : requested;
+  const mediaSnapshot =
+    task.operationKind === 'REPAIR' ? requestSnapshot(task.generationRequestSnapshot) : snapshot;
   const cancelledFailedReplacement = task.status === 'FAILED' && task.outputFileObjectId &&
     requested.refreshContext && requested.adoptedInput && !needsUpdate;
   const status =
@@ -331,19 +380,18 @@ const presentTask = (
       (task.operationKind === 'REPAIR' ? requestSnapshot(task.generationRequestSnapshot) : snapshot)
         .outputDurationSeconds ?? snapshot.request.duration,
     source: 'PROMPT',
-    origin: hasOutput && !task.providerTaskId ? 'EXTERNAL_IMPORT' : 'AI_GENERATED',
+    // Provider IDs belong to an attempt and are cleared when replacing a clip.
+    // Provenance belongs to the material and must survive retries and repairs.
+    origin: snapshot.importedMaterial ? 'EXTERNAL_IMPORT' : 'AI_GENERATED',
+    mediaAspectRatio: activeMediaAspectRatio(task, mediaSnapshot),
+    mediaResolution: activeMediaResolution(task, mediaSnapshot),
+    mediaShortSidePixels: activeMediaShortSide(task, mediaSnapshot),
     ...(snapshot.importedMaterial
       ? {
           independentImport: true,
-          mediaShortSidePixels: activeMediaShortSide(
-            task,
-            task.operationKind === 'REPAIR'
-              ? requestSnapshot(task.generationRequestSnapshot)
-              : snapshot,
-          ),
         }
       : {}),
-    sourceName: hasOutput && !task.providerTaskId ? task.outputFileName! : task.promptCode,
+    sourceName: snapshot.importedMaterial && hasOutput ? task.outputFileName! : task.promptCode,
     status,
     progress: task.progress,
     retryCount: task.retryCount,
@@ -451,6 +499,33 @@ export class EffectSegmentRenderService {
     );
   }
 
+  private promptTaskSettings(
+    batch: EffectPromptBatchResult,
+    promptIds: readonly string[],
+    defaults: EffectSegmentRenderSettings,
+    overrides: readonly EffectSegmentRenderPromptSettings[] | null = [],
+  ): Record<string, EffectSegmentRenderSettings> {
+    const allowed = new Set(promptIds);
+    const explicit = new Map<string, EffectSegmentRenderSettings>();
+    for (const override of overrides ?? []) {
+      if (!allowed.has(override.promptId) || explicit.has(override.promptId))
+        throw badRequest('单条渲染配置包含重复或不属于本次新任务的 Prompt');
+      const settings = this.settingsFromState(override.settings);
+      if (!settings) throw badRequest('单条渲染配置不符合所选模型能力');
+      explicit.set(override.promptId, settings);
+    }
+    return Object.fromEntries(promptIds.map((promptId) => {
+      const item = batch.items.find((entry) => entry.id === promptId);
+      if (!item) throw conflict('待渲染 Prompt 已变化，请刷新后重试');
+      const settings = explicit.get(promptId) ?? defaults;
+      const issues = effectPromptRenderSettingsIssues(settings, {
+        durationSeconds: item.targetDurationSeconds, origin: item.origin,
+      });
+      if (issues.length) throw conflict(`${item.code}：${issues.join('；')}，请单独配置后再生成`);
+      return [promptId, { ...settings }];
+    }));
+  }
+
   private async present(record: EffectSegmentRenderBatchRecord,
     context = { workflowRunId: record.workflowRunId, productId: record.productId }): Promise<EffectSegmentRenderBatch> {
     const load = () => this.presentUncached(record, context);
@@ -458,15 +533,15 @@ export class EffectSegmentRenderService {
     // and checking dependency versions must not poison the cache for the new batch snapshot.
     return this.readCache ? this.readCache.read(
       { projectId: record.projectId, workflowRunId: context.workflowRunId }, 'render', load,
-      { projectionVersion: 5, productId: context.productId, batchId: record.id, snapshot: JSON.stringify(record) },
+      { projectionVersion: 6, productId: context.productId, batchId: record.id, snapshot: JSON.stringify(record) },
     ) : load();
   }
 
   private async presentUncached(record: EffectSegmentRenderBatchRecord,
     context: { workflowRunId: string; productId: string }): Promise<EffectSegmentRenderBatch> {
     const sourceSnapshot = sourcePackageSnapshot(record.tasks[0]?.requestSnapshot);
-    const [prompt, sourcePackage, marketingInsight, settingsNode] = await Promise.all([
-      this.repository.promptArtifact(record.projectId, context.workflowRunId, context.productId),
+    const [prompt, sourcePackage, marketingInsight, settingsNode, run] = await Promise.all([
+      this.repository.promptArtifact(record.projectId, context.workflowRunId, context.productId, record),
       this.repository.sourcePackageArtifact(
         record.projectId,
         record.workflowRunId,
@@ -479,6 +554,7 @@ export class EffectSegmentRenderService {
       ),
       this.workingRepository.findNodeState(record.projectId, context.workflowRunId,
         effectSegmentRenderSettingsNodeId(context.productId)),
+      this.repository.workflowRun(record.projectId, record.workflowRunId),
     ]);
     const productName =
       insightProductName(marketingInsight?.payload) ?? (record.product.name.trim() || '未命名产品');
@@ -507,9 +583,7 @@ export class EffectSegmentRenderService {
         latestPromptBatch?.items.some((item) => item.id === task.promptId)))
       .map((task) => [task.id, upstreamStale &&
         !requestSnapshot(task.requestSnapshot).importedMaterial
-        ? 'RENDER' as const : task.status === 'FAILED' && !task.outputFileObjectId && latestPromptBatch?.items.some(
-          (item) => item.id === task.promptId) && !requestSnapshot(task.requestSnapshot).importedMaterial
-          ? 'RENDER' as const : promptTaskUpdateKind(task, latestPromptBatch)]));
+        ? 'RENDER' as const : promptTaskUpdateKind(task, latestPromptBatch)]));
     const taskIdsNeedingUpdate = new Set([...updateKinds]
       .filter(([, kind]) => kind).map(([id]) => id));
     const pendingRemovedTaskIds = [...updateKinds]
@@ -566,6 +640,16 @@ export class EffectSegmentRenderService {
         : batchInput && artifact.contentHash === workingArtifactContentHash(batchInput)
           ? 'COMMITTED'
           : 'DRAFT_CHANGED';
+    const progressScope = (run?.editIdMap as { renderProgress?: {
+      batchId?: string; taskIds?: unknown; synchronizedTaskIds?: unknown; removedTaskIds?: unknown;
+    } } | null)?.renderProgress;
+    const scopedTaskIds = progressScope?.batchId === record.id && Array.isArray(progressScope.taskIds)
+      ? new Set(progressScope.taskIds.filter((id): id is string => typeof id === 'string')) : null;
+    const progressTaskIds = scopedTaskIds
+      ? record.tasks.filter((task) => task.errorCode !== 'MATERIAL_DELETED' &&
+        scopedTaskIds.has(task.id)).map(({ id }) => id)
+      : record.tasks.filter((task) => task.errorCode !== 'MATERIAL_DELETED' &&
+        !requestSnapshot(task.requestSnapshot).importedMaterial).map(({ id }) => id);
     return {
       id: record.id,
       projectId: record.projectId,
@@ -584,6 +668,12 @@ export class EffectSegmentRenderService {
       pendingRemovedTaskIds,
       refreshSignature: differenceSignature(),
       canSaveFrozenResults: record.tasks.some((task) => requestSnapshot(task.requestSnapshot).refreshContext?.schemaVersion === 1),
+      autoCommitPending: this.isAutomaticPromptRefresh(run, record.id),
+      progressTaskIds,
+      ...renderUpdateCompletions(record.id, record.tasks, progressScope),
+      ...(record.committedAt && record.committedAt >= record.createdAt &&
+        run?.parentWorkflowRunId && !run.branchPublishedAt && !run.editSessionNodeId
+        ? { committedWorkflowRunId: run.parentWorkflowRunId } : {}),
       latestPromptRevision: prompt?.revision ?? null,
       latestPromptCount: latestPromptBatch?.items.length ?? 0,
       revision: record.revision,
@@ -610,7 +700,7 @@ export class EffectSegmentRenderService {
   ): Promise<GetEffectSegmentRenderWorkspaceData> {
     return this.readCache
       ? this.readCache.read({ projectId, workflowRunId }, 'render-workspace',
-          () => this.loadWorkspace(projectId, workflowRunId, productId), { projectionVersion: 8, productId })
+          () => this.loadWorkspace(projectId, workflowRunId, productId), { projectionVersion: 10, productId })
       : this.loadWorkspace(projectId, workflowRunId, productId);
   }
 
@@ -624,20 +714,22 @@ export class EffectSegmentRenderService {
       throw notFound('效果类工作流运行不存在');
     if (!(await this.repository.product(projectId, workflowRunId, productId)))
       throw notFound('产品不存在');
-    const [prompt, batch, settingsNode] = await Promise.all([
-      this.repository.promptArtifact(projectId, workflowRunId, productId),
-      this.repository.workspaceBatch(projectId, workflowRunId, productId),
+    const readContext = await this.repository.workspaceReadContext(projectId, workflowRunId, productId);
+    const [batch, settingsNode] = await Promise.all([
+      this.repository.workspaceBatch(projectId, readContext.workflowRunId, readContext.productId),
       this.workingRepository.findNodeState(
         projectId,
-        workflowRunId,
-        effectSegmentRenderSettingsNodeId(productId),
+        readContext.workflowRunId,
+        effectSegmentRenderSettingsNodeId(readContext.productId),
       ),
     ]);
+    const prompt = await this.repository.promptArtifact(projectId, readContext.workflowRunId, readContext.productId, batch);
     const promptBatch = prompt?.payload ? parseEffectPromptBatchResult(prompt.payload) : null;
     const promptReady = Boolean(
       promptBatch && prompt?.freshness === 'CURRENT' && prompt.availability === 'AVAILABLE',
     );
-    if (batch) await this.resumeCommittedBatchPublication(projectId, batch);
+    if (batch) await this.autoCommitCompletedBatch(projectId, batch.id, true);
+    const latestBatch = batch ? await this.repository.batch(projectId, batch.id) : null;
     return {
       projectId,
       workflowRunId,
@@ -648,7 +740,11 @@ export class EffectSegmentRenderService {
       settings:
         this.settingsFromState(settingsNode?.state) ?? this.legacySettings(prompt?.payload ?? null),
       settingsRevision: settingsNode?.revision ?? null,
-      batch: batch ? await this.present(batch, { workflowRunId, productId }) : null,
+      promptRenderInputs: promptReady ? promptBatch!.items.map((item) => ({
+        promptId: item.id, promptCode: item.code, promptText: item.content, durationSeconds: item.targetDurationSeconds,
+        origin: item.origin,
+      })) : [],
+      batch: latestBatch ? await this.present(latestBatch, readContext) : null,
     };
   }
 
@@ -692,23 +788,32 @@ export class EffectSegmentRenderService {
     await this.projects.get(projectId);
     const record = await this.repository.batch(projectId, batchId);
     if (!record) throw notFound('视频渲染批次不存在');
-    await this.resumeCommittedBatchPublication(projectId, record);
-    return { batch: await this.present(record) };
+    await this.autoCommitCompletedBatch(projectId, record.id, true);
+    return { batch: await this.present((await this.repository.batch(projectId, batchId)) ?? record) };
   }
 
   async start(
     projectId: string,
     productId: string,
-    input: {
-      workflowRunId: string;
-      expectedPromptArtifactRevision: number;
-      expectedSettingsRevision: number;
-      idempotencyKey: string;
-    },
+    input: StartEffectSegmentRenderBatchRequest,
   ): Promise<StartEffectSegmentRenderBatchData> {
     await this.projects.get(projectId);
     const idempotencyKey = input.idempotencyKey.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    const defaultsProductId = productId;
+    // Freeze defaults in the displayed workspace before opening/remapping an edit Run.
+    const [defaultsNode, defaultsPrompt] = await Promise.all([
+      this.workingRepository.findNodeState(projectId, input.workflowRunId, effectSegmentRenderSettingsNodeId(productId)),
+      this.repository.promptArtifact(projectId, input.workflowRunId, productId),
+    ]);
+    if ((defaultsNode?.revision ?? 0) !== input.expectedSettingsRevision)
+      throw conflict('视频渲染设置已更新，请刷新后重试');
+    const frozenDefaults = defaultsNode ? this.settingsFromState(defaultsNode.state) : this.legacySettings(defaultsPrompt?.payload);
+    if (!frozenDefaults) throw conflict('视频渲染设置无效，请重新保存');
+    const defaultsBatch = defaultsPrompt ? parseEffectPromptBatchResult(defaultsPrompt.payload) : null;
+    if (!defaultsBatch || defaultsPrompt?.revision !== input.expectedPromptArtifactRevision)
+      throw conflict('Prompt 批次已更新，请刷新后重试');
+    const frozenTaskSettings = this.promptTaskSettings(defaultsBatch, defaultsBatch.items.map(({ id }) => id), frozenDefaults, input.promptSettings);
     // Batch generation is an explicit paid action. Before it can mutate a
     // published render result, route it to an unpublished child work context.
     const edit = await this.workflowWorkingService.beginEffectNodeEdit(
@@ -719,16 +824,11 @@ export class EffectSegmentRenderService {
     );
     const workflowRunId = edit.run.id;
     productId = edit.productIdMap[productId] ?? productId;
-    const [workflow, product, promptArtifact, sourcePackage, settingsNode] = await Promise.all([
+    const [workflow, product, promptArtifact, sourcePackage] = await Promise.all([
       this.repository.workflowRun(projectId, workflowRunId),
       this.repository.product(projectId, workflowRunId, productId),
       this.repository.promptArtifact(projectId, workflowRunId, productId),
       this.repository.sourcePackageArtifact(projectId, workflowRunId, productId),
-      this.workingRepository.findNodeState(
-        projectId,
-        workflowRunId,
-        effectSegmentRenderSettingsNodeId(productId),
-      ),
     ]);
     if (!workflow) throw notFound('效果类工作流运行不存在');
     if (!product) throw notFound('产品不存在');
@@ -746,13 +846,11 @@ export class EffectSegmentRenderService {
       sourcePackage.availability !== 'AVAILABLE'
     )
       throw conflict('产品资料包尚未完成校验');
-    if ((settingsNode?.revision ?? 0) !== input.expectedSettingsRevision)
+    const currentDefaults = await this.workingRepository.findNodeState(projectId, input.workflowRunId,
+      effectSegmentRenderSettingsNodeId(defaultsProductId));
+    if ((currentDefaults?.revision ?? 0) !== input.expectedSettingsRevision)
       throw conflict('视频渲染设置已更新，请刷新后重试');
-    const renderSettings = settingsNode
-      ? this.settingsFromState(settingsNode.state)
-      : this.legacySettings(promptArtifact.payload);
-    if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
-    const model = this.modelFor(renderSettings.capabilityKey);
+    const renderSettings = frozenDefaults;
     const inputImages = sourcePackage.files
       .filter(
         ({ role, fileObject }) => role === 'PRODUCT_IMAGE' && fileObject.status === 'AVAILABLE',
@@ -766,9 +864,10 @@ export class EffectSegmentRenderService {
         sortOrder,
       }));
     if (!inputImages.length) throw conflict('产品资料包至少需要一张可用商品图片');
-    const referenceImageLimit = /seedance[-_.]?2[-_.]?5/iu.test(model)
-      ? EFFECT_SEGMENT_RENDER_LIMITS.maxReferenceImages
-      : EFFECT_SEGMENT_RENDER_LIMITS.maxReferenceImagesSeedance20;
+    const referenceImageLimit = Math.min(...Object.values(frozenTaskSettings).map((settings) =>
+      /seedance[-_.]?2[-_.]?5/iu.test(this.modelFor(settings.capabilityKey))
+        ? EFFECT_SEGMENT_RENDER_LIMITS.maxReferenceImages
+        : EFFECT_SEGMENT_RENDER_LIMITS.maxReferenceImagesSeedance20));
     if (inputImages.length > referenceImageLimit)
       throw badRequest(
         `当前 Seedance 模型单任务最多支持 ${referenceImageLimit} 张参考图，请减少商品图片后重试`,
@@ -796,9 +895,8 @@ export class EffectSegmentRenderService {
     if (!promptBatch) throw conflict('Prompt 批次结构无效，请重新生成并校验');
     this.assertRenderablePromptBatch(promptBatch);
     const snapshots = promptBatch.items.map((item) => {
-      const taskSettings = item.origin === 'MANUAL' && item.targetDurationSeconds > 15
-        ? resolveEffectImportedRenderSettings(renderSettings, { durationSeconds: item.targetDurationSeconds })
-        : renderSettings;
+      const taskSettings = frozenTaskSettings[item.id];
+      if (!taskSettings) throw conflict('Prompt 在任务准备期间已变化，请重新确认');
       const compiled = this.compileSeedanceRequest(() =>
         compileEffectSeedanceRequest(promptBatch, item.id,
           this.modelFor(taskSettings.capabilityKey), taskSettings),
@@ -832,7 +930,7 @@ export class EffectSegmentRenderService {
       sourcePackageRevision: sourcePackage.revision,
       sourcePackageHash: sourcePackage.contentHash,
       renderSettings,
-      renderSettingsRevision: settingsNode?.revision ?? 0,
+      renderSettingsRevision: input.expectedSettingsRevision,
       snapshots,
     });
     const batchId = randomUUID();
@@ -896,12 +994,25 @@ export class EffectSegmentRenderService {
   private async assertEditableBatch(
     projectId: string,
     record: EffectSegmentRenderBatchRecord,
+    localUpdate = false,
   ): Promise<void> {
     await this.workflowWorkingService.assertEffectNodeWritable(
       projectId,
       record.workflowRunId,
       'SEGMENT_RENDER',
     );
+    const run = await this.repository.workflowRun(projectId, record.workflowRunId);
+    if (!localUpdate && this.isAutomaticPromptRefresh(run, record.id))
+      throw conflict('局部更新尚未完成，请先完成更新或取消编辑，再修改素材');
+  }
+
+  private isAutomaticPromptRefresh(
+    run: Awaited<ReturnType<EffectSegmentRenderRepository['workflowRun']>>,
+    batchId: string,
+  ): boolean {
+    const editMap = run?.editIdMap as Record<string, unknown> | null | undefined;
+    return run?.editSessionNodeId === 'SEGMENT_RENDER' && run.editSessionPurpose === 'MANUAL' &&
+      editMap?.autoCommitPromptRefresh === batchId;
   }
 
   async importContext(projectId: string, batchId: string) {
@@ -929,6 +1040,7 @@ export class EffectSegmentRenderService {
       expectedPromptArtifactRevision: input.expectedPromptArtifactRevision,
       ...(input.expectedDifferenceSignature ? { expectedDifferenceSignature: input.expectedDifferenceSignature } : {}),
       ...(input.taskIds ? { taskIds: [...new Set(input.taskIds)].sort() } : {}),
+      ...(input.promptSettings ? { promptSettings: input.promptSettings } : {}),
       ...(input.settingsContext ? { settingsContext: input.settingsContext } : {}),
     });
     const receipt = await this.repository.operationReceipt(projectId, idempotencyKey);
@@ -939,7 +1051,7 @@ export class EffectSegmentRenderService {
         (await this.repository.batch(projectId, receipt.batchId)) ??
         (await this.repository.batch(projectId, batchId));
       if (!replay) throw notFound('视频渲染批次不存在');
-      return { batch: await this.present(replay), replayed: true };
+      return { batch: (await this.batch(projectId, replay.id)).batch, replayed: true };
     }
     const original = await this.repository.batch(projectId, batchId);
     if (!original) throw notFound('视频渲染批次不存在');
@@ -975,6 +1087,17 @@ export class EffectSegmentRenderService {
       throw badRequest('单条更新只能选择当前待更新且未被删除的素材');
     if (original.tasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
       throw conflict('当前素材仍在渲染中');
+    const addedIds = input.taskIds ? [] : view.pendingPromptIds ?? [];
+    const defaultsNode = await this.workingRepository.findNodeState(projectId,
+      settingsContext?.workflowRunId ?? original.workflowRunId,
+      effectSegmentRenderSettingsNodeId(settingsContext?.productId ?? original.productId));
+    if (settingsContext && (defaultsNode?.revision ?? 0) !== settingsContext.expectedSettingsRevision)
+      throw conflict('视频渲染设置已更新，请重新确认');
+    const defaults = defaultsNode ? this.settingsFromState(defaultsNode.state) : this.legacySettings(prompt?.payload);
+    if (!defaults) throw conflict('视频渲染设置无效，请重新保存');
+    const currentPromptBatch = prompt ? parseEffectPromptBatchResult(prompt.payload) : null;
+    if (!currentPromptBatch) throw conflict('Prompt 批次结构无效，请刷新后重试');
+    const addedPromptSettings = this.promptTaskSettings(currentPromptBatch, addedIds, defaults, input.promptSettings);
     // MANUAL uses the existing isolated edit workspace; its successful publication merges into
     // the original branch rather than creating a new published version like BATCH does.
     const edit = await this.workflowWorkingService.beginEffectNodeEdit(
@@ -989,6 +1112,12 @@ export class EffectSegmentRenderService {
         ? original
         : await this.repository.latestBatch(projectId, edit.run.id, productId);
     if (!target) throw notFound('编辑素材批次不存在');
+    if (edit.created && target.revision !== original.revision)
+      throw conflict('素材在更新准备期间已被编辑，请先保存或取消当前人工编辑');
+    const editRun = await this.repository.workflowRun(projectId, edit.run.id);
+    if (!edit.created && editRun?.editSessionNodeId === 'SEGMENT_RENDER' &&
+      !this.isAutomaticPromptRefresh(editRun, target.id))
+      throw conflict('请先保存或取消当前人工编辑，再执行局部更新');
     const current = await this.present(target);
     if (current.refreshScope !== 'SELECTIVE') throw conflict('Prompt 或素材在更新准备期间已变化');
     const selectedIds = input.taskIds ? new Set(input.taskIds.map((id) => edit.taskIdMap?.[id] ?? id)) : null;
@@ -998,6 +1127,11 @@ export class EffectSegmentRenderService {
     const selected = current.tasks.filter((task) => task.needsUpdate && (!selectedIds || selectedIds.has(task.id)));
     if (selectedIds && selected.length !== selectedIds.size)
       throw conflict('所选素材在更新准备期间已变化');
+    const latestDefaults = await this.workingRepository.findNodeState(projectId,
+      settingsContext?.workflowRunId ?? original.workflowRunId,
+      effectSegmentRenderSettingsNodeId(settingsContext?.productId ?? original.productId));
+    if ((latestDefaults?.revision ?? 0) !== (defaultsNode?.revision ?? 0))
+      throw conflict('视频渲染设置在更新准备期间已变化，请重新确认');
     return this.regenerate(
       projectId,
       target.id,
@@ -1010,7 +1144,8 @@ export class EffectSegmentRenderService {
         removedTaskIds: selectedIds ? [] : current.pendingRemovedTaskIds ?? [],
         expectedPromptArtifactRevision: prompt!.revision,
         refreshRequestHash,
-        ...(input.expectedDifferenceSignature ? { confirmationSignature: input.expectedDifferenceSignature } : {}),
+        confirmationSignature: input.expectedDifferenceSignature ?? signature!,
+        addedPromptSettings,
       },
     );
   }
@@ -1028,6 +1163,7 @@ export class EffectSegmentRenderService {
       expectedPromptArtifactRevision: number;
       refreshRequestHash: string;
       confirmationSignature?: string;
+      addedPromptSettings?: Record<string, EffectSegmentRenderSettings>;
     },
   ): Promise<{ batch: EffectSegmentRenderBatch; replayed: boolean }> {
     await this.projects.get(projectId);
@@ -1042,7 +1178,7 @@ export class EffectSegmentRenderService {
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
     const record = await this.repository.batch(projectId, batchId);
     if (!record) throw notFound('视频渲染批次不存在');
-    await this.assertEditableBatch(projectId, record);
+    await this.assertEditableBatch(projectId, record, Boolean(incremental));
     const [promptArtifact, sourcePackage, settingsNode] = await Promise.all([
       this.repository.promptArtifact(projectId, record.workflowRunId, record.productId),
       this.repository.sourcePackageArtifact(projectId, record.workflowRunId, record.productId),
@@ -1091,13 +1227,14 @@ export class EffectSegmentRenderService {
       if (!item) throw conflict('该 Prompt 已从当前批次移除，请创建新渲染批次');
       const configured =
         previous?.renderSettings ??
+        incremental?.addedPromptSettings?.[promptId] ??
         (settingsNode
           ? this.settingsFromState(settingsNode.state)
           : this.legacySettings(promptArtifact.payload));
       if (!configured) throw conflict('视频渲染设置无效，请重新保存');
-      const renderSettings = item.origin === 'MANUAL' && item.targetDurationSeconds > 15
-        ? resolveEffectImportedRenderSettings(configured, { durationSeconds: item.targetDurationSeconds })
-        : configured;
+      const renderSettings = configured;
+      const issues = effectPromptRenderSettingsIssues(renderSettings, { durationSeconds: item.targetDurationSeconds, origin: item.origin });
+      if (issues.length) throw conflict(`${item.code}：${issues.join('；')}，请单独配置后再生成`);
       const compiled = this.compileSeedanceRequest(() =>
         compileEffectSeedanceRequest(
           promptBatch,
@@ -1197,6 +1334,7 @@ export class EffectSegmentRenderService {
         },
         taskSnapshots,
         ...(incremental ? {
+          autoCommitPromptRefresh: true,
           addedTasks,
           removedTaskIds: incremental.removedTaskIds ?? [],
           metadataSnapshots: Object.fromEntries((incremental.metadataTaskIds ?? []).map((id) => {
@@ -1239,6 +1377,7 @@ export class EffectSegmentRenderService {
       throw conflict('所选任务存在待处理的视频返修，请先采用或放弃返修结果');
     if (result.kind === 'ACTIVE_CONFLICT') throw conflict('当前产品已有进行中的视频渲染批次');
     if (result.kind === 'KEY_CONFLICT') throw conflict('幂等键已用于其他视频重生成请求');
+    if (incremental) await this.autoCommitCompletedBatch(projectId, batchId, true);
     const updatedRecord = await this.repository.batch(projectId, batchId);
     if (!updatedRecord) throw notFound('视频渲染批次不存在');
     return { batch: await this.present(updatedRecord), replayed: result.kind === 'REPLAYED' };
@@ -2231,27 +2370,31 @@ export class EffectSegmentRenderService {
     }
   }
 
-  private async autoCommitCompletedBatch(projectId: string, batchId: string): Promise<void> {
+  private async autoCommitCompletedBatch(projectId: string, batchId: string, localUpdatesOnly = false): Promise<void> {
     const batch = await this.repository.batch(projectId, batchId);
     if (!batch) return;
     if (batch.committedAt) {
       await this.resumeCommittedBatchPublication(projectId, batch);
       return;
     }
-    if (batch.tasks.some((task) => requestSnapshot(task.requestSnapshot).refreshContext?.schemaVersion === 1)) return;
     const run = await this.repository.workflowRun(projectId, batch.workflowRunId);
-    if (run?.editSessionNodeId === 'SEGMENT_RENDER' && run.editSessionPurpose === 'MANUAL') return;
-    // Single-clip retries, imports and repair candidates remain editable drafts.
-    // Only a newly created complete batch is adopted automatically.
+    const automaticRefresh = this.isAutomaticPromptRefresh(run, batch.id);
+    if (localUpdatesOnly && !automaticRefresh) return;
+    if (!automaticRefresh && (batch.tasks.some((task) => requestSnapshot(task.requestSnapshot).refreshContext?.schemaVersion === 1) ||
+      (run?.editSessionNodeId === 'SEGMENT_RENDER' && run.editSessionPurpose === 'MANUAL'))) return;
+    // Explicit local updates and fresh complete batches commit automatically.
+    // Imports, repair candidates and unrelated manual edits still require saving.
     if (
       batch.status !== 'COMPLETED' ||
       !batch.tasks.length ||
       batch.tasks.some(
         (task) =>
-          task.status !== 'COMPLETED' ||
-          task.operationKind !== 'GENERATE' ||
-          task.repairStatus !== null ||
-          !task.outputFileObjectId,
+          (automaticRefresh && task.errorCode === 'MATERIAL_DELETED'
+            ? task.repairStatus !== null
+            : task.status !== 'COMPLETED' ||
+              task.operationKind !== 'GENERATE' ||
+              task.repairStatus !== null ||
+              !task.outputFileObjectId),
       )
     )
       return;

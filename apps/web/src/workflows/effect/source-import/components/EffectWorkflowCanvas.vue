@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { AlertCircle, Check, ChevronRight, GitBranch } from '@lucide/vue';
 import { computed } from 'vue';
+import { EFFECT_NODE_LABELS } from '../../shared/effect-node-labels';
 
 const props = withDefaults(
   defineProps<{
@@ -25,39 +26,39 @@ const emit = defineEmits<{ select: [step: number]; branches: [] }>();
 
 const effectNodes = [
   {
-    label: '导入',
+    label: EFFECT_NODE_LABELS.SOURCE_IMPORT,
     status: '当前',
-    title: '资料包导入',
+    title: EFFECT_NODE_LABELS.SOURCE_IMPORT,
     description: '汇集商品图片、文档与链接，统一视频生产规格',
   },
   {
-    label: '提炼',
+    label: EFFECT_NODE_LABELS.INFORMATION_EXTRACTION,
     status: '就绪',
-    title: 'AI 信息提炼',
+    title: EFFECT_NODE_LABELS.INFORMATION_EXTRACTION,
     description: '把非结构化资料整理为可人工修订的制作信息卡',
   },
   {
-    label: 'Prompt',
+    label: EFFECT_NODE_LABELS.PROMPT_GENERATION,
     status: '就绪',
-    title: 'Prompt 生成',
+    title: EFFECT_NODE_LABELS.PROMPT_GENERATION,
     description: '批量生成带用途标签的素材片段 Prompt，不生成完整成片脚本',
   },
   {
-    label: '渲染',
+    label: EFFECT_NODE_LABELS.SEGMENT_RENDER,
     status: '就绪',
-    title: '片段渲染',
+    title: EFFECT_NODE_LABELS.SEGMENT_RENDER,
     description: '每条 Prompt 渲染为一个可供混剪的视频素材片段',
   },
   {
-    label: '混剪',
+    label: EFFECT_NODE_LABELS.TEMPLATE_MIX,
     status: '就绪',
-    title: '模板混剪',
+    title: EFFECT_NODE_LABELS.TEMPLATE_MIX,
     description: '按模板规则批量搭建成片工程，再逐条进入时间轴精修',
   },
   {
-    label: '导出',
+    label: EFFECT_NODE_LABELS.FINAL_OUTPUT,
     status: '就绪',
-    title: '成片生成与批量导出',
+    title: EFFECT_NODE_LABELS.FINAL_OUTPUT,
     description: '渲染已统一确认的成片，查看进度、恢复失败项、分页播放与下载',
   },
 ] as const;

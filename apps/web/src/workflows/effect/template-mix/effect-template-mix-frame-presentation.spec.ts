@@ -119,6 +119,25 @@ describe('montage first frame presentation', () => {
     expect(stale).not.toHaveBeenCalled();
     expect(latest).toHaveBeenCalledOnce();
   });
+  it('does not restart the paint gate for repeated readiness reports of the same frame', () => {
+    const gate = new TimelineFramePresentation(), player = video(), publish = vi.fn();
+    gate.present(player, 1.25, 1 / 30, publish);
+    tick();
+    gate.present(player, 1.25, 1 / 30, publish);
+    gate.present(player, 1.25, 1 / 30, publish);
+    tick();
+    expect(publish).toHaveBeenCalledOnce();
+    expect(frames.size).toBe(0);
+  });
+  it('retains the paint deadline but refreshes the callback for a duplicate target', () => {
+    const gate = new TimelineFramePresentation(), player = video(), old = vi.fn(), latest = vi.fn();
+    gate.present(player, 1.25, 1 / 30, old);
+    tick();
+    gate.present(player, 1.25, 1 / 30, latest);
+    tick();
+    expect(old).not.toHaveBeenCalled();
+    expect(latest).toHaveBeenCalledOnce();
+  });
   it('cancels pending publication on scope changes or unmount', () => {
     const gate = new TimelineFramePresentation(),
       publish = vi.fn();
@@ -141,13 +160,29 @@ describe('montage first frame presentation', () => {
     expect(page).toContain('@loadeddata="onTimelinePlayerReady(slot.id, $event)"');
     expect(page).toContain('event.currentTarget !== video');
     expect(page).toContain(':time="coverOffset(variant)"');
-    expect(page).toContain('presentedPreviewIdentity.value !== previewMediaIdentity.value');
+    expect(page).toContain('presentedPreviewSourceIdentity.value !== previewSourceIdentity.value');
     expect(page).toContain('framePresentation.reset()');
     expect(identity).toContain('playbackSeekVersion.value');
     expect(visibility).not.toContain('playhead.value === 0');
     expect(visibility).toContain('!playing.value');
     expect(visibility).toContain('!displayedTimelineSlotId.value && !!previewCachedPoster.value');
+    expect(visibility).not.toContain('previewMediaIdentity.value');
     expect(page).not.toContain('captureDisplayedFrame()');
+  });
+  it('keeps an already decoded source visible during scrubbing while fencing stale seek callbacks', () => {
+    const sourceIdentity = page.split('const previewSourceIdentity = computed(() =>')[1]!
+      .split(']));')[0]!;
+    const seekIdentity = page.split('const previewMediaIdentity = computed(() =>')[1]!
+      .split(']));')[0]!;
+    expect(sourceIdentity).not.toContain('playbackSeekVersion.value');
+    expect(sourceIdentity).toContain('currentWorkspaceScope.value');
+    expect(sourceIdentity).toContain('selectedVariant.value?.id');
+    expect(sourceIdentity).toContain('previewMaterial.value?.contentHash');
+    expect(sourceIdentity).toContain('selectedVariant.value?.offsets');
+    expect(seekIdentity).toContain('previewSourceIdentity.value, playbackSeekVersion.value');
+    expect(page).toContain('identity !== previewMediaIdentity.value');
+    expect(page).toContain('presentedPreviewSourceIdentity.value = previewSourceIdentity.value');
+    expect(page).toContain("presentedPreviewSourceIdentity.value = ''");
   });
   it('uses decoded playback handoffs and never re-seeks a natural boundary from the poster watcher', () => {
     const playback = page

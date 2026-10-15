@@ -5,6 +5,7 @@ import type {
   EffectPromptFragmentType,
   EffectPromptInsightField,
   EffectPromptItem,
+  EffectPromptItemOrigin,
   EffectPromptNodeId,
   EffectPromptPurposeMatchMode,
   EffectPromptRun,
@@ -41,7 +42,6 @@ import {
   prefetchEffectWorkspace,
   type EffectWorkspaceSnapshot,
 } from '../../shared/effect-workspace-prefetch';
-
 import { buildEffectPromptHtml } from './effect-prompt-html-export';
 
 export type EffectPromptContext = {
@@ -139,6 +139,7 @@ export const loadEffectPromptResult = async (
   purpose?: EffectPromptFragmentType,
   purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
   signal?: AbortSignal,
+  origin?: EffectPromptItemOrigin,
 ): Promise<EffectPromptViewResultData> => {
   return (
     await getEffectPromptResult(
@@ -151,6 +152,7 @@ export const loadEffectPromptResult = async (
       purpose,
       purposeMatch,
       signal,
+      origin,
     )
   ).data as EffectPromptViewResultData;
 };
@@ -213,6 +215,7 @@ export const loadEffectPromptNodeDetail = async (
 export type PromptItemDraft = {
   content: string;
   primaryPurpose: EffectPromptFragmentType;
+  compatiblePurposes: EffectPromptFragmentType[];
   creativeCore: string;
   dimensions: EffectPromptDimensions;
   targetDurationSeconds: number;
@@ -229,6 +232,7 @@ const promptItemInput = (draft: PromptItemDraft) => {
     EFFECT_PROMPT_DIMENSIONS.some(({ key }) => normalizedDimensions[key].length > 0);
   return {
     ...baseDraft,
+    compatiblePurposes: [...new Set([draft.primaryPurpose, ...draft.compatiblePurposes])],
     ...(hasCreativeStructure
       ? { creativeCore: normalizedCreativeCore, dimensions: normalizedDimensions }
       : {}),
@@ -243,34 +247,16 @@ export const saveEffectPromptItem = async (
   itemId?: string,
   signal?: AbortSignal,
 ): Promise<UpdateEffectPromptResultData> => {
-  const input = {
-    ...promptItemInput(draft),
-    expectedRevision,
-    evaluateAfterSave: false,
-  };
-  return itemId
-    ? (await updateEffectPromptItem(projectId, resultId, itemId, input, signal)).data
-    : (await addEffectPromptItem(projectId, resultId, input, signal)).data;
-};
-
-export const autoFillEffectPromptCreativeStructure = async (
-  projectId: string,
-  resultId: string,
-  expectedRevision: number,
-  expectedSettingsRevision: number,
-  draft: PromptItemDraft,
-  itemId?: string,
-  signal?: AbortSignal,
-): Promise<UpdateEffectPromptResultData> => {
-  const input = {
-    content: draft.content,
-    primaryPurpose: draft.primaryPurpose,
-    targetDurationSeconds: draft.targetDurationSeconds,
-    expectedRevision,
-    evaluateAfterSave: true,
-    expectedSettingsRevision,
-    idempotencyKey: createPromptIdempotencyKey(),
-  };
+  const input = itemId
+    ? {
+        content: draft.content.trim(),
+        targetDurationSeconds: draft.targetDurationSeconds,
+        expectedRevision,
+      }
+    : {
+        ...promptItemInput(draft),
+        expectedRevision,
+      };
   return itemId
     ? (await updateEffectPromptItem(projectId, resultId, itemId, input, signal)).data
     : (await addEffectPromptItem(projectId, resultId, input, signal)).data;

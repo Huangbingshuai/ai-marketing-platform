@@ -10,6 +10,7 @@ import { PrismaClient } from '../../../generated/prisma/client';
 import type { PrismaService } from '../../../database/prisma.service';
 import type { StoragePort } from '../../../platform/file/storage.port';
 import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
+import { confirmedEffectRenderSourceRun } from '../../../platform/workflow/effect-render-source-context';
 import { EffectTemplateDeletionRepository } from './effect-template-deletion.repository';
 import { EffectTemplateDeletionService } from './effect-template-deletion.service';
 import type { EffectTemplateDeletionCache } from './effect-template-deletion-cache.service';
@@ -69,6 +70,8 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
       const templateId = randomUUID(),
         siblingId = randomUUID(),
         variantId = randomUUID();
+      const legacySibling = randomUUID(),
+        legacySiblingChild = randomUUID();
       await db.project.createMany({
         data: [
           { id: projectId, name: 'isolated deletion fixture' },
@@ -82,6 +85,8 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
         [fill, root, templateId, 'TEMPLATE_MIX'],
         [output, fill, templateId, 'FINAL_OUTPUT'],
         [sibling, fill, siblingId, 'TEMPLATE_MIX'],
+        [legacySibling, fill, null, 'TEMPLATE_MIX'],
+        [legacySiblingChild, legacySibling, null, 'TEMPLATE_MIX'],
       ] as const)
         await db.workflowRun.create({
           data: {
@@ -99,7 +104,7 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
       await db.workflowRun.update({ where: { id: root }, data: { activeKey: null } });
       await db.workflowRun.update({ where: { id: output }, data: { activeKey: 'ACTIVE' } });
       const hash = 'a'.repeat(64);
-      for (const workflowRunId of [root, fill, output, sibling])
+      for (const workflowRunId of [root, fill, output, sibling, legacySibling, legacySiblingChild])
         await db.workflowNodeState.create({
           data: {
             projectId,
@@ -113,6 +118,22 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
             },
           },
         });
+      for (const workflowRunId of [legacySibling, legacySiblingChild]) {
+        await db.effectTemplateMixAiRun.create({
+          data: {
+            projectId,
+            workflowRunId,
+            templateId: siblingId,
+            idempotencyKey: `legacy-sibling-${workflowRunId}`,
+            requestHash: hash,
+            inputHash: hash,
+            inputSnapshot: {},
+            expectedDraftRevision: 1,
+            templateEditVersion: 1,
+            status: 'COMPLETED',
+          },
+        });
+      }
       await db.workflowNodeState.create({
         data: {
           projectId,
@@ -172,6 +193,23 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
           },
         });
       const source = await artifact(fill, 'render-clip:shared-source', shared.id);
+      for (const workflowRunId of [legacySibling, legacySiblingChild]) {
+        // A copied target configuration must not override actual sibling task ownership.
+        await artifact(workflowRunId, `mix-template:${templateId}`);
+        await artifact(workflowRunId, `timeline-project:${siblingId}:${randomUUID()}`);
+      }
+      // No mix dependency points at this membership index or unused clip. They
+      // still belong to the render node, not the template being permanently removed.
+      const poolIndex = await artifact(fill, 'render-batch:shared-product');
+      const unusedClip = await artifact(fill, 'render-clip:unused-source');
+      await artifact(root, 'render-batch:shared-product');
+      await db.workingArtifact.update({
+        where: { id: poolIndex.id },
+        data: {
+          revision: 2,
+          payload: { clips: Array.from({ length: 22 }, (_, i) => ({ taskId: `material-${i}` })) },
+        },
+      });
       const sourceUser = await artifact(
         sibling,
         `timeline-project:${siblingId}:${randomUUID()}`,
@@ -196,6 +234,68 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
       );
       await artifact(fill, `mix-template:${templateId}`);
       await artifact(root, `mix-template:${siblingId}`);
+      const unknownLegacy = randomUUID();
+      await db.workflowRun.create({
+        data: {
+          id: unknownLegacy,
+          projectId,
+          parentWorkflowRunId: fill,
+          forkNodeId: 'TEMPLATE_MIX',
+          forkTemplateId: null,
+          activeKey: null,
+          workflow: 'EFFECT',
+          workflowSpace: 'EFFECT',
+        },
+      });
+      const copiedConfig = await artifact(unknownLegacy, `mix-template:${templateId}`);
+      await db.workingArtifact.update({
+        where: { id: copiedConfig.id },
+        data: { contentHash: 'b'.repeat(64) },
+      });
+      // Legacy provenance survives A's cleanup because B still consumes it. It must
+      // never be rediscovered as a live B branch by a later deletion request.
+      const retiredLegacy = randomUUID();
+      await db.workflowRun.create({
+        data: {
+          id: retiredLegacy,
+          projectId,
+          parentWorkflowRunId: fill,
+          forkNodeId: 'TEMPLATE_MIX',
+          forkTemplateId: null,
+          activeKey: null,
+          workflow: 'EFFECT',
+          workflowSpace: 'EFFECT',
+        },
+      });
+      const historicalSiblingSource = await artifact(retiredLegacy, `mix-template:${siblingId}`);
+      // A real task proves this is A's retired branch, not an unknown child or
+      // B's live branch containing inherited configuration from A.
+      await db.effectTemplateMixAiRun.create({
+        data: {
+          projectId,
+          workflowRunId: retiredLegacy,
+          templateId,
+          idempotencyKey: 'retired-a-owner',
+          requestHash: hash,
+          inputHash: hash,
+          inputSnapshot: {},
+          expectedDraftRevision: 1,
+          templateEditVersion: 1,
+          status: 'COMPLETED',
+        },
+      });
+      await db.workingArtifactDependency.create({
+        data: {
+          projectId,
+          workflowRunId: sibling,
+          dependentArtifactId: sourceUser.id,
+          sourceType: 'WORKING_ARTIFACT',
+          sourceArtifactId: historicalSiblingSource.id,
+          sourceKey: historicalSiblingSource.artifactKey,
+          sourceRevision: 1,
+          sourceHash: hash,
+        },
+      });
       const asset = await db.asset.create({
         data: {
           projectId,
@@ -323,8 +423,23 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
         '模板已修改',
       );
       const accepted = await repository.enqueue(projectId, output, templateId, 1);
-      expect(accepted).toEqual({ templateId, workflowRunId: root, status: 'QUEUED' });
-      expect(await repository.enqueue(projectId, output, templateId, 1)).toEqual(accepted);
+      expect(accepted).toEqual({
+        templateId,
+        workflowRunId: root,
+        status: 'QUEUED',
+        draftRevision: 2,
+        removedWorkflowRunIds: expect.arrayContaining([fill, output]),
+      });
+      expect(accepted.removedWorkflowRunIds).not.toContain(sibling);
+      expect(accepted.removedWorkflowRunIds).not.toContain(legacySibling);
+      expect(accepted.removedWorkflowRunIds).not.toContain(legacySiblingChild);
+      expect(accepted.removedWorkflowRunIds).not.toContain(unknownLegacy);
+      expect(await repository.enqueue(projectId, output, templateId, 1)).toMatchObject({
+        templateId,
+        workflowRunId: root,
+        status: 'QUEUED',
+        removedWorkflowRunIds: accepted.removedWorkflowRunIds,
+      });
       expect(await db.workflowRun.findUnique({ where: { id: root } })).toMatchObject({
         activeKey: 'ACTIVE',
       });
@@ -397,6 +512,28 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
       const job = await db.effectTemplateDeletion.findUniqueOrThrow({
         where: { projectId_templateId: { projectId, templateId } },
       });
+      // A durable receipt accepted by old recursive code is fenced before any deletion.
+      const oldToken = randomUUID();
+      await db.effectTemplateDeletion.update({
+        where: { id: job.id },
+        data: {
+          workflowRunIds: [...job.workflowRunIds, legacySibling],
+          leaseToken: oldToken,
+        },
+      });
+      await expect(repository.removeData(job.id, oldToken)).rejects.toThrow(
+        'TEMPLATE_DELETE_FOREIGN_RUN_REQUIRES_REVIEW',
+      );
+      expect(
+        await db.workflowNodeState.count({ where: { projectId, workflowRunId: legacySibling } }),
+      ).toBe(1);
+      await db.effectTemplateDeletion.update({
+        where: { id: job.id },
+        data: {
+          workflowRunIds: job.workflowRunIds,
+          leaseToken: null,
+        },
+      });
       const storage = { delete: vi.fn() },
         cache = {
           clear: vi
@@ -431,7 +568,57 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
       expect(await db.workflowRun.findUnique({ where: { id: sibling } })).toMatchObject({
         parentWorkflowRunId: root,
       });
+      expect(await db.workflowRun.findUnique({ where: { id: legacySibling } })).toMatchObject({
+        parentWorkflowRunId: root,
+      });
+      expect(await db.workflowRun.findUnique({ where: { id: legacySiblingChild } })).toMatchObject({
+        parentWorkflowRunId: legacySibling,
+      });
+      expect(await db.workflowRun.findUnique({ where: { id: unknownLegacy } })).toMatchObject({
+        parentWorkflowRunId: root,
+      });
+      const survivingSiblingState = await working.findNodeState(
+        projectId,
+        legacySibling,
+        'TEMPLATE_MIX',
+      );
+      expect(survivingSiblingState?.state).toMatchObject({ templates: [{ id: siblingId }] });
+      await expect(
+        db.workflowNodeState.update({
+          where: { id: survivingSiblingState!.id },
+          data: { state: { templates: [{ id: siblingId }], activeTemplateId: siblingId } },
+        }),
+      ).resolves.toBeTruthy();
       expect(await db.workingArtifact.findUnique({ where: { id: source.id } })).not.toBeNull();
+      expect(await db.workingArtifact.findUnique({ where: { id: poolIndex.id } })).not.toBeNull();
+      expect(await db.workingArtifact.findUnique({ where: { id: unusedClip.id } })).not.toBeNull();
+      // Removing the consumer must not roll the shared head back to the root's
+      // older pool. The deleted mix Run remains hidden, but its source is readable.
+      expect(await confirmedEffectRenderSourceRun(db, projectId, root)).toBe(fill);
+      const renderPool = (
+        await working.listArtifacts(projectId, {
+          workflowRunId: root,
+          nodeId: 'SEGMENT_RENDER',
+        })
+      ).find((row) => row.id === poolIndex.id);
+      expect((renderPool?.payload as { clips?: unknown[] })?.clips).toHaveLength(22);
+      expect(
+        (
+          await working.listArtifacts(projectId, {
+            workflowRunId: fill,
+            nodeId: 'SEGMENT_RENDER',
+          })
+        ).some((row) => row.workflowRunId === fill),
+      ).toBe(false);
+      expect(
+        (
+          await working.listArtifacts(projectId, {
+            workflowRunId: fill,
+            nodeId: 'SEGMENT_RENDER',
+            view: 'SNAPSHOT',
+          })
+        ).some((row) => row.workflowRunId === fill),
+      ).toBe(false);
       expect(
         await db.workingArtifactDependency.findFirst({
           where: { dependentArtifactId: sourceUser.id },
@@ -484,7 +671,12 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
       const duplicates = await Promise.all(
         [0, 1].map(() => repository.enqueue(projectId, root, emptyTemplateId, emptyState.revision)),
       );
-      expect(duplicates[0]).toEqual(duplicates[1]);
+      expect(duplicates[1]).toMatchObject({
+        templateId: duplicates[0]!.templateId,
+        workflowRunId: duplicates[0]!.workflowRunId,
+        status: duplicates[0]!.status,
+        removedWorkflowRunIds: duplicates[0]!.removedWorkflowRunIds,
+      });
       const emptyJob = await db.effectTemplateDeletion.findUniqueOrThrow({
         where: { projectId_templateId: { projectId, templateId: emptyTemplateId } },
       });
@@ -495,11 +687,37 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
         await db.effectTemplateDeletion.findUnique({ where: { id: emptyJob.id } }),
       ).toMatchObject({ status: 'COMPLETED' });
       expect(storage.delete).toHaveBeenCalledTimes(1);
+      expect(await db.workflowRun.findUnique({ where: { id: retiredLegacy } })).not.toBeNull();
+      const siblingDraft = await db.workflowNodeState.findUniqueOrThrow({
+        where: {
+          projectId_workflowRunId_nodeId: {
+            projectId,
+            workflowRunId: sibling,
+            nodeId: 'TEMPLATE_MIX',
+          },
+        },
+      });
+      const siblingDeletion = await repository.enqueue(
+        projectId,
+        sibling,
+        siblingId,
+        siblingDraft.revision,
+      );
+      expect(siblingDeletion.status).toBe('QUEUED');
+      expect(siblingDeletion.removedWorkflowRunIds).toContain(sibling);
+      expect(siblingDeletion.removedWorkflowRunIds).not.toContain(retiredLegacy);
+      expect(siblingDeletion.removedWorkflowRunIds).not.toContain(fill);
+      await expect(
+        db.workflowRun.update({
+          where: { id: retiredLegacy },
+          data: { currentNodeId: 'TEMPLATE_MIX' },
+        }),
+      ).rejects.toThrow('EFFECT_TEMPLATE_DELETED');
       // Project deletion can still detach provenance parent links after this template cleanup.
-    // This optional project-cleanup compatibility field is unrelated to template deletion.
-    // Add it only inside the isolated schema if that feature has not been migrated yet.
-    await db.$executeRaw`ALTER TABLE projects ADD COLUMN IF NOT EXISTS "deletionState" varchar(20)`;
-    await db.$executeRaw`UPDATE projects SET "deletionState" = 'QUEUED' WHERE id = ${projectId}::uuid`;
+      // This optional project-cleanup compatibility field is unrelated to template deletion.
+      // Add it only inside the isolated schema if that feature has not been migrated yet.
+      await db.$executeRaw`ALTER TABLE projects ADD COLUMN IF NOT EXISTS "deletionState" varchar(20)`;
+      await db.$executeRaw`UPDATE projects SET "deletionState" = 'QUEUED' WHERE id = ${projectId}::uuid`;
       await expect(
         db.workflowRun.updateMany({ where: { projectId }, data: { parentWorkflowRunId: null } }),
       ).resolves.toBeDefined();

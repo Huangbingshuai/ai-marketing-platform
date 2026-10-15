@@ -34,6 +34,9 @@ export class StartSegmentRenderBatchDto {
   @Type(() => Number) @IsInt() @Min(1) expectedPromptArtifactRevision!: number;
   @Type(() => Number) @IsInt() @Min(0) expectedSettingsRevision!: number;
   @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(EFFECT_SEGMENT_RENDER_LIMITS.maxTasksPerBatch)
+  @ValidateNested({ each: true }) @Type(() => SegmentRenderPromptSettingsDto)
+  promptSettings?: SegmentRenderPromptSettingsDto[];
 }
 
 export class SegmentRenderSettingsDto {
@@ -41,6 +44,11 @@ export class SegmentRenderSettingsDto {
   @IsIn(SEEDANCE_RESOLUTIONS) resolution!: (typeof SEEDANCE_RESOLUTIONS)[number];
   @IsIn(EFFECT_PROMPT_RENDER_CAPABILITY_KEYS)
   capabilityKey!: (typeof EFFECT_PROMPT_RENDER_CAPABILITY_KEYS)[number];
+}
+
+export class SegmentRenderPromptSettingsDto {
+  @IsUUID('4') promptId!: string;
+  @ValidateNested() @Type(() => SegmentRenderSettingsDto) settings!: SegmentRenderSettingsDto;
 }
 
 export class SegmentRenderSettingsContextDto {
@@ -66,6 +74,9 @@ export class RegenerateSegmentRenderTasksDto {
 }
 
 export class RefreshSegmentRenderBatchDto {
+  @IsOptional() @IsArray() @ArrayMaxSize(EFFECT_SEGMENT_RENDER_LIMITS.maxTasksPerBatch)
+  @ValidateNested({ each: true }) @Type(() => SegmentRenderPromptSettingsDto)
+  promptSettings?: SegmentRenderPromptSettingsDto[];
   @IsOptional() @ValidateNested() @Type(() => SegmentRenderSettingsContextDto)
   settingsContext?: SegmentRenderSettingsContextDto;
   @IsOptional() @IsString() @MaxLength(64) expectedDifferenceSignature?: string;

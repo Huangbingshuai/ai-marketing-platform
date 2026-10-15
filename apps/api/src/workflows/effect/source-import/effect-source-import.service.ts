@@ -1497,9 +1497,13 @@ export class EffectSourceImportService {
     rangeHeader?: string,
   ): Promise<EffectMaterialContent> {
     this.assertMode(modeValue);
-    const draft = await this.getDraft(projectId, modeValue);
-    if (!(await this.repository.product(projectId, draft.id, productId))) throw notFound();
-    const material = await this.repository.material(projectId, productId, materialId);
+    await this.projectService.get(projectId);
+    const material = await this.repository.readableMaterial(
+      projectId,
+      modeValue,
+      productId,
+      materialId,
+    );
     const storageKey = material?.fileObject?.storageKey ?? material?.storageKey;
     const originalFileName = material?.fileObject?.originalFileName ?? material?.originalFileName;
     const mimeType = material?.fileObject?.mimeType ?? material?.mimeType;

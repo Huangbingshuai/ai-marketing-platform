@@ -125,7 +125,10 @@ export function artifactVisitor(artifacts: WorkingArtifact[]) {
           // The clip owns its adopted text, not the mutable batch's latest text/revision.
           // Packaging still consumes confirmed product facts through this explicit source
           // edge. Do not lose them when skipping the batch, or scan unrelated insights.
-          if (source.freshness !== 'CURRENT' || source.availability !== 'AVAILABLE')
+          // This historical batch is only the provenance edge to confirmed product facts.
+          // Its mutable text/config freshness is not consumed: the clip owns hash-verified text.
+          // Keep the explicit source available and recursively validate every fact below.
+          if (source.availability !== 'AVAILABLE')
             throw new BadRequestException('包装来源工作副本已失效，请先确认上游');
           for (const fact of source.dependencies)
             if (fact.sourceType === 'WORKING_ARTIFACT' && fact.sourceArtifactId) {

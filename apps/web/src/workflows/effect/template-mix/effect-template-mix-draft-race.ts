@@ -56,6 +56,13 @@ const editableEntry = (entry: DraftTemplate | undefined): string => {
   return stableJson(editable);
 };
 
+/** Compare the same persisted template boundary used by independent-template rebases. */
+export const sameEditableMixTemplate = (
+  current: DraftTemplate | undefined,
+  incoming: DraftTemplate | undefined,
+): boolean => Boolean(current && incoming && current.id === incoming.id &&
+  editableEntry(current) === editableEntry(incoming));
+
 /** Only merge independent templates. Concurrent edits of the same template are never overwritten. */
 export const rebaseMixDraft = (
   baseline: EffectTemplateMixDraft,

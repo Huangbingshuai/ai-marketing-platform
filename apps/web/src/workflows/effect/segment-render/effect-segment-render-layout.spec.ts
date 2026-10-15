@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { effectSegmentRenderModels } from './effect-segment-render-models';
 
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import apiSource from './api/effect-segment-render.api.ts?raw';
@@ -8,6 +9,42 @@ import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
 
 describe('effect segment render material gallery layout', () => {
+  it('resolves remapped product identities on every load, including KeepAlive reactivation', () => {
+    const loader = pageSource.split('const loadCurrentWorkspace = async')[1]!
+      .split('const updateRenderSetting')[0]!;
+    expect(loader.indexOf('effectSegmentRenderCurrentProductId(props.products, currentProductId.value)'))
+      .toBeLessThan(loader.indexOf('const product = currentProduct.value'));
+    expect(loader).toContain('if (nextProductId !== currentProductId.value)');
+    expect(loader).toContain('skipNextProductLoad = true;');
+    expect(loader).toContain('currentProductId.value = nextProductId;');
+    expect(pageSource.split('onActivated(() => {')[1]!.split('onDeactivated')[0]!)
+      .toContain('void loadCurrentWorkspace(false)');
+    expect(loader).toContain('generation !== loadGeneration || controller.signal.aborted');
+  });
+  it('keeps the render component mounted while its own editing Run is synchronized in the background', () => {
+    expect(parentSource).toContain(':key="`render:${currentProjectId}`"');
+    expect(parentSource).not.toContain(':key="`render:${currentProjectId}:${workspace?.workflowRunId');
+    expect(parentSource).toContain('{ showCurtain: false }).finally(settled)');
+    expect(pageSource).toContain('expectedSynchronizedRunId === props.workflowRunId');
+    expect(pageSource).toContain('generation === synchronizationGeneration');
+    expect(pageSource).toContain('void loadCurrentWorkspace(!preserveView)');
+    expect(pageSource).toContain(':inert="workspaceSynchronizing || runSynchronizing || undefined"');
+    expect(pageSource).toContain('current.workflowRunId !== props.workflowRunId');
+    expect(pageSource).toContain('workspaceSynchronizing.value = false');
+  });
+  it('continues polling after rejecting an obsolete batch response', () => {
+    expect(pageSource).toContain('if (pollController === controller) {');
+    expect(pageSource).toContain('workspace.value?.batchId === batchId && !pollTimer');
+    expect(pageSource).toContain('schedulePolling(workspace.value)');
+    expect(pageSource).toMatch(/pollTimer = setTimeout\(\(\) => \{ pollTimer = undefined; void pollBatch\(\); \},/);
+  });
+  it('auto-saves local updates and returns to the committed branch even when newer Prompt differences remain', () => {
+    expect(pageSource).toContain('校验通过后自动保存到当前分支');
+    expect(pageSource).not.toContain('完成后请保存修改');
+    expect(pageSource).toContain('synchronizeWorkflowRun(nextWorkspace.committedWorkflowRunId)');
+    expect(pageSource).toContain('v-if="!workspace?.autoCommitPending"');
+    expect(pageSource).toContain('!workspace.value?.autoCommitPending && Boolean(props.editing');
+  });
   it('uses signed confirmations, no-op responses and frozen draft saves with late-response protection', () => {
     expect(pageSource).toContain('expectedDifferenceSignature: current.refreshSignature');
     expect(pageSource).toContain('response.data.noChanges');
@@ -27,13 +64,34 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('@click="startBatch(true)"');
     expect(apiSource).toContain('/refresh');
   });
+  it('places the yellow local update action first and names full rerender concisely', () => {
+    const actions = pageSource.split('<div class="segment-heading__actions">')[1]!
+      .split('</div>')[0]!;
+    expect(actions.indexOf('segment-local-update-button')).toBeLessThan(
+      actions.indexOf('v-if="hasConfirmedRender && !editing"'),
+    );
+    expect(actions).toContain('<RefreshCw v-else :size="14" />{{ startButtonLabel }}');
+    expect(actions).toContain('<RefreshCw :size="14" />重新渲染');
+    expect(actions).not.toContain('全部重新渲染');
+    expect(pageSource).toMatch(
+      /\.segment-local-update-button\s*\{[^}]*color:\s*#a66a0b;[^}]*background:\s*#fffaf0;[^}]*border-color:\s*#f5ca80;/su,
+    );
+    expect(pageSource).toContain('<WorkflowRunProgress');
+    expect(pageSource).toContain('v-if="creatingTaskCount !== null || batchActive"');
+    expect(pageSource).toContain('tone="update"');
+    expect(pageSource).toContain(":summary=\"updatingProgress ? '本次更新进度' : '视频渲染进度'\"");
+    expect(pageSource).toContain(':attempt-label="batchProgressDetail"');
+    expect(pageSource).toContain('effectSegmentRenderProgress(workspace.value, creatingTaskCount.value)');
+    expect(pageSource).toContain('creatingTaskCount.value = selectiveRefresh ? updateCount : promptCount.value');
+    expect(pageSource).toContain("updatingProgress.value ? '更新中' : '渲染中'");
+  });
   it('replaces completed-validation with branch-safe editing controls', () => {
     expect(pageSource).toContain('<Pencil v-else :size="14" />进入编辑');
     expect(pageSource).toContain('<X :size="14" />取消编辑');
     expect(pageSource).toContain('<CheckCircle2 :size="14" />保存修改');
     expect(pageSource).toContain('beginEffectWorkflowNodeEdit');
     expect(pageSource).toContain('cancelEffectWorkflowNodeEdit');
-    expect(pageSource).toContain("emit('workflow-run-change', props.workflowRunId)");
+    expect(pageSource).toContain('synchronizeWorkflowRun(props.workflowRunId)');
     expect(pageSource).toContain(':show-validate="false"');
     expect(pageSource).not.toContain('完成校验前仍可继续调整');
   });
@@ -72,6 +130,8 @@ describe('effect segment render material gallery layout', () => {
   it('keeps one prompt mapped to one real material fragment', () => {
     expect(pageSource).toContain('每条 1 个视频素材片段');
     expect(pageSource).toContain('creativeCoreForTask(task)');
+    expect(pageSource).toContain('effectSegmentRenderCardTitle(task, cardCreativeCoreByPromptId.value[task.promptId])');
+    expect(pageSource).not.toContain('创意方向待同步');
     expect(pageSource).toContain('effectSegmentRenderCreativeCoreMap(promptArtifact.payload)');
     expect(pageSource).toContain("nodeId: 'PROMPT_GENERATION'");
     expect(pageSource).not.toContain('promptExcerpt(task.promptText)');
@@ -180,6 +240,13 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('endMs: Math.round(repairEndSeconds.value * 1000)');
   });
 
+  it('shows additional purposes without repeating the primary type or leaving an empty label', () => {
+    expect(pageSource).toContain('v-if="effectSegmentRenderAdditionalPurposes(task).length"');
+    expect(pageSource).toContain('v-for="compatibleType in effectSegmentRenderAdditionalPurposes(task)"');
+    expect(pageSource).not.toContain('v-for="compatibleType in task.compatibleFragmentTypes"');
+    expect(pageSource).toContain('task.compatibleFragmentTypes.includes(fragmentFilter.value)');
+  });
+
   it('uses the prompt-node search and purpose filter pattern with toggleable selection actions', () => {
     for (const marker of [
       '导入素材',
@@ -209,7 +276,9 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).not.toContain('重新渲染（${promptCount.value}）');
     expect(pageSource).toContain('<RefreshCw v-else-if="hasBatch && canStartBatch" :size="14" />');
     expect(pageSource).toContain('重新渲染全部片段');
-    expect(pageSource).toContain('再次产生供应商费用');
+    expect(pageSource).toContain('再次产生费用');
+    expect(pageSource).toContain('严格按当前已确认 Prompt 创建新批次');
+    expect(pageSource).toContain('人工导入的视频不会重新生成，也不会带入新分支');
     expect(pageSource).toContain('原版本保持可回溯');
     expect(pageSource).not.toContain('批量删除');
     expect(pageSource).toContain('deleteEffectSegmentRenderMaterials');
@@ -324,6 +393,24 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('.material-card-actions button:focus-visible');
   });
 
+  it('shows duration, aspect ratio, resolution and format below compatible purposes without progress percent', () => {
+    expect(pageSource).toContain('class="material-facts"');
+    expect(pageSource).toContain('materialAspectRatioLabel(task.mediaAspectRatio)');
+    expect(pageSource).toContain('materialResolutionLabel(task.mediaResolution)');
+    expect(pageSource).toContain('materialFormatLabel(task.output?.mimeType)');
+    expect(pageSource).toContain('importVideoDuration(task.durationSeconds)');
+    expect(pageSource).not.toContain('{{ task.progress }}%');
+    expect(pageSource).toMatch(
+      /\.material-facts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/s,
+    );
+    expect(pageSource).toMatch(
+      /\.material-facts span\s*\{[^}]*justify-content:\s*center;/s,
+    );
+    expect(pageSource.indexOf('class="material-facts"')).toBeGreaterThan(
+      pageSource.indexOf('class="compatible-purpose-tags"'),
+    );
+  });
+
   it('copies the prompt-node pagination controls and page size options', () => {
     expect(pageSource).toContain('class="prompt-pagination"');
     expect(pageSource).toContain('class="prompt-page-size"');
@@ -340,15 +427,11 @@ describe('effect segment render material gallery layout', () => {
       'Doubao-Seedance-2.0-mini',
       'Doubao-Seedance-2.0-fast',
     ])
-      expect(pageSource).toContain(`label: '${model}'`);
+      expect(effectSegmentRenderModels.some((option) => option.label === model)).toBe(true);
     expect(pageSource).not.toContain("label: 'Seedance 1.5 Pro'");
     expect(pageSource).not.toContain("label: 'Seedance 1.0'");
-    expect(pageSource).toContain(
-      'resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0.resolutions',
-    );
-    expect(pageSource).toContain(
-      'resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.resolutions',
-    );
+    expect(effectSegmentRenderModels.find((model) => model.value === 'SEEDANCE_2_0')?.resolutions).toEqual(['480p', '720p', '1080p', '4k']);
+    expect(effectSegmentRenderModels.find((model) => model.value === 'SEEDANCE_1_5_PRO')?.resolutions).toEqual(['480p', '720p', '1080p']);
     expect(pageSource).toContain('selectedCapability.value.ratios.map');
     expect(pageSource).toContain('selectedCapability.value.resolutions.map');
     expect(pageSource).toContain('next.resolution = capability.defaultResolution');
@@ -367,7 +450,8 @@ describe('effect segment render material gallery layout', () => {
     ])
       expect(apiSource).toContain(handler);
     expect(pageSource).not.toContain("from './services/effect-segment-render.mock-service'");
-    expect(pageSource).toContain('真实 Seedance 任务');
+    expect(pageSource).toContain('视频生成任务');
+    expect(pageSource).not.toContain('真实');
     expect(pageSource).toContain('pollTimer = setTimeout');
     expect(pageSource).not.toContain('setInterval(');
     expect(pageSource).toContain('getEffectSegmentRenderTaskContent(');
@@ -404,7 +488,7 @@ describe('effect segment render material gallery layout', () => {
       /<div v-else-if="!hasBatch && !tasks\.length" class="segment-batch-empty">[\s\S]*?<\/div>/u,
     )?.[0];
     expect(emptyState).toContain('尚未创建视频渲染任务');
-    expect(emptyState).toContain('从页头开始提交真实批量渲染');
+    expect(emptyState).toContain('从页头开始批量渲染');
     expect(emptyState).not.toContain('<button');
     expect(serviceSource).toContain("batchStatus: 'NOT_STARTED'");
     expect(serviceSource).toContain('tasks: []');
@@ -414,7 +498,7 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).not.toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
     expect(pageSource).not.toContain(':status-title=');
-    expect(pageSource).toContain('back-label="上一步：Prompt 生成"');
+    expect(pageSource).toContain('back-label="上一步：素材 Prompt"');
     expect(pageSource).not.toContain('保存到项目资产库');
     expect(pageSource).not.toContain('localStorage');
     expect(parentSource).toContain(

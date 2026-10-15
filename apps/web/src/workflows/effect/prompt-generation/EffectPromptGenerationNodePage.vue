@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import WorkflowExecutionGraphDialog from "../../../platform/workflow/components/WorkflowExecutionGraphDialog.vue";
+import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import type {
   EffectImportProduct,
   EffectPromptBatchSettings,
@@ -7,6 +8,7 @@ import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptItem,
+  EffectPromptItemOrigin,
   EffectPromptInsightField,
   EffectPromptNodeExecution,
   EffectPromptNodeId,
@@ -58,10 +60,11 @@ import { useProjectContext } from '../../../platform/project/project-context';
 import {
   beginEffectWorkflowNodeEdit,
   cancelEffectWorkflowNodeEdit,
-  getActiveWorkflowRunOverview,
 } from '../../../platform/workflow/api/workflow-working.api';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import EffectPromptItemDialog from './components/EffectPromptItemDialog.vue';
 import { confirmDiscardEffectEdit } from '../shared/effect-edit-session';
+import { completeEffectNodeHandoff, flushEffectNodeNavigation } from '../shared/effect-node-navigation';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import {
   buildEffectPromptGraphRows,
@@ -74,12 +77,13 @@ import {
   EFFECT_PROMPT_PAGE_SIZE_OPTIONS,
   isPromptProductCommitted,
   isPromptRunActive,
+  isPromptWorkspaceScopeReady,
+  resolvePromptTransitionValue,
   normalizePromptSettings,
   promptPageCount,
   type EffectPromptPageStatus,
 } from './effect-prompt-generation-state';
 import {
-  autoFillEffectPromptCreativeStructure,
   beginEffectPromptRun,
   commitEffectPromptResult,
   downloadEffectPromptBatch,
@@ -100,11 +104,15 @@ const props = defineProps<{
   projectId: string;
   workflowRunId: string;
   products: EffectImportProduct[];
+  editing?: boolean;
 }>();
-
 const projectContext = useProjectContext();
 
-const emit = defineEmits<{ back: []; next: []; branchActivated: [] }>();
+const emit = defineEmits<{
+  back: [];
+  next: [];
+  branchActivated: [settled?: () => void, options?: { refreshBranchTree: boolean }];
+}>();
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
@@ -122,6 +130,12 @@ const resultData = ref<EffectPromptViewResultData | null>(null);
 const resultLoading = ref(false);
 const keyword = ref('');
 const purposeFilter = ref<EffectPromptFragmentType | ''>('');
+const originFilter = ref<EffectPromptItemOrigin | ''>('');
+const originOptions = [
+  { value: '', label: '全部来源' },
+  { value: 'AI', label: 'AI 生成' },
+  { value: 'MANUAL', label: '外部导入' },
+] as const;
 const includeCompatiblePurposes = ref(false);
 const page = ref(1);
 const pageSize = ref(EFFECT_PROMPT_LIMITS.pageSize);
@@ -129,7 +143,43 @@ const notice = ref<Notice | null>(null);
 const itemOperation = ref<ItemOperation | null>(null);
 const validating = ref(false);
 const editPending = ref(false);
-const editing = ref(false);
+const editing = computed(() => Boolean(props.editing));
+const editTransition = ref<'enter' | 'cancel' | 'save' | null>(null);
+// Keep the source controls until both the parent and this node finish handing
+// over. Never advertise a ready edit/read-only view while its data is still old.
+const displayEditing = computed(() => editTransition.value === 'enter'
+  ? false : editTransition.value !== null ? true : editing.value);
+const workspaceSynchronizing = ref(false);
+let activeWorkspaceLoad: Promise<void> | null = null;
+let runSynchronization: Promise<void> | null = null;
+let expectedEditRunId: string | null = null;
+const transitionView = ref<{
+  projectId: string;
+  workflowRunId: string;
+  product: EffectImportProduct | null;
+  state: EffectPromptProductState | null;
+} | null>(null);
+const synchronizeEditRun = (workflowRunId: string, refreshBranchTree = false): Promise<void> => {
+  expectedEditRunId = workflowRunId;
+  transitionView.value = {
+    projectId: props.projectId,
+    workflowRunId,
+    product: currentProduct.value,
+    state: currentState.value,
+  };
+  const pending = completeEffectNodeHandoff(
+    () => new Promise<void>((resolve) => emit('branchActivated', resolve, { refreshBranchTree })),
+    () => activeWorkspaceLoad,
+  );
+  runSynchronization = pending;
+  void pending.finally(() => {
+    if (runSynchronization === pending) {
+      runSynchronization = null;
+      expectedEditRunId = null;
+    }
+  });
+  return pending;
+};
 const exporting = ref(false);
 const batchStartPending = ref(false);
 
@@ -146,12 +196,12 @@ const graphTrigger = ref<HTMLButtonElement | null>(null);
 
 const editorOpen = ref(false);
 const editorSaving = ref(false);
-const editorAutoFilling = ref(false);
 const editorMode = ref<'add' | 'edit'>('edit');
 const editorItemId = ref('');
 const editorDraft = ref<PromptItemDraft>({
   content: '',
   primaryPurpose: 'PRODUCT_DISPLAY',
+  compatiblePurposes: ['PRODUCT_DISPLAY'],
   creativeCore: '',
   dimensions: {
     narrative: '',
@@ -163,14 +213,16 @@ const editorDraft = ref<PromptItemDraft>({
   },
   targetDurationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.defaultDurationSeconds,
 });
+const editorOriginalDraft = ref<PromptItemDraft | null>(null);
 const editorTrigger = ref<HTMLElement | null>(null);
-const editorCloseButton = ref<HTMLButtonElement | null>(null);
 const promptSearchInput = ref<HTMLInputElement | null>(null);
 
 let disposed = false;
 let nodeActive = true;
 let activatedOnce = false;
 let workspaceHydrating = false;
+const loadedWorkspaceContext = ref<EffectPromptContext | null>(null);
+const loadedResultContext = ref<EffectPromptContext | null>(null);
 let workspaceGeneration = 0;
 let resultGeneration = 0;
 let workspaceController: AbortController | null = null;
@@ -178,6 +230,7 @@ let resultController: AbortController | null = null;
 let operationController: AbortController | null = null;
 let itemMutationController: AbortController | null = null;
 let exportController: AbortController | null = null;
+let batchExportPending = false;
 let graphDetailController: AbortController | null = null;
 let graphStateController: AbortController | null = null;
 let settingsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -193,13 +246,48 @@ const activeProducts = computed(() =>
   props.products.filter((product) => product.status === 'ACTIVE'),
 );
 const currentProduct = computed(
-  () => activeProducts.value.find((product) => product.id === currentProductId.value) ?? null,
+  () => resolvePromptTransitionValue(
+    activeProducts.value.find((product) => product.id === currentProductId.value) ?? null,
+    transitionView.value ? { ...transitionView.value, value: transitionView.value.product } : null,
+    { projectId: props.projectId, workflowRunId: props.workflowRunId },
+  ),
 );
-const currentState = computed(() => productStates.value[currentProductId.value] ?? null);
+const currentState = computed(() => resolvePromptTransitionValue(
+  productStates.value[currentProductId.value] ?? null,
+  transitionView.value ? { ...transitionView.value, value: transitionView.value.state } : null,
+  { projectId: props.projectId, workflowRunId: props.workflowRunId },
+));
 const hasConfirmedPrompt = computed(() =>
-  Object.values(productStates.value).some((state) => state.commitStatus === 'COMMITTED'),
+  Object.values(productStates.value).some(
+    (state) => typeof state.workingArtifactRevision === 'number',
+  ),
 );
-const canEditPrompt = computed(() => editing.value || !hasConfirmedPrompt.value);
+const canEditPrompt = computed(() =>
+  isPromptWorkspaceScopeReady(status.value, loadedWorkspaceContext.value, context()) &&
+  isPromptWorkspaceScopeReady(status.value, loadedResultContext.value, context()) &&
+  !editPending.value &&
+  !validating.value &&
+  !editorSaving.value &&
+  itemOperation.value === null &&
+  resultData.value?.productId === currentProductId.value &&
+  resultData.value?.resultId === currentState.value?.resultId &&
+  (editing.value || !hasConfirmedPrompt.value),
+);
+const canEnterPromptEdit = computed(() =>
+  isPromptWorkspaceScopeReady(status.value, loadedWorkspaceContext.value, {
+    projectId: props.projectId,
+    workflowRunId: props.workflowRunId,
+  }) && !editPending.value && !validating.value && !currentRunning.value && !batchStartPending.value,
+);
+const canEditSettings = computed(
+  () =>
+    !editing.value &&
+    !workspaceSynchronizing.value &&
+    !currentRunning.value &&
+    !batchStartPending.value &&
+    !editPending.value &&
+    !validating.value,
+);
 const currentSettings = computed(
   () => settingsDrafts.value[currentProductId.value] ?? DEFAULT_EFFECT_PROMPT_SETTINGS,
 );
@@ -223,7 +311,7 @@ const editorDurationRange = {
 };
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
 const displayedGraphRun = computed(() => currentRun.value);
-const graphDialogDescription = '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
+const graphDialogDescription = '展示本次输入、连贯创意生成、用途评估和数量结果。';
 const currentGraphNodeIds = computed<readonly EffectPromptNodeId[]>(() => {
   if (displayedGraphRun.value)
     return effectPromptRunGraphNodeIds(displayedGraphRun.value.operation);
@@ -332,7 +420,14 @@ const currentCountStats = computed(() => {
     excessCount: Math.max(0, actualCount - targetCount),
   };
 });
-const hasPromptFilters = computed(() => Boolean(keyword.value.trim() || purposeFilter.value));
+const hasPromptFilters = computed(() =>
+  Boolean(keyword.value.trim() || purposeFilter.value || originFilter.value),
+);
+const originCount = (origin: EffectPromptItemOrigin | ''): number | string => {
+  const counts = resultData.value?.sourceCounts;
+  if (!origin) return counts ? counts.AI + counts.MANUAL : currentCountStats.value.actualCount;
+  return counts?.[origin] ?? (resultData.value ? '—' : 0);
+};
 const purposeMatchMode = computed<EffectPromptPurposeMatchMode>(() =>
   includeCompatiblePurposes.value ? 'PRIMARY_OR_COMPATIBLE' : 'PRIMARY',
 );
@@ -417,15 +512,6 @@ const emptyDimensions = (): EffectPromptDimensions => ({
   emotion: '',
 });
 
-const editorDimensionMaxLengths: Record<EffectPromptDimensionKey, number> = {
-  narrative: 120,
-  scene: 120,
-  persona: 160,
-  productRelation: 240,
-  camera: 160,
-  emotion: 120,
-};
-
 const reviewIssueLabel = (issue: string): string =>
   ({
     PRODUCT_UNRELATED: '正文与当前产品缺少明确关联',
@@ -471,12 +557,27 @@ const applyWorkspace = (products: EffectPromptProductState[]): void => {
   disabledElementsTextDrafts.value = disabledDrafts;
 };
 
-const loadCurrentResult = async (): Promise<void> => {
+const resultViewKey = (productId = currentProductId.value): string => JSON.stringify([
+  props.projectId, props.workflowRunId, productId, page.value, pageSize.value,
+  keyword.value, purposeFilter.value, purposeMatchMode.value, originFilter.value,
+]);
+
+const loadCurrentResult = async (
+  prefetched?: { data: EffectPromptViewResultData; key: string } | null,
+): Promise<void> => {
+  if (
+    !nodeActive ||
+    loadedWorkspaceContext.value?.projectId !== props.projectId ||
+    loadedWorkspaceContext.value.workflowRunId !== props.workflowRunId
+  ) return;
   const productId = currentProductId.value;
+  const requestedContext = context();
   const state = productStates.value[productId];
   const generation = ++resultGeneration;
   resultController?.abort();
-  if (resultData.value?.productId && resultData.value.productId !== productId)
+  if (resultData.value?.productId && resultData.value.productId !== productId &&
+    !(transitionView.value?.projectId === props.projectId &&
+      transitionView.value.workflowRunId === props.workflowRunId))
     resultData.value = null;
   if (!productId || (!state?.resultId && state?.status !== 'FAILED')) {
     resultData.value = null;
@@ -486,7 +587,7 @@ const loadCurrentResult = async (): Promise<void> => {
   resultController = controller;
   resultLoading.value = true;
   try {
-    const loaded = await loadEffectPromptResult(
+    const loaded = prefetched?.key === resultViewKey(productId) ? prefetched.data : await loadEffectPromptResult(
       props.projectId,
       props.workflowRunId,
       productId,
@@ -496,13 +597,17 @@ const loadCurrentResult = async (): Promise<void> => {
       purposeFilter.value || undefined,
       purposeMatchMode.value,
       controller.signal,
+      originFilter.value || undefined,
     );
     if (
       generation !== resultGeneration ||
       controller.signal.aborted ||
-      productId !== currentProductId.value
+      productId !== currentProductId.value ||
+      requestedContext.projectId !== props.projectId ||
+      requestedContext.workflowRunId !== props.workflowRunId
     )
       return;
+    loadedResultContext.value = requestedContext;
     const validPage = clampPromptPage(page.value, loaded.total, pageSize.value);
     if (page.value !== validPage) {
       resultData.value = loaded;
@@ -613,6 +718,12 @@ const startPolling = (productId: string, run: EffectPromptRun): void => {
 };
 
 const resumeRuns = async (): Promise<void> => {
+  const generation = workspaceGeneration;
+  const projectId = props.projectId;
+  const workflowRunId = props.workflowRunId;
+  const signal = workspaceController?.signal;
+  const isCurrent = (): boolean => nodeActive && generation === workspaceGeneration &&
+    projectId === props.projectId && workflowRunId === props.workflowRunId && !signal?.aborted;
   await Promise.all(
     Object.values(productStates.value)
       .filter(
@@ -621,24 +732,39 @@ const resumeRuns = async (): Promise<void> => {
       )
       .map(async (state) => {
         try {
-          const run = await loadEffectPromptRun(props.projectId, state.runId!);
+          const run = await loadEffectPromptRun(projectId, state.runId!, signal);
+          if (!isCurrent() || productStates.value[state.productId]?.runId !== state.runId) return;
           if (run.status === 'QUEUED' || run.status === 'RUNNING')
             startPolling(state.productId, run);
           else updateRun(state.productId, run);
         } catch (error) {
-          if (!isAbortError(error))
+          if (isCurrent() && !isAbortError(error))
             showNotice(safeMessage(error, '恢复 Prompt 任务失败'), 'warning');
         }
       }),
   );
 };
 
-async function reloadWorkspace(showLoading = true): Promise<void> {
+function reloadWorkspace(showLoading = true): Promise<void> {
+  const pending = readPromptWorkspace(showLoading);
+  activeWorkspaceLoad = pending;
+  return pending;
+}
+
+async function readPromptWorkspace(showLoading = true): Promise<void> {
   if (!nodeActive) return;
   const generation = ++workspaceGeneration;
   workspaceController?.abort();
   const controller = new AbortController();
+  const loadedContext = context();
+  if (loadedWorkspaceContext.value?.projectId !== loadedContext.projectId ||
+    loadedWorkspaceContext.value.workflowRunId !== loadedContext.workflowRunId) {
+    runsByProduct.value = {};
+    settingsSaveStatuses.value = {};
+    settingsSavePromises.clear();
+  }
   workspaceController = controller;
+  workspaceSynchronizing.value = true;
   if (showLoading) status.value = 'loading';
   loadError.value = '';
   try {
@@ -649,29 +775,36 @@ async function reloadWorkspace(showLoading = true): Promise<void> {
       status.value = 'ready';
       return;
     }
-    const snapshot = await loadEffectPromptWorkspaceSnapshot(context(), controller.signal);
+    const nextProductId = activeProducts.value.find(({ id }) => id === currentProductId.value)?.id
+      ?? activeProducts.value[0]?.id;
+    const nextResultKey = nextProductId ? resultViewKey(nextProductId) : '';
+    // The edit API has already cloned a confirmed result. Its mapped product ID
+    // is available from the parent draft, so workspace and list need not waterfall.
+    const prefetchResult = transitionView.value?.projectId === loadedContext.projectId &&
+      transitionView.value.workflowRunId === loadedContext.workflowRunId &&
+      transitionView.value.state?.resultId && nextProductId;
+    const [snapshot, prefetchedResult] = await Promise.all([
+      loadEffectPromptWorkspaceSnapshot(loadedContext, controller.signal),
+      prefetchResult ? loadEffectPromptResult(
+        loadedContext.projectId, loadedContext.workflowRunId, nextProductId!,
+        page.value, pageSize.value, keyword.value, purposeFilter.value || undefined,
+        purposeMatchMode.value, controller.signal, originFilter.value || undefined,
+      ).then((data) => ({ data, key: nextResultKey })).catch((error: unknown) => {
+        if (isAbortError(error)) throw error;
+        return null; // The normal result loader retains its existing error/retry behavior.
+      }) : Promise.resolve(null),
+    ]);
     const workspace = snapshot.data;
     if (generation !== workspaceGeneration || controller.signal.aborted) return;
     workspaceHydrating = true;
     try {
       applyWorkspace(workspace.products);
-      const overview = await getActiveWorkflowRunOverview(
-        props.projectId,
-        'EFFECT',
-        'EFFECT',
-        controller.signal,
-      );
+      loadedWorkspaceContext.value = loadedContext;
       if (generation !== workspaceGeneration || controller.signal.aborted) return;
-      const activeRun = overview.data.run;
-      editing.value = Boolean(
-        activeRun?.id === props.workflowRunId &&
-        activeRun.isTemporaryBranch &&
-        activeRun.editNodeId === 'PROMPT_GENERATION',
-      );
       if (!activeProducts.value.some(({ id }) => id === currentProductId.value))
         currentProductId.value = activeProducts.value[0]!.id;
       status.value = 'ready';
-      await loadCurrentResult();
+      await loadCurrentResult(prefetchedResult);
       void resumeRuns();
       if (snapshot.prefetched) {
         workspaceRevalidationTimer = setTimeout(() => {
@@ -680,12 +813,19 @@ async function reloadWorkspace(showLoading = true): Promise<void> {
         }, 600);
       }
     } finally {
-      workspaceHydrating = false;
+      if (generation === workspaceGeneration) workspaceHydrating = false;
     }
   } catch (error) {
     if (isAbortError(error) || generation !== workspaceGeneration) return;
     status.value = 'error';
     loadError.value = safeMessage(error, 'Prompt 工作区加载失败');
+  } finally {
+    if (generation === workspaceGeneration) {
+      workspaceSynchronizing.value = false;
+      if (transitionView.value?.projectId === loadedContext.projectId &&
+        transitionView.value.workflowRunId === loadedContext.workflowRunId)
+        transitionView.value = null;
+    }
   }
 }
 
@@ -704,6 +844,10 @@ watch(
     pollControllers.clear();
     settingsControllers.forEach((controller) => controller.abort());
     settingsControllers.clear();
+    if (settingsTimer) clearTimeout(settingsTimer);
+    if (searchTimer) clearTimeout(searchTimer);
+    resultGeneration += 1;
+    resultController?.abort();
     operationController?.abort();
     itemMutationController?.abort();
     exportController?.abort();
@@ -719,9 +863,18 @@ watch(
     selectedGraphNodeId.value = null;
     graphDetail.value = null;
     graphDetailError.value = '';
-    void reloadWorkspace();
+    void reloadWorkspace(status.value !== 'ready');
   },
   { immediate: true },
+);
+watch(
+  () => [props.projectId, props.workflowRunId],
+  () => {
+    if (expectedEditRunId === props.workflowRunId) return;
+    transitionView.value = null;
+    originFilter.value = '';
+    page.value = 1;
+  },
 );
 watch(currentProductId, (next, previous) => {
   if (!nodeActive || workspaceHydrating) return;
@@ -729,6 +882,7 @@ watch(currentProductId, (next, previous) => {
   page.value = 1;
   keyword.value = '';
   purposeFilter.value = '';
+  originFilter.value = '';
   includeCompatiblePurposes.value = false;
   itemMutationController?.abort();
   exportController?.abort();
@@ -752,7 +906,7 @@ const changePageSize = (): void => {
   if (page.value === 1) void loadCurrentResult();
   else page.value = 1;
 };
-watch([purposeFilter, includeCompatiblePurposes], () => {
+watch([purposeFilter, includeCompatiblePurposes, originFilter], () => {
   if (page.value === 1) void loadCurrentResult();
   else page.value = 1;
 });
@@ -789,14 +943,14 @@ const settingRange = (key: NumericPromptSetting): { maximum: number; minimum: nu
   })[key];
 
 const queueSettingsSave = (): void => {
-  if (!currentProductId.value || !canEditPrompt.value) return;
+  if (!currentProductId.value || !canEditSettings.value) return;
   settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [currentProductId.value]: 'idle' };
   if (settingsTimer) clearTimeout(settingsTimer);
   settingsTimer = setTimeout(() => void flushSettings(currentProductId.value), 700);
 };
 
 const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
-  if (!canEditPrompt.value) return;
+  if (!canEditSettings.value) return;
   const draft = settingsDrafts.value[currentProductId.value];
   if (!draft) return;
   const range = settingRange(key);
@@ -805,7 +959,7 @@ const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
 };
 
 const updateStyleSchedule = (value: string | number): void => {
-  if (!canEditPrompt.value) return;
+  if (!canEditSettings.value) return;
   const draft = settingsDrafts.value[currentProductId.value];
   if (!draft) return;
   const selected = String(value);
@@ -815,7 +969,7 @@ const updateStyleSchedule = (value: string | number): void => {
 };
 
 const updateDeliveryChannel = (value: string | number): void => {
-  if (!canEditPrompt.value) return;
+  if (!canEditSettings.value) return;
   const draft = settingsDrafts.value[currentProductId.value];
   if (!draft) return;
   draft.deliveryChannel = String(value);
@@ -823,7 +977,7 @@ const updateDeliveryChannel = (value: string | number): void => {
 };
 
 const updateDisabledElementsText = (value: string): void => {
-  if (!canEditPrompt.value) return;
+  if (!canEditSettings.value) return;
   disabledElementsTextDrafts.value = {
     ...disabledElementsTextDrafts.value,
     [currentProductId.value]: value,
@@ -877,9 +1031,6 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
   if (state.settingsRevision !== null && JSON.stringify(draft) === JSON.stringify(state.settings))
     return true;
   const normalized = normalizePromptSettings(draft);
-  const disabledElementsChanged =
-    JSON.stringify(state.settings.disabledElements ?? []) !==
-    JSON.stringify(normalized.disabledElements ?? []);
   settingsDrafts.value = { ...settingsDrafts.value, [productId]: normalized };
   disabledElementsTextDrafts.value = {
     ...disabledElementsTextDrafts.value,
@@ -909,13 +1060,10 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
           ...state,
           settings: saved.settings,
           settingsRevision: saved.settingsRevision,
-          commitStatus: state.commitStatus === 'COMMITTED' ? 'DRAFT_CHANGED' : state.commitStatus,
           updatedAt: saved.savedAt,
         },
       };
       settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'saved' };
-      if (disabledElementsChanged && productId === currentProductId.value && state.resultId)
-        await loadCurrentResult();
       return true;
     } catch (error) {
       if (isAbortError(error)) return false;
@@ -939,7 +1087,15 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
 
 const generateCurrentBatch = async (): Promise<void> => {
   const productId = currentProductId.value;
-  if (!productId || currentRunning.value || batchStartPending.value) return;
+  if (
+    !productId ||
+    editing.value ||
+    editPending.value ||
+    validating.value ||
+    currentRunning.value ||
+    batchStartPending.value
+  )
+    return;
   if (
     currentState.value?.resultId &&
     !(await requestActionConfirmation({
@@ -1014,6 +1170,9 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
   editorDraft.value = {
     content: item?.content ?? '',
     primaryPurpose: item?.primaryPurpose ?? 'PRODUCT_DISPLAY',
+    compatiblePurposes: item?.compatiblePurposes?.length
+      ? [...item.compatiblePurposes]
+      : [item?.primaryPurpose ?? 'PRODUCT_DISPLAY'],
     creativeCore: item?.creativeCore ?? '',
     dimensions: item ? { ...item.dimensions } : emptyDimensions(),
     targetDurationSeconds: item?.targetDurationSeconds
@@ -1026,20 +1185,45 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
           ),
         ),
   };
+  editorOriginalDraft.value = {
+    ...editorDraft.value,
+    compatiblePurposes: [...editorDraft.value.compatiblePurposes],
+    dimensions: { ...editorDraft.value.dimensions },
+  };
   editorOpen.value = true;
-  await nextTick();
-  editorCloseButton.value?.focus();
 };
 
 const closeEditor = (): void => {
-  if (editorSaving.value || editorAutoFilling.value) return;
+  if (editorSaving.value) return;
+  if (editorOriginalDraft.value) {
+    editorDraft.value = {
+      ...editorOriginalDraft.value,
+      compatiblePurposes: [...editorOriginalDraft.value.compatiblePurposes],
+      dimensions: { ...editorOriginalDraft.value.dimensions },
+    };
+  }
   editorOpen.value = false;
   const trigger = editorTrigger.value;
   editorTrigger.value = null;
   nextTick(() => trigger?.focus());
 };
 
+// Reads are not write locks. Fence pending reads when an actual mutation starts
+// so an older workspace/list response cannot overwrite its successful result.
+const invalidatePromptReadRequests = (): void => {
+  clearTimeout(workspaceRevalidationTimer);
+  workspaceRevalidationTimer = undefined;
+  workspaceGeneration += 1;
+  resultGeneration += 1;
+  workspaceController?.abort();
+  resultController?.abort();
+  workspaceHydrating = false;
+  workspaceSynchronizing.value = false;
+  resultLoading.value = false;
+};
+
 const commitEditor = async (): Promise<void> => {
+  if (editorSaving.value || !canEditPrompt.value) return;
   const state = currentState.value;
   const result = resultData.value;
   const draft = editorDraft.value;
@@ -1048,16 +1232,6 @@ const commitEditor = async (): Promise<void> => {
     showNotice('请填写 Prompt 内容', 'warning');
     return;
   }
-  const creativeStructureValues = [
-    draft.creativeCore,
-    ...EFFECT_PROMPT_DIMENSIONS.map(({ key }) => draft.dimensions[key]),
-  ];
-  const hasAnyCreativeStructure = creativeStructureValues.some((value) => value.trim());
-  const hasCompleteCreativeStructure = creativeStructureValues.every((value) => value.trim());
-  if (!hasAnyCreativeStructure || !hasCompleteCreativeStructure) {
-    showNotice('请完整填写创意主线和六维信息，或点击 AI 自动生成', 'warning');
-    return;
-  }
   if (
     !Number.isInteger(draft.targetDurationSeconds) ||
     draft.targetDurationSeconds < editorDurationRange.minDurationSeconds ||
@@ -1069,6 +1243,7 @@ const commitEditor = async (): Promise<void> => {
     );
     return;
   }
+  invalidatePromptReadRequests();
   editorSaving.value = true;
   itemMutationController?.abort();
   const controller = new AbortController();
@@ -1076,6 +1251,7 @@ const commitEditor = async (): Promise<void> => {
   const productId = state.productId;
   const resultId = state.resultId;
   const resultRevision = result.revision;
+  const wasEditing = editorMode.value === 'edit';
   try {
     const saved = await saveEffectPromptItem(
       props.projectId,
@@ -1084,120 +1260,39 @@ const commitEditor = async (): Promise<void> => {
       {
         content: draft.content.trim(),
         primaryPurpose: draft.primaryPurpose,
+        compatiblePurposes: [...draft.compatiblePurposes],
         creativeCore: draft.creativeCore,
         dimensions: { ...draft.dimensions },
         targetDurationSeconds: draft.targetDurationSeconds,
       },
-      editorMode.value === 'edit' ? editorItemId.value : undefined,
+      wasEditing ? editorItemId.value : undefined,
       controller.signal,
     );
     if (controller.signal.aborted || currentProductId.value !== productId) return;
     editorOpen.value = false;
-    keyword.value = '';
-    purposeFilter.value = '';
-    includeCompatiblePurposes.value = false;
-    const affectedIndex = saved.affectedItemIndex ?? -1;
-    page.value =
-      affectedIndex >= 0
-        ? Math.floor(affectedIndex / pageSize.value) + 1
-        : promptPageCount(saved.result.items.length, pageSize.value);
+    if (saved.unchanged) {
+      showNotice('内容未变化，无需更新');
+      return;
+    }
+    if (!wasEditing) {
+      keyword.value = '';
+      purposeFilter.value = '';
+      originFilter.value = '';
+      includeCompatiblePurposes.value = false;
+      const affectedIndex = saved.affectedItemIndex ?? -1;
+      page.value =
+        affectedIndex >= 0
+          ? Math.floor(affectedIndex / pageSize.value) + 1
+          : promptPageCount(saved.result.items.length, pageSize.value);
+    }
     await reloadWorkspace(false);
-    showNotice(editorMode.value === 'edit' ? 'Prompt 编辑已保存' : 'Prompt 已添加', 'success');
+    showNotice(wasEditing ? 'Prompt 编辑已保存' : 'Prompt 已添加', 'success');
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, 'Prompt 保存失败');
   } finally {
     if (itemMutationController === controller) itemMutationController = null;
     if (!controller.signal.aborted || currentProductId.value === productId)
       editorSaving.value = false;
-  }
-};
-
-const autoFillEditorCreativeStructure = async (): Promise<void> => {
-  const state = currentState.value;
-  const result = resultData.value;
-  const draft = editorDraft.value;
-  if (
-    !state?.resultId ||
-    !result ||
-    result.revision === null ||
-    state.settingsRevision === null ||
-    currentRunning.value ||
-    partialPreview.value ||
-    editorAutoFilling.value
-  )
-    return;
-  if (!draft.content.trim()) {
-    showNotice('请先填写片段生成 Prompt，再使用 AI 自动生成', 'warning');
-    return;
-  }
-  if (
-    !Number.isInteger(draft.targetDurationSeconds) ||
-    draft.targetDurationSeconds < editorDurationRange.minDurationSeconds ||
-    draft.targetDurationSeconds > editorDurationRange.maxDurationSeconds
-  ) {
-    showNotice(
-      `片段时长需在 ${editorDurationRange.minDurationSeconds}～${editorDurationRange.maxDurationSeconds} 秒之间`,
-      'warning',
-    );
-    return;
-  }
-  operationController?.abort();
-  const controller = new AbortController();
-  operationController = controller;
-  editorAutoFilling.value = true;
-  const productId = state.productId;
-  try {
-    const saved = await autoFillEffectPromptCreativeStructure(
-      props.projectId,
-      state.resultId,
-      result.revision,
-      state.settingsRevision,
-      { ...draft, dimensions: { ...draft.dimensions } },
-      editorMode.value === 'edit' ? editorItemId.value : undefined,
-      controller.signal,
-    );
-    if (controller.signal.aborted || currentProductId.value !== productId) return;
-    const itemId = saved.affectedItemId ?? editorItemId.value;
-    if (itemId) {
-      editorMode.value = 'edit';
-      editorItemId.value = itemId;
-      keyword.value = '';
-      purposeFilter.value = '';
-      includeCompatiblePurposes.value = false;
-      if (saved.affectedItemIndex !== undefined)
-        page.value = Math.floor(saved.affectedItemIndex / pageSize.value) + 1;
-    }
-    if (!itemId || !saved.evaluationRun) {
-      await reloadWorkspace(false);
-      throw new Error(saved.evaluationStartError || 'AI 自动补齐任务未能启动');
-    }
-    updateRun(productId, saved.evaluationRun);
-    const finalRun = await pollEffectPromptRun(props.projectId, saved.evaluationRun.id, {
-      signal: controller.signal,
-      onUpdate: (run) => updateRun(productId, run),
-    });
-    if (controller.signal.aborted || currentProductId.value !== productId) return;
-    updateRun(productId, finalRun);
-    await reloadWorkspace(false);
-    if (finalRun.status !== 'COMPLETED')
-      throw new Error(finalRun.errorMessage || 'AI 自动补齐失败');
-    const filled = resultData.value?.items.find((item) => item.id === itemId);
-    if (!filled) throw new Error('AI 已完成补齐，但最新 Prompt 未能载入，请刷新后重试');
-    editorDraft.value = {
-      content: filled.content,
-      primaryPurpose: filled.primaryPurpose,
-      creativeCore: filled.creativeCore,
-      dimensions: { ...filled.dimensions },
-      targetDurationSeconds: filled.targetDurationSeconds,
-    };
-    showNotice('创意方向与六维信息已自动生成', 'success');
-  } catch (error) {
-    if (!isAbortError(error)) {
-      await handleMutationError(error, 'AI 自动补齐失败');
-    }
-  } finally {
-    if (operationController === controller) operationController = null;
-    editorAutoFilling.value = false;
   }
 };
 
@@ -1223,10 +1318,12 @@ const requestDeleteItem = async (item: EffectPromptItem): Promise<void> => {
     !result ||
     result.revision === null ||
     partialPreview.value ||
+    !canEditPrompt.value ||
     currentRunning.value ||
     itemOperation.value
   )
     return;
+  invalidatePromptReadRequests();
   itemOperation.value = { itemId: item.id, kind: 'delete' };
   itemMutationController?.abort();
   const controller = new AbortController();
@@ -1254,23 +1351,32 @@ const requestDeleteItem = async (item: EffectPromptItem): Promise<void> => {
 };
 
 const exportBatch = async (): Promise<void> => {
-  const projectId = props.projectId;
-  const state = currentState.value;
-  if (
-    !state?.resultId ||
-    !resultData.value ||
-    partialPreview.value ||
-    !currentProduct.value ||
-    currentRunning.value ||
-    exporting.value
-  )
-    return;
-  exportController?.abort();
-  const controller = new AbortController();
-  exportController = controller;
-  const productId = state.productId;
+  if (batchExportPending) return;
+  batchExportPending = true;
   exporting.value = true;
+  const projectId = props.projectId;
+  let controller: AbortController | null = null;
   try {
+    // A click during a Run handoff is accepted, not silently dropped. Wait for
+    // its authoritative result ID; ordinary background reads do not block export.
+    await runSynchronization;
+    if (!nodeActive || projectId !== props.projectId) return;
+    if (resultData.value?.productId !== currentProductId.value ||
+      resultData.value?.resultId !== currentState.value?.resultId)
+      await activeWorkspaceLoad;
+    if (!nodeActive || projectId !== props.projectId) return;
+    const state = currentState.value;
+    const result = resultData.value;
+    const product = currentProduct.value;
+    if (!state?.resultId || !result || partialPreview.value || !product ||
+      result.projectId !== projectId || result.productId !== state.productId ||
+      result.resultId !== state.resultId) {
+      showNotice('暂无可导出的完整 Prompt 批次，请稍后重试', 'warning');
+      return;
+    }
+    controller = new AbortController();
+    exportController = controller;
+    const productId = state.productId;
     const projectName = (
       projectContext.currentProject.value?.id === projectId
         ? projectContext.currentProject.value.name
@@ -1300,7 +1406,8 @@ const exportBatch = async (): Promise<void> => {
     if (!isAbortError(error)) showNotice(safeMessage(error, 'Prompt 导出失败'), 'error');
   } finally {
     if (exportController === controller) exportController = null;
-    if (!controller.signal.aborted || currentProductId.value === productId) exporting.value = false;
+    batchExportPending = false;
+    exporting.value = false;
   }
 };
 
@@ -1315,6 +1422,8 @@ const validatePromptBatch = async (): Promise<void> => {
     showNotice('当前批次仍存在数量偏差、完全重复、待评估条目或事实与结构硬问题', 'warning');
     return;
   }
+  invalidatePromptReadRequests();
+  editTransition.value = 'save';
   validating.value = true;
   const resultRevision = result.revision;
   try {
@@ -1336,34 +1445,46 @@ const validatePromptBatch = async (): Promise<void> => {
         ? `${completedMessage}；另有 ${validation.warnings.length} 项质量建议，可继续优化`
         : completedMessage,
     );
-    editing.value = false;
-    if (validation.workflowRunId && validation.workflowRunId !== props.workflowRunId) {
-      emit('branchActivated');
-      return;
-    }
-    await reloadWorkspace(false);
+    const nextRunId = validation.workflowRunId ?? props.workflowRunId;
+    const sameRun = nextRunId === props.workflowRunId;
+    await synchronizeEditRun(nextRunId, true);
+    if (sameRun) await reloadWorkspace(false);
   } catch (error) {
     await handleMutationError(error, 'Prompt 修改保存失败');
   } finally {
     validating.value = false;
+    editTransition.value = null;
   }
 };
 
 const beginPromptEdit = async (): Promise<void> => {
-  if (editPending.value || currentRunning.value) return;
+  if (!canEnterPromptEdit.value) return;
+  editTransition.value = 'enter';
   editPending.value = true;
+  // A warm same-Run snapshot can enter editing immediately. Invalidate the
+  // background read first so a late response cannot overwrite the edit handoff.
+  workspaceGeneration += 1;
+  workspaceController?.abort();
+  resultGeneration += 1;
+  resultController?.abort();
+  resultLoading.value = false;
+  workspaceSynchronizing.value = false;
+  clearTimeout(workspaceRevalidationTimer);
+  workspaceRevalidationTimer = undefined;
   try {
+    if (!(await flushSettings())) return;
     const session = await beginEffectWorkflowNodeEdit(
       props.projectId,
       props.workflowRunId,
       'PROMPT_GENERATION',
     );
-    editing.value = true;
-    if (session.data.run.id !== props.workflowRunId) emit('branchActivated');
+    await synchronizeEditRun(session.data.run.id);
   } catch (error) {
     showNotice(safeMessage(error, '进入 Prompt 编辑失败'), 'error');
+    void reloadWorkspace(false);
   } finally {
     editPending.value = false;
+    editTransition.value = null;
   }
 };
 
@@ -1371,6 +1492,7 @@ const cancelPromptEdit = async (): Promise<void> => {
   if (editPending.value || currentRunning.value) return;
   if (!(await confirmDiscardEffectEdit())) return;
   if (editPending.value || currentRunning.value || !editing.value) return;
+  editTransition.value = 'cancel';
   editPending.value = true;
   try {
     const result = await cancelEffectWorkflowNodeEdit(
@@ -1378,13 +1500,14 @@ const cancelPromptEdit = async (): Promise<void> => {
       props.workflowRunId,
       'PROMPT_GENERATION',
     );
-    editing.value = false;
-    if (result.data.activeWorkflowRunId !== props.workflowRunId) emit('branchActivated');
-    else await reloadWorkspace(false);
+    const sameRun = result.data.activeWorkflowRunId === props.workflowRunId;
+    await synchronizeEditRun(result.data.activeWorkflowRunId);
+    if (sameRun) await reloadWorkspace(false);
   } catch (error) {
     showNotice(safeMessage(error, '取消 Prompt 编辑失败'), 'error');
   } finally {
     editPending.value = false;
+    editTransition.value = null;
   }
 };
 
@@ -1617,7 +1740,7 @@ const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
         RESULT_SAVE: '保存最佳结果；数量与结构校验通过后自动提交为工作副本。',
         ITEM_EVALUATE: '将根据用户输入的 Prompt 自动补齐创意主线和六维信息。',
       } as Partial<Record<EffectPromptNodeId, string>>
-    )[nodeId] ?? '执行后将在这里展示真实业务结果。';
+    )[nodeId] ?? '执行后将在这里展示业务结果。';
   return {
     nodeId,
     status: execution.status,
@@ -1795,13 +1918,28 @@ watch(
   },
 );
 
-const flushPendingEdits = async (): Promise<boolean> => flushSettings();
+const flushPendingEdits = async (): Promise<boolean> => {
+  const canLeave = await flushEffectNodeNavigation(
+    runSynchronization,
+    () => editPending.value || validating.value || editorSaving.value || itemOperation.value !== null,
+  );
+  if (!canLeave) return false;
+  // Editing an existing batch does not edit next-batch settings. Navigation must not
+  // normalize and save historical settings, or write them during read-only hydration.
+  if (editing.value || workspaceSynchronizing.value) return true;
+  return flushSettings();
+};
 defineExpose({ flushPendingEdits });
 
 const stopNodeRequests = (): void => {
+  clearTimeout(settingsTimer);
+  settingsTimer = undefined;
+  clearTimeout(searchTimer);
+  searchTimer = undefined;
   clearTimeout(workspaceRevalidationTimer);
   workspaceRevalidationTimer = undefined;
   workspaceGeneration += 1;
+  workspaceSynchronizing.value = false;
   resultGeneration += 1;
   workspaceController?.abort();
   resultController?.abort();
@@ -1848,11 +1986,12 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
 
-    <section v-if="status === 'loading'" class="prompt-page-state" role="status">
-      <LoaderCircle class="spin" :size="32" />
-      <h2>正在恢复差异化 Prompt 工作区</h2>
-      <p>载入服务端批次设置、生成任务、质量指标与节点草稿…</p>
-    </section>
+    <WorkflowPageLoading
+      v-if="status === 'loading'"
+      icon="prompt"
+      title="正在恢复 Prompt 工作区"
+      description="正在读取当前工作流的批次设置、Prompt 和生成任务…"
+    />
     <section v-else-if="status === 'error'" class="prompt-page-state error" role="alert">
       <AlertCircle :size="32" />
       <h2>Prompt 工作区加载失败</h2>
@@ -1877,55 +2016,9 @@ onBeforeUnmount(() => {
         </div>
         <div class="effect-prompt-heading__actions">
           <button
-            v-if="hasConfirmedPrompt && !editing"
-            class="secondary-button"
-            type="button"
-            :disabled="editPending || currentRunning"
-            @click="beginPromptEdit"
-          >
-            <Pencil :size="14" />进入编辑
-          </button>
-          <button
-            v-else-if="editing"
-            class="secondary-button"
-            type="button"
-            :disabled="editPending || currentRunning || validating"
-            @click="cancelPromptEdit"
-          >
-            <X :size="14" />取消编辑
-          </button>
-          <button
-            v-if="canEditPrompt"
-            class="secondary-button"
-            type="button"
-            :aria-busy="validating"
-            :disabled="
-              partialPreview ||
-              currentRunning ||
-              validating ||
-              editPending ||
-              !currentState.resultId ||
-              !resultData ||
-              resultData.revision === null
-            "
-            @click="validatePromptBatch"
-          >
-            <LoaderCircle v-if="validating" class="spin" :size="14" />
-            <CheckCircle2 v-else :size="14" />{{ validating ? '正在校验…' : '保存修改' }}
-          </button>
-          <button
-            ref="graphTrigger"
-            class="secondary-button workflow-graph-trigger"
-            type="button"
-            aria-haspopup="dialog"
-            @click="openGraph($event)"
-          >
-            <Workflow :size="14" />查看工作流
-          </button>
-          <button
             class="primary-button heading-generate-button"
             type="button"
-            :disabled="currentRunning || batchStartPending"
+            :disabled="editing || editPending || validating || currentRunning || batchStartPending"
             :aria-busy="currentRunning || batchStartPending"
             @click="generateCurrentBatch"
           >
@@ -1941,6 +2034,15 @@ onBeforeUnmount(() => {
                     ? '重新批量生成'
                     : '开始批量生成'
             }}
+          </button>
+          <button
+            ref="graphTrigger"
+            class="secondary-button workflow-graph-trigger"
+            type="button"
+            aria-haspopup="dialog"
+            @click="openGraph($event)"
+          >
+            <Workflow :size="14" />查看工作流
           </button>
         </div>
       </header>
@@ -1965,8 +2067,7 @@ onBeforeUnmount(() => {
         <span>
           {{
             currentState.status === 'STALE'
-              ? currentState.errorMessage ||
-                '上游信息卡或批次设置已更新，请重新生成当前产品的 Prompt。'
+              ? currentState.errorMessage || '上游信息卡已更新，请重新生成当前产品的 Prompt。'
               : currentState.errorMessage || '本次 Prompt 生成失败，请查看工作流节点后重试。'
           }}
         </span>
@@ -2011,8 +2112,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="`降低${setting.label}`"
                 :disabled="
-                  currentRunning ||
-                  !canEditPrompt ||
+                  !canEditSettings ||
                   currentSettings[setting.key] <= settingRange(setting.key).minimum
                 "
                 @click="adjustSetting(setting.key, -1)"
@@ -2025,7 +2125,7 @@ onBeforeUnmount(() => {
                 :aria-label="setting.label"
                 :min="settingRange(setting.key).minimum"
                 :max="settingRange(setting.key).maximum"
-                :disabled="currentRunning || !canEditPrompt"
+                :disabled="!canEditSettings"
                 @input="queueSettingsSave"
                 @blur="flushSettings()"
               />
@@ -2034,8 +2134,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="`提高${setting.label}`"
                 :disabled="
-                  currentRunning ||
-                  !canEditPrompt ||
+                  !canEditSettings ||
                   currentSettings[setting.key] >= settingRange(setting.key).maximum
                 "
                 @click="adjustSetting(setting.key, 1)"
@@ -2050,7 +2149,7 @@ onBeforeUnmount(() => {
               field-label="投放渠道"
               :model-value="currentSettings.deliveryChannel ?? '抖音'"
               :options="deliveryChannelOptions"
-              :disabled="currentRunning || !canEditPrompt"
+              :disabled="!canEditSettings"
               @update:model-value="updateDeliveryChannel"
             />
           </label>
@@ -2061,7 +2160,7 @@ onBeforeUnmount(() => {
               :model-value="currentStyleSelection"
               :options="styleOptions"
               :creatable="false"
-              :disabled="currentRunning || !canEditPrompt"
+              :disabled="!canEditSettings"
               @update:model-value="updateStyleSchedule"
             />
           </label>
@@ -2072,7 +2171,7 @@ onBeforeUnmount(() => {
               rows="3"
               maxlength="6000"
               placeholder="例如：未成年人、绝对化用语、未经确认的品牌文字"
-              :disabled="currentRunning || !canEditPrompt"
+              :disabled="!canEditSettings"
               @input="updateDisabledElementsText(($event.target as HTMLTextAreaElement).value)"
               @blur="flushSettings()"
             />
@@ -2119,6 +2218,49 @@ onBeforeUnmount(() => {
           >
             {{ currentSemanticDisplay.text }}
           </span>
+          <div class="prompt-edit-actions" role="group" aria-label="提示词编辑">
+            <button
+              v-if="hasConfirmedPrompt && !displayEditing"
+              class="secondary-button"
+              type="button"
+              :disabled="!canEnterPromptEdit"
+              :aria-busy="editPending"
+              @click="beginPromptEdit"
+            >
+              <LoaderCircle v-if="editPending" class="spin" :size="14" />
+              <Pencil v-else :size="14" />{{ editPending ? '正在进入…' : '进入编辑' }}
+            </button>
+            <button
+              v-else-if="displayEditing"
+              class="secondary-button"
+              type="button"
+              :disabled="editPending || currentRunning || validating"
+              @click="cancelPromptEdit"
+            >
+              <LoaderCircle v-if="editTransition === 'cancel'" class="spin" :size="14" />
+              <X v-else :size="14" />{{ editTransition === 'cancel' ? '正在退出…' : '取消编辑' }}
+            </button>
+            <button
+              v-if="displayEditing || (!editTransition && !hasConfirmedPrompt)"
+              class="secondary-button"
+              type="button"
+              :aria-busy="validating"
+              :disabled="
+                partialPreview ||
+                currentRunning ||
+                validating ||
+                editPending ||
+                !canEditPrompt ||
+                !currentState.resultId ||
+                !resultData ||
+                resultData.revision === null
+              "
+              @click="validatePromptBatch"
+            >
+              <LoaderCircle v-if="validating" class="spin" :size="14" />
+              <CheckCircle2 v-else :size="14" />{{ validating ? '正在校验…' : '保存修改' }}
+            </button>
+          </div>
           <button
             v-if="!partialPreview"
             class="primary-button"
@@ -2132,7 +2274,7 @@ onBeforeUnmount(() => {
             v-if="!partialPreview"
             class="primary-button"
             type="button"
-            :disabled="!resultData || currentRunning || exporting"
+            :aria-busy="exporting"
             title="导出提示词表格和阅读版"
             @click="exportBatch"
           >
@@ -2142,6 +2284,18 @@ onBeforeUnmount(() => {
             />批量导出
           </button>
         </div>
+        <nav class="origin-filter-bar purpose-filter-bar" aria-label="按来源筛选 Prompt">
+          <button
+            v-for="option in originOptions"
+            :key="option.value"
+            type="button"
+            :class="{ active: originFilter === option.value }"
+            :aria-pressed="originFilter === option.value"
+            @click="originFilter = option.value"
+          >
+            {{ option.label }} <small>{{ originCount(option.value) }}</small>
+          </button>
+        </nav>
         <nav class="purpose-filter-bar" aria-label="按推荐用途筛选 Prompt">
           <button
             type="button"
@@ -2170,8 +2324,8 @@ onBeforeUnmount(() => {
           </label>
         </nav>
 
-        <div v-if="resultLoading" class="prompt-empty-state" role="status">
-          <LoaderCircle class="spin" :size="25" /><strong>正在加载 Prompt</strong>
+        <div v-if="resultLoading && !resultData" class="prompt-empty-state" role="status">
+          <Sparkles :size="25" /><strong>正在加载 Prompt</strong>
         </div>
         <div v-else-if="!currentItems.length" class="prompt-empty-state">
           <Search :size="25" /><strong>{{
@@ -2183,7 +2337,7 @@ onBeforeUnmount(() => {
           }}</strong
           ><span>{{
             resultData
-              ? '请调整搜索词，或人工补充新的 Prompt。'
+              ? '请调整来源、用途或搜索词，或人工补充新的 Prompt。'
               : currentState.status === 'FAILED'
                 ? '请重新批量生成；失败任务不会覆盖已有有效结果。'
                 : '完成信息提炼后，点击开始批量生成。'
@@ -2196,13 +2350,14 @@ onBeforeUnmount(() => {
           }}</span>
           <div class="prompt-main">
             <header>
-              <strong>{{ item.code }}</strong
-              ><span
-                ><i v-if="item.manualEdited || item.origin === 'MANUAL'">人工</i
-                ><em v-if="item.classificationStatus === 'PENDING'" class="classification-pending"
-                  >待补齐</em
-                ><em
-                  v-else-if="item.classificationStatus === 'NEEDS_REVISION'"
+              <strong>{{ item.code }}</strong>
+              <span>
+                <em
+                  class="prompt-origin-tag"
+                  :class="item.origin === 'MANUAL' ? 'external' : 'ai'"
+                >{{ item.origin === 'MANUAL' ? '外部导入' : 'AI 生成' }}</em>
+                <em
+                  v-if="item.classificationStatus === 'NEEDS_REVISION'"
                   class="classification-needs-revision"
                   >需修改</em
                 ><em v-else class="primary-fragment-tag"
@@ -2325,7 +2480,6 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-
       <WorkflowNodeFooter
         back-label="上一步：AI 信息提炼"
         :show-validate="false"
@@ -2337,133 +2491,14 @@ onBeforeUnmount(() => {
     </template>
 
     <Teleport to="body">
-      <div v-if="editorOpen" class="prompt-dialog-backdrop" @mousedown.self="closeEditor">
-        <section
-          class="prompt-editor-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="prompt-editor-title"
-          @keydown.esc="closeEditor"
-        >
-          <header>
-            <div>
-              <span>{{ editorMode === 'add' ? '人工补充' : '节点草稿编辑' }}</span>
-              <h2 id="prompt-editor-title">
-                {{ editorMode === 'add' ? '添加提示词' : '编辑提示词' }}
-              </h2>
-            </div>
-            <button
-              ref="editorCloseButton"
-              type="button"
-              aria-label="关闭 Prompt 编辑窗口"
-              @click="closeEditor"
-            >
-              <X :size="17" />
-            </button>
-          </header>
-          <div class="editor-grid">
-            <label>
-              <span>片段类型</span>
-              <select v-model="editorDraft.primaryPurpose" :disabled="editorAutoFilling">
-                <option v-for="type in EFFECT_PROMPT_FRAGMENT_TYPES" :key="type" :value="type">
-                  {{ fragmentTypeLabel(type) }}
-                </option>
-              </select>
-              <small>作为该条素材的主用途，AI 自动生成不会覆盖你的选择。</small>
-            </label>
-            <label>
-              <span>片段时长</span>
-              <input
-                v-if="editorMode === 'add'"
-                v-model.number="editorDraft.targetDurationSeconds"
-                type="number"
-                :min="editorDurationRange.minDurationSeconds"
-                :max="editorDurationRange.maxDurationSeconds"
-                :disabled="editorAutoFilling"
-              />
-              <div v-else class="editor-duration-readonly">
-                {{ editorDraft.targetDurationSeconds }} 秒
-              </div>
-              <small>{{
-                editorMode === 'edit'
-                  ? '已有 Prompt 的时长不可修改。'
-                  : '支持 4～30 秒；时长作为渲染参数，不写入 Prompt 正文。'
-              }}</small>
-            </label>
-          </div>
-          <label class="editor-content"
-            ><span>片段生成 Prompt</span
-            ><small>先描述一个可独立渲染的画面片段；填写后可让 AI 补齐下方创意信息。</small>
-            <textarea
-              v-model="editorDraft.content"
-              :disabled="editorAutoFilling"
-              placeholder="请写清首帧画面、单一连续动作、产品位置、运镜、光线与结束帧"
-            />
-          </label>
-          <section class="editor-creative-structure">
-            <header>
-              <div>
-                <h3>创意方向与六维信息</h3>
-                <p>用于创意评估、展示与追溯，请与 Prompt 正文保持一致。</p>
-              </div>
-              <button
-                class="editor-ai-fill-button"
-                type="button"
-                :disabled="editorAutoFilling || editorSaving || !editorDraft.content.trim()"
-                @click="autoFillEditorCreativeStructure"
-              >
-                <LoaderCircle v-if="editorAutoFilling" class="spin" :size="14" />
-                <Sparkles v-else :size="14" />
-                {{ editorAutoFilling ? 'AI 生成中' : 'AI 自动生成' }}
-              </button>
-            </header>
-            <label class="editor-creative-core">
-              <span>创意主线</span>
-              <textarea
-                v-model="editorDraft.creativeCore"
-                :disabled="editorAutoFilling"
-                maxlength="160"
-                rows="2"
-                placeholder="概括这一画面片段要表达的核心创意"
-              />
-            </label>
-            <div class="editor-dimension-grid">
-              <label v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                <span>{{ dimension.label }}</span>
-                <textarea
-                  v-model="editorDraft.dimensions[dimension.key]"
-                  :disabled="editorAutoFilling"
-                  :maxlength="editorDimensionMaxLengths[dimension.key]"
-                  rows="2"
-                  :placeholder="`填写${dimension.label}`"
-                />
-              </label>
-            </div>
-            <p class="editor-structure-hint">
-              可自行填写，或在上方 Prompt 完成后让 AI 自动生成；生成结果仍可继续编辑。
-            </p>
-          </section>
-          <footer>
-            <p>完整手填内容可直接保存；只有点击“AI 自动生成”才会调用 AI。</p>
-            <button
-              type="button"
-              :disabled="editorSaving || editorAutoFilling"
-              @click="closeEditor"
-            >
-              取消</button
-            ><button
-              class="primary-button"
-              type="button"
-              :disabled="editorSaving || editorAutoFilling"
-              @click="commitEditor"
-            >
-              <LoaderCircle v-if="editorSaving" class="spin" :size="14" />{{
-                editorMode === 'add' ? '添加提示词' : '保存编辑'
-              }}
-            </button>
-          </footer>
-        </section>
-      </div>
+      <EffectPromptItemDialog
+        v-if="editorOpen"
+        v-model:draft="editorDraft"
+        :editor-mode="editorMode"
+        :editor-saving="editorSaving"
+        @close="closeEditor"
+        @save="commitEditor"
+      />
 
       <WorkflowExecutionGraphDialog
         :open="graphDialogOpen" title="Prompt 生成工作流" eyebrow="PROMPT WORKFLOW"
@@ -2475,11 +2510,11 @@ onBeforeUnmount(() => {
         @close="closeGraph" @select="selectSharedGraphNode"
       >
               <div v-if="!selectedGraphNodeId" class="node-detail-empty">
-                <Workflow :size="30" /><strong>选择节点查看真实结果</strong>
+                <Workflow :size="30" /><strong>选择节点查看结果</strong>
                 <p v-if="!displayedGraphRun">
-                  当前产品尚无执行产物；运行新批次后，这里将展示对应节点的真实结果。
+                  当前产品尚无执行产物；运行新批次后，这里将展示对应节点的结果。
                 </p>
-                <p v-else>展示当前运行的真实业务产物，同时隐藏模型指令、原始响应和内部标识。</p>
+                <p v-else>展示当前运行的业务产物，同时隐藏模型指令、原始响应和内部标识。</p>
               </div>
               <template v-else>
                 <header class="node-detail-header">
@@ -2501,7 +2536,7 @@ onBeforeUnmount(() => {
                   class="node-detail-message loading"
                   role="status"
                 >
-                  <LoaderCircle class="spin" :size="13" />正在同步节点真实结果…
+                  <LoaderCircle class="spin" :size="13" />正在同步节点结果…
                 </div>
                 <div v-if="graphDetailError" class="node-detail-message error" role="alert">
                   <AlertCircle :size="13" />{{ graphDetailError }}
@@ -3022,6 +3057,16 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 800;
 }
+.prompt-notice.warning {
+  color: #926123;
+  background: #fff9eb;
+  border-color: #f3d69a;
+}
+.prompt-notice.error {
+  color: #a84148;
+  background: #fff3f2;
+  border-color: #f3c6c4;
+}
 .prompt-notice-enter-active,
 .prompt-notice-leave-active {
   transition: 0.2s ease;
@@ -3042,6 +3087,9 @@ onBeforeUnmount(() => {
 }
 .prompt-page-state > svg {
   color: var(--effect-blue);
+}
+.prompt-page-state.error > svg {
+  color: #d65355;
 }
 .prompt-page-state h2 {
   margin: 13px 0 5px;
@@ -3145,6 +3193,11 @@ button:disabled {
   border-radius: 11px;
   font-size: 11px;
 }
+.prompt-state-alert.error {
+  color: #b83246;
+  background: #fff1f2;
+  border-color: #efc4cb;
+}
 .prompt-state-alert span {
   flex: 1;
 }
@@ -3183,6 +3236,9 @@ button:disabled {
 }
 .settings-heading span.saving {
   color: #2563eb;
+}
+.settings-heading span.error {
+  color: #d65355;
 }
 .setting-card {
   display: grid;
@@ -3559,7 +3615,14 @@ button:disabled {
   min-height: 42px;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
   scroll-margin-top: 84px;
+}
+.prompt-edit-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .prompt-search {
   display: flex;
@@ -3707,22 +3770,31 @@ button:disabled {
 }
 .prompt-main > header i,
 .prompt-main > header em {
+  display: inline-flex;
   min-height: 22px;
   padding: 2px 8px;
+  align-items: center;
+  justify-content: center;
   border-radius: 5px;
   font-size: 10px;
   font-style: normal;
   font-weight: 700;
+  text-align: center;
+}
+.prompt-main > header em.prompt-origin-tag {
+  color: #287194;
+  background: #edf9fd;
+  border: 1px solid #b8dfeb;
+}
+.prompt-main > header em.prompt-origin-tag.external {
+  color: #7d5a22;
+  background: #fff7df;
+  border-color: #f1d89a;
 }
 .prompt-main > header em.duration-tag {
   color: #4f6f9f;
   background: #eef5ff;
   border-color: #cfdef4;
-}
-.prompt-main > header em.classification-pending {
-  color: #9a6508;
-  background: #fff7df;
-  border-color: #efd69a;
 }
 .prompt-main > header em.classification-needs-revision {
   color: #b33a46;
@@ -3927,16 +3999,6 @@ button:disabled {
 .prompt-main > textarea::-webkit-scrollbar-thumb:hover {
   background: #8ea5c6;
 }
-.editor-duration-readonly {
-  display: flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 10px;
-  background: #f5f8fc;
-  border: 1px solid #dfe5ed;
-  border-radius: 8px;
-  font-weight: 600;
-}
 .prompt-actions {
   display: grid;
   grid-template-columns: repeat(2, 68px);
@@ -3958,6 +4020,10 @@ button:disabled {
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
+}
+.prompt-actions button.danger {
+  color: #df4d58;
+  border-color: #f1cbd0;
 }
 .prompt-empty-state {
   display: flex;
@@ -4011,230 +4077,12 @@ button:disabled {
 .prompt-page-size select:disabled {
   cursor: wait;
 }
-.prompt-dialog-backdrop {
-  --effect-blue: #2563eb;
-  position: fixed;
-  z-index: 1200;
-  inset: 0;
-  display: grid;
-  padding: 20px;
-  place-items: center;
-  background: #0f172a66;
-  backdrop-filter: blur(3px);
-}
-.prompt-editor-dialog{
-  width: min(920px, 100%);
-  max-height: calc(100vh - 40px);
-  overflow: auto;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 20px;
-  box-shadow: 0 24px 70px #0f172a38;
-}
-.prompt-editor-dialog {
-  padding: 22px;
-}
 .selling-point-note {
   display: block;
   margin-top: 8px;
   color: #7b879a;
   font-size: 9px;
   line-height: 1.45;
-}
-.prompt-editor-dialog > header{
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-}
-.prompt-editor-dialog > header {
-  margin-bottom: 18px;
-}
-.prompt-editor-dialog header span{
-  color: #6f50c4;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-}
-.prompt-editor-dialog h2{
-  margin: 4px 0 0;
-  color: #1d2940;
-  font-size: 20px;
-}
-.prompt-editor-dialog > header button{
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  color: #64748b;
-  background: #f7f9fc;
-  border: 1px solid #dfe6f0;
-  border-radius: 9px;
-}
-.editor-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 11px;
-}
-.editor-creative-structure {
-  margin-top: 14px;
-  padding: 14px;
-  background: #f8faff;
-  border: 1px solid #dce7fb;
-  border-radius: 12px;
-}
-.editor-creative-structure > header {
-  display: flex;
-  margin-bottom: 12px;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.editor-creative-structure > header h3 {
-  margin: 0;
-  color: #263650;
-  font-size: 13px;
-}
-.editor-creative-structure > header p {
-  margin: 4px 0 0;
-  color: #718099;
-  font-size: 10px;
-  line-height: 1.5;
-}
-.editor-ai-fill-button {
-  display: inline-flex;
-  min-height: 32px;
-  padding: 0 11px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  color: #2563eb;
-  background: #eef4ff;
-  border: 1px solid #cfe0ff;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 800;
-}
-.editor-ai-fill-button:hover:not(:disabled) {
-  background: #e3edff;
-  border-color: #9fbcff;
-}
-.editor-ai-fill-button:disabled {
-  color: #98a6ba;
-  background: #f1f4f8;
-  border-color: #e1e7ef;
-}
-.editor-dimension-grid {
-  display: grid;
-  margin-top: 11px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-.prompt-editor-dialog .editor-creative-core textarea,
-.prompt-editor-dialog .editor-dimension-grid textarea {
-  min-height: 62px;
-  padding: 9px 11px;
-  resize: vertical;
-  line-height: 1.55;
-}
-.editor-structure-hint {
-  margin: 10px 0 0;
-  color: #8a6a2f;
-  font-size: 9px;
-  line-height: 1.55;
-}
-.editor-wide-field {
-  grid-column: 1 / -1;
-}
-.prompt-editor-dialog label > span {
-  display: block;
-  margin-bottom: 6px;
-  color: #4d5b72;
-  font-size: 11px;
-  font-weight: 800;
-}
-.prompt-editor-dialog label > small {
-  display: block;
-  margin-top: 5px;
-  color: #8995a8;
-  font-size: 9px;
-  line-height: 1.45;
-}
-.prompt-editor-dialog input[readonly] {
-  color: #6b778b;
-  background: #f4f6f9;
-  cursor: not-allowed;
-}
-.prompt-editor-dialog input,
-.prompt-editor-dialog select,
-.prompt-editor-dialog textarea {
-  width: 100%;
-  padding: 0 11px;
-  color: #4e5b70;
-  border: 1px solid #dbe4f6;
-  border-radius: 10px;
-  outline: none;
-  font-family: inherit;
-  font-size: 12px;
-}
-.prompt-editor-dialog input {
-  height: 39px;
-}
-.prompt-editor-dialog select {
-  width: 100%;
-  height: 39px;
-  padding: 0 11px;
-  background: #fff;
-}
-.prompt-editor-dialog textarea {
-  min-height: 210px;
-  padding: 11px;
-  resize: vertical;
-  line-height: 1.7;
-}
-.editor-content {
-  display: block;
-  margin-top: 13px;
-}
-.editor-content > small {
-  display: block;
-  margin: -2px 0 7px;
-  color: #8995a8;
-  font-size: 9px;
-  line-height: 1.55;
-}
-.prompt-editor-dialog input:focus,
-.prompt-editor-dialog select:focus,
-.prompt-editor-dialog textarea:focus {
-  border-color: #7da4ff;
-  box-shadow: 0 0 0 3px #2563eb14;
-}
-.prompt-editor-dialog > footer {
-  display: flex;
-  margin-top: 16px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.prompt-editor-dialog > footer p {
-  margin: 0 auto 0 0;
-  color: #7e8a9d;
-  font-size: 10px;
-}
-.prompt-editor-dialog > footer button {
-  height: 38px;
-  padding: 0 16px;
-  color: #536178;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 9px;
-  font-size: 12px;
-  font-weight: 800;
-}
-.prompt-editor-dialog > footer .primary-button {
-  color: #fff;
-  background: var(--effect-blue);
-  border-color: var(--effect-blue);
 }
 .spin {
   animation: prompt-spin 0.75s linear infinite;
@@ -4323,27 +4171,5 @@ button:disabled {
     grid-template-columns: 1fr;
     gap: 3px;
   }
-  .editor-grid,
-  .editor-dimension-grid{
-    grid-template-columns: 1fr;
-  }
-  .prompt-editor-dialog .editor-creative-core textarea,
-  .prompt-editor-dialog .editor-dimension-grid textarea {
-    min-height: 88px;
-  }
-  .prompt-editor-dialog > footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .prompt-editor-dialog > footer p {
-    margin-right: 0;
-  }
-  .prompt-editor-dialog > footer button {
-    width: 100%;
-  }
-  .prompt-dialog-backdrop {
-    padding: 10px;
-  }
 }
-
 </style>

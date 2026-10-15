@@ -10,7 +10,9 @@ import { effectSavedMixSourcesStale } from '../../../platform/workflow/effect-br
 import { visualHash } from '../template-mix/effect-packaging.domain';
 import {
   finalOutputSavedBatchStale,
+  finalOutputConfirmedProjectIds,
   finalOutputSavedDraftDiffers,
+  finalOutputSavedProjectChanges,
 } from './effect-final-output-freshness';
 
 const variant = (): EffectTemplateMixVariant => ({
@@ -162,11 +164,36 @@ describe('saved engineering and final output freshness', () => {
       output = batch(v);
     const empty = { ...variant(), id: 'new', slots: [], bindings: {}, preservedTimelineEnd: 10 };
     expect(finalOutputSavedBatchStale(output, [v, empty])).toBe(false);
-    expect(finalOutputSavedBatchStale(output, [v, { ...variant(), id: 'new' }])).toBe(true);
+    expect(finalOutputSavedBatchStale(output, [v, { ...variant(), id: 'new' }])).toBe(false);
+    expect(finalOutputSavedBatchStale(output, [v, { ...variant(), id: 'new' }],
+      new Map(), new Set(), new Set(['new']))).toBe(true);
     expect(finalOutputSavedBatchStale(output, [])).toBe(true);
     expect(finalOutputSavedBatchStale(output, null)).toBe(false);
     expect(finalOutputSavedBatchStale({ ...output, items: [] }, [])).toBe(false);
     expect(finalOutputSavedBatchStale(output, [v])).toBe(false);
+  });
+
+  it('requires an available confirmed timeline of the selected template for additions, not deletions', () => {
+    const v = variant(), added = { ...variant(), id: 'new' };
+    const artifacts = [
+      { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:t:new', availability: 'AVAILABLE' },
+      { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:other:sibling', availability: 'AVAILABLE' },
+      { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:t:missing', availability: 'MISSING' },
+      { nodeId: 'FINAL_OUTPUT', artifactKey: 'timeline-project:t:wrong-node', availability: 'AVAILABLE' },
+      { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-package:t:package-only', availability: 'AVAILABLE' },
+    ];
+    const ids = finalOutputConfirmedProjectIds('t', artifacts);
+    expect(ids).toEqual(new Set(['new']));
+    expect(finalOutputSavedProjectChanges([v, added], batch(v).items, new Set())).toEqual({
+      added: [], removedItemIds: [],
+    });
+    expect(finalOutputSavedProjectChanges([v, added], batch(v).items, ids)).toEqual({
+      added: [added], removedItemIds: [],
+    });
+    expect(finalOutputSavedProjectChanges([added], batch(v).items, ids)).toEqual({
+      added: [added], removedItemIds: ['film'],
+    });
+    expect(artifacts).toHaveLength(5);
   });
 
   it('does not warn for a frozen in-flight edit but retains failed local updates', () => {
@@ -332,6 +359,17 @@ describe('branch tree final-output saved-draft projection', () => {
       ['sibling', 'CONFIRMED', 'CONFIRMED'],
       ['other-template', 'CONFIRMED', 'CONFIRMED'],
     ]);
+    // Historical unsubmitted drafts are not newly added films after an export.
+    const extra = { ...variant(), id: 'unsubmitted' };
+    edited.nodeStates[0]!.state.templates[0]!.workspace.variants.push(extra);
+    rows[2]!.workingArtifacts.push(artifact('timeline-project:t:unsubmitted', 'sibling'));
+    rows[3]!.workingArtifacts.push(artifact('timeline-project:other:unsubmitted', 'other-template'));
+    expect((await status())[0]).toEqual(['edited', 'CONFIRMED', 'CONFIRMED']);
+    edited.workingArtifacts.push(artifact('timeline-project:t:unsubmitted', 'edited'));
+    expect((await status())[0]).toEqual(['edited', 'STALE', 'STALE']);
+    edited.workingArtifacts.pop();
+    edited.nodeStates[0]!.state.templates[0]!.workspace.variants.pop();
+    expect((await status())[0]).toEqual(['edited', 'CONFIRMED', 'CONFIRMED']);
     saved.offsets.s = 1;
     const before = JSON.stringify(rows);
     expect(await status()).toEqual([

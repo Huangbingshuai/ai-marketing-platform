@@ -175,3 +175,81 @@ describe('single material refresh context', () => {
     expect(c.refreshEffectSegmentRenderBatch).not.toHaveBeenCalled();
   });
 });
+
+describe('workspace recovery after a background publication conflict', () => {
+  function recovery() {
+    const context = {
+      nodeActive: true,
+      props: { projectId: 'p', workflowRunId: 'view-run', products: [] },
+      currentProductId: ref('product'),
+      currentProduct: ref({ id: 'product' }),
+      workspace: ref<{ workflowRunId: string; productId: string } | null>({
+        workflowRunId: 'view-run',
+        productId: 'product',
+      }),
+      effectSegmentRenderCurrentProductId: () => 'product',
+      skipNextProductLoad: false,
+      loadGeneration: 0,
+      loadController: null,
+      operationController: null,
+      stopPolling: vi.fn(),
+      operation: ref(null),
+      creatingTaskCount: ref(null),
+      workspaceSynchronizing: ref(false),
+      validated: ref(true),
+      pageStatus: ref('success'),
+      loadError: ref(''),
+      closeAllDialogs: vi.fn(),
+      closeTransferPanel: vi.fn(),
+      imports: { dispose: vi.fn() },
+      selectedTaskIds: ref(new Set()),
+      loadEffectSegmentRenderWorkspaceSnapshot: vi.fn(async () => {
+        throw new Error('publication conflict');
+      }),
+      listWorkingArtifacts: vi.fn(async () => ({ data: { items: [] } })),
+      isAbortError: () => false,
+      safeMessage: (error: Error) => error.message,
+      showNotice: vi.fn(),
+      workspaceRevalidationTimer: undefined,
+      setTimeout: vi.fn(),
+      editTransitioning: ref(false),
+    };
+    const source = `const loadCurrentWorkspace =${page.split('const loadCurrentWorkspace =')[1]!.split('const updateRenderSetting =')[0]!}`;
+    const js = transpileModule(source, {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText;
+    const load = new Function('context', `with(context) { ${js}; return loadCurrentWorkspace; }`)(
+      context,
+    ) as (showLoading: boolean) => Promise<void>;
+    return { context, load };
+  }
+
+  it('keeps the existing cards and retries instead of replacing the workbench with an error page', async () => {
+    const { context: c, load } = recovery();
+    const previous = c.workspace.value;
+    await load(false);
+    expect(c.workspace.value).toBe(previous);
+    expect(c.pageStatus.value).toBe('success');
+    expect(c.workspaceSynchronizing.value).toBe(false);
+    expect(c.showNotice).toHaveBeenCalledWith('publication conflict', 'warning');
+    expect(c.setTimeout).toHaveBeenCalledWith(expect.any(Function), 5000);
+  });
+
+  it.each(['initial', 'other-run'])('does not display stale cards for %s', async (scope) => {
+    const { context: c, load } = recovery();
+    if (scope === 'initial') c.workspace.value = null;
+    else c.workspace.value!.workflowRunId = 'other-run';
+    await load(false);
+    expect(c.pageStatus.value).toBe('error');
+    expect(c.setTimeout).not.toHaveBeenCalled();
+  });
+
+  it('does not retry into a branch selected after the failed request', async () => {
+    const { context: c, load } = recovery();
+    await load(false);
+    const retry = c.setTimeout.mock.calls[0]![0] as () => void;
+    c.loadGeneration += 1;
+    retry();
+    expect(c.loadEffectSegmentRenderWorkspaceSnapshot).toHaveBeenCalledTimes(1);
+  });
+});

@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { effectTemplateBranchTips, type ApiResponse, type EffectWorkflowBranchTreeData,
-  type FinalOutputRun, type WorkingArtifact } from '@ai-marketing/contracts';
+  type EffectTemplateMixSourcesData, type FinalOutputRun, type WorkingArtifact } from '@ai-marketing/contracts';
 import { requestJson } from '../../../api/http-client';
 import { getEffectWorkflowBranchTree, listWorkingArtifacts } from '../../../platform/workflow/api/workflow-working.api';
 import { workflowNodeBaseId } from '../../../platform/workflow/workflow-node-id';
@@ -61,6 +61,21 @@ export function branchStaleCounts(tree: EffectWorkflowBranchTreeData, contextRun
   return counts;
 }
 
+/** Same exact per-template source comparison as the list; old copied templates never contribute. */
+export function currentMixSourceCount(tree: EffectWorkflowBranchTreeData, contextRunId: string,
+  pools: ReadonlyMap<string, EffectTemplateMixSourcesData>): number | null {
+  if (!tree.branches.some((branch) => branch.workflowRunId === contextRunId)) return null;
+  let count = 0;
+  for (const [templateId, tip] of effectTemplateBranchTips(tree.branches, contextRunId, { current: true })) {
+    const source = pools.get(tip.workflowRunId);
+    const pending = source?.pendingProjectCounts?.[templateId];
+    // Missing is different from an authoritative zero (including compatibility with old APIs).
+    if (pending === undefined || !Number.isSafeInteger(pending) || pending < 0) return null;
+    count += pending + Number(Boolean(source?.pendingAddedMaterialIds?.[templateId]?.length));
+  }
+  return count;
+}
+
 type CanvasScope = {
   projectId: string; workflowRunId: string; activeStep: number; enabled: boolean;
   /** Hidden editing children have no published downstream results; use their confirmed origin. */
@@ -73,13 +88,18 @@ export function useEffectCanvasFreshness(scope: () => CanvasScope) {
   const artifactCounts = ref<number[]>([]), outputCount = ref(0), mixCount = ref(0);
   const branchCounts = ref<number[] | null>(null);
   const branchTree = shallowRef<EffectWorkflowBranchTreeData | null>(null);
-  const directoryMixCount = ref(0);
+  const directoryMixCount = ref<number | null>(null);
+  const currentPathMixCount = ref<number | null>(null);
+  const mixProjectionReady = ref(false);
   let directoryGeneration = 0;
   const staleCounts = computed(() => NODE_IDS.map((_, index) => index === 5
     ? Math.max(branchCounts.value?.[index] ?? artifactCounts.value[index] ?? 0, outputCount.value)
-    : index === 4 ? Math.max(branchCounts.value?.[index] ?? artifactCounts.value[index] ?? 0,
-      branchCounts.value === null ? mixCount.value : 0, directoryMixCount.value)
-    : branchCounts.value?.[index] ?? artifactCounts.value[index] ?? 0));
+    : index === 4 ? directoryMixCount.value ?? currentPathMixCount.value ??
+      (mixProjectionReady.value ? Math.max(branchCounts.value?.[index] ?? artifactCounts.value[index] ?? 0,
+        branchCounts.value === null ? mixCount.value : 0) : 0)
+    // Generic artifact reads include exact historical dependency closures. They can be stale
+    // while the current render workspace has no Prompt delta; only the scoped tree owns heads.
+    : branchCounts.value?.[index] ?? 0));
   let controller: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sequence = 0;
@@ -134,8 +154,17 @@ export function useEffectCanvasFreshness(scope: () => CanvasScope) {
           if (!isCurrent() || result.data.projectId !== current.projectId) return;
           const counts = branchStaleCounts(result.data, publishedRunId);
           if (counts) {
+            // Upstream status does not depend on slow mix-source or sibling-template reads.
+            // Keep the last authoritative status on a transient error, not a copied artifact's.
+            branchTree.value = result.data;
+            branchCounts.value = [...counts];
+          }
+          // Do not briefly warn from inherited artifacts while the authoritative path is loading.
+          const currentSources = await sources;
+          let exactMixCount: number | null = null;
+          if (counts) {
             const tips = effectTemplateBranchTips(result.data.branches, publishedRunId, { current: true });
-            const sourcePools = new Map([[publishedRunId, await sources]]);
+            const sourcePools = new Map([[publishedRunId, currentSources]]);
             // Read only lightweight source projections, once per current Run. Old sibling copies
             // must not contribute their pendingProjectCount to another template's current path.
             await Promise.all([...new Set([...tips.values()].map((tip) => tip.workflowRunId))]
@@ -146,13 +175,20 @@ export function useEffectCanvasFreshness(scope: () => CanvasScope) {
               if (sourcePools.get(tip.workflowRunId)?.data.pendingAddedMaterialIds?.[templateId]?.length)
                 counts[4]! += 1;
             }
+            exactMixCount = currentMixSourceCount(result.data, publishedRunId,
+              new Map([...sourcePools].map(([id, result]) => [id, result.data])));
           }
           if (isCurrent() && result.data.projectId === current.projectId) {
             branchTree.value = result.data;
             branchCounts.value = counts;
+            mixProjectionReady.value = true;
             // A complete current-path server read can clear a previously shown warning. A
             // newer edit-page projection delivered during this read must not be overwritten.
-            if (counts && directoryGeneration === readingDirectoryGeneration) directoryMixCount.value = 0;
+            if (directoryGeneration === readingDirectoryGeneration) {
+              currentPathMixCount.value = exactMixCount;
+              // A complete read supersedes the page snapshot, but missing old-API fields do not.
+              if (exactMixCount !== null) directoryMixCount.value = null;
+            }
           }
         }),
         // Exact material dependencies also detect new-id replacements while old clips remain
@@ -185,7 +221,9 @@ export function useEffectCanvasFreshness(scope: () => CanvasScope) {
     const current = scope();
     const key = `${current.projectId}:${confirmedRunId(current)}:${current.enabled}`;
     if (key !== lastScope) {
-      artifactCounts.value = []; outputCount.value = 0; mixCount.value = 0; directoryMixCount.value = 0;
+      artifactCounts.value = []; outputCount.value = 0; mixCount.value = 0;
+      directoryMixCount.value = null; currentPathMixCount.value = null;
+      mixProjectionReady.value = false;
       lastOutputKey = null;
       lastMixCount = null;
       if (branchTree.value?.projectId !== current.projectId) branchTree.value = null;

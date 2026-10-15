@@ -64,15 +64,31 @@ export function finalOutputSavedDraftDiffers(
   );
 }
 
+/** The caller supplies artifacts resolved in this Run/template's source scope, never siblings. */
+export function finalOutputConfirmedProjectIds(
+  templateId: string,
+  artifacts: readonly { nodeId?: string; artifactKey?: string; availability?: string }[],
+): ReadonlySet<string> {
+  const prefix = `timeline-project:${templateId}:`;
+  const ids = new Set<string>();
+  for (const artifact of artifacts) {
+    if (artifact.nodeId === 'TEMPLATE_MIX' && artifact.availability === 'AVAILABLE' &&
+      artifact.artifactKey?.startsWith(prefix)) ids.add(artifact.artifactKey.slice(prefix.length));
+  }
+  return ids;
+}
+
 export function finalOutputSavedProjectChanges<T extends { id: string; variantId: string }>(
   variants: readonly EffectTemplateMixVariant[],
   items: readonly T[],
+  confirmedVariantIds: ReadonlySet<string>,
   packaging: ReadonlyMap<string, PackagingCheckpoint> = new Map(),
 ) {
   return {
     added: variants.filter(
       (variant) =>
         !items.some((item) => item.variantId === variant.id) &&
+        confirmedVariantIds.has(variant.id) &&
         effectTemplateMixPlacedContentDuration(variant, packaging.get(variant.id)) > 0,
     ),
     removedItemIds: items
@@ -97,9 +113,10 @@ export function finalOutputSavedBatchStale(
   variants: readonly EffectTemplateMixVariant[] | null,
   packaging: ReadonlyMap<string, PackagingCheckpoint> = new Map(),
   sourceStaleVariantIds: ReadonlySet<string> = new Set(),
+  confirmedVariantIds: ReadonlySet<string> = new Set(),
 ): boolean {
   if (!variants) return false;
-  const membership = finalOutputSavedProjectChanges(variants, run.items, packaging);
+  const membership = finalOutputSavedProjectChanges(variants, run.items, confirmedVariantIds, packaging);
   if (membership.added.length || membership.removedItemIds.length) return true;
   if (['QUEUED', 'RUNNING'].includes(run.status)) return false;
   return run.items.some((item) => {

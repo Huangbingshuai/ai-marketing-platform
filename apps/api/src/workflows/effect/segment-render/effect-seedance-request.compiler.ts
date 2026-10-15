@@ -22,8 +22,10 @@ export type EffectSeedanceCreateTaskRequest = {
   resolution: SeedanceResolution;
 };
 
-export type EffectSeedanceRequestSnapshot = Pick<EffectSegmentRenderRequestSnapshot,
-  'creativeCore' | 'dimensions' | 'promptDurationMaxSeconds'> & {
+export type EffectSeedanceRequestSnapshot = Pick<
+  EffectSegmentRenderRequestSnapshot,
+  'creativeCore' | 'dimensions' | 'promptDurationMaxSeconds'
+> & {
   promptId: string;
   primaryPurpose: EffectPromptFragmentType;
   compatiblePurposes: EffectPromptFragmentType[];
@@ -202,8 +204,10 @@ export const compileEffectSeedanceRequest = (
     );
   if (!model.trim()) throw new EffectSeedanceCompileError('EMPTY_MODEL', 'Seedance 模型配置为空');
   const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[renderSettings.capabilityKey];
-  const maxDuration = item.origin === 'MANUAL' && renderSettings.capabilityKey === 'SEEDANCE_1_5_PRO'
-    ? 30 : capability.maxDurationSeconds;
+  const maxDuration =
+    item.origin === 'MANUAL' && renderSettings.capabilityKey === 'SEEDANCE_1_5_PRO'
+      ? 30
+      : capability.maxDurationSeconds;
   if (
     item.targetDurationSeconds < capability.minDurationSeconds ||
     item.targetDurationSeconds > maxDuration
@@ -291,14 +295,27 @@ const ratioMatches = (
   const normalizedExpected = expected.replace('：', ':');
   const normalizedActual = actual.replace('：', ':');
   if (normalizedExpected === normalizedActual) return true;
-  if (!allowAdaptiveRounding) return false;
   const parse = (value: string): number | null => {
+    if (!/^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/u.test(value)) return null;
     const [width, height, ...rest] = value.split(':').map(Number);
-    if (rest.length || !width || !height || width <= 0 || height <= 0) return null;
-    return width / height;
+    if (
+      rest.length ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      !width ||
+      !height ||
+      width <= 0 ||
+      height <= 0
+    )
+      return null;
+    const ratio = width / height;
+    return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
   };
-  const expectedValue = parse(normalizedExpected);
   const actualValue = parse(normalizedActual);
+  // Adaptive is a selection strategy, not the concrete ratio echoed by Seedance.
+  if (normalizedExpected === 'adaptive') return actualValue !== null;
+  if (!allowAdaptiveRounding) return false;
+  const expectedValue = parse(normalizedExpected);
   if (expectedValue === null || actualValue === null) return false;
   return Math.abs(actualValue / expectedValue - 1) <= 0.03;
 };

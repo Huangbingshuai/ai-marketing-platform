@@ -29,7 +29,32 @@ export const PACKAGING_INCLUDE = {
 
 @Injectable()
 export class EffectPackagingRepository {
+  // Coalesce overlapping reads only. Never retain a resolved task/source state or
+  // reuse it after a later edit, cancellation, revision change or another scope.
+  private readonly sourceReads = new Map<string, ReturnType<WorkflowWorkingRepository['listArtifacts']>>();
   constructor(@Inject(PrismaService) readonly db: PrismaService) {}
+
+  readRunScope(projectId: string, workflowRunId: string) {
+    return this.db.workflowRun.findFirst({
+      where: { id: workflowRunId, projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      select: { id: true },
+    });
+  }
+
+  /** Display-only fallback for legacy snapshots, using exact source IDs rather than newer heads. */
+  async materialLabels(projectId: string, materialIds: string[]) {
+    if (!materialIds.length) return [];
+    const rows = await this.db.workingArtifact.findMany({
+      where: { projectId, id: { in: materialIds }, nodeId: 'SEGMENT_RENDER',
+        artifactKey: { startsWith: 'render-clip:' } },
+      select: { id: true, name: true, payload: true },
+    });
+    return rows.map((row) => {
+      const payload = row.payload as { renderCode?: unknown } | null;
+      return { id: row.id, code: typeof payload?.renderCode === 'string' ? payload.renderCode : row.name,
+        name: row.name.replace(/\s+视频片段$/u, '') };
+    });
+  }
 
   get(projectId: string, id: string) {
     return this.db.effectPackagingRun.findFirst({
@@ -52,8 +77,24 @@ export class EffectPackagingRepository {
     // Snapshot creation and execution must resolve the same project/branch source graph, including
     // shared render heads and their original dependencies, rather than only local copied rows.
     const wanted = new Set(artifactIds);
-    const artifacts = await new WorkflowWorkingRepository(this.db)
-      .listArtifacts(projectId, { workflowRunId });
+    const key = projectId + ':' + workflowRunId;
+    let reading = this.sourceReads.get(key);
+    if (!reading) {
+      reading = new WorkflowWorkingRepository(this.db)
+        .listArtifacts(projectId, { workflowRunId }, { upstreamOnly: true });
+      this.sourceReads.set(key, reading);
+    }
+    let artifacts: Awaited<typeof reading>;
+    try {
+      artifacts = await reading;
+    } finally {
+      if (this.sourceReads.get(key) === reading) this.sourceReads.delete(key);
+    }
+    // A legacy timeline can consume an exact non-head identity recovered solely
+    // through its dependency closure. Keep that authorized fallback, never replace
+    // the requested ID with a newer same-key source just to make validation pass.
+    if (artifactIds.some((id) => !artifacts.some((artifact) => artifact.id === id)))
+      artifacts = await new WorkflowWorkingRepository(this.db).listArtifacts(projectId, { workflowRunId });
     return artifacts.filter((artifact) => wanted.has(artifact.id)).map(publishedRenderSource).map((artifact) => ({
       id: artifact.id, revision: artifact.revision,
       freshness: artifact.freshness, availability: artifact.availability,
@@ -205,6 +246,7 @@ export class EffectPackagingRepository {
     snapshots: PackagingSnapshot[];
     checkpoints: PackagingCheckpoint[];
     expectedDraftRevision: number;
+    expectedSourceDraftRevision?: number;
     expectedTemplateHash: string;
     sourceWorkflowRunId?: string;
   }) {
@@ -236,7 +278,7 @@ export class EffectPackagingRepository {
           const source = await tx.workflowNodeState.findUnique({ where: { projectId_workflowRunId_nodeId: {
             projectId: input.projectId, workflowRunId: input.sourceWorkflowRunId, nodeId: 'TEMPLATE_MIX',
           } } });
-          if (!source || source.revision !== input.expectedDraftRevision)
+          if (!source || source.revision !== (input.expectedSourceDraftRevision ?? input.expectedDraftRevision))
             throw new ConflictException('包装前原工程已改变，请刷新后重试');
         }
       }
@@ -473,7 +515,8 @@ export class EffectPackagingRepository {
       if (!item) throw new ConflictException('包装结果已被修改，请刷新');
       await lockMixNodeForSourceUpdate(tx, projectId, item.run.workflowRunId);
       const packaging = await activePackagingItems(tx, projectId, item.run.workflowRunId);
-      if (packaging.some((active) => active.run.templateId === item.run.templateId && active.variantId === item.variantId))
+      if (packaging.some((active) => active.run.workflowRunId === item.run.workflowRunId &&
+          active.run.templateId === item.run.templateId && active.variantId === item.variantId))
         throw new ConflictException('当前成片正在包装，完成后自动解锁');
       const updates = await activeMixSourceUpdates(tx, projectId, item.run.workflowRunId);
       if (updates.some((update) => update.templateId === item.run.templateId &&

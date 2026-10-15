@@ -1,4 +1,4 @@
-import { ConflictException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConflictException, HttpException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { EffectTemplateMixAiTrim } from '@ai-marketing/contracts';
 import { EffectTemplateMixService } from './effect-template-mix.service';
 import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
@@ -33,7 +33,8 @@ export class EffectTemplateMixCompletionService {
       }
       await this.mix.recordAppendContinuation(projectId, runId, false);
     } catch (error) {
-      await this.mix.recordAppendContinuation(projectId, runId, true);
+      const retryable = !(error instanceof HttpException) || error.getStatus() >= 500 || error.getStatus() === 429;
+      await this.mix.recordAppendContinuation(projectId, runId, true, retryable);
       throw error;
     }
     return this.mix.aiRun(projectId, runId);
@@ -43,9 +44,11 @@ export class EffectTemplateMixCompletionService {
     const result = await this.mix.claimAiRun(projectId, runId);
     if (result.terminal) {
       const run = await this.mix.aiRun(projectId, runId);
-      if (run.operation === 'APPEND' && run.status === 'COMPLETED') {
+      if (run.operation === 'APPEND' && run.status === 'COMPLETED' &&
+        ['APPEND_CONTINUATION_PENDING', 'APPEND_CONTINUATION_RETRY_1', 'APPEND_CONTINUATION_RETRY_2']
+          .includes(run.errorCode ?? '')) {
         try { await this.resumeAppend(projectId, runId); }
-        catch { /* The visible continuation error keeps this recoverable from the workbench. */ }
+        catch { /* The original Outbox automatically resumes recoverable continuation. */ }
       }
     }
     return result;

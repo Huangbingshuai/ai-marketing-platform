@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { transpileModule } from 'typescript';
 import { computed, ref } from 'vue';
 import page from './EffectTemplateMixNodePage.vue?raw';
-import { mixLocalUpdateProgress } from './effect-template-mix-operation-progress';
+import { createMixLocalUpdateProgressTracker, mixLocalUpdateProgress } from './effect-template-mix-operation-progress';
 
 const frozenOperation = { sourceOperationHasAdditions: true, sourceOperationId: 'frozen-operation' };
 
@@ -122,7 +122,11 @@ describe('one local-update action for additions, replacements and deletions', ()
     const context = {
       computed,
       mixLocalUpdateProgress,
+      trackLocalUpdateProgress: createMixLocalUpdateProgressTracker(),
+      props: { projectId: 'project', workflowRunId: 'run' },
+      completedAppendRun: ref(null),
       sourceUpdateHandoff: ref(false),
+      pendingAppendContinuation: ref(false),
       sourceUpdateBusy: ref(false),
       sourceUpdateProgress: ref(40),
       sourceUpdateRun: ref({
@@ -135,6 +139,8 @@ describe('one local-update action for additions, replacements and deletions', ()
       sourceUpdateItemIds: ref(['one', 'two']),
       sourceUpdateStarting: ref(false),
       appendProgress: ref<{ progress: number } | null>(null),
+      activeAppendRun: ref(null), activeAppendPackaging: ref(null),
+      autoPackagingTemplateIds: ref([]), activeTemplateId: ref('template'),
       localUpdateStarting: ref(false),
       mutating: ref(false),
     };

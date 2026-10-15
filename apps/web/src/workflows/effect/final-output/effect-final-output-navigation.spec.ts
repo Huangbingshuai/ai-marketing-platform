@@ -4,6 +4,7 @@ import { ScriptTarget, transpileModule } from 'typescript';
 import page from './EffectFinalOutputNodePage.vue?raw';
 import parent from '../source-import/EffectImportNodePage.vue?raw';
 import mix from '../template-mix/EffectTemplateMixNodePage.vue?raw';
+import { readTemplateDeleted } from '../shared/effect-template-deletion';
 
 const compile = (source: string, context: Record<string, unknown>, result: string) =>
   new Function(...Object.keys(context), `${transpileModule(source, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText}\nreturn ${result};`)(...Object.values(context));
@@ -69,6 +70,7 @@ describe('pending film navigation and current source directory', () => {
   });
   it('refreshes after changes from an independent template Run but ignores other projects', async () => {
     const context = { props: { projectId: 'p', workflowRunId: 'global' }, mounted: true,
+      readTemplateDeleted,
       templateDirectory: ref({ workflowRunIds: { t: 'source' } }), refresh: vi.fn(async () => {}), refreshMixWorkspace: vi.fn() };
     const source = `const outputChanged =${page.split('const outputChanged =')[1]!.split('if (outputSyncChannel)')[0]!}`;
     const execute = compile(source, context, 'outputChanged');

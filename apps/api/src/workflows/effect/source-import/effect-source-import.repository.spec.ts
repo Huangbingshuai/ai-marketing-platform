@@ -5,6 +5,38 @@ import type { PrismaService } from '../../../database/prisma.service';
 import { EffectSourceImportRepository } from './effect-source-import.repository';
 
 describe('EffectSourceImportRepository project isolation', () => {
+  it('reads only the requested file under the active Effect draft and product', async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    const repository = new EffectSourceImportRepository(
+      { effectImportMaterial: { findFirst } } as unknown as PrismaService,
+      {} as never,
+    );
+    await repository.readableMaterial('project-a', 'SINGLE', 'product-a', 'material-a');
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        projectId: 'project-a',
+        productId: 'product-a',
+        id: 'material-a',
+        product: {
+          projectId: 'project-a',
+          status: 'ACTIVE',
+          draft: {
+            projectId: 'project-a',
+            mode: 'SINGLE',
+            workspace: {
+              workflowRun: {
+                projectId: 'project-a',
+                activeKey: 'ACTIVE',
+                workflow: 'EFFECT',
+                workflowSpace: 'EFFECT',
+              },
+            },
+          },
+        },
+      },
+      include: { fileObject: true },
+    });
+  });
   it('retires only disposed, untransferred preview metadata after successful storage cleanup', async () => {
     const transaction = {
       storageCleanupTask: {

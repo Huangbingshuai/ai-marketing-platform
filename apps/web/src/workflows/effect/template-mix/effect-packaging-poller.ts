@@ -1,13 +1,5 @@
-import { isNetworkError } from '../../../api/http-client';
-
 /** One latest, bounded read. A stalled/late response must never freeze or rewind the graph. */
 const MAX_ERROR_BACKOFF_MS = 30_000;
-
-export function packagingPollErrorMessage(error: unknown): string {
-  if (isNetworkError(error))
-    return '网络连接暂时中断，正在稍后重试读取包装状态；时间轴草稿不受影响。';
-  return error instanceof Error ? error.message : '读取包装任务失败，请稍后重试。';
-}
 
 export function createPackagingPoller<T>(options: {
   read: (signal: AbortSignal) => Promise<T>;
@@ -44,7 +36,7 @@ export function createPackagingPoller<T>(options: {
       };
       timeout = setTimeout(() => {
         controller.abort();
-        reject(new Error('读取包装进度超时，正在重新连接；下方保留上次读取结果。'));
+        reject(new Error('读取包装状态超时'));
       }, 15_000);
     });
     try {

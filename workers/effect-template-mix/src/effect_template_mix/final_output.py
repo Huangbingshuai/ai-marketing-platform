@@ -302,10 +302,15 @@ def _caption_lanes(captions: list[dict[str, Any]], fps: int) -> dict[str, int]:
     return lanes
 
 
+# Mirrored from Contracts; test_final_output checks the shared reference and scale vectors.
+PACKAGING_CAPTION_REFERENCE_HEIGHT = 360
+
+
 def captions_ass(captions: list[dict[str, Any]], width: int, height: int, duration: float,
                  boxes: dict[str, dict[str, float]] | None = None, fps: int = 30,
                  caption_font_size: int = 16) -> str:
-    font_size = max(8, min(48, int(caption_font_size)))
+    canvas_scale = height / PACKAGING_CAPTION_REFERENCE_HEIGHT
+    font_size = max(1, round(max(8, min(48, int(caption_font_size))) * canvas_scale))
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -319,8 +324,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     boxes = boxes or {}
     lanes = _caption_lanes(captions, fps)
-    # One checkpoint-level size applies to every subtitle, independent of output resolution.
-    lane_step = max(28, round(font_size * 1.35))
+    # Match the preview's logical size at every resolution, including overlapping lanes.
+    lane_step = max(round(28 * canvas_scale), round(font_size * 1.35))
     for index, row in enumerate(captions):
         start, end = row['start'], row['end']
         if not (math.isfinite(start) and math.isfinite(end)
@@ -578,7 +583,9 @@ class FinalOutputHandler:
             async def persist_retry(count: int) -> None:
                 await self.api.request('PUT', f'{endpoint}/checkpoint', headers=headers,
                     json={'projectId': project_id, 'stage': package_item['stage'],
-                          'checkpoint': {'automaticRetries': count}})
+                          'checkpoint': {'automaticRetries': count,
+                              **({'recovery': package_item['checkpoint']['recovery']}
+                                 if package_item['checkpoint'].get('recovery') else {})}})
             try:
                 await recover_packaging_item(package_item,
                     lambda: packaging.process_item(root, headers, project_id, package_item), persist_retry)

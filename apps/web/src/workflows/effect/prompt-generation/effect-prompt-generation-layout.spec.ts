@@ -4,9 +4,37 @@ import sharedGraph from '../../../platform/workflow/components/WorkflowExecution
 import viteConfigSource from '../../../../vite.config.ts?raw';
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import pageSource from './EffectPromptGenerationNodePage.vue?raw';
+import editorSource from './components/EffectPromptItemDialog.vue?raw';
 import graphSource from './effect-prompt-generation-graph.ts?raw';
 
 describe('effect prompt generation current layout', () => {
+  it('filters by persisted source independently of purposes and manual editing', () => {
+    expect(pageSource).toContain('aria-label="按来源筛选 Prompt"');
+    expect(pageSource).toContain('{{ option.label }} <small>{{ originCount(option.value) }}</small>');
+    expect(pageSource).toContain('resultData.value?.sourceCounts');
+    expect(pageSource).toContain("{ value: 'AI', label: 'AI 生成' }");
+    expect(pageSource).toContain("{ value: 'MANUAL', label: '外部导入' }");
+    expect(pageSource).toContain('originFilter.value || undefined');
+    expect(pageSource).toContain('watch([purposeFilter, includeCompatiblePurposes, originFilter]');
+    expect(pageSource).toContain('keyword.value.trim() || purposeFilter.value || originFilter.value');
+  });
+  it('places batch generation before the workflow viewer without changing their actions', () => {
+    const start = pageSource.indexOf('<div class="effect-prompt-heading__actions">');
+    const end = pageSource.indexOf('</header>', start);
+    const actions = pageSource.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    const generation = actions.indexOf('class="primary-button heading-generate-button"');
+    const workflow = actions.indexOf('class="secondary-button workflow-graph-trigger"');
+    expect(generation).toBeGreaterThan(-1);
+    expect(workflow).toBeGreaterThan(generation);
+    expect(actions).toContain('@click="generateCurrentBatch"');
+    expect(actions).toContain('@click="openGraph($event)"');
+    expect(actions).toContain('ref="graphTrigger"');
+    expect(actions).toContain(
+      ':disabled="editing || editPending || validating || currentRunning || batchStartPending"',
+    );
+  });
+
   it('loads the live workspace contract source', () => {
     expect(viteConfigSource).toContain("'@ai-marketing/contracts': contractsSource");
     expect(viteConfigSource).toContain("exclude: ['@ai-marketing/contracts']");
@@ -119,6 +147,24 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('prompt-semantic-rate--');
   });
 
+  it('shows stable source labels for imported and AI-generated prompts', () => {
+    expect(pageSource).toContain('class="prompt-origin-tag"');
+    expect(pageSource).toContain("item.origin === 'MANUAL' ? '外部导入' : 'AI 生成'");
+    expect(pageSource).not.toContain('item.manualEdited || item.origin ===');
+  });
+
+  it('centers the text inside prompt card badges', () => {
+    expect(pageSource).toMatch(
+      /\.prompt-main\s*>\s*header\s+i,[\s\S]*?\.prompt-main\s*>\s*header\s+em\s*\{[^}]*justify-content:\s*center;/u,
+    );
+    expect(pageSource).toMatch(
+      /\.prompt-main\s*>\s*header\s+i,[\s\S]*?\.prompt-main\s*>\s*header\s+em\s*\{[^}]*text-align:\s*center;/u,
+    );
+    expect(pageSource).not.toMatch(
+      /\.prompt-main\s*>\s*header\s*>\s*span\s*\{[^}]*justify-content:\s*center;/u,
+    );
+  });
+
   it('renders the shared six dimensions without asking users to lock them', () => {
     expect(pageSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
     expect(pageSource).not.toContain('regenerationPreservedDimensions');
@@ -131,30 +177,37 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('卖点侧重');
   });
 
-  it('places Prompt first and lets the user explicitly request AI creative-structure autofill', () => {
-    expect(pageSource).toContain('创意方向与六维信息');
-    expect(pageSource).toContain('用于创意评估、展示与追溯，请与 Prompt 正文保持一致');
-    expect(pageSource).toContain('v-model="editorDraft.primaryPurpose"');
-    expect(pageSource).toContain('v-model="editorDraft.creativeCore"');
-    expect(pageSource).toContain('v-model="editorDraft.dimensions[dimension.key]"');
-    expect(pageSource).toContain('AI 自动生成不会覆盖你的选择');
+  it('keeps optional creative notes collapsed and uses an isolated native dialog', () => {
+    expect(pageSource).toContain('<EffectPromptItemDialog');
+    expect(editorSource).toContain('创意方向与六大维度');
+    expect(editorSource).toContain('可全部留空，也可以只记录需要的内容');
+    expect(editorSource).toContain('<details v-if="isAdd" class="editor-optional">');
+    expect(editorSource).not.toContain('<details open');
+    expect(editorSource).toContain('selectPrimaryPurpose');
+    expect(editorSource).toContain('v-model="editorDraft.compatiblePurposes"');
+    expect(editorSource).toContain('还适合的片段类型');
+    expect(editorSource).toContain('v-model="editorDraft.creativeCore"');
+    expect(editorSource).toContain('v-model="editorDraft.dimensions[dimension.key]"');
+    expect(editorSource).toContain('@cancel.prevent="close"');
+    expect(editorSource).toContain('dialog.value?.showModal()');
+    expect(pageSource).not.toContain('hasCompleteCreativeStructure');
+    expect(pageSource).toContain('editorOriginalDraft.value = {');
+    expect(pageSource).toContain('...editorOriginalDraft.value,');
     expect(pageSource).not.toContain('editorDraft.useAiAnalysis');
-    expect(pageSource).not.toContain('保存后使用 AI 分析');
-    expect(pageSource).toContain('只有点击“AI 自动生成”才会调用 AI');
-    expect(pageSource).toContain('!editorDraft.content.trim()');
-    expect(pageSource).toContain('@click="autoFillEditorCreativeStructure"');
-    expect(pageSource.indexOf('class="editor-content"')).toBeLessThan(
-      pageSource.indexOf('class="editor-creative-structure"'),
+    expect(pageSource).not.toContain('autoFillEditorCreativeStructure');
+    expect(pageSource).not.toContain('editorAutoFilling');
+    expect(editorSource.indexOf('class="editor-content"')).toBeLessThan(
+      editorSource.indexOf('class="editor-optional"'),
     );
     expect(pageSource).toContain('saved.affectedItemIndex');
     expect(pageSource).not.toContain('saved.result.items.findIndex');
     expect(pageSource).not.toContain('existingItemIds');
-    expect(pageSource).toContain("item.classificationStatus === 'PENDING'");
+    expect(pageSource).not.toContain('待补齐</em>');
     expect(pageSource).toContain('NEEDS_REVISION');
     expect(pageSource).toContain('需修改');
     expect(pageSource).not.toContain('@click="evaluateItem(item)"');
     expect(pageSource).not.toContain('重新评估');
-    expect(pageSource).toContain("editorMode === 'add' ? '添加提示词' : '编辑提示词'");
+    expect(editorSource).toContain("isAdd ? '添加提示词' : '编辑提示词'");
     expect(pageSource).toContain('<Pencil :size="13" />编辑');
   });
 
@@ -201,8 +254,8 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toMatch(/\.prompt-actions button\s*\{[^}]*height:\s*34px/u);
     expect(pageSource).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
     expect(pageSource).toContain('grid-column: 2;');
-    expect(pageSource).toContain('v-if="editorMode === \'add\'"');
-    expect(pageSource).toContain('class="editor-duration-readonly"');
+    expect(editorSource).toContain('v-if="isAdd"');
+    expect(editorSource).toContain('class="editor-fixed-duration"');
     expect(pageSource).toContain('EFFECT_PROMPT_LIMITS.maxManualDurationSeconds');
   });
 
@@ -213,11 +266,11 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('次级标签');
     expect(pageSource).not.toContain('次级素材标签');
     expect(pageSource).toContain('<Plus :size="15" />新增 Prompt');
-    expect(pageSource).toContain('v-model.number="editorDraft.targetDurationSeconds"');
-    expect(pageSource).toContain('v-model="editorDraft.primaryPurpose"');
+    expect(editorSource).toContain('v-model.number="editorDraft.targetDurationSeconds"');
+    expect(editorSource).toContain('selectPrimaryPurpose');
     expect(pageSource).not.toContain('role="switch"');
-    expect(pageSource).toContain("editorMode === 'add' ? '添加提示词' : '保存编辑'");
-    expect(pageSource).toContain('已有 Prompt 的时长不可修改');
+    expect(editorSource).toContain("isAdd ? '添加提示词' : '保存修改'");
+    expect(editorSource).toContain('最终渲染时长保持不变');
     expect(pageSource).not.toContain('title="差异化 Prompt 批次草稿"');
   });
 
@@ -250,7 +303,8 @@ describe('effect prompt generation current layout', () => {
       /effectPromptRunGraphNodeIds\(displayedGraphRun\.value\.operation\)/u,
     );
     expect(pageSource).toMatch(/effectPromptRunGraphEdges\(displayedGraphRun\.value\.operation\)/u);
-    expect(pageSource).toContain('展示本次真实输入、连贯创意生成、用途评估和数量结果。');
+    expect(pageSource).toContain('展示本次输入、连贯创意生成、用途评估和数量结果。');
+    expect(pageSource).not.toContain('真实');
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });
 

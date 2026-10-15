@@ -31,6 +31,14 @@ const setup = () => {
 afterEach(() => vi.useRealTimers());
 
 describe('import image preview recovery', () => {
+  it('uses the same first request URL when remounted with unchanged file version', () => {
+    const first = setup();
+    const url = first.preview.source.value;
+    first.scope.stop();
+    const second = setup();
+    expect(second.preview.source.value).toBe(url);
+    second.scope.stop();
+  });
   it('recovers from transient errors using bounded backoff without modifying the material', () => {
     vi.useFakeTimers();
     const { scope, material, preview } = setup();

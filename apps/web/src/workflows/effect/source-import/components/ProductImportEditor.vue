@@ -11,12 +11,14 @@ import {
   FileText,
   Image as ImageIcon,
   Link2,
-  Plus,
   RefreshCw,
   Trash2,
   Upload,
 } from '@lucide/vue';
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, shallowRef } from 'vue';
+import ImportSourceCard from '../../../../platform/file/components/ImportSourceCard.vue';
+import ImportDropzone from '../../../../platform/file/components/ImportDropzone.vue';
+import ImportMaterialRow from '../../../../platform/file/components/ImportMaterialRow.vue';
 import EffectImportContentViewerDialog from './EffectImportDocumentReaderDialog.vue';
 import EffectImportImagePreview from './EffectImportImagePreview.vue';
 
@@ -57,6 +59,7 @@ const emit = defineEmits<{
 const unifiedUploadAccept = '.jpg,.jpeg,.png,.psd,.webp,.doc,.docx,.xls,.xlsx,.pdf,.txt,.md';
 const commerceInput = ref<HTMLInputElement | null>(null);
 const readingMaterial = ref<EffectImportMaterial | null>(null);
+const readingImage = shallowRef<HTMLImageElement | null>(null);
 let readingTrigger: HTMLButtonElement | null = null;
 const savedCommerceUrl = computed(() => props.product.commerceUrl?.trim() ?? '');
 const importedItemCount = computed(
@@ -80,12 +83,6 @@ const commitStatusLabel = computed(
 );
 const changeField = (field: 'commerceUrl', event: Event): void =>
   emit('change', props.product, field, (event.target as HTMLInputElement).value);
-const chooseFiles = (event: Event): void => {
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  input.value = '';
-  if (!uploadDisabled.value && files.length) emit('upload', props.product, files);
-};
 const formatBytes = (value: number | null): string =>
   value === null
     ? '—'
@@ -100,10 +97,19 @@ const materialName = (material: EffectImportMaterial): string =>
   material.originalFileName || material.expectedFileName || '待补传文件';
 const openDocument = (material: EffectImportMaterial, event: MouseEvent): void => {
   readingTrigger = event.currentTarget as HTMLButtonElement;
+  const image = readingTrigger.closest('.material-file-row')?.querySelector('img');
+  const matchesMaterial =
+    material.type === 'PRODUCT_IMAGE' &&
+    image?.dataset.projectId === material.projectId &&
+    image?.dataset.productId === material.productId &&
+    image?.dataset.materialId === material.id &&
+    image?.dataset.materialUpdatedAt === material.updatedAt;
+  readingImage.value = matchesMaterial ? image : null;
   readingMaterial.value = material;
 };
 const closeDocument = (): void => {
   readingMaterial.value = null;
+  readingImage.value = null;
   const trigger = readingTrigger;
   readingTrigger = null;
   void nextTick(() => trigger?.focus());
@@ -146,45 +152,30 @@ const statusText = (material: EffectImportMaterial): string =>
       </button>
     </header>
 
-    <section v-if="!batch" class="source-card upload-source-card">
-      <header class="panel-heading">
-        <span class="panel-heading-icon"><Upload :size="20" /></span>
-        <div>
-          <h3>上传产品资料</h3>
-          <p>支持商品主图、细节图、场景图与产品文本资料</p>
-        </div>
-      </header>
-      <label class="source-dropzone" :class="{ disabled: uploadDisabled }">
-        <span class="dropzone-plus"><Plus :size="25" /></span>
-        <strong>点击或将商品图片、产品文档拖拽到此处</strong>
-        <small>支持同时选择图片和文档，系统会自动识别资料类型</small>
-        <small>JPG / PNG / PSD / WebP · Word / Excel / PDF / 纯文本</small>
-        <input
-          type="file"
-          hidden
-          multiple
-          :accept="unifiedUploadAccept"
-          :disabled="uploadDisabled"
-          @change="chooseFiles"
-        />
-      </label>
-    </section>
-
-    <template v-else>
-      <label class="source-dropzone batch-dropzone" :class="{ disabled: uploadDisabled }">
-        <span class="dropzone-plus"><Plus :size="20" /></span
-        ><strong>点击或拖拽上传图片和文档</strong
-        ><small>支持混合选择多个文件，系统会自动识别类型</small>
-        <input
-          type="file"
-          hidden
-          multiple
-          :accept="unifiedUploadAccept"
-          :disabled="uploadDisabled"
-          @change="chooseFiles"
-        />
-      </label>
-    </template>
+    <ImportSourceCard
+      v-if="!batch"
+      title="上传产品资料"
+      description="支持商品主图、细节图、场景图与产品文本资料"
+    >
+      <template #icon><Upload :size="20" /></template>
+      <ImportDropzone
+        :accept="unifiedUploadAccept"
+        :disabled="uploadDisabled"
+        prompt="点击或将商品图片、产品文档拖拽到此处"
+        hint="支持同时选择图片和文档，系统会自动识别资料类型"
+        formats="JPG / PNG / PSD / WebP · Word / Excel / PDF / 纯文本"
+        @files="emit('upload', product, $event)"
+      />
+    </ImportSourceCard>
+    <ImportDropzone
+      v-else
+      compact
+      :accept="unifiedUploadAccept"
+      :disabled="uploadDisabled"
+      prompt="点击或拖拽上传图片和文档"
+      hint="支持混合选择多个文件，系统会自动识别类型"
+      @files="emit('upload', product, $event)"
+    />
 
     <section class="commerce-parse" :class="{ 'source-card': !batch }">
       <header v-if="!batch" class="panel-heading compact-heading">
@@ -225,73 +216,68 @@ const statusText = (material: EffectImportMaterial): string =>
       <div v-if="!importedItemCount" class="materials-empty">
         暂无已导入资料，可从上方上传文件或保存电商链接
       </div>
-      <div
+      <ImportMaterialRow
         v-for="material in product.materials"
         :key="material.id"
-        class="material-file-row"
+        :name="materialName(material)"
+        :description="`${EFFECT_IMPORT_MATERIAL_TYPE_LABELS[material.type]} · ${formatBytes(material.sizeBytes)}${material.errorMessage ? ` · ${material.errorMessage}` : ''}`"
         :class="material.status.toLowerCase()"
       >
-        <span v-if="material.type === 'PRODUCT_IMAGE'" class="material-thumbnail">
-          <EffectImportImagePreview :material="material" />
-        </span>
-        <span v-else class="file-extension">{{ extension(material) }}</span>
-        <span class="file-copy"
-          ><strong>{{ materialName(material) }}</strong
-          ><small
-            >{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[material.type] }} ·
-            {{ formatBytes(material.sizeBytes)
-            }}<template v-if="material.errorMessage">
-              · {{ material.errorMessage }}</template
-            ></small
-          ></span
-        >
-        <em
-          ><CheckCircle2 v-if="material.status === 'READY'" :size="13" /><AlertTriangle
-            v-else-if="material.status === 'FAILED'"
-            :size="13"
-          /><RefreshCw v-else :size="13" :class="{ spin: material.status === 'UPLOADING' }" />{{
-            statusText(material)
-          }}</em
-        >
-        <button
-          v-if="
-            (material.type === 'PRODUCT_DOCUMENT' || material.type === 'PRODUCT_IMAGE') &&
-            material.status === 'READY' &&
-            material.contentUrl
-          "
-          class="file-read"
-          type="button"
-          :disabled="busyMaterialIds.has(material.id)"
-          @click="openDocument(material, $event)"
-        >
-          <ImageIcon v-if="material.type === 'PRODUCT_IMAGE'" :size="13" />
-          <FileText v-else :size="13" />查看内容
-        </button>
-        <button
-          v-if="material.status === 'FAILED' && material.failureDisposition === 'RETRYABLE'"
-          type="button"
-          :disabled="disabled || busyMaterialIds.has(material.id)"
-          @click="emit('retry', product, material)"
-        >
-          重试
-        </button>
-        <button
-          type="button"
-          :disabled="uploadDisabled || busyMaterialIds.has(material.id)"
-          @click="emit('replace', product, material)"
-        >
-          重传
-        </button>
-        <button
-          class="file-delete"
-          type="button"
-          :disabled="disabled || busyMaterialIds.has(material.id)"
-          aria-label="删除资料"
-          @click="emit('deleteMaterial', product, material)"
-        >
-          <Trash2 :size="13" />
-        </button>
-      </div>
+        <template #preview>
+          <span v-if="material.type === 'PRODUCT_IMAGE'" class="material-thumbnail">
+            <EffectImportImagePreview :material="material" />
+          </span>
+          <span v-else class="file-extension">{{ extension(material) }}</span>
+        </template>
+        <template #actions>
+          <em
+            ><CheckCircle2 v-if="material.status === 'READY'" :size="13" /><AlertTriangle
+              v-else-if="material.status === 'FAILED'"
+              :size="13"
+            /><RefreshCw v-else :size="13" :class="{ spin: material.status === 'UPLOADING' }" />{{
+              statusText(material)
+            }}</em
+          >
+          <button
+            v-if="
+              (material.type === 'PRODUCT_DOCUMENT' || material.type === 'PRODUCT_IMAGE') &&
+              material.status === 'READY' &&
+              material.contentUrl
+            "
+            class="file-read"
+            type="button"
+            :disabled="busyMaterialIds.has(material.id)"
+            @click="openDocument(material, $event)"
+          >
+            <ImageIcon v-if="material.type === 'PRODUCT_IMAGE'" :size="13" />
+            <FileText v-else :size="13" />查看内容
+          </button>
+          <button
+            v-if="material.status === 'FAILED' && material.failureDisposition === 'RETRYABLE'"
+            type="button"
+            :disabled="disabled || busyMaterialIds.has(material.id)"
+            @click="emit('retry', product, material)"
+          >
+            重试
+          </button>
+          <button
+            type="button"
+            :disabled="uploadDisabled || busyMaterialIds.has(material.id)"
+            @click="emit('replace', product, material)"
+          >
+            重传
+          </button>
+          <button
+            class="file-delete"
+            type="button"
+            :disabled="disabled || busyMaterialIds.has(material.id)"
+            aria-label="删除资料"
+            @click="emit('deleteMaterial', product, material)"
+          >
+            <Trash2 :size="13" />
+          </button>
+        </template>
+      </ImportMaterialRow>
       <div v-if="savedCommerceUrl" class="material-file-row commerce-link-row">
         <span class="commerce-link-badge"><Link2 :size="18" /></span>
         <span class="file-copy">
@@ -331,6 +317,7 @@ const statusText = (material: EffectImportMaterial): string =>
       v-if="readingMaterial"
       :material="readingMaterial"
       :mode="mode"
+      :preview-image="readingImage"
       @close="closeDocument"
     />
   </article>

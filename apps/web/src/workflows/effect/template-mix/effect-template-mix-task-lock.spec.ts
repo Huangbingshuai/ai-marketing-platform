@@ -11,6 +11,7 @@ function harness() {
     computed,
     activeTemplateId,
     aiRuns,
+    pendingFillRun: ref<unknown>(null),
     activeEntry,
     runSwitching: ref(false),
     fillStartPending: ref(false),
@@ -64,5 +65,15 @@ describe('smart-fill task locks belong to the selected template', () => {
     c.fillStartPending.value = false;
     c.runSwitching.value = true;
     expect(c.workspaceTaskLocked.value).toBe(true);
+  });
+
+  it('keeps a completed receipt locked only while its films are still being installed', () => {
+    const c = harness();
+    c.activeTemplateId.value = 'filling';
+    c.aiRuns.value[0]!.status = 'COMPLETED';
+    c.pendingFillRun.value = c.aiRuns.value[0];
+    expect(c.workspaceTaskLocked.value).toBe(true);
+    c.pendingFillRun.value = null;
+    expect(c.workspaceTaskLocked.value).toBe(false);
   });
 });

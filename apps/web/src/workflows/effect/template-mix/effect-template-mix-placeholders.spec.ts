@@ -11,7 +11,8 @@ describe('decorative empty template markers', () => {
     expect(timeline).toContain('props.variant?.slots.filter(({ id }) => props.variant?.bindings[id])');
   });
   it('shows a neutral sign instead of a missing-media warning', () => {
-    expect(timeline).toContain("variant.bindings[slot.id] ? '素材不可用' : '模板槽位'");
+    // An intentional hole is distinct from a decorative template marker and unavailable media.
+    expect(timeline).toContain("variant.bindings[slot.id] ? '素材不可用' : variant.intentionallyEmptySlotIds?.includes(slot.id) ? '空槽待补充' : '模板槽位'");
     expect(timeline).toContain('Boolean(variant.bindings[slot.id]) && (!materialForSlot(slot.id)');
     expect(timeline).toMatch(/\.video-clip\.is-template-marker\s*\{[^}]*border:\s*1px dashed #cbd5e1/s);
   });

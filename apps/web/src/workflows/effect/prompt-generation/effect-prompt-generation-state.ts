@@ -1,10 +1,46 @@
-import type { EffectPromptBatchSettings, EffectPromptProductState } from '@ai-marketing/contracts';
+import type {
+  EffectPromptBatchSettings,
+  EffectPromptFragmentType,
+  EffectPromptProductState,
+} from '@ai-marketing/contracts';
 import { EFFECT_PROMPT_LIMITS, normalizeEffectPromptSettings } from '@ai-marketing/contracts';
 
 export { EFFECT_PROMPT_LIMITS };
 export type EffectPromptPageStatus = 'loading' | 'ready' | 'error';
 
+export const isPromptWorkspaceScopeReady = (
+  status: EffectPromptPageStatus,
+  loaded: { projectId: string; workflowRunId: string } | null,
+  current: { projectId: string; workflowRunId: string },
+): boolean => status === 'ready' && loaded?.projectId === current.projectId &&
+  loaded.workflowRunId === current.workflowRunId;
+
 export const EFFECT_PROMPT_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const;
+
+/** A known edit handoff may retain its read-only view, never an unrelated branch. */
+export const resolvePromptTransitionValue = <T>(
+  current: T | null,
+  transition: { projectId: string; workflowRunId: string; value: T | null } | null,
+  scope: { projectId: string; workflowRunId: string },
+): T | null => current ?? (
+  transition?.projectId === scope.projectId && transition.workflowRunId === scope.workflowRunId
+    ? transition.value : null
+);
+
+export const changePromptPrimaryPurpose = (
+  previous: EffectPromptFragmentType,
+  next: EffectPromptFragmentType,
+  compatible: EffectPromptFragmentType[],
+): EffectPromptFragmentType[] => (previous === next ? [...new Set([next, ...compatible])] : [next]);
+
+export const normalizeManualPromptDuration = (value: number): number =>
+  Math.min(
+    EFFECT_PROMPT_LIMITS.maxManualDurationSeconds,
+    Math.max(
+      EFFECT_PROMPT_LIMITS.minDurationSeconds,
+      Number.isFinite(value) ? Math.round(value) : EFFECT_PROMPT_LIMITS.minDurationSeconds,
+    ),
+  );
 
 const hydratePromptSettings = (settings: EffectPromptBatchSettings): EffectPromptBatchSettings => ({
   targetCount: settings.targetCount,

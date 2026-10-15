@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import EffectSinglePackagingControl from './EffectSinglePackagingControl.vue';
+import { createMixSourceChangesReader } from './effect-template-mix-source-changes-reader';
+import { samePackagingDraftInput } from './effect-packaging-draft-input';
+import { mixFillResultReady, type MixFillResultHandoff } from './effect-template-mix-fill-result';
 import type {
   EffectImportProduct,
   EffectTemplateMixAiRun,
@@ -34,7 +37,6 @@ import {
   packagingTimelineClips,
   packagingPictureOnlyVariant,
   packagingTimelineDuration,
-  effectTemplateMixSourceChanges,
   effectTemplateMixSourceUpdateSignature,
   effectTemplateMixSlotDurationLimit,
   effectTemplateMixMaterialFitsTemplate,
@@ -46,6 +48,8 @@ import {
   packagingAudioFade,
   packagingAudioFromDb,
   packagingAudioToDb,
+  packagingCaptionFontPixels,
+  PACKAGING_CAPTION_REFERENCE_HEIGHT,
 } from '@ai-marketing/contracts';
 import { ParameterAdjustList, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import type { ParameterAdjustItem } from '@ai-marketing/ui';
@@ -90,7 +94,7 @@ import EffectVideoTransformToolbar from './EffectVideoTransformToolbar.vue';
 import EffectCanvasRatioMenu from './EffectCanvasRatioMenu.vue';
 import { scaleVideoTransform, videoTransformGuides, videoWheelDelta, videoPositionOverview } from './effect-video-transform-gesture';
 import type { EffectVideoTransform } from '@ai-marketing/contracts';
-import { mixAppendProgress, mixLocalUpdateProgress } from './effect-template-mix-operation-progress';
+import { createMixLocalUpdateProgressTracker, hasPendingMixContinuation, mixAppendProgress, mixLocalUpdateProgress } from './effect-template-mix-operation-progress';
 import {
   computed,
   nextTick,
@@ -107,7 +111,6 @@ import {
 import {
   createEffectCaptionVoice,
   createEffectTemplateMixAiRun,
-  resumeEffectTemplateMixAppend,
   createEmptyEffectTemplateMixVariant,
   deleteEffectTemplateMixVariant,
   deleteEffectTemplateMix,
@@ -128,6 +131,7 @@ import {
   MixDraftRaceGuard,
   MixWorkspaceRevisionFence,
   rebaseMixDraft,
+  sameEditableMixTemplate,
   saveLatestMixDraft,
 } from './effect-template-mix-draft-race';
 import { canRetainMixPlayback, retainUnchangedMixValue } from './effect-template-mix-background-sync';
@@ -156,8 +160,7 @@ import {
   moveEffectTemplateMixSlot,
 } from './effect-template-mix-state';
 import {
-  effectTemplateMixDissolvePlaybackKeyframes,
-  effectTemplateMixFlashPlaybackKeyframes,
+  effectTemplateMixTransitionPlaybackKeyframes,
   effectTemplateMixTransitionPresentation,
 } from './effect-template-mix-transition';
 import { PreparedVideoHandoff } from './effect-template-mix-native-handoff';
@@ -359,14 +362,23 @@ const selectedPackaging = ref<PackagingItem | null>(null);
 const packagingPreviewEnabled = ref(false);
 const packagingReady = ref(false);
 const packagingRunStatus = ref<PackagingRun['status'] | null>(null);
+const appendPackagingRun = ref<PackagingRun | null>(null);
+const activeAppendPackaging = computed(() => {
+  const run = appendPackagingRun.value;
+  return run?.operation === 'APPEND_PACKAGE' && run.workflowRunId === props.workflowRunId &&
+    run.templateId === activeTemplateId.value && ['QUEUED', 'RUNNING'].includes(run.status)
+    ? run : null;
+});
 const packagingResults = ref<PackagingItem[]>([]);
 let packagingTaskWorkspaceScope = '';
 const pendingPackagingVariantId = ref('');
 const variantPackagingLocked = (id: string): boolean => pendingPackagingVariantId.value === id ||
-  packagingResults.value.some((item) => item.variantId === id && Boolean(item.operation) && ['QUEUED', 'RUNNING'].includes(item.status));
+  packagingResults.value.some((item) => item.workflowRunId === props.workflowRunId &&
+    item.variantId === id && Boolean(item.operation) && ['QUEUED', 'RUNNING'].includes(item.status));
 const packagingPreviewReadOnly = ref(false);
 const packagingResultByVariant = computed(() =>
-  new Map(packagingResults.value.map((item) => [item.variantId, item])),
+  new Map(packagingResults.value.filter((item) => item.workflowRunId === props.workflowRunId)
+    .map((item) => [item.variantId, item])),
 );
 /**
  * Films the packaging gave up on. They are still submitted as picture-only ones, and the batch they
@@ -378,10 +390,12 @@ const packagingFailureByVariant = computed(
   () => new Map(packagingFailures.value.map((failure) => [failure.variantId, failure])),
 );
 const packagingActionLabel = computed(() =>
-  packagingActionText(packagingReady.value, packagingRunStatus.value),
+  packagingActionText(packagingReady.value || packagingResults.value.some((item) =>
+    item.workflowRunId === props.workflowRunId && item.status === 'COMPLETED'), packagingRunStatus.value),
 );
 const packagingActionBlockReason = computed(() => {
   if (runSwitching.value) return '正在加载成片工程，请稍后再包装。';
+  if (localUpdateBusy.value) return '当前模板正在局部更新，请完成后再进行智能成片包装。';
   const entry = activeEntry.value;
   if (!entry) return null;
   if (entry.packagingSourceLocked) return '智能成片包装正在进行，暂时不能再次包装。';
@@ -399,10 +413,23 @@ const mutating = ref(false);
 const fillStartPending = ref(false);
 const aiRuns = ref<EffectTemplateMixAiRun[]>([]);
 const backgroundAiRun = ref<EffectTemplateMixAiRun | null>(null);
+// Keep the actual terminal receipt visible until its confirmed films are installed, not just read.
+const fillResultHandoffs = ref<MixFillResultHandoff[]>([]);
+const pendingFillRun = computed(() => fillResultHandoffs.value.find((item) =>
+  item.projectId === props.projectId && item.run.workflowRunId === props.workflowRunId &&
+  item.run.templateId === activeTemplateId.value)?.run ?? null);
+const pendingBackgroundFillRun = computed(() => fillResultHandoffs.value.find((item) =>
+  item.projectId === props.projectId && item.sourceWorkflowRunId === props.workflowRunId &&
+  item.run.workflowRunId !== props.workflowRunId && item.run.templateId === activeTemplateId.value)?.run ?? null);
+const retainFillResult = (run: EffectTemplateMixAiRun, projectId: string, sourceWorkflowRunId: string): void => {
+  if (run.status !== 'COMPLETED' || run.operation === 'APPEND') return;
+  fillResultHandoffs.value = [{ projectId, sourceWorkflowRunId, run },
+    ...fillResultHandoffs.value.filter((item) => item.projectId !== projectId || item.run.id !== run.id)];
+};
 let backgroundAiTimer: ReturnType<typeof setTimeout> | undefined;
 let backgroundAiGeneration = 0;
 const backgroundAiBusy = computed(() =>
-  ['QUEUED', 'RUNNING'].includes(backgroundAiRun.value?.status ?? ''),
+  Boolean(pendingBackgroundFillRun.value) || ['QUEUED', 'RUNNING'].includes(backgroundAiRun.value?.status ?? ''),
 );
 const classificationPools = ref<EffectTemplateMixClassificationPool[]>([]);
 const activeAiRun = computed(
@@ -411,17 +438,21 @@ const activeAiRun = computed(
       (run) =>
         run.templateId === activeTemplateId.value &&
         (run.status === 'QUEUED' || run.status === 'RUNNING'),
-    ) ?? null,
+    ) ?? pendingFillRun.value,
 );
 const displayedBackgroundAi = computed(
-  () => backgroundAiBusy.value && backgroundAiRun.value?.templateId === activeTemplateId.value,
+  () => Boolean(pendingBackgroundFillRun.value) ||
+    (backgroundAiBusy.value && backgroundAiRun.value?.templateId === activeTemplateId.value),
 );
 const displayedAiRun = computed(() =>
-  displayedBackgroundAi.value ? backgroundAiRun.value : activeAiRun.value,
+  displayedBackgroundAi.value ? pendingBackgroundFillRun.value ?? backgroundAiRun.value : activeAiRun.value,
 );
 const activeAppendRun = computed(() =>
   activeAiRun.value?.operation === 'APPEND' ? activeAiRun.value : null,
 );
+const pendingAppendContinuation = computed(() => aiRuns.value.some((run) =>
+  run.workflowRunId === props.workflowRunId && run.templateId === activeTemplateId.value &&
+  hasPendingMixContinuation(run)));
 const appendProgress = computed(() => mixAppendProgress(activeAppendRun.value));
 const activeFillRun = computed(() =>
   activeAiRun.value?.operation !== 'APPEND' ? activeAiRun.value : null,
@@ -433,16 +464,6 @@ const failedAiRun = computed(() => {
   const latest = aiRuns.value.find((run) => run.templateId === activeTemplateId.value);
   return latest?.status === 'FAILED' ? latest : null;
 });
-const appendContinuationRun = computed(
-  () =>
-    aiRuns.value.find(
-      (run) =>
-        run.templateId === activeTemplateId.value &&
-        run.operation === 'APPEND' &&
-        run.status === 'COMPLETED' &&
-        run.errorCode === 'APPEND_CONTINUATION_FAILED',
-    ) ?? null,
-);
 const completedAppendRun = computed(
   () =>
     aiRuns.value.find(
@@ -544,6 +565,8 @@ const playerTimecode = ref<HTMLSpanElement | null>(null);
 const stageElement = ref<HTMLElement | null>(null);
 /** Generated subtitles start at 16 px, independent of the preview panel's width. */
 const stageCaptionFontSize = ref(16);
+const stageCaptionCanvasHeight = ref(PACKAGING_CAPTION_REFERENCE_HEIGHT);
+let stageCaptionResizeObserver: ResizeObserver | null = null;
 const playerMenu = ref<'DISPLAY' | null>(null);
 const previewZoom = ref(100);
 const playerFullscreen = ref(false);
@@ -669,10 +692,9 @@ const outputSyncChannel =
 const queuedOutputRevision = (): number | null => queuedOutputSync?.revision ?? null;
 let playbackAnimationFrame: number | undefined;
 let playerScrubberAnimations: Animation[] = [];
+let transitionPlaybackAnimations: Animation[] = [];
 const preparedVideoHandoff = new PreparedVideoHandoff();
-let dissolvePlaybackAnimation: Animation | null = null;
-let flashPlaybackAnimation: Animation | null = null;
-let dissolvePlaybackSignature = '';
+let transitionPlaybackSignature = '';
 const transitionOverlayElement = ref<HTMLDivElement | null>(null);
 let playbackAnchorMilliseconds = 0;
 let playbackAnchorSeconds = 0;
@@ -695,14 +717,8 @@ const pollControllers = new Map<string, AbortController>();
 const activeEntry = computed(
   () => catalog.value.find(({ id }) => id === activeTemplateId.value) ?? null,
 );
-const pendingPackagingScope = ref('');
-const packagingScopeKey = computed(
-  () => `${props.projectId}:${props.workflowRunId}:${activeTemplateId.value}`,
-);
 const packagingSourceAutoLocked = computed(
-  () =>
-    Boolean(activeEntry.value?.packagingSourceLocked) ||
-    pendingPackagingScope.value === packagingScopeKey.value,
+  () => Boolean(activeEntry.value?.packagingSourceLocked),
 );
 /**
  * A packaging run that is still working blocks a new fill from the same Run. A completed package
@@ -717,6 +733,7 @@ const sourceUpdateStarting = ref(false);
 const sourceUpdateHandoff = ref(false);
 const localUpdateStarting = ref(false);
 const sourceUpdatePendingVariantIds = ref<string[]>([]);
+const trackLocalUpdateProgress = createMixLocalUpdateProgressTracker();
 const sourceUpdateBusy = computed(
   () =>
     sourceUpdateStarting.value ||
@@ -740,7 +757,8 @@ const localUpdateBusy = computed(
     localUpdateStarting.value ||
     sourceUpdateBusy.value ||
     sourceUpdateHandoff.value ||
-    Boolean(activeAppendRun.value),
+    pendingAppendContinuation.value ||
+    Boolean(activeAppendRun.value) || Boolean(activeAppendPackaging.value),
 );
 const localUpdateProgress = computed(() => {
   let source: { progress: number; detail: string } | null = null;
@@ -760,14 +778,25 @@ const localUpdateProgress = computed(() => {
           : `正在更新成片工程${items.length ? ` · 已完成 ${completed}/${items.length}` : ''}`,
     };
   }
-  return mixLocalUpdateProgress({
+  const progress = mixLocalUpdateProgress({
     source,
     hasAdditions: Boolean(sourceUpdateRun.value?.sourceOperationHasAdditions),
-    handoff: sourceUpdateHandoff.value,
+    handoff: sourceUpdateHandoff.value || pendingAppendContinuation.value,
+    appendCompleted: pendingAppendContinuation.value,
     append: appendProgress.value,
+    packageNewVariants: activeAppendRun.value?.packageNewVariants ?? (pendingAppendContinuation.value
+      ? completedAppendRun.value?.packageNewVariants
+      : undefined) ?? Boolean(sourceUpdateRun.value?.sourceOperationHasAdditions &&
+        autoPackagingTemplateIds.value.includes(activeTemplateId.value)),
+    packaging: activeAppendPackaging.value,
   }) ?? (localUpdateStarting.value && mutating.value
     ? { progress: 0, detail: '正在准备更新任务' }
     : null);
+  return trackLocalUpdateProgress(
+    JSON.stringify([props.projectId, props.workflowRunId, activeTemplateId.value]),
+    sourceUpdateRun.value?.sourceOperationId,
+    progress,
+  );
 });
 const workspaceTaskLocked = computed(() =>
   Boolean(
@@ -801,7 +830,8 @@ const projectEditLocked = computed(
   () => workspaceTaskLocked.value || selectedSourceUpdateLocked.value || packagingPreviewReadOnly.value || Boolean(selectedVariant.value && variantPackagingLocked(selectedVariant.value.id)),
 );
 const templateEditLocked = computed(() => workspaceTaskLocked.value || sourceUpdateBusy.value ||
-  packagingResults.value.some((item) => item.operation && ['QUEUED', 'RUNNING'].includes(item.status)));
+  packagingResults.value.some((item) => item.workflowRunId === props.workflowRunId &&
+    item.operation && ['QUEUED', 'RUNNING'].includes(item.status)));
 /**
  * The voice only feeds future packaging and voice redos, never existing audio, so it stays editable
  * once the run has finished. It is still locked while a run is in flight, because that run already
@@ -828,9 +858,7 @@ const selectedVariantBaseline = computed(
 // Execution view is disposable: never autosave the temporary removal of old audio/subtitles.
 const selectedVariant = computed(() => {
   const variant = selectedVariantBaseline.value;
-  const item = variant ? packagingResultByVariant.value.get(variant.id) : undefined;
-  return variant && (variantPackagingLocked(variant.id) ||
-    item?.operation && item.workflowRunId !== props.workflowRunId && item.status === 'COMPLETED')
+  return variant && variantPackagingLocked(variant.id)
     ? packagingPictureOnlyVariant(variant) : variant;
 });
 const timelineHistoryScope = computed(() =>
@@ -866,11 +894,12 @@ const audioRowByClipId = computed<Record<string, number>>(() => {
 });
 const mutedAudioClip = (clipId: string): boolean =>
   audioRowMuted.value[audioRowByClipId.value[clipId] ?? 0] ?? false;
+const readSourceChanges = createMixSourceChangesReader();
 const variantSourceChanges = (variant: EffectTemplateMixVariant) =>
-  effectTemplateMixSourceChanges(variant, sourceMaterials.value);
+  readSourceChanges(variant, sourceMaterials.value);
 const templatePendingUpdateCount = (entry: EffectTemplateMixTemplateEntry) =>
   entry.workspace.variants.filter(
-    (variant) => effectTemplateMixSourceChanges(variant, entry.workspace.materials).length > 0,
+    (variant) => readSourceChanges(variant, entry.workspace.materials).length > 0,
   ).length;
 watch(
   () =>
@@ -999,7 +1028,6 @@ async function pollSourceUpdate(
     if (!ownsUpdate()) return;
     // A failed read is not a failed durable task. Keep the confirmed operation and retry;
     // only its explicit terminal status above can report an update failure.
-    showNotice('局部更新状态暂时未能读取，正在重新连接；已保存的更新不会撤回。', 'warning');
     sourceUpdateTimer = setTimeout(
       () => void pollSourceUpdate(run, generation, afterSuccess),
       3000,
@@ -1440,6 +1468,9 @@ const transitionPreviewAt = (time: number): ActiveTransitionPreview | null => {
     const incomingRange = ranges.find(({ id }) => id === incomingSlot.id);
     const outgoingRange = ranges.find(({ id }) => id === outgoingSlot.id);
     if (!incomingRange || !outgoingRange) continue;
+    // A genuine empty slot/gap is not a two-decoder transition.
+    if (!materialForSlot(incomingSlot.id) || !materialForSlot(outgoingSlot.id) ||
+      Math.abs(outgoingRange.end - incomingRange.start) > 1 / TIMELINE_FPS) continue;
     const duration = effectTemplateMixTransitionDuration(incomingSlot, outgoingSlot);
     if (duration <= 0) continue;
     // Centered transition: the duration is split evenly, half on the outgoing
@@ -1507,46 +1538,44 @@ const transitionOverlayStyle = computed<Record<string, string> | undefined>(() =
   return presentation.overlay;
 });
 const stopTransitionPlaybackAnimation = (): void => {
-  dissolvePlaybackAnimation?.cancel();
-  dissolvePlaybackAnimation = null;
-  flashPlaybackAnimation?.cancel();
-  flashPlaybackAnimation = null;
-  dissolvePlaybackSignature = '';
+  for (const animation of transitionPlaybackAnimations) animation.cancel();
+  transitionPlaybackAnimations = [];
+  transitionPlaybackSignature = '';
 };
 const syncTransitionPlaybackAnimation = (
   transition: ActiveTransitionPreview | null,
   playbackTime: number,
 ): void => {
-  if (!transition || (transition.transition !== '叠化' && transition.transition !== '闪白')) {
+  if (!transition) {
     stopTransitionPlaybackAnimation();
     return;
   }
-  const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}:${transition.transition}`;
-  if (signature === dissolvePlaybackSignature && dissolvePlaybackAnimation?.playState === 'running')
+  const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}:${transition.transition}:${transition.start}:${transition.end}`;
+  if (signature === transitionPlaybackSignature)
     return;
   stopTransitionPlaybackAnimation();
   const incoming = timelinePlayers.get(transition.incomingSlot.id);
-  const remaining = Math.max(0, transition.end - playbackTime);
-  if (!incoming || remaining <= 0 || typeof incoming.animate !== 'function') return;
-  dissolvePlaybackSignature = signature;
-  dissolvePlaybackAnimation = incoming.animate(
-    effectTemplateMixDissolvePlaybackKeyframes(transition.progress),
-    { duration: remaining * 1000, easing: 'linear', fill: 'both' },
-  );
-  if (transition.transition === '闪白') {
+  const outgoing = timelinePlayers.get(transition.outgoingSlot.id);
+  if (!incoming || !outgoing || transition.end <= playbackTime || typeof incoming.animate !== 'function') return;
+  transitionPlaybackSignature = signature;
+  const frames = effectTemplateMixTransitionPlaybackKeyframes(transition.transition);
+  const animate = (element: HTMLElement, keyframes: Keyframe[]): void => {
+    const animation = element.animate(keyframes, {
+      duration: transition.duration * 1000, easing: 'linear', fill: 'both',
+    });
+    // The shared audio/transport clock owns progress, including buffering and seeks.
+    animation.pause();
+    animation.currentTime = Math.max(0, playbackTime - transition.start) * 1000;
+    transitionPlaybackAnimations.push(animation);
+  };
+  animate(outgoing, frames.outgoing);
+  animate(incoming, frames.incoming);
+  if (transitionOverlayStyle.value) {
     void nextTick(() => {
-      if (!playing.value || dissolvePlaybackSignature !== signature) return;
+      if (!playing.value || transitionPlaybackSignature !== signature) return;
       const overlay = transitionOverlayElement.value;
       if (!overlay || typeof overlay.animate !== 'function') return;
-      flashPlaybackAnimation = overlay.animate(effectTemplateMixFlashPlaybackKeyframes(), {
-        duration: transition.duration * 1000,
-        easing: 'linear',
-        fill: 'both',
-      });
-      flashPlaybackAnimation.currentTime = Math.max(
-        0,
-        Math.min(transition.duration, currentPlaybackClockSeconds() - transition.start) * 1000,
-      );
+      animate(overlay, frames.overlay);
     });
   }
 };
@@ -1558,13 +1587,17 @@ const previewRange = computed(() =>
 const previewMaterial = computed(() =>
   previewSlot.value ? materialForSlot(previewSlot.value.id) : null,
 );
-const previewMediaIdentity = computed(() => JSON.stringify([
+// A seek invalidates callbacks, not the decoded source already on screen. Otherwise
+// every scrub event covers the moving native video with the trim-start thumbnail.
+const previewSourceIdentity = computed(() => JSON.stringify([
   currentWorkspaceScope.value, activeTemplateId.value, selectedVariant.value?.id,
   previewSlot.value?.id, previewMaterial.value?.contentUrl, previewMaterial.value?.contentHash,
   selectedVariant.value?.offsets[previewSlot.value?.id ?? ''] ?? 0,
-  playbackSeekVersion.value,
 ]));
-const presentedPreviewIdentity = ref('');
+const previewMediaIdentity = computed(() => JSON.stringify([
+  previewSourceIdentity.value, playbackSeekVersion.value,
+]));
+const presentedPreviewSourceIdentity = ref('');
 const framePresentation = new TimelineFramePresentation();
 const previewCachedPoster = useEffectTemplateMixThumbnail(
   computed(() => previewMaterial.value?.contentUrl ?? ''),
@@ -1574,7 +1607,7 @@ const previewCachedPoster = useEffectTemplateMixThumbnail(
 const previewPosterVisible = computed(() =>
   (!playing.value || (!displayedTimelineSlotId.value && !!previewCachedPoster.value)) && !auditionMaterial.value &&
   videoTrackVisible.value && !!previewMaterial.value &&
-  presentedPreviewIdentity.value !== previewMediaIdentity.value);
+  presentedPreviewSourceIdentity.value !== previewSourceIdentity.value);
 const stageMaterial = computed(() => auditionMaterial.value ?? previewMaterial.value);
 const sourceAspectLabel = computed(() => {
   // Empty/new templates use the same default as populated projects, before playback metadata.
@@ -2364,6 +2397,15 @@ const installWorkspaceData = (
   classificationPools.value = data.classificationPools ?? [];
   // Retain the complete owner-Run response, never the cross-Run directory projection.
   templateDirectory.value.workspaces[scope.slice(props.projectId.length + 1)] = cloneMix(data);
+  for (const entry of data.draft.templates) {
+    if (!entry.aiFillLocked) continue;
+    // Only the latest receipt owns this lock, never historical fills on the same template.
+    const run = data.aiRuns?.find((item) => item.templateId === entry.id);
+    if (run?.status === 'COMPLETED') retainFillResult(run, props.projectId, run.workflowRunId);
+  }
+  fillResultHandoffs.value = fillResultHandoffs.value.filter((item) =>
+    item.projectId !== props.projectId || `${item.projectId}:${item.run.workflowRunId}` !== scope ||
+    !mixFillResultReady(item.run, data));
   return true;
 };
 const stopPolling = (runId?: string): void => {
@@ -2380,12 +2422,13 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
   const workflowRunId = props.workflowRunId;
   const scope = currentWorkspaceScope.value;
   const ownsCompletion = (): boolean =>
-    run.workflowRunId === workflowRunId &&
+    workbenchActive && run.workflowRunId === workflowRunId &&
     projectId === props.projectId &&
     workflowRunId === props.workflowRunId &&
     scope === currentWorkspaceScope.value &&
     !runSwitching.value;
   if (!ownsCompletion()) return;
+  retainFillResult(run, projectId, workflowRunId);
   stopPolling(run.id);
   if (run.status === 'FAILED' || run.status === 'CANCELLED') {
     await load();
@@ -2411,8 +2454,19 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
     return;
   }
   const readToken = draftRace.readToken();
-  const response = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
+  let response: Awaited<ReturnType<typeof loadEffectTemplateMixWorkspace>>;
+  try {
+    response = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
+  } catch {
+    // stopPolling already aborted the progress request; its catch cannot recover this read.
+    if (ownsCompletion()) pollTimers.set(run.id, setTimeout(() => void finishAiRun(run), 3000));
+    return;
+  }
   if (!ownsCompletion()) return;
+  if (run.operation !== 'APPEND' && !mixFillResultReady(run, response.data)) {
+    pollTimers.set(run.id, setTimeout(() => void finishAiRun(run), 1200));
+    return;
+  }
   if (
     !draftRace.canInstall(readToken, saveState.value === 'dirty' || saveState.value === 'saving')
   ) {
@@ -2432,7 +2486,7 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
   }
   const variantId = run.outputVariantId;
   const ui = uiByTemplate[run.templateId];
-  if (variantId && ui) {
+  if (variantId && ui && run.operation !== 'APPEND') {
     ui.selectedVariantId = variantId;
     const entry = catalog.value.find(({ id }) => id === run.templateId);
     ui.selectedSlotId =
@@ -2444,13 +2498,31 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
   }
   saveState.value = 'saved';
   if (run.operation === 'APPEND' && activeTemplateId.value === run.templateId) {
+    // The server creates automatic packaging before marking APPEND complete. Discover it
+    // before releasing the local-update handoff; never select a new, picture-only film.
+    await packagingPanel.value?.refresh();
+    await nextTick();
+    if (!ownsCompletion()) return;
+    if (hasPendingMixContinuation(run)) {
+      // Read the latest durable continuation phase, not this captured completed
+      // fill response. Background Outbox retries may end without creating a package.
+      pollTimers.set(run.id, setTimeout(() => void pollAiRun(run.id), 1200));
+      return;
+    }
+    if (run.packageNewVariants && run.outputVariantIds?.length &&
+      run.errorCode !== 'APPEND_CONTINUATION_FAILED' &&
+      !run.outputVariantIds.every((id) => appendPackagingRun.value?.items.some((item) => item.variantId === id))) {
+      // A transient history-read failure cannot end this confirmed operation early.
+      pollTimers.set(run.id, setTimeout(() => void finishAiRun(run), 1200));
+      return;
+    }
     sourceUpdateHandoff.value = false;
     sourceUpdateRun.value = null;
     if (run.errorCode === 'APPEND_CONTINUATION_FAILED') {
-      showNotice('新增成片已生成，但结果同步或包装衔接未完成，请继续原任务；不要重复追加。', 'error');
       return;
     }
-    showNotice('本次局部更新已完成；执行期间的新变化或未采用素材仍会显示待更新。');
+    if (!run.packageNewVariants && !activeAppendPackaging.value)
+      showNotice('本次局部更新已完成；执行期间的新变化或未采用素材仍会显示待更新。');
     return;
   }
   const entry = catalog.value.find(({ id }) => id === run.templateId);
@@ -2518,6 +2590,11 @@ const pollAiRun = async (runId: string): Promise<void> => {
     )
       return;
     if (error instanceof DOMException && error.name === 'AbortError') return;
+    if (aiRuns.value.some((run) => run.id === runId)) {
+      // A read failure does not cancel an accepted task or require user action.
+      pollTimers.set(runId, setTimeout(() => void pollAiRun(runId), 3000));
+      return;
+    }
     showNotice(error instanceof Error ? error.message : '智能填充进度读取失败', 'error');
   }
 };
@@ -2749,7 +2826,9 @@ const load = async (): Promise<void> => {
     )
       scheduleSave();
     const running = response.data.aiRuns?.filter(
-      ({ status }) => status === 'QUEUED' || status === 'RUNNING',
+      (run) => run.status === 'QUEUED' || run.status === 'RUNNING' || hasPendingMixContinuation(run) ||
+        (run.status === 'COMPLETED' && response.data.draft.templates.some((entry) =>
+          entry.id === run.templateId && entry.aiFillLocked)),
     );
     const resumedRun = running?.find(({ targetVariantId, templateId }) => {
       const entry = response.data.draft.templates.find(({ id }) => id === templateId);
@@ -2767,9 +2846,13 @@ const load = async (): Promise<void> => {
       const ui = uiByTemplate[resumedRun.templateId];
       const entry = catalog.value.find(({ id }) => id === resumedRun.templateId);
       if (ui && entry) {
-        ui.selectedVariantId = resumedRun.targetVariantId ?? '';
-        ui.selectedSlotId = resumedRun.targetVariantId
-          ? (entry.workspace.variants.find(({ id }) => id === resumedRun.targetVariantId)?.slots[0]
+        const selectedVariantId = resumedRun.operation === 'APPEND'
+          ? entry.workspace.variants.find(({ id }) => id === ui.selectedVariantId)?.id ??
+            entry.workspace.variants[0]?.id ?? ''
+          : resumedRun.targetVariantId ?? '';
+        ui.selectedVariantId = selectedVariantId;
+        ui.selectedSlotId = selectedVariantId
+          ? (entry.workspace.variants.find(({ id }) => id === selectedVariantId)?.slots[0]
               ?.id ?? '')
           : '';
       }
@@ -3814,7 +3897,7 @@ const captionBoxStyle = (id: string): Record<string, string> => {
     left: `${(box.x - box.width / 2) * 100}%`,
     width: `${box.width * 100}%`,
     bottom: `${box.y * 100}%`,
-    fontSize: `${captionFontSize.value}px`,
+    fontSize: `${packagingCaptionFontPixels(captionFontSize.value, stageCaptionCanvasHeight.value)}px`,
   };
 };
 /**
@@ -4370,11 +4453,35 @@ const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<vo
   deletingTemplateId.value = entry.id;
   try {
     if (!(await flushPendingEdits()) || scope !== currentWorkspaceScope.value) return;
-    const expectedRevision = targetRunId === loadedWorkspaceRunId
+    let expectedRevision = targetRunId === loadedWorkspaceRunId
       ? draftRevision.value : templateDirectory.value.workspaces[targetRunId]?.draftRevision;
     if (expectedRevision === null || expectedRevision === undefined)
       throw new Error('模板版本尚未读取完成，请重试模板列表后再删除');
-    const result = await deleteEffectTemplateMix(projectId, targetRunId, entry.id, expectedRevision);
+    const deletionInput = (target: EffectTemplateMixDraft['templates'][number] | undefined) => target
+      ? serializeEffectTemplateMixDraft([hydrate(target, [])], target.id).templates[0] : undefined;
+    const confirmedEntry = deletionInput(templateListCatalog.value.find(({ id }) => id === entry.id));
+    if (!confirmedEntry) return;
+    const confirmed = cloneMix(confirmedEntry);
+    let result;
+    try {
+      result = await deleteEffectTemplateMix(projectId, targetRunId, entry.id, expectedRevision);
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.status !== 409 ||
+        !error.message.includes('模板已修改')) throw error;
+      // Unrelated template cleanup/navigation can advance the Run revision. Never remove
+      // newer target content, install a remote draft, or retry an ambiguous write failure.
+      const latest = await loadEffectTemplateMixWorkspace(projectId, targetRunId);
+      if (projectId !== props.projectId || scope !== currentWorkspaceScope.value ||
+        (templateDirectory.value.workflowRunIds[entry.id] ?? props.workflowRunId) !== targetRunId) return;
+      const remote = latest.data.draft.templates.find(({ id }) => id === entry.id);
+      const current = deletionInput(templateListCatalog.value.find(({ id }) => id === entry.id));
+      if (!sameEditableMixTemplate(confirmed, current) ||
+        !sameEditableMixTemplate(confirmed, deletionInput(remote)))
+        throw new Error('目标模板内容已变化，已保留模板，请核对后再确认删除');
+      if (latest.data.draftRevision === null) throw error;
+      expectedRevision = latest.data.draftRevision;
+      result = await deleteEffectTemplateMix(projectId, targetRunId, entry.id, expectedRevision);
+    }
     const receipt: EffectTemplateDeleted = {
       ...result.data, kind: 'TEMPLATE_DELETED', projectId, sourceWorkflowRunId: targetRunId,
     };
@@ -4464,7 +4571,7 @@ const detachedAudioSourceUrl = (audio: EffectTemplateMixDetachedAudio): string =
 const resetTimelinePlayerState = (): void => {
   previewPlaybackError.value = '';
   framePresentation.reset();
-  presentedPreviewIdentity.value = '';
+  presentedPreviewSourceIdentity.value = '';
   displayedTimelineSlotId.value = '';
   positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
   timelineVideoSeeks.reset();
@@ -4518,7 +4625,7 @@ const presentTimelineFrame = (slotId: string, video: HTMLVideoElement): void => 
       }
     }
     displayedTimelineSlotId.value = slotId;
-    presentedPreviewIdentity.value = identity;
+    presentedPreviewSourceIdentity.value = previewSourceIdentity.value;
     transitionFrame.value = '';
   };
   if (playing.value) {
@@ -4741,11 +4848,24 @@ async function openTemplateWorkspace(
   targetView: 'CONFIG' | 'EDITOR',
   action?: 'SOURCE_UPDATE',
 ): Promise<boolean> {
-  if (
-    mutating.value ||
-    pageState.value !== 'READY'
-  )
-    return false;
+  if (pageState.value !== 'READY') return false;
+  // Switching views of the installed template does not leave its draft or change its owner.
+  // Keep autosave running independently: a slow write must not hold the editor entrance hostage.
+  if (!action && targetView === 'EDITOR' && activeTemplateId.value === templateId &&
+    installedWorkspaceScope.value === currentWorkspaceScope.value && !runSwitching.value && workbenchActive) {
+    const ownerRunId = templateDirectory.value.workflowRunIds[templateId] ??
+      (catalog.value.some(({ id }) => id === templateId) ? props.workflowRunId : null);
+    if (ownerRunId === props.workflowRunId) {
+      controller?.abort();
+      requestedWorkspaceScope.value = null;
+      releaseExplicitWorkspaceTarget();
+      enterEditor();
+      return true;
+    }
+  }
+  // A mutation freezes its draft owner, not the CONFIG/EDITOR view of that same draft.
+  // Only navigation that could replace the owner must wait for the mutation to finish.
+  if (mutating.value) return false;
   const replacingNavigation = runSwitching.value ||
     installedWorkspaceScope.value !== currentWorkspaceScope.value;
   // A slow fallback read is cancellable navigation. It must not disable the entire directory,
@@ -4787,8 +4907,7 @@ async function openTemplateWorkspace(
     const variantId = uiByTemplate[templateId]?.selectedVariantId ?? '';
     if (!isCurrent()) return false;
     const cached = templateDirectory.value.workspaces[targetRunId];
-    if (targetView === 'CONFIG' && !action && cached &&
-      cached.draft.templates.some(({ id }) => id === templateId) &&
+    if (!action && cached?.draft?.templates.some(({ id }) => id === templateId) &&
       workspaceRevisionFence.isCurrent(`${projectId}:${targetRunId}`, cached.draftRevision)) {
       // Capture the latest saved editor before leaving. A directory read may have predated
       // a local update, so returning must use this exact revision and draft, not that old copy.
@@ -4830,11 +4949,14 @@ async function openTemplateWorkspace(
       loadedWorkspaceRunId = targetRunId;
       saveState.value = 'saved';
       takeWorkbench(targetRunId);
-      view.value = 'CONFIG';
-      resetWorkbenchDefaults();
+      if (targetView === 'EDITOR') enterEditor();
+      else {
+        view.value = 'CONFIG';
+        resetWorkbenchDefaults();
+      }
       return true;
     }
-    // Missing or outdated snapshots and explicit editor actions still require a fresh read.
+    // Missing/outdated snapshots and source-update actions still require a fresh read.
     templateNavigationTarget.value = `${projectId}:${targetRunId}`;
     rememberWorkbench({
       workflowRunId: targetRunId,
@@ -6603,13 +6725,12 @@ const openPackaging = (target: 'ACTION' | 'WORKFLOW'): void => {
 };
 const handlePackagingSubmissionPending = (templateId: string, workflowRunId: string, variantId?: string): void => {
   if (workflowRunId !== props.workflowRunId || templateId !== activeTemplateId.value) return;
-  if (variantId) { pendingPackagingVariantId.value = variantId; return; }
-  if (!activeEntry.value?.packagingLocked) pendingPackagingScope.value = packagingScopeKey.value;
+  // Batch packaging freezes a new child Run; the parent remains editable and keeps its package.
+  if (variantId) pendingPackagingVariantId.value = variantId;
 };
 const handlePackagingSubmissionSettled = (templateId: string, workflowRunId: string): void => {
-  const scope = `${props.projectId}:${workflowRunId}:${templateId}`;
-  if (pendingPackagingScope.value === scope) pendingPackagingScope.value = '';
-  pendingPackagingVariantId.value = '';
+  if (workflowRunId === props.workflowRunId && templateId === activeTemplateId.value)
+    pendingPackagingVariantId.value = '';
 };
 const handlePackagingStarted = async (): Promise<void> => {
   await load();
@@ -6801,19 +6922,29 @@ const handleBackgroundFillFinished = async (
 ): Promise<void> => {
   if (run.status !== 'COMPLETED' || !run.workflowRunId || run.workflowRunId === sourceWorkflowRunId)
     return;
+  retainFillResult(run, projectId, sourceWorkflowRunId);
   if (!workbenchActive || activeTemplateId.value !== run.templateId) {
     deferredFillCompletion = { run, projectId, sourceWorkflowRunId };
     return;
   }
+  const generation = backgroundAiGeneration;
   const isCurrentWorkbench = () =>
+    generation === backgroundAiGeneration &&
     projectId === props.projectId &&
     sourceWorkflowRunId === props.workflowRunId &&
     run.templateId === activeTemplateId.value &&
     !templateNavigationPending.value &&
     workbenchActive &&
     pageState.value === 'READY';
-  if (!isCurrentWorkbench() || openingFillRunId) return;
+  if (!isCurrentWorkbench()) return;
+  if (openingFillRunId) {
+    // A newer discovery may supersede an in-flight read. Resume after that read releases ownership.
+    backgroundAiTimer = setTimeout(() => void pollBackgroundAiRun(
+      projectId, sourceWorkflowRunId, run.id, generation), 3000);
+    return;
+  }
   openingFillRunId = run.id;
+  let switched = false;
   try {
     let fromRevision: number | null = null;
     let toRevision: number | null = null;
@@ -6840,7 +6971,6 @@ const handleBackgroundFillFinished = async (
     }
     if (!isCurrentWorkbench()) return;
     if (!published) {
-      showNotice('智能填充已完成，但新分支尚未发布，请在版本分支树中查看', 'warning');
       return;
     }
     if (!(await flushPendingEdits())) {
@@ -6848,7 +6978,10 @@ const handleBackgroundFillFinished = async (
       return;
     }
     if (!isCurrentWorkbench()) return;
+    const result = await loadEffectTemplateMixWorkspace(projectId, run.workflowRunId);
+    if (!isCurrentWorkbench() || !mixFillResultReady(run, result.data)) return;
     await activateEffectWorkflowBranch(projectId, run.workflowRunId);
+    if (!isCurrentWorkbench()) return;
     rememberWorkbench({
       workflowRunId: run.workflowRunId,
       templateId: run.templateId,
@@ -6860,11 +6993,14 @@ const handleBackgroundFillFinished = async (
       fromRevision,
       toRevision,
     });
+    switched = true;
   } catch (error) {
-    if (isCurrentWorkbench())
-      showNotice(error instanceof Error ? error.message : '打开智能填充分支失败', 'error');
+    // Only read/publication coordination failed. Keep the completed receipt and reconnect.
   } finally {
     if (openingFillRunId === run.id) openingFillRunId = null;
+    if (!switched && isCurrentWorkbench() && generation === backgroundAiGeneration)
+      backgroundAiTimer = setTimeout(() => void pollBackgroundAiRun(
+        projectId, sourceWorkflowRunId, run.id, generation), 3000);
   }
 };
 const resumeDeferredFill = (): void => {
@@ -6991,7 +7127,28 @@ const preparePackaging = async (): Promise<number | null> => {
     showNotice(packagingActionBlockReason.value, 'warning');
     return null;
   }
-  return (await flushPendingEdits()) ? draftRevision.value : null;
+  const context = { scope: currentWorkspaceScope.value, projectId: props.projectId,
+    workflowRunId: props.workflowRunId, templateId: activeTemplateId.value };
+  const ownsContext = () => context.scope === currentWorkspaceScope.value &&
+    context.templateId === activeTemplateId.value && installedWorkspaceScope.value === context.scope;
+  if (!(await flushPendingEdits()) || !ownsContext()) return null;
+  const token = draftRace.readToken();
+  const revision = draftRevision.value;
+  const input = activeEntry.value ? cloneMix(activeEntry.value) : undefined;
+  const latest = await loadEffectTemplateMixWorkspace(context.projectId, context.workflowRunId);
+  if (!ownsContext()) return null;
+  // A late preparation read must never erase an edit, another save, or a newer task result.
+  if (!draftRace.canInstall(token, saveState.value !== 'saved' || Boolean(pendingSave)) ||
+      draftRevision.value !== revision)
+    throw new Error('读取期间工程有新修改，请等待保存完成后再包装');
+  const remote = latest.data.draft.templates.find((entry) => entry.id === context.templateId);
+  if (latest.data.draftRevision !== revision &&
+      !samePackagingDraftInput(input, remote ? hydrate(remote, latest.data.materials) : undefined))
+    throw new Error('当前模板已在其他页面更新，本页内容已保留，请重新读取后再包装');
+  if (!installWorkspaceData(latest.data, context.scope, true)) return null;
+  if (packagingActionBlockReason.value) throw new Error(packagingActionBlockReason.value);
+  // Installation may normalize an obsolete detached transition. Freeze the saved result only.
+  return (await flushPendingEdits()) && ownsContext() ? draftRevision.value : null;
 };
 const startAiFill = async (
   target: EffectTemplateMixVariant | null,
@@ -7082,9 +7239,18 @@ const startAiFill = async (
     // Publish/poll the authoritative receipt immediately, before the slower workspace read.
     acceptedTask = true;
     aiRuns.value = [result.data, ...aiRuns.value.filter(({ id }) => id !== result.data.id)];
+    // Submission ended at the durable receipt, not at the slower workspace projection.
+    // The task now owns its template lock; other templates must remain usable.
+    fillStartPending.value = false;
+    mutating.value = false;
+    const readToken = draftRace.readToken();
     void pollAiRun(result.data.id);
-    const workspaceResponse = await loadEffectTemplateMixWorkspace(projectId, workflowRunId);
+    const workspaceResponse = await readMixWorkspaceWithDeadline(
+      (signal) => loadEffectTemplateMixWorkspace(projectId, workflowRunId, signal),
+      new AbortController(),
+    );
     if (!ownsRequest()) return;
+    if (!draftRace.canInstall(readToken, saveState.value !== 'saved' || Boolean(pendingSave))) return;
     // Polling may already have advanced or completed while this projection was loading.
     const latestTask = aiRuns.value.find(({ id }) => id === result.data.id) ?? result.data;
     if (!installWorkspaceData(workspaceResponse.data, `${projectId}:${workflowRunId}`)) return;
@@ -7120,29 +7286,16 @@ const startAiFill = async (
       'error',
     );
   } finally {
-    // This request owns these short-lived flags even if navigation invalidated its response.
-    // Another submission cannot start while mutating is true.
-    fillStartPending.value = false;
-    mutating.value = false;
+    // Accepted requests already released these flags. A late projection response must
+    // not unlock a newer submission started on another template in the meantime.
+    if (!acceptedTask) {
+      fillStartPending.value = false;
+      mutating.value = false;
+    }
   }
 };
 // The top-level action regenerates a complete batch in a child Run, never just the selected film.
 const refill = (): void => void startAiFill(null);
-const resumeAppend = async (): Promise<void> => {
-  const run = appendContinuationRun.value;
-  if (!run || mutating.value || !(await flushPendingEdits())) return;
-  mutating.value = true;
-  try {
-    const result = await resumeEffectTemplateMixAppend(props.projectId, run.id);
-    aiRuns.value = [result.data, ...aiRuns.value.filter((item) => item.id !== run.id)];
-    await load();
-    showNotice('新增成片已同步，所需包装任务已启动');
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : '继续更新失败，请稍后重试', 'error');
-  } finally {
-    mutating.value = false;
-  }
-};
 const addCaption = (): void => {
   const packaging = selectedPackaging.value;
   const variant = selectedVariant.value;
@@ -7375,6 +7528,12 @@ const updatePlaybackFrame = (now: number): void => {
     return;
   }
   const next = currentPlaybackClockSeconds();
+  const transition = transitionPreviewAt(next);
+  if (transition) {
+    for (const animation of transitionPlaybackAnimations) {
+      animation.currentTime = Math.max(0, next - transition.start) * 1000;
+    }
+  }
   captionPresentationTime.value = next;
   timelineRef.value?.syncPlaybackNeedleClock(next);
   for (const animation of playerScrubberAnimations) {
@@ -7578,9 +7737,9 @@ const startPreparedPlayback = async (reposition: boolean, heldAudio?: Promise<vo
   const scope = previewMediaIdentity.value;
   const currentStart = () => playing.value && playbackStarting &&
     startVersion === playbackStartVersion && scope === previewMediaIdentity.value;
-  if (reposition && previewCachedPoster.value) {
+  if (reposition && previewCachedPoster.value &&
+    presentedPreviewSourceIdentity.value !== previewSourceIdentity.value) {
     displayedTimelineSlotId.value = '';
-    presentedPreviewIdentity.value = '';
   }
   // Start packaged audio before the async video seek so the browser still treats it as the
   // player's user gesture. The child continues syncing it to the shared playhead afterwards.
@@ -7978,6 +8137,17 @@ watch(activeClassificationPool, (pool, previous) => {
   // user's selected category instead of jumping back to the first category every five seconds.
   if (pool && !previous) materialRoleFilter.value = preferredMaterialRole.value;
 });
+watch(stageElement, (element) => {
+  stageCaptionResizeObserver?.disconnect();
+  stageCaptionResizeObserver = null;
+  if (!element) return;
+  // offsetHeight/contentRect exclude previewZoom's transform: scale the caption only once.
+  if (element.clientHeight > 0) stageCaptionCanvasHeight.value = element.clientHeight;
+  stageCaptionResizeObserver = new ResizeObserver(([entry]) => {
+    if (entry && entry.contentRect.height > 0) stageCaptionCanvasHeight.value = entry.contentRect.height;
+  });
+  stageCaptionResizeObserver.observe(element);
+});
 watch(materialGrid, (element) => {
   materialGridResizeObserver?.disconnect();
   materialGridResizeObserver = null;
@@ -8008,7 +8178,12 @@ watch(
     backgroundAiRun.value = null;
     packagingReady.value = false;
     packagingRunStatus.value = null;
-    packagingResults.value = [];
+    // Opening the first committed film's task workspace must not unlock unfinished siblings
+    // while the packaging panel rediscovers its task in the child Run.
+    if (packagingTaskWorkspaceScope !== `${props.projectId}:${props.workflowRunId}:${activeTemplateId.value}`)
+      packagingResults.value = [];
+    else
+      packagingResults.value = packagingResults.value.filter((item) => item.workflowRunId === props.workflowRunId);
     packagingPreviewReadOnly.value = false;
     packagingFailures.value = [];
     selectedPackaging.value = null;
@@ -8156,6 +8331,10 @@ onActivated(() => {
       )
         void refreshMaterialSources();
       else await load();
+      for (const item of fillResultHandoffs.value) {
+        if (item.projectId === props.projectId && item.run.workflowRunId === props.workflowRunId)
+          void finishAiRun(item.run);
+      }
       const deferred = deferredPackagingCompletion;
       deferredPackagingCompletion = null;
       if (
@@ -8219,6 +8398,7 @@ onBeforeUnmount(() => {
   clearMaterialPointerTarget();
   materialGridResizeObserver?.disconnect();
   if (materialGridResizeFrame !== undefined) cancelAnimationFrame(materialGridResizeFrame);
+  stageCaptionResizeObserver?.disconnect();
   window.removeEventListener('resize', updateWorkbenchMode);
   controller?.abort();
   clearTimeout(saveTimer);
@@ -8454,7 +8634,7 @@ defineExpose({
           <footer class="template-config-actions">
             <button
               class="button primary"
-              :disabled="!workspace.template.name.trim() || mutating"
+              :disabled="!workspace.template.name.trim() || runSwitching || pageState !== 'READY' || installedWorkspaceScope !== currentWorkspaceScope"
               @click="openTemplateWorkspace(activeTemplateId, 'EDITOR')"
             >
               <WandSparkles :size="15" />进入精修工作台
@@ -8530,6 +8710,7 @@ defineExpose({
                 Boolean(activeAiRun) ||
                 backgroundAiBusy ||
                 packagingInFlight ||
+                localUpdateBusy ||
                 Boolean(aiFillBlockReason)
               "
               :title="aiFillBlockReason ?? '按模板规则整批生成成片；原分支保留，完成后查看新批次'"
@@ -8537,6 +8718,7 @@ defineExpose({
             >
               <LoaderCircle v-if="activeFillRun || fillStartPending" class="spin" :size="15" />
               <RefreshCw v-else-if="selectedVariant" :size="15" />
+              <WandSparkles v-else :size="15" />
               {{ fillStartPending ? '正在提交…' : activeFillRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : '智能填充' }}
             </button>
             <button class="button" @click="leaveEditor">返回模板配置</button>
@@ -8555,6 +8737,8 @@ defineExpose({
           <Lock :size="15" />{{
             packagingPreviewReadOnly
               ? '当前展示已完成的新包装结果，可播放预览；新包装分支发布后可编辑。'
+              : activeAppendPackaging && selectedVariant && variantPackagingLocked(selectedVariant.id)
+                ? '局部更新正在进行，新增成片暂时不能编辑；任务结束后自动解锁。'
               : packagingSourceAutoLocked || (selectedVariant && variantPackagingLocked(selectedVariant.id))
               ? '智能成片包装正在进行，成片工程暂时不能编辑；任务结束后自动解锁。'
               : selectedSourceUpdateLocked
@@ -8564,15 +8748,6 @@ defineExpose({
         </div>
         <div v-if="activeEntry?.needsAiFill" class="template-lock-banner warning" role="status">
           <AlertCircle :size="15" />模板槽位配置已修改，请重新智能填充以应用新配置。
-        </div>
-        <div v-if="appendContinuationRun" class="ai-run-card editor-run failed" role="alert">
-          <AlertCircle :size="18" />
-          <div>
-            <b>新增成片需要继续更新</b><span>{{ appendContinuationRun.errorMessage }}</span>
-          </div>
-          <button class="button compact" :disabled="mutating" @click="resumeAppend">
-            继续更新
-          </button>
         </div>
         <details v-if="completedAppendRun" class="append-result" data-testid="append-result">
           <summary>
@@ -9219,10 +9394,10 @@ defineExpose({
                   type="button"
                   :disabled="
                     !selectedVariant ||
+                    localUpdateBusy ||
                     packagingPanel?.busy ||
                     packagingPanel?.active ||
-                    packagingPanel?.backgroundActive ||
-                    packagingPanel?.loading
+                    packagingPanel?.backgroundActive
                   "
                   :title="
                     packagingActionBlockReason ??
@@ -9232,9 +9407,7 @@ defineExpose({
                 >
                   <LoaderCircle
                     v-if="
-                      packagingPanel?.busy ||
-                      packagingPanel?.active ||
-                      packagingPanel?.backgroundActive
+                      packagingPanel?.batchSubmitting || packagingPanel?.batchActive
                     "
                     class="spin"
                     :size="13"
@@ -9242,9 +9415,7 @@ defineExpose({
                   <RefreshCw v-else-if="packagingActionLabel === '重新成片包装'" :size="14" />
                   <WandSparkles v-else :size="14" />
                   {{
-                    packagingPanel?.busy ||
-                    packagingPanel?.active ||
-                    packagingPanel?.backgroundActive
+                    packagingPanel?.batchSubmitting || packagingPanel?.batchActive
                       ? '成片包装中…'
                       : packagingActionLabel
                   }}
@@ -9455,10 +9626,12 @@ defineExpose({
             v-if="displayedFillRun || fillStartPending"
             class="mix-run-progress"
             :progress="displayedFillRun?.progress ?? 0"
-            :summary="displayedFillRun ? aiStageLabels[displayedFillRun.stage] : '正在提交智能填充'"
+            :summary="displayedFillRun?.status === 'COMPLETED' ? '正在同步成片工程' : displayedFillRun ? aiStageLabels[displayedFillRun.stage] : '正在提交智能填充'"
             :attempt-label="
               !displayedFillRun
                 ? '正在保存当前修改并创建任务'
+                : displayedFillRun.status === 'COMPLETED'
+                ? '正在载入已生成的成片工程'
                 : displayedBackgroundAi
                 ? '完成后可在版本分支树中打开'
                 : '完成后自动把六个片段铺入当前视频轨'
@@ -9468,9 +9641,10 @@ defineExpose({
           />
           <EffectTemplateMixPackaging
             ref="packagingPanel"
-            :project-id="projectId"
-            :workflow-run-id="workflowRunId"
+            :project-id="props.projectId"
+            :workflow-run-id="props.workflowRunId"
             :template-id="activeTemplateId"
+            :local-update-active="localUpdateBusy"
             :variants="workspace.variants"
             :selected-variant-id="selectedVariant?.id ?? ''"
             :prepare="preparePackaging"
@@ -9490,6 +9664,7 @@ defineExpose({
             @background-started="handleBackgroundPackagingStarted"
             @background-finished="handleBackgroundPackagingFinished"
             @status="packagingRunStatus = $event"
+            @append-packaging="appendPackagingRun = $event"
             @results="handlePackagingResults"
             @preview-read-only="packagingPreviewReadOnly = $event"
             @failures="packagingFailures = $event"
@@ -9586,7 +9761,7 @@ defineExpose({
           :template-id="activeTemplateId"
           :packaging="selectedPackaging"
           :read-only="projectEditLocked"
-          :packaging-source-lock="packagingSourceAutoLocked"
+          :packaging-source-lock="packagingSourceAutoLocked || Boolean(selectedVariant && variantPackagingLocked(selectedVariant.id))"
           :source-update-lock="selectedSourceUpdateLocked"
           :can-redo="canRedoTimeline && !projectEditLocked"
           :can-undo="canUndoTimeline && !projectEditLocked"

@@ -633,7 +633,7 @@ export const createEffectSegmentRenderExport = async (
   const content = JSON.stringify(
     {
       mock: true,
-      note: '前端 Mock 导出清单，不包含真实视频二进制文件。',
+      note: '前端 Mock 导出清单，不包含视频二进制文件。',
       projectId: context.projectId,
       workflowRunId: context.workflowRunId,
       productId: product.id,

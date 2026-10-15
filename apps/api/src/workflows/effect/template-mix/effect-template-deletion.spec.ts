@@ -39,7 +39,39 @@ describe('template deletion boundaries', () => {
         forkTemplateId: null,
       },
     ];
-    expect([...templateDeletionRuns(rows, 'a')]).toEqual(['a', 'pack', 'output']);
+    expect([...templateDeletionRuns(rows, 'a', new Set(['output']))]).toEqual([
+      'a',
+      'pack',
+      'output',
+    ]);
+  });
+  it('never cascades into untagged historical forks of another template or unknown ownership', () => {
+    const rows = [
+      { id: 'a', parentWorkflowRunId: null, forkNodeId: 'TEMPLATE_MIX', forkTemplateId: null },
+      { id: 'b', parentWorkflowRunId: 'a', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: null },
+      {
+        id: 'b-package',
+        parentWorkflowRunId: 'b',
+        forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: null,
+      },
+      { id: 'unknown', parentWorkflowRunId: 'a', forkNodeId: 'FINAL_OUTPUT', forkTemplateId: null },
+      {
+        id: 'a-output',
+        parentWorkflowRunId: 'a',
+        forkNodeId: 'FINAL_OUTPUT',
+        forkTemplateId: null,
+      },
+    ];
+    expect([
+      ...templateDeletionRuns(rows, 'a', new Set(['a', 'a-output']), new Set(['b', 'b-package'])),
+    ]).toEqual(['a', 'a-output']);
+  });
+  it('preserves a shared container even with an old explicit target template marker', () => {
+    const rows = [
+      { id: 'shared', parentWorkflowRunId: null, forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 'a' },
+    ];
+    expect([...templateDeletionRuns(rows, 'a', new Set(), new Set(['shared']))]).toEqual([]);
   });
   it('prunes navigation/config without touching another template or mutating the input', () => {
     const state = {
@@ -57,6 +89,32 @@ describe('template deletion boundaries', () => {
 });
 
 describe('durable background cleanup', () => {
+  it('keeps acceptance independent of an already running, stalled storage cleanup', async () => {
+    let finishDelete!: () => void;
+    const stalled = new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    });
+    const repository = {
+      enqueue: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
+      claim: vi.fn().mockResolvedValue({ phase: 'FILES', projectId: 'p', storageKeys: ['owned'] }),
+      unreferenced: vi.fn().mockResolvedValue(true),
+      finish: vi.fn(),
+      pending: vi.fn().mockResolvedValue([]),
+    };
+    const storage = { delete: vi.fn().mockReturnValue(stalled) };
+    const service = new EffectTemplateDeletionService(
+      repository as unknown as EffectTemplateDeletionRepository,
+      storage as unknown as StoragePort,
+      { clear: vi.fn() } as unknown as EffectTemplateDeletionCache,
+    );
+    const cleanup = service.cleanup('previous-job');
+    await vi.waitFor(() => expect(storage.delete).toHaveBeenCalled());
+    expect(await service.remove('p', 'r', 'next-template', 1)).toEqual({ status: 'QUEUED' });
+    expect(repository.finish).not.toHaveBeenCalled();
+    finishDelete();
+    await cleanup;
+    service.onModuleDestroy();
+  });
   it('returns acceptance without waiting for files/cache', async () => {
     const repository = {
       enqueue: vi.fn().mockResolvedValue({ status: 'QUEUED' }),

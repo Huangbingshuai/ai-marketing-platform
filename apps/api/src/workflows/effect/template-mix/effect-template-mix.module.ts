@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { WorkflowModule } from '../../../platform/workflow/workflow.module';
+import { ProjectModule } from '../../../platform/project/project.module';
 import { FileModule } from '../../../platform/file/file.module';
 import { JobModule } from '../../../platform/job/job.module';
 import { EffectTemplateMixController } from './effect-template-mix.controller';
@@ -32,7 +33,7 @@ import {
 } from './effect-packaging.controller';
 
 @Module({
-  imports: [WorkflowModule, FileModule, JobModule],
+  imports: [WorkflowModule, FileModule, JobModule, ProjectModule],
   controllers: [
     EffectTemplateMixController,
     EffectTemplateMixWorkerController,

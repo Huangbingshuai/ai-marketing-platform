@@ -2,6 +2,7 @@
 import { computed, watch } from 'vue';
 
 import { useEffectTemplateMixMediaVisibility } from './effect-template-mix-media-visibility';
+import { waveformWindowPeaks } from './effect-template-mix-waveform-window';
 
 import {
   requestEffectTemplateMixWaveform,
@@ -42,26 +43,9 @@ const envelope = (offset: number): number => {
   return Math.max(0, Math.min(1, rise, fall));
 };
 const visibleBars = computed(() => {
-  const decoded = waveform.value;
-  if (!decoded || decoded.status !== 'READY' || !decoded.samples.length || decoded.duration <= 0)
-    return [];
-  const startRatio = Math.max(0, Math.min(1, props.trimStart / decoded.duration));
-  const endRatio = Math.max(
-    startRatio,
-    Math.min(1, (props.trimStart + props.duration) / decoded.duration),
-  );
-  const rangeStart = Math.floor(startRatio * decoded.samples.length);
-  const rangeEnd = Math.max(rangeStart + 1, Math.ceil(endRatio * decoded.samples.length));
-  const count = Math.max(1, props.barCount);
-  return Array.from({ length: count }, (_, index) => {
-    const bucketStart = Math.floor(rangeStart + ((rangeEnd - rangeStart) * index) / count);
-    const bucketEnd = Math.max(
-      bucketStart + 1,
-      Math.ceil(rangeStart + ((rangeEnd - rangeStart) * (index + 1)) / count),
-    );
-    let peak = 0;
-    for (let cursor = bucketStart; cursor < bucketEnd; cursor += 1)
-      peak = Math.max(peak, decoded.samples[cursor] ?? 0);
+  const peaks = waveformWindowPeaks(waveform.value, props.trimStart, props.duration, props.barCount);
+  const count = peaks.length;
+  return peaks.map((peak, index) => {
     // Read at the bar's midpoint, which is where a ramp drawn across the bar looks centred.
     return peak * envelope(((index + 0.5) / count) * props.duration) * Math.max(0, props.gain);
   });
@@ -85,6 +69,7 @@ watch([source, visible], ([nextSource, isVisible]) => {
     ]"
     :data-waveform-status="status"
     :data-waveform-samples="visibleBars.length"
+    :style="{ '--waveform-count': Math.max(1, visibleBars.length) }"
     :title="status === 'FAILED' ? '素材音轨不可用，未生成伪波形' : '素材音频波形'"
     aria-hidden="true"
   >
@@ -113,7 +98,7 @@ watch([source, visible], ([nextSource, isVisible]) => {
   padding: 2px 3px;
   display: flex;
   align-items: flex-end;
-  gap: 1px;
+  gap: min(1px, calc(100% / var(--waveform-count, 1) / 3));
   overflow: hidden;
   border-top: 1px solid var(--wave-border);
   border-radius: 0 0 2px 2px;
@@ -165,12 +150,13 @@ watch([source, visible], ([nextSource, isVisible]) => {
   background: var(--wave-line-solid);
 }
 .clip-waveform i {
-  min-width: 1px;
-  max-width: 2px;
+  /* Every bar owns an equal share of the full clip. Fixed caps left long music blank
+     at the tail; fixed minimums pushed short/zoomed-out waveforms past their end. */
+  min-width: 0;
   max-height: 100%;
   position: relative;
   z-index: 1;
-  flex: 1 1 1px;
+  flex: 1 1 0;
   border-radius: 1px;
   background: var(--wave-bar);
 }
@@ -194,9 +180,6 @@ watch([source, visible], ([nextSource, isVisible]) => {
 }
 .clip-waveform.is-layout-fill i {
   max-height: calc(100% - 5px);
-}
-.clip-waveform.is-layout-fill i {
-  max-width: 3px;
 }
 .clip-waveform.is-layout-fill.is-loading:not(.has-samples) {
   background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);

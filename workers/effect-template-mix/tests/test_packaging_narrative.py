@@ -9,7 +9,7 @@ import pytest
 
 from effect_template_mix.api import InternalApi
 from effect_template_mix.packaging import (
-    NARRATION_STORY_RULES, NarrationPlan, NarrationRepair, PackagingHandler, ScriptRow,
+    NARRATION_DENSITY_RULES, NARRATION_STORY_RULES, NarrationPlan, NarrationRepair, PackagingHandler, ScriptRow,
     narration_story_context, plan_script, shorten_voice_line,
 )
 from effect_template_mix.packaging_provider import PackagingProvider, TimedVoicePcm
@@ -17,7 +17,7 @@ from effect_template_mix.provider import ArkProvider
 
 
 def film(fact: str = '清洁剂采用按压式喷头') -> dict[str, Any]:
-    roles = ['HOOK', 'PAIN', 'PRODUCT', 'SELLING_POINT', 'EFFECT', 'END']
+    roles = ['HOOK', 'PAIN_POINT', 'PRODUCT', 'SELLING_POINT', 'TRANSFORMATION', 'END']
     return {
         'duration': 24, 'narrationLayoutVersion': 'SLOT_V1',
         'variant': {'slots': [{'id': f's{i}', 'role': role} for i, role in enumerate(roles)]},
@@ -158,6 +158,9 @@ async def test_structure_repairs_keep_valid_neighbors_and_refresh_read_only_cont
     assert second['storyContext']['segments'][1]['existingLines'][0]['text'] == '已修复的前句'
     assert result.lines[0].text == '整片句0' and result.lines[4].text == '最终修复句'
     assert all(rule in second['rules'] for rule in NARRATION_STORY_RULES)
+    assert all(rule in second['rules'] for rule in NARRATION_DENSITY_RULES)
+    assert first['narrationWindows'][0]['roleIntent'] == first['storyContext']['segments'][1]['roleIntent']
+    assert second['narrationWindows'][0]['roleIntent'] == second['storyContext']['segments'][4]['roleIntent']
     assert [call.args[2] for call in ark.structured.call_args_list] == [
         'packaging_script', 'packaging_script_repair', 'packaging_script_repair']
 

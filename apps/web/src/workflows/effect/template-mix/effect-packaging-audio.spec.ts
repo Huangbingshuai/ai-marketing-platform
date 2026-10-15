@@ -53,7 +53,10 @@ describe('packaging audio playback wiring', () => {
     expect(pageSource).toContain(
       'selectedPackaging.value?.checkpoint.captionFontSize ?? stageCaptionFontSize.value',
     );
-    expect(pageSource).toContain('fontSize: `${captionFontSize.value}px`');
+    expect(pageSource).toContain('fontSize: `${packagingCaptionFontPixels(captionFontSize.value, stageCaptionCanvasHeight.value)}px`');
+    expect(pageSource).toContain('stageCaptionCanvasHeight.value = entry.contentRect.height');
+    expect(pageSource).toContain('stageCaptionResizeObserver?.disconnect()');
+    expect(pageSource).not.toContain('stageCaptionCanvasHeight.value = element.getBoundingClientRect().height');
     expect(pageSource).toContain('checkpoint.captionFontSize = next');
     expect(pageSource).toContain('changeCaptionFontSize(-1)');
     expect(pageSource).toContain('changeCaptionFontSize(1)');

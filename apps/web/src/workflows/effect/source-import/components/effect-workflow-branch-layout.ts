@@ -5,25 +5,26 @@ import type {
   EffectWorkflowBranchTemplate,
 } from '@ai-marketing/contracts';
 import { effectTemplateBranchTips } from '@ai-marketing/contracts';
+import { EFFECT_NODE_LABELS } from '../../shared/effect-node-labels';
 
 // These are drawing layers. The actual effect workflow still has six fixed nodes.
 export const BRANCH_TREE_STAGES = [
-  { key: 'SOURCE_IMPORT', nodeId: 'SOURCE_IMPORT', name: "资料导入" },
+  { key: 'SOURCE_IMPORT', nodeId: 'SOURCE_IMPORT', name: EFFECT_NODE_LABELS.SOURCE_IMPORT },
   {
     key: 'INFORMATION_EXTRACTION',
     nodeId: 'INFORMATION_EXTRACTION',
-    name: "AI 信息提炼",
+    name: EFFECT_NODE_LABELS.INFORMATION_EXTRACTION,
   },
   {
     key: 'PROMPT_GENERATION',
     nodeId: 'PROMPT_GENERATION',
-    name: "Prompt 生成",
+    name: EFFECT_NODE_LABELS.PROMPT_GENERATION,
   },
-  { key: 'SEGMENT_RENDER', nodeId: 'SEGMENT_RENDER', name: "视频渲染" },
+  { key: 'SEGMENT_RENDER', nodeId: 'SEGMENT_RENDER', name: EFFECT_NODE_LABELS.SEGMENT_RENDER },
   { key: 'MIX_TEMPLATE', nodeId: 'TEMPLATE_MIX', name: '混剪模板' },
   { key: 'MIX_FILL', nodeId: 'TEMPLATE_MIX', name: '智能填充' },
   { key: 'MIX_PACKAGING', nodeId: 'TEMPLATE_MIX', name: '智能成片包装' },
-  { key: 'FINAL_OUTPUT', nodeId: 'FINAL_OUTPUT', name: "成片输出" },
+  { key: 'FINAL_OUTPUT', nodeId: 'FINAL_OUTPUT', name: EFFECT_NODE_LABELS.FINAL_OUTPUT },
 ] as const satisfies readonly { key: string; nodeId: EffectWorkflowBranchNodeId; name: string }[];
 export type BranchStageKey = (typeof BRANCH_TREE_STAGES)[number]['key'];
 export const BRANCH_TREE_AXIS_WIDTH = 178;

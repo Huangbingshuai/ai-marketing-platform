@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ConflictException } from '@nestjs/common';
 import type { EffectTemplateMixService } from './effect-template-mix.service';
 import type { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 import { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
@@ -15,6 +16,22 @@ describe('smart-fill completion coordination', () => {
       output as unknown as EffectFinalOutputService, packaging as unknown as EffectPackagingService);
     return { mix, output, packaging, service };
   }
+  it.each(['APPEND_CONTINUATION_PENDING', 'APPEND_CONTINUATION_RETRY_1', 'APPEND_CONTINUATION_RETRY_2', null, 'APPEND_CONTINUATION_FAILED'])(
+    'terminal delivery only resumes durable pending continuation: %s', async (errorCode) => {
+      const { mix, service } = appendHarness();
+      Object.assign(mix, { claimAiRun: vi.fn().mockResolvedValue({ terminal: true }) });
+      mix.aiRun.mockResolvedValue({ ...(await mix.aiRun()), errorCode } as never);
+      const resume = vi.spyOn(service, 'resumeAppend').mockResolvedValue({} as never);
+      await service.claim('p', 'fill');
+      expect(resume).toHaveBeenCalledTimes(errorCode && errorCode !== 'APPEND_CONTINUATION_FAILED' ? 1 : 0);
+    },
+  );
+  it('does not automatically resume an edit/source conflict', async () => {
+    const { mix, packaging, service } = appendHarness();
+    packaging.createIncremental.mockRejectedValueOnce(new ConflictException('来源冲突'));
+    await expect(service.resumeAppend('p', 'fill')).rejects.toThrow('来源冲突');
+    expect(mix.recordAppendContinuation).toHaveBeenCalledWith('p', 'fill', true, false);
+  });
   it('only synchronizes and packages the new IDs without a branch switch', async () => {
     const { mix, output, packaging, service } = appendHarness();
     await service.resumeAppend('p', 'fill');
@@ -34,7 +51,7 @@ describe('smart-fill completion coordination', () => {
     const { mix, output, packaging, service } = appendHarness();
     packaging.createIncremental.mockRejectedValueOnce(new Error('输出同步失败'));
     await expect(service.resumeAppend('p', 'fill')).rejects.toThrow('输出同步失败');
-    expect(mix.recordAppendContinuation).toHaveBeenCalledWith('p', 'fill', true);
+    expect(mix.recordAppendContinuation).toHaveBeenCalledWith('p', 'fill', true, true);
     packaging.createIncremental.mockResolvedValue({ status: 'COMPLETED' });
     await service.resumeAppend('p', 'fill');
     expect(output.upsertFromPackaging).toHaveBeenCalledWith('p', 'run', 't', { publish: false, onlyVariantIds: ['new-film'] });

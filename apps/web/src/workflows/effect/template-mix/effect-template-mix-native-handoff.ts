@@ -17,11 +17,17 @@ export class PreparedVideoHandoff {
         return;
       }
       this.pending.delete(video);
-      if (!current()) { video.pause(); return; }
+      if (!current()) {
+        video.pause();
+        return;
+      }
       if (error) failed(error);
     };
-    try { void video.play().then(() => finish(), finish); }
-    catch (error) { finish(error); }
+    try {
+      void video.play().then(() => finish(), finish);
+    } catch (error) {
+      finish(error);
+    }
   }
 
   stalled(video: NativeVideo, milliseconds = 350): boolean {
@@ -30,5 +36,7 @@ export class PreparedVideoHandoff {
   }
 
   /** Invalidate before another transport starts using the same media element. */
-  cancel(): void { this.pending = new WeakMap(); }
+  cancel(): void {
+    this.pending = new WeakMap();
+  }
 }

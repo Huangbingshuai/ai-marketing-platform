@@ -595,6 +595,39 @@ export class EffectSourceImportRepository {
     });
   }
 
+  /** Single-file authorization projection; never restores the full product/draft. */
+  readableMaterial(
+    projectId: string,
+    mode: EffectImportMode,
+    productId: string,
+    materialId: string,
+  ): Promise<EffectMaterialRecord | null> {
+    return this.prisma.effectImportMaterial.findFirst({
+      where: {
+        projectId,
+        productId,
+        id: materialId,
+        product: {
+          projectId,
+          status: 'ACTIVE',
+          draft: {
+            projectId,
+            mode,
+            workspace: {
+              workflowRun: {
+                projectId,
+                activeKey: 'ACTIVE',
+                workflow: 'EFFECT',
+                workflowSpace: 'EFFECT',
+              },
+            },
+          },
+        },
+      },
+      include: { fileObject: true },
+    });
+  }
+
   async createMaterial(
     projectId: string,
     draftId: string,

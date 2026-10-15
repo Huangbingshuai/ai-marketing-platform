@@ -376,6 +376,40 @@ const publishableDraft = (): EffectImportDraft =>
   });
 
 describe('EffectSourceImportService', () => {
+  it('opens authorized material without restoring a full draft or sibling materials', async () => {
+    const readableMaterial = vi.fn().mockResolvedValue({
+      type: 'PRODUCT_IMAGE',
+      storageKey: 'image-key',
+      originalFileName: 'image.jpg',
+      mimeType: 'image/jpeg',
+      sizeBytes: 123,
+      fileObject: null,
+    });
+    const draft = vi.fn(),
+      product = vi.fn();
+    const open = vi.fn().mockResolvedValue({ contentLength: 123, stream: {} });
+    const service = serviceWith({ readableMaterial, draft, product }, { open });
+    expect(
+      await service.materialContent('project-1', 'SINGLE', 'product-1', 'material-1'),
+    ).toMatchObject({
+      mimeType: 'image/jpeg',
+      contentLength: 123,
+      partial: false,
+    });
+    expect(readableMaterial).toHaveBeenCalledWith('project-1', 'SINGLE', 'product-1', 'material-1');
+    expect(open).toHaveBeenCalledWith('image-key', undefined);
+    expect(draft).not.toHaveBeenCalled();
+    expect(product).not.toHaveBeenCalled();
+    readableMaterial.mockResolvedValue(null);
+    await expect(
+      service.materialContent('project-2', 'BATCH', 'product-1', 'material-1'),
+    ).rejects.toThrow();
+    expect(open).toHaveBeenCalledTimes(1);
+    await expect(
+      service.materialContent('project-1', 'INVALID', 'product-1', 'material-1'),
+    ).rejects.toThrow();
+    expect(readableMaterial).toHaveBeenCalledTimes(2);
+  });
   it('caps the manifest and companion aggregate budget at 522 MiB', () => {
     expect(EFFECT_MANIFEST_UPLOAD_TOTAL_BYTES).toBe(522 * 1024 * 1024);
   });

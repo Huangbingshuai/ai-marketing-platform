@@ -246,6 +246,22 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
                 .branchPublishedAt,
             ).toBeNull();
             expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(0);
+            // A late callback/read must not re-merge the closed edit or roll back
+            // a second upstream change, even when its expected batch revision matches.
+            await working.commitValidatedArtifactsInTransaction(tx, projectId, root.id,
+              'PROMPT_GENERATION', [{ artifactKey: prompt.artifactKey,
+                input: { ...input, payload: { items: [], version: 'third' } }, invalidateDependents: false }]);
+            const revisionBeforeReplay = savedBatch.revision;
+            const poolBeforeReplay = await tx.workingArtifact.findUniqueOrThrow({ where: { id: pool.id } });
+            const duplicate = await render.commitValidatedBatch(projectId, childBatch.id, childBatch.revision,
+              { artifactId: childPrompt.id, revision: childPrompt.revision, contentHash: childPrompt.contentHash },
+              { artifactId: childSource.id, revision: childSource.revision, contentHash: childSource.contentHash },
+              [{ artifactKey: `render-batch:${childProduct}`, input }]);
+            expect(duplicate).toMatchObject({ kind: 'COMMITTED', publication: null });
+            expect((await tx.effectSegmentRenderBatch.findUniqueOrThrow({ where: { id: batch.id } })).revision)
+              .toBe(revisionBeforeReplay);
+            expect(await tx.workingArtifact.findUniqueOrThrow({ where: { id: pool.id } })).toEqual(poolBeforeReplay);
+            expect((await tx.workingArtifact.findUniqueOrThrow({ where: { id: prompt.id } })).revision).toBe(3);
             throw rollback;
           },
           { timeout: 120000 },

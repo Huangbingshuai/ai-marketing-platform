@@ -3,6 +3,7 @@ import type {
   EffectPromptBatchSettings,
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectPromptItemOrigin,
   EffectPromptOperation,
   EffectPromptPurposeMatchMode,
   EffectPromptShardPhase,
@@ -10,6 +11,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_ITEM_ORIGINS,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_OPERATIONS,
@@ -54,6 +56,7 @@ export class PromptResultQueryDto {
   @IsOptional()
   @IsIn([...EFFECT_PROMPT_PURPOSE_MATCH_MODES])
   purposeMatch?: EffectPromptPurposeMatchMode;
+  @IsOptional() @IsIn([...EFFECT_PROMPT_ITEM_ORIGINS]) origin?: EffectPromptItemOrigin;
 }
 
 export class SavePromptSettingsDto {
@@ -105,8 +108,13 @@ export class UndoPromptRegenerationDto {
 
 export class PromptItemDto {
   @IsOptional() @IsIn(EFFECT_PROMPT_FRAGMENT_TYPES) primaryPurpose?: EffectPromptFragmentType;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(EFFECT_PROMPT_FRAGMENT_TYPES.length)
+  @IsIn(EFFECT_PROMPT_FRAGMENT_TYPES, { each: true })
+  compatiblePurposes?: EffectPromptFragmentType[];
   @IsOptional() @IsString() @MaxLength(160) creativeCore?: string;
-  @IsOptional() @Allow() dimensions?: EffectPromptDimensions;
+  @IsOptional() @Allow() dimensions?: Partial<EffectPromptDimensions>;
   @IsString() @MaxLength(12_000) content!: string;
   @Type(() => Number)
   @IsInt()
@@ -114,9 +122,6 @@ export class PromptItemDto {
   @Max(EFFECT_PROMPT_LIMITS.maxManualDurationSeconds)
   targetDurationSeconds!: number;
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
-  @IsOptional() @IsBoolean() evaluateAfterSave?: boolean;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) expectedSettingsRevision?: number;
-  @IsOptional() @IsString() @MaxLength(500) idempotencyKey?: string;
 }
 
 export class DeletePromptItemDto {

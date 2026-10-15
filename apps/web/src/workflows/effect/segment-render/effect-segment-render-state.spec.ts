@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
+  effectSegmentRenderAdditionalPurposes,
+  effectSegmentRenderCardTitle,
+  effectSegmentRenderCurrentProductId,
   effectSegmentRenderPage,
   effectSegmentRenderPageCount,
   effectSegmentRenderCreativeCoreMap,
@@ -44,6 +47,79 @@ const task = (
 });
 
 describe('effect segment render state', () => {
+  it('prefers a nonempty creative direction and keeps imported material independent of upstream IDs', () => {
+    const material = { ...task(1, 'COMPLETED'), creativeCore: '  原创意方向  ' };
+    expect(effectSegmentRenderCardTitle(material, ' 当前创意方向 ')).toBe('当前创意方向');
+    expect(effectSegmentRenderCardTitle(material, '   ')).toBe('原创意方向');
+    expect(effectSegmentRenderCardTitle({ ...material, independentImport: true }, '其他条目')).toBe('原创意方向');
+  });
+
+  it.each([
+    ['【视频概览】\n目标： 展示锅中腊肠与蛋液。', '展示锅中腊肠与蛋液。'],
+    ['  【视频概览】 目标: 展示产品\n细节。  ', '展示产品 细节。'],
+    ['【视频概览】：\n目标 ： 展示商品。', '展示商品。'],
+    ['【视频概览】展示商品。', '展示商品。'],
+    ['目标：展示商品。', '展示商品。'],
+    ['镜头扫过商品，目标：展示包装上的【视频概览】文字。', '镜头扫过商品，目标：展示包装上的【视频概览】文字。'],
+  ])('uses the Prompt as the title, removing only leading labels: %s', (promptText, expected) => {
+    const material = { ...task(1, 'COMPLETED'), creativeCore: '  ', promptText };
+    expect(effectSegmentRenderCardTitle(material)).toBe(expected);
+    expect(effectSegmentRenderCardTitle({ ...material, independentImport: true })).toBe(expected);
+    expect(material.promptText).toBe(promptText);
+  });
+
+  it('falls back when the creative direction is absent and avoids blank titles for label-only input', () => {
+    expect(effectSegmentRenderCardTitle(task(1, 'COMPLETED'))).toBe('周末家庭厨房提示词 1');
+    expect(effectSegmentRenderCardTitle({ ...task(1, 'COMPLETED'), promptText: '【视频概览】\n目标：' })).toBe('P1');
+  });
+
+  it.each(['AI_GENERATED', 'EXTERNAL_IMPORT'] as const)(
+    'shows only additional purposes for %s without changing the source classifications',
+    (origin) => {
+      const material = {
+        ...task(1, 'COMPLETED'),
+        origin,
+        compatibleFragmentTypes: ['HOOK', 'EFFECT', 'PRODUCT_DISPLAY', 'EFFECT'] as EffectSegmentRenderTask['compatibleFragmentTypes'],
+      };
+      expect(effectSegmentRenderAdditionalPurposes(material)).toEqual(['EFFECT', 'PRODUCT_DISPLAY']);
+      expect(material.compatibleFragmentTypes).toEqual(['HOOK', 'EFFECT', 'PRODUCT_DISPLAY', 'EFFECT']);
+      material.fragmentType = 'EFFECT';
+      expect(effectSegmentRenderAdditionalPurposes(material)).toEqual(['HOOK', 'PRODUCT_DISPLAY']);
+    },
+  );
+
+  it('has no additional purposes when compatibility is empty or contains only the primary type', () => {
+    expect(effectSegmentRenderAdditionalPurposes({ fragmentType: 'HOOK', compatibleFragmentTypes: [] })).toEqual([]);
+    expect(effectSegmentRenderAdditionalPurposes({ fragmentType: 'HOOK', compatibleFragmentTypes: ['HOOK'] })).toEqual([]);
+  });
+
+  it.each(['新增混剪模板', '智能填充', '成片包装'])('%s 切换 Run 后重新匹配当前商品', () => {
+    const nextProducts = [{ id: 'child-product', status: 'ACTIVE' as const }];
+    expect(effectSegmentRenderCurrentProductId(nextProducts, 'parent-product')).toBe('child-product');
+  });
+
+  it('uses only the latest scope after multiple changes while the node is inactive', () => {
+    const latest = [{ id: 'latest-product', status: 'ACTIVE' as const }];
+    expect(effectSegmentRenderCurrentProductId(latest, 'first-product')).toBe('latest-product');
+    expect(effectSegmentRenderCurrentProductId(latest, 'intermediate-product')).toBe('latest-product');
+  });
+
+  it('retains a selection still present in the current scope', () => {
+    const products = [
+      { id: 'first', status: 'ACTIVE' as const },
+      { id: 'selected', status: 'ACTIVE' as const },
+    ];
+    expect(effectSegmentRenderCurrentProductId(products, 'selected')).toBe('selected');
+  });
+
+  it('never selects removed products or falls back to a cached branch when the current scope is empty', () => {
+    expect(effectSegmentRenderCurrentProductId([], 'old-product')).toBe('');
+    expect(effectSegmentRenderCurrentProductId([{ id: 'removed', status: 'REMOVED' }], 'removed')).toBe('');
+    expect(effectSegmentRenderCurrentProductId([
+      { id: 'removed', status: 'REMOVED' }, { id: 'current', status: 'ACTIVE' },
+    ], 'removed')).toBe('current');
+  });
+
   it('keeps new Prompt IDs pending without marking unchanged render tasks as changed', () => {
     const batch = {
       id: 'batch-1', productId: 'product-1',
@@ -65,9 +141,21 @@ describe('effect segment render state', () => {
     delete legacyBatch.pendingPromptIds;
     expect(effectSegmentRenderWorkspaceWithBatch(current, legacyBatch).pendingPromptIds).toEqual([]);
     const refreshed = effectSegmentRenderWorkspaceWithBatch(current, { ...batch, latestPromptRevision: 7,
-      latestPromptCount: 3, refreshSignature: 'net-difference', canSaveFrozenResults: true });
+      latestPromptCount: 3, refreshSignature: 'net-difference', canSaveFrozenResults: true,
+      autoCommitPending: true, progressTaskIds: ['task-1'] });
     expect(refreshed.promptArtifactRevision).toBe(7);
     expect(refreshed.sourcePromptRevision).toBe(2);
+    expect(refreshed.autoCommitPending).toBe(true);
+    expect(refreshed.progressTaskIds).toEqual(['task-1']);
+    expect(effectSegmentRenderWorkspaceWithBatch(refreshed, legacyBatch).progressTaskIds).toBeUndefined();
+    expect(effectSegmentRenderWorkspaceFromApi({ projectId: 'project-1', workflowRunId: 'run-1',
+      productId: 'product-1', promptCount: 2, batch: { ...batch, progressTaskIds: ['task-1'] },
+    } as Parameters<typeof effectSegmentRenderWorkspaceFromApi>[0]).progressTaskIds).toEqual(['task-1']);
+    const adopted = effectSegmentRenderWorkspaceWithBatch(refreshed, { ...batch,
+      autoCommitPending: false, committedWorkflowRunId: 'original-run' });
+    expect(adopted.committedWorkflowRunId).toBe('original-run');
+    expect(adopted.autoCommitPending).toBe(false);
+    expect(effectSegmentRenderWorkspaceWithBatch(adopted, legacyBatch).committedWorkflowRunId).toBeUndefined();
     expect(refreshed.promptCount).toBe(3);
     expect(refreshed.refreshSignature).toBe('net-difference');
     expect(refreshed.canSaveFrozenResults).toBe(true);

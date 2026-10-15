@@ -163,9 +163,110 @@ describe('EffectPromptRepository', () => {
     });
   });
 
+  it('does not move the visible stage backward when an older parallel stage reports late', async () => {
+    const updateMany = vi
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const transaction = {
+      effectPromptRun: { updateMany },
+      effectPromptStageOutput: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({}),
+      },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.saveStage(
+        projectId,
+        runId,
+        'attempt-current',
+        'COHERENT_CREATIVE_GENERATION',
+        { status: 'SUCCEEDED', summary: '完成', warnings: [], metadata: {} },
+        59,
+      ),
+    ).resolves.toBe(true);
+    expect(updateMany.mock.calls[1]?.[0].where.currentNode).toEqual({
+      in: expect.arrayContaining(['SHARED_PROMPT_COMPILATION']),
+    });
+    expect(updateMany.mock.calls[2]?.[0].data).not.toHaveProperty('currentNode');
+    expect(updateMany.mock.calls[2]?.[0].data).not.toHaveProperty('progress');
+  });
+
+  it('can advance the visible stage during a retry with previously higher progress', async () => {
+    const updateMany = vi.fn().mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    const transaction = {
+      effectPromptRun: { updateMany },
+      effectPromptStageOutput: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({}),
+      },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await repository.saveStage(
+      projectId,
+      runId,
+      'attempt-retry',
+      'CREATIVE_EVALUATION_CLASSIFICATION',
+      { status: 'RUNNING', summary: '正在评分', warnings: [], metadata: {} },
+      60,
+    );
+    expect(updateMany.mock.calls[1]?.[0]).toMatchObject({
+      where: { currentNode: { in: expect.arrayContaining(['LOAD_AND_SNAPSHOT']) } },
+      data: { currentNode: 'CREATIVE_EVALUATION_CLASSIFICATION' },
+    });
+  });
+
+  it('advances a live batch from completed classification shards, never from draft writes', async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const queryRaw = vi.fn().mockResolvedValue([{ expectedItems: 30, completedItems: 4 }]);
+    const transaction = {
+      $queryRaw: queryRaw,
+      effectPromptRun: { updateMany },
+      effectPromptShardOutput: { upsert: vi.fn().mockResolvedValue({}) },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+    const shard = {
+      status: 'SUCCEEDED' as const,
+      combinationPlan: [],
+      items: [],
+      classificationPlan: ['candidate-a'],
+      evaluations: [{ slotId: 'candidate-a' }],
+      warnings: [],
+    };
+
+    await repository.saveShard(projectId, runId, 'attempt-current', 0, 0, 'CLASSIFICATION', shard);
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ attemptToken: 'attempt-current', progress: { lt: 61 } }),
+        data: { progress: 61, currentNode: 'CREATIVE_EVALUATION_CLASSIFICATION' },
+      }),
+    );
+
+    queryRaw.mockClear();
+    updateMany.mockClear();
+    await repository.saveShard(projectId, runId, 'attempt-current', 0, 0, 'CLASSIFICATION', {
+      ...shard,
+      status: 'RUNNING',
+    });
+    expect(queryRaw).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledTimes(1);
+  });
+
   it('persists creative and classification shards under phase-scoped unique keys', async () => {
     const upsert = vi.fn().mockResolvedValue({});
     const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       effectPromptRun: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       effectPromptShardOutput: { upsert },
     };
@@ -1503,6 +1604,122 @@ describe('EffectPromptRepository', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it.each(['ADD', 'UPDATE'] as const)(
+    'keeps the last AI semantic duplicate score when a user manually %s a Prompt',
+    async (kind) => {
+      const createdAt = '2026-10-09T00:00:00.000Z';
+      const generatedItem = {
+        id: '00000000-0000-4000-8000-000000000010',
+        code: 'P001',
+        origin: 'AI' as const,
+        fragmentType: 'PRODUCT_DISPLAY' as const,
+        primaryPurpose: 'PRODUCT_DISPLAY' as const,
+        compatiblePurposes: ['PRODUCT_DISPLAY' as const],
+        classificationStatus: 'VERIFIED' as const,
+        productRelevance: 90,
+        targetDurationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.defaultDurationSeconds,
+        creativeCore: '商品细节展示',
+        dimensions: {
+          narrative: '效果展示',
+          scene: '家庭',
+          persona: '成年人',
+          productRelation: '展示产品',
+          camera: '近景',
+          emotion: '温暖',
+        },
+        content: '原始 AI Prompt',
+        insightBindings: [],
+        manualEdited: false,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      const addedItem = {
+        ...generatedItem,
+        id: '00000000-0000-4000-8000-000000000011',
+        code: 'P002',
+        origin: 'MANUAL' as const,
+        content: '人工新增 Prompt',
+        manualEdited: true,
+      };
+      const semanticEvaluation = {
+        status: 'VERIFIED' as const,
+        evaluatedCount: 1,
+        duplicateGroupCount: 1,
+        duplicateCount: 1,
+        duplicateRate: 37.5,
+      };
+      const draft = recomputePromptQuality(
+        [generatedItem],
+        DEFAULT_EFFECT_PROMPT_SETTINGS,
+        undefined,
+        undefined,
+        undefined,
+        semanticEvaluation,
+      );
+      const existing = {
+        id: '00000000-0000-4000-8000-000000000030',
+        projectId,
+        workflowRunId,
+        runId,
+        productId,
+        revision: 1,
+        draftResult: draft,
+        manualOverrides: { added: [], edited: {}, deleted: [] },
+        savedAt: new Date(createdAt),
+        updatedAt: new Date(createdAt),
+        createdAt: new Date(createdAt),
+      };
+      const resultUpdate = vi.fn().mockImplementation(({ data }) => ({
+        ...existing,
+        revision: 2,
+        draftResult: data.draftResult,
+        manualOverrides: data.manualOverrides,
+        savedAt: data.savedAt,
+      }));
+      const transaction = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: existing.id }]),
+        effectPromptResult: {
+          findFirst: vi.fn().mockResolvedValue(existing),
+          update: resultUpdate,
+        },
+      };
+      const repository = new EffectPromptRepository({
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService);
+      const mutation =
+        kind === 'ADD'
+          ? { kind, item: addedItem }
+          : {
+              kind,
+              itemId: generatedItem.id,
+              item: {
+                content: '修改后的 AI Prompt',
+                fragmentType: generatedItem.fragmentType,
+                primaryPurpose: generatedItem.primaryPurpose,
+                compatiblePurposes: generatedItem.compatiblePurposes,
+                classificationStatus: generatedItem.classificationStatus,
+                productRelevance: generatedItem.productRelevance,
+                targetDurationSeconds: generatedItem.targetDurationSeconds,
+                creativeCore: generatedItem.creativeCore,
+                dimensions: generatedItem.dimensions,
+                reviewIssues: [],
+              },
+            };
+
+      await expect(repository.mutateResult(projectId, existing.id, 1, mutation)).resolves.toMatchObject({
+        kind: 'UPDATED',
+      });
+      expect(resultUpdate.mock.calls[0]?.[0].data.draftResult.metrics.semanticEvaluation).toEqual(
+        semanticEvaluation,
+      );
+      expect(
+        resultUpdate.mock.calls[0]?.[0].data.draftResult.items.find(
+          (item: { id: string }) => item.id === (kind === 'ADD' ? addedItem.id : generatedItem.id),
+        )?.origin,
+      ).toBe(kind === 'ADD' ? 'MANUAL' : 'AI');
+    },
+  );
+
   it('rechecks current insight and execution input inside the commit transaction', async () => {
     const commit = vi.fn();
     const transaction = {
@@ -1531,6 +1748,7 @@ describe('EffectPromptRepository', () => {
         findFirst: vi.fn().mockResolvedValue({ id: runId, status: 'COMPLETED' }),
       },
       workingArtifact: { findFirst: vi.fn().mockResolvedValue(null) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue(null) },
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({ executionInputHash: 'settings-hash' }),
       },

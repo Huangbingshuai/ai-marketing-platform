@@ -3,6 +3,7 @@ import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
+  changePromptPrimaryPurpose,
   clampPromptPage,
   clonePromptSettings,
   EFFECT_PROMPT_PAGE_SIZE_OPTIONS,
@@ -10,10 +11,47 @@ import {
   isPromptProductCommitted,
   isPromptRunActive,
   normalizePromptSettings,
+  normalizeManualPromptDuration,
   promptPageCount,
 } from './effect-prompt-generation-state';
 
 describe('effect prompt generation state', () => {
+  it('does not turn previous primary purposes into implicitly selected compatible purposes', () => {
+    const effect = changePromptPrimaryPurpose('PRODUCT_DISPLAY', 'EFFECT', ['PRODUCT_DISPLAY']);
+    expect(effect).toEqual(['EFFECT']);
+    expect(changePromptPrimaryPurpose('EFFECT', 'CTA', effect)).toEqual(['CTA']);
+  });
+
+  it('clears all extra compatible selections whenever the primary purpose changes', () => {
+    const selected = ['PRODUCT_DISPLAY', 'HOOK', 'CTA'] as const;
+    expect(changePromptPrimaryPurpose('PRODUCT_DISPLAY', 'EFFECT', [...selected])).toEqual([
+      'EFFECT',
+    ]);
+    expect(changePromptPrimaryPurpose('PRODUCT_DISPLAY', 'HOOK', [...selected])).toEqual(['HOOK']);
+    expect(selected).toEqual(['PRODUCT_DISPLAY', 'HOOK', 'CTA']);
+  });
+  it('does not reset selections when the primary purpose has not changed', () => {
+    expect(
+      changePromptPrimaryPurpose('PRODUCT_DISPLAY', 'PRODUCT_DISPLAY', ['PRODUCT_DISPLAY', 'HOOK']),
+    ).toEqual(['PRODUCT_DISPLAY', 'HOOK']);
+  });
+  it.each([
+    [50, 30],
+    [100, 30],
+    [31, 30],
+    [30, 30],
+    [1, 4],
+    [0, 4],
+    [-5, 4],
+    [4, 4],
+    [15, 15],
+    [25, 25],
+    [12.7, 13],
+    [Number.NaN, 4],
+    [Number.POSITIVE_INFINITY, 4],
+  ])('normalizes manual duration %s to %s seconds', (input, expected) => {
+    expect(normalizeManualPromptDuration(input)).toBe(expected);
+  });
   it('keeps a confirmed historical batch below the current generation minimum readable', () => {
     expect(clonePromptSettings({ targetCount: 10, defaultDurationSeconds: 5 }).targetCount).toBe(
       10,

@@ -21,6 +21,75 @@ const runningTask = {
 };
 
 describe('EffectSegmentRenderRepository', () => {
+  describe('confirmed read scope while another node has an isolated edit', () => {
+    function contextHarness(nodeId: string, published = false) {
+      const run = { id: 'draft', projectId: 'p', parentWorkflowRunId: 'parent',
+        forkNodeId: nodeId, editSessionNodeId: nodeId, branchPublishedAt: published ? new Date() : null,
+        editIdMap: { productIdMap: { 'parent-product': 'draft-product', 'ancestor-alias': 'draft-product' } } };
+      const db = {
+        workflowRun: { findFirst: vi.fn(async ({ where }) => where.projectId === 'p'
+          ? where.id === 'draft' ? run : { id: 'parent' } : null) },
+        effectImportProduct: { findMany: vi.fn().mockResolvedValue([{ id: 'parent-product' }]) },
+      };
+      const repository = new EffectSegmentRenderRepository(db as never);
+      return { db, repository, run };
+    }
+    it.each(['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION'])(
+      'keeps the confirmed parent pool visible during %s editing without publishing its draft', async (nodeId) => {
+        const { repository, db } = contextHarness(nodeId);
+        expect(await repository.workspaceReadContext('p', 'draft', 'draft-product')).toEqual({
+          workflowRunId: 'parent', productId: 'parent-product',
+        });
+        expect(db.effectImportProduct.findMany).toHaveBeenCalledWith({ where: {
+          projectId: 'p', workflowRunId: 'parent', id: { in: ['parent-product', 'ancestor-alias'] }, status: 'ACTIVE',
+        }, select: { id: true } });
+      },
+    );
+    it.each(['SEGMENT_RENDER', 'TEMPLATE_MIX', 'FINAL_OUTPUT'])(
+      'does not redirect a %s draft away from its own tasks', async (nodeId) => {
+        const { repository, db } = contextHarness(nodeId);
+        expect(await repository.workspaceReadContext('p', 'draft', 'draft-product')).toEqual({
+          workflowRunId: 'draft', productId: 'draft-product',
+        });
+        expect(db.effectImportProduct.findMany).not.toHaveBeenCalled();
+      },
+    );
+    it('keeps saved upstream changes on their published branch', async () => {
+      const { repository, db } = contextHarness('PROMPT_GENERATION', true);
+      expect(await repository.workspaceReadContext('p', 'draft', 'draft-product')).toEqual({
+        workflowRunId: 'draft', productId: 'draft-product',
+      });
+      expect(db.effectImportProduct.findMany).not.toHaveBeenCalled();
+    });
+    it.each([{ parents: [] }, { parents: [{ id: 'one' }, { id: 'two' }] }])('refuses an absent or ambiguous parent identity (%j)', async ({ parents }) => {
+      const { repository, db } = contextHarness('PROMPT_GENERATION');
+      db.effectImportProduct.findMany.mockResolvedValue(parents);
+      await expect(repository.workspaceReadContext('p', 'draft', 'draft-product')).rejects.toThrow('原产品来源');
+    });
+    it('never resolves a parent outside the requested project', async () => {
+      const { repository, db } = contextHarness('PROMPT_GENERATION');
+      db.workflowRun.findFirst.mockResolvedValueOnce({ id: 'draft', parentWorkflowRunId: 'other-project-parent',
+        forkNodeId: 'PROMPT_GENERATION', editIdMap: { productIdMap: { old: 'draft-product' } } } as never)
+        .mockResolvedValueOnce(null);
+      await expect(repository.workspaceReadContext('p', 'draft', 'draft-product')).rejects.toThrow('原产品来源');
+      expect(db.effectImportProduct.findMany).not.toHaveBeenCalled();
+    });
+  });
+  it('treats a duplicate validated commit as read-only after its manual edit already merged', async () => {
+    const batch = { id: runningTask.batchId, workflowRunId: 'closed-edit', revision: 4,
+      createdAt: new Date('2026-10-10T01:00:00Z'), committedAt: new Date('2026-10-10T01:01:00Z'), tasks: [] };
+    const tx = { $queryRaw: vi.fn(), effectSegmentRenderBatch: { findFirst: vi.fn().mockResolvedValue(batch), update: vi.fn() },
+      workingArtifact: { findMany: vi.fn().mockResolvedValue([{ id: 'pool', artifactKey: 'render-batch:product', revision: 2 }]) } };
+    const commit = vi.fn();
+    const repository = new EffectSegmentRenderRepository({ $transaction: (callback: (value: typeof tx) => unknown) => callback(tx) } as never,
+      { commitValidatedArtifactsInTransaction: commit } as never);
+    const source = { artifactId: 'source', revision: 1, contentHash: 'hash' };
+    const result = await repository.commitValidatedBatch(runningTask.projectId, batch.id, 4, source, source,
+      [{ artifactKey: 'render-batch:product', input: {} as never }]);
+    expect(result).toMatchObject({ kind: 'COMMITTED', artifacts: [{ artifactId: 'pool', revision: 2, unchanged: true }] });
+    expect(tx.effectSegmentRenderBatch.update).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
   it('merges a restored old video as completed after a failed refresh has fully cancelled out', async () => {
     const sourcePrompt = { artifactId: 'prompt', revision: 1, contentHash: 'a'.repeat(64) };
     const snapshot = {

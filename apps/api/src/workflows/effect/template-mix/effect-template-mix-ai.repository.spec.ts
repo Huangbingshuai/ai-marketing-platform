@@ -7,7 +7,72 @@ import type { WorkflowWorkingRepository } from '../../../platform/workflow/workf
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 import { pendingAddedMaterials } from './effect-template-mix-incremental';
 
+describe('durable APPEND continuation through the original Outbox', () => {
+  const now = new Date('2026-10-11T16:00:00Z');
+  function continuationHarness(errorCode: string, count = 1, frozen = true) {
+    const row = { id: 'append', projectId: 'p', errorCode, updatedAt: new Date(now.getTime() - 180_000),
+      inputSnapshot: { incremental: {}, sourceOperation: { protocol: frozen ? 'FROZEN_RENDER_V1' : 'legacy' } } };
+    const tx = { effectTemplateMixAiRun: { updateMany: vi.fn().mockResolvedValue({ count }) },
+      jobOutbox: { updateMany: vi.fn() } };
+    const db = { effectTemplateMixAiRun: { findMany: vi.fn().mockResolvedValue([row]) },
+      $transaction: (callback: (value: typeof tx) => Promise<void>) => callback(tx) };
+    return { row, tx, db, repo: new EffectTemplateMixAiRepository(db as unknown as PrismaService) };
+  }
+  it.each(['APPEND_CONTINUATION_PENDING', 'APPEND_CONTINUATION_RETRY_1'])(
+    'replays coordination only with the same aggregate (%s)', async phase => {
+      const { repo, tx, row } = continuationHarness(phase);
+      await repo.recoverAppendContinuations(now);
+      expect(tx.effectTemplateMixAiRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+        projectId: 'p', id: 'append', status: 'COMPLETED', errorCode: phase, updatedAt: row.updatedAt,
+      } }));
+      expect(tx.jobOutbox.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ projectId: 'p', aggregateId: 'append' }),
+        data: expect.objectContaining({ status: 'PENDING', nextAttemptAt: now }),
+      }));
+    });
+  it('stops after two durable extra attempts without creating another task', async () => {
+    const { repo, tx } = continuationHarness('APPEND_CONTINUATION_RETRY_2');
+    await repo.recoverAppendContinuations(now);
+    expect(tx.effectTemplateMixAiRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { errorCode: 'APPEND_CONTINUATION_FAILED' },
+    }));
+    expect(tx.jobOutbox.updateMany).not.toHaveBeenCalled();
+  });
+  it('does not reset the budget or revive old failed tasks', async () => {
+    const { repo, tx, db } = continuationHarness('APPEND_CONTINUATION_RETRY_1', 0);
+    await repo.recoverAppendContinuations(now);
+    expect(tx.jobOutbox.updateMany).not.toHaveBeenCalled();
+    expect(db.effectTemplateMixAiRun.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ errorCode: { in: [
+        'APPEND_CONTINUATION_PENDING', 'APPEND_CONTINUATION_RETRY_1', 'APPEND_CONTINUATION_RETRY_2',
+      ] } }),
+    }));
+  });
+  it('never replays historical non-frozen input', async () => {
+    const { repo, tx } = continuationHarness('APPEND_CONTINUATION_PENDING', 1, false);
+    await repo.recoverAppendContinuations(now);
+    expect(tx.effectTemplateMixAiRun.updateMany).not.toHaveBeenCalled();
+  });
+});
+
 describe('durable incremental consumption history', () => {
+  it('filters template history in both queries without truncating older terminal inputs', async () => {
+    const rows = Array.from({ length: 27 }, (_, i) => ({ id: `t-${i}`, templateId: 't',
+      createdAt: new Date(100 - i), status: 'COMPLETED', inputSnapshot: {} }));
+    const other = { ...rows[0]!, id: 'sibling', templateId: 'other' };
+    const findMany = vi.fn(async ({ where, take }) => {
+      const filtered = [...rows, other].filter((row) => row.templateId === where.templateId);
+      return take ? filtered.slice(0, take) : filtered;
+    });
+    const repo = new EffectTemplateMixAiRepository({ effectTemplateMixAiRun: { findMany } } as unknown as PrismaService);
+    const history = await repo.listHistory('p', 'r', 't');
+    expect(history).toHaveLength(27);
+    expect(history.every((row) => row.templateId === 't')).toBe(true);
+    expect(findMany.mock.calls).toHaveLength(2);
+    expect(findMany.mock.calls.every(([query]) => query.where.projectId === 'p' &&
+      query.where.workflowRunId === 'r' && query.where.templateId === 't')).toBe(true);
+    expect(findMany.mock.calls[1]![0]).not.toHaveProperty('take');
+  });
   it('does not make old additions pending again after more than twenty later trim tasks', async () => {
     const baseline = { id: 'baseline', templateId: 't', workflowRunId: 'r', status: 'COMPLETED',
       createdAt: new Date(1), inputSnapshot: { materials: [{ id: 'old', promptId: 'old' }] } };
@@ -19,7 +84,7 @@ describe('durable incremental consumption history', () => {
         materials: [{ id: 'old', promptId: 'old' }] }, selectionResult: [{ materialId: 'old' }] }));
     const findMany = vi.fn().mockImplementation(async ({ where, take }) => {
       const all = [...trims, append, baseline];
-      return where.status === 'COMPLETED' ? all : all.slice(0, take);
+      return where.status ? all : all.slice(0, take);
     });
     const repo = new EffectTemplateMixAiRepository({ effectTemplateMixAiRun: { findMany } } as unknown as PrismaService);
     const history = await repo.listHistory('p', 'r');
@@ -30,8 +95,28 @@ describe('durable incremental consumption history', () => {
       { id: 'replacement-of-added', sourcePromptId: 'added', available: true },
       { id: 'second-addition', sourcePromptId: 'second-addition', available: true },
     ], history)).toEqual(['second-addition']);
-    expect(findMany).toHaveBeenCalledWith({ where: { projectId: 'p', workflowRunId: 'r', status: 'COMPLETED' },
+    expect(findMany).toHaveBeenCalledWith({ where: { projectId: 'p', workflowRunId: 'r', status: { in: ['COMPLETED', 'FAILED'] } },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+  });
+  it('keeps failed APPEND classifications beyond activity pagination without adopting their materials', async () => {
+    const baseline = { id: 'baseline', templateId: 't', workflowRunId: 'r', status: 'COMPLETED',
+      createdAt: new Date(1), inputSnapshot: { materials: [{ id: 'old', promptId: 'old' }] } };
+    const failed = { ...baseline, id: 'failed-append', status: 'FAILED', createdAt: new Date(2),
+      inputSnapshot: { materials: [{ id: 'added', promptId: 'added' }],
+        incremental: { materialIds: ['added'] } }, selectionResult: [{ materialId: 'added' }] };
+    const fullFailed = { ...baseline, id: 'full-failed', status: 'FAILED' };
+    const recent = Array.from({ length: 20 }, (_, i) => ({ ...baseline, id: `recent-${i}`, createdAt: new Date(100 + i) }));
+    const findMany = vi.fn().mockImplementation(async ({ where }) =>
+      where.status ? [baseline, failed, fullFailed, ...recent] : recent);
+    const repo = new EffectTemplateMixAiRepository({ effectTemplateMixAiRun: { findMany } } as unknown as PrismaService);
+    const history = await repo.listHistory('p', 'r');
+    expect(history.map(({ id }) => id)).toContain('failed-append');
+    expect(history.map(({ id }) => id)).not.toContain('full-failed');
+    expect(pendingAddedMaterials('t', [
+      { id: 'old', sourcePromptId: 'old', available: true },
+      { id: 'added', sourcePromptId: 'added', available: true },
+    ], history)).toEqual(['added']);
+    expect(findMany.mock.calls.every(([{ where }]) => where.projectId === 'p' && where.workflowRunId === 'r')).toBe(true);
   });
 });
 
@@ -116,6 +201,20 @@ describe('authoritative fill source lineage', () => {
 });
 
 describe('role choices during smart-fill', () => {
+  it('merges completion into the latest draft without overwriting another template or its selection', async () => {
+    const current = draft(4, 9);
+    current.activeTemplateId = 'other';
+    const updated = draft(5, 1);
+    const { repository, transaction } = harness(current, 12);
+    await expect(repository.completeWithDraft(
+      'project', 'run', 'attempt', 'variant', [], updated,
+      workflowStateHash(updated), 10, 'target', workflowStateHash(current.templates[0]!.workspace),
+    )).resolves.toBe('COMPLETED');
+    const saved = transaction.workflowNodeState.update.mock.calls[0]![0].data.state as EffectTemplateMixDraft;
+    expect(saved.activeTemplateId).toBe('other');
+    expect(saved.templates[1]).toEqual(current.templates[1]);
+    expect(saved.templates[0]!.workspace.editVersion).toBe(5);
+  });
   it.each([false, true])(
     'preserves newer role edits and consumes only unchanged pending resets (newer=%s)',
     async (newer) => {
@@ -478,6 +577,22 @@ describe('EffectTemplateMixAiRepository.inheritedMixAiRuns', () => {
 
     await expect(repository.inheritedMixAiRuns('project', 'root')).resolves.toEqual([]);
     expect(findFills).not.toHaveBeenCalled();
+  });
+
+  it('scopes every ancestor query to the selected template while preserving its fork-time fence', async () => {
+    const childTime = new Date('2026-10-06T01:00:00Z');
+    const parentTime = new Date('2026-10-06T00:00:00Z');
+    const { prisma, findFills } = chain({ child: 'parent', parent: 'root', root: null }, {},
+      { child: childTime, parent: parentTime });
+    const repository = new EffectTemplateMixAiRepository(prisma as unknown as PrismaService);
+    await expect(repository.inheritedMixAiRuns('p', 'child', 'selected-template')).resolves.toEqual([]);
+    expect(findFills).toHaveBeenCalledTimes(2);
+    expect(findFills.mock.calls.map(([call]) => call.where)).toEqual([
+      expect.objectContaining({ projectId: 'p', workflowRunId: 'parent', templateId: 'selected-template',
+        completedAt: { lte: childTime } }),
+      expect.objectContaining({ projectId: 'p', workflowRunId: 'root', templateId: 'selected-template',
+        completedAt: { lte: parentTime } }),
+    ]);
   });
 
   it('freezes each ancestor at the fork boundary, never inheriting its later APPEND', async () => {

@@ -175,14 +175,61 @@ describe('slot-bound narration layout', () => {
     expect(rows[0]!.freshness).toBe('STALE');
   });
 
-  it.each(['STALE', 'MISSING', 'REVISION'] as const)(
+  it('packages an adopted render Prompt through a stale historical batch without adopting that batch', () => {
+    const rows = adoptedSources();
+    rows[1]!.freshness = 'STALE';
+    rows[1]!.revision = 13;
+    const before = structuredClone(rows);
+    const frozen = packagingSnapshot(variant(), materials, rows);
+    expect(frozen.clips[0]!.prompt).toBe('生成画面时采用的原始 Prompt');
+    expect(frozen.dependencies.map(({ artifactId }) => artifactId)).toEqual(['clip', 'facts']);
+    expect(frozen.facts.every(({ artifactId }) => artifactId === 'facts')).toBe(true);
+    expect(rows).toEqual(before);
+  });
+
+  it.each(['MISSING_PROMPT', 'UNAVAILABLE_PROMPT', 'NO_ADOPTION', 'BAD_HASH'] as const)(
+    'does not relax provenance without an available explicit source and a verified adoption (%s)',
+    (condition) => {
+      const rows = adoptedSources();
+      rows[1]!.freshness = 'STALE';
+      if (condition === 'MISSING_PROMPT') rows.splice(1, 1);
+      if (condition === 'UNAVAILABLE_PROMPT') rows[1]!.availability = 'SOURCE_REMOVED';
+      if (condition === 'NO_ADOPTION') rows[0]!.payload = { promptId: 'p' };
+      if (condition === 'BAD_HASH') rows[0]!.payload = {
+        promptId: 'p', promptText: '未确认正文', adoptedPrompt: { promptContentHash: 'invalid' },
+      };
+      expect(() => packagingSnapshot(variant(), materials, rows)).toThrow(/包装来源/);
+    },
+  );
+
+  it.each(['STALE', 'MISSING', 'REVISION', 'SOURCE_REMOVED'] as const)(
     'does not bypass confirmed product fact validation when a clip owns its Prompt (%s)',
     (condition) => {
       const rows = adoptedSources();
       rows[1]!.revision = 2;
+      rows[1]!.freshness = 'STALE';
       if (condition === 'STALE') rows[2]!.freshness = 'STALE';
       if (condition === 'MISSING') rows.pop();
       if (condition === 'REVISION') rows[2]!.revision = 2;
+      if (condition === 'SOURCE_REMOVED') rows[2]!.availability = 'SOURCE_REMOVED';
+      expect(() => packagingSnapshot(variant(), materials, rows)).toThrow(/包装来源/);
+    },
+  );
+
+  it.each(['STALE', 'MISSING', 'REVISION', 'SOURCE_REMOVED'] as const)(
+    'still validates the source-package dependency behind adopted product facts (%s)',
+    (condition) => {
+      const rows = adoptedSources();
+      rows[1]!.freshness = 'STALE';
+      rows[2]!.dependencies = [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'import',
+        sourceNodeId: 'SOURCE_IMPORT', sourceKey: 'source-package:p', sourceRevision: 1, sourceHash: null }];
+      if (condition !== 'MISSING') {
+        const source = artifact('import', 'source-package:p', {});
+        if (condition === 'STALE') source.freshness = 'STALE';
+        if (condition === 'REVISION') source.revision = 2;
+        if (condition === 'SOURCE_REMOVED') source.availability = 'SOURCE_REMOVED';
+        rows.push(source);
+      }
       expect(() => packagingSnapshot(variant(), materials, rows)).toThrow(/包装来源/);
     },
   );

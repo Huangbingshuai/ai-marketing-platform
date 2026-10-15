@@ -37,6 +37,7 @@ const fixture = () => {
   };
   const transaction = {
     $queryRaw: vi.fn().mockResolvedValue([]),
+    workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-a', editIdMap: {} }), update: vi.fn() },
     workingArtifact: { findFirst: vi.fn().mockResolvedValue({}) },
     effectSegmentRenderOperationReceipt: {
       findUnique: vi.fn().mockResolvedValue(null),
@@ -80,6 +81,9 @@ describe('render refresh transaction', () => {
         removedTaskIds: kind === 'remove' ? ['remove'] : [],
       });
       expect(output).toEqual({ kind: 'UPDATED' });
+      expect(tx.workflowRun.update).toHaveBeenCalledWith({ where: { id: 'run-a' },
+        data: { editIdMap: { renderProgress: { batchId: 'batch-a', taskIds: [],
+          synchronizedTaskIds: kind === 'metadata' ? ['metadata'] : [], removedTaskIds: kind === 'remove' ? ['remove'] : [] } } } });
       expect(tx.jobOutbox.upsert).not.toHaveBeenCalled();
       expect(tx.jobOutbox.createMany).not.toHaveBeenCalled();
       expect(tx.effectSegmentRenderBatch.updateMany).toHaveBeenCalledWith(
@@ -129,6 +133,9 @@ describe('render refresh transaction', () => {
       },
     );
     expect(output).toEqual({ kind: 'UPDATED' });
+    expect(tx.workflowRun.update).toHaveBeenCalledWith({ where: { id: 'run-a' },
+      data: { editIdMap: { renderProgress: { batchId: 'batch-a', taskIds: ['render', 'added'],
+        synchronizedTaskIds: ['metadata'], removedTaskIds: ['remove'] } } } });
     expect(tx.jobOutbox.upsert).toHaveBeenCalledOnce();
     expect(
       tx.jobOutbox.createMany.mock.calls[0]![0].data.map(

@@ -133,7 +133,8 @@ window.fetch = async (input, init) => {
     });
   if (method !== 'GET') mutations.value++;
   let data: unknown;
-  if (path.includes('/background-ai-run')) data = null;
+  if (path.includes('/branches')) data = { branches: [] };
+  else if (path.includes('/background-')) data = null;
   else if (path.includes('/sources?'))
     data = { materials, draftRevision: 1, pendingAddedMaterialIds: { t: ['m6', 'm7'] } };
   else if (path.includes('/resume-append')) {
@@ -160,6 +161,7 @@ window.fetch = async (input, init) => {
   else if (path.includes('/voice')) data = [];
   else if (path.includes('/music')) data = [];
   else if (path.includes('/final-output/sync')) data = { refreshed: [] };
+  else if (path.includes('/final-output')) data = [];
   else throw new Error(`隔离验收阻止未匹配请求: ${method} ${path}`);
   return new Response(JSON.stringify({ data, requestId: 'qa' }), {
     headers: { 'Content-Type': 'application/json' },

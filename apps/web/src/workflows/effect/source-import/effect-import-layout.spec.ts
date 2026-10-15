@@ -1,26 +1,37 @@
 import { describe, expect, it } from 'vitest';
 
 import pageSource from './EffectImportNodePage.vue?raw';
+import feedbackSource from '../../../platform/workflow/components/WorkflowNavigationFeedback.vue?raw';
+import activationSource from '../../../platform/workflow/workflow-node-activation.ts?raw';
 import { effectImportMaterialContentPath } from './api/effect-import.api';
 import manifestDialogSource from './components/BatchManifestImportDialog.vue?raw';
-import contentViewerSource from './components/EffectImportDocumentReaderDialog.vue?raw';
+import contentViewerSource from '../../../platform/file/components/ImportContentViewer.vue?raw';
+import dropzoneSource from '../../../platform/file/components/ImportDropzone.vue?raw';
+import viewerAdapterSource from './components/EffectImportDocumentReaderDialog.vue?raw';
 import globalConfigSource from './components/GlobalVideoConfigPanel.vue?raw';
 import productEditorSource from './components/ProductImportEditor.vue?raw';
 import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from './effect-import-options';
 
 describe('effect import single-product prototype grid', () => {
   it('keeps the edit button and changes active Runs without blanking the whole page', () => {
-    expect(pageSource).toContain('<Pencil :size="14" />进入编辑');
+    expect(pageSource).toContain('<WorkflowNodeEditActions');
     expect(pageSource).toContain('const refreshActiveRunInPlace =');
     expect(pageSource).toContain('const previousStep = activeStep.value');
-    expect(pageSource).toContain('activeStep.value = previousStep');
-    expect(pageSource).toContain('正在切换编辑状态');
-    expect(pageSource).toContain('@branch-activated="refreshActiveRunInPlace(currentProjectId)"');
+    expect(pageSource).not.toContain('activeStep.value = previousStep');
+    expect(pageSource).toContain('activeStep.value === previousStep');
+    expect(pageSource).toContain('<WorkflowNavigationFeedback');
+    expect(feedbackSource).toContain('正在切换编辑状态');
+    expect(pageSource).toContain('@branch-activated="handlePromptWorkflowRunChange"');
     // A full update in the mix or output node forks a child Run, and those pages report it here so
     // the canvas follows instead of leaving the user on the published branch.
     expect(
       pageSource.match(/@workflow-run-change="refreshActiveRunInPlace\(currentProjectId\)"/gu),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
+    expect(pageSource).toContain('@workflow-run-change="handleSegmentRenderWorkflowRunChange"');
+    expect(pageSource).toContain(
+      'void refreshActiveRunInPlace(currentProjectId.value, { showCurtain: false })',
+    );
+    expect(pageSource).toContain('activeRunRefreshQueue.invalidate()');
     expect(pageSource).toContain('@workflow-run-change="handleTemplateMixWorkflowRunChange"');
     expect(pageSource).toContain('@workflow-run-change="handleFinalOutputWorkflowRunChange"');
   });
@@ -60,9 +71,19 @@ describe('effect import single-product prototype grid', () => {
   it('prefetches the tree and revalidates cached content without blanking it on each open', () => {
     expect(pageSource).toContain('prefetchBranchTree(projectId);');
     expect(pageSource).toContain('branchPrefetchController?.abort();');
-    expect(pageSource).toContain('branchTreeOpen.value = true;\n  void loadBranchTree();');
+    expect(pageSource).toMatch(/branchTreeOpen\.value = true;\s+void loadBranchTree\(\);/);
     expect(pageSource).not.toContain(
       'const openBranchTree = (): void => {\n  branchTree.value = null;',
+    );
+  });
+
+  it('starts the active Run overview before awaiting the project workspace', () => {
+    const loadProject = pageSource
+      .split('const loadProject = async (')[1]
+      ?.split('/** Keep the current node visible')[0];
+    expect(loadProject).toContain('const overviewPromise = getActiveWorkflowRunOverview(');
+    expect(loadProject).toMatch(
+      /const overviewPromise = getActiveWorkflowRunOverview\([\s\S]*?const workspaceResponse = await getEffectImportWorkspace\(/,
     );
   });
 
@@ -125,12 +146,13 @@ describe('effect import single-product prototype grid', () => {
 
   it('uses the selected balanced-layout node heading', () => {
     expect(pageSource).toContain('<span>01</span>');
-    expect(pageSource).toContain('<h1>资料包导入</h1>');
+    expect(pageSource).toContain('<h1>资料导入</h1>');
     expect(pageSource).toContain('整理产品图片、文本资料与电商链接');
   });
 
   it('merges image and document channels into one mixed-file upload entry', () => {
-    expect(productEditorSource.match(/type="file"\s+hidden/g)).toHaveLength(2);
+    expect(productEditorSource.match(/<ImportDropzone/g)).toHaveLength(2);
+    expect(dropzoneSource.match(/type="file"\s+hidden/g)).toHaveLength(1);
     expect(productEditorSource).toContain('点击或将商品图片、产品文档拖拽到此处');
     expect(productEditorSource).toContain('支持同时选择图片和文档，系统会自动识别资料类型');
     expect(productEditorSource).toContain(':accept="unifiedUploadAccept"');
@@ -202,17 +224,15 @@ describe('effect import identity boundary', () => {
     expect(pageSource).not.toContain(':status-detail=');
     expect(pageSource).not.toContain('`revision ${draft?.revision ?? 0}`');
     expect(pageSource).not.toContain('relockDownstreamNode');
-    expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');
+    expect(pageSource).toContain('next-label="下一步：信息提炼"');
     expect(pageSource).toContain(':show-validate="false"');
-    expect(pageSource).toContain('@click="validateDraft"');
-    expect(pageSource).toContain('<X :size="14" />取消编辑');
-    expect(pageSource).toContain('<CheckCircle2 v-else :size="14" />');
-    expect(pageSource).toContain("validatingDraft ? '正在校验…' : '保存版本'");
+    expect(pageSource).toContain('<WorkflowNodeEditActions');
+    expect(pageSource).toContain('@save="validateDraft"');
+    expect(pageSource).toContain('@begin="beginSourceEdit"');
+    expect(pageSource).toContain('@cancel="cancelSourceEdit"');
+    expect(pageSource).toContain(':saving="validatingDraft"');
     expect(pageSource).toContain('class="node-heading__actions"');
-    expect(pageSource.indexOf('<Pencil :size="14" />进入编辑')).toBeLessThan(
-      pageSource.indexOf('class="node-heading__save-action"'),
-    );
-    expect(pageSource.indexOf('class="node-heading__save-action"')).toBeLessThan(
+    expect(pageSource.indexOf('<WorkflowNodeEditActions')).toBeLessThan(
       pageSource.indexOf('下载资料包模板'),
     );
     expect(pageSource.indexOf('下载资料包模板')).toBeLessThan(
@@ -254,11 +274,18 @@ describe('effect import material previews', () => {
     expect(productEditorSource).toContain(
       '<ImageIcon v-if="material.type === \'PRODUCT_IMAGE\'" :size="13" />',
     );
-    expect(contentViewerSource).toContain(
-      "const isImage = computed(() => props.material.type === 'PRODUCT_IMAGE')",
-    );
+    expect(contentViewerSource).toContain('const isImage = computed(() => props.file.isImage)');
+    expect(viewerAdapterSource).toContain("props.material.type === 'PRODUCT_IMAGE'");
     expect(contentViewerSource).toContain(':href="originalContentUrl"');
-    expect(contentViewerSource).toContain('<figure v-if="isImage && imageSource"');
+    expect(contentViewerSource).toContain(
+      '<figure v-if="isImage && (imageSource || reusedPreview)"',
+    );
+    expect(contentViewerSource).toContain('await preview.decode()');
+    expect(contentViewerSource).toContain('importImageCache.get(');
+    expect(productEditorSource).toContain(':preview-image="readingImage"');
+    expect(productEditorSource).toContain(
+      'image?.dataset.materialUpdatedAt === material.updatedAt',
+    );
     expect(contentViewerSource).toContain('按原始比例显示，图片内容不会被裁切');
     expect(contentViewerSource).toMatch(/\.image-reader > img[\s\S]*object-fit:\s*contain;/);
   });
@@ -303,9 +330,9 @@ describe('effect import automatic draft saving', () => {
   it('keeps visited AI nodes warm and exposes immediate switching feedback', () => {
     expect(pageSource).toContain('<KeepAlive :max="4">');
     expect(pageSource).toContain('pendingStep.value = step');
-    expect(pageSource).toContain('class="node-switch-progress"');
-    expect(pageSource).toContain('正在切换到{{ pendingStepLabel }}');
-    expect(pageSource).toContain('保存当前草稿并准备目标节点…');
+    expect(feedbackSource).toContain('class="node-switch-progress"');
+    expect(feedbackSource).toContain('正在切换到{{ pendingStepLabel }}');
+    expect(feedbackSource).toContain('保存当前草稿并准备目标节点…');
   });
 
   it('moves node activation out of the visual switching critical path', () => {
@@ -315,12 +342,14 @@ describe('effect import automatic draft saving', () => {
     expect(switchingSource).toContain('activeStep.value = step');
     expect(switchingSource).toContain('enqueueWorkflowNodeActivation(');
     expect(switchingSource).not.toContain('await activateWorkflowNode(');
-    expect(pageSource).toContain('for (let attempt = 0; attempt < 2; attempt += 1)');
-    expect(pageSource).toContain('sequence !== activationSequence');
+    expect(activationSource).toContain('for (let attempt = 0; attempt < 2; attempt += 1)');
+    expect(pageSource).toContain('createWorkflowNodeActivationQueue');
+    expect(activationSource).toContain('request === sequence');
   });
 
   it('prefetches adjacent effect workspaces with isolated context inputs', () => {
     expect(pageSource).toContain('scheduleAdjacentWorkspacePrefetch');
+    expect(pageSource).toContain('const targetPrefetch = prefetchWorkflowStep(step)');
     expect(pageSource).toContain('prefetchEffectExtractionWorkspace({ projectId, draftId })');
     expect(pageSource).toContain('prefetchEffectPromptWorkspace({ projectId, workflowRunId })');
     expect(pageSource).toContain(
@@ -332,7 +361,7 @@ describe('effect import automatic draft saving', () => {
   it('activates the selected workflow node independently from node draft persistence', () => {
     expect(pageSource).toContain('activateWorkflowNode(');
     expect(pageSource).toContain('getActiveWorkflowRunOverview(');
-    expect(pageSource).toContain('workflowNodeBaseId(overview.data.run?.currentNodeId)');
+    expect(pageSource).toContain('workflowNodeBaseId(overviewData.run?.currentNodeId)');
     expect(pageSource).toContain("'INFORMATION_EXTRACTION'");
     expect(pageSource).toContain('effectWorkflowNodeIds[step]');
     expect(pageSource).toContain('effectWorkflowNodeIds[activeStep.value]');

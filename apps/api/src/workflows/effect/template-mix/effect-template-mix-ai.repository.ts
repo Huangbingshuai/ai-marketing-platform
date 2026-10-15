@@ -27,24 +27,29 @@ export class EffectTemplateMixAiRepository {
     @Inject(WorkflowWorkingRepository) private readonly working: WorkflowWorkingRepository = new WorkflowWorkingRepository(prisma),
   ) {}
 
-  listRecent(projectId: string, workflowRunId: string) {
+  listRecent(projectId: string, workflowRunId: string, templateId?: string) {
     return this.prisma.effectTemplateMixAiRun.findMany({
-      where: { projectId, workflowRunId },
+      where: { projectId, workflowRunId, ...(templateId ? { templateId } : {}) },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 20,
     });
   }
 
-  /** Successful consumption is a durable baseline, not a page of recent task activity. */
-  async listHistory(projectId: string, workflowRunId: string) {
-    const [recent, completed] = await Promise.all([
-      this.listRecent(projectId, workflowRunId),
+  /** Consumption baselines and validated APPEND classifications outlive recent task activity. */
+  async listHistory(projectId: string, workflowRunId: string, templateId?: string) {
+    const [recent, terminal] = await Promise.all([
+      this.listRecent(projectId, workflowRunId, templateId),
       this.prisma.effectTemplateMixAiRun.findMany({
-        where: { projectId, workflowRunId, status: 'COMPLETED' },
+        where: { projectId, workflowRunId, ...(templateId ? { templateId } : {}),
+          status: { in: ['COMPLETED', 'FAILED'] } },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       }),
     ]);
-    return [...new Map([...recent, ...completed].map((run) => [run.id, run])).values()]
+    const durable = terminal.filter(
+      (run) => run.status === 'COMPLETED' ||
+        Boolean((run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot).incremental),
+    );
+    return [...new Map([...recent, ...durable].map((run) => [run.id, run])).values()]
       .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id));
   }
 
@@ -81,11 +86,95 @@ export class EffectTemplateMixAiRepository {
       return { kind: 'CANCELLED' as const, run: cancelled };
     });
   }
-  recordAppendContinuation(projectId: string, runId: string, failed: boolean) {
+  recordAppendContinuation(projectId: string, runId: string, failed: boolean, retryable = false) {
     return this.prisma.effectTemplateMixAiRun.updateMany({
       where: { projectId, id: runId, status: 'COMPLETED' },
-      data: { errorCode: failed ? 'APPEND_CONTINUATION_FAILED' : null,
-        errorMessage: failed ? '新增成片已保存，输出同步或自动包装尚未完成，请点击继续更新' : null },
+      // Recoverable failures keep their durable phase/budget. Never reset RETRY_1/2
+      // back to PENDING on redelivery, or a restart could retry forever.
+      data: { ...(!failed || !retryable ? {
+        errorCode: failed ? 'APPEND_CONTINUATION_FAILED' : null,
+      } : {}), errorMessage: failed ? '新增工程已保存，结果同步衔接未完成' : null },
+    });
+  }
+
+  /** Replay only persistence/coordination of new-protocol completed APPENDs.
+   * The terminal claim does not regenerate selections, trims or finished packaging.
+   */
+  async recoverAppendContinuations(now = new Date()): Promise<void> {
+    const phases = ['APPEND_CONTINUATION_PENDING', 'APPEND_CONTINUATION_RETRY_1', 'APPEND_CONTINUATION_RETRY_2'];
+    const rows = await this.prisma.effectTemplateMixAiRun.findMany({ where: {
+      status: 'COMPLETED', errorCode: { in: phases },
+      updatedAt: { lte: new Date(now.getTime() - 120_000) },
+    }, orderBy: { updatedAt: 'asc' }, take: 50 });
+    for (const row of rows) {
+      const snapshot = row.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
+      if (!snapshot.incremental || snapshot.sourceOperation?.protocol !== 'FROZEN_RENDER_V1') continue;
+      const attempt = phases.indexOf(row.errorCode!);
+      await this.prisma.$transaction(async (tx) => {
+        const changed = await tx.effectTemplateMixAiRun.updateMany({ where: {
+          projectId: row.projectId, id: row.id, status: 'COMPLETED',
+          errorCode: row.errorCode, updatedAt: row.updatedAt,
+        }, data: { errorCode: phases[attempt + 1] ?? 'APPEND_CONTINUATION_FAILED' } });
+        if (!changed.count || attempt >= 2) return;
+        await tx.jobOutbox.updateMany({ where: {
+          projectId: row.projectId, aggregateId: row.id, jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE,
+        }, data: { status: 'PENDING', dispatchToken: null, nextAttemptAt: now,
+          publishedAt: null, lastError: null } });
+      });
+    }
+  }
+  async retryAppend(projectId: string, runId: string, now = new Date()) {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_template_mix_ai_runs"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${runId}::uuid FOR UPDATE
+      `;
+      const run = await transaction.effectTemplateMixAiRun.findFirst({ where: { projectId, id: runId } });
+      if (!run) return { kind: 'NOT_FOUND' as const };
+      const snapshot = run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
+      if (!snapshot.incremental || snapshot.sourceOperation?.protocol !== 'FROZEN_RENDER_V1' || !snapshot.workspaceHash)
+        return { kind: 'UNSUPPORTED' as const };
+      if (['QUEUED', 'RUNNING', 'COMPLETED'].includes(run.status))
+        return { kind: 'REPLAYED' as const, run };
+      if (run.status !== 'FAILED') return { kind: 'CANCELLED' as const };
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "workflow_node_states"
+        WHERE "projectId" = ${projectId}::uuid AND "workflowRunId" = ${run.workflowRunId}::uuid
+          AND "nodeId" = 'TEMPLATE_MIX' FOR UPDATE
+      `;
+      const state = await transaction.workflowNodeState.findUnique({ where: {
+        projectId_workflowRunId_nodeId: { projectId, workflowRunId: run.workflowRunId, nodeId: 'TEMPLATE_MIX' },
+      } });
+      const entry = (state?.state as unknown as EffectTemplateMixDraft)?.templates?.find(({ id }) => id === run.templateId);
+      if (!entry || workflowStateHash(entry.workspace) !== snapshot.workspaceHash ||
+        (entry.materialRoleEditVersion ?? 0) !== (snapshot.materialRoleEditVersion ?? 0))
+        return { kind: 'DRAFT_CONFLICT' as const };
+      const active = await transaction.effectTemplateMixAiRun.findFirst({ where: {
+        projectId, workflowRunId: run.workflowRunId, templateId: run.templateId,
+        status: { in: ['QUEUED', 'RUNNING'] },
+      } });
+      if (active) return { kind: 'ACTIVE_CONFLICT' as const };
+      if (await transaction.effectPackagingRun.count({ where: {
+        projectId, workflowRunId: run.workflowRunId, templateId: run.templateId,
+        status: { in: ['QUEUED', 'RUNNING'] },
+      } })) return { kind: 'PACKAGING_LOCKED' as const };
+      const outbox = await transaction.jobOutbox.findFirst({ where: {
+        projectId, jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE, aggregateId: runId,
+      }, select: { id: true } });
+      if (!outbox) return { kind: 'MISSING_DELIVERY' as const };
+      const retried = await transaction.effectTemplateMixAiRun.update({
+        where: { projectId_id: { projectId, id: runId } }, data: {
+          status: 'QUEUED', attemptToken: null, leaseExpiresAt: null,
+          errorCode: null, errorMessage: null, completedAt: null, queuedAt: now,
+          // An explicit user recovery grants two attempts, without resetting
+          // history or discarding any successful, frozen checkpoint.
+          maxAttempts: Math.max(run.maxAttempts, run.attemptCount + 2),
+        },
+      });
+      await transaction.jobOutbox.updateMany({ where: { projectId, id: outbox.id }, data: {
+        status: 'PENDING', dispatchToken: null, nextAttemptAt: now, publishedAt: null, lastError: null,
+      } });
+      return { kind: 'RETRIED' as const, run: retried };
     });
   }
   latestUnpublishedChild(projectId: string, workflowRunId: string, templateId: string) {
@@ -132,7 +221,7 @@ export class EffectTemplateMixAiRepository {
    * library populated for a chain of packaging branches, and a snapshot that no longer describes
    * these clips is dropped by the caller instead of showing a pool that is not this Run's.
    */
-  async inheritedMixAiRuns(projectId: string, workflowRunId: string) {
+  async inheritedMixAiRuns(projectId: string, workflowRunId: string, templateId?: string) {
     const collected = new Map<string, Awaited<ReturnType<typeof this.listRecent>>[number]>();
     const visited = new Set([workflowRunId]);
     let cursor = await this.prisma.workflowRun.findFirst({
@@ -148,6 +237,7 @@ export class EffectTemplateMixAiRepository {
         where: {
           projectId,
           workflowRunId: parentId,
+          ...(templateId ? { templateId } : {}),
           status: 'COMPLETED',
           outputVariantId: { not: null },
           // A fork inherits its creation snapshot, not later in-place updates of its parent.
@@ -926,6 +1016,9 @@ export class EffectTemplateMixAiRepository {
           status: 'COMPLETED',
           stage: 'COMPLETED',
           progress: 100,
+          ...((run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot | undefined)?.incremental &&
+            (run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot).sourceOperation?.protocol === 'FROZEN_RENDER_V1'
+            ? { errorCode: 'APPEND_CONTINUATION_PENDING', errorMessage: null } : {}),
           attemptToken: null,
           leaseExpiresAt: null,
           heartbeatAt: now,
@@ -1036,6 +1129,7 @@ export class EffectTemplateMixAiRepository {
   }
 
   async recoverExpired(now = new Date()): Promise<void> {
+    await this.recoverAppendContinuations(now);
     await this.recoverUnclaimed(now);
     const runs = await this.prisma.effectTemplateMixAiRun.findMany({
       where: { status: 'RUNNING', leaseExpiresAt: { lte: now } },

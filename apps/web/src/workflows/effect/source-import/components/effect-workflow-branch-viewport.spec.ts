@@ -38,4 +38,19 @@ describe('branch tree display-only viewport', () => {
       'border-color',
     );
   });
+  it('reserves a separate controls row instead of overlaying scrollable nodes', () => {
+    const css = (selector: string) => treeSource.split(`${selector} {`)[1]!.split('}')[0]!;
+    expect(css('.branch-workspace')).toContain('flex-direction: column');
+    expect(css('.branch-scroll')).toContain('min-height: 0');
+    expect(css('.branch-view-controls')).toContain('position: static');
+    expect(css('.branch-view-controls')).toContain('flex: none');
+    expect(css('.branch-view-controls')).toContain('overflow-x: auto');
+    expect(css('.branch-view-controls')).not.toContain('translateX');
+    expect(css('.branch-header')).toContain('flex-shrink: 0');
+    expect(css('.branch-toolbar')).toContain('flex-shrink: 0');
+    // Fit and locate operate on the actual canvas viewport, which already excludes controls.
+    expect(treeSource).not.toContain('scroll.clientHeight - 56');
+    expect(treeSource).toContain('height: scroll.clientHeight');
+    expect(treeSource).toContain('viewport.top - scroll.clientHeight / 2');
+  });
 });

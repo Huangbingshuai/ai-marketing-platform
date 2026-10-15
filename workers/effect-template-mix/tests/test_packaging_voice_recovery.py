@@ -1,6 +1,7 @@
 import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -32,6 +33,39 @@ async def test_paid_success_remains_fenced_until_audio_is_uploaded() -> None:
     with pytest.raises(VoiceResponseUncertain):
         await recover_voice_connection(request, AsyncMock(), item_id='i', slot_id='s', state=state, persist=AsyncMock())
     assert request.await_count == 1
+
+
+async def test_concurrent_voice_records_are_valid_before_any_checkpoint_is_written() -> None:
+    states: dict[str, Any] = {}
+    ready = asyncio.Event()
+    async def guard() -> None:
+        if len(states) == 6:
+            ready.set()
+        await ready.wait()
+    async def persist() -> None:
+        assert len(states) == 6
+        assert all(isinstance(row.get('startedAt'), str) and isinstance(row.get('attempts'), int)
+                   for row in states.values())
+    async def clause(index: int) -> None:
+        row = states.setdefault(str(index), {})
+        await recover_voice_connection(AsyncMock(return_value=b'pcm'), guard,
+            item_id='i', slot_id=str(index), state=row, persist=persist)
+    await asyncio.gather(*(clause(index) for index in range(6)))
+
+
+async def test_cancelled_queue_or_lease_guard_never_marks_an_unsubmitted_voice_paid() -> None:
+    state: dict[str, Any] = {}
+    request = AsyncMock()
+    @asynccontextmanager
+    async def scope():  # type: ignore[no-untyped-def]
+        raise ApiError('lease expired before sending', retryable=False)
+        yield
+    with pytest.raises(ApiError):
+        await recover_voice_connection(request, AsyncMock(), item_id='i', slot_id='s',
+            state=state, persist=AsyncMock(), request_scope=scope)
+    assert not state.get('pending')
+    assert state['attempts'] == 0
+    request.assert_not_called()
 
 
 async def test_stage_retry_budget_is_persisted_and_does_not_regenerate_successful_steps() -> None:

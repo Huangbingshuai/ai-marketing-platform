@@ -12,7 +12,8 @@ import type {
   PackagingSnapshot,
 } from '@ai-marketing/contracts';
 import type { StoragePort } from '../../../platform/file/storage.port';
-import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import type { ProjectService } from '../../../platform/project/project.service';
 import type { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 import type { EffectTemplateMixService } from './effect-template-mix.service';
 import type { EffectPackagingRepository } from './effect-packaging.repository';
@@ -108,6 +109,7 @@ function harness(templateVoiceProfileId?: string) {
     }),
   };
   const working = {
+    getEffectBranchTree: vi.fn(),
     // No published version to protect, so packaging stays in the Run it was asked for.
     beginEffectNodeEdit: vi.fn().mockResolvedValue({
       run: { id: 'w' },
@@ -139,6 +141,9 @@ function harness(templateVoiceProfileId?: string) {
     finish: vi.fn(),
     updateCheckpoint: vi.fn(),
     list: vi.fn().mockResolvedValue([]),
+    latestChild: vi.fn().mockResolvedValue(null),
+    readRunScope: vi.fn().mockResolvedValue({ id: 'w' }),
+    materialLabels: vi.fn().mockResolvedValue([]),
     create: vi.fn().mockResolvedValue('new-run'),
     enqueueCaptionVoice: vi.fn().mockResolvedValue({ id: 'outbox' }),
     db: {
@@ -165,14 +170,16 @@ function harness(templateVoiceProfileId?: string) {
     publishMixBranch: vi.fn().mockResolvedValue(undefined),
     upsertFromPackaging: vi.fn().mockResolvedValue(undefined),
   };
+  const projects = { get: vi.fn().mockResolvedValue({ id: 'p' }) };
   const service = new EffectPackagingService(
     repo as unknown as EffectPackagingRepository,
     mix as unknown as EffectTemplateMixService,
     working as unknown as WorkflowWorkingService,
     storage as unknown as StoragePort,
     finalOutput as unknown as EffectFinalOutputService,
+    projects as unknown as ProjectService,
   );
-  return { service, mix, working, repo, storage, tx, visual, packaging, finalOutput };
+  return { service, mix, working, repo, storage, tx, visual, packaging, finalOutput, projects };
 }
 
 describe('transactional packaging completion', () => {
@@ -248,7 +255,232 @@ function completedItem() {
 function completedRun() {
   return { id: 'run', workflowRunId: 'w', templateId: 't', items: [completedItem()] };
 }
+describe('lightweight packaging progress reads', () => {
+  function readRun(status = 'RUNNING') {
+    return { ...completedRun(), status, createdAt: new Date('2026-10-14T01:00:00Z'),
+      startedAt: null, completedAt: null, items: [{ ...completedItem(), status,
+        snapshot: { ...completedItem().snapshot, variant: structuredClone(v),
+          clips: [{ slotId: 'slot', materialId: 'clip', materialCode: 'R-01',
+            materialName: '冻结素材', start: 0, offset: 1, duration: 4 }] },
+      }] };
+  }
+  it('returns empty history/discovery without loading a workspace or sources', async () => {
+    const { service, repo, mix, projects } = harness();
+    await expect(service.list('p', 'w', 't')).resolves.toEqual([]);
+    await expect(service.latestBackground('p', 'w', 't')).resolves.toBeNull();
+    expect(projects.get).toHaveBeenCalledWith('p');
+    expect(repo.readRunScope).toHaveBeenCalledWith('p', 'w');
+    expect(repo.list).toHaveBeenCalledWith('p', 'w', 't');
+    expect(repo.latestChild).toHaveBeenCalledWith('p', 'w', 't');
+    expect(mix.workspace).not.toHaveBeenCalled();
+    expect(repo.materialLabels).not.toHaveBeenCalled();
+  });
+  it.each(['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'])(
+    'reads durable %s status and frozen sources across all progress endpoints', async (status) => {
+      const { service, repo, mix, working } = harness();
+      const run = readRun(status);
+      repo.get.mockResolvedValue(run as never);
+      repo.list.mockResolvedValue([run] as never);
+      repo.latestChild.mockResolvedValue(run as never);
+      for (const result of [await service.get('p', 'run'),
+        ...(await service.list('p', 'w', 't')), await service.latestBackground('p', 'w', 't')]) {
+        expect(result).toMatchObject({ status, workflowRunId: 'w', templateId: 't',
+          items: [{ status, sourceClips: [{ materialName: 'R-01 · 冻结素材', sourceOffset: 1 }] }] });
+      }
+      expect(mix.workspace).not.toHaveBeenCalled();
+      expect(repo.materialLabels).not.toHaveBeenCalled();
+      expect(working.listArtifacts).not.toHaveBeenCalled();
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.db.$transaction).not.toHaveBeenCalled();
+    });
+  it('does not retain old progress when the durable task changes on the next read', async () => {
+    const { service, repo } = harness();
+    repo.get.mockResolvedValueOnce(readRun('RUNNING') as never)
+      .mockResolvedValueOnce(readRun('COMPLETED') as never);
+    expect((await service.get('p', 'run')).status).toBe('RUNNING');
+    expect((await service.get('p', 'run')).status).toBe('COMPLETED');
+    expect(repo.get).toHaveBeenCalledTimes(2);
+  });
+  it('uses only a matching adopted source snapshot for legacy names', async () => {
+    const { service, repo } = harness();
+    const run = readRun();
+    const clip = run.items[0]!.snapshot.clips[0]!;
+    delete (clip as Partial<typeof clip>).materialCode;
+    delete (clip as Partial<typeof clip>).materialName;
+    Object.assign(run.items[0]!.snapshot.variant, { bindingSources: {
+      slot: { id: 'clip', code: 'R-02', name: '已采用的素材' },
+    } });
+    repo.get.mockResolvedValue(run as never);
+    expect((await service.get('p', 'run')).items[0]!.sourceClips?.[0]?.materialName)
+      .toBe('R-02 · 已采用的素材');
+    expect(repo.materialLabels).not.toHaveBeenCalled();
+    Object.assign(run.items[0]!.snapshot.variant, { bindingSources: {
+      slot: { id: 'other-clip', code: 'R-99', name: '另一个素材' },
+    } });
+    expect((await service.get('p', 'run')).items[0]!.sourceClips?.[0]?.materialName).toBe('来源视频素材');
+    expect(repo.materialLabels).toHaveBeenCalledWith('p', ['clip']);
+  });
+  it('deduplicates missing legacy labels and retains frozen names', async () => {
+    const { service, repo, mix } = harness();
+    const run = readRun();
+    const legacyClip = { ...run.items[0]!.snapshot.clips[0]!, materialId: 'legacy' };
+    delete (legacyClip as Partial<typeof legacyClip>).materialCode;
+    delete (legacyClip as Partial<typeof legacyClip>).materialName;
+    run.items[0]!.snapshot.clips.push(legacyClip, legacyClip);
+    repo.list.mockResolvedValue([run, run] as never);
+    repo.materialLabels.mockResolvedValue([{ id: 'legacy', code: 'R-03', name: '历史素材' }]);
+    const result = await service.list('p', 'w', 't');
+    expect(repo.materialLabels).toHaveBeenCalledOnce();
+    expect(repo.materialLabels).toHaveBeenCalledWith('p', ['legacy']);
+    expect(result[0]!.items[0]!.sourceClips?.map((clip) => clip.materialName))
+      .toEqual(['R-01 · 冻结素材', 'R-03 · 历史素材', 'R-03 · 历史素材']);
+    expect(mix.workspace).not.toHaveBeenCalled();
+  });
+  it.each(['list', 'latestBackground'] as const)('rejects unrelated Run before %s reads tasks', async (method) => {
+    const { service, repo } = harness();
+    repo.readRunScope.mockResolvedValue(null as never);
+    await expect(service[method]('p', 'other-run', 't')).rejects.toThrow('工作流运行不存在');
+    expect(repo.list).not.toHaveBeenCalled();
+    expect(repo.latestChild).not.toHaveBeenCalled();
+  });
+  it('preserves project deletion and missing-task checks', async () => {
+    const { service, projects, repo, mix } = harness();
+    projects.get.mockRejectedValue(new ConflictException('项目正在删除'));
+    await expect(service.list('p', 'w', 't')).rejects.toThrow('项目正在删除');
+    repo.get.mockResolvedValue(readRun() as never);
+    await expect(service.get('p', 'run')).rejects.toThrow('项目正在删除');
+    repo.get.mockResolvedValue(null as never);
+    await expect(service.get('other-project', 'run')).rejects.toThrow('包装任务不存在');
+    expect(repo.get).toHaveBeenLastCalledWith('other-project', 'run');
+    expect(repo.list).not.toHaveBeenCalled();
+    expect(mix.workspace).not.toHaveBeenCalled();
+  });
+});
 describe('packaging service output boundary', () => {
+  it.each(['NONE', 'FAILED', 'CANCELLED'].flatMap((status) => [true, false].map((active) => ({ status, active }))))(
+    'keeps the first batch in place after $status history (globally active=$active)', async ({ status, active }) => {
+    const { service, mix, repo, working } = harness();
+    repo.db.workflowRun.findFirst.mockResolvedValueOnce(active ? { id: 'w' } as never : null)
+      .mockResolvedValue({ id: 'global', editSessionNodeId: null } as never);
+    working.getEffectBranchTree.mockResolvedValue({ activeWorkflowRunId: 'global', branches: [
+      { workflowRunId: 'global', forkNodeId: 'SEGMENT_RENDER', parentWorkflowRunId: null,
+        createdAt: '2026-10-10', templates: [] },
+      { workflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX', parentWorkflowRunId: 'global',
+        forkTemplateId: 't', createdAt: '2026-10-11',
+        templates: [{ templateId: 't', currentSelectedAt: '2026-10-11' }] },
+    ] });
+    const workspace = await mix.workspace();
+    // This UI/history flag includes attempts, not only committed packaging artifacts.
+    Object.assign(workspace.draft.templates[0]!, { packagingLocked: status !== 'NONE' });
+    const variant = { ...v, slots: [{ id: 'a', label: '产品', role: 'PRODUCT',
+      purpose: 'PRODUCT_DISPLAY', duration: 4, transition: '硬切' }],
+      bindings: { a: 'clip' }, bindingRevisions: { a: 1 } } as EffectTemplateMixVariant;
+    workspace.draft.templates[0]!.workspace.variants = [variant];
+    repo.list.mockResolvedValue(status === 'NONE' ? [] : [{ status, items: [] }] as never);
+    vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
+    const snapshot = vi.spyOn(packagingDomain, 'packagingSnapshot').mockReturnValue({
+      ...completedItem().snapshot, variant, sourceTimelineHash: visualHash(variant),
+    } as never);
+    try {
+      await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1,
+        operation: 'BATCH_PACKAGE', idempotencyKey: `first-${status}` });
+      expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+      expect(repo.create.mock.calls[0]![0]).toMatchObject({ workflowRunId: 'w',
+        sourceWorkflowRunId: 'w', expectedDraftRevision: 1, expectedSourceDraftRevision: 1,
+        snapshots: [{ operation: 'BATCH_PACKAGE', baselineVariant: variant }] });
+    } finally { snapshot.mockRestore(); }
+  });
+  it('rejects an obsolete source revision before creating an orphan packaging branch', async () => {
+    const { service, mix, repo, working } = harness();
+    (await mix.workspace()).draftRevision = 33;
+    await expect(service.create('p', 't', { workflowRunId: 'w', expectedRevision: 31,
+      operation: 'BATCH_PACKAGE', idempotencyKey: 'stale-create' })).rejects.toThrow('草稿已改变');
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+  it.each([33, 34])('fences the copied execution baseline as well as the source (%s)', async (childRevision) => {
+    const { service, mix, repo, working } = harness();
+    repo.db.workingArtifact.findFirst.mockResolvedValue({ id: 'confirmed-package' } as never);
+    repo.db.workflowRun.findFirst.mockResolvedValue({ id: 'w' } as never);
+    const parent = await mix.workspace();
+    parent.draftRevision = 33;
+    const variant = { ...v, slots: [{ id: 'a', label: '产品', role: 'PRODUCT',
+      purpose: 'PRODUCT_DISPLAY', duration: 4, transition: '硬切' }],
+      bindings: { a: 'clip' }, bindingRevisions: { a: 1 } } as EffectTemplateMixVariant;
+    parent.draft.templates[0]!.workspace.variants = [variant];
+    const child = structuredClone(parent);
+    child.draftRevision = childRevision;
+    mix.workspace.mockResolvedValueOnce(parent).mockResolvedValue(child);
+    working.beginEffectNodeEdit.mockResolvedValue({ run: { id: 'child' } } as never);
+    vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
+    const snapshot = vi.spyOn(packagingDomain, 'packagingSnapshot').mockReturnValue({
+      ...completedItem().snapshot, variant, sourceTimelineHash: visualHash(variant),
+    } as never);
+    try {
+      const task = service.create('p', 't', { workflowRunId: 'w', expectedRevision: 33,
+        operation: 'BATCH_PACKAGE', idempotencyKey: 'fresh-create' });
+      if (childRevision !== 33) {
+        await expect(task).rejects.toThrow('草稿已改变');
+        expect(repo.create).not.toHaveBeenCalled();
+        return;
+      }
+      await task;
+      expect(working.beginEffectNodeEdit.mock.calls[0]![4]).toMatchObject({ expectedNodeStateRevision: 33 });
+      expect(repo.create.mock.calls[0]![0]).toMatchObject({ workflowRunId: 'child',
+        sourceWorkflowRunId: 'w', expectedDraftRevision: 33, expectedSourceDraftRevision: 33 });
+    } finally { snapshot.mockRestore(); }
+  });
+  it.each([true, false])('resolves a non-global template path before background packaging (%s)', async (current) => {
+    const { service, repo, working } = harness();
+    repo.db.workingArtifact.findFirst.mockResolvedValue({ id: 'confirmed-package' } as never);
+    repo.db.workflowRun.findFirst.mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: 'global', editSessionNodeId: null } as never);
+    working.getEffectBranchTree.mockResolvedValue({ activeWorkflowRunId: 'global', branches: [
+      { workflowRunId: 'global', forkNodeId: 'SEGMENT_RENDER', parentWorkflowRunId: null,
+        createdAt: '2026-10-10', templates: [] },
+      { workflowRunId: current ? 'w' : 'other', forkNodeId: 'TEMPLATE_MIX',
+        parentWorkflowRunId: 'global', forkTemplateId: 't', createdAt: '2026-10-11',
+        templates: [{ templateId: 't', currentSelectedAt: '2026-10-11' }] },
+    ] });
+    working.beginEffectNodeEdit.mockRejectedValue(new Error('SCOPE_ACCEPTED'));
+    await expect(service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1,
+      operation: 'BATCH_PACKAGE', idempotencyKey: 'selected-template' }))
+      .rejects.toThrow(current ? 'SCOPE_ACCEPTED' : '模板当前分支已变化');
+    if (current) expect(working.beginEffectNodeEdit.mock.calls[0]![4]).toMatchObject({
+      templateId: 't', templateScopeActiveRunId: 'global', expectedNodeStateRevision: 1,
+      keepParentActive: true, preservePackagingBaseline: true,
+    });
+    else expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+  it.each([true, false])('uses the real tree projection to authorize repackaging a partial batch (modern=%s)', async (modern) => {
+    const { service, repo, working } = harness();
+    repo.db.workingArtifact.findFirst.mockResolvedValue({ id: 'confirmed-package' } as never);
+    const at = new Date('2026-10-11T01:00:00Z');
+    const artifact = (artifactKey: string) => ({ id: artifactKey, workflowRunId: 'w',
+      nodeId: 'TEMPLATE_MIX', artifactKey, revision: 1, freshness: 'CURRENT',
+      createdAt: at, updatedAt: at, name: artifactKey, payload: null });
+    const treeService = new WorkflowWorkingService({ listEffectRunBranches: vi.fn().mockResolvedValue([
+      { id: 'global', parentWorkflowRunId: null, activeKey: 'ACTIVE', forkNodeId: null,
+        createdAt: at, workingArtifacts: [artifact('mix-template:t')] },
+      { id: 'w', parentWorkflowRunId: 'global', activeKey: null, forkNodeId: 'TEMPLATE_MIX',
+        forkTemplateId: 't', branchPublishedAt: at, createdAt: at,
+        workingArtifacts: [artifact('timeline-project:t:v'), artifact('timeline-package:t:v')],
+        workingArtifactRevisions: [{ workingArtifactId: 'timeline-package:t:v', revision: 1, confirmedAt: at }],
+        effectPackagingRuns: [{ templateId: 't', status: 'PARTIAL',
+          operation: modern ? 'BATCH_PACKAGE' : undefined, idempotencyKey: 'batch', completedAt: at,
+          items: [{ variantId: 'v', status: 'COMPLETED' }, { variantId: 'failed', status: 'FAILED' }] }] },
+    ]) } as never, { get: vi.fn().mockResolvedValue({ id: 'p' }) } as never, {} as never);
+    working.getEffectBranchTree.mockImplementation(() => treeService.getEffectBranchTree('p'));
+    repo.db.workflowRun.findFirst.mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: 'global', editSessionNodeId: null } as never);
+    working.beginEffectNodeEdit.mockRejectedValue(new Error('SCOPE_ACCEPTED'));
+    await expect(service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1,
+      operation: 'BATCH_PACKAGE', idempotencyKey: 'new-package' }))
+      .rejects.toThrow(modern ? 'SCOPE_ACCEPTED' : '模板当前分支已变化');
+    expect(working.beginEffectNodeEdit).toHaveBeenCalledTimes(modern ? 1 : 0);
+    expect(repo.create).not.toHaveBeenCalled();
+  });
   it('requires local update for added materials before attempting to fork or create packaging', async () => {
     const { service, mix, repo, working } = harness();
     const workspace = await mix.workspace();
@@ -453,7 +685,7 @@ describe('packaging service output boundary', () => {
   });
 
   it('projects frozen clip and confirmed-fact examples without exposing file identifiers or raw prompts', async () => {
-    const { service, repo, mix } = harness();
+    const { service, repo } = harness();
     const timelineVariant = {
       ...v,
       slots: [
@@ -487,11 +719,7 @@ describe('packaging service output boundary', () => {
       transitionDuration: 0.5,
       originalAudioDetached: true,
     };
-    mix.workspace.mockResolvedValue({
-      draftRevision: 1,
-      draft: { templates: [{ id: 't', workspace: { variants: [timelineVariant] } }] },
-      materials: [{ id: 'material-1', code: 'R-06', name: '腊肠煎制' }],
-    });
+    repo.materialLabels.mockResolvedValue([{ id: 'material-1', code: 'R-06', name: '腊肠煎制' }]);
     repo.get.mockResolvedValue({
       id: 'run',
       workflowRunId: 'w',
@@ -1620,6 +1848,19 @@ describe('editor-generated caption narration', () => {
 });
 
 describe('a finished package feeds the output node', () => {
+  it.each(['FAILED', 'COMPLETED'])(
+    'settles automatic APPEND packaging without requesting manual continuation (%s)', async status => {
+      const { service, repo, mix, finalOutput } = harness();
+      const record = vi.fn();
+      Object.assign(mix, { recordAppendContinuation: record });
+      repo.get.mockResolvedValue({ workflowRunId: 'w', templateId: 't', items: [
+        { status, snapshot: { operation: 'APPEND_PACKAGE', incrementalFillRunId: 'append' } },
+      ] });
+      await service.finish('p', 'package', 'token');
+      expect(record).toHaveBeenCalledExactlyOnceWith('p', 'append', false);
+      expect(repo.finish).toHaveBeenCalledExactlyOnceWith('p', 'package', 'token');
+      expect(finalOutput.upsertFromPackaging).not.toHaveBeenCalled();
+    });
   const finished = (status: string) => ({
     accepted: true,
     status,

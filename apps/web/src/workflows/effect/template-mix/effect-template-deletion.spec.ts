@@ -26,7 +26,9 @@ describe('permanent template deletion interaction', () => {
     expect(action).toContain("emit('templateDeleted', receipt)");
     expect(action).not.toContain("emit('workflowRunChange')");
     expect(action).not.toContain('await load()');
-    expect(action).not.toContain('await loadEffectTemplateMixWorkspace');
+    const accepted = action.split('const receipt: EffectTemplateDeleted =')[1]!;
+    expect(accepted).not.toContain('await loadEffectTemplateMixWorkspace');
+    expect(action).toContain('const latest = await loadEffectTemplateMixWorkspace(projectId, targetRunId)');
     expect(action).not.toContain('while (');
   });
   it('does not lock other template selection or show a parent branch-publication curtain', () => {

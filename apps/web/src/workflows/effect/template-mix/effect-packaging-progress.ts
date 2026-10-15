@@ -209,15 +209,10 @@ export function livePackagingItem(run: PackagingRun | null, variant?: EffectTemp
     ? item : null;
 }
 
-/**
- * A run that is no longer queued or running has already produced (or attempted) a package, so the
- * action is a rerun — including a partial or failed one, where running it again is the only way
- * forward. Keying this on `ready` alone left the button reading "智能成片包装" after a finished run,
- * so a user whose run had ended (and partly failed) could not tell packaging had run at all.
- */
-export function packagingActionText(ready: boolean, status: PackagingRun['status'] | null) {
-  const attempted = status !== null && !['QUEUED', 'RUNNING'].includes(status);
-  return ready || attempted ? '重新成片包装' : '智能成片包装';
+/** An unsuccessful attempt alone does not turn first packaging into branch-creating repackaging. */
+export function packagingActionText(hasCommittedPackage: boolean, status: PackagingRun['status'] | null) {
+  return hasCommittedPackage || status === 'COMPLETED' || status === 'PARTIAL'
+    ? '重新成片包装' : '智能成片包装';
 }
 
 export function packagingItemStageState(item: PackagingItem, stage: PackagingStage) {

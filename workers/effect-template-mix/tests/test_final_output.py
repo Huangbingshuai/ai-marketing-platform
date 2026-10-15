@@ -1,6 +1,7 @@
 import array
 import asyncio
 import math
+import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -125,9 +126,9 @@ def test_caption_box_moves_and_wraps_one_event_with_fixed_font_size() -> None:
     assert line.count('\\N') >= 1 and line.endswith('抢购')
     # Legacy editor scale metadata must not change the fixed packaged subtitle size.
     big = [row for row in captions_ass(caption, 720, 1280, 1, {'a1': {'x': .5, 'y': .5, 'width': .9, 'scale': 2}}).splitlines() if row.startswith('Dialogue')][0]
-    assert '{\\fs16}' in big and ',640,,' in big
+    assert '{\\fs57}' in big and ',640,,' in big
     style = next(line for line in captions_ass(caption, 1920, 1080, 1).splitlines() if line.startswith('Style: Default'))
-    assert style.startswith('Style: Default,Noto Sans CJK SC,16,')
+    assert style.startswith('Style: Default,Noto Sans CJK SC,48,')
 
 
 def test_shared_caption_font_size_applies_to_every_caption_and_style() -> None:
@@ -139,11 +140,38 @@ def test_shared_caption_font_size_applies_to_every_caption_and_style() -> None:
     ass = captions_ass(captions, 720, 960, 2, boxes, caption_font_size=24)
     style = next(line for line in ass.splitlines() if line.startswith('Style: Default'))
     events = [line for line in ass.splitlines() if line.startswith('Dialogue:')]
-    assert style.startswith('Style: Default,Noto Sans CJK SC,24,')
+    assert style.startswith('Style: Default,Noto Sans CJK SC,64,')
     assert len(events) == 2
     assert all('Default' in line for line in events)
-    assert '{\\fs24}' in events[0]
-    assert ',0,0,0,,' in events[1]  # no box still inherits the same 24 px default style
+    assert '{\\fs64}' in events[0]
+    assert ',0,0,0,,' in events[1]  # no box inherits the same scaled default style
+
+
+def test_caption_reference_height_matches_shared_contract() -> None:
+    contract = (Path(__file__).resolve().parents[3] / 'packages/contracts/src/effect-template-mix-packaging.ts').read_text(encoding='utf-8')
+    match = re.search(r'PACKAGING_CAPTION_REFERENCE_HEIGHT = (\d+);', contract)
+    assert match and int(match[1]) == final_output.PACKAGING_CAPTION_REFERENCE_HEIGHT
+
+
+@pytest.mark.parametrize('height', [180, 360, 480, 720, 960, 1080, 1280, 1440, 2160, 3840])
+@pytest.mark.parametrize(('logical_size', 'expected_size'), [(16, 16), (24, 24), (1, 8), (100, 48)])
+def test_caption_relative_size_is_resolution_independent(height: int, logical_size: int, expected_size: int) -> None:
+    ass = captions_ass([{'text': '画布字幕', 'start': 0, 'end': 1}], round(height * .75), height, 1,
+                       caption_font_size=logical_size)
+    style = next(line for line in ass.splitlines() if line.startswith('Style: Default'))
+    size = int(style.split(',')[2])
+    assert size == round(expected_size * height / 360)
+    assert abs(size / height - expected_size / 360) <= .5 / height
+
+
+def test_overlapping_caption_lanes_scale_with_the_font() -> None:
+    captions = [{'id': 'a', 'text': '甲', 'start': 0, 'end': 1},
+                {'id': 'b', 'text': '乙', 'start': 0, 'end': 1}]
+    for height in [360, 960, 2160]:
+        ass = captions_ass(captions, round(height * .75), height, 1)
+        events = [line for line in ass.splitlines() if line.startswith('Dialogue:')]
+        bottom = int(events[1].split(',')[7])
+        assert bottom == round(height * .03) + round(28 * height / 360)
 
 
 def test_caption_without_a_box_keeps_the_pipeline_style_byte_for_byte() -> None:
@@ -161,6 +189,31 @@ def test_caption_box_never_leaves_the_frame() -> None:
     left, right, bottom = (int(value) for value in line.split(',,')[1].split(',')[:3])
     assert left == 0 and right == 0  # a full-width box is pinned inside the frame
     assert 0 <= bottom <= 1280
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real subtitle rendering')
+@pytest.mark.parametrize(('ratio', 'resolution', 'with_box'), [
+    ('3:4', '720p', False), ('16:9', '720p', True), ('9:16', '1080p', False),
+])
+async def test_burned_caption_has_readable_relative_height(
+    tmp_path: Path, ratio: str, resolution: str, with_box: bool,
+) -> None:
+    # Real H.264 + libass, not just an ASS string assertion. No supplier calls or project data.
+    caption = {'id': 'caption', 'text': '字幕清晰可读', 'start': 0, 'end': .5}
+    packaging: dict[str, Any] = {'captions': [caption], 'voices': {}}
+    if with_box:
+        packaging['captionBoxes'] = {'caption': {'x': .5, 'y': .03, 'width': .9, 'scale': 1}}
+    output = await render({'timeline': {'duration': .5, 'clips': []}, 'aspectRatio': ratio, 'originalVolume': 0,
+                           'resolution': resolution, 'frameRate': 30, 'packaging': packaging},
+                          {}, tmp_path, AsyncMock())
+    width, height = final_output.output_size(ratio, resolution)
+    frame = await command('ffmpeg', ['-v', 'error', '-i', str(output), '-frames:v', '1',
+                                   '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1'])
+    assert len(frame) == width * height
+    rows = [i // width for i, value in enumerate(frame) if value > 160]
+    assert rows, 'The encoded subtitle must actually be visible'
+    glyph_height = max(rows) - min(rows) + 1
+    assert .02 <= glyph_height / height <= .06
 
 
 def test_stream_duration_falls_back_to_duration_ticks() -> None:

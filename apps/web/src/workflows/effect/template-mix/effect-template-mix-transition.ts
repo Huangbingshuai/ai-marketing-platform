@@ -8,6 +8,22 @@ export type TransitionPresentation = {
 
 const clamp = (value: number): number => Math.max(0, Math.min(1, value));
 
+/** Sample the same deterministic presentation used for scrubbing. All effects,
+ * including nonlinear masks/overlays, run independently of Vue's UI tick. */
+export const effectTemplateMixTransitionPlaybackKeyframes = (
+  transition: EffectTemplateMixTransition,
+): { outgoing: Keyframe[]; incoming: Keyframe[]; overlay: Keyframe[] } => {
+  const frames = { outgoing: [] as Keyframe[], incoming: [] as Keyframe[], overlay: [] as Keyframe[] };
+  for (let index = 0; index <= 60; index += 1) {
+    const offset = index / 60;
+    const presentation = effectTemplateMixTransitionPresentation(transition, offset);
+    for (const layer of ['outgoing', 'incoming', 'overlay'] as const) {
+      frames[layer].push({ ...presentation[layer], offset });
+    }
+  }
+  return frames;
+};
+
 /**
  * Playback-only compositor keyframes for a dissolve. The editor's Vue state is
  * intentionally throttled while playing, so the incoming layer must animate

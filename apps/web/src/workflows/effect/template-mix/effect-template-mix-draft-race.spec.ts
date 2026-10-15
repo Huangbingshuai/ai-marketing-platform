@@ -2,7 +2,7 @@ import type { EffectTemplateMixDraft } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 import page from './EffectTemplateMixNodePage.vue?raw';
 import { createEffectTemplateMixEntry } from './effect-template-mix-state';
-import { MixDraftRaceGuard, MixWorkspaceRevisionFence, rebaseMixDraft, saveLatestMixDraft } from './effect-template-mix-draft-race';
+import { MixDraftRaceGuard, MixWorkspaceRevisionFence, rebaseMixDraft, sameEditableMixTemplate, saveLatestMixDraft } from './effect-template-mix-draft-race';
 
 const draft = (): EffectTemplateMixDraft => ({
   schemaVersion: 1, activeTemplateId: 'a',
@@ -44,7 +44,29 @@ describe('monotonic scoped workspace installation', () => {
     expect(page).toContain('workspaceRevisionFence.isCurrent(`${projectId}:${workflowRunId}`, data.draftRevision)');
     // No caller can accidentally install a response under whichever Run the page switched to.
     for (const call of page.matchAll(/installWorkspaceData\(([^;]+)\);/g))
-      expect(call[1]).toMatch(/, (scope|`\$\{project(Id)?\}:\$\{workflow(RunId)?\}`)/);
+      expect(call[1]).toMatch(/, (scope|cachedNavigationScope|`\$\{project(Id)?\}:\$\{workflow(RunId)?\}`)/);
+  });
+});
+
+describe('confirmed deletion target comparison', () => {
+  it('ignores computed locks but keeps configuration, film tracks and manual roles authoritative', () => {
+    const original = draft().templates[0]!;
+    const remote = copy(original);
+    remote.aiFillLocked = true;
+    remote.packagingLocked = true;
+    remote.needsAiFill = true;
+    remote.filledTemplateHash = 'computed';
+    expect(sameEditableMixTemplate(original, remote)).toBe(true);
+    remote.workspace.template.name = 'new name';
+    expect(sameEditableMixTemplate(original, remote)).toBe(false);
+    const roles = copy(original);
+    roles.materialRoleOverrides = { material: 'HOOK' };
+    expect(sameEditableMixTemplate(original, roles)).toBe(false);
+    expect(sameEditableMixTemplate(original, undefined)).toBe(false);
+    expect(sameEditableMixTemplate(undefined, undefined)).toBe(false);
+    const film = copy(original);
+    film.workspace.editVersion += 1;
+    expect(sameEditableMixTemplate(original, film)).toBe(false);
   });
 });
 

@@ -2165,7 +2165,7 @@ const outputBlocks = (
     blocks.push(
       ...materialTaskBlocks(run, metadata),
       creativePlanBlock(metadata),
-      creativeSampleBlock('真实创意候选样例', samples, samples.length),
+      creativeSampleBlock('创意候选样例', samples, samples.length),
     );
   } else if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE') {
     const accepted = samples.filter((item) => item.outcome === 'ACCEPTED');
@@ -2403,7 +2403,7 @@ const buildDetailSections = (
             : '本次输出',
       summary:
         status === 'PENDING'
-          ? (expectedOutputSummary[nodeId] ?? '该节点执行后将在这里展示真实业务结果。')
+          ? (expectedOutputSummary[nodeId] ?? '该节点执行后将在这里展示业务结果。')
           : nodeId === 'RESULT_SAVE' && outputHasContent
             ? '结果已保存为节点草稿；只有完成校验后才会提交 Prompt 工作副本。'
             : outputHasContent

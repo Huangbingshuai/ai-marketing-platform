@@ -82,6 +82,7 @@ function installation() {
     committedVersions: reactive({}),
     classificationPools: ref([]),
     aiRuns: ref([]),
+    fillResultHandoffs: ref([]), retainFillResult: vi.fn(), mixFillResultReady: vi.fn(() => false),
     templateDirectory: ref({ workspaces: {} }),
     normalizeVariantVideoLanes: vi.fn(),
     clearDetachedTransitions: vi.fn(() => false),

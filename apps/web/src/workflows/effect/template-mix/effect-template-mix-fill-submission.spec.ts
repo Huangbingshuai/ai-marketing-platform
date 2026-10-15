@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ref } from 'vue';
 import { ScriptTarget, transpileModule } from 'typescript';
 import page from './EffectTemplateMixNodePage.vue?raw';
+import { MixDraftRaceGuard } from './effect-template-mix-draft-race';
+import { readMixWorkspaceWithDeadline } from './effect-template-mix-workspace-load';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -38,6 +40,10 @@ function harness() {
     aiRuns: ref<unknown[]>([]),
     pollAiRun: vi.fn(),
     loadEffectTemplateMixWorkspace: vi.fn().mockResolvedValue({ data: {} }),
+    readMixWorkspaceWithDeadline,
+    draftRace: new MixDraftRaceGuard(),
+    saveState: ref('saved'),
+    pendingSave: undefined,
     installWorkspaceData: vi.fn(() => false),
     load: vi.fn(),
     showNotice: vi.fn(),
@@ -90,6 +96,8 @@ describe('smart-fill submission feedback precedes network waits', () => {
     expect(c.aiRuns.value).toEqual([run]);
     expect(c.pollAiRun).toHaveBeenCalledExactlyOnceWith('fill');
     expect(c.installWorkspaceData).not.toHaveBeenCalled();
+    expect(c.fillStartPending.value).toBe(false);
+    expect(c.mutating.value).toBe(false);
     workspace.resolve({ data: {} });
     await task;
     expect(c.fillStartPending.value).toBe(false);
@@ -106,6 +114,59 @@ describe('smart-fill submission feedback precedes network waits', () => {
       expect.stringContaining('智能填充任务已开始'),
       'warning',
     );
+  });
+
+  it('does not install a delayed workspace over edits made after task acceptance', async () => {
+    const { c, start } = harness();
+    const workspace = deferred<{ data: object }>();
+    c.loadEffectTemplateMixWorkspace.mockReturnValue(workspace.promise);
+    const task = start(null);
+    await vi.waitFor(() => expect(c.pollAiRun).toHaveBeenCalledOnce());
+    c.draftRace.changed();
+    workspace.resolve({ data: {} });
+    await task;
+    expect(c.installWorkspaceData).not.toHaveBeenCalled();
+  });
+
+  it('bounds a stalled post-acceptance read without losing or restarting the task', async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, run, start } = harness();
+      c.loadEffectTemplateMixWorkspace.mockReturnValue(new Promise(() => {}));
+      const task = start(null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(c.fillStartPending.value).toBe(false);
+      expect(c.mutating.value).toBe(false);
+      await vi.advanceTimersByTimeAsync(30_001);
+      await task;
+      expect(c.aiRuns.value).toEqual([run]);
+      expect(c.createEffectTemplateMixAiRun).toHaveBeenCalledOnce();
+      expect(c.pollAiRun).toHaveBeenCalledOnce();
+      expect(c.load).not.toHaveBeenCalled();
+      expect(c.loadEffectTemplateMixWorkspace.mock.calls[0]?.[2].aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not release a newer submission lock when an old workspace read settles', async () => {
+    const { c, start } = harness();
+    const workspace = deferred<{ data: object }>();
+    c.loadEffectTemplateMixWorkspace.mockReturnValue(workspace.promise);
+    const oldTask = start(null);
+    await vi.waitFor(() => expect(c.pollAiRun).toHaveBeenCalledOnce());
+    c.activeTemplateId.value = 'other-template';
+    const accepted = deferred<never>();
+    c.createEffectTemplateMixAiRun.mockReturnValue(accepted.promise);
+    const newTask = start(null);
+    await vi.waitFor(() => expect(c.createEffectTemplateMixAiRun).toHaveBeenCalledTimes(2));
+    workspace.resolve({ data: {} });
+    await oldTask;
+    expect(c.fillStartPending.value).toBe(true);
+    expect(c.mutating.value).toBe(true);
+    accepted.resolve({ data: { ...harness().run, templateId: 'other-template' } } as never);
+    await newTask;
+    expect(c.fillStartPending.value).toBe(false);
   });
 
   it('does not roll polled progress back to the creation receipt after a slow workspace read', async () => {

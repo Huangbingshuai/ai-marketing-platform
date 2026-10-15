@@ -1,23 +1,24 @@
 <script setup lang="ts">
+import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import type {
   EffectImportProduct,
   EffectPromptFragmentType,
   EffectSegmentRenderBatch,
   EffectSegmentRenderExportFormat,
   EffectSegmentRenderSettings,
-  SeedanceRatio,
-  SeedanceResolution,
+  EffectSegmentRenderPromptInput,
+  EffectSegmentRenderPromptSettings,
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
-  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_SEGMENT_IMPORT_DIMENSION_LIMITS,
   resolveEffectImportedRenderSettings,
+  effectPromptRenderSettingsIssues,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeFooter } from '@ai-marketing/ui';
+import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   AlertCircle,
   Check,
@@ -53,6 +54,7 @@ import {
 
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import { confirmDiscardEffectEdit } from '../shared/effect-edit-session';
+import { flushEffectNodeNavigation } from '../shared/effect-node-navigation';
 import {
   beginEffectWorkflowNodeEdit,
   cancelEffectWorkflowNodeEdit,
@@ -61,6 +63,8 @@ import {
 import { EFFECT_PROMPT_PAGE_SIZE_OPTIONS } from '../prompt-generation/effect-prompt-generation-state';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import EffectSegmentRenderSourcePrompt from './components/EffectSegmentRenderSourcePrompt.vue';
+import EffectPromptRenderConfigurationDialog from './components/EffectPromptRenderConfigurationDialog.vue';
+import { effectSegmentRenderModels as capabilityOptions, type RenderModelOption } from './effect-segment-render-models';
 import {
   decideEffectSegmentRenderRepair,
   deleteEffectSegmentRenderMaterials,
@@ -68,6 +72,7 @@ import {
   exportEffectSegmentRenderMaterials,
   getEffectSegmentRenderTaskContent,
   getEffectSegmentRenderBatch,
+  getEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
   refreshEffectSegmentRenderBatch,
   saveEffectSegmentRenderSettings,
@@ -77,6 +82,9 @@ import {
 } from './api/effect-segment-render.api';
 import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
+  effectSegmentRenderAdditionalPurposes,
+  effectSegmentRenderCardTitle,
+  effectSegmentRenderCurrentProductId,
   effectSegmentRenderPage,
   effectSegmentRepairUnavailableReason,
   effectSegmentRenderPageCount,
@@ -94,6 +102,7 @@ import {
   type EffectSegmentRenderWorkspace,
 } from './effect-segment-render-state';
 import { loadEffectSegmentRenderWorkspaceSnapshot } from './services/effect-segment-render-workspace.service';
+import { effectSegmentRenderProgress } from './effect-segment-render-progress';
 import {
   createEffectSegmentImportBatch,
   importRecognitionBusy,
@@ -118,10 +127,10 @@ const props = defineProps<{
   editing?: boolean;
 }>();
 
-const emit = defineEmits<{ back: []; next: []; 'workflow-run-change': [workflowRunId: string] }>();
+const emit = defineEmits<{ back: []; next: []; 'workflow-run-change': [workflowRunId: string, settled?: () => void] }>();
 
 type PageStatus = 'empty' | 'error' | 'loading' | 'success';
-type Operation = 'batch' | 'delete' | 'export' | 'import' | 'repair' | 'retry' | 'settings' | null;
+type Operation = 'prepare' | 'batch' | 'delete' | 'export' | 'import' | 'repair' | 'retry' | 'settings' | null;
 type FragmentFilter = 'ABNORMAL' | 'ALL' | EffectPromptFragmentType;
 type TransferPanel = 'export' | 'import' | null;
 type ExportScope = 'ALL_TASKS' | 'FILTERED' | 'SELECTED';
@@ -139,7 +148,33 @@ const page = ref(1);
 const pageSize = ref<number>(EFFECT_SEGMENT_RENDER_PAGE_SIZE);
 const operation = ref<Operation>(null);
 const validated = ref(false);
-const editTransitioning = ref(false);
+const editRequestPending = ref(false);
+const runSynchronizing = ref(false);
+let runSynchronization: Promise<void> | null = null;
+let synchronizationGeneration = 0;
+let expectedSynchronizedRunId: string | null = null;
+const workspaceSynchronizing = ref(false);
+const editTransitioning = computed(() => editRequestPending.value || runSynchronizing.value || workspaceSynchronizing.value);
+const synchronizeWorkflowRun = (workflowRunId: string): Promise<void> => {
+  const generation = ++synchronizationGeneration;
+  expectedSynchronizedRunId = workflowRunId;
+  runSynchronizing.value = true;
+  const pending = new Promise<void>((resolve) => {
+    emit('workflow-run-change', workflowRunId, () => {
+      if (generation === synchronizationGeneration) {
+        runSynchronizing.value = false;
+        expectedSynchronizedRunId = null;
+      }
+      resolve();
+      if (nodeActive) void pollBatch();
+    });
+  });
+  runSynchronization = pending;
+  void pending.finally(() => {
+    if (runSynchronization === pending) runSynchronization = null;
+  });
+  return pending;
+};
 const notice = ref<Notice | null>(null);
 const transferPanel = ref<TransferPanel>(null);
 const selectionMode = ref(false);
@@ -180,58 +215,22 @@ const renderSettings = ref<EffectSegmentRenderSettings>({
   ...DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
 });
 const renderSettingsRevision = ref<number | null>(null);
+const promptConfiguration = ref<{ inputs: EffectSegmentRenderPromptInput[]; defaults: EffectSegmentRenderSettings } | null>(null);
+let resolvePromptConfiguration: ((settings: EffectSegmentRenderPromptSettings[] | null) => void) | null = null;
+const settlePromptConfiguration = (settings: EffectSegmentRenderPromptSettings[] | null): void => {
+  const resolve = resolvePromptConfiguration;
+  resolvePromptConfiguration = null;
+  promptConfiguration.value = null;
+  resolve?.(settings);
+};
 const creativeCoreByPromptId = ref<Record<string, string>>({});
 const promptDetailsByPromptId = ref<Record<string, EffectSegmentRenderPromptDetails>>({});
 const creativeCoreSourceKey = ref('');
 
-type RenderModelOption = {
-  value: EffectSegmentRenderSettings['capabilityKey'];
-  label: string;
-  ratios: readonly SeedanceRatio[];
-  resolutions: readonly SeedanceResolution[];
-  defaultRatio: SeedanceRatio;
-  defaultResolution: SeedanceResolution;
-};
-
-const capabilityOptions = [
-  {
-    value: 'SEEDANCE_1_5_PRO',
-    label: 'Doubao-Seedance-2.5',
-    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.ratios,
-    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.resolutions,
-    defaultRatio: 'adaptive',
-    defaultResolution: '720p',
-  },
-  {
-    value: 'SEEDANCE_2_0',
-    label: 'Doubao-Seedance-2.0',
-    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0.ratios,
-    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0.resolutions,
-    defaultRatio: 'adaptive',
-    defaultResolution: '720p',
-  },
-  {
-    value: 'SEEDANCE_1_0',
-    label: 'Doubao-Seedance-2.0-mini',
-    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_0.ratios,
-    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_0.resolutions,
-    defaultRatio: 'adaptive',
-    defaultResolution: '720p',
-  },
-  {
-    value: 'SEEDANCE_2_0_FAST',
-    label: 'Doubao-Seedance-2.0-fast',
-    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0_FAST.ratios,
-    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0_FAST.resolutions,
-    defaultRatio: 'adaptive',
-    defaultResolution: '720p',
-  },
-] as const satisfies readonly RenderModelOption[];
-
 const selectedCapability = computed(
   () =>
     capabilityOptions.find(({ value }) => value === renderSettings.value.capabilityKey) ??
-    capabilityOptions[1],
+    capabilityOptions[1]!,
 );
 const ratioOptions = computed(() =>
   selectedCapability.value.ratios.map((value) => ({
@@ -350,10 +349,18 @@ const hasConfirmedRender = computed(
     workspace.value?.workingArtifactRevision !== null &&
     workspace.value?.workingArtifactRevision !== undefined,
 );
-const canEditMaterials = computed(() => Boolean(props.editing || !hasConfirmedRender.value));
+const canEditMaterials = computed(() => !editTransitioning.value && !workspace.value?.autoCommitPending && Boolean(props.editing || !hasConfirmedRender.value));
 const batchActive = computed(
   () => workspace.value?.batchStatus === 'QUEUED' || workspace.value?.batchStatus === 'RUNNING',
 );
+const creatingTaskCount = ref<number | null>(null);
+const creatingLocalUpdate = ref(false);
+const updatingProgress = computed(() => creatingLocalUpdate.value || workspace.value?.autoCommitPending ||
+  Boolean(workspace.value?.progressSynchronizedCount || workspace.value?.progressRemovedCount));
+const renderProgress = computed(() => effectSegmentRenderProgress(workspace.value, creatingTaskCount.value));
+const batchProgress = computed(() => renderProgress.value.progress);
+const batchProgressDetail = computed(() => creatingTaskCount.value !== null && creatingLocalUpdate.value
+  ? `正在创建更新，已完成 0/${creatingTaskCount.value} 项` : renderProgress.value.detail);
 const promptCount = computed(() => workspace.value?.promptCount ?? 0);
 const missingPromptCount = computed(() =>
   workspace.value?.pendingPromptIds?.length ?? Math.max(0, promptCount.value - promptTasks.value.length),
@@ -426,9 +433,7 @@ const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
   !(task.needsUpdate && workspace.value?.refreshScope === 'FULL');
 
 const creativeCoreForTask = (task: EffectSegmentRenderTask): string =>
-  task.independentImport
-    ? task.creativeCore || task.promptText
-    : (cardCreativeCoreByPromptId.value[task.promptId] ?? task.creativeCore ?? '创意方向待同步');
+  effectSegmentRenderCardTitle(task, cardCreativeCoreByPromptId.value[task.promptId]);
 
 const detailsForTask = (task: EffectSegmentRenderTask) => {
   const confirmedDetails = cardPromptDetailsByPromptId.value[task.promptId];
@@ -655,7 +660,7 @@ const canStartBatch = computed(
   () =>
     Boolean(workspace.value?.promptReady && workspace.value.promptArtifactRevision) &&
     (promptCount.value > 0 || workspace.value?.refreshScope === 'SELECTIVE') &&
-    !batchActive.value,
+    !batchActive.value && !editTransitioning.value,
 );
 const tasksNeedingUpdate = computed(() => tasks.value.filter((task) => task.needsUpdate));
 const incrementalTaskCount = computed(
@@ -663,11 +668,11 @@ const incrementalTaskCount = computed(
 );
 const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
-  if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
+  if (batchActive.value) return `${updatingProgress.value ? '更新中' : '渲染中'} ${renderProgress.value.completed}/${renderProgress.value.total}`;
   if (!workspace.value?.promptReady) return '等待上游 Prompt 生成可用版本';
   if (workspace.value?.stale && workspace.value.refreshScope === 'SELECTIVE')
     return `局部更新（${incrementalTaskCount.value}）`;
-  if (workspace.value?.stale) return '按最新 Prompt 重新渲染';
+  if (workspace.value?.stale) return '重新渲染';
   if (hasBatch.value) return '重新渲染';
   return `开始批量渲染（${promptCount.value}）`;
 });
@@ -712,7 +717,7 @@ const needsPolling = (nextWorkspace: EffectSegmentRenderWorkspace): boolean =>
 const pollBatch = async (): Promise<void> => {
   const current = workspace.value;
   if (!current?.batchId || !nodeActive || pollController || current.workflowRunId !== props.workflowRunId ||
-    current.productId !== currentProductId.value) return;
+    current.productId !== currentProductId.value || workspaceSynchronizing.value || runSynchronizing.value) return;
   if (operation.value || document.visibilityState === 'hidden') {
     schedulePolling(current);
     return;
@@ -762,7 +767,7 @@ const schedulePolling = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = undefined;
   if (nodeActive && nextWorkspace.batchId)
-    pollTimer = setTimeout(() => void pollBatch(), needsPolling(nextWorkspace) ? 3000 : 10000);
+    pollTimer = setTimeout(() => { pollTimer = undefined; void pollBatch(); }, needsPolling(nextWorkspace) ? 3000 : 10000);
 };
 
 const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
@@ -780,14 +785,19 @@ const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
     (previousStatus === 'QUEUED' || previousStatus === 'RUNNING' || previousStatus === 'PARTIAL') &&
     nextWorkspace.batchStatus === 'COMPLETED'
   )
-    showNotice('全部视频片段已完成并进入素材池');
+    showNotice(nextWorkspace.committedWorkflowRunId || nextWorkspace.commitStatus === 'COMMITTED'
+      ? '视频片段已完成并保存到素材池'
+      : nextWorkspace.autoCommitPending ? '视频片段已完成，正在校验保存'
+      : '视频片段已完成，请保存修改');
   validated.value = nextWorkspace.commitStatus === 'COMMITTED' && !nextWorkspace.stale;
-  if (
+  if (nextWorkspace.committedWorkflowRunId && nextWorkspace.committedWorkflowRunId !== props.workflowRunId)
+    void synchronizeWorkflowRun(nextWorkspace.committedWorkflowRunId);
+  else if (
     props.editing &&
     previousCommitStatus !== 'COMMITTED' &&
     nextWorkspace.commitStatus === 'COMMITTED'
   )
-    emit('workflow-run-change', props.workflowRunId);
+    void synchronizeWorkflowRun(props.workflowRunId);
   schedulePolling(nextWorkspace);
 };
 
@@ -835,6 +845,7 @@ const handleRepairVideoMetadata = (event: Event): void => {
 };
 
 const closeAllDialogs = (restoreFocus = false): void => {
+  settlePromptConfiguration(null);
   clearPreview();
   previewTask.value = null;
   previewVariant.value = 'ACTIVE';
@@ -867,12 +878,30 @@ const cancelImport = (): void => {
 
 const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
   if (!nodeActive) return;
+  // KeepAlive skips the watcher while away. A mix/fill branch can remap product IDs
+  // during that time, so activation must resolve the current scope before reading.
+  const nextProductId = effectSegmentRenderCurrentProductId(props.products, currentProductId.value);
+  if (nextProductId !== currentProductId.value) {
+    skipNextProductLoad = true;
+    currentProductId.value = nextProductId;
+  }
   const product = currentProduct.value;
   const generation = ++loadGeneration;
   loadController?.abort();
   operationController?.abort();
+  operationController = null;
   stopPolling();
   operation.value = null;
+  if (showLoading) creatingTaskCount.value = null;
+  const scopeChanged = workspace.value?.workflowRunId !== props.workflowRunId ||
+    workspace.value?.productId !== product?.id;
+  workspaceSynchronizing.value = showLoading || scopeChanged;
+  if (!showLoading && scopeChanged) {
+    closeAllDialogs(false);
+    closeTransferPanel(false);
+    imports.dispose();
+    selectedTaskIds.value = new Set();
+  }
   if (showLoading) {
     closeAllDialogs(false);
     closeTransferPanel(false);
@@ -885,13 +914,16 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
     includeCompatiblePurposes.value = false;
   }
   validated.value = false;
-  creativeCoreByPromptId.value = {};
-  promptDetailsByPromptId.value = {};
-  creativeCoreSourceKey.value = '';
+  if (showLoading) {
+    creativeCoreByPromptId.value = {};
+    promptDetailsByPromptId.value = {};
+    creativeCoreSourceKey.value = '';
+  }
   if (showLoading) cardVideoReadyKeys.value = new Set();
   if (!product || !props.projectId || !props.workflowRunId) {
     workspace.value = null;
     pageStatus.value = 'empty';
+    workspaceSynchronizing.value = false;
     return;
   }
   if (showLoading || !workspace.value) pageStatus.value = 'loading';
@@ -899,26 +931,32 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
   const controller = new AbortController();
   loadController = controller;
   try {
-    const snapshot = await loadEffectSegmentRenderWorkspaceSnapshot(
-      {
-        projectId: props.projectId,
-        workflowRunId: props.workflowRunId,
-        productId: product.id,
-      },
-      controller.signal,
-    );
+    const [snapshot, artifactResponse] = await Promise.all([
+      loadEffectSegmentRenderWorkspaceSnapshot(
+        {
+          projectId: props.projectId,
+          workflowRunId: props.workflowRunId,
+          productId: product.id,
+        },
+        controller.signal,
+      ),
+      listWorkingArtifacts(
+        props.projectId,
+        { workflowRunId: props.workflowRunId, nodeId: 'PROMPT_GENERATION' },
+        controller.signal,
+      ).catch((error: unknown) => {
+        if (isAbortError(error)) throw error;
+        return null;
+      }),
+    ]);
     if (generation !== loadGeneration || controller.signal.aborted) return;
     renderSettings.value = { ...snapshot.data.settings };
     renderSettingsRevision.value = snapshot.data.settingsRevision;
     applyWorkspace(effectSegmentRenderWorkspaceFromApi(snapshot.data));
+    creatingTaskCount.value = null;
+    creatingLocalUpdate.value = false;
     pageStatus.value = 'success';
-    try {
-      const artifactResponse = await listWorkingArtifacts(
-        props.projectId,
-        { workflowRunId: props.workflowRunId, nodeId: 'PROMPT_GENERATION' },
-        controller.signal,
-      );
-      if (generation !== loadGeneration || controller.signal.aborted) return;
+    if (artifactResponse) {
       const promptArtifact = artifactResponse.data.items.find(
         (artifact) => artifact.artifactKey === `prompt-batch:${product.id}`,
       );
@@ -927,8 +965,7 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
         promptDetailsByPromptId.value = effectSegmentRenderPromptDetailsMap(promptArtifact.payload);
         creativeCoreSourceKey.value = `${promptArtifact.id}:${promptArtifact.revision}`;
       }
-    } catch (error) {
-      if (isAbortError(error) || generation !== loadGeneration) return;
+    } else {
       creativeCoreByPromptId.value = {};
       promptDetailsByPromptId.value = {};
       creativeCoreSourceKey.value = '';
@@ -936,15 +973,31 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
     if (snapshot.prefetched) {
       workspaceRevalidationTimer = setTimeout(() => {
         workspaceRevalidationTimer = undefined;
-        if (nodeActive && generation === loadGeneration) void loadCurrentWorkspace(false);
+        if (nodeActive && generation === loadGeneration && !operation.value && !editTransitioning.value)
+          void loadCurrentWorkspace(false);
       }, 600);
     }
   } catch (error) {
     if (isAbortError(error) || generation !== loadGeneration) return;
+    if (!showLoading && workspace.value?.workflowRunId === props.workflowRunId &&
+      workspace.value.productId === product.id) {
+      // Recovery/auto-publication can conflict while a callback or another poll commits.
+      // Keep the last confirmed view; a failed read must not erase cards or stop recovery.
+      showNotice(safeMessage(error, '工作区同步暂未完成，将自动重试'), 'warning');
+      workspaceRevalidationTimer = setTimeout(() => {
+        workspaceRevalidationTimer = undefined;
+        if (nodeActive && generation === loadGeneration && !operation.value && !editTransitioning.value)
+          void loadCurrentWorkspace(false);
+      }, 5000);
+      return;
+    }
     pageStatus.value = 'error';
     loadError.value = safeMessage(error, '渲染工作区加载失败');
   } finally {
-    if (loadController === controller) loadController = null;
+    if (loadController === controller) {
+      loadController = null;
+      workspaceSynchronizing.value = false;
+    }
   }
 };
 
@@ -959,7 +1012,7 @@ const updateRenderSetting = async <Key extends keyof EffectSegmentRenderSettings
   if (key === 'capabilityKey') {
     const capability: RenderModelOption =
       capabilityOptions.find((option) => option.value === next.capabilityKey) ??
-      capabilityOptions[1];
+      capabilityOptions[1]!;
     if (!capability.ratios.includes(next.ratio)) next.ratio = capability.defaultRatio;
     if (!capability.resolutions.includes(next.resolution))
       next.resolution = capability.defaultResolution;
@@ -988,13 +1041,9 @@ watch(
   [() => props.projectId, () => props.workflowRunId, activeProductSignature],
   () => {
     if (!nodeActive) return;
-    if (!activeProducts.value.some((product) => product.id === currentProductId.value)) {
-      skipNextProductLoad = true;
-      currentProductId.value = activeProducts.value[0]?.id ?? '';
-      void loadCurrentWorkspace();
-      return;
-    }
-    void loadCurrentWorkspace();
+    const preserveView = runSynchronizing.value && expectedSynchronizedRunId === props.workflowRunId &&
+      workspace.value?.projectId === props.projectId;
+    void loadCurrentWorkspace(!preserveView);
   },
   { immediate: true },
 );
@@ -1076,51 +1125,117 @@ const changePageSize = (): void => {
 
 const startBatch = async (forceFull = false): Promise<void> => {
   const product = currentProduct.value;
-  const current = workspace.value;
+  let current = workspace.value;
   if (!product || operation.value || !current || !canStartBatch.value) return;
-  const selectiveRefresh = !forceFull && current.stale && current.refreshScope === 'SELECTIVE';
-  const selectedTaskIds = selectiveRefresh ? tasksNeedingUpdate.value.map(({ id }) => id) : [];
-  const newPromptCount = selectiveRefresh ? (current.pendingPromptIds?.length ?? 0) : 0;
-  const renderCount = selectiveRefresh ? tasksNeedingUpdate.value.filter((task) => !task.updateKind || task.updateKind === 'RENDER').length : 0;
-  const metadataCount = selectiveRefresh ? tasksNeedingUpdate.value.filter((task) => task.updateKind === 'METADATA').length : 0;
-  const removedCount = selectiveRefresh ? (current.pendingRemovedTaskIds?.length ?? 0) : 0;
-  const updateCount = selectedTaskIds.length + newPromptCount;
-  if (selectiveRefresh && !updateCount) return;
-  const rerendering = hasBatch.value;
-  if (
-    !(await requestActionConfirmation(
-      selectiveRefresh
-        ? {
-            eyebrow: '按最新 Prompt 定向更新',
-            title: `重渲染 ${renderCount} 个，新增 ${newPromptCount} 个，同步信息 ${metadataCount} 个，移除 ${removedCount} 个？`,
-            description: `其余 ${Math.max(0, current.tasks.length - selectedTaskIds.length)} 个素材保持不变。更新结果先保留在编辑草稿，保存修改后才影响下游；历史文件和原分支保留。本次产生 ${renderCount + newPromptCount} 个视频生成任务，信息同步和删除不产生生成费用。`,
-            confirmLabel: `局部更新 ${updateCount} 个素材`,
-            tone: 'warning',
-          }
-        : rerendering
-          ? {
-              eyebrow: current.stale ? '按最新 Prompt 重新渲染' : '重新渲染全部片段',
-              title: `重新生成全部 ${promptCount.value} 个视频素材片段？`,
-              description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会创建隔离的新批次、提交 ${promptCount.value} 个真实 Seedance 任务并再次产生供应商费用。全部成功且校验通过后自动保存为新版本；原版本保持可回溯。`,
-              confirmLabel: `重新提交 ${promptCount.value} 个真实任务`,
-              tone: 'warning',
-            }
-          : {
-              eyebrow: '创建视频渲染批次',
-              title: `开始生成 ${promptCount.value} 个真实视频素材片段？`,
-              description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会提交 ${promptCount.value} 个真实 Seedance 任务并产生供应商费用。`,
-              confirmLabel: `提交 ${promptCount.value} 个真实任务`,
-              tone: 'warning',
-            },
-    ))
-  )
-    return;
+  const startingTrigger =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const context = {
+    projectId: props.projectId,
+    workflowRunId: props.workflowRunId,
+    productId: product.id,
+  };
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
-  operation.value = 'batch';
-  validated.value = false;
+  operation.value = 'prepare';
+  const inScope = () =>
+    !controller.signal.aborted &&
+    props.projectId === context.projectId &&
+    props.workflowRunId === context.workflowRunId &&
+    currentProductId.value === context.productId;
   try {
+    // Read authoritative Prompt summaries and saved defaults before either confirmation.
+    const prepared = (
+      await getEffectSegmentRenderWorkspace(
+        context.projectId,
+        context.workflowRunId,
+        product.id,
+        controller.signal,
+      )
+    ).data;
+    if (!inScope()) return;
+    current = effectSegmentRenderWorkspaceFromApi(prepared);
+    applyWorkspace(current);
+    renderSettings.value = { ...prepared.settings };
+    renderSettingsRevision.value = prepared.settingsRevision;
+    const frozenDefaults = { ...prepared.settings };
+    const settingsRevision = prepared.settingsRevision ?? 0;
+    const selectiveRefresh = !forceFull && current.stale && current.refreshScope === 'SELECTIVE';
+    const changedTasks = current.tasks.filter((task) => task.needsUpdate);
+    const selectedTaskIds = selectiveRefresh ? changedTasks.map(({ id }) => id) : [];
+    const newPromptCount = selectiveRefresh ? (current.pendingPromptIds?.length ?? 0) : 0;
+    const renderCount = selectiveRefresh
+      ? changedTasks.filter((task) => !task.updateKind || task.updateKind === 'RENDER').length
+      : 0;
+    const metadataCount = selectiveRefresh
+      ? changedTasks.filter((task) => task.updateKind === 'METADATA').length
+      : 0;
+    const removedCount = selectiveRefresh ? (current.pendingRemovedTaskIds?.length ?? 0) : 0;
+    const updateCount = selectedTaskIds.length + newPromptCount;
+    if (selectiveRefresh && !updateCount) return;
+    if (!prepared.promptReady) {
+      showNotice('请先保存并确认提示词', 'error');
+      return;
+    }
+    const newInputs = (prepared.promptRenderInputs ?? []).filter(
+      (input) => !selectiveRefresh || current!.pendingPromptIds?.includes(input.promptId),
+    );
+    // Older servers without summaries must not bypass capability confirmation.
+    if (newInputs.length !== (selectiveRefresh ? newPromptCount : prepared.promptCount)) {
+      showNotice('提示词渲染配置尚未同步，请刷新后重试', 'error');
+      return;
+    }
+    const conflicts = newInputs.filter(
+      (input) => effectPromptRenderSettingsIssues(frozenDefaults, input).length,
+    );
+    let promptSettings: EffectSegmentRenderPromptSettings[] = [];
+    if (conflicts.length) {
+      promptConfiguration.value = { inputs: conflicts, defaults: frozenDefaults };
+      const configured = await new Promise<EffectSegmentRenderPromptSettings[] | null>(
+        (resolve) => {
+          resolvePromptConfiguration = resolve;
+        },
+      );
+      if (!configured || !inScope()) return;
+      promptSettings = configured;
+    }
+    const overrideDescription = promptSettings.length
+      ? `其中 ${promptSettings.length} 条使用刚才单独配置的参数，其余新任务使用默认配置。`
+      : '';
+    const rerendering = hasBatch.value;
+    if (
+      !(await requestActionConfirmation(
+        selectiveRefresh
+          ? {
+              eyebrow: '按最新 Prompt 定向更新',
+              title: `重渲染 ${renderCount} 个，新增 ${newPromptCount} 个，同步信息 ${metadataCount} 个，移除 ${removedCount} 个？`,
+              description: `其余 ${Math.max(0, current.tasks.length - selectedTaskIds.length)} 个素材保持不变。${overrideDescription}全部更新成功且校验通过后自动保存到当前分支；历史文件保留。本次产生 ${renderCount + newPromptCount} 个视频生成任务，信息同步和删除不产生生成费用。`,
+              confirmLabel: `局部更新 ${updateCount} 个素材`,
+              tone: 'warning',
+            }
+          : rerendering
+            ? {
+                eyebrow: current.stale ? '按最新 Prompt 重新渲染' : '重新渲染全部片段',
+                title: `重新生成全部 ${promptCount.value} 个视频素材片段？`,
+                description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${frozenDefaults.ratio}；${frozenDefaults.resolution}。${overrideDescription}确认后会严格按当前已确认 Prompt 创建新批次、提交 ${promptCount.value} 个视频生成任务并再次产生费用。人工导入的视频不会重新生成，也不会带入新分支。全部成功且校验通过后自动保存为新版本；原版本保持可回溯。`,
+                confirmLabel: `重新提交 ${promptCount.value} 个任务`,
+                tone: 'warning',
+              }
+            : {
+                eyebrow: '创建视频渲染批次',
+                title: `开始生成 ${promptCount.value} 个视频素材片段？`,
+                description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${frozenDefaults.ratio}；${frozenDefaults.resolution}。${overrideDescription}确认后会提交 ${promptCount.value} 个视频生成任务并产生费用。`,
+                confirmLabel: `提交 ${promptCount.value} 个任务`,
+                tone: 'warning',
+              },
+      ))
+    )
+      return;
+    if (!inScope()) return;
+    creatingTaskCount.value = selectiveRefresh ? updateCount : promptCount.value;
+    creatingLocalUpdate.value = Boolean(selectiveRefresh);
+    operation.value = 'batch';
+    validated.value = false;
     if (selectiveRefresh) {
       const response = await refreshEffectSegmentRenderBatch(
         props.projectId,
@@ -1128,10 +1243,16 @@ const startBatch = async (forceFull = false): Promise<void> => {
         {
           expectedBatchRevision: current.batchRevision!,
           expectedPromptArtifactRevision: current.promptArtifactRevision!,
-          settingsContext: { workflowRunId: props.workflowRunId, productId: product.id,
-            expectedSettingsRevision: renderSettingsRevision.value ?? 0 },
-          ...(current.refreshSignature ? { expectedDifferenceSignature: current.refreshSignature } : {}),
+          ...(current.refreshSignature
+            ? { expectedDifferenceSignature: current.refreshSignature }
+            : {}),
           idempotencyKey: crypto.randomUUID(),
+          promptSettings,
+          settingsContext: {
+            workflowRunId: context.workflowRunId,
+            productId: context.productId,
+            expectedSettingsRevision: settingsRevision,
+          },
         },
         controller.signal,
       );
@@ -1142,11 +1263,15 @@ const startBatch = async (forceFull = false): Promise<void> => {
         return;
       }
       if (response.data.batch.workflowRunId !== props.workflowRunId) {
-        emit('workflow-run-change', response.data.batch.workflowRunId);
+        await synchronizeWorkflowRun(response.data.batch.workflowRunId);
         return;
       }
       applyBatch(response.data.batch);
-      showNotice(renderCount + newPromptCount ? `${renderCount + newPromptCount} 个素材进入渲染队列，其余同步已完成；完成后请保存修改` : '素材信息同步/移除已完成，请保存修改');
+      showNotice(
+        renderCount + newPromptCount
+          ? `${renderCount + newPromptCount} 个素材进入渲染队列，完成后自动保存`
+          : '素材信息同步/移除已完成并保存',
+      );
       return;
     }
     const response = await startEffectSegmentRenderBatch(
@@ -1155,27 +1280,35 @@ const startBatch = async (forceFull = false): Promise<void> => {
       {
         workflowRunId: props.workflowRunId,
         expectedPromptArtifactRevision: current.promptArtifactRevision!,
-        expectedSettingsRevision: renderSettingsRevision.value ?? 0,
+        expectedSettingsRevision: settingsRevision,
         idempotencyKey: crypto.randomUUID(),
+        promptSettings,
       },
       controller.signal,
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
     if (response.data.batch.workflowRunId !== props.workflowRunId) {
-      emit('workflow-run-change', response.data.batch.workflowRunId);
+      await synchronizeWorkflowRun(response.data.batch.workflowRunId);
       return;
     }
     applyBatch(response.data.batch);
     showNotice(
       rerendering
-        ? `新批次已创建，${response.data.batch.tasks.length} 个真实视频任务已进入渲染队列`
-        : `${response.data.batch.tasks.length} 个真实视频任务已进入渲染队列`,
+        ? `新批次已创建，${response.data.batch.tasks.length} 个视频生成任务已进入渲染队列`
+        : `${response.data.batch.tasks.length} 个视频生成任务已进入渲染队列`,
     );
   } catch (error) {
-    if (!isAbortError(error)) showNotice(safeMessage(error, '批量渲染失败'), 'error');
+    if (inScope() && !isAbortError(error)) showNotice(safeMessage(error, '批量渲染失败'), 'error');
   } finally {
-    if (operationController === controller) operationController = null;
-    if (!controller.signal.aborted || currentProductId.value === product.id) operation.value = null;
+    if (operationController === controller) {
+      operationController = null;
+      operation.value = null;
+      creatingTaskCount.value = null;
+      creatingLocalUpdate.value = false;
+      void nextTick(() => {
+        if (inScope() && startingTrigger?.isConnected) startingTrigger.focus();
+      });
+    }
   }
 };
 
@@ -1190,6 +1323,21 @@ const importedRenderDescription = (task: EffectSegmentRenderTask): string => {
     capabilityOptions.find((item) => item.value === settings.capabilityKey)?.label ??
     settings.capabilityKey;
   return `本次使用 ${label} · ${settings.resolution.toUpperCase()}，不改变全局渲染设置`;
+};
+
+const materialResolutionLabel = (resolution: string | undefined): string =>
+  resolution === '4k' ? '4K' : (resolution ?? '—');
+
+const materialAspectRatioLabel = (ratio: string | undefined): string =>
+  ratio === 'adaptive' ? '自适应' : (ratio ?? '—');
+
+const materialFormatLabel = (mimeType: string | undefined): string => {
+  if (!mimeType) return '—';
+  const normalized = mimeType.toLowerCase();
+  if (normalized === 'video/quicktime') return 'MOV';
+  if (normalized === 'video/webm') return 'WEBM';
+  if (normalized === 'video/mp4') return 'MP4';
+  return normalized.startsWith('video/') ? normalized.slice('video/'.length).toUpperCase() : '—';
 };
 
 const retryTask = async (taskId: string): Promise<void> => {
@@ -1207,7 +1355,6 @@ const retryTask = async (taskId: string): Promise<void> => {
   const taskNeedsUpdate = task.needsUpdate;
   const settingsContext = { workflowRunId: props.workflowRunId, productId: product.id,
     expectedSettingsRevision: renderSettingsRevision.value ?? 0 };
-
   if (
     !(await requestActionConfirmation({
       eyebrow: taskNeedsUpdate ? '按最新 Prompt 更新素材' : '重新生成片段',
@@ -1215,10 +1362,10 @@ const retryTask = async (taskId: string): Promise<void> => {
       description: task.independentImport
         ? `使用这条素材已确认的反推提示词重新生成，原视频仍会保留；${importedRenderDescription(task)}。`
         : task.updateKind === 'METADATA'
-          ? '仅同步创意方向、六维与用途，原视频保持不变，不产生视频生成费用；保存修改后生效。'
+          ? '仅同步创意方向、六维与用途，原视频保持不变，不产生视频生成费用；校验通过后自动保存。'
         : taskNeedsUpdate
-          ? '这条素材会使用当前已确认的 Prompt 和原批次渲染设置重新生成；旧版本视频仍会保留。'
-          : '重新生成会提交一个新的真实 Seedance 请求，Prompt 与渲染配置保持不变。',
+          ? '这条素材会使用当前已确认的 Prompt 和原批次渲染设置重新生成；校验通过后自动保存，旧版本视频仍会保留。'
+          : '重新生成会提交一个新的视频生成任务，Prompt 与渲染配置保持不变。',
       confirmLabel: taskNeedsUpdate ? '确认更新素材' : '确认重新生成',
       tone: 'warning',
     }))
@@ -1228,6 +1375,8 @@ const retryTask = async (taskId: string): Promise<void> => {
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
+  creatingTaskCount.value = 1;
+  creatingLocalUpdate.value = taskNeedsUpdate;
   operation.value = 'retry';
   validated.value = false;
   try {
@@ -1254,16 +1403,21 @@ const retryTask = async (taskId: string): Promise<void> => {
       return;
     }
     if (response.data.batch.workflowRunId !== props.workflowRunId) {
-      emit('workflow-run-change', response.data.batch.workflowRunId);
+      await synchronizeWorkflowRun(response.data.batch.workflowRunId);
       return;
     }
     applyBatch(response.data.batch);
-    showNotice(task.updateKind === 'METADATA' ? '素材信息已同步，请保存修改' : '视频素材片段已进入渲染队列');
+    showNotice(task.updateKind === 'METADATA' ? '素材信息已同步并保存' : taskNeedsUpdate
+      ? '视频素材片段已进入渲染队列，完成后自动保存' : '视频素材片段已进入渲染队列');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '片段重生成失败'), 'error');
   } finally {
-    if (operationController === controller) operationController = null;
-    if (!controller.signal.aborted || currentProductId.value === product.id) operation.value = null;
+    if (operationController === controller) {
+      operationController = null;
+      operation.value = null;
+      creatingTaskCount.value = null;
+      creatingLocalUpdate.value = false;
+    }
   }
 };
 
@@ -1474,7 +1628,7 @@ const submitRepair = async (): Promise<void> => {
     );
     applyBatch(response.data.batch);
     closeAllDialogs(true);
-    showNotice('真实返修任务已进入队列，完成后可预览并决定是否采用');
+    showNotice('返修任务已进入队列，完成后可预览并决定是否采用');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '视频画面返修失败'), 'error');
   } finally {
@@ -1722,18 +1876,18 @@ const formatFileSize = (size: number): string =>
 
 const enterEdit = async (): Promise<void> => {
   if (editTransitioning.value || operation.value || batchActive.value) return;
-  editTransitioning.value = true;
+  editRequestPending.value = true;
   try {
     const response = await beginEffectWorkflowNodeEdit(
       props.projectId,
       props.workflowRunId,
       'SEGMENT_RENDER',
     );
-    emit('workflow-run-change', response.data.run.id);
+    await synchronizeWorkflowRun(response.data.run.id);
   } catch (error) {
     showNotice(safeMessage(error, '进入视频素材编辑状态失败'), 'error');
   } finally {
-    editTransitioning.value = false;
+    editRequestPending.value = false;
   }
 };
 
@@ -1741,18 +1895,18 @@ const cancelEdit = async (): Promise<void> => {
   if (!props.editing || editTransitioning.value || operation.value || batchActive.value) return;
   if (!(await confirmDiscardEffectEdit())) return;
   if (!props.editing || editTransitioning.value || operation.value || batchActive.value) return;
-  editTransitioning.value = true;
+  editRequestPending.value = true;
   try {
     const response = await cancelEffectWorkflowNodeEdit(
       props.projectId,
       props.workflowRunId,
       'SEGMENT_RENDER',
     );
-    emit('workflow-run-change', response.data.activeWorkflowRunId);
+    await synchronizeWorkflowRun(response.data.activeWorkflowRunId);
   } catch (error) {
     showNotice(safeMessage(error, '取消视频素材编辑失败'), 'error');
   } finally {
-    editTransitioning.value = false;
+    editRequestPending.value = false;
   }
 };
 
@@ -1771,7 +1925,7 @@ const saveVersion = async (): Promise<void> => {
   }
   const current = workspace.value;
   if (!current?.batchId || typeof current.batchRevision !== 'number') return;
-  editTransitioning.value = true;
+  editRequestPending.value = true;
   try {
     const response = await validateEffectSegmentRenderBatch(props.projectId, current.batchId, {
       expectedBatchRevision: current.batchRevision,
@@ -1783,17 +1937,20 @@ const saveVersion = async (): Promise<void> => {
     // The validated batch and branch activation commit atomically in the API.
     // The parent reloads the active Run, which may be the original Run if the
     // content hash did not change.
-    emit('workflow-run-change', props.workflowRunId);
+    await synchronizeWorkflowRun(props.workflowRunId);
     showNotice('视频素材修改已保存');
   } catch (error) {
     showNotice(safeMessage(error, '保存视频素材修改失败'), 'error');
   } finally {
-    editTransitioning.value = false;
+    editRequestPending.value = false;
   }
 };
 
-const flushPendingEdits = async (): Promise<boolean> =>
-  operation.value === null && !editTransitioning.value;
+const flushPendingEdits = (): Promise<boolean> =>
+  flushEffectNodeNavigation(
+    runSynchronization,
+    () => operation.value !== null || editRequestPending.value,
+  );
 
 defineExpose({ flushPendingEdits });
 
@@ -1823,17 +1980,21 @@ onActivated(() => {
 });
 
 onDeactivated(() => {
+  settlePromptConfiguration(null);
   nodeActive = false;
   operation.value = null;
+  creatingTaskCount.value = null;
   closeTransferPanel(false);
   imports.dispose();
   stopNodeRequests();
 });
 
 onBeforeUnmount(() => {
+  settlePromptConfiguration(null);
   window.removeEventListener('focus', refreshOnFocus);
   nodeActive = false;
   operation.value = null;
+  creatingTaskCount.value = null;
   closeTransferPanel(false);
   imports.dispose();
   stopNodeRequests();
@@ -1846,18 +2007,23 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="effect-segment-render-node" aria-labelledby="effect-segment-render-title">
+  <section
+    class="effect-segment-render-node"
+    aria-labelledby="effect-segment-render-title"
+    :inert="workspaceSynchronizing || runSynchronizing || undefined"
+    :aria-busy="workspaceSynchronizing || runSynchronizing || undefined">
     <Transition name="segment-notice">
       <div v-if="notice" class="segment-notice" :class="notice.kind" role="status">
         {{ notice.text }}
       </div>
     </Transition>
 
-    <section v-if="pageStatus === 'loading'" class="segment-page-state" role="status">
-      <LoaderCircle class="spin" :size="32" />
-      <h2>正在恢复视频片段渲染队列</h2>
-      <p>按当前项目和商品载入真实 Prompt 批次与 Seedance 任务…</p>
-    </section>
+    <WorkflowPageLoading
+      v-if="pageStatus === 'loading'"
+      icon="render"
+      title="正在恢复视频渲染工作区"
+      description="正在读取当前工作流的 Prompt 批次和视频渲染任务…"
+    />
     <section v-else-if="pageStatus === 'error'" class="segment-page-state error" role="alert">
       <AlertCircle :size="32" />
       <h2>视频片段渲染工作区加载失败</h2>
@@ -1890,6 +2056,16 @@ onBeforeUnmount(() => {
         </div>
         <div class="segment-heading__actions">
           <button
+            v-if="workspace?.stale && workspace.refreshScope === 'SELECTIVE'"
+            class="secondary-button segment-local-update-button"
+            type="button"
+            :disabled="operation !== null || editTransitioning || !canStartBatch"
+            @click="startBatch()"
+          >
+            <LoaderCircle v-if="operation === 'batch' || batchActive" class="spin" :size="14" />
+            <RefreshCw v-else :size="14" />{{ startButtonLabel }}
+          </button>
+          <button
             v-if="hasConfirmedRender && !editing"
             class="secondary-button"
             type="button"
@@ -1909,6 +2085,7 @@ onBeforeUnmount(() => {
               <X :size="14" />取消编辑
             </button>
             <button
+              v-if="!workspace?.autoCommitPending"
               class="secondary-button"
               type="button"
               :disabled="editTransitioning || !currentProductReady"
@@ -1918,7 +2095,7 @@ onBeforeUnmount(() => {
             </button>
           </template>
           <button
-            v-else-if="hasBatch && !batchActive"
+            v-else-if="hasBatch && !batchActive && !workspace?.autoCommitPending"
             class="secondary-button"
             type="button"
             :disabled="editTransitioning || !currentProductReady"
@@ -1947,9 +2124,10 @@ onBeforeUnmount(() => {
             :disabled="operation !== null || editTransitioning || !canStartBatch"
             @click="startBatch(true)"
           >
-            <RefreshCw :size="14" />全部重新渲染
+            <RefreshCw :size="14" />重新渲染
           </button>
           <button
+            v-if="!(workspace?.stale && workspace.refreshScope === 'SELECTIVE')"
             class="primary-button start-render-button"
             type="button"
             :disabled="operation !== null || editTransitioning || !canStartBatch"
@@ -1962,12 +2140,22 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
+      <WorkflowRunProgress
+        v-if="creatingTaskCount !== null || batchActive"
+        class="segment-run-progress"
+        tone="update"
+        :progress="batchProgress"
+        :summary="updatingProgress ? '本次更新进度' : '视频渲染进度'"
+        :attempt-label="batchProgressDetail"
+        action-label=""
+      />
+
       <section class="render-settings-card" aria-labelledby="render-settings-title">
         <div class="render-settings-card__heading">
           <span><Settings2 :size="17" /></span>
           <div>
             <h3 id="render-settings-title">视频渲染设置</h3>
-            <p>画幅和分辨率只用于新的视频任务，不会让 Prompt 或提炼结果过期。</p>
+            <p>新任务的默认配置，不追溯修改已有素材。</p>
           </div>
           <small>{{
             batchActive ? '当前批次参数已锁定' : operation === 'settings' ? '保存中…' : '已自动保存'
@@ -2204,9 +2392,6 @@ onBeforeUnmount(() => {
                   :size="25"
                 />
                 <Play v-else :size="27" />
-                <small
-                  >{{ importVideoDuration(task.durationSeconds) }}s · {{ task.progress }}%</small
-                >
               </button>
               <div class="material-card-body">
                 <div class="material-card-title">
@@ -2225,17 +2410,23 @@ onBeforeUnmount(() => {
                   >
                 </div>
                 <div
-                  v-if="task.compatibleFragmentTypes.length"
+                  v-if="effectSegmentRenderAdditionalPurposes(task).length"
                   class="compatible-purpose-tags"
                   aria-label="该视频素材的兼容用途"
                 >
                   <small>还适合</small>
                   <span
-                    v-for="compatibleType in task.compatibleFragmentTypes"
+                    v-for="compatibleType in effectSegmentRenderAdditionalPurposes(task)"
                     :key="compatibleType"
                   >
                     {{ fragmentTypeLabel(compatibleType) }}
                   </span>
+                </div>
+                <div class="material-facts" aria-label="视频素材参数">
+                  <span><small>时长</small>{{ importVideoDuration(task.durationSeconds) }}s</span>
+                  <span><small>画幅</small>{{ materialAspectRatioLabel(task.mediaAspectRatio) }}</span>
+                  <span><small>分辨率</small>{{ materialResolutionLabel(task.mediaResolution) }}</span>
+                  <span><small>格式</small>{{ materialFormatLabel(task.output?.mimeType) }}</span>
                 </div>
                 <div v-if="task.errorMessage" class="task-error" role="status">
                   <AlertCircle :size="12" />{{ task.errorMessage }}
@@ -2328,7 +2519,7 @@ onBeforeUnmount(() => {
               workspace?.promptReady ? '尚未创建视频渲染任务' : '等待上游 Prompt 校验'
             }}</strong>
             <p v-if="workspace?.promptReady">
-              已确认 {{ promptCount }} 条片段 Prompt，可从页头开始提交真实批量渲染。
+              已确认 {{ promptCount }} 条片段 Prompt，可从页头开始批量渲染。
             </p>
             <p v-else>请返回 Prompt 节点生成可用版本，渲染节点只消费已确认的工作副本。</p>
           </div>
@@ -2358,7 +2549,7 @@ onBeforeUnmount(() => {
 
 
       <WorkflowNodeFooter
-        back-label="上一步：Prompt 生成"
+        back-label="上一步：素材 Prompt"
         :show-validate="false"
         :next-disabled="!validated || operation !== null"
         next-label="下一步：模板混剪"
@@ -2366,6 +2557,14 @@ onBeforeUnmount(() => {
         @next="emit('next')"
       />
     </template>
+
+    <EffectPromptRenderConfigurationDialog
+      v-if="promptConfiguration"
+      :inputs="promptConfiguration.inputs"
+      :defaults="promptConfiguration.defaults"
+      @cancel="settlePromptConfiguration(null)"
+      @confirm="settlePromptConfiguration"
+    />
 
     <Teleport to="body">
       <div
@@ -3294,6 +3493,11 @@ select:disabled {
 }
 .secondary-button {
   min-width: 171px;
+}
+.segment-local-update-button {
+  color: #a66a0b;
+  background: #fffaf0;
+  border-color: #f5ca80;
 }
 .start-render-button {
   min-width: 154px;
@@ -4607,18 +4811,6 @@ select:disabled {
   z-index: 1;
   filter: drop-shadow(0 2px 6px #17203340);
 }
-.material-preview > small {
-  position: absolute;
-  z-index: 2;
-  right: 9px;
-  bottom: 7px;
-  color: #fff;
-  font-size: 9px;
-  font-weight: 800;
-}
-.material-preview.success:not(.video-ready) > small {
-  color: #66758b;
-}
 .material-status-pill {
   position: absolute;
   z-index: 2;
@@ -4729,6 +4921,35 @@ select:disabled {
   border: 1px solid #ded6fb;
   border-radius: 999px;
   font-size: 8px;
+}
+.material-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 8px;
+  padding: 6px 4px;
+  align-items: center;
+  gap: 0;
+  color: #526178;
+  background: #f6f8fc;
+  border: 1px solid #e8edf5;
+  border-radius: 7px;
+  font-size: 8px;
+  line-height: 1;
+}
+.material-facts span {
+  display: inline-flex;
+  min-width: 0;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.material-facts small {
+  color: #94a0b2;
+  font-size: inherit;
+}
+.material-facts span + span {
+  border-left: 1px solid #dce3ed;
 }
 .task-error {
   display: flex;

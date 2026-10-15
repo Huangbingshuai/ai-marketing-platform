@@ -14,25 +14,24 @@ export { parseVoiceSegmentFrames, wavDuration } from './effect-packaging-audio';
 import type {
   CreatePackagingCaptionVoiceRequest,
   CreatePackagingRequest,
-  EffectTemplateMixVariant,
+  EffectTemplateMixMaterial,
   PackagingCheckpoint,
   PackagingItem,
   PackagingRun,
   PackagingSnapshot,
   PackagingStage,
-  EffectTemplateMixWorkspaceData,
   EffectTemplateMixDraft,
   FinalOutputSourceTrim,
   UpdatePackagingAudioRequest,
-  WorkingArtifact,
 } from '@ai-marketing/contracts';
-import { packagingPictureOnlyVariant, packagingVisualTimeline, effectTemplateMixSourceChanges } from '@ai-marketing/contracts';
+import { packagingPictureOnlyVariant, packagingVisualTimeline, effectTemplateMixSourceChanges, effectTemplateBranchTips } from '@ai-marketing/contracts';
 import { packagingExecution } from './effect-packaging.metrics';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectTemplateMixService } from './effect-template-mix.service';
 import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 import { EffectVoiceCatalogService } from './effect-voice.catalog';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import { ProjectService } from '../../../platform/project/project.service';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { templateConfigurationHash } from './template-mix-lifecycle';
@@ -46,6 +45,9 @@ import {
 } from './effect-packaging.domain';
 
 type PackagingRunRow = NonNullable<Awaited<ReturnType<EffectPackagingRepository['get']>>>;
+type PackagingPresentation = {
+  materials: readonly Pick<EffectTemplateMixMaterial, 'id' | 'code' | 'name'>[];
+};
 
 /**
  * The editor's fades for one audio clip, rebuilt field by field so a client cannot smuggle anything
@@ -84,6 +86,7 @@ export class EffectPackagingService {
     @Inject(STORAGE_PORT) readonly storage: StoragePort,
     @Inject(EffectFinalOutputService)
     readonly finalOutput: EffectFinalOutputService,
+    @Inject(ProjectService) private readonly projects: ProjectService,
     @Inject(EffectVoiceCatalogService)
     readonly voiceCatalog: EffectVoiceCatalogService = new EffectVoiceCatalogService(),
   ) {}
@@ -104,8 +107,9 @@ export class EffectPackagingService {
       if (operation === 'BATCH_PACKAGE' && current!.items.some((item) => item.status === 'COMPLETED'))
         await this.finalOutput.publishMixBranch(projectId, current!.workflowRunId);
       const appendId = (current!.items[0]?.snapshot as unknown as PackagingSnapshot).incrementalFillRunId;
-      if (appendId) await this.mix.recordAppendContinuation(projectId, appendId,
-        current!.items.some((item) => item.status !== 'COMPLETED'));
+      // A terminal failed film has retained its baseline. It is not unfinished
+      // continuation and must never require a second local-update click.
+      if (appendId) await this.mix.recordAppendContinuation(projectId, appendId, false);
       await this.repo.finish(projectId, runId, token);
       return { accepted: true };
     }
@@ -171,6 +175,10 @@ export class EffectPackagingService {
       return this.get(projectId, replay.id);
     }
     const sourceWorkspace = await this.mix.workspace(projectId, body.workflowRunId);
+    // The request revision belongs to the source Run, not a future execution child.
+    // Reject before opening an otherwise empty child for a stale browser snapshot.
+    if (sourceWorkspace.draftRevision !== body.expectedRevision)
+      throw new ConflictException('草稿已改变，请刷新后重试');
     const sourceEntry = sourceWorkspace.draft.templates.find((entry) => entry.id === templateId);
     if (
       !operation && sourceEntry?.packagingSourceLocked
@@ -204,7 +212,27 @@ export class EffectPackagingService {
     const packageInDeliveredRun = Boolean(
       activeSource && delivered && !packaged && !sourceEntry?.packagingLocked,
     );
-    const workflowRunId = append || body.operation === 'SINGLE_PACKAGE' || (!operation && packageInDeliveredRun)
+    // An attempted/cancelled task is not a confirmed package. Only a committed package
+    // makes this a repackage; the first batch fills the existing picture-only Run in place.
+    const firstBatchInPlace = operation === 'BATCH_PACKAGE' && !packaged;
+    let templateScopeActiveRunId: string | undefined;
+    if (operation === 'BATCH_PACKAGE' && !activeSource) {
+      // Ordinary template navigation does not activate the global Run. Authorize only its
+      // resolved current template path, then freeze the global pointer during the clone.
+      const [tree, active] = await Promise.all([
+        this.working.getEffectBranchTree(projectId),
+        this.repo.db.workflowRun.findFirst({ where: {
+          projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+          status: { in: ['ACTIVE', 'PAUSED'] },
+        }, select: { id: true, editSessionNodeId: true } }),
+      ]);
+      if (!active || active.editSessionNodeId || tree.activeWorkflowRunId !== active.id ||
+          effectTemplateBranchTips(tree.branches, tree.activeWorkflowRunId, { current: true })
+            .get(templateId)?.workflowRunId !== body.workflowRunId)
+        throw new ConflictException('模板当前分支已变化，请重新读取后再包装');
+      templateScopeActiveRunId = active.id;
+    }
+    const workflowRunId = append || body.operation === 'SINGLE_PACKAGE' || firstBatchInPlace || (!operation && packageInDeliveredRun)
       ? body.workflowRunId
       : (await this.working.beginEffectNodeEdit(
           projectId,
@@ -215,11 +243,15 @@ export class EffectPackagingService {
             always: true,
             keepParentActive: true,
             ...(operation === 'BATCH_PACKAGE' ? { preservePackagingBaseline: true } : {}),
+            ...(templateScopeActiveRunId ? { templateId, templateScopeActiveRunId } : {}),
+            expectedNodeStateRevision: body.expectedRevision,
             creationKey: `mix-package:${workflowStateHash(body.idempotencyKey)}`,
           },
         )).run.id;
     const workspace = await this.mix.workspace(projectId, workflowRunId);
     const frozenAppendSource = append ? await this.mix.frozenAppendSources(projectId, append.fillRunId) : undefined;
+    // The clone protocol preserves the source revision. Do not accept an orphan/reused
+    // child edited since it was cloned merely because we just read its latest revision.
     if (workspace.draftRevision !== body.expectedRevision)
       throw new ConflictException('草稿已改变，请刷新后重试');
     const entry = workspace.draft.templates.find((t) => t.id === templateId);
@@ -447,6 +479,7 @@ export class EffectPackagingService {
       snapshots,
       checkpoints,
       expectedDraftRevision: body.expectedRevision,
+      expectedSourceDraftRevision: body.expectedRevision,
       expectedTemplateHash: templateConfigurationHash(entry.workspace.template),
     });
     return this.get(projectId, id);
@@ -454,12 +487,32 @@ export class EffectPackagingService {
   async get(projectId: string, id: string): Promise<PackagingRun> {
     const run = await this.repo.get(projectId, id);
     if (!run) throw new NotFoundException('包装任务不存在');
-    const workspace = await this.mix.workspace(projectId, run.workflowRunId);
-    return this.present(run, workspace);
+    await this.assertReadScope(projectId, run.workflowRunId);
+    return this.present(run, await this.presentationSources(projectId, [run]));
+  }
+  private frozenMaterialName(snapshot: PackagingSnapshot, clip: PackagingSnapshot['clips'][number]) {
+    const name = [clip.materialCode, clip.materialName].filter(Boolean).join(' · ');
+    if (name) return name;
+    const adopted = snapshot.variant.bindingSources?.[clip.slotId];
+    return adopted && (adopted.id === clip.materialId || adopted.artifactId === clip.materialId)
+      ? [adopted.code, adopted.name].filter(Boolean).join(' · ')
+      : '';
+  }
+  private async presentationSources(projectId: string, runs: PackagingRunRow[]): Promise<PackagingPresentation> {
+    const missing = new Set<string>();
+    for (const run of runs)
+      for (const item of run.items) {
+        const snapshot = item.snapshot as unknown as PackagingSnapshot;
+        for (const clip of snapshot.clips ?? [])
+          if (!this.frozenMaterialName(snapshot, clip)) missing.add(clip.materialId);
+      }
+    // Progress comes from durable task rows. Do not hydrate editable timelines,
+    // source freshness or the whole project merely to display a task's clip names.
+    return { materials: missing.size ? await this.repo.materialLabels(projectId, [...missing]) : [] };
   }
   private presentItems(
     run: PackagingRunRow,
-    workspace: EffectTemplateMixWorkspaceData,
+    workspace: PackagingPresentation,
   ): PackagingItem[] {
     return run.items.map((i) => {
       const snapshot = i.snapshot as unknown as PackagingSnapshot;
@@ -482,7 +535,7 @@ export class EffectPackagingService {
           const slot = snapshot.variant.slots.find(({ id }) => id === clip.slotId);
           const material = (workspace.materials ?? []).find(({ id }) => id === clip.materialId);
           const materialName =
-            [clip.materialCode, clip.materialName].filter(Boolean).join(' · ') ||
+            this.frozenMaterialName(snapshot, clip) ||
             (material
               ? [material.code, material.name].filter(Boolean).join(' · ')
               : '来源视频素材');
@@ -510,7 +563,7 @@ export class EffectPackagingService {
       };
     });
   }
-  private present(run: PackagingRunRow, workspace: EffectTemplateMixWorkspaceData): PackagingRun {
+  private present(run: PackagingRunRow, workspace: PackagingPresentation): PackagingRun {
     const items = this.presentItems(run, workspace);
     return {
       ...(items[0]?.operation ? { operation: items[0].operation } : {}),
@@ -853,17 +906,22 @@ export class EffectPackagingService {
     }
   }
   async list(projectId: string, workflowRunId: string, templateId: string) {
-    const [workspace, runs] = await Promise.all([
-      this.mix.workspace(projectId, workflowRunId),
-      this.repo.list(projectId, workflowRunId, templateId),
-    ]);
+    await this.assertReadScope(projectId, workflowRunId);
+    const runs = await this.repo.list(projectId, workflowRunId, templateId);
+    if (!runs.length) return [];
+    const workspace = await this.presentationSources(projectId, runs);
     return runs.map((run) => this.present(run, workspace));
   }
   async latestBackground(projectId: string, workflowRunId: string, templateId: string) {
+    await this.assertReadScope(projectId, workflowRunId);
     const run = await this.repo.latestChild(projectId, workflowRunId, templateId);
     if (!run) return null;
-    const workspace = await this.mix.workspace(projectId, run.workflowRunId);
-    return this.present(run, workspace);
+    return this.present(run, await this.presentationSources(projectId, [run]));
+  }
+  private async assertReadScope(projectId: string, workflowRunId: string) {
+    await this.projects.get(projectId);
+    if (!await this.repo.readRunScope(projectId, workflowRunId))
+      throw new NotFoundException('工作流运行不存在');
   }
   async retry(projectId: string, id: string) {
     const run = await this.get(projectId, id);

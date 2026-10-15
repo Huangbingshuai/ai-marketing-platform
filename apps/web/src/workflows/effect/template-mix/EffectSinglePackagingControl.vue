@@ -5,15 +5,16 @@ import { PACKAGING_STAGES, PACKAGING_STAGE_LABELS } from '@ai-marketing/contract
 import type { PackagingItem } from '@ai-marketing/contracts';
 const props = defineProps<{ item?: PackagingItem | undefined; submitting: boolean; disabled: boolean }>();
 const emit = defineEmits<{ package: []; details: [] }>();
-const active = computed(() => props.submitting || ['QUEUED', 'RUNNING'].includes(props.item?.status ?? ''));
-const progress = computed(() => props.submitting ? 0 : props.item?.status === 'COMPLETED' ? 100 :
+// Batch/append items still lock this film, but are not a single-button submission.
+const active = computed(() => props.submitting || props.item?.operation === 'SINGLE_PACKAGE' &&
+  ['QUEUED', 'RUNNING'].includes(props.item.status));
+const progress = computed(() => props.submitting ? 0 :
   Math.floor(PACKAGING_STAGES.indexOf(props.item?.stage ?? 'SNAPSHOT') / PACKAGING_STAGES.length * 100));
 const detail = computed(() => {
+  if (!active.value) return '';
   if (props.submitting) return '正在提交';
   const item = props.item;
   if (!item) return '';
-  if (item.status === 'COMPLETED') return '已完成';
-  if (['FAILED', 'CANCELLED'].includes(item.status)) return '已结束 · 已保留包装前原样';
   const waiting = item.checkpoint.recovery?.waitingUntil;
   const voiceWaiting = Object.values(item.checkpoint.voiceRecovery ?? {}).some((state) =>
     state.waitingUntil && Date.parse(state.waitingUntil) > Date.now());
@@ -22,9 +23,9 @@ const detail = computed(() => {
 </script>
 <template>
   <div class="single-packaging-control">
-    <button type="button" :disabled="disabled || active" @click="emit('package')"><WandSparkles :size="14" />成片包装</button>
+    <button type="button" :disabled="disabled || active" @click="emit('package')"><WandSparkles :size="14" />单条成片包装</button>
     <div v-if="active" class="single-packaging-meter" role="progressbar" aria-label="当前成片包装进度" :aria-valuenow="progress" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${progress}%` }" /></div>
-    <button v-if="detail" class="single-packaging-detail" type="button" @click="emit('details')">{{ detail }}</button>
+    <button v-if="active && detail" class="single-packaging-detail" type="button" @click="emit('details')">{{ detail }}</button>
   </div>
 </template>
 <style scoped>

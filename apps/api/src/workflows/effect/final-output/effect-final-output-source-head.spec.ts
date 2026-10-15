@@ -22,7 +22,7 @@ function fixture(file = 'latest-video', owner = true) {
       update: vi.fn(),
     },
     workingArtifact: { findMany: vi.fn().mockResolvedValue([source]) },
-    effectPackagingItem: { findFirst: vi.fn().mockResolvedValue(null) },
+    effectPackagingItem: { findMany: vi.fn().mockResolvedValue([]) },
   };
   const heads = vi.spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts').mockResolvedValue([
     { ...source, id: 'head', revision: 2, metadata: { branchSourceOwner: owner },
@@ -60,5 +60,60 @@ describe('local source refresh authoritative heads', () => {
   it('does not mistake a historical non-owner copy for the current source head', async () => {
     const { tx, service, snapshot } = fixture('different-history-video', false);
     await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).resolves.toBeUndefined();
+  });
+});
+
+describe('local source refresh adopted packaging fence', () => {
+  function packagedFixture() {
+    const context = fixture('old-video');
+    const checkpoint = { voices: {}, captions: [], music: { fileObjectId: 'music', volume: 0.4 } };
+    Object.assign(context.snapshot.sourceRefresh!, { packagingItemId: 'saved', baselinePackaging: checkpoint });
+    const saved = { id: 'saved', variantId: 'v', status: 'COMPLETED', snapshot: {},
+      checkpoint: structuredClone(checkpoint) };
+    return { ...context, saved };
+  }
+
+  it.each(['FAILED', 'CANCELLED', 'QUEUED', 'RUNNING'])('does not mistake an uncommitted %s attempt for a changed package', async (status) => {
+    const { tx, service, snapshot, saved } = packagedFixture();
+    tx.effectPackagingItem.findMany.mockResolvedValue([
+      { ...saved, id: 'attempt', status, snapshot: { operation: 'BATCH_PACKAGE' }, checkpoint: {} }, saved,
+    ] as never);
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).resolves.toBeUndefined();
+    expect(tx.effectPackagingItem.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      projectId: 'p', variantId: 'v', run: { workflowRunId: 'mix', templateId: { in: ['t'] } },
+    } }));
+  });
+
+  it('ignores supplier-only metadata but still rejects a real saved audio edit', async () => {
+    const { tx, service, snapshot, saved } = packagedFixture();
+    Object.assign(saved.checkpoint, { musicTaskId: 'supplier-task', musicSubmissionPending: false });
+    tx.effectPackagingItem.findMany.mockResolvedValue([saved] as never);
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).resolves.toBeUndefined();
+    saved.checkpoint.music.volume = 0.7;
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).rejects.toThrow('包装已被修改');
+  });
+
+  it('rejects a newer successful commit even with identical content', async () => {
+    const { tx, service, snapshot, saved } = packagedFixture();
+    tx.effectPackagingItem.findMany.mockResolvedValue([{ ...saved, id: 'new-commit' }, saved] as never);
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).rejects.toThrow('包装已被修改');
+  });
+
+  it('keeps the legacy unfinished-package barrier instead of silently reviving old content', async () => {
+    const { tx, service, snapshot, saved } = packagedFixture();
+    tx.effectPackagingItem.findMany.mockResolvedValue([{ ...saved, id: 'legacy', status: 'FAILED' }, saved] as never);
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).rejects.toThrow('包装已被修改');
+    delete snapshot.sourceRefresh!.packagingItemId;
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).rejects.toThrow('包装已被修改');
+  });
+
+  it('allows an unpackaged baseline with only an uncommitted attempt, but rejects its later success', async () => {
+    const { tx, service, snapshot, saved } = packagedFixture();
+    delete snapshot.sourceRefresh!.packagingItemId;
+    const attempt = { ...saved, snapshot: { operation: 'SINGLE_PACKAGE' }, status: 'FAILED' };
+    tx.effectPackagingItem.findMany.mockResolvedValue([attempt] as never);
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).resolves.toBeUndefined();
+    attempt.status = 'COMPLETED';
+    await expect(service.assertRefreshCurrent(tx, 'p', snapshot)).rejects.toThrow('包装已被修改');
   });
 });

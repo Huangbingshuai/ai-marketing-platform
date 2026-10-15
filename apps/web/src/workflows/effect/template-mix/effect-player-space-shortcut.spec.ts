@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ownsPlayerSpace } from './effect-player-space-shortcut';
 import page from './EffectTemplateMixNodePage.vue?raw';
+import { vueLifecycleCallback } from './__tests__/vue-source';
 
 const space = {
   code: 'Space',
@@ -52,6 +53,6 @@ describe('workbench playback Space ownership', () => {
     expect(handler).toContain('togglePreviewPlayback();');
     expect(page).toContain("window.addEventListener('blur', resetPlayerSpace);");
     expect(page).toContain('active: workbenchActive');
-    expect(page).toContain('onDeactivated(() => {\n  resetPlayerSpace();');
+    expect(vueLifecycleCallback(page, 'onDeactivated')).toContain('resetPlayerSpace();');
   });
 });

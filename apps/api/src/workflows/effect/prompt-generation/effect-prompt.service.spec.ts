@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { EffectPromptService } from './effect-prompt.service';
-import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
+import { compileEffectPromptSharedPrompt, pendingEffectPromptSemanticEvaluation, recomputePromptQuality } from './effect-prompt.quality';
 
 const completionGateFixture = (duplicate = false) => {
   const settings = { targetCount: 10, defaultDurationSeconds: 5 };
@@ -75,6 +75,84 @@ const completionGateFixture = (duplicate = false) => {
     duplicateRate: 0,
   });
 };
+
+describe('prompt result source filtering', () => {
+  it('restores a deleted batch assessment for display without writes, AI calls or changed revisions', async () => {
+    const generated = completionGateFixture();
+    generated.metrics.semanticEvaluation = { status: 'VERIFIED', duplicateRate: 20,
+      duplicateCount: 2, evaluatedCount: 10, duplicateGroupCount: 1 };
+    const draft = structuredClone(generated);
+    draft.items.pop();
+    draft.metrics.semanticEvaluation = pendingEffectPromptSemanticEvaluation();
+    const record = { id: 'result-a', revision: 15, draftResult: draft, generatedResult: generated };
+    const before = structuredClone(record);
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      latestResult: vi.fn().mockResolvedValue(record),
+    };
+    const service = new EffectPromptService(repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never, {} as never);
+    for (const origin of [undefined, 'AI', 'MANUAL'] as const) {
+      const output = await service.result('project-a', 'workflow-a', 'product-a', 1, 5,
+        '', undefined, 'PRIMARY', origin);
+      expect(output.revision).toBe(15);
+      expect(output.result.metrics.semanticEvaluation).toEqual(generated.metrics.semanticEvaluation);
+      expect(output.result.metrics.acceptedCount).toBe(9);
+    }
+    expect(record).toEqual(before);
+  });
+
+  it('filters the entire batch before pagination without changing metrics or edited AI origins', async () => {
+    const draft = completionGateFixture();
+    draft.items[1]!.origin = 'MANUAL';
+    draft.items[8]!.origin = 'MANUAL';
+    draft.items[0]!.manualEdited = true;
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      latestResult: vi.fn().mockResolvedValue({ id: 'result-a', revision: 1, draftResult: draft }),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const cacheQueries: unknown[] = [];
+    const cache = {
+      read: vi.fn(async (
+        _scope: unknown,
+        _key: string,
+        load: () => Promise<unknown>,
+        query: unknown,
+      ) => {
+        cacheQueries.push(query);
+        return load();
+      }),
+    };
+    const service = new EffectPromptService(
+      repository as never, projects as never, {} as never,
+      undefined, undefined, cache as never,
+    );
+    const all = await service.result('project-a', 'workflow-a', 'product-a', 1, 100);
+    const manual = await service.result('project-a', 'workflow-a', 'product-a', 2, 1,
+      '', undefined, 'PRIMARY', 'MANUAL');
+    const ai = await service.result('project-a', 'workflow-a', 'product-a', 1, 100,
+      '', undefined, 'PRIMARY', 'AI');
+    const combined = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
+      '晨光', 'HOOK', 'PRIMARY_OR_COMPATIBLE', 'MANUAL');
+    const empty = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
+      '', 'EFFECT', 'PRIMARY', 'MANUAL');
+    expect(all.total).toBe(10);
+    expect(manual.total).toBe(2);
+    expect(manual.items.map(item => item.code)).toEqual(['P009']);
+    expect(ai.total).toBe(8);
+    expect(ai.items.some(item => item.code === 'P001' && item.manualEdited)).toBe(true);
+    expect(combined.items.map(item => item.code)).toEqual(['P002']);
+    expect(empty.total).toBe(0);
+    expect(empty.items).toEqual([]);
+    for (const result of [all, manual, ai, combined, empty]) {
+      expect(result.sourceCounts).toEqual({ AI: 8, MANUAL: 2 });
+    }
+    expect(manual.result.metrics).toEqual(all.result.metrics);
+    expect(cacheQueries).toContainEqual(expect.objectContaining({ origin: 'MANUAL', page: 2 }));
+    expect(cacheQueries).toContainEqual(expect.objectContaining({ origin: 'AI' }));
+  });
+});
 
 const currentInputSnapshot = (overrides: Record<string, unknown> = {}) => ({
   projectId: 'project-a',
@@ -931,7 +1009,7 @@ describe('EffectPromptService settings contract', () => {
   });
 
   it.each([4, 15, 16, 30])(
-    'queues AI creative-structure autofill for the exact saved %s-second manual item',
+    'saves the exact %s-second manual item without starting AI',
     async (duration) => {
       const draftResult = completionGateFixture();
       const repository = {
@@ -973,15 +1051,11 @@ describe('EffectPromptService settings contract', () => {
         { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
         {} as never,
       );
-      const evaluationRun = { id: 'evaluation-run', operation: 'ITEM_EVALUATE' } as never;
-      const start = vi.spyOn(service, 'start').mockResolvedValue({ run: evaluationRun });
+      const start = vi.spyOn(service, 'start');
 
       const output = await service.addItem('project-a', 'result-a', 1, {
         content: '家庭厨房中，一双手把广式腊肠放入蒸锅，镜头停在锅盖合上的瞬间。',
         targetDurationSeconds: duration,
-        evaluateAfterSave: true,
-        expectedSettingsRevision: 3,
-        idempotencyKey: 'manual-add-evaluation',
       });
 
       const mutation = repository.mutateResult.mock.calls[0]?.[3];
@@ -991,13 +1065,18 @@ describe('EffectPromptService settings contract', () => {
         expect.objectContaining({ origin: 'MANUAL', targetDurationSeconds: duration }),
       );
       expect(mutation.item.dimensions).toEqual({
-        narrative: '等待 AI 自动补齐',
-        scene: '等待 AI 自动补齐',
-        persona: '等待 AI 自动补齐',
-        productRelation: '等待 AI 自动补齐',
-        camera: '等待 AI 自动补齐',
-        emotion: '等待 AI 自动补齐',
+        narrative: '',
+        scene: '',
+        persona: '',
+        productRelation: '',
+        camera: '',
+        emotion: '',
       });
+      expect(mutation.item.creativeCore).toBe('');
+      expect(mutation.item.classificationStatus).toBe('VERIFIED');
+      expect(output.result.metrics.hardIssueCounts).not.toContainEqual(
+        expect.objectContaining({ code: 'CLASSIFICATION_PENDING' }),
+      );
       expect(output.affectedItemId).toBe(mutation.item.id);
       const displayOrder = [...output.result.items].sort((left, right) =>
         left.code.localeCompare(right.code, 'zh-CN', { numeric: true }),
@@ -1005,15 +1084,7 @@ describe('EffectPromptService settings contract', () => {
       expect(output.affectedItemIndex).toBe(
         displayOrder.findIndex(({ id }) => id === mutation.item.id),
       );
-      expect(output.evaluationRun).toBe(evaluationRun);
-      expect(start).toHaveBeenCalledWith('project-a', 'product-a', {
-        workflowRunId: 'workflow-a',
-        operation: 'ITEM_EVALUATE',
-        targetItemId: mutation.item.id,
-        expectedSettingsRevision: 3,
-        expectedResultRevision: 2,
-        idempotencyKey: 'manual-add-evaluation',
-      });
+      expect(start).not.toHaveBeenCalled();
     },
   );
 
@@ -1063,6 +1134,7 @@ describe('EffectPromptService settings contract', () => {
     const output = await service.addItem('project-a', 'result-a', 1, {
       content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
       primaryPurpose: 'EFFECT',
+      compatiblePurposes: ['EFFECT', 'HOOK'],
       creativeCore: '用家常装盘突出方便搭配',
       dimensions: {
         narrative: '动作展示',
@@ -1073,17 +1145,14 @@ describe('EffectPromptService settings contract', () => {
         emotion: '温暖日常',
       },
       targetDurationSeconds: 5,
-      evaluateAfterSave: false,
     });
 
     expect(start).not.toHaveBeenCalled();
-    expect(output.evaluationRun).toBeUndefined();
-    expect(output.evaluationStartError).toBeUndefined();
     expect(output.result.items.find(({ id }) => id === output.affectedItemId)).toMatchObject({
       classificationStatus: 'VERIFIED',
       fragmentType: 'EFFECT',
       primaryPurpose: 'EFFECT',
-      compatiblePurposes: ['EFFECT'],
+      compatiblePurposes: ['EFFECT', 'HOOK'],
       content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
       creativeCore: '用家常装盘突出方便搭配',
       dimensions: {
@@ -1097,11 +1166,43 @@ describe('EffectPromptService settings contract', () => {
     });
   });
 
-  it('rejects a partial user-authored creative structure', async () => {
+  it.each([
+    { creativeCore: '只填写了创意主线' },
+    { dimensions: { scene: '自然光下的桌面' } },
+    { creativeCore: '', dimensions: { scene: '' } },
+  ])('accepts independently optional creative notes: %j', async (notes) => {
     const draftResult = completionGateFixture();
     const repository = {
-      result: vi.fn().mockResolvedValue({ draftResult }),
-      mutateResult: vi.fn(),
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        workflowRunId: 'workflow-a',
+        draftResult,
+      }),
+      mutateResult: vi
+        .fn()
+        .mockImplementation(
+          async (
+            _projectId: string,
+            _resultId: string,
+            _revision: number,
+            mutation: { item: EffectPromptItem },
+          ) => ({
+            kind: 'UPDATED',
+            result: {
+              id: 'result-a',
+              productId: 'product-a',
+              revision: 2,
+              savedAt: new Date(),
+              updatedAt: new Date(),
+            },
+            draft: recomputePromptQuality(
+              [...draftResult.items, mutation.item],
+              draftResult.settings,
+              draftResult.metrics,
+            ),
+          }),
+        ),
     };
     const service = new EffectPromptService(
       repository as never,
@@ -1109,15 +1210,24 @@ describe('EffectPromptService settings contract', () => {
       {} as never,
     );
 
-    await expect(
-      service.addItem('project-a', 'result-a', 1, {
-        content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
-        creativeCore: '只填写了创意主线',
-        targetDurationSeconds: 5,
-        evaluateAfterSave: false,
-      }),
-    ).rejects.toThrow('Prompt 正文、片段时长或创意结构不符合要求');
-    expect(repository.mutateResult).not.toHaveBeenCalled();
+    const output = await service.addItem('project-a', 'result-a', 1, {
+      content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+      ...notes,
+      targetDurationSeconds: 5,
+    });
+    expect(output.result.items.find(({ id }) => id === output.affectedItemId)).toMatchObject({
+      origin: 'MANUAL',
+      classificationStatus: 'VERIFIED',
+      creativeCore: notes.creativeCore ?? '',
+      dimensions: {
+        scene: notes.dimensions?.scene ?? '',
+        narrative: '',
+        persona: '',
+        camera: '',
+        productRelation: '',
+        emotion: '',
+      },
+    });
   });
 
   it('rejects changes to an existing Prompt duration even within the manual duration range', async () => {
@@ -1174,9 +1284,12 @@ describe('EffectPromptService settings contract', () => {
       { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
       {} as never,
     );
+    const start = vi.spyOn(service, 'start');
 
     const result = await service.updateItem('project-a', 'result-a', draftResult.items[0]!.id, 1, {
       content: `${draftResult.items[0]!.content} 已编辑。`,
+      primaryPurpose: 'EFFECT',
+      compatiblePurposes: ['EFFECT', 'CTA'],
       creativeCore: draftResult.items[0]!.creativeCore,
       targetDurationSeconds: draftResult.items[0]!.targetDurationSeconds,
       dimensions: draftResult.items[0]!.dimensions,
@@ -1184,7 +1297,15 @@ describe('EffectPromptService settings contract', () => {
 
     expect(result.revision).toBe(2);
     expect(repository.mutateResult).toHaveBeenCalledOnce();
+    expect(repository.mutateResult.mock.calls[0]?.[3]).toMatchObject({
+      kind: 'UPDATE',
+      item: {
+        primaryPurpose: 'EFFECT',
+        compatiblePurposes: ['EFFECT', 'CTA'],
+      },
+    });
     expect(repository.commitValidatedResult).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
   });
 
   it('combines multi-keyword search with explicit primary or compatible purpose matching', async () => {
@@ -1497,6 +1618,16 @@ describe('EffectPromptService settings contract', () => {
     expect(output.items[0]?.content).toContain('广式腊肠');
     expect(output.items.some(({ content }) => content.includes('窗边桌面'))).toBe(true);
     expect(output.result.qualityStatus).toBe('NEEDS_REVIEW');
+    const aiOnly = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
+      '', undefined, 'PRIMARY', 'AI');
+    const manualOnly = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
+      '', undefined, 'PRIMARY', 'MANUAL');
+    expect(aiOnly.total).toBe(2);
+    expect(manualOnly.total).toBe(0);
+    expect(manualOnly.items).toEqual([]);
+    expect(manualOnly.isPartialPreview).toBe(true);
+    expect(aiOnly.sourceCounts).toEqual({ AI: 2, MANUAL: 0 });
+    expect(manualOnly.sourceCounts).toEqual({ AI: 2, MANUAL: 0 });
   });
 
   it('does not recreate removed quality gates during completion', async () => {

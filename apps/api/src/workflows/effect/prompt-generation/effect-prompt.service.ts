@@ -5,6 +5,7 @@ import type {
   EffectPromptFragmentType,
   EffectPromptInsightField,
   EffectPromptItem,
+  EffectPromptItemOrigin,
   EffectPromptOperation,
   EffectPromptPurposeMatchMode,
   EffectPromptRegenerationMode,
@@ -66,6 +67,7 @@ import {
   isEffectPromptItem,
   isEffectPromptSettings,
   parseEffectPromptBatchResult,
+  parseEffectPromptStoredDraft,
   recomputePromptQuality,
   compileEffectPromptSharedPrompt,
 } from './effect-prompt.quality';
@@ -76,6 +78,7 @@ import type {
   EffectPromptInputSnapshot,
 } from './effect-prompt.types';
 import { presentEffectPromptNodeDetail } from './effect-prompt-node-detail';
+import { promptStageProgress } from './effect-prompt.progress';
 
 const badRequest = (message: string) =>
   new ApiHttpException(message, HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
@@ -90,11 +93,6 @@ const publicWarnings = (value: unknown): string[] =>
     : [];
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-
-const normalizedSettingsHash = (state: unknown): string | null => {
-  const settings = readEffectPromptSettings(state);
-  return settings ? workflowStateHash(settings) : null;
-};
 
 const isValidVisualStrategyCheckpoint = (
   checkpoint: unknown,
@@ -146,19 +144,6 @@ const currentSnapshot = (record: EffectPromptRunRecord): EffectPromptInputSnapsh
 const operationOf = (record: EffectPromptRunRecord): EffectPromptOperation => {
   const snapshot = record.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
   return snapshot?.operation ?? record.operation;
-};
-
-const stageProgress = (
-  nodeId: EffectPromptNodeId,
-  status: string,
-  operation: EffectPromptRun['operation'],
-): number => {
-  const nodeIds = effectPromptRunGraphNodeIds(operation);
-  const index = nodeIds.indexOf(nodeId);
-  const base = Math.round((Math.max(0, index) / nodeIds.length) * 95);
-  return status === 'SUCCEEDED' || status === 'PARTIAL' || status === 'SKIPPED'
-    ? Math.min(99, base + Math.round(95 / nodeIds.length))
-    : Math.max(1, base);
 };
 
 const persistedFailedNode = (record: EffectPromptRunRecord): string | null =>
@@ -363,6 +348,12 @@ const previewItemId = (sourceFingerprint: string, slotId: string): string => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
+const promptSourceCounts = (items: EffectPromptItem[]): Record<EffectPromptItemOrigin, number> => {
+  const counts = { AI: 0, MANUAL: 0 };
+  for (const item of items) counts[item.origin] += 1;
+  return counts;
+};
+
 const promptPreviewItems = (run: EffectPromptPreviewRunRecord): EffectPromptItem[] => {
   const unique = new Map<string, EffectPromptItem>();
   for (const shard of run.shards) {
@@ -426,10 +417,14 @@ const previewRenderProfile = (snapshot: EffectPromptInputSnapshot): EffectPrompt
   };
 };
 
-const validateDimensions = (dimensions: EffectPromptDimensions): boolean =>
+const validateDimensions = (dimensions: Partial<EffectPromptDimensions>): boolean =>
   Boolean(
     dimensions &&
-    Object.keys(dimensions).length === EFFECT_PROMPT_DIMENSIONS.length &&
+    !Array.isArray(dimensions) &&
+    typeof dimensions === 'object' &&
+    Object.keys(dimensions).every((key) =>
+      EFFECT_PROMPT_DIMENSIONS.some((axis) => axis.key === key),
+    ) &&
     EFFECT_PROMPT_DIMENSIONS.every(({ key }) => {
       const maximum = {
         narrative: 120,
@@ -439,38 +434,27 @@ const validateDimensions = (dimensions: EffectPromptDimensions): boolean =>
         camera: 160,
         emotion: 120,
       }[key];
-      return (
-        typeof dimensions[key] === 'string' &&
-        dimensions[key].trim().length > 0 &&
-        dimensions[key].length <= maximum
-      );
+      const value = dimensions[key];
+      return value === undefined || (typeof value === 'string' && value.length <= maximum);
     }),
   );
 
-const pendingItemDimensions = (): EffectPromptDimensions => ({
-  narrative: '等待 AI 自动补齐',
-  scene: '等待 AI 自动补齐',
-  persona: '等待 AI 自动补齐',
-  productRelation: '等待 AI 自动补齐',
-  camera: '等待 AI 自动补齐',
-  emotion: '等待 AI 自动补齐',
+const emptyItemDimensions = (): EffectPromptDimensions => ({
+  narrative: '',
+  scene: '',
+  persona: '',
+  productRelation: '',
+  camera: '',
+  emotion: '',
 });
-
-const hasCompleteCreativeStructure = (input: PromptItemMutationInput): boolean =>
-  typeof input.creativeCore === 'string' &&
-  input.creativeCore.trim().length > 0 &&
-  input.dimensions !== undefined &&
-  validateDimensions(input.dimensions);
 
 type PromptItemMutationInput = {
   content: string;
   primaryPurpose?: EffectPromptFragmentType;
+  compatiblePurposes?: EffectPromptFragmentType[];
   creativeCore?: string;
-  dimensions?: EffectPromptDimensions;
+  dimensions?: Partial<EffectPromptDimensions>;
   targetDurationSeconds: number;
-  evaluateAfterSave?: boolean;
-  expectedSettingsRevision?: number;
-  idempotencyKey?: string;
 };
 
 @Injectable()
@@ -550,11 +534,19 @@ export class EffectPromptService {
 
   async workspace(projectId: string, workflowRunId: string): Promise<GetEffectPromptWorkspaceData> {
     return this.readCache
-      ? this.readCache.read({ projectId, workflowRunId }, 'prompt', () => this.loadWorkspace(projectId, workflowRunId))
+      ? this.readCache.read(
+          { projectId, workflowRunId },
+          'prompt',
+          () => this.loadWorkspace(projectId, workflowRunId),
+          { preserveBatchSemanticEvaluation: true },
+        )
       : this.loadWorkspace(projectId, workflowRunId);
   }
 
-  private async loadWorkspace(projectId: string, workflowRunId: string): Promise<GetEffectPromptWorkspaceData> {
+  private async loadWorkspace(
+    projectId: string,
+    workflowRunId: string,
+  ): Promise<GetEffectPromptWorkspaceData> {
     await this.requireWorkflow(projectId, workflowRunId);
     const products = await this.repository.products(projectId, workflowRunId);
     const states: EffectPromptProductState[] = await Promise.all(
@@ -571,7 +563,7 @@ export class EffectPromptService {
           resultRecord && resultRecord.runId !== latestRunRecord?.id
             ? await this.repository.run(projectId, resultRecord.runId)
             : latestRunRecord;
-        const draft = resultRecord ? parseEffectPromptBatchResult(resultRecord.draftResult) : null;
+        const draft = resultRecord ? parseEffectPromptStoredDraft(resultRecord) : null;
         const settingsNode = await this.repository.settingsNode(
           projectId,
           workflowRunId,
@@ -611,8 +603,7 @@ export class EffectPromptService {
             insight.availability !== 'AVAILABLE' ||
             snapshot?.insightArtifact.id !== insight.id ||
             snapshot.insightArtifact.revision !== insight.revision ||
-            snapshot.insightArtifact.contentHash !== insight.contentHash ||
-            normalizedSettingsHash(settingsNode?.state) !== resultRecord.settingsHash),
+            snapshot.insightArtifact.contentHash !== insight.contentHash),
         );
         const artifact = await this.repository.promptArtifact(projectId, workflowRunId, product.id);
         const artifactInput =
@@ -669,7 +660,6 @@ export class EffectPromptService {
     settings: unknown,
   ) {
     await this.requireWorkflow(projectId, workflowRunId);
-    await this.assertPromptWritable(projectId, workflowRunId);
     if (!isEffectPromptSettings(settings)) throw badRequest('Prompt 批次设置不符合允许范围');
     if (settings.targetCount < EFFECT_PROMPT_LIMITS.minNewBatchCount)
       throw badRequest(`新批次至少生成 ${EFFECT_PROMPT_LIMITS.minNewBatchCount} 条 Prompt`);
@@ -691,28 +681,8 @@ export class EffectPromptService {
       1,
     );
     if (result.conflict) throw conflict('Prompt 批次设置已在其他页面更新，请刷新后重试');
-    const latestResult = await this.repository.latestResult(projectId, workflowRunId, productId);
-    const currentDraft = latestResult
-      ? parseEffectPromptBatchResult(latestResult.draftResult)
-      : null;
-    if (
-      latestResult &&
-      currentDraft &&
-      currentDraft.settings.targetCount === normalized.targetCount &&
-      currentDraft.settings.defaultDurationSeconds === normalized.defaultDurationSeconds &&
-      currentDraft.settings.styleMode === normalized.styleMode &&
-      currentDraft.settings.styleTone === normalized.styleTone &&
-      currentDraft.settings.deliveryChannel === normalized.deliveryChannel &&
-      workflowStateHash(currentDraft.settings.disabledElements) !==
-        workflowStateHash(normalized.disabledElements)
-    ) {
-      await this.repository.mutateResult(projectId, latestResult.id, latestResult.revision, {
-        kind: 'SETTINGS',
-        settings: normalized,
-        sharedPrompt: compileEffectPromptSharedPrompt(normalized.disabledElements ?? []),
-        settingsHash: hash,
-      });
-    }
+    // These settings belong to the next generation attempt. Existing results
+    // retain their own settings/shared-prompt snapshot until explicitly regenerated.
     return {
       productId,
       settings: normalized,
@@ -823,12 +793,41 @@ export class EffectPromptService {
   }
 
   async result(
-    projectId: string, workflowRunId: string, productId: string, page: number, pageSize: number,
-    query = '', purpose?: EffectPromptFragmentType, purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
+    projectId: string,
+    workflowRunId: string,
+    productId: string,
+    page: number,
+    pageSize: number,
+    query = '',
+    purpose?: EffectPromptFragmentType,
+    purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
+    origin?: EffectPromptItemOrigin,
   ): Promise<GetEffectPromptResultData> {
-    const load = () => this.loadResult(projectId, workflowRunId, productId, page, pageSize, query, purpose, purposeMatch);
-    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'prompt-result', load,
-      { productId, page, pageSize, query, purpose, purposeMatch }) : load();
+    const load = () =>
+      this.loadResult(
+        projectId,
+        workflowRunId,
+        productId,
+        page,
+        pageSize,
+        query,
+        purpose,
+        purposeMatch,
+        origin,
+      );
+    return this.readCache
+      ? this.readCache.read({ projectId, workflowRunId }, 'prompt-result', load, {
+          includeSourceCounts: true,
+          preserveBatchSemanticEvaluation: true,
+          productId,
+          page,
+          pageSize,
+          query,
+          purpose,
+          purposeMatch,
+          origin,
+        })
+      : load();
   }
 
   private async loadResult(
@@ -840,6 +839,7 @@ export class EffectPromptService {
     query = '',
     purpose?: EffectPromptFragmentType,
     purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
+    origin?: EffectPromptItemOrigin,
   ): Promise<GetEffectPromptResultData> {
     await this.requireWorkflow(projectId, workflowRunId);
     const record = await this.repository.latestResult(projectId, workflowRunId, productId);
@@ -872,7 +872,10 @@ export class EffectPromptService {
       );
       const filtered = preview.items
         .filter(
-          (item) => itemMatchesPurpose(item, purpose, purposeMatch) && searchable(item, query),
+          (item) =>
+            (!origin || item.origin === origin) &&
+            itemMatchesPurpose(item, purpose, purposeMatch) &&
+            searchable(item, query),
         )
         .sort(comparePromptItemsForDisplay);
       const offset = (page - 1) * pageSize;
@@ -883,6 +886,7 @@ export class EffectPromptService {
         revision: null,
         isPartialPreview: true,
         previewRunId: failedRun.id,
+        sourceCounts: promptSourceCounts(preview.items),
         result: {
           settings: preview.settings,
           renderProfile: preview.renderProfile,
@@ -896,10 +900,15 @@ export class EffectPromptService {
         pageSize,
       };
     }
-    const draft = parseEffectPromptBatchResult(record.draftResult);
+    const draft = parseEffectPromptStoredDraft(record);
     if (!draft) throw conflict('Prompt 结果结构无效，请重新生成');
     const filtered = draft.items
-      .filter((item) => itemMatchesPurpose(item, purpose, purposeMatch) && searchable(item, query))
+      .filter(
+        (item) =>
+          (!origin || item.origin === origin) &&
+          itemMatchesPurpose(item, purpose, purposeMatch) &&
+          searchable(item, query),
+      )
       .sort(comparePromptItemsForDisplay);
     const offset = (page - 1) * pageSize;
     const summary = {
@@ -916,6 +925,7 @@ export class EffectPromptService {
       revision: record.revision,
       isPartialPreview: false,
       previewRunId: null,
+      sourceCounts: promptSourceCounts(draft.items),
       result: summary,
       items: filtered.slice(offset, offset + pageSize),
       total: filtered.length,
@@ -927,8 +937,9 @@ export class EffectPromptService {
   private validItemInput(input: {
     content: string;
     primaryPurpose?: EffectPromptFragmentType;
+    compatiblePurposes?: EffectPromptFragmentType[];
     creativeCore?: string;
-    dimensions?: EffectPromptDimensions;
+    dimensions?: Partial<EffectPromptDimensions>;
     targetDurationSeconds: number;
   }): boolean {
     const hasCreativeCore = input.creativeCore !== undefined;
@@ -938,9 +949,15 @@ export class EffectPromptService {
       input.content.length <= 12_000 &&
       (input.primaryPurpose === undefined ||
         EFFECT_PROMPT_FRAGMENT_TYPES.includes(input.primaryPurpose)) &&
-      hasCreativeCore === hasDimensions &&
+      (input.compatiblePurposes === undefined ||
+        (Array.isArray(input.compatiblePurposes) &&
+          input.compatiblePurposes.length <= EFFECT_PROMPT_FRAGMENT_TYPES.length &&
+          input.compatiblePurposes.every((purpose) =>
+            EFFECT_PROMPT_FRAGMENT_TYPES.includes(purpose),
+          ) &&
+          new Set(input.compatiblePurposes).size === input.compatiblePurposes.length)) &&
       (!hasCreativeCore ||
-        (input.creativeCore!.trim().length > 0 && input.creativeCore!.length <= 160)) &&
+        (typeof input.creativeCore === 'string' && input.creativeCore.length <= 160)) &&
       Number.isInteger(input.targetDurationSeconds) &&
       input.targetDurationSeconds >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
       input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxManualDurationSeconds &&
@@ -984,35 +1001,6 @@ export class EffectPromptService {
       ...(affectedItemId ? { affectedItemId } : {}),
       ...(affectedItemIndex >= 0 ? { affectedItemIndex } : {}),
     };
-  }
-
-  private async queueSavedItemEvaluation(
-    projectId: string,
-    workflowRunId: string,
-    saved: UpdateEffectPromptResultData,
-    itemId: string,
-    input: PromptItemMutationInput,
-  ): Promise<UpdateEffectPromptResultData> {
-    if (!input.evaluateAfterSave) return saved;
-    if (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
-      throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
-    try {
-      const started = await this.start(projectId, saved.productId, {
-        workflowRunId,
-        operation: 'ITEM_EVALUATE',
-        targetItemId: itemId,
-        expectedSettingsRevision: input.expectedSettingsRevision,
-        expectedResultRevision: saved.revision,
-        idempotencyKey: input.idempotencyKey.trim(),
-      });
-      return { ...saved, evaluationRun: started.run };
-    } catch (error) {
-      if (!(error instanceof ApiHttpException)) throw error;
-      return {
-        ...saved,
-        evaluationStartError: 'Prompt 已保存，但 AI 自动补齐未能启动，请稍后重试',
-      };
-    }
   }
 
   private presentRegenerationMutation(
@@ -1091,11 +1079,6 @@ export class EffectPromptService {
     await this.projects.get(projectId);
     this.validatePromptDurationRange(input.targetDurationSeconds);
     if (!this.validItemInput(input)) throw badRequest('Prompt 正文、片段时长或创意结构不符合要求');
-    if (
-      input.evaluateAfterSave &&
-      (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
-    )
-      throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
     await this.assertPromptWritable(projectId, current.workflowRunId);
@@ -1107,35 +1090,34 @@ export class EffectPromptService {
         : null;
     if (Array.isArray(rawDraft?.items) && rawDraft.items.length >= EFFECT_PROMPT_LIMITS.maxCount)
       throw badRequest(`Prompt 数量已达到 ${EFFECT_PROMPT_LIMITS.maxCount} 条上限`);
-    const parsed = parseEffectPromptBatchResult(current.draftResult);
+    const parsed = parseEffectPromptStoredDraft(current);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
     const maxCode = parsed.items.reduce((maximum, item) => {
       const number = Number(item.code.replace(/\D+/gu, ''));
       return Number.isFinite(number) ? Math.max(maximum, number) : maximum;
     }, 0);
     const now = new Date().toISOString();
-    const dimensions = input.evaluateAfterSave
-      ? pendingItemDimensions()
-      : input.dimensions
-        ? (Object.fromEntries(
-            EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
-          ) as EffectPromptDimensions)
-        : pendingItemDimensions();
+    const dimensions = input.dimensions
+      ? (Object.fromEntries(
+          EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key]?.trim() ?? '']),
+        ) as EffectPromptDimensions)
+      : emptyItemDimensions();
     const primaryPurpose = input.primaryPurpose ?? 'PRODUCT_DISPLAY';
-    const creativeStructureReady = hasCompleteCreativeStructure(input);
+    const compatiblePurposes = [
+      primaryPurpose,
+      ...(input.compatiblePurposes ?? []).filter((purpose) => purpose !== primaryPurpose),
+    ];
     const item: EffectPromptItem = {
       id: randomUUID(),
       code: `P${String(maxCode + 1).padStart(3, '0')}`,
       origin: 'MANUAL',
       fragmentType: primaryPurpose,
       primaryPurpose,
-      compatiblePurposes: [primaryPurpose],
-      classificationStatus: creativeStructureReady ? 'VERIFIED' : 'PENDING',
+      compatiblePurposes,
+      classificationStatus: 'VERIFIED',
       productRelevance: 0,
       targetDurationSeconds: input.targetDurationSeconds,
-      creativeCore: input.evaluateAfterSave
-        ? '等待 AI 自动补齐'
-        : input.creativeCore?.trim() || '等待 AI 自动补齐',
+      creativeCore: input.creativeCore?.trim() ?? '',
       dimensions,
       content: input.content.trim(),
       insightBindings: [],
@@ -1151,7 +1133,7 @@ export class EffectPromptService {
       }),
       item.id,
     );
-    return this.queueSavedItemEvaluation(projectId, current.workflowRunId, saved, item.id, input);
+    return saved;
   }
 
   async updateItem(
@@ -1164,15 +1146,10 @@ export class EffectPromptService {
     await this.projects.get(projectId);
     this.validatePromptDurationRange(input.targetDurationSeconds);
     if (!this.validItemInput(input)) throw badRequest('Prompt 正文、片段时长或创意结构不符合要求');
-    if (
-      input.evaluateAfterSave &&
-      (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
-    )
-      throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
     await this.assertPromptWritable(projectId, current.workflowRunId);
-    const parsed = parseEffectPromptBatchResult(current.draftResult);
+    const parsed = parseEffectPromptStoredDraft(current);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
     const currentItem = parsed.items.find((item) => item.id === itemId);
     if (!currentItem) throw notFound('Prompt 不存在');
@@ -1181,16 +1158,21 @@ export class EffectPromptService {
     const primaryPurpose = input.primaryPurpose ?? currentItem.primaryPurpose;
     const compatiblePurposes = [
       primaryPurpose,
-      ...currentItem.compatiblePurposes.filter((purpose) => purpose !== primaryPurpose),
+      ...(input.compatiblePurposes ?? currentItem.compatiblePurposes).filter(
+        (purpose) => purpose !== primaryPurpose,
+      ),
     ];
-    const dimensions = input.evaluateAfterSave
-      ? pendingItemDimensions()
-      : input.dimensions
-        ? (Object.fromEntries(
-            EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
-          ) as EffectPromptDimensions)
-        : currentItem.dimensions;
-    const creativeStructureReady = hasCompleteCreativeStructure(input);
+    const dimensions = input.dimensions
+      ? (Object.fromEntries(
+          EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key]?.trim() ?? '']),
+        ) as EffectPromptDimensions)
+      : currentItem.dimensions;
+    if (
+      currentItem.origin === 'AI' &&
+      ((input.creativeCore !== undefined && !input.creativeCore.trim()) ||
+        EFFECT_PROMPT_DIMENSIONS.some(({ key }) => !dimensions[key].trim()))
+    )
+      throw badRequest('AI 生成条目的创意信息不能清空');
     const saved = this.presentMutation(
       await this.repository.mutateResult(projectId, resultId, expectedRevision, {
         kind: 'UPDATE',
@@ -1200,23 +1182,18 @@ export class EffectPromptService {
           fragmentType: primaryPurpose,
           primaryPurpose,
           compatiblePurposes,
-          classificationStatus: input.evaluateAfterSave
-            ? 'PENDING'
-            : creativeStructureReady
-              ? 'VERIFIED'
-              : currentItem.classificationStatus,
+          classificationStatus:
+            currentItem.origin === 'MANUAL' ? 'VERIFIED' : currentItem.classificationStatus,
           productRelevance: 0,
           targetDurationSeconds: input.targetDurationSeconds,
-          creativeCore: input.evaluateAfterSave
-            ? '等待 AI 自动补齐'
-            : input.creativeCore?.trim() || currentItem.creativeCore,
+          creativeCore: input.creativeCore?.trim() ?? currentItem.creativeCore,
           dimensions,
-          reviewIssues: [],
+          reviewIssues: currentItem.origin === 'MANUAL' ? [] : (currentItem.reviewIssues ?? []),
         },
       }),
       itemId,
     );
-    return this.queueSavedItemEvaluation(projectId, current.workflowRunId, saved, itemId, input);
+    return saved;
   }
 
   async deleteItem(
@@ -1245,7 +1222,7 @@ export class EffectPromptService {
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
     await this.assertPromptWritable(projectId, current.workflowRunId);
-    const parsed = parseEffectPromptBatchResult(current.draftResult);
+    const parsed = parseEffectPromptStoredDraft(current);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
     const compiledContent = content.trim();
     if (compiledContent.length > 60_000) throw badRequest('共用提示词不能超过 60000 字');
@@ -1292,7 +1269,7 @@ export class EffectPromptService {
     if (!record) throw notFound('Prompt 结果不存在');
     if (record.revision !== expectedRevision)
       throw conflict('Prompt 结果已被其他操作更新，请刷新后重试');
-    const draft = parseEffectPromptBatchResult(record.draftResult);
+    const draft = parseEffectPromptStoredDraft(record);
     if (!draft)
       return {
         valid: false,
@@ -1362,11 +1339,8 @@ export class EffectPromptService {
       record.workflowRunId,
       record.productId,
     );
-    const settingsNode = await this.repository.settingsNode(
-      projectId,
-      record.workflowRunId,
-      record.productId,
-    );
+    // The repository checks generation-settings freshness atomically at commit.
+    // Manual item edits retain their batch's original settings snapshot.
     if (
       !run ||
       run.status !== 'COMPLETED' ||
@@ -1376,8 +1350,7 @@ export class EffectPromptService {
       insight.availability !== 'AVAILABLE' ||
       insight.id !== snapshot.insightArtifact.id ||
       insight.revision !== snapshot.insightArtifact.revision ||
-      insight.contentHash !== snapshot.insightArtifact.contentHash ||
-      normalizedSettingsHash(settingsNode?.state) !== record.settingsHash
+      insight.contentHash !== snapshot.insightArtifact.contentHash
     )
       issues.push({ code: 'STALE_RESULT', message: '上游信息卡或 Prompt 设置已经变化' });
     if (issues.length)
@@ -1439,7 +1412,7 @@ export class EffectPromptService {
     await this.projects.get(projectId);
     const record = await this.repository.result(projectId, resultId);
     if (!record) throw notFound('Prompt 结果不存在');
-    const draft = parseEffectPromptBatchResult(record.draftResult);
+    const draft = parseEffectPromptStoredDraft(record);
     if (!draft) throw conflict('Prompt 结果结构无效，请重新生成');
     return {
       productId: record.productId,
@@ -1540,7 +1513,7 @@ export class EffectPromptService {
         attemptToken,
         node.id,
         input,
-        stageProgress(node.id, input.status, operation),
+        promptStageProgress(node.id, input.status, operation),
       ))
     )
       throw conflict('Worker 租约已失效');

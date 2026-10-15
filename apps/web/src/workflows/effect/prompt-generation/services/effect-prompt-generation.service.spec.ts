@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 
 import {
-  autoFillEffectPromptCreativeStructure,
   buildEffectPromptCsv,
   downloadEffectPromptBatch,
   loadEffectPromptNodeDetail,
@@ -193,6 +192,7 @@ describe('effect prompt generation HTTP service', () => {
       {
         content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
         primaryPurpose: 'PRODUCT_DISPLAY',
+        compatiblePurposes: ['PRODUCT_DISPLAY'],
         creativeCore: '',
         dimensions: {
           narrative: '',
@@ -209,16 +209,50 @@ describe('effect prompt generation HTTP service', () => {
 
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(request.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({ evaluateAfterSave: false, expectedRevision: 1 });
+    expect(body).toMatchObject({ expectedRevision: 1 });
+    expect(body).not.toHaveProperty('evaluateAfterSave');
     expect(body).not.toHaveProperty('expectedSettingsRevision');
     expect(body).not.toHaveProperty('idempotencyKey');
     expect(body).not.toHaveProperty('useAiAnalysis');
     expect(body).toHaveProperty('primaryPurpose', 'PRODUCT_DISPLAY');
+    expect(body).toHaveProperty('compatiblePurposes', ['PRODUCT_DISPLAY']);
     expect(body).not.toHaveProperty('creativeCore');
     expect(body).not.toHaveProperty('dimensions');
   });
 
-  it('提交用户填写的创意主线和完整六维信息', async () => {
+  it('新增可只填写一个维度，不自动补造其他创意信息', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response({ resultId: 'result-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await saveEffectPromptItem('project-1', 'result-1', 1, {
+      content: '商品放在桌面上，固定近景展示。',
+      primaryPurpose: 'PRODUCT_DISPLAY',
+      compatiblePurposes: ['PRODUCT_DISPLAY'],
+      creativeCore: '',
+      dimensions: {
+        narrative: '',
+        scene: '自然光下的桌面',
+        persona: '',
+        productRelation: '',
+        camera: '',
+        emotion: '',
+      },
+      targetDurationSeconds: 15,
+    });
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      creativeCore: '',
+      dimensions: {
+        narrative: '',
+        scene: '自然光下的桌面',
+        persona: '',
+        productRelation: '',
+        camera: '',
+        emotion: '',
+      },
+    });
+  });
+
+  it('编辑已有 Prompt 时只提交正文与时长，保留服务端已有分类和创意信息', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       response({
         resultId: 'result-1',
@@ -238,6 +272,7 @@ describe('effect prompt generation HTTP service', () => {
       {
         content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
         primaryPurpose: 'EFFECT',
+        compatiblePurposes: ['EFFECT', 'HOOK'],
         creativeCore: '用家常装盘突出方便搭配',
         dimensions: {
           narrative: '动作展示',
@@ -254,63 +289,10 @@ describe('effect prompt generation HTTP service', () => {
 
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(request.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({
-      primaryPurpose: 'EFFECT',
-      creativeCore: '用家常装盘突出方便搭配',
-      dimensions: {
-        narrative: '动作展示',
-        scene: '家庭餐桌',
-        productRelation: '蒸熟后直接装盘',
-      },
-    });
-  });
-
-  it('AI 自动补齐只提交用户 Prompt 和异步任务所需版本', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      response({
-        resultId: 'result-1',
-        productId: 'product-1',
-        revision: 2,
-        result: {},
-        savedAt: '2026-09-03T00:00:00.000Z',
-        unchanged: false,
-      }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    await autoFillEffectPromptCreativeStructure(
-      'project-1',
-      'result-1',
-      1,
-      3,
-      {
-        content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
-        primaryPurpose: 'PRODUCT_DISPLAY',
-        creativeCore: '不应发送的旧创意',
-        dimensions: {
-          narrative: '旧叙事',
-          scene: '旧场景',
-          persona: '旧人物',
-          productRelation: '旧关联',
-          camera: '旧镜头',
-          emotion: '旧情绪',
-        },
-        targetDurationSeconds: 5,
-      },
-    );
-
-    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    const body = JSON.parse(String(request.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({
+    expect(body).toEqual({
       content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
-      primaryPurpose: 'PRODUCT_DISPLAY',
       targetDurationSeconds: 5,
       expectedRevision: 1,
-      expectedSettingsRevision: 3,
-      evaluateAfterSave: true,
     });
-    expect(body).toHaveProperty('idempotencyKey');
-    expect(body).not.toHaveProperty('creativeCore');
-    expect(body).not.toHaveProperty('dimensions');
   });
 });

@@ -5,6 +5,7 @@ import type {
 } from '@ai-marketing/contracts';
 import { effectTemplateMixSourceChanges } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
@@ -249,6 +250,26 @@ describe('inherited render replacements in a selected mix branch', () => {
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
 
+  it('reports authoritative counts per template, including current and unfilled zeros', async () => {
+    const { service, working } = harness();
+    const value = draft();
+    const stale = structuredClone(value.templates[0]!);
+    stale.id = 'stale-template';
+    stale.workspace.variants[0]!.bindingRevisions[slotId] = 1;
+    const empty = structuredClone(value.templates[0]!);
+    empty.id = 'empty-template';
+    empty.workspace.variants = [];
+    value.templates.push(stale, empty);
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: value });
+    const result = await service.materialSources('project', 'run');
+    expect(result.pendingProjectCounts).toEqual({ [templateId]: 0, 'stale-template': 1, 'empty-template': 0 });
+    expect(result.pendingProjectCount).toBe(1);
+    stale.workspace.variants[0]!.bindingRevisions[slotId] = 2;
+    expect((await service.materialSources('project', 'run')).pendingProjectCounts)
+      .toEqual({ [templateId]: 0, 'stale-template': 0, 'empty-template': 0 });
+    expect(working.getNodeStateOrNull).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
   it('updates only changed source slots and keeps unchanged cloned bindings current', async () => {
     const { working, service } = harness();
     const state = draft();
@@ -733,6 +754,42 @@ describe('EffectTemplateMixService', () => {
     expect(result.draft.templates[0]!.workspace).toMatchObject(draft().templates[0]!.workspace);
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('isolates configuration saves from another template fill (editLocked=%s)', async (editLocked) => {
+    const { working } = harness();
+    const previous = draft();
+    previous.templates[0]!.workspace.variants = [];
+    previous.templates.push({
+      ...structuredClone(previous.templates[0]!),
+      id: '9c2504a0-b21a-4a7d-b486-14495c73bdf4',
+    });
+    previous.templates[1]!.workspace.template.name = '另一模板';
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      {
+        lockedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+        packagedTemplateIds: vi.fn().mockResolvedValue([]),
+        listRecent: vi.fn().mockResolvedValue([]),
+      } as unknown as EffectTemplateMixAiRepository,
+    );
+    const edited = structuredClone(previous);
+    edited.templates[editLocked ? 0 : 1]!.workspace.template.name += '修改';
+    edited.activeTemplateId = edited.templates[1]!.id;
+    const saving = service.saveDraft('project', 'run', 7, edited, true);
+    if (editLocked) {
+      await expect(saving).rejects.toThrow('智能填充正在运行，此模板暂时不能修改');
+      expect(working.putNodeState).not.toHaveBeenCalled();
+    } else {
+      await expect(saving).resolves.toEqual({ draftRevision: 8 });
+      const saved = working.putNodeState.mock.calls[0]![3].state as EffectTemplateMixDraft;
+      expect(saved.templates[0]!.aiFillLocked).toBe(true);
+      expect(saved.templates[1]!.aiFillLocked).toBe(false);
+      expect(saved.templates[0]!.workspace).toEqual(previous.templates[0]!.workspace);
+      expect(saved.templates[1]!.workspace.template.name).toBe('另一模板修改');
+      expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+    }
   });
 
   it('freezes manual roles for smart-fill and enforces them in role pools', async () => {
@@ -1343,6 +1400,30 @@ describe('EffectTemplateMixService', () => {
     });
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
   });
+
+  it.each(['valid', 'hash', 'revision', 'missing', 'unproven'] as const)(
+    'uses the creation-time adopted-source policy for a single package commit: %s', async (change) => {
+      const { service, working } = harness();
+      const adopted = { ...source, freshness: 'STALE',
+        revision: change === 'revision' ? 3 : 2,
+        availability: change === 'missing' ? 'MISSING' : 'AVAILABLE',
+        metadata: change === 'unproven' ? {} : { promptSourcePending: true },
+        payload: { ...(source.payload as object), promptText: '合法冻结正文',
+          adoptedPrompt: { promptContentHash: change === 'hash' ? 'invalid' :
+            createHash('sha256').update('合法冻结正文').digest('hex') } },
+      } as WorkingArtifact;
+      working.listArtifacts.mockResolvedValue({ items: [adopted], total: 1 });
+      const result = service.prepareValidation('project', 'run', 7, templateId,
+        { partial: true, manualOutput: true, variantIds: [variantId] });
+      if (change === 'valid') {
+        expect((await result).variants.map((row) => row.id)).toEqual([variantId]);
+      } else {
+        await expect(result).rejects.toThrow('成片工程引用了缺失');
+      }
+      expect(adopted.freshness).toBe('STALE');
+      expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a stale browser draft revision', async () => {
     const { service, working } = harness();
@@ -2140,6 +2221,10 @@ describe('EffectTemplateMixService', () => {
       },
     };
     const importState = structuredClone(state);
+    const shortGenerated = {
+      ...clips[0]!, id: 'short-generated', artifactKey: 'render-clip:short-generated',
+      payload: { ...clips[0]!.payload, durationSeconds: 4, fileObjectId: 'short-generated-file' },
+    };
     importState.templates[0]!.workspace.template.slots.forEach((slot) => {
       slot.duration = 5;
     });
@@ -2149,14 +2234,17 @@ describe('EffectTemplateMixService', () => {
       ...clips.slice(1),
       importedClip,
       shortImport,
+      shortGenerated,
     ]);
     await service.createAiRun('project', 'run', templateId, 7, 'import-key');
     const importSnapshot = create.mock.calls[7]![0].snapshot;
     expect(importSnapshot.durationFilteredImports).toBe(true);
+    expect(importSnapshot.durationFilteredMaterials).toBe(true);
     expect(importSnapshot.materials).toHaveLength(6);
     expect(
       importSnapshot.materials.some((material: { id: string }) => material.id === 'short-import'),
     ).toBe(false);
+    expect(importSnapshot.materials.some((material: { id: string }) => material.id === 'short-generated')).toBe(false);
     expect(
       importSnapshot.materials.find(
         (material: { id: string }) => material.id === 'imported-picture',
@@ -2572,6 +2660,18 @@ describe('EffectTemplateMixService', () => {
       ]),
     );
     expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
+    // New snapshots compare only duration-eligible current files. A short generated source
+    // outside the frozen pool must not make completion falsely report an upstream edit.
+    const shortClip = { ...source, id: 'short-ai', artifactKey: 'render-clip:short-ai',
+      payload: { ...source.payload as Record<string, unknown>, durationSeconds: 3, fileObjectId: 'short-file' } };
+    Object.assign(snapshot, { durationFilteredMaterials: true });
+    aiRuns.sourceArtifacts.mockResolvedValue([source, shortClip]);
+    await expect(service.completeAiRun('project', 'ai-run', 'token', trims)).resolves.toBeDefined();
+    Object.assign(snapshot, { durationFilteredMaterials: undefined, durationFilteredImports: true });
+    await expect(service.completeAiRun('project', 'ai-run', 'token', trims)).rejects.toThrow('视频片段已变化');
+    aiRuns.sourceArtifacts.mockResolvedValue([source, { ...shortClip,
+      payload: { ...shortClip.payload, origin: 'EXTERNAL_IMPORT' } }]);
+    await expect(service.completeAiRun('project', 'ai-run', 'token', trims)).resolves.toBeDefined();
   });
 
   it('creates a trim-only refresh for changed clips without changing their slot assignments', async () => {
@@ -2964,7 +3064,9 @@ describe('EffectTemplateMixService', () => {
     expect(result.materials[0]?.fileObjectId).toBe('new-file');
     expect(result.materials[0]).not.toHaveProperty('trimStartSeconds');
     currentPrompt.payload.items[0]!.content = '已修改的另一创意';
-    expect((await service.materialSources('project', 'run')).classificationPools).toEqual([]);
+    expect((await service.materialSources('project', 'run')).classificationPools?.[0]?.items).toEqual([
+      { materialId: 'replacement', role: 'HOOK', matchScore: 0.9 },
+    ]);
   });
 
   it('drops an inherited fill whose clips are not the ones this Run holds', async () => {

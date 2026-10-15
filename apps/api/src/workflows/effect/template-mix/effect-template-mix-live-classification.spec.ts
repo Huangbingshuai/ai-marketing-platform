@@ -186,19 +186,54 @@ describe('read-only live APPEND classification checkpoint projection', () => {
       { materialId: 'new', role: 'PAIN_POINT', matchScore: 1, source: 'MANUAL' },
     ]);
   });
-  it.each(['FAILED', 'CANCELLED', 'QUEUED'])('never exposes %s checkpoints', (status) => {
+  it('retains a complete failed APPEND pool without committing engineering or consuming additions', async () => {
+    const { read, readSources, live, old, draft } = harness();
+    live.status = 'FAILED';
+    live.classificationResult.push({ materialId: 'old', scores });
+    const before = structuredClone(draft);
+    const result = read([live], [old]);
+    expect(result.classificationPools[0]!.runId).toBe('live');
+    expect(result.classificationPools[0]!.items.map(({ materialId }) => materialId).sort())
+      .toEqual(['new', 'old']);
+    expect(result.draftRevision).toBe(1);
+    expect(draft).toEqual(before);
+    expect((await readSources()).classificationPools?.[0]?.runId).toBe('live');
+    expect(live.status).toBe('FAILED');
+  });
+  it.each(['FAILED', 'CANCELLED', 'QUEUED'])('never exposes partial or unconfirmed %s checkpoints', (status) => {
     const { read, live, old } = harness();
     live.status = status;
     expect(read([live], [old]).classificationPools[0]!.runId).toBe('completed');
   });
-  it('excludes active full refill and active ancestor/sibling tasks', () => {
+  it.each(['RUNNING', 'FAILED'])('excludes %s full refill and ancestor/sibling tasks', (status) => {
     const { read, live } = harness();
+    live.status = status;
+    live.classificationResult.push({ materialId: 'old', scores });
     live.workflowRunId = 'sibling';
     expect(read([live]).classificationPools).toEqual([]);
     live.workflowRunId = 'run';
     delete (live.inputSnapshot as { incremental?: unknown }).incremental;
     expect(read([live]).classificationPools).toEqual([]);
   });
+  it('does not restore failed classifications over newer manual role edits', () => {
+    const { read, live, draft } = harness();
+    live.status = 'FAILED';
+    live.classificationResult.push({ materialId: 'old', scores });
+    draft.templates[0]!.materialRoleEditVersion = 1;
+    expect(read([live]).classificationPools).toEqual([]);
+  });
+  it.each(['fileObjectId', 'artifactRevision', 'contentHash', 'prompt'])(
+    'rejects failed checkpoint rows with changed %s while retaining unchanged identities', (field) => {
+      const { read, live } = harness();
+      live.status = 'FAILED';
+      live.classificationResult.push({ materialId: 'old', scores });
+      Object.assign(live.inputSnapshot.materials[1]!, {
+        [field]: field === 'artifactRevision' ? 99 : 'obsolete',
+      });
+      expect(read([live]).classificationPools[0]!.items.map(({ materialId }) => materialId))
+        .toEqual(['old']);
+    },
+  );
   it.each(['fileObjectId', 'artifactRevision', 'contentHash'])(
     'rejects obsolete %s checkpoint rows',
     (field) => {

@@ -654,6 +654,95 @@ async def test_run_resume_handles_each_missing_item_only(count: int) -> None:
     message.nack.assert_not_called()
 
 
+async def test_retryable_background_heartbeat_failure_does_not_cancel_paid_item() -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.ROOT = 'internal/workers/effect-template-mix'
+    row = dict(item(), status='QUEUED')
+    failure_seen = asyncio.Event()
+    async def request(method: str, path: str, **_: Any) -> Any:
+        if path.endswith('/claim'):
+            return {'terminal': False, 'attemptToken': 'token', 'items': [row]}
+        if path.endswith('/heartbeat'):
+            failure_seen.set()
+            raise ApiError('temporary API outage', retryable=True)
+        return {'accepted': True}
+    api.request.side_effect = request
+    worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), AsyncMock(spec=PackagingProvider), 1000)
+    async def process(*_: Any) -> None:
+        await failure_seen.wait()
+        await asyncio.sleep(0)  # Already-started supplier response completes normally.
+    worker.process_item = AsyncMock(side_effect=process)  # type: ignore[method-assign]
+    message = AsyncMock()
+    await asyncio.wait_for(worker.handle(message, {
+        'projectId': '11111111-1111-4111-8111-111111111111',
+        'runId': '22222222-2222-4222-8222-222222222222'}), 2)
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_called()
+    assert any(call.args[1].endswith('/finish') for call in api.request.await_args_list)
+
+
+async def test_explicit_heartbeat_lease_rejection_still_cancels_inflight_item() -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.ROOT = 'internal/workers/effect-template-mix'
+    started, cancelled = asyncio.Event(), asyncio.Event()
+    async def request(method: str, path: str, **_: Any) -> Any:
+        if path.endswith('/claim'):
+            return {'terminal': False, 'attemptToken': 'token', 'items': [dict(item(), status='QUEUED')]}
+        if path.endswith('/heartbeat'):
+            await started.wait()
+            raise ApiError('lease expired', retryable=False, status_code=409)
+        return {'accepted': True}
+    api.request.side_effect = request
+    worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), AsyncMock(spec=PackagingProvider), 1000)
+    async def process(*_: Any) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    worker.process_item = AsyncMock(side_effect=process)  # type: ignore[method-assign]
+    message = AsyncMock()
+    await asyncio.wait_for(worker.handle(message, {
+        'projectId': '11111111-1111-4111-8111-111111111111',
+        'runId': '22222222-2222-4222-8222-222222222222'}), 2)
+    assert cancelled.is_set()
+    message.ack.assert_not_called()
+    message.nack.assert_awaited_once()
+    assert not any(call.args[1].endswith('/finish') for call in api.request.await_args_list)
+
+
+async def test_concurrent_voice_fences_skip_only_durably_identical_checkpoints() -> None:
+    api = AsyncMock(spec=InternalApi)
+    adapter = AsyncMock(spec=PackagingProvider)
+    adapter.voice.return_value = TimedVoicePcm(b'\0\0' * 24000, 0, 24000)
+    row = item()
+    row['snapshot']['operation'] = 'SINGLE_PACKAGE'
+    row['snapshot']['duration'] = row['checkpoint']['music']['duration'] = 16
+    row['snapshot']['variant']['slots'] = [{'id': f's{i}', 'role': 'PRODUCT'} for i in range(4)]
+    row['snapshot']['clips'] = [{'slotId': f's{i}', 'start': i * 4, 'duration': 4} for i in range(4)]
+    row['checkpoint']['script'] = [{'id': f'line-{i}', 'slotId': f's{i}', 'text': f'口播{i}',
+        'start': i * 4, 'end': i * 4 + 4, 'factIds': ['f']} for i in range(4)]
+    fences: list[dict[str, Any]] = []
+    async def request(method: str, path: str, **kwargs: Any) -> Any:
+        patch = kwargs.get('json', {}).get('checkpoint', {})
+        if 'voiceRecovery' in patch:
+            fences.append(copy.deepcopy(patch['voiceRecovery']))
+        await asyncio.sleep(0)  # Other voices enter the same item's write queue.
+        return {'fileObjectId': 'saved-' + path.rsplit('/', 1)[-1]}
+    api.request.side_effect = request
+    async def voice(*_: Any, **__: Any) -> bytes:
+        assert all(any(record.get('pending') for record in fence.values()) for fence in fences)
+        return TimedVoicePcm(b'\0\0' * 24000, 0, 24000)
+    adapter.voice.side_effect = voice
+    worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000)
+    await worker.process_item('/run', {}, 'project', row)
+    assert adapter.voice.await_count == 4
+    assert len(fences) == 2  # First voice, then the three queued sibling fences together.
+    assert len(fences[-1]) == len(row['checkpoint']['voiceRecovery']) == 4
+    assert all(record['pending'] and record['attempts'] == 1 for record in fences[-1].values())
+    assert row['stage'] == 'READY'
+
+
 async def test_hundred_items_refill_four_global_slots_without_shard_barriers() -> None:
     active = maximum = 0
     launched: list[int] = []

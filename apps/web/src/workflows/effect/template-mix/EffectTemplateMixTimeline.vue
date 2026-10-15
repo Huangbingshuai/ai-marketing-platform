@@ -3483,7 +3483,6 @@ onBeforeUnmount(() => {
                       "
                       :bar-count="waveformBarCount(slot)"
                       :duration="activeSlotDuration(slot.id)"
-                      :gain="variant.originalVolume ?? 1"
                       :source="materialForSlot(slot.id)!.contentUrl"
                       :trim-start="activeTrimOffset(slot.id)"
                     />

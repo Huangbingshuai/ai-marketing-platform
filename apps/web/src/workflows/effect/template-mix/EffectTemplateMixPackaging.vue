@@ -8,10 +8,10 @@ import {
   packagingStageDetails,
   packagingStageState,
   currentPackagingRun,
-  packagingTerminalResult,
   livePackagingItem,
 } from './effect-packaging-progress';
-import { createPackagingPoller, packagingPollErrorMessage } from './effect-packaging-poller';
+import { createPackagingPoller } from './effect-packaging-poller';
+import { PackagingBackgroundReader } from './effect-packaging-background-reader';
 import type { PackagingStage } from './effect-packaging-progress';
 import { PackagingSampleClock } from './effect-packaging-sample-clock';
 import type { ScheduledPackagingClip } from './effect-packaging-sample-clock';
@@ -40,6 +40,7 @@ const props = defineProps<{
   projectId: string;
   workflowRunId: string;
   templateId: string;
+  localUpdateActive?: boolean;
   variants: EffectTemplateMixVariant[];
   selectedVariantId: string;
   prepare: () => Promise<number | null>;
@@ -67,6 +68,7 @@ const emit = defineEmits<{
   backgroundStarted: [run?: PackagingRun];
   backgroundFinished: [run: PackagingRun, variantId: string];
   status: [status: PackagingRun['status'] | null];
+  appendPackaging: [run: PackagingRun | null];
   results: [items: PackagingItem[]];
   previewReadOnly: [readOnly: boolean];
   /** Films whose packaging failed; they will still be submitted, playing picture only. */
@@ -78,14 +80,13 @@ const visible = ref(false),
   loading = ref(false);
 const starting = ref(false);
 const startingVariantId = ref('');
-const requestError = ref(''),
-  loadError = ref(''),
-  previewError = ref('');
-const backgroundError = ref('');
-const error = computed(() => requestError.value || loadError.value || previewError.value);
+const requestError = ref(''), previewError = ref('');
+const readUnavailable = ref(false);
+const error = computed(() => requestError.value || previewError.value);
 const runs = ref<PackagingRun[]>([]);
 const backgroundRun = ref<PackagingRun | null>(null);
 let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+const backgroundReader = new PackagingBackgroundReader();
 const displayedBackgroundRun = computed(() => backgroundRun.value);
 const selectedStage = ref<PackagingStage | null>(null);
 let generation = 0;
@@ -103,20 +104,35 @@ const active = computed(() => runs.value.some((r) => ['QUEUED', 'RUNNING'].inclu
 const backgroundActive = computed(() =>
   ['QUEUED', 'RUNNING'].includes(backgroundRun.value?.status ?? ''),
 );
+const batchSubmitting = computed(() => starting.value && !startingVariantId.value);
+const batchActive = computed(() => Boolean(progressRun.value));
 const progressRun = computed(() => {
+  // A new submission has no task progress yet. Never borrow the previous batch's results.
+  if (batchSubmitting.value) return undefined;
   const all = [displayedBackgroundRun.value, ...runs.value].filter((run): run is PackagingRun => Boolean(run));
-  return all.find((run) => run.operation !== 'SINGLE_PACKAGE' && ['QUEUED', 'RUNNING'].includes(run.status))
-    ?? displayedBackgroundRun.value ?? currentPackagingRun(runs.value);
+  const seen = new Set<string>();
+  return all.find((run) => {
+    if (seen.has(run.id)) return false;
+    seen.add(run.id); // The directly polled task beats an older history copy of the same task.
+    return run.operation !== 'SINGLE_PACKAGE' && run.operation !== 'APPEND_PACKAGE' &&
+      ['QUEUED', 'RUNNING'].includes(run.status);
+  });
 });
-const terminalResult = computed(() => starting.value ? null : packagingTerminalResult(progressRun.value));
-watch(progressRun, (value) => emit('status', value?.status ?? null), { immediate: true });
+// Finished tasks remain available in workflow details, never as workbench status banners.
+const batchProgressVisible = computed(() =>
+  batchSubmitting.value || Boolean(progressRun.value),
+);
+const manualRun = computed(() => currentPackagingRun(
+  [displayedBackgroundRun.value, ...runs.value].filter((run): run is PackagingRun =>
+    Boolean(run && run.operation !== 'APPEND_PACKAGE'))));
+watch(manualRun, (value) => emit('status', value?.status ?? null), { immediate: true });
 const progress = computed(
   () => progressRun.value?.execution?.progressPercent ?? packagingProgress(progressRun.value),
 );
 const executionSummary = computed(() => {
-  if (terminalResult.value) return terminalResult.value.detail;
+  if (!batchProgressVisible.value) return '';
   const value = progressRun.value;
-  if (!value) return `本次覆盖 ${completeCount.value} 条视频成片`;
+  if (!value) return '';
   const e = value.execution;
   const base = `已完成 ${value.counts.completed} / ${value.counts.total} 条 · ${value.counts.shards} 个分片`;
   if (!e) return base;
@@ -126,11 +142,11 @@ const executionSummary = computed(() => {
         ? ' · 暂无可靠完成时间'
         : ''
       : ` · 预计剩余 ${Math.ceil(e.estimatedRemainingSeconds / 60)} 分钟${e.estimateBasis === 'BASELINE' ? '（初始估算）' : ''}`;
-  return `${base} · 排队 ${e.queued} · 运行 ${e.running}${eta}${e.delayed ? ' · 当前吞吐低于目标或存在失败' : ''}`;
+  return `${base} · 排队 ${e.queued} · 运行 ${e.running}${eta}`;
 });
 const progressSummary = computed(() => {
-  if (starting.value && !active.value) return '智能成片包装 · 正在提交任务…';
-  if (terminalResult.value) return terminalResult.value.summary;
+  if (batchSubmitting.value) return '智能成片包装 · 正在提交任务…';
+  if (!batchProgressVisible.value) return '';
   const value = progressRun.value;
   if (!value) return '';
   const item = value.items.find((i) => i.status === 'RUNNING');
@@ -166,26 +182,31 @@ function currentItem(item: PackagingItem): PackagingItem {
 const orderedRuns = computed(() => [backgroundRun.value, ...runs.value]
   .filter((run): run is PackagingRun => Boolean(run))
   .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)));
+// A background child shares film IDs with its parent, but owns different audio, locks and drafts.
+const workspaceRuns = computed(() => orderedRuns.value.filter((run) =>
+  run.workflowRunId === props.workflowRunId && run.templateId === props.templateId));
+watch(workspaceRuns, (runs) => emit('appendPackaging',
+  runs.find((run) => run.operation === 'APPEND_PACKAGE') ?? null), { immediate: true });
 const selected = computed(() => {
-  const latest = orderedRuns.value
+  const latest = workspaceRuns.value
     .flatMap((run) => run.items).find((item) => item.variantId === props.selectedVariantId);
   if (latest?.operation && ['QUEUED', 'RUNNING'].includes(latest.status)) return null;
-  const item = runs.value
+  const item = workspaceRuns.value
     .flatMap((r) => r.items)
     .find((i) => i.variantId === props.selectedVariantId &&
       (!i.operation || i.status === 'COMPLETED'));
   const variant = props.variants.find((v) => v.id === props.selectedVariantId);
-  const live = livePackagingItem(backgroundRun.value, variant);
+  const live = backgroundRun.value?.workflowRunId === props.workflowRunId &&
+    backgroundRun.value.templateId === props.templateId ? livePackagingItem(backgroundRun.value, variant) : null;
   if (live && live.id === latest?.id) return live;
   if (!item || !variant) return null;
   return currentItem(item);
 });
 const selectedVariant = computed(() => {
   const variant = props.variants.find((variant) => variant.id === props.selectedVariantId);
-  const latest = orderedRuns.value.flatMap((run) => run.items)
+  const latest = workspaceRuns.value.flatMap((run) => run.items)
     .find((item) => item.variantId === props.selectedVariantId);
-  return variant && latest?.operation && (['QUEUED', 'RUNNING'].includes(latest.status) ||
-    latest.status === 'COMPLETED' && latest.workflowRunId !== props.workflowRunId)
+  return variant && latest?.operation && ['QUEUED', 'RUNNING'].includes(latest.status)
     ? packagingPictureOnlyVariant(variant) : variant;
 });
 const boundaryError = computed(() => {
@@ -201,7 +222,10 @@ watch([selected, backgroundRun], ([item, background]) => {
 watch([runs, backgroundRun], () => {
   const latest = new Map<string, PackagingItem>();
   for (const run of orderedRuns.value)
-    for (const item of run?.items ?? []) if (!latest.has(item.variantId)) latest.set(item.variantId, item);
+    for (const item of run.items) {
+      const key = `${run.workflowRunId}:${item.variantId}`;
+      if (!latest.has(key)) latest.set(key, item);
+    }
   emit('results', [...latest.values()]);
 }, { immediate: true });
 const packageableVariants = computed(() =>
@@ -235,7 +259,7 @@ const conclusions = computed(() =>
 const allReady = computed(
   () =>
     !active.value &&
-    !loadError.value &&
+    !readUnavailable.value &&
     packageableVariants.value.length > 0 &&
     conclusions.value.every((entry) => entry.state !== 'PENDING'),
 );
@@ -265,62 +289,66 @@ const poller = createPackagingPoller({
   },
   onData(data) {
     runs.value = data;
-    loadError.value = '';
+    readUnavailable.value = false;
     if (!backgroundRun.value || !backgroundActive.value) void loadBackgroundRun();
   },
-  onError(reason) {
-    loadError.value = packagingPollErrorMessage(reason);
+  onError() {
+    // Read failures stay internal: retain the last result and let the poller reconnect.
+    // Submission and playback errors still use their own user-facing error state.
+    readUnavailable.value = true;
   },
   onLoading(value) {
     loading.value = value && !runs.value.length;
   },
   // Discover tasks started in another session even when this workspace is idle.
-  interval: () => (visible.value || active.value || loadError.value ? 4000 : 30_000),
+  interval: () => (props.localUpdateActive || visible.value || active.value || readUnavailable.value ? 4000 : 30_000),
 });
 const refresh = () => poller.refresh();
-async function loadBackgroundRun() {
-  const version = generation;
-  const path = base.value;
-  const workflowRunId = props.workflowRunId;
-  const templateId = props.templateId;
-  if (!templateId) return;
-  const pending = pendingPackagingNavigation(props.projectId, workflowRunId, templateId);
-  try {
-    const response = await requestJson<ApiResponse<PackagingRun | null>>(
-      pending
-        ? `${path}/packaging-runs/${pending.runId}`
-        : `${path}/templates/${templateId}/background-packaging-run?workflowRunId=${workflowRunId}`,
-      { operation: '读取后台包装任务' },
-    );
-    if (version !== generation) return;
-    const found = response.data;
-    if (!found) return;
-    if (pending && (found.id !== pending.runId || found.workflowRunId !== pending.workflowRunId || found.templateId !== templateId)) {
-      forgetPackagingNavigation(props.projectId, workflowRunId, templateId, pending.runId);
-      return;
+function loadBackgroundRun(): Promise<void> {
+  return backgroundReader.read(async (signal, current) => {
+    const version = generation;
+    const path = base.value;
+    const workflowRunId = props.workflowRunId;
+    const templateId = props.templateId;
+    if (!templateId) return;
+    const pending = pendingPackagingNavigation(props.projectId, workflowRunId, templateId);
+    try {
+      const response = await requestJson<ApiResponse<PackagingRun | null>>(
+        pending
+          ? `${path}/packaging-runs/${pending.runId}`
+          : `${path}/templates/${templateId}/background-packaging-run?workflowRunId=${workflowRunId}`,
+        { operation: '读取后台包装任务', signal },
+      );
+      if (version !== generation || !current()) return;
+      const found = response.data;
+      if (!found) return;
+      if (pending && (found.id !== pending.runId || found.workflowRunId !== pending.workflowRunId || found.templateId !== templateId)) {
+        forgetPackagingNavigation(props.projectId, workflowRunId, templateId, pending.runId);
+        return;
+      }
+      // An active run has its own serialized poll. A terminal run may have been resumed by
+      // another session: install that response and restart polling, even when its id is unchanged.
+      if (backgroundRun.value?.id === found.id && backgroundActive.value) return;
+      backgroundRun.value = found;
+      if (['QUEUED', 'RUNNING'].includes(found.status)) {
+        emit('backgroundStarted', found);
+        clearTimeout(backgroundTimer);
+        backgroundTimer = setTimeout(() => void pollBackgroundRun(path, found.id, version), 4000);
+      } else if (found.status === 'COMPLETED' || (found.operation && found.status === 'PARTIAL')) {
+        const recentlyCompleted =
+          found.completedAt !== null && Date.now() - Date.parse(found.completedAt) < 24 * 60 * 60 * 1000;
+        if (
+          (pending || recentlyCompleted) &&
+          !hasOpenedPackagingBranch(props.projectId, workflowRunId, templateId, found.workflowRunId)
+        )
+          emit('backgroundFinished', found, pending?.variantId ?? props.selectedVariantId);
+      } else if (pending) {
+        forgetPackagingNavigation(props.projectId, workflowRunId, templateId, found.id);
+      }
+    } catch {
+      // The next discovery read reconnects without replacing the last valid task.
     }
-    // An active run has its own serialized poll. A terminal run may have been resumed by
-    // another session: install that response and restart polling, even when its id is unchanged.
-    if (backgroundRun.value?.id === found.id && backgroundActive.value) return;
-    backgroundRun.value = found;
-    if (['QUEUED', 'RUNNING'].includes(found.status)) {
-      emit('backgroundStarted', found);
-      clearTimeout(backgroundTimer);
-      backgroundTimer = setTimeout(() => void pollBackgroundRun(path, found.id, version), 4000);
-    } else if (found.status === 'COMPLETED' || (found.operation && found.status === 'PARTIAL')) {
-      const recentlyCompleted =
-        found.completedAt !== null && Date.now() - Date.parse(found.completedAt) < 24 * 60 * 60 * 1000;
-      if (
-        (pending || recentlyCompleted) &&
-        !hasOpenedPackagingBranch(props.projectId, workflowRunId, templateId, found.workflowRunId)
-      )
-        emit('backgroundFinished', found, pending?.variantId ?? props.selectedVariantId);
-    } else if (pending) {
-      forgetPackagingNavigation(props.projectId, workflowRunId, templateId, found.id);
-    }
-  } catch (reason) {
-    if (version === generation) backgroundError.value = packagingPollErrorMessage(reason);
-  }
+  });
 }
 async function pollBackgroundRun(path: string, runId: string, version: number) {
   try {
@@ -332,7 +360,6 @@ async function pollBackgroundRun(path: string, runId: string, version: number) {
     );
     if (version !== generation) return;
     backgroundRun.value = response.data;
-    backgroundError.value = '';
     if (!['QUEUED', 'RUNNING'].includes(response.data.status)) {
       const pending = pendingPackagingNavigation(props.projectId, props.workflowRunId, props.templateId);
       if (response.data.status === 'COMPLETED')
@@ -344,9 +371,8 @@ async function pollBackgroundRun(path: string, runId: string, version: number) {
       }
       return;
     }
-  } catch (reason) {
+  } catch {
     if (version !== generation) return;
-    backgroundError.value = packagingPollErrorMessage(reason);
   }
   backgroundTimer = setTimeout(() => void pollBackgroundRun(path, runId, version), 4000);
 }
@@ -358,7 +384,7 @@ function refreshOnReturn() {
 }
 async function open(mode: 'ACTION' | 'WORKFLOW') {
   if (mode === 'ACTION') {
-    if (busy.value || active.value || backgroundActive.value || loading.value) return;
+    if (busy.value || active.value || backgroundActive.value) return;
     if (!completeCount.value) {
       requestError.value = '请先完成至少一条成片的画面时间轴，空成片不参与包装';
       return;
@@ -387,6 +413,8 @@ defineExpose({
   busy,
   active,
   backgroundActive,
+  batchActive,
+  batchSubmitting,
   loading,
   starting,
   startPlaybackAudio,
@@ -456,7 +484,12 @@ async function create(variantId?: string) {
         response.data.workflowRunId,
         props.selectedVariantId,
       );
+      backgroundReader.invalidate();
       backgroundRun.value = response.data;
+      // Acceptance ends submission, even if the following history refresh is still pending.
+      // Otherwise a fast task can finish while an unrelated GET leaves a stale 0% banner up.
+      starting.value = false;
+      startingVariantId.value = '';
       clearTimeout(backgroundTimer);
       backgroundTimer = setTimeout(
         () => void pollBackgroundRun(context.path, response.data.id, context.generation),
@@ -553,19 +586,26 @@ watch(() => props.playing, (playing) => {
 watch(() => props.selectedVariantId, () => stopPlaybackAudio());
 watch(
   () => [props.projectId, props.workflowRunId, props.templateId],
-  () => {
+  (_scope, previous) => {
+    // The first committed batch item opens its child workspace. Keep that exact task across
+    // the handoff, rather than emitting an empty result/lock set until the next GET finishes.
+    const carriedRuns = previous?.[0] === props.projectId
+      ? orderedRuns.value.filter((run) => run.workflowRunId === props.workflowRunId &&
+        run.templateId === props.templateId)
+      : [];
     generation++;
     poller.stop();
+    backgroundReader.invalidate();
     clearTimeout(backgroundTimer);
     backgroundRun.value = null;
-    backgroundError.value = '';
-    runs.value = [];
+    runs.value = carriedRuns;
     pendingCreate = null;
     requestError.value = '';
-    loadError.value = '';
+    readUnavailable.value = false;
     previewError.value = '';
     busy.value = false;
     starting.value = false;
+    startingVariantId.value = '';
     close();
     sampleClock.dispose();
     if (props.templateId) {
@@ -582,6 +622,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   generation++;
   poller.stop();
+  backgroundReader.invalidate();
   clearTimeout(backgroundTimer);
   window.removeEventListener('focus', refreshOnReturn);
   document.removeEventListener('visibilitychange', refreshOnReturn);
@@ -592,21 +633,16 @@ onBeforeUnmount(() => {
 <template>
   <div v-if="boundaryError" class="notice error" role="alert">{{ boundaryError }}</div>
   <WorkflowRunProgress
-    v-if="(starting && !startingVariantId) || (progressRun?.operation !== 'SINGLE_PACKAGE' && (active || displayedBackgroundRun || terminalResult))"
+    v-if="batchProgressVisible"
     class="packaging-progress"
-    :progress="starting && !active && !backgroundActive ? 0 : progress"
+    :progress="progress"
     :summary="progressSummary"
-    :terminal="Boolean(terminalResult)"
     :attempt-label="executionSummary"
-    :warning="
-      error || backgroundError ||
-      (progressRun?.counts.failed ? `${progressRun.counts.failed} 条失败，请查看当前工作流` : '')
-    "
     action-label="查看当前工作流"
     @show-details="open('WORKFLOW')"
   />
-  <div v-if="error && !visible && !active && !busy" class="notice error" role="alert">
-    <AlertCircle :size="16" />{{ error }}<button @click="refresh">重新读取</button>
+  <div v-if="error && !props.localUpdateActive && !visible && !active && !busy" class="notice error" role="alert">
+    <AlertCircle :size="16" />{{ error }}
   </div>
   <dialog
     ref="dialog"
@@ -625,9 +661,8 @@ onBeforeUnmount(() => {
         <X :size="18" />
       </button>
     </header>
-    <div v-if="error" class="notice error" role="alert">
-      <AlertCircle :size="16" />{{ error
-      }}<button :disabled="busy" @click="refresh">重新读取</button>
+    <div v-if="error && !props.localUpdateActive" class="notice error" role="alert">
+      <AlertCircle :size="16" />{{ error }}
     </div>
     <main class="workflow-graph-content">
       <div class="workflow-graph-canvas" aria-label="智能成片包装执行图">
@@ -710,7 +745,7 @@ onBeforeUnmount(() => {
             </div>
             <p v-if="run" role="status">阶段状态：{{ stageState(selectedStage).label }}</p>
             <p v-else role="status">
-              {{ loading ? '正在读取结果…' : loadError ? '暂时无法读取结果' : '尚未生成结果' }}
+              {{ loading || readUnavailable ? '正在读取结果…' : '尚未生成结果' }}
             </p>
           </section>
         </template>

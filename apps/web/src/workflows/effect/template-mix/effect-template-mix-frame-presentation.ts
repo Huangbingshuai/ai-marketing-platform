@@ -8,7 +8,13 @@ type FrameVideo = {
 
 /** A seek event is not a paint. Keep the poster until the decoded frame has crossed a paint. */
 export class TimelineFramePresentation {
-  private pending = new Map<FrameVideo, { cancel: () => void }>();
+  private pending = new Map<FrameVideo, {
+    source: string;
+    seconds: number;
+    tolerance: number;
+    publish: () => void;
+    cancel: () => void;
+  }>();
 
   reset(): void {
     for (const request of this.pending.values()) request.cancel();
@@ -25,10 +31,17 @@ export class TimelineFramePresentation {
   }
 
   present(video: FrameVideo, seconds: number, tolerance: number, publish: () => void): void {
+    // loadeddata/canplay/seeked can all report the same decoded target before paint.
+    // Restarting the two-RAF gate on every report can starve its publication.
+    const existing = this.pending.get(video);
+    if (existing?.source === video.src && existing.seconds === seconds && existing.tolerance === tolerance) {
+      existing.publish = publish;
+      return;
+    }
     this.pending.get(video)?.cancel();
     const source = video.src;
     let frame = 0;
-    const request = { cancel: () => cancelAnimationFrame(frame) };
+    const request = { source, seconds, tolerance, publish, cancel: () => cancelAnimationFrame(frame) };
     const ready = () =>
       this.pending.get(video) === request &&
       video.src === source &&
@@ -40,7 +53,7 @@ export class TimelineFramePresentation {
     frame = requestAnimationFrame(() => {
       // The first RAF is before paint; the second permits the new decoded frame to be drawn.
       frame = requestAnimationFrame(() => {
-        if (ready()) publish();
+        if (ready()) request.publish();
         if (this.pending.get(video) === request) this.pending.delete(video);
       });
     });

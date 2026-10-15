@@ -5,6 +5,7 @@ from time import monotonic
 from datetime import datetime, timezone
 from typing import Any
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 
 import httpx
 
@@ -26,12 +27,15 @@ async def recover_voice_connection(
     item_id: str, slot_id: str, max_attempts: int = 8, timeout_seconds: float = 600,
     max_delay_seconds: float = 30, backoff_seconds: float = 5,
     state: dict[str, Any] | None = None, persist: Callable[[], Awaitable[None]] | None = None,
+    request_scope: Callable[[], AbstractAsyncContextManager[None]] | None = None,
 ) -> bytes:
     deadline = monotonic() + timeout_seconds
     first_attempt = 0
     if state is not None:
         started = state.setdefault('startedAt', datetime.now(timezone.utc).isoformat())
-        first_attempt = int(state.get('attempts', 0))
+        # Other clauses persist this shared map while we wait for their API guard.
+        # Every visible entry must already satisfy the checkpoint contract.
+        first_attempt = int(state.setdefault('attempts', 0))
         deadline -= (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
         if state.get('pending'):
             raise VoiceResponseUncertain('上次配音响应未确认，已保留包装前原样')
@@ -40,12 +44,15 @@ async def recover_voice_connection(
         if monotonic() >= deadline:
             raise VoiceConnectionExhausted('配音连接恢复超时，已保留包装前原样')
         try:
-            if state is not None:
-                state.update(attempts=attempt + 1, pending=True)
-                state.pop('waitingUntil', None)
-                if persist:
-                    await persist()
-            result = await request()
+            # Queue/lease checks precede the paid fence. Cancellation while waiting
+            # for a permit must not masquerade as an ambiguous supplier response.
+            async with request_scope() if request_scope else nullcontext():
+                if state is not None:
+                    state.update(attempts=attempt + 1, pending=True)
+                    state.pop('waitingUntil', None)
+                    if persist:
+                        await persist()
+                result = await request()
             # Keep the in-flight marker until the caller has durably uploaded the audio.
             # A crash after a paid response but before upload must not submit that sentence again.
             return result

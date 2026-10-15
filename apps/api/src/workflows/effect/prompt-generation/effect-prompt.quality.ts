@@ -122,7 +122,7 @@ export const promptPairViolationRate = (violations: number, count: number): numb
     : Math.floor((violations * 10_000 + totalPairs / 2) / totalPairs) / 100;
 };
 
-const validDimensions = (value: unknown): value is EffectPromptDimensions => {
+const validDimensions = (value: unknown, allowBlank = false): value is EffectPromptDimensions => {
   const candidate = record(value);
   return Boolean(
     candidate &&
@@ -130,7 +130,7 @@ const validDimensions = (value: unknown): value is EffectPromptDimensions => {
     EFFECT_PROMPT_DIMENSIONS.every(
       ({ key }) =>
         typeof candidate[key] === 'string' &&
-        candidate[key].trim().length > 0 &&
+        (allowBlank || candidate[key].trim().length > 0) &&
         candidate[key].length <= dimensionTextLimits[key],
     ),
   );
@@ -438,7 +438,7 @@ const validBaseItem = (
     Number(item.targetDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
     Number(item.targetDurationSeconds) <= maxDurationSeconds &&
     typeof item.creativeCore === 'string' &&
-    item.creativeCore.trim().length > 0 &&
+    (item.origin === 'MANUAL' || item.creativeCore.trim().length > 0) &&
     item.creativeCore.length <= itemTextLimits.creativeCore &&
     typeof item.content === 'string' &&
     item.content.trim().length > 0 &&
@@ -465,7 +465,7 @@ const isEffectPromptItemWithinDuration = (
       item,
       item.origin === 'MANUAL' ? EFFECT_PROMPT_LIMITS.maxManualDurationSeconds : maxDurationSeconds,
     ) &&
-    validDimensions(item.dimensions) &&
+    validDimensions(item.dimensions, item.origin === 'MANUAL') &&
     EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.primaryPurpose as EffectPromptFragmentType) &&
     item.fragmentType === item.primaryPurpose &&
     Array.isArray(compatiblePurposes) &&
@@ -1212,6 +1212,21 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
     candidate.renderProfile,
     candidate.sharedPrompt,
   );
+};
+
+/** Manual maintenance never replaces the last AI batch's similarity assessment.
+ * Read-time recovery is scoped to this result's immutable generated snapshot;
+ * it does not rewrite stored content, advance revisions or invent an assessment.
+ */
+export const parseEffectPromptStoredDraft = (result: {
+  draftResult: unknown;
+  generatedResult?: unknown;
+}): EffectPromptBatchResult | null => {
+  const draft = parseEffectPromptBatchResult(result.draftResult);
+  if (!draft) return null;
+  const evaluation = parseEffectPromptBatchResult(result.generatedResult)?.metrics.semanticEvaluation;
+  if (evaluation?.status !== 'VERIFIED') return draft;
+  return { ...draft, metrics: { ...draft.metrics, semanticEvaluation: evaluation } };
 };
 
 export const mergeEffectPromptCompletionItems = (

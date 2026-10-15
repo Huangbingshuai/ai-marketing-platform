@@ -19,6 +19,97 @@ import type { EffectTemplateMixService } from '../template-mix/effect-template-m
 import { visualHash } from '../template-mix/effect-packaging.domain';
 import { EffectFinalOutputService } from './effect-final-output.service';
 
+describe('retained packaging baseline compatibility', () => {
+  function fixture() {
+    const h = harness();
+    const checkpoint = structuredClone(h.rows[0]!.checkpoint);
+    const snapshot = { unpackaged: false, packaging: structuredClone(checkpoint), dependencies: [
+      { artifactId: 'old-visual', artifactKey: 'timeline-project:t:v0', revision: 2, contentHash: 'visual-hash' },
+      { artifactId: 'old-package', revision: 3, contentHash: 'package-hash' },
+    ] };
+    const item = { projectId: 'p', runId: 'out', variantId: 'v0', snapshot };
+    const rows = [
+      { id: 'old-visual', projectId: 'p', workflowRunId: 'parent', nodeId: 'TEMPLATE_MIX',
+        artifactKey: 'timeline-project:t:v0', revision: 2, contentHash: 'visual-hash', availability: 'AVAILABLE', freshness: 'CURRENT' },
+      { id: 'old-package', projectId: 'p', workflowRunId: 'parent', nodeId: 'TEMPLATE_MIX',
+        artifactKey: 'timeline-package:t:v0', revision: 3, contentHash: 'package-hash', availability: 'AVAILABLE', freshness: 'CURRENT' },
+    ];
+    h.db.workflowRun.findMany.mockResolvedValue([
+      { id: 'w', parentWorkflowRunId: 'parent', forkNodeId: 'TEMPLATE_MIX', forkTemplateId: 't' },
+      { id: 'parent', parentWorkflowRunId: null, forkNodeId: null, forkTemplateId: null },
+    ]);
+    const findFailed = vi.fn().mockResolvedValue({ id: 'failed-batch-item' });
+    Object.assign(h.db.effectPackagingItem, { findFirst: findFailed });
+    h.db.workingArtifact.findMany.mockImplementation(({ where }) => Promise.resolve(rows.filter((row) =>
+      row.projectId === where.projectId && where.workflowRunId.in.includes(row.workflowRunId) &&
+      row.nodeId === where.nodeId && where.id.in.includes(row.id) &&
+      where.artifactKey.in.includes(row.artifactKey) && row.availability === where.availability)));
+    const internal = h.service as unknown as {
+      retainedPackagingArtifacts: (...args: unknown[]) => Promise<typeof rows>;
+      rewriteFilm: (...args: unknown[]) => Promise<void>;
+      liveClips: (...args: unknown[]) => unknown;
+    };
+    return { ...h, internal, item, checkpoint, baseline: rows, findFailed,
+      resolve: (artifacts: unknown[] = []) => internal.retainedPackagingArtifacts(h.db, 't', item, checkpoint, artifacts) };
+  }
+
+  it('loads only exact frozen ancestor references for a failed repackaging film without writing or queuing', async () => {
+    const h = fixture();
+    expect(await h.resolve()).toEqual(h.baseline);
+    expect(h.findFailed).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      projectId: 'p', variantId: 'v0', status: { in: ['FAILED', 'CANCELLED'] },
+      run: { workflowRunId: 'w', templateId: 't' }, snapshot: { path: ['operation'], equals: 'BATCH_PACKAGE' },
+    } }));
+    expect(h.db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+    expect(h.db.jobOutbox.upsert).not.toHaveBeenCalled();
+    expect(h.working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+  });
+
+  it('allows the normal film rewrite with its preserved package and does not change the ancestor', async () => {
+    const h = fixture();
+    const before = structuredClone(h.baseline);
+    const variant = h.rows[0]!.snapshot.variant;
+    Object.assign(h.item.snapshot, { timeline: { variant, duration: 10, dependencies: [] },
+      aspectRatio: '3:4', resolution: '720p', frameRate: 30 });
+    vi.spyOn(h.internal, 'liveClips').mockReturnValue([{ slotId: 's', start: 0, duration: 10, fileObjectId: 'video' }]);
+    await h.internal.rewriteFilm(h.db, 't', h.item, variant, { materials: [] }, [], 'PENDING_RENDER', h.checkpoint);
+    expect(h.db.effectFinalOutputItem.update).toHaveBeenCalledOnce();
+    expect(h.db.effectFinalOutputItem.update.mock.calls[0]![0].data.snapshot.packaging).toEqual(h.checkpoint);
+    expect(h.baseline).toEqual(before);
+    expect(h.db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each(['revision', 'hash', 'project', 'sibling', 'template', 'variant', 'unavailable'])(
+    'does not admit a mismatched retained package: %s', async (invalid) => {
+      const h = fixture();
+      const row = h.baseline[1]!;
+      if (invalid === 'revision') row.revision++;
+      if (invalid === 'hash') row.contentHash = 'changed';
+      if (invalid === 'project') row.projectId = 'other';
+      if (invalid === 'sibling') row.workflowRunId = 'sibling';
+      if (invalid === 'template') row.artifactKey = 'timeline-package:other:v0';
+      if (invalid === 'variant') row.artifactKey = 'timeline-package:t:other';
+      if (invalid === 'unavailable') row.availability = 'MISSING';
+      expect((await h.resolve()).some((artifact) => artifact.id === 'old-package')).toBe(false);
+    },
+  );
+
+  it('never falls back over an unavailable current package or an unconfirmed package', async () => {
+    const h = fixture();
+    expect(await h.resolve([{ artifactKey: 'timeline-package:t:v0', availability: 'MISSING' }])).toEqual([]);
+    h.findFailed.mockResolvedValue(null);
+    expect(await h.resolve()).toEqual([]);
+  });
+
+  it('requires the unchanged retained checkpoint, ignoring only transient supplier task fields', async () => {
+    const h = fixture();
+    Object.assign(h.checkpoint, { musicTaskId: 'old-task', musicSubmissionPending: true });
+    expect(await h.resolve()).toHaveLength(2);
+    h.checkpoint.voices.line!.fileObjectId = 'unconfirmed-new-voice';
+    expect(await h.resolve()).toEqual([]);
+  });
+});
+
 function harness(count = 1) {
   const variants = Array.from(
     { length: count },
@@ -1156,6 +1247,59 @@ describe('atomic full packaging completion', () => {
     });
     expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
   });
+  it.each(['draft', 'other-template', 'unavailable', 'empty-placeholder'])(
+    'exports confirmed films without adopting or being blocked by an extra %s', async (extra) => {
+      const context = harness(2);
+      const { service, db, outputRun, mix, sources, working } = context;
+      await service.upsertFromPackaging('p', 'w', 't');
+      const workspace = await mix.outputSourceWorkspace('p', 'w');
+      const draft = structuredClone(workspace.draft.templates[0]!.workspace.variants[0]!);
+      draft.id = 'unsubmitted';
+      if (extra === 'empty-placeholder') draft.bindings = {};
+      workspace.draft.templates[0]!.workspace.variants.push(draft);
+      const artifacts = [...sources, ...currentRows(outputRun.items as { snapshot: FinalOutputSnapshot }[])];
+      if (extra === 'other-template' || extra === 'unavailable') artifacts.push({
+        id: 'unsubmitted-artifact', nodeId: 'TEMPLATE_MIX',
+        artifactKey: `timeline-project:${extra === 'other-template' ? 'other' : 't'}:unsubmitted`,
+        revision: 1, contentHash: 'hash', freshness: 'CURRENT',
+        availability: extra === 'unavailable' ? 'MISSING' : 'AVAILABLE',
+      });
+      db.workingArtifact.findMany.mockResolvedValue(artifacts);
+      const parent = structuredClone(outputRun);
+      const child = forkExportHarness(context);
+      vi.clearAllMocks();
+
+      await service.start('p', 'out', { resolution: '720p', frameRate: 30 });
+
+      expect(child.status).toBe('QUEUED');
+      expect(db.effectFinalOutputItem.update).toHaveBeenCalledTimes(2);
+      expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+      expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+      expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+      expect(outputRun).toEqual(parent);
+      expect(workspace.draft.templates[0]!.workspace.variants).toHaveLength(3);
+    },
+  );
+  it('still rejects an extra confirmed timeline rather than silently omitting its film', async () => {
+    const context = harness();
+    const { service, db, outputRun, mix, sources } = context;
+    await service.upsertFromPackaging('p', 'w', 't');
+    const workspace = await mix.outputSourceWorkspace('p', 'w');
+    const variant = { ...structuredClone(workspace.draft.templates[0]!.workspace.variants[0]!), id: 'new-film' };
+    workspace.draft.templates[0]!.workspace.variants.push(variant);
+    db.workingArtifact.findMany.mockResolvedValue([
+      ...sources, ...currentRows(outputRun.items as { snapshot: FinalOutputSnapshot }[]),
+      { id: 'new-timeline', nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:t:new-film',
+        revision: 1, contentHash: 'hash', freshness: 'CURRENT', availability: 'AVAILABLE' },
+    ]);
+    forkExportHarness(context);
+    vi.clearAllMocks();
+
+    await expect(service.start('p', 'out', { resolution: '720p', frameRate: 30 }))
+      .rejects.toThrow('当前成片工程数量已变化');
+    expect(db.effectFinalOutputItem.update).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
   it.each(['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'])(
     're-exports a %s batch in an independent child with every item and the new batch spec',
     async (status) => {
@@ -1237,6 +1381,14 @@ describe('atomic full packaging completion', () => {
     });
     await service.upsertFromPackaging('p', 'w', 't');
     expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'TEMPLATE_MIX');
+  });
+  it.each([null, 'source'])('first packaging does not republish the existing Run (parent=%s)', async (parentWorkflowRunId) => {
+    const { service, db, working } = harness();
+    db.workflowRun.findFirst.mockResolvedValue({ parentWorkflowRunId,
+      branchPublishedAt: parentWorkflowRunId ? new Date('2026-10-12') : null,
+      editSessionNodeId: null, forkNodeId: parentWorkflowRunId ? 'TEMPLATE_MIX' : null });
+    await service.publishMixBranch('p', 'w');
+    expect(working.publishEffectNodeEdit).not.toHaveBeenCalled();
   });
   it('publishes a mix branch that was opened without an edit session', async () => {
     const { service, db, working } = harness();
@@ -2194,6 +2346,35 @@ describe('local update', () => {
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
     expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
   });
+  it.each(['QUEUED', 'RUNNING', 'FAILED'])('does not claim an unrelated legacy %s picture during a source refresh', async (legacyStatus) => {
+    const { service, db, run, items, workspace, artifacts } = await localUpdateHarness(false);
+    run.status = 'PENDING_RENDER';
+    items[0]!.status = 'PENDING_RENDER'; items[0]!.fileObjectId = null; items[0]!.assetId = null;
+    const unrelated = { ...structuredClone(items[0]!), id: 'legacy', variantId: 'other', status: legacyStatus };
+    Object.assign((unrelated as unknown as { snapshot: FinalOutputSnapshot }).snapshot,
+      { sourceOperation: { id: 'previous-source-operation' } });
+    items.push(unrelated);
+    workspace.draft.templates[0]!.workspace.variants.push({ ...structuredClone(workspace.draft.templates[0]!.workspace.variants[0]!), id: 'other' });
+    const before = JSON.stringify(unrelated);
+    workspace.materials[0]!.artifactRevision = 2;
+    artifacts[0]!.id = 'clip'; artifacts[0]!.revision = 2;
+    Object.assign((artifacts[0] as unknown as { payload: object }).payload,
+      { fileObjectId: 'video', contentHash: 'clip-hash' });
+    workspace.materials[0]!.artifactId = 'clip';
+    db.fileObject.count.mockImplementation(({ where }) => Promise.resolve(where.id.in.length));
+    db.fileObject.findMany.mockResolvedValue([{ id: 'video', sha256: 'clip-hash' }] as never);
+    db.effectPackagingItem.findMany.mockResolvedValue([]);
+    (items[0] as unknown as { snapshot: FinalOutputSnapshot }).snapshot.unpackaged = true;
+    db.workflowNodeState.findUnique.mockResolvedValue({ state: workspace.draft });
+    db.workingArtifact.findFirst.mockResolvedValue(artifacts[0]);
+    await service.localUpdate('p', 'out', { itemIds: ['item-0'] });
+    expect(unrelated.status).toBe('PENDING_RENDER');
+    expect(JSON.stringify({ ...unrelated, status: legacyStatus, progress: undefined, errorMessage: undefined }))
+      .toBe(JSON.stringify({ ...JSON.parse(before), progress: undefined, errorMessage: undefined }));
+    Object.assign(run, { updatedAt: new Date() });
+    const claim = await service.claim('p', 'out');
+    expect(claim.items?.filter((item) => item.status === 'QUEUED').map((item) => item.id)).toEqual(['item-0']);
+  });
   it('refuses unchanged films and a historical template path without creating a paid task', async () => {
     const unchanged = await localUpdateHarness();
     await expect(unchanged.service.localUpdate('p', 'out', { itemIds: ['item-0'] }))
@@ -2284,6 +2465,36 @@ describe('local update', () => {
     await expect(broken.service.localUpdate('p', 'out', { itemIds: ['item-0'] })).rejects.toThrow('原素材来源无法确认');
     expect(broken.db.jobOutbox.upsert).not.toHaveBeenCalled();
   });
+  it.each(['draft-only', 'other-template', 'unavailable', 'wrong-node'] as const)(
+    'does not expose or execute 13 unconfirmed drafts as additions (%s)', async (kind) => {
+      const { service, workspace, artifacts, db, working, items } = await membershipUpdateHarness();
+      const at = artifacts.findIndex((artifact) => artifact.id === 'new-timeline');
+      const unconfirmed = artifacts.splice(at, 1)[0]!;
+      if (kind !== 'draft-only') artifacts.push({ ...unconfirmed,
+        ...(kind === 'other-template' ? { artifactKey: 'timeline-project:other:new-project' } : {}),
+        ...(kind === 'unavailable' ? { availability: 'MISSING' } : {}),
+        ...(kind === 'wrong-node' ? { nodeId: 'FINAL_OUTPUT' } : {}),
+      } as never);
+      const drafts = workspace.draft.templates[0]!.workspace.variants;
+      for (let index = 1; index < 13; index++)
+        drafts.push({ ...structuredClone(drafts[1]!), id: `unsubmitted-${index}` });
+      const before = structuredClone(items);
+      for (let read = 0; read < 2; read++) {
+        const detail = await service.get('p', 'out');
+        expect(detail.projectChanges).toMatchObject({ added: [], removedItemIds: [] });
+        expect(detail.counts.stale).toBe(0);
+        expect(detail.items.every((item) => !item.stale)).toBe(true);
+        expect((await service.listPath('p', 'w'))[0]?.counts.stale).toBe(0);
+      }
+      await expect(service.localUpdate('p', 'out', { itemIds: [], syncProjects: true }))
+        .rejects.toThrow('无需局部更新');
+      expect(items).toEqual(before);
+      expect(drafts).toHaveLength(14);
+      expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+      expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+      expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
+    });
+
   it('detects added projects and renders only additions in the same branch using existing output settings', async () => {
     const context = await membershipUpdateHarness();
     const { service, db, working, items } = context;

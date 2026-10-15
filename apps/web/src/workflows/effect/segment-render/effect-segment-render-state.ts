@@ -1,4 +1,5 @@
 import type {
+  EffectImportProduct,
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectSegmentRenderUpdateKind,
@@ -28,6 +29,15 @@ export const effectSegmentRepairUnavailableReason = (
 };
 
 export const EFFECT_SEGMENT_RENDER_PAGE_SIZE = 20;
+
+/** Resolve only against the current Run's products, never cached branch identities. */
+export const effectSegmentRenderCurrentProductId = (
+  products: readonly Pick<EffectImportProduct, 'id' | 'status'>[],
+  selectedProductId: string,
+): string => {
+  const active = products.filter((product) => product.status === 'ACTIVE');
+  return active.find((product) => product.id === selectedProductId)?.id ?? active[0]?.id ?? '';
+};
 
 export type EffectSegmentRenderStatus =
   'AUTO_RETRY' | 'COMPLETED' | 'FAILED' | 'QUEUED' | 'RENDERING';
@@ -70,6 +80,8 @@ export type EffectSegmentRenderTask = {
   source: EffectSegmentRenderSource;
   origin: EffectSegmentRenderOrigin;
   independentImport?: boolean;
+  mediaAspectRatio?: string;
+  mediaResolution?: string;
   mediaShortSidePixels?: number;
   sourceName: string;
   status: EffectSegmentRenderStatus;
@@ -107,6 +119,11 @@ export type EffectSegmentRenderWorkspace = {
   pendingRemovedTaskIds?: string[];
   refreshSignature?: string | undefined;
   canSaveFrozenResults?: boolean | undefined;
+  autoCommitPending?: boolean | undefined;
+  progressTaskIds?: string[] | undefined;
+  progressSynchronizedCount?: number | undefined;
+  progressRemovedCount?: number | undefined;
+  committedWorkflowRunId?: string | undefined;
   commitStatus?: WorkingArtifactCommitStatus | null;
   workingArtifactRevision?: number | null;
   batchStatus: EffectSegmentRenderBatchStatus;
@@ -114,6 +131,28 @@ export type EffectSegmentRenderWorkspace = {
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
+};
+
+/** Presentation only: keep the full compatible-purpose set for filtering and persistence. */
+export const effectSegmentRenderAdditionalPurposes = (
+  task: Pick<EffectSegmentRenderTask, 'fragmentType' | 'compatibleFragmentTypes'>,
+): EffectPromptFragmentType[] =>
+  [...new Set(task.compatibleFragmentTypes)].filter((purpose) => purpose !== task.fragmentType);
+
+/** Card text only; never rewrite the Prompt used for rendering or source inspection. */
+export const effectSegmentRenderCardTitle = (
+  task: Pick<EffectSegmentRenderTask, 'creativeCore' | 'independentImport' | 'promptText' | 'promptCode' | 'renderCode'>,
+  confirmedCreativeCore?: string,
+): string => {
+  const creativeCore =
+    (!task.independentImport && confirmedCreativeCore?.trim()) || task.creativeCore?.trim();
+  if (creativeCore) return creativeCore;
+  return task.promptText
+    .trim()
+    .replace(/^【视频概览】\s*[:：]?\s*/u, '')
+    .replace(/^目标\s*[:：]\s*/u, '')
+    .replace(/\s+/gu, ' ')
+    .trim() || task.promptCode || task.renderCode;
 };
 
 export type EffectSegmentRenderPromptDetails = {
@@ -158,6 +197,11 @@ export const effectSegmentRenderWorkspaceFromApi = (
   pendingRemovedTaskIds: data.batch?.pendingRemovedTaskIds ?? [],
   refreshSignature: data.batch?.refreshSignature,
   canSaveFrozenResults: data.batch?.canSaveFrozenResults,
+  autoCommitPending: data.batch?.autoCommitPending,
+  progressTaskIds: data.batch?.progressTaskIds,
+  progressSynchronizedCount: data.batch?.progressSynchronizedCount,
+  progressRemovedCount: data.batch?.progressRemovedCount,
+  committedWorkflowRunId: data.batch?.committedWorkflowRunId,
   commitStatus: data.batch?.commitStatus ?? null,
   workingArtifactRevision: data.batch?.workingArtifactRevision ?? null,
   batchStatus: data.batch?.status ?? 'NOT_STARTED',
@@ -185,6 +229,11 @@ export const effectSegmentRenderWorkspaceWithBatch = (
   pendingRemovedTaskIds: batch.pendingRemovedTaskIds ?? [],
   refreshSignature: batch.refreshSignature,
   canSaveFrozenResults: batch.canSaveFrozenResults,
+  autoCommitPending: batch.autoCommitPending,
+  progressTaskIds: batch.progressTaskIds,
+  progressSynchronizedCount: batch.progressSynchronizedCount,
+  progressRemovedCount: batch.progressRemovedCount,
+  committedWorkflowRunId: batch.committedWorkflowRunId,
   commitStatus: batch.commitStatus,
   workingArtifactRevision: batch.workingArtifactRevision,
   batchStatus: batch.status,

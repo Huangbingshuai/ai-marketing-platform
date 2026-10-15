@@ -152,7 +152,7 @@ describe('workbench source update orchestration', () => {
     const execute = new Function(...Object.keys(context), `${script}\nreturn execute;`)(...Object.values(context));
     await execute(run, 1);
     expect(context.sourceUpdateRun.value).toEqual(run);
-    expect(context.showNotice).toHaveBeenCalledWith(expect.stringContaining('正在重新连接'), 'warning');
+    expect(context.showNotice).not.toHaveBeenCalled();
     expect(context.setTimeout).toHaveBeenCalledWith(expect.any(Function), 3000);
   });
   it('clears cancelled net differences without polling, appending or invoking paid work', async () => {
@@ -265,8 +265,8 @@ describe('workbench source update orchestration', () => {
     const entry = ref({ needsAiFill: false, packagingSourceLocked: false });
     let count = 1;
     const pendingAddedCount = ref(0);
-    const reason = new Function('computed', 'runSwitching', 'activeEntry', 'pendingAddedCount', 'templatePendingUpdateCount',
-      `${script}\nreturn packagingActionBlockReason;`)(computed, ref(false), entry, pendingAddedCount, () => count) as { value: string | null };
+    const reason = new Function('computed', 'runSwitching', 'activeEntry', 'pendingAddedCount', 'templatePendingUpdateCount', 'localUpdateBusy',
+      `${script}\nreturn packagingActionBlockReason;`)(computed, ref(false), entry, pendingAddedCount, () => count, ref(false)) as { value: string | null };
     expect(reason.value).toBe('当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。');
     count = 0; entry.value = { ...entry.value }; // Invalidate the computed like an installed workspace.
     expect(reason.value).toBeNull();
@@ -277,7 +277,7 @@ describe('workbench source update orchestration', () => {
     entry.value.needsAiFill = true;
     expect(reason.value).toContain('模板槽位配置已修改');
   });
-  it('checks packaging prerequisites before saving or starting an editing branch', async () => {
+  it('rejects pending source updates before saving or preparing a packaging task', async () => {
     const source = page.split('const preparePackaging =')[1]!.split('const startAiFill =')[0]!;
     const script = transpileModule(`const execute =${source}`, {}).outputText;
     const reason = ref<string | null>('请先完成局部更新');
@@ -287,9 +287,8 @@ describe('workbench source update orchestration', () => {
     expect(await execute()).toBeNull();
     expect(showNotice).toHaveBeenCalledWith('请先完成局部更新', 'warning');
     expect(flush).not.toHaveBeenCalled();
-    reason.value = null;
-    expect(await execute()).toBe(9);
-    expect(flush).toHaveBeenCalledOnce();
+    // Successful draft preparation (including its current-revision read) is exercised by
+    // effect-packaging-draft-input.spec.ts; this harness intentionally tests the early guard.
   });
   it('keeps first packaging and repackaging icons and lets a blocked click explain the prerequisite', () => {
     const action = page.split('<div class="project-actions"')[1]!.split('project-workflow-action')[0]!;

@@ -78,6 +78,7 @@ export class EffectPromptController {
       query.query,
       query.purpose ?? query.fragmentType,
       query.purposeMatch,
+      query.origin,
     );
   }
 

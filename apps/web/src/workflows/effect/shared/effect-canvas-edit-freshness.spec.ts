@@ -89,6 +89,45 @@ describe('canvas confirmed branch projection', () => {
 });
 
 describe('canvas edit lifecycle', () => {
+  it('does not mark a new-template render head stale from historical artifacts while the tree loads', async () => {
+    let resolveTree!: (value: unknown) => void;
+    mocks.tree.mockImplementationOnce(() => new Promise((resolve) => { resolveTree = resolve; }));
+    mocks.artifacts.mockResolvedValue({ data: { items: [{
+      id: 'historical-prompt-dependency', nodeId: 'SEGMENT_RENDER', freshness: 'STALE',
+      artifactKey: 'render-batch:old', metadata: { branchSourceOwner: true, promptSourcePending: true },
+    }] } });
+    const scope = reactive({ projectId: 'p', workflowRunId: 'root', activeStep: 4, enabled: true });
+    const { app, state } = mount(scope);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.staleCounts.value[3]).toBe(0);
+    resolveTree({ data: tree() });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.staleCounts.value[3]).toBe(0);
+    app.unmount();
+  });
+  it.each(['CONFIRMED', 'STALE'] as const)(
+    'publishes actual %s upstream status without waiting for mixed-template source reads', async (status) => {
+      let resolveSources!: (value: unknown) => void;
+      mocks.sources.mockImplementationOnce(() => new Promise((resolve) => { resolveSources = resolve; }));
+      const data = tree();
+      data.branches[0]!.nodes[3]!.status = status;
+      mocks.tree.mockResolvedValue({ data });
+      mocks.artifacts.mockResolvedValue({ data: { items: [{
+        id: 'old-render', nodeId: 'SEGMENT_RENDER', freshness: 'STALE',
+      }] } });
+      const scope = reactive({ projectId: 'p', workflowRunId: 'root', activeStep: 4, enabled: true });
+      const { app, state } = mount(scope);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(state.staleCounts.value[3]).toBe(status === 'STALE' ? 1 : 0);
+      expect(state.branchTree.value).toEqual(data);
+      resolveSources({ data: { pendingProjectCount: 0 } });
+      await vi.advanceTimersByTimeAsync(0);
+      mocks.tree.mockRejectedValueOnce(new Error('temporary read failure'));
+      await vi.advanceTimersByTimeAsync(12000);
+      expect(state.staleCounts.value[3]).toBe(status === 'STALE' ? 1 : 0);
+      app.unmount();
+    },
+  );
   it.each([0, 1, 2, 3])('keeps downstream warnings on node %i through enter, cancel and unchanged save', async (activeStep) => {
     const scope = reactive({ projectId: 'p', workflowRunId: 'root', activeStep, enabled: true,
       publishedWorkflowRunId: null as string | null });
@@ -165,6 +204,10 @@ describe('canvas edit lifecycle', () => {
     app.unmount();
   });
   it('clears an old directory warning after a complete server reread but preserves a newer page projection', async () => {
+    mocks.sources.mockResolvedValue({ data: {
+      materials: [], draftRevision: 1, pendingProjectCount: 0,
+      pendingProjectCounts: { a: 0, b: 0 }, pendingAddedMaterialIds: {},
+    } });
     const data = tree(); data.branches.find((item) => item.workflowRunId === 'b')!.templates[0] = template('b', false);
     mocks.tree.mockResolvedValue({ data });
     const scope = reactive({ projectId: 'p', workflowRunId: 'root', activeStep: 3, enabled: true });

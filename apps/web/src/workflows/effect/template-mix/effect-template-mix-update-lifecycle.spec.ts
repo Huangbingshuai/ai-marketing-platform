@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { transpileModule } from 'typescript';
 import page from './EffectTemplateMixNodePage.vue?raw';
 import { saveLatestMixDraft } from './effect-template-mix-draft-race';
+import { hasPendingMixContinuation } from './effect-template-mix-operation-progress';
 
 function execute(source: string, context: Record<string, unknown>) {
   return new Function('state', `with (state) { ${transpileModule(source, {}).outputText} }`)(context);
@@ -24,6 +25,22 @@ function saveHarness() {
 }
 
 describe('local update save queue and task ownership', () => {
+  it.each(['APPEND', 'FILL'])('retains accepted %s task and silently reconnects a failed read', async (operation) => {
+    const state = {
+      props: { projectId: 'project', workflowRunId: 'run' },
+      stopPolling: vi.fn(), pollControllers: new Map(), AbortController,
+      getEffectTemplateMixAiRun: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')),
+      aiRuns: ref([{ id: 'task', operation, status: 'RUNNING' }]),
+      pollTimers: new Map(), setTimeout: vi.fn(() => 1), showNotice: vi.fn(), DOMException,
+    };
+    const source = page.split('const pollAiRun =')[1]!.split('let loadedWorkspaceRunId')[0]!;
+    const poll = execute(`const pollAiRun =${source}; return pollAiRun;`, state);
+    await poll('task');
+    expect(state.aiRuns.value[0]).toEqual({ id: 'task', operation, status: 'RUNNING' });
+    expect(state.showNotice).not.toHaveBeenCalled();
+    expect(state.setTimeout).toHaveBeenCalledWith(expect.any(Function), 3000);
+    expect(state.pollTimers.has('task')).toBe(true);
+  });
   it('leaving the node stops foreground work without cancelling or retrying the server task', () => {
     const context = {
       closeMaterialPreview: vi.fn(), resetPlayerSpace: vi.fn(), framePresentation: { reset: vi.fn() },
@@ -47,6 +64,7 @@ describe('local update save queue and task ownership', () => {
 
   function completionHarness() {
     const context = {
+      workbenchActive: true, retainFillResult: vi.fn(), mixFillResultReady: vi.fn(() => true),
       props: { projectId: 'p', workflowRunId: 'current' },
       currentWorkspaceScope: ref('p:current'), runSwitching: ref(false),
       stopPolling: vi.fn(), mutating: ref(false), load: vi.fn(), showNotice: vi.fn(),
@@ -56,6 +74,9 @@ describe('local update save queue and task ownership', () => {
       draftRace: { readToken: vi.fn(() => 1), canInstall: vi.fn(() => true) },
       loadEffectTemplateMixWorkspace: vi.fn().mockResolvedValue({ data: {} }),
       saveState: ref('saved'), installWorkspaceData: vi.fn(() => true), uiByTemplate: {}, view: ref('EDITOR'),
+      packagingPanel: ref({ refresh: vi.fn().mockResolvedValue(undefined) }), nextTick: vi.fn(),
+      activeAppendPackaging: ref<unknown>(null), appendPackagingRun: ref<unknown>(null),
+      hasPendingMixContinuation, pollAiRun: vi.fn(),
     };
     const source = page.split('const finishAiRun =')[1]!.split('const pollAiRun =')[0]!;
     const finish = execute(`const finishAiRun =${source}; return finishAiRun;`, context);
@@ -87,11 +108,49 @@ describe('local update save queue and task ownership', () => {
     expect(context.sourceUpdateHandoff.value).toBe(false);
     expect(context.showNotice).toHaveBeenCalledWith(expect.stringContaining('本次局部更新已完成'));
   });
-  it('does not report full success when append persistence or automatic packaging continuation failed', async () => {
+  it('silently preserves appended films when continuation has finally stopped', async () => {
     const { context, finish } = completionHarness();
     await finish({ ...append, status: 'COMPLETED', errorCode: 'APPEND_CONTINUATION_FAILED' });
-    expect(context.showNotice).toHaveBeenCalledWith(expect.stringContaining('不要重复追加'), 'error');
-    expect(context.showNotice).not.toHaveBeenCalledWith(expect.stringContaining('本次局部更新已完成'));
+    expect(context.showNotice).not.toHaveBeenCalled();
+    expect(context.sourceUpdateHandoff.value).toBe(false);
+  });
+  it('completely removes the continuation banner, retry button and frontend recovery call', () => {
+    for (const text of ['新增成片需要继续更新', '继续更新', 'appendContinuationRun', 'resumeEffectTemplateMixAppend'])
+      expect(page).not.toContain(text);
+  });
+  it('keeps polling durable automatic continuation without a manual retry notification', async () => {
+    const { context, finish } = completionHarness();
+    await finish({ ...append, status: 'COMPLETED', errorCode: 'APPEND_CONTINUATION_RETRY_1' });
+    expect(context.pollTimers.has('append')).toBe(true);
+    expect(context.sourceUpdateHandoff.value).toBe(true);
+    expect(context.showNotice).not.toHaveBeenCalled();
+  });
+  it.each(['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'])('hides automatic packaging terminal results (%s)', async status => {
+    const { context, finish } = completionHarness();
+    context.appendPackagingRun.value = { status, items: [{ variantId: 'new-film' }] };
+    await finish({ ...append, status: 'COMPLETED', outputVariantIds: ['new-film'], packageNewVariants: true });
+    expect(context.sourceUpdateHandoff.value).toBe(false);
+    expect(context.showNotice).not.toHaveBeenCalled();
+  });
+  it('preserves the selected original film and keeps automatic packaging under local update', async () => {
+    const { context, finish } = completionHarness();
+    const ui = { selectedVariantId: 'original', selectedSlotId: 'slot-3' };
+    context.uiByTemplate = { t: ui };
+    context.activeAppendPackaging.value = { id: 'package' };
+    context.appendPackagingRun.value = { items: [{ variantId: 'new-film' }] };
+    await finish({ ...append, status: 'COMPLETED', outputVariantId: 'new-film',
+      outputVariantIds: ['new-film'], packageNewVariants: true });
+    expect(ui).toEqual({ selectedVariantId: 'original', selectedSlotId: 'slot-3' });
+    expect(context.packagingPanel.value.refresh).toHaveBeenCalledOnce();
+    expect(context.sourceUpdateHandoff.value).toBe(false);
+    expect(context.showNotice).not.toHaveBeenCalled();
+  });
+  it('keeps the handoff while automatic packaging history is unavailable', async () => {
+    const { context, finish } = completionHarness();
+    await finish({ ...append, status: 'COMPLETED', outputVariantIds: ['new-film'], packageNewVariants: true });
+    expect(context.sourceUpdateHandoff.value).toBe(true);
+    expect(context.pollTimers.has('append')).toBe(true);
+    expect(context.showNotice).not.toHaveBeenCalled();
   });
   it('releases the completed save so source polling can install the next worker revision', async () => {
     const { state, persist } = saveHarness();
@@ -181,6 +240,9 @@ describe('local update save queue and task ownership', () => {
         flushPendingEdits: vi.fn().mockResolvedValue(true), fillStartPending: ref(false),
         createEffectTemplateMixAiRun: vi.fn().mockResolvedValue({ data: run }), aiRuns: ref<unknown[]>([]),
         pollAiRun: vi.fn(), loadEffectTemplateMixWorkspace: vi.fn().mockResolvedValue({ data: {} }),
+        readMixWorkspaceWithDeadline: (read: (signal: AbortSignal) => unknown) => read(new AbortController().signal),
+        draftRace: { readToken: () => 0, canInstall: () => true },
+        saveState: ref('saved'), pendingSave: undefined,
         installWorkspaceData: vi.fn(() => false), load: vi.fn(), showNotice: vi.fn(),
       };
       if (failure === 'read-failed') context.loadEffectTemplateMixWorkspace.mockRejectedValue(new Error('offline'));
@@ -195,6 +257,7 @@ describe('local update save queue and task ownership', () => {
   );
   it('rejects completion from another Run before saving or loading anything', async () => {
     const context = {
+      workbenchActive: true,
       props: { projectId: 'p', workflowRunId: 'current' },
       currentWorkspaceScope: ref('p:current'), runSwitching: ref(false),
       stopPolling: vi.fn(), flushPendingEdits: vi.fn(), loadEffectTemplateMixWorkspace: vi.fn(),

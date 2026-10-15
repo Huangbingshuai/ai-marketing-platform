@@ -71,7 +71,7 @@ import {
 import { wavDuration, parseVoiceSegmentFrames, parseVoiceSpeechRanges } from '../template-mix/effect-packaging-audio';
 import { withoutChangedSlots, withoutRemovedSlots, clearRemovedSourceSlots,
   assertRefreshPreservesContent, validateRefreshCheckpoint } from './effect-final-output-refresh';
-import { finalOutputSavedDraftDiffers, finalOutputSavedProjectChanges } from './effect-final-output-freshness';
+import { finalOutputConfirmedProjectIds, finalOutputSavedDraftDiffers, finalOutputSavedProjectChanges } from './effect-final-output-freshness';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -105,6 +105,13 @@ const NEEDS_REPACKAGING = '成片工程已变化，请返回混剪重新进行�
 const audioIds = (cp: PackagingCheckpoint) =>
   [...Object.values(cp.voices ?? {}), ...Object.values(cp.captionVoices ?? {}),
     ...(cp.music ? [cp.music] : [])].map((a) => a.fileObjectId);
+/** Supplier bookkeeping does not change the saved audiovisual package. */
+const packagingContentHash = (checkpoint: PackagingCheckpoint) => {
+  const content = { ...checkpoint };
+  delete content.musicTaskId;
+  delete content.musicSubmissionPending;
+  return workflowStateHash(content);
+};
 /**
  * The picture layers the user stacked on top after the package was confirmed.
  *
@@ -138,7 +145,10 @@ const hasOutputVersion = (artifacts: ArtifactRow[]): boolean =>
   artifacts.some((artifact) => artifact.nodeId === 'FINAL_OUTPUT' &&
     artifact.artifactKey?.startsWith('final-delivery:'));
 type OutputItemRow = { id: string; variantId: string; name: string; snapshot: unknown;
-  fileObjectId?: string | null; status?: string };
+  fileObjectId?: string | null; status?: string; projectId?: string; runId?: string };
+type AdoptedPackagingItem = Prisma.EffectPackagingItemGetPayload<{ select: {
+  id: true; variantId: true; status: true; checkpoint: true; snapshot: true;
+} }>;
 /**
  * A fingerprint of the picture an export would render. Placement is part of it because dragging a
  * clip is an edit the user expects to see, even though it leaves the packaging source hash alone.
@@ -182,22 +192,31 @@ export class EffectFinalOutputService {
     templateIds: string[],
     client: Prisma.TransactionClient = this.db,
   ): Promise<Map<string, PackagingCheckpoint>> {
+    const items = await this.packagingItemsByVariant(projectId, workflowRunId, templateIds, client);
+    return new Map([...items].filter(([, item]) => item.status === 'COMPLETED')
+      .map(([variantId, item]) => [variantId, item.checkpoint as PackagingCheckpoint]));
+  }
+
+  /** Same adopted result for display, source-update freezing and commit-time conflict checks. */
+  private async packagingItemsByVariant(
+    projectId: string, workflowRunId: string, templateIds: string[],
+    client: Prisma.TransactionClient, variantId?: string,
+  ): Promise<Map<string, AdoptedPackagingItem>> {
     if (!templateIds.length) return new Map();
     const rows = await client.effectPackagingItem.findMany({
-      where: { projectId, run: {
+      where: { projectId, ...(variantId ? { variantId } : {}), run: {
         workflowRunId, templateId: { in: templateIds },
       } },
       orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }],
-      select: { variantId: true, status: true, checkpoint: true, snapshot: true },
+      select: { id: true, variantId: true, status: true, checkpoint: true, snapshot: true },
     });
-    const latest = new Map<string, PackagingCheckpoint | null>();
+    const latest = new Map<string, AdoptedPackagingItem>();
     for (const row of rows) {
       // A new transactional package has not replaced the saved package until its own commit.
       if ((row.snapshot as unknown as PackagingSnapshot).operation && row.status !== 'COMPLETED') continue;
-      if (!latest.has(row.variantId)) latest.set(row.variantId,
-        row.status === 'COMPLETED' ? row.checkpoint as PackagingCheckpoint : null);
+      if (!latest.has(row.variantId)) latest.set(row.variantId, row);
     }
-    return new Map([...latest].filter((entry): entry is [string, PackagingCheckpoint] => entry[1] !== null));
+    return latest;
   }
 
   private enqueue(tx: Prisma.TransactionClient, projectId: string, runId: string) {
@@ -813,6 +832,57 @@ export class EffectFinalOutputService {
     await this.publishEditBranch(projectId, workflowRunId, 'TEMPLATE_MIX');
   }
 
+  /** Compatibility for packaging children created before confirmed rollback artifacts were copied. */
+  private async retainedPackagingArtifacts(
+    tx: Prisma.TransactionClient, templateId: string, item: OutputItemRow,
+    checkpoint: PackagingCheckpoint, artifacts: WorkingArtifact[],
+  ): Promise<WorkingArtifact[]> {
+    const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+    const packageKey = `timeline-package:${templateId}:${item.variantId}`;
+    // A present but invalid current result is never replaced with an older one.
+    if (!item.projectId || !item.runId || snapshot.unpackaged ||
+      artifacts.some((artifact) => artifact.artifactKey === packageKey)) return [];
+    if (!snapshot.packaging || packagingContentHash(snapshot.packaging) !== packagingContentHash(checkpoint)) return [];
+    const output = await tx.effectFinalOutputRun.findFirst({ where: {
+      projectId: item.projectId, id: item.runId, templateId,
+    }, select: { workflowRunId: true } });
+    if (!output) return [];
+    const failed = await tx.effectPackagingItem.findFirst({ where: {
+      projectId: item.projectId, variantId: item.variantId, status: { in: ['FAILED', 'CANCELLED'] },
+      run: { workflowRunId: output.workflowRunId, templateId },
+      snapshot: { path: ['operation'], equals: 'BATCH_PACKAGE' },
+    }, select: { id: true } });
+    if (!failed) return [];
+    const branches = await tx.workflowRun.findMany({ where: {
+      projectId: item.projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+    }, select: { id: true, parentWorkflowRunId: true, forkNodeId: true, forkTemplateId: true } });
+    const byId = new Map(branches.map((branch) => [branch.id, branch]));
+    const branch = byId.get(output.workflowRunId);
+    if (branch?.forkNodeId !== 'TEMPLATE_MIX' || branch.forkTemplateId !== templateId) return [];
+    const ancestors = new Set<string>();
+    let cursor = branch.parentWorkflowRunId;
+    while (cursor && cursor !== branch.id && !ancestors.has(cursor)) {
+      const parent = byId.get(cursor);
+      if (!parent) break;
+      ancestors.add(parent.id);
+      cursor = parent.parentWorkflowRunId;
+    }
+    const keys = [`timeline-project:${templateId}:${item.variantId}`, packageKey];
+    const dependencies = snapshot.dependencies ?? [];
+    // Old snapshots did not always persist artifactKey; the explicit artifact ID + hash is
+    // still authoritative. Only the two exact film keys are admitted after loading below.
+    const rows = await tx.workingArtifact.findMany({ where: {
+      projectId: item.projectId, workflowRunId: { in: [...ancestors] }, nodeId: 'TEMPLATE_MIX',
+      id: { in: dependencies.map((dependency) => dependency.artifactId) },
+      artifactKey: { in: keys }, availability: 'AVAILABLE',
+    }, include: workingArtifactInclude });
+    return rows.filter((row) => dependencies.some((dependency) =>
+      dependency.artifactId === row.id && dependency.revision === row.revision &&
+      dependency.contentHash === row.contentHash &&
+      (!dependency.artifactKey || dependency.artifactKey === row.artifactKey)) &&
+      !artifacts.some((artifact) => artifact.artifactKey === row.artifactKey)) as unknown as WorkingArtifact[];
+  }
+
   /** Rewrites one film from the current saved picture and audio without regenerating narration. */
   private async rewriteFilm(
     tx: Prisma.TransactionClient,
@@ -827,6 +897,9 @@ export class EffectFinalOutputService {
     sourceRefresh?: FinalOutputSnapshot['sourceRefresh'],
   ): Promise<void> {
     const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+    if (latestPackaging && !artifacts.some((artifact) =>
+      artifact.artifactKey === `timeline-package:${templateId}:${item.variantId}`))
+      artifacts.push(...await this.retainedPackagingArtifacts(tx, templateId, item, latestPackaging, artifacts));
     let clips: PackagingSnapshot['clips'];
     try {
       clips = this.liveClips(variant, workspace.materials, artifacts);
@@ -1118,8 +1191,10 @@ export class EffectFinalOutputService {
       .map((artifact) => [artifact.id, artifact])).values()];
     if (!projectRefreshOnly && !hasOutputVersion(artifacts))
       throw new ConflictException('当前分支尚无已确认成片版本');
-    const packaging = await this.packagingByVariant(projectId, run.workflowRunId,
+    const packagingItems = await this.packagingItemsByVariant(projectId, run.workflowRunId,
       [run.templateId], tx);
+    const packaging = new Map([...packagingItems].filter(([, item]) => item.status === 'COMPLETED')
+      .map(([variantId, item]) => [variantId, item.checkpoint as PackagingCheckpoint]));
     if (!Array.isArray(body.itemIds) || (!body.itemIds.length && !body.syncProjects))
       throw new BadRequestException('请先选择需要重新渲染的成片');
     if (body.itemIds.length !== new Set(body.itemIds).size)
@@ -1154,6 +1229,25 @@ export class EffectFinalOutputService {
       variant.id === item.variantId) && (body.syncProjects || body.itemIds.includes(item.id)));
     if (!chosen.length && !added.length && !removed.length)
       throw new ConflictException('成片工程无需局部更新，请刷新后重试');
+    // Older packaging/export forks cloned unexported films as QUEUED even though
+    // their batch was PENDING_RENDER. Starting one local update must not sweep
+    // those unrelated pictures into the Worker (and accidentally encode them).
+    // This batch is locked and was verified inactive above; no live work is lost.
+    for (const item of run.items.filter((item) => {
+      if (body.itemIds.includes(item.id) || removed.some((removed) => removed.id === item.id)) return false;
+      if (['QUEUED', 'RUNNING'].includes(item.status)) return true;
+      const snapshot = item.snapshot as unknown as FinalOutputSnapshot;
+      // Compatibility for those legacy clones already swept into a previous source
+      // operation. They were not refresh targets and have never produced a delivery;
+      // their encode failure must not count as this operation's project-update failure.
+      return projectRefreshOnly && !hasOutputVersion(artifacts) && item.status === 'FAILED' &&
+        !item.fileObjectId && !item.assetId && Boolean(snapshot.sourceOperation) &&
+        !snapshot.sourceRefresh && !snapshot.projectRefreshOnly;
+    })) {
+      await tx.effectFinalOutputItem.update({ where: { id: item.id }, data: {
+        status: item.fileObjectId ? 'COMPLETED' : 'PENDING_RENDER', progress: 0, errorMessage: null,
+      } });
+    }
     if (added.length) {
       const blocked = membership?.added.find((entry) => entry.blockedReason);
       if (blocked) throw new ConflictException(`${blocked.name}：${blocked.blockedReason}`);
@@ -1253,10 +1347,7 @@ export class EffectFinalOutputService {
             audio.offset = 0;
           }
         }
-        const packageItem = await tx.effectPackagingItem.findFirst({ where: {
-          projectId, variantId: item.variantId, status: 'COMPLETED',
-          run: { workflowRunId: run.workflowRunId, templateId: run.templateId },
-        }, orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }] });
+        const packageItem = packagingItems.get(item.variantId);
         refresh = { workflowRunId: run.workflowRunId, templateId: run.templateId,
           protocol: 'FROZEN_RENDER_V1',
           templateHash: workflowStateHash(workspace.draft.templates.find((entry) => entry.id === run.templateId)!.workspace.template),
@@ -1266,7 +1357,7 @@ export class EffectFinalOutputService {
             (artifact.metadata as { branchSourceOwner?: boolean } | null)?.branchSourceOwner !== false &&
             artifact.availability === 'AVAILABLE').map((artifact) => ({ artifactId: artifact.id,
               artifactKey: artifact.artifactKey, revision: artifact.revision, contentHash: artifact.contentHash ?? '' })),
-          ...(packageItem ? { packagingItemId: packageItem.id } : {}),
+          ...(packageItem?.status === 'COMPLETED' ? { packagingItemId: packageItem.id } : {}),
           slots: replacements.map((change) => ({ slotId: change.slotId, material: change.material! })),
           ...(removedSlotIds.length ? { removedSlotIds } : {}),
           ...(projectRefreshOnly && item.fileObjectId ? {
@@ -1554,14 +1645,19 @@ export class EffectFinalOutputService {
       }
       const variants = workspace.draft?.templates.find((entry) => entry.id === source.templateId)
         ?.workspace.variants ?? [];
-      const outputVariants = variants.filter((variant) => run.items.some((item) => item.variantId === variant.id) ||
-        effectTemplateMixPlacedContentDuration(variant) > 0);
-      if (!outputVariants.length || outputVariants.length !== run.items.length ||
-        run.items.some((item) => !variants.some((variant) => variant.id === item.variantId)))
-        throw new ConflictException('当前成片工程数量已变化，请先同步成片工程后再导出');
       const artifacts = await tx.workingArtifact.findMany({ where: {
         projectId, workflowRunId: edit.runId,
       }, include: workingArtifactInclude }) as unknown as WorkingArtifact[];
+      // The output queue contains confirmed timelines, not every editable picture draft.
+      // Keep detecting truly added confirmed films without allowing an unsubmitted sibling
+      // (including a historical partial-fill draft) to veto this batch's export.
+      const confirmedVariantIds = finalOutputConfirmedProjectIds(source.templateId, artifacts);
+      const outputVariants = variants.filter((variant) => run.items.some((item) => item.variantId === variant.id) ||
+        (confirmedVariantIds.has(variant.id) &&
+          effectTemplateMixPlacedContentDuration(variant) > 0));
+      if (!outputVariants.length || outputVariants.length !== run.items.length ||
+        run.items.some((item) => !variants.some((variant) => variant.id === item.variantId)))
+        throw new ConflictException('当前成片工程数量已变化，请先同步成片工程后再导出');
       const packaging = await this.packagingByVariant(projectId, edit.runId, [source.templateId], tx);
       for (const item of run.items) {
         const variant = variants.find((entry) => entry.id === item.variantId)!;
@@ -1884,7 +1980,8 @@ export class EffectFinalOutputService {
   ): FinalOutputRun['projectChanges'] {
     const variants = workspace?.draft?.templates.find((entry) => entry.id === run.templateId)?.workspace.variants;
     if (!variants || !hasOutputVersion(artifacts)) return undefined;
-    const membership = finalOutputSavedProjectChanges(variants, run.items, packaging);
+    const membership = finalOutputSavedProjectChanges(variants, run.items,
+      finalOutputConfirmedProjectIds(run.templateId, artifacts), packaging);
     return {
       ...(typeof workspace?.draftRevision === 'number' ? { draftRevision: workspace.draftRevision } : {}),
       added: membership.added.map((variant) => {
@@ -2031,7 +2128,8 @@ export class EffectFinalOutputService {
   }
   async list(projectId: string, workflowRunId: string) {
     const load = () => this.loadList(projectId, workflowRunId);
-    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'output', load) : load();
+    return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'output', load,
+      'confirmed-output-membership-v1') : load();
   }
 
   private async loadList(projectId: string, workflowRunId: string) {
@@ -2423,12 +2521,10 @@ export class EffectFinalOutputService {
         }) } });
       if (!current) throw new ConflictException('素材所依赖的商品事实或 Prompt 已变化，请重新发起局部更新');
     }
-    const latest = await tx.effectPackagingItem.findFirst({ where: { projectId,
-        variantId: refresh.baselineVariant.id,
-        run: { workflowRunId: refresh.workflowRunId, templateId: refresh.templateId },
-      }, orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }] });
+    const latest = (await this.packagingItemsByVariant(projectId, refresh.workflowRunId,
+      [refresh.templateId], tx, refresh.baselineVariant.id)).get(refresh.baselineVariant.id);
     if (refresh.packagingItemId ? (latest?.id !== refresh.packagingItemId || latest.status !== 'COMPLETED' ||
-          workflowStateHash(latest.checkpoint) !== workflowStateHash(refresh.baselinePackaging)) : Boolean(latest))
+          packagingContentHash(latest.checkpoint as PackagingCheckpoint) !== packagingContentHash(refresh.baselinePackaging)) : Boolean(latest))
         throw new ConflictException('该成片包装已被修改，请重新发起局部更新');
   }
 

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 
 MIN_PROMPT_COUNT = 10
@@ -109,6 +109,24 @@ class CreativeDimensionKey(StrEnum):
     PRODUCT_RELATION = "PRODUCT_RELATION"
     CAMERA = "CAMERA"
     EMOTION = "EMOTION"
+
+
+class ManualCreativeDimensions(CreativeDimensions):
+    """User-authored metadata may be empty; generated creative output remains strict."""
+
+    narrative: str = Field(max_length=120)
+    scene: str = Field(max_length=120)
+    persona: str = Field(max_length=160)
+    product_relation: str = Field(max_length=240)
+    camera: str = Field(max_length=160)
+    emotion: str = Field(max_length=120)
+
+    @field_validator(
+        "narrative", "scene", "persona", "product_relation", "camera", "emotion"
+    )
+    @classmethod
+    def clean_dimension(cls, value: str) -> str:
+        return " ".join(value.split())
 
 
 class CreativeSemanticProfile(ApiModel):
@@ -327,7 +345,7 @@ class PromptItem(ApiModel):
         ge=MIN_PROMPT_DURATION_SECONDS,
         le=MAX_MANUAL_PROMPT_DURATION_SECONDS,
     )
-    creative_core: str = Field(min_length=1, max_length=160)
+    creative_core: str = Field(max_length=160)
     dimensions: CreativeDimensions
     content: str = Field(min_length=1, max_length=12_000)
     insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
@@ -336,8 +354,17 @@ class PromptItem(ApiModel):
     created_at: datetime
     updated_at: datetime
 
+    @field_validator("dimensions", mode="before")
+    @classmethod
+    def read_dimensions(cls, value: Any, info: ValidationInfo) -> CreativeDimensions:
+        raw = value.model_dump() if isinstance(value, CreativeDimensions) else value
+        model = ManualCreativeDimensions if info.data.get("origin") == "MANUAL" else CreativeDimensions
+        return model.model_validate(raw)
+
     @model_validator(mode="after")
     def validate_purposes(self) -> PromptItem:
+        if self.origin == "AI" and not self.creative_core.strip():
+            raise ValueError("AI Prompt requires creativeCore")
         if self.origin == 'AI' and self.target_duration_seconds > MAX_PROMPT_DURATION_SECONDS:
             raise ValueError("AI Prompt duration must not exceed batch duration limit")
         purposes = list(dict.fromkeys(self.compatible_purposes))

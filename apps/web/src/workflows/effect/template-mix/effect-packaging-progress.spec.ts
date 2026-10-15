@@ -17,7 +17,6 @@ describe('packaging workflow progress', () => {
     expect(result.detail).toContain('成功 27 / 44 条 · 失败 17 条');
     expect(result.detail).not.toMatch(/78%|预计|吞吐/);
     expect(result.detail).toContain('已保留包装前原样');
-    expect(component).toContain(':terminal="Boolean(terminalResult)"');
   });
   it('keeps running progress and all terminal statuses distinct', () => {
     for (const status of ['QUEUED', 'RUNNING'] as const)
@@ -107,11 +106,12 @@ describe('packaging workflow progress', () => {
     expect(packagingActionText(true, null)).toBe('重新成片包装');
     expect(packagingActionText(false, 'RUNNING')).toBe('智能成片包装');
   });
-  it('labels a finished run that is not fully ready as a rerun too', () => {
-    // A partial run ends without the validate gate opening, so the only way forward is running
-    // packaging again — the button has to say so instead of reading "智能成片包装".
-    for (const status of ['PARTIAL', 'FAILED', 'CANCELLED'] as const)
-      expect(packagingActionText(false, status)).toBe('重新成片包装');
+  it('does not mistake unsuccessful first attempts for confirmed packaging', () => {
+    expect(packagingActionText(false, 'PARTIAL')).toBe('重新成片包装');
+    for (const status of ['FAILED', 'CANCELLED'] as const) {
+      expect(packagingActionText(false, status)).toBe('智能成片包装');
+      expect(packagingActionText(true, status)).toBe('重新成片包装');
+    }
     expect(packagingActionText(false, 'QUEUED')).toBe('智能成片包装');
     expect(packagingActionText(false, null)).toBe('智能成片包装');
   });

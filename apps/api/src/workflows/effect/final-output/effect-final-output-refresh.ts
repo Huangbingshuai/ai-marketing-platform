@@ -55,6 +55,8 @@ export function withoutChangedSlots(
   // A newly frozen source refresh owns its own recovery budget. Older packaging
   // retries must not exhaust it; persisted retries in the current snapshot survive.
   delete result.automaticRetries;
+  delete result.recovery;
+  delete result.voiceRecovery;
   return result;
 }
 
@@ -154,7 +156,7 @@ export function assertRefreshPreservesContent(
       workflowStateHash(actual.segmentFrames ?? []) !== workflowStateHash(voice.segmentFrames ?? []) ||
       workflowStateHash(actual.speechRanges ?? []) !== workflowStateHash(voice.speechRanges ?? [])
     )
-      throw new ConflictException('局部更新音频不属于本任务或真实时长不一致');
+      throw new ConflictException('局部更新音频不属于本任务或文件时长不一致');
   }
 }
 

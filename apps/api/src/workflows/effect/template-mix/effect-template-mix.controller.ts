@@ -123,6 +123,12 @@ export class EffectTemplateMixController {
     return this.service.cancelAppend(projectId, runId);
   }
 
+  @Post('ai-fill-runs/:runId/retry')
+  retryAppend(@Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string) {
+    return this.service.retryAppend(projectId, runId);
+  }
+
   @Get('templates/:templateId/background-ai-run')
   backgroundAiRun(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,

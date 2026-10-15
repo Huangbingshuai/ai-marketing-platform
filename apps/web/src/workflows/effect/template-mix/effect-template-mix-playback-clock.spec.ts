@@ -52,6 +52,14 @@ describe('template mix compositor playback clock', () => {
     expect(pageSource).toContain('preparedVideoHandoff.stalled(activeVideo)');
     expect(pageSource).toContain('if (!playbackStarting) playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame)');
   });
+  it('advances all transition animations on the shared clock between UI ticks', () => {
+    expect(pageSource).toContain('animate(outgoing, frames.outgoing)');
+    expect(pageSource).toContain('animate(incoming, frames.incoming)');
+    expect(pageSource).toContain('animate(overlay, frames.overlay)');
+    expect(pageSource).toContain('animation.pause()');
+    expect(pageSource).toContain('animation.currentTime = Math.max(0, next - transition.start) * 1000');
+    expect(pageSource).not.toContain("transition.transition !== '叠化'");
+  });
   it('warms the next clip without reloads and reuses positioned frames at natural boundaries', () => {
     expect(pageSource).toContain('prepareTimelineVideo(video, timelineVideoSeeks, targetTime');
     const timelinePreparation = pageSource.slice(

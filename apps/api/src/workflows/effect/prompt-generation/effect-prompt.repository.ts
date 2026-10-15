@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { confirmedEffectRenderSourceRun } from '../../../platform/workflow/effect-render-source-context';
+import { confirmedEffectPromptEditSource, confirmedEffectRenderSourceRun } from '../../../platform/workflow/effect-render-source-context';
 
 import type {
   EffectPromptBatchResult,
@@ -7,6 +7,7 @@ import type {
   EffectPromptDimensions,
   EffectPromptItem,
   EffectPromptManualOverrides,
+  EffectPromptNodeId,
   EffectPromptOperation,
   EffectPromptRegenerationMode,
   EffectPromptRegenerationReason,
@@ -23,7 +24,7 @@ import {
   normalizeEffectPromptFragmentTypes,
   readEffectPromptSettings,
 } from '@ai-marketing/contracts';
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -40,10 +41,10 @@ import { normalizeEffectExtractionResult } from '../information-extraction/effec
 import {
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
+  parseEffectPromptStoredDraft,
   parseEffectPromptSemanticAudit,
   pendingEffectPromptSemanticEvaluation,
   recomputePromptQuality,
-  semanticEvaluationAfterDeletion,
 } from './effect-prompt.quality';
 import {
   emptyManualOverrides,
@@ -52,6 +53,7 @@ import {
   type EffectPromptShardInput,
   type EffectPromptStageInput,
 } from './effect-prompt.types';
+import { promptPrecedingNodeIds, promptShardProgress } from './effect-prompt.progress';
 
 const AI_RESPONSE_INVALID_RETRY_LEDGER_NODE = 'INTERNAL_AI_RESPONSE_INVALID_RETRY';
 
@@ -779,7 +781,7 @@ export class EffectPromptRepository {
     projectId: string,
     runId: string,
     attemptToken: string,
-    nodeId: string,
+    nodeId: EffectPromptNodeId,
     input: EffectPromptStageInput,
     progress: number,
     now = new Date(),
@@ -793,7 +795,7 @@ export class EffectPromptRepository {
         leaseExpiresAt: { gt: now },
       };
       let renewed = await transaction.effectPromptRun.updateMany({
-        where: { ...activeLease, progress: { lte: progress } },
+        where: { ...activeLease, progress: { lt: progress } },
         data: {
           currentNode: nodeId,
           progress,
@@ -803,9 +805,21 @@ export class EffectPromptRepository {
       });
       if (renewed.count !== 1) {
         renewed = await transaction.effectPromptRun.updateMany({
-          where: activeLease,
+          where: {
+            ...activeLease,
+            currentNode: { in: promptPrecedingNodeIds(nodeId) },
+          },
           data: {
             currentNode: nodeId,
+            heartbeatAt: now,
+            leaseExpiresAt: leaseDate(now),
+          },
+        });
+      }
+      if (renewed.count !== 1) {
+        renewed = await transaction.effectPromptRun.updateMany({
+          where: activeLease,
+          data: {
             heartbeatAt: now,
             leaseExpiresAt: leaseDate(now),
           },
@@ -905,6 +919,61 @@ export class EffectPromptRepository {
           completedAt: ['PENDING', 'RUNNING'].includes(input.status) ? null : now,
         },
       });
+      if (input.status === 'SUCCEEDED') {
+        const [counts] = await transaction.$queryRaw<
+          Array<{ expectedItems: number; completedItems: number }>
+        >`
+          SELECT
+            COALESCE(
+              NULLIF((stage."metadata"->>'candidateTargetCount')::int, 0),
+              GREATEST(
+                COALESCE((run."inputSnapshot"->'settings'->>'targetCount')::int, 0) -
+                CASE WHEN jsonb_typeof(run."inputSnapshot"->'retainedManualItems') = 'array'
+                  THEN jsonb_array_length(run."inputSnapshot"->'retainedManualItems')
+                  ELSE 0 END,
+                0
+              )
+            ) AS "expectedItems",
+            COALESCE((
+              SELECT SUM(jsonb_array_length(shard."items"))
+              FROM "effect_prompt_shard_outputs" AS shard
+              WHERE shard."projectId" = ${projectId}::uuid
+                AND shard."runId" = ${runId}::uuid
+                AND shard."phase" = ${storagePhase}::"EffectPromptShardPhase"
+                AND shard."round" = ${round}
+                AND shard."status" = 'SUCCEEDED'
+            ), 0)::int AS "completedItems"
+          FROM "effect_prompt_runs" AS run
+          LEFT JOIN "effect_prompt_stage_outputs" AS stage
+            ON stage."projectId" = run."projectId"
+            AND stage."runId" = run."id"
+            AND stage."nodeId" = 'COHERENT_CREATIVE_GENERATION'
+          WHERE run."projectId" = ${projectId}::uuid
+            AND run."id" = ${runId}::uuid
+            AND run."operation" = 'BATCH_GENERATE'
+        `;
+        if (counts && counts.expectedItems > 0) {
+          const shardProgress = promptShardProgress(
+            phase,
+            round,
+            counts.completedItems,
+            counts.expectedItems,
+          );
+          if (shardProgress) {
+            await transaction.effectPromptRun.updateMany({
+              where: {
+                projectId,
+                id: runId,
+                status: 'RUNNING',
+                attemptToken,
+                leaseExpiresAt: { gt: now },
+                progress: { lt: shardProgress.progress },
+              },
+              data: shardProgress,
+            });
+          }
+        }
+      }
       return true;
     });
   }
@@ -1721,13 +1790,11 @@ export class EffectPromptRepository {
       });
       if (!existing) return { kind: 'NOT_FOUND' as const };
       if (existing.revision !== expectedRevision) return { kind: 'REVISION_CONFLICT' as const };
-      const current = parseEffectPromptBatchResult(existing.draftResult);
+      const current = parseEffectPromptStoredDraft(existing);
       if (!current) return { kind: 'INVALID_RESULT' as const };
       const overrides = parseOverrides(existing.manualOverrides);
       const items = [...current.items];
-      let semanticEvaluation = pendingEffectPromptSemanticEvaluation();
-      let semanticContentUnchanged =
-        mutation.kind === 'SHARED_PROMPT' || mutation.kind === 'SETTINGS';
+      // Add, edit and delete all preserve the last AI batch assessment.
       if (mutation.kind === 'ADD') {
         if (items.some(({ id }) => id === mutation.item.id))
           return { kind: 'ITEM_CONFLICT' as const };
@@ -1743,28 +1810,22 @@ export class EffectPromptRepository {
           delete overrides.edited[mutation.itemId];
           if (previous.origin === 'AI' && !overrides.deleted.includes(mutation.itemId))
             overrides.deleted.push(mutation.itemId);
-          const resultSaveStage = await transaction.effectPromptStageOutput.findUnique({
-            where: {
-              projectId_runId_nodeId: {
-                projectId,
-                runId: existing.runId,
-                nodeId: 'RESULT_SAVE',
-              },
-            },
-          });
-          const metadata = jsonRecord(resultSaveStage?.metadata);
-          const audit = parseEffectPromptSemanticAudit(metadata?.semanticAudit, items, true);
-          semanticEvaluation = audit
-            ? semanticEvaluationAfterDeletion(items, audit)
-            : pendingEffectPromptSemanticEvaluation();
         } else {
+          // Saving the same user-editable content must not become a new edit just
+          // because derived scores, manualEdited or updatedAt would change.
+          const editableFields = [
+            'content', 'fragmentType', 'primaryPurpose', 'compatiblePurposes',
+            'targetDurationSeconds', 'creativeCore', 'dimensions',
+          ] as const;
+          if (editableFields.every((field) =>
+            workflowStateHash(previous[field]) === workflowStateHash(mutation.item[field])))
+            return { kind: 'UNCHANGED' as const, result: existing, draft: current };
           const updated: EffectPromptItem = {
             ...previous,
             ...mutation.item,
             manualEdited: true,
             updatedAt: new Date().toISOString(),
           };
-          semanticContentUnchanged = updated.content === previous.content;
           items[index] = updated;
           if (previous.origin === 'MANUAL')
             overrides.added = overrides.added.map((item) =>
@@ -1781,11 +1842,7 @@ export class EffectPromptRepository {
         mutation.kind === 'SHARED_PROMPT' || mutation.kind === 'SETTINGS'
           ? mutation.sharedPrompt
           : current.sharedPrompt,
-        semanticContentUnchanged
-          ? current.metrics.semanticEvaluation
-          : mutation.kind === 'DELETE'
-            ? semanticEvaluation
-            : pendingEffectPromptSemanticEvaluation(),
+        current.metrics.semanticEvaluation,
       );
       if (workflowStateHash(next) === workflowStateHash(current))
         return { kind: 'UNCHANGED' as const, result: existing, draft: current };
@@ -2130,10 +2187,17 @@ export class EffectPromptRepository {
         },
       });
       const currentSettings = readEffectPromptSettings(settingsNode?.state);
+      const editingRun = await transaction.workflowRun.findFirst({
+        where: { projectId, id: result.workflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
+      });
+      const hiddenPromptEdit = Boolean(
+        editingRun?.parentWorkflowRunId && !editingRun.branchPublishedAt &&
+        editingRun.editSessionNodeId === 'PROMPT_GENERATION',
+      );
       if (
         !insight ||
         !currentSettings ||
-        workflowStateHash(currentSettings) !== result.settingsHash
+        (!hiddenPromptEdit && workflowStateHash(currentSettings) !== result.settingsHash)
       )
         return { kind: 'DEPENDENCY_CONFLICT' as const };
       if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
@@ -2149,13 +2213,6 @@ export class EffectPromptRepository {
         },
         include: workingArtifactInclude,
       });
-      const editingRun = await transaction.workflowRun.findFirst({
-        where: { projectId, id: result.workflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
-      });
-      const hiddenPromptEdit = Boolean(
-        editingRun?.parentWorkflowRunId && !editingRun.branchPublishedAt &&
-        editingRun.editSessionNodeId === 'PROMPT_GENERATION',
-      );
       const previousDraft = parseEffectPromptBatchResult(previousPromptArtifact?.payload);
       const currentDraft = parseEffectPromptBatchResult(artifactInput.payload);
       const semanticHash = (draft: EffectPromptBatchResult) => workflowStateHash({
@@ -2181,23 +2238,20 @@ export class EffectPromptRepository {
           );
           if (!exit) throw new Error('PROMPT_EDIT_PUBLISH_FAILED');
           const map = (editingRun?.editIdMap ?? {}) as { productIdMap?: Record<string, string> };
-          const parentProductId = Object.entries(map.productIdMap ?? {})
-            .find(([, childId]) => childId === result.productId)?.[0];
-          if (!parentProductId) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
-          if (parentProductId) {
-            const parentArtifact = await transaction.workingArtifact.findUnique({ where: {
-              projectId_workflowRunId_nodeId_artifactKey: {
-                projectId, workflowRunId: exit.runId, nodeId: 'PROMPT_GENERATION',
-                artifactKey: `prompt-batch:${parentProductId}`,
-              },
-            } });
-            if (parentArtifact) return { kind: 'COMMITTED' as const,
-              workflowRunId: exit.runId, productId: parentProductId,
-              artifact: { artifactId: parentArtifact.id, artifactKey: parentArtifact.artifactKey,
-                revision: parentArtifact.revision, unchanged: true },
-            };
-          }
-          throw new Error('PROMPT_EDIT_PARENT_ARTIFACT_MISSING');
+          const parentProductIds = Object.entries(map.productIdMap ?? {})
+            .filter(([, childId]) => childId === result.productId).map(([id]) => id);
+          const parents = await transaction.workingArtifact.findMany({ where: {
+            projectId, workflowRunId: exit.runId, nodeId: 'PROMPT_GENERATION',
+            artifactKey: { in: parentProductIds.map((id) => `prompt-batch:${id}`) },
+          } });
+          if (parents.length !== 1) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
+          const parentArtifact = parents[0]!;
+          const parentProductId = parentArtifact.artifactKey.slice('prompt-batch:'.length);
+          return { kind: 'COMMITTED' as const,
+            workflowRunId: exit.runId, productId: parentProductId,
+            artifact: { artifactId: parentArtifact.id, artifactKey: parentArtifact.artifactKey,
+              revision: parentArtifact.revision, unchanged: true },
+          };
         }
         return { kind: 'COMMITTED' as const,
           workflowRunId: result.workflowRunId, productId: result.productId,
@@ -2522,9 +2576,16 @@ export class EffectPromptRepository {
       ? await confirmedEffectRenderSourceRun(transaction, projectId, renderEdit.parentWorkflowRunId)
       : editRun.parentWorkflowRunId;
     const map = (editRun.editIdMap ?? {}) as { productIdMap?: Record<string, string> };
-    const navigationProductId = Object.entries(map.productIdMap ?? {})
-      .find(([, childId]) => childId === result.productId)?.[0];
-    if (!navigationProductId) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
+    const navigationProductIds = Object.entries(map.productIdMap ?? {})
+      .filter(([, childId]) => childId === result.productId).map(([id]) => id);
+    // JSONB key order is not insertion order. Several ancestor product IDs can map to
+    // the same child; only the actual navigation parent's artifact identifies the write target.
+    const navigationArtifacts = await transaction.workingArtifact.findMany({ where: {
+      projectId, workflowRunId: editRun.parentWorkflowRunId, nodeId: 'PROMPT_GENERATION',
+      artifactKey: { in: navigationProductIds.map((id) => `prompt-batch:${id}`) },
+    } });
+    if (navigationArtifacts.length !== 1) throw new Error('PROMPT_EDIT_PRODUCT_MAPPING_MISSING');
+    const navigationProductId = navigationArtifacts[0]!.artifactKey.slice('prompt-batch:'.length);
     const aliases = renderEdit ? Object.entries((renderEdit.editIdMap as {
       productIdMap?: Record<string, string> } | null)?.productIdMap ?? {})
       .filter(([, id]) => id === navigationProductId).map(([id]) => id) : [navigationProductId];
@@ -2540,9 +2601,19 @@ export class EffectPromptRepository {
         artifactKey: `prompt-batch:${parentProductId}`,
       },
     } });
-    const parentDraft = parseEffectPromptBatchResult(parentArtifact?.payload);
-    if (!parentArtifact || !parentDraft || semanticHash(parentDraft) !== semanticHash(previousDraft))
-      throw new Error('PROMPT_EDIT_PARENT_CHANGED');
+    const resolvedParent = parentArtifact && await confirmedEffectPromptEditSource(
+      transaction, projectId, parentRunId, parentArtifact);
+    const parentDraft = parseEffectPromptBatchResult(resolvedParent?.payload);
+    const frozen = (editRun.editIdMap as { promptEditBaseline?: {
+      source: { artifactId: string; revision: number; contentHash: string };
+      target: { artifactId: string; revision: number; contentHash: string };
+    } } | null)?.promptEditBaseline;
+    const matches = (artifact: typeof parentArtifact, baseline: NonNullable<typeof frozen>['source']) =>
+      artifact?.id === baseline.artifactId && artifact.revision === baseline.revision &&
+      artifact.contentHash === baseline.contentHash;
+    if (!parentArtifact || !parentDraft || semanticHash(parentDraft) !== semanticHash(previousDraft) ||
+        (frozen && (!matches(parentArtifact, frozen.target) || !matches(resolvedParent, frozen.source))))
+      throw new ConflictException('Prompt 编辑来源已改变，已保留你的修改，请重新进入编辑后重试');
     const childInsight = await transaction.workingArtifact.findUnique({ where: {
       projectId_workflowRunId_nodeId_artifactKey: {
         projectId, workflowRunId: result.workflowRunId, nodeId: 'INFORMATION_EXTRACTION',
@@ -2578,15 +2649,8 @@ export class EffectPromptRepository {
         nodeId: `PROMPT_GENERATION:${parentProductId}` },
     } });
     if (!childSettings || !parentSettings) throw new Error('PROMPT_EDIT_SETTINGS_MISSING');
-    const settingsState = remap(childSettings.state);
-    const settingsHash = workflowStateHash(settingsState);
-    if (settingsHash !== parentSettings.contentHash)
-      await transaction.workflowNodeState.update({ where: { id: parentSettings.id }, data: {
-        state: json(settingsState), contentHash: settingsHash,
-        executionInputHash: childSettings.executionInputHash,
-        executionInputSchemaVersion: childSettings.executionInputSchemaVersion,
-        revision: { increment: 1 }, savedAt: new Date(),
-      } });
+    // Item editing commits the existing batch snapshot, never a copied future
+    // generation-settings draft (which may have changed in another window).
     await transaction.effectPromptRun.update({ where: { id: result.runId }, data: {
       workflowRunId: parentRunId, productId: parentProductId,
       inputSnapshot: json(remap(result.run.inputSnapshot)),
@@ -2673,7 +2737,7 @@ export class EffectPromptRepository {
         projectId_workflowRunId_nodeId: { projectId, workflowRunId: renderEdit.id,
           nodeId: `PROMPT_GENERATION:${navigationProductId}` },
       } });
-      const nextState = toDraft(settingsState);
+      const nextState = toDraft(parentSettings.state);
       if (workflowStateHash(nextState) !== draftSettings.contentHash) await transaction.workflowNodeState.update({
         where: { id: draftSettings.id }, data: { state: json(nextState), contentHash: workflowStateHash(nextState),
           revision: { increment: 1 }, savedAt: new Date() },

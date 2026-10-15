@@ -2,6 +2,7 @@ import asyncio
 from typing import Any
 import pytest
 from effect_template_mix.packaging import run_packaging_shards
+from effect_template_mix.api import ApiError
 
 
 @pytest.mark.parametrize('count', [1, 10, 100])
@@ -67,6 +68,21 @@ async def test_cancel_drains_children() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert count == 0
+
+
+async def test_one_api_outage_drains_paid_siblings_without_cancelling_or_starting_new_items() -> None:
+    started: list[int] = []
+    saved: list[int] = []
+    async def execute(item: dict[str, Any]) -> None:
+        started.append(item['id'])
+        await asyncio.sleep(.001 if item['id'] == 0 else .01)
+        if item['id'] == 0:
+            raise ApiError('temporary persistence outage', retryable=True)
+        saved.append(item['id'])
+    with pytest.raises(ExceptionGroup):
+        await run_packaging_shards([{'id': i, 'status': 'QUEUED'} for i in range(10)], 4, execute)
+    assert started == [0, 1, 2, 3]
+    assert sorted(saved) == [1, 2, 3]
 
 
 async def test_100_fake_provider_items_resume_without_repeating_saved_requests() -> None:

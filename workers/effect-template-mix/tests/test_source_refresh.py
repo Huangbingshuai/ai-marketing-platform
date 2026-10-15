@@ -113,6 +113,25 @@ async def test_refresh_retries_missing_work_and_persists_stage_and_budget(monkey
         json={'projectId': 'p', 'stage': 'SCRIPT', 'checkpoint': {'automaticRetries': 1}})
 
 
+async def test_modern_refresh_persists_per_stage_retry_budget_for_worker_restart(monkeypatch: Any) -> None:
+    api, packaging = AsyncMock(spec=InternalApi), AsyncMock(spec=PackagingHandler)
+    cp: dict[str, Any] = {'voices': {}, 'recovery': {'attempts': {'VOICE': 1}}}
+    row = {'id': 'i', 'snapshot': {'sourceRefresh': {'trimsReady': True, 'stage': 'VOICE'},
+        'timeline': {'operation': 'BATCH_PACKAGE'}, 'packaging': cp}}
+    async def process(_root: str, _headers: Any, _project: str, item: Any) -> None:
+        if cp['recovery']['attempts']['VOICE'] == 1:
+            raise ProviderError('timeout', retryable=True)
+        item['outputSnapshot'] = {**row['snapshot'], 'sourceRefresh': {'ready': True}}
+    packaging.process_item.side_effect = process
+    monkeypatch.setattr('effect_template_mix.packaging.asyncio.sleep', AsyncMock())
+    await FinalOutputHandler(api, 1000, packaging=packaging).prepare_refresh('/run', '/item', {}, 'p', row)
+    assert packaging.process_item.await_count == 2
+    saved = api.request.call_args.kwargs['json']['checkpoint']
+    assert saved['automaticRetries'] == 2
+    assert saved['recovery']['attempts']['VOICE'] == 2
+    assert saved['recovery']['waitingUntil']
+
+
 @pytest.mark.parametrize('error', [ProviderError('denied', retryable=False), ApiError('lease', retryable=False)])
 async def test_refresh_does_not_retry_permanent_provider_or_lease_errors(error: Exception) -> None:
     api, packaging = AsyncMock(spec=InternalApi), AsyncMock(spec=PackagingHandler)

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createPackagingPoller, packagingPollErrorMessage } from './effect-packaging-poller';
+import { createPackagingPoller } from './effect-packaging-poller';
+import { computed, ref } from 'vue';
+import { transpileModule } from 'typescript';
+import component from './EffectTemplateMixPackaging.vue?raw';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -13,6 +16,40 @@ function setup(read: (signal: AbortSignal) => Promise<string>) {
 }
 afterEach(() => { vi.useRealTimers(); });
 describe('packaging progress polling', () => {
+  it('keeps progress-read failures silent while retaining results and automatically reconnecting', async () => {
+    vi.useFakeTimers();
+    const readUnavailable = ref(false), requestError = ref(''), previewError = ref('');
+    const source = component.split('onError() {')[1]!.split('onLoading(value)')[0]!;
+    const errorHandler = new Function('readUnavailable',
+      transpileModule(`return () => {${source.slice(0, source.lastIndexOf('},'))}}`, {}).outputText);
+    const onError = errorHandler(readUnavailable);
+    const displayedError = new Function('computed', 'requestError', 'previewError', 'readUnavailable',
+      `return ${component.split('const error = ')[1]!.split(';')[0]!};`);
+    const error = displayedError(computed, requestError, previewError, readUnavailable);
+    const results = ref('last valid progress');
+    const onData = vi.fn((data: string) => { results.value = data; readUnavailable.value = false; });
+    const read = vi.fn().mockReturnValueOnce(new Promise(() => {})).mockResolvedValue('fresh progress');
+    const poller = createPackagingPoller({ read, onData, onError, onLoading: vi.fn(), interval: () => 4000 });
+    const request = poller.refresh();
+    await vi.advanceTimersByTimeAsync(15_000);
+    await request;
+    expect(readUnavailable.value).toBe(true);
+    expect(error.value).toBe('');
+    expect(results.value).toBe('last valid progress');
+    expect(onData).not.toHaveBeenCalled(); // No empty result replaces the last valid projection.
+    requestError.value = '创建任务失败';
+    expect(error.value).toBe('创建任务失败');
+    requestError.value = '';
+    previewError.value = '音频无法播放';
+    expect(error.value).toBe('音频无法播放');
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(onData).toHaveBeenCalledExactlyOnceWith('fresh progress');
+    expect(readUnavailable.value).toBe(false);
+    expect(results.value).toBe('fresh progress');
+    expect(component).not.toContain('重新读取');
+    expect(component).not.toContain('暂时无法读取结果');
+    poller.stop();
+  });
   it('does not allow an old response to overwrite a newer read', async () => {
     vi.useFakeTimers();
     const old = deferred<string>(), fresh = deferred<string>();
@@ -79,14 +116,6 @@ describe('packaging progress polling', () => {
     expect(read).toHaveBeenCalledTimes(4);
     expect(poller.onData).toHaveBeenCalledWith('steady');
     poller.stop();
-  });
-  it('replaces browser network exceptions with a stable user-facing message', () => {
-    expect(
-      packagingPollErrorMessage(new TypeError('NetworkError when attempting to fetch resource.')),
-    ).toBe('网络连接暂时中断，正在稍后重试读取包装状态；时间轴草稿不受影响。');
-    expect(packagingPollErrorMessage(new Error('读取包装任务失败（HTTP 503）'))).toBe(
-      '读取包装任务失败（HTTP 503）',
-    );
   });
   it('clears all timers and ignores responses after unmount or scope changes', async () => {
     vi.useFakeTimers();

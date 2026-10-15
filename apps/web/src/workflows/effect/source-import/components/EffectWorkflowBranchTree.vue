@@ -8,6 +8,7 @@ import {
   Clapperboard,
   Clock3,
   FileText,
+  FileVideo,
   Film,
   FolderInput,
   FolderOpen,
@@ -21,6 +22,7 @@ import {
   X,
 } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { EFFECT_NODE_LABELS } from '../../shared/effect-node-labels';
 import {
   effectBranchDestination,
   type EffectBranchNavigation,
@@ -52,6 +54,7 @@ const props = defineProps<{
   alternateLayout?: WorkflowBranchDisplayLayout | undefined;
   alternateStages?: readonly { key: string; nodeId: string; name: string }[];
   workflowLabel?: string;
+  navigationDescription?: string;
   activeWorkflowRunId?: string | null | undefined;
   tree: EffectWorkflowBranchTreeData | null;
   loading: boolean;
@@ -97,7 +100,7 @@ const stageIcons: Record<string, typeof FolderInput> = {
   MIX_TEMPLATE: LayoutTemplate,
   MIX_FILL: Clapperboard,
   MIX_PACKAGING: AudioLines,
-  FINAL_OUTPUT: Film,
+  FINAL_OUTPUT: FileVideo,
   STORYBOARD: Clapperboard,
   SHOT_PROMPT: FileText,
   VISUAL_ASSETS: FolderOpen,
@@ -194,7 +197,7 @@ const fitTree = async () => {
   const scroll = scrollContainer.value;
   if (!scroll) return;
   treeZoom.value = fitBranchZoom(
-    { width: scroll.clientWidth, height: Math.max(0, scroll.clientHeight - 56) },
+    { width: scroll.clientWidth, height: scroll.clientHeight },
     { width: layout.value.width + BRANCH_TREE_AXIS_WIDTH, height: layout.value.height },
   );
   await nextTick();
@@ -244,7 +247,7 @@ const initializeView = async () => {
     treeZoom.value = Math.max(
       0.8,
       fitBranchZoom(
-        { width: scroll.clientWidth, height: Math.max(0, scroll.clientHeight - 56) },
+        { width: scroll.clientWidth, height: scroll.clientHeight },
         { width: layout.value.width + BRANCH_TREE_AXIS_WIDTH, height: layout.value.height },
       ),
     );
@@ -321,9 +324,10 @@ onBeforeUnmount(() => {
               <h2 id="branch-title">版本分支树</h2>
               <p v-if="layout.nodes.length">
                 {{
-                  assetBrowse
+                  navigationDescription ??
+                  (assetBrowse
                     ? '点击版本查看对应资产，不切换正在编辑的工作流。'
-                    : '以项目为中心，分支向两侧展开。点击版本切换工作流。'
+                    : '以项目为中心，分支向两侧展开。点击版本切换工作流。')
                 }}
               </p>
             </div>
@@ -425,7 +429,7 @@ onBeforeUnmount(() => {
                     v-if="mixStages.length"
                     class="branch-axis-mix-group"
                     role="group"
-                    :aria-label="`${'模板混剪'}：混剪模板、智能填充、智能成片包装`"
+                    :aria-label="`${EFFECT_NODE_LABELS.TEMPLATE_MIX}：混剪模板、智能填充、智能成片包装`"
                     :style="{
                       top: `${BRANCH_TREE_TOP + mixStartIndex * BRANCH_TREE_ROW_GAP - BRANCH_TREE_ROW_GAP / 2}px`,
                       height: `${mixStages.length * BRANCH_TREE_ROW_GAP}px`,
@@ -433,7 +437,7 @@ onBeforeUnmount(() => {
                   >
                     <div class="branch-axis-mix-group__parent">
                       <span class="branch-axis__number">05</span>
-                      <span>混剪</span>
+                      <span>{{ EFFECT_NODE_LABELS.TEMPLATE_MIX }}</span>
                     </div>
                     <div class="branch-axis-mix-group__rows">
                       <div
@@ -519,14 +523,15 @@ onBeforeUnmount(() => {
                       <span class="branch-node__identity">
                         <small>{{ stageName(node.stageKey) }}</small>
                         <strong>{{
-                          node.displayLabel ?? (node.stageKey === 'MIX_TEMPLATE'
+                          node.displayLabel ??
+                          (node.stageKey === 'MIX_TEMPLATE'
                             ? (node.templateName ?? '模板')
                             : versionText(
                                 node.revision,
                                 node.revisions,
                                 node.artifactCount,
                                 node.status,
-                              )
+                              ))
                         }}</strong>
                       </span>
                     </span>
@@ -546,9 +551,16 @@ onBeforeUnmount(() => {
                           compactCreatedAtText(node.createdAt)
                         }}</span
                       >
-                      <span v-if="node.showStaleWarning" class="branch-node__stale">待更新</span>
                       <span
-                        v-else-if="currentViewNode?.key === node.key"
+                        v-if="node.showStaleWarning"
+                        class="branch-node__stale"
+                        :class="{ 'branch-node__stale--active': node.onActivePath }"
+                        >待更新</span
+                      >
+                      <span
+                        v-else-if="
+                          alternateStages ? node.isCurrentStage : currentViewNode?.key === node.key
+                        "
                         class="branch-node__current"
                         >当前查看</span
                       >
@@ -613,6 +625,7 @@ onBeforeUnmount(() => {
 }
 .branch-header {
   display: flex;
+  flex-shrink: 0;
   align-items: flex-start;
   justify-content: space-between;
   padding: 18px 24px;
@@ -684,6 +697,7 @@ onBeforeUnmount(() => {
 }
 .branch-toolbar {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   min-height: 52px;
@@ -693,13 +707,16 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #e1e7f2;
 }
 .branch-view-controls {
-  position: absolute;
-  bottom: 18px;
-  left: 50%;
-  z-index: 8;
-  transform: translateX(-50%);
+  /* Own a row outside the scrolling canvas: no node can pass under the controls. */
+  position: static;
   display: flex;
+  flex: none;
+  align-self: center;
   align-items: center;
+  max-width: calc(100% - 24px);
+  margin: 8px 12px;
+  box-sizing: border-box;
+  overflow-x: auto;
   gap: 2px;
   padding: 3px;
   background: rgba(255, 255, 255, 0.94);
@@ -711,6 +728,7 @@ onBeforeUnmount(() => {
 }
 .branch-view-controls button {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   gap: 6px;
@@ -772,11 +790,13 @@ onBeforeUnmount(() => {
 .branch-workspace {
   position: relative;
   display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 .branch-scroll {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   background: #f8fafd;
@@ -1104,6 +1124,10 @@ onBeforeUnmount(() => {
   font-size: 10px;
   font-weight: 700;
 }
+.branch-node__stale--active {
+  color: #9f3a22;
+  background: linear-gradient(110deg, #fee2e2 0%, #fff1c2 100%);
+}
 .branch-node:disabled {
   cursor: wait;
 }
@@ -1191,7 +1215,7 @@ onBeforeUnmount(() => {
     gap: 9px;
   }
   .branch-view-controls {
-    bottom: 12px;
+    margin-block: 6px;
   }
   .branch-view-controls button {
     padding: 0 6px;

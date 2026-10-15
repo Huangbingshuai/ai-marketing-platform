@@ -52,6 +52,28 @@ const branch = (
 });
 
 describe('effect workflow branch tree layout', () => {
+  it.each(['FILL', 'TEMPLATE'] as const)('draws an owned fill before first in-place packaging in a %s Run', (forkMixStage) => {
+    const root = branch('root', null, null);
+    Object.assign(root.templates[0]!, { timelineVariantCount: 0, fillRevision: null,
+      packagingVariantCount: 0, packagingRevision: null, deliveryCount: 0 });
+    const filled = branch('fill-and-package', root.workflowRunId, 'TEMPLATE_MIX', true);
+    filled.forkTemplateId = 'template-a';
+    filled.forkMixStage = forkMixStage;
+    Object.assign(filled.templates[0]!, { timelineVariantCount: 32, fillRevision: 1,
+      packagingVariantCount: 30, packagingRevision: 1, deliveryCount: 0 });
+    const layout = buildEffectBranchLayout([root, filled], 'template-a', filled.workflowRunId);
+    const fillKey = `${filled.workflowRunId}:MIX_FILL:template-a`;
+    const packageKey = `${filled.workflowRunId}:MIX_PACKAGING:template-a`;
+    expect(layout.nodes.find(n => n.key === fillKey)).toMatchObject({ artifactCount: 32,
+      revision: 1, onActivePath: true });
+    expect(layout.nodes.find(n => n.key === packageKey)).toMatchObject({ artifactCount: 30,
+      revision: 1, onActivePath: true });
+    expect(layout.edges.map(e => e.key)).toContain(`root:MIX_TEMPLATE:template-a->${fillKey}`);
+    expect(layout.edges.map(e => e.key)).toContain(`${fillKey}->${packageKey}`);
+    expect(layout.edges.map(e => e.key)).not.toContain(`root:MIX_TEMPLATE:template-a->${packageKey}`);
+    expect(layout.nodes.find(n => n.key === fillKey)?.x).toBe(layout.nodes.find(n => n.key === packageKey)?.x);
+  });
+
   it('keeps the project root, stage lanes, and separators visible when there are no versions', () => {
     expect(treeSource).not.toContain('当前项目还没有已确认的');
     expect(treeSource).toContain('class="branch-stage-band"');
@@ -354,6 +376,21 @@ describe('effect workflow branch tree layout', () => {
       layout.nodes.find((node) => node.key === 'sibling:MIX_FILL:template-a')?.onActivePath,
     ).toBe(true);
   });
+  it('shows saved-output warnings on the current red path without warning unrelated layers', () => {
+    const main = branch('main', null, null, true);
+    main.templates[0]!.deliveryStatus = 'STALE';
+    const layout = buildEffectBranchLayout([main], 'template-a');
+    const output = layout.nodes.find((node) => node.stageKey === 'FINAL_OUTPUT')!;
+    expect(output).toMatchObject({ status: 'STALE', showStaleWarning: true, onActivePath: true });
+    expect(layout.nodes.filter((node) => node.showStaleWarning)).toEqual([output]);
+    main.templates[0]!.deliveryStatus = 'CONFIRMED';
+    expect(
+      buildEffectBranchLayout([main], 'template-a').nodes.find(
+        (node) => node.stageKey === 'FINAL_OUTPUT',
+      ),
+    ).toMatchObject({ status: 'CONFIRMED', showStaleWarning: false });
+  });
+
   it('shows source warnings on packaging descendants instead of their shared fill head', () => {
     const main = branch('main', null, null, true);
     main.templates[0]!.packagingVariantCount = 0;
@@ -713,7 +750,7 @@ describe('effect workflow branch tree layout', () => {
     );
     expect(treeSource).toContain('class="branch-axis-mix-group"');
     expect(treeSource).toContain('class="branch-axis-mix-group__parent"');
-    expect(treeSource).toContain('<span>混剪</span>');
+    expect(treeSource).toContain('<span>{{ EFFECT_NODE_LABELS.TEMPLATE_MIX }}</span>');
     expect(treeSource).toContain('class="branch-axis-mix-group__row"');
   });
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import { computed, nextTick, onActivated, onDeactivated, onBeforeUnmount, ref, watch } from 'vue';
-import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, X } from '@lucide/vue';
+import { AlertCircle, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Download, Film, Layers, LoaderCircle, Play, RefreshCw, X } from '@lucide/vue';
 import type {
   ApiResponse,
   EffectTemplateMixWorkspaceData,
@@ -19,6 +20,9 @@ import { effectBranchNavigationMatches, type EffectBranchNavigation } from '../s
 import type { EffectOutputFreshness } from '../shared/effect-canvas-freshness';
 import { outputFileDescription, outputPackagingLabel, outputTemplateStatus } from './effect-final-output-status';
 import { activateEffectWorkflowBranch } from '../../../platform/workflow/api/workflow-working.api';
+import {
+  readTemplateDeleted, withoutDeletedMixCatalog, withoutDeletedMixTemplates,
+} from '../shared/effect-template-deletion';
 
 const props = defineProps<{
   projectId: string;
@@ -60,6 +64,9 @@ const runs = ref<FinalOutputRun[]>([]),
   selectedItemIds = ref<Set<string>>(new Set()),
   batchDownloading = ref(false),
   settingsByTemplate = ref(new Map<string, { resolution: FinalOutputResolution; frameRate: 24 | 25 | 30 | 50 | 60 }>());
+const acceptedTemplateDeletions = new Map<string, Set<string>>();
+const deletedTemplateIds = () => acceptedTemplateDeletions.get(props.projectId) ?? new Set<string>();
+const deletionNotice = ref('');
 const loading = ref(true),
   mixLoading = ref(true),
   busy = ref(false),
@@ -323,12 +330,12 @@ async function refresh() {
       { operation: '读取成片输出', signal: controller.signal },
     );
     if (current !== generation) return;
-    runs.value = result.data;
+    runs.value = result.data.filter((entry) => !deletedTemplateIds().has(entry.templateId));
     // The POST may still be waiting for its response (or the following refresh) after the
     // server has created the child. The read path is authoritative for its progress.
     const attempt = exportAttempt;
     if (attempt && attempt.projectId === props.projectId) {
-      const observed = result.data.find((entry) =>
+      const observed = runs.value.find((entry) =>
         entry.backgroundExportSourceRunId === attempt.sourceRunId &&
         entry.templateId === attempt.templateId &&
         Date.parse(entry.createdAt) >= attempt.startedAt - 5000);
@@ -337,7 +344,7 @@ async function refresh() {
         exportStarting.value = false;
       }
     }
-    if (mounted) emit('freshness', { projectId: props.projectId, workflowRunId: props.workflowRunId, runs: result.data });
+    if (mounted) emit('freshness', { projectId: props.projectId, workflowRunId: props.workflowRunId, runs: runs.value });
     const savedSettings = new Map(settingsByTemplate.value);
     for (const template of templates.value) {
       if (template.run && !savedSettings.has(template.templateId)) {
@@ -355,12 +362,12 @@ async function refresh() {
       selectedRunId.value = templateRuns.value[0]?.id ?? '';
     // Follow only an export started here or observed in progress. Reopening historical
     // deliveries and completing an in-place local update must not navigate the workflow.
-    for (const entry of result.data) {
+    for (const entry of runs.value) {
       if (entry.backgroundExportSourceRunId &&
         ['PENDING_RENDER', 'QUEUED', 'RUNNING'].includes(entry.status))
         pendingExportNavigation.add(entry.id);
     }
-    const completedExport = result.data.find((entry) =>
+    const completedExport = runs.value.find((entry) =>
       pendingExportNavigation.has(entry.id) && entry.templateId === selectedTemplateId.value &&
       entry.status === 'COMPLETED' &&
       (!entry.backgroundExportSourceRunId || entry.backgroundExportPublished));
@@ -401,8 +408,9 @@ async function refreshMixWorkspace(): Promise<EffectTemplateMixWorkspaceData | n
         { operation: '读取模板当前工程', signal: requestController.signal },
       )).data, scopeId);
     if (current === mixGeneration && mounted && projectId === props.projectId && scopeId === props.workflowRunId) {
-      mixWorkspace.value = result.data;
-      templateDirectory.value = directory;
+      mixWorkspace.value = { ...result.data,
+        draft: withoutDeletedMixTemplates(result.data.draft, deletedTemplateIds()) };
+      templateDirectory.value = withoutDeletedMixCatalog(directory, deletedTemplateIds());
       mixError.value = '';
       if (!templates.value.some(({ templateId }) => templateId === selectedTemplateId.value))
         selectedTemplateId.value = templates.value[0]?.templateId ?? '';
@@ -451,6 +459,50 @@ const refreshAll = () => {
   void refresh();
 };
 const outputChanged = (value: unknown) => {
+  const receipt = readTemplateDeleted(value);
+  if (receipt && receipt.projectId === props.projectId) {
+    const deleted = acceptedTemplateDeletions.get(receipt.projectId) ?? new Set<string>();
+    // CustomEvent and BroadcastChannel can carry the same acceptance; consume it only once.
+    if (deleted.has(receipt.templateId)) return;
+    deleted.add(receipt.templateId);
+    acceptedTemplateDeletions.set(receipt.projectId, deleted);
+    ++generation; controller?.abort();
+    ++mixGeneration; mixController?.abort();
+    loading.value = false;
+    mixLoading.value = false;
+    const wasSelected = selectedTemplateId.value === receipt.templateId;
+    for (const entry of runs.value.filter(run => run.templateId === receipt.templateId))
+      pendingExportNavigation.delete(entry.id);
+    runs.value = runs.value.filter(run => run.templateId !== receipt.templateId);
+    templateDirectory.value = withoutDeletedMixCatalog(templateDirectory.value, deleted);
+    if (mixWorkspace.value) mixWorkspace.value = { ...mixWorkspace.value,
+      draft: withoutDeletedMixTemplates(mixWorkspace.value.draft, deleted) };
+    settingsByTemplate.value.delete(receipt.templateId);
+    if (receipt.removedWorkflowRunIds?.includes(outputWorkflowRunId.value) ||
+      (!receipt.removedWorkflowRunIds && outputWorkflowRunId.value === receipt.sourceWorkflowRunId &&
+        outputWorkflowRunId.value !== receipt.workflowRunId))
+      outputWorkflowRunId.value = receipt.workflowRunId;
+    if (wasSelected) {
+      closePreviewDialog(false);
+      selectedTemplateId.value = templateDirectory.value.entries[0]?.id ?? '';
+      selectedRunId.value = templateRuns.value[0]?.id ?? '';
+      selectedItemIds.value = new Set();
+      selectionMode.value = false;
+      liveExport.value = null;
+      exportStarting.value = false;
+      exportAttempt = null;
+      error.value = '';
+      mixError.value = '';
+    }
+    deletionNotice.value = '模板及其成片已移除，后台清理已安排；其他成片可继续操作。';
+    // Kept-alive pages retain the receipt but do not start network work while hidden.
+    if (mounted) {
+      emit('freshness', { projectId: props.projectId, workflowRunId: props.workflowRunId, runs: runs.value });
+      void refresh();
+      if (!receipt.removedWorkflowRunIds?.includes(props.workflowRunId)) void refreshMixWorkspace();
+    }
+    return;
+  }
   const scope = value as { projectId?: string; workflowRunId?: string } | null;
   if (!mounted || scope?.projectId !== props.projectId ||
     (scope.workflowRunId !== props.workflowRunId &&
@@ -705,6 +757,7 @@ function stop() {
 watch(
   () => [props.projectId, props.workflowRunId] as const,
   ([projectId], previousScope) => {
+    deletionNotice.value = '';
     // The parent adopts this page's completed export child Run. Keep the already-visible output
     // state in place while the parent refreshes its workflow context; this is not a user branch
     // navigation and must not blank the page or flash its loading state.
@@ -819,12 +872,17 @@ onBeforeUnmount(() => {
         <RefreshCw :size="14" />重新读取
       </button>
     </div>
+    <p v-if="deletionNotice" class="deletion-notice" role="status">
+      <CheckCircle2 :size="16" />{{ deletionNotice }}
+    </p>
 
-    <section v-if="pageLoading" class="page-state" role="status">
-      <span class="state-icon loading-icon"><Film :size="24" /></span>
-      <h3>正在读取成片输出</h3>
-      <p>正在读取当前工作流的混剪模板和成片任务…</p>
-    </section>
+    <WorkflowPageLoading
+      v-if="pageLoading"
+      icon="output"
+      :min-height="360"
+      title="正在读取成片输出"
+      description="正在读取当前工作流的混剪模板和成片任务…"
+    />
     <section v-else-if="!templates.length && !error && !mixError" class="page-state empty-state">
       <span class="state-icon"><Film :size="25" /></span>
       <h3>暂无混剪模板</h3>
@@ -1270,6 +1328,18 @@ onBeforeUnmount(() => {
   color: #7d899d;
   font-size: 11px;
 }
+.deletion-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 1px solid #b7e6d7;
+  border-radius: 12px;
+  background: #f0faf6;
+  color: #16785b;
+  font-size: 13px;
+}
+.deletion-notice svg { flex-shrink: 0; }
 .template-list {
   display: grid;
   min-height: 0;
@@ -1471,12 +1541,6 @@ progress {
   margin: 0;
   font-size: 12px;
   line-height: 1.7;
-}
-.loading-icon {
-  animation: pulse 1.2s ease-in-out infinite alternate;
-}
-@keyframes pulse {
-  to { opacity: 0.45; transform: scale(0.94); }
 }
 .render-settings {
   display: flex;

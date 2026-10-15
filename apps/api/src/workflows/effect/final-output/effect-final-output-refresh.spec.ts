@@ -134,8 +134,17 @@ describe('same-branch source-refresh content boundaries', () => {
     expect(v.bindings.a).toBe('file');
   });
   it('starts a new source refresh with a fresh retry budget without mutating old packaging', () => {
-    const cp = { ...baseline(), automaticRetries: 2 };
-    expect(withoutChangedSlots(cp, ['a']).automaticRetries).toBeUndefined();
+    const cp = { ...baseline(), automaticRetries: 2,
+      recovery: { startedAt: '2026-10-11T01:00:00Z', attempts: { VOICE: 2 } },
+      voiceRecovery: { previous: { startedAt: '2026-10-11T01:00:00Z', pending: true, attempts: 1 } } };
+    const refreshed = withoutChangedSlots(cp, ['a']);
+    expect(refreshed.automaticRetries).toBeUndefined();
+    expect(refreshed.recovery).toBeUndefined();
+    expect(refreshed.voiceRecovery).toBeUndefined();
+    expect(refreshed.voices).toEqual({});
+    expect(refreshed.music).toEqual(cp.music);
+    expect(cp.voiceRecovery.previous.pending).toBe(true);
+    expect(cp.recovery.attempts.VOICE).toBe(2);
     expect(cp.automaticRetries).toBe(2);
   });
   it('clears edited split-caption lineage and uniquely linked historical split voices, never independent audio', () => {
@@ -192,7 +201,7 @@ describe('same-branch source-refresh content boundaries', () => {
       const cp = refreshed(original);
       Object.assign(cp.voices!.new!, patch);
       expect(() => validateRefreshCheckpoint(snapshot(original), cp, true)).toThrow(
-        '音频不属于本任务或真实时长不一致',
+        '音频不属于本任务或文件时长不一致',
       );
     }
     const cp = refreshed(original);
@@ -218,7 +227,7 @@ describe('same-branch source-refresh content boundaries', () => {
     expect(() => validateRefreshCheckpoint(input, cp, true)).not.toThrow();
     cp.voices!.new!.speechRanges![0]!.startFrame = 2400;
     expect(() => assertRefreshPreservesContent(input, cp)).toThrow(
-      '音频不属于本任务或真实时长不一致',
+      '音频不属于本任务或文件时长不一致',
     );
   });
 });
