@@ -14,7 +14,7 @@ from zipfile import ZipFile
 from lxml import etree
 
 ROOT = Path(__file__).resolve().parents[4]
-DEST = ROOT / "素材/定制类项目素材/多产品提炼验收"
+DEST = ROOT / "素材/定制类项目素材"
 TEMP = Path(os.environ["TEMP"]) / "customized-products-paid-20261010"
 TEMPLATE = ROOT / "docs/workflows/customized/templates/视频创作简报模板.docx"
 LABELS = [

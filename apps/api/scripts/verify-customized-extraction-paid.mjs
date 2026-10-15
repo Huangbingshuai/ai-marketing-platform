@@ -64,7 +64,7 @@ if (process.argv.includes('--reextract')) {
 }
 if (!state.source) {
   const filePath =
-    process.env.CUSTOMIZED_PAID_DOCUMENT || '素材/定制类项目素材/青梅酱/青梅酱视频创作简报.docx';
+    process.env.CUSTOMIZED_PAID_DOCUMENT || '素材/定制类项目素材/09青梅酱/视频创作简报.docx';
   if (!state.assetId) {
     const form = new FormData();
     form.set('section', 'BRIEF');

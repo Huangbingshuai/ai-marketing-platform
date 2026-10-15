@@ -68,6 +68,6 @@ pytest 使用受控 Provider / HTTP transport，不接触真实模型供应商�
 
 深度验收可先运行 `tests/prepare_paid_fixtures.py` 生成 9 组无敏感信息的本地测试资料（不调用 API），再在根目录运行 `node apps/api/scripts/verify-customized-extraction-deep-paid.mjs`（需要上述付费开关）。台账位于系统临时目录 `customized-deep-paid-20261010/ledger.json`，普通重跑仅查询；`--assert` 检查终态、事实及冲突阻断。`CUSTOMIZED_DEEP_CASE` 指定单个用例；`--retry` 恢复原失败任务，`--reextract` 创建新任务，均须谨慎使用。`--cancel-running` 仅用于该台账的长文用例，会确认原结果、创建隔离编辑任务并在实际运行时取消。不要删除台账后重复执行。深度验收的具体样本、耗时与限制见 [深度验收记录](../../docs/workflows/customized/evidence/browser/2026-10-10-paid-extraction-deep.md)。
 
-多产品资料位于 `素材/定制类项目素材/多产品提炼验收/`，包含八份 Word 简报和四份补充说明，均为虚构样本，一项目一产品。`CUSTOMIZED_PAID_CASE_DIRECTORY` 可指定独立 cases.json / ledger.json 目录，`CUSTOMIZED_PAID_PROJECT_PREFIX` 可指定测试项目名前缀；默认仍使用原深度验收账本。具体过程见[多产品验收](../../docs/workflows/customized/evidence/browser/2026-10-10-paid-extraction-products.md)。
+多产品资料位于 `素材/定制类项目素材/`，按 `01`–`12` 编号平铺保存，均为虚构样本，一项目一产品；`01`–`08` 为多产品验收用例，包含八份 Word 简报和四份同产品补充说明，`09`–`12` 为后续补充样本。`CUSTOMIZED_PAID_CASE_DIRECTORY` 可指定独立 cases.json / ledger.json 目录，`CUSTOMIZED_PAID_PROJECT_PREFIX` 可指定测试项目名前缀；默认仍使用原深度验收账本。具体过程见[多产品验收](../../docs/workflows/customized/evidence/browser/2026-10-10-paid-extraction-products.md)。
 
 本轮独立原文审校、跨片段依据核对与冲突候选补全的真实付费结果、失败修复及实际耗时见[提炼增强验收](../../docs/workflows/customized/evidence/browser/2026-10-10-extraction-quality-enhancement.md)。使用 `tests/prepare_quality_fixtures.py` 可在没有既有台账时准备本地隔离样本；探针 `tests/verify_quality_paid.py` 需要显式付费开关，不能作为默认单元测试运行。
