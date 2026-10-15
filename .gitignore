@@ -18,3 +18,28 @@ apps/api/src/generated/
 **/.pytest_cache/
 .codex-browser-mock.*
 .playwright-mcp/
+
+# 本地测试与验证临时产物
+.pytest-*/
+.pytest-tmp*/
+.pt*/
+.pv1/
+.test-tmp/
+.tmp-*
+.mcf-*/
+.t[0-9a-f]*/
+.tps-*/
+.tsr-*/
+.tvs-*/
+.w[0-9]*/
+.wl[0-9]*/
+.wt[0-9]*/
+.w-transform-qa*/
+
+# 运行与构建输出
+output/
+tmp/
+.claude/
+apps/api/dist-*-check/
+apps/web/.*-tests.json
+apps/web/.tmp-*
