@@ -32,7 +32,7 @@ apps/api/src/generated/
 .tsr-*/
 .tvs-*/
 .w[0-9]*/
-.wl[0-9]*/
+.wl*/
 .wt[0-9]*/
 .w-transform-qa*/
 
@@ -40,6 +40,7 @@ apps/api/src/generated/
 output/
 tmp/
 .claude/
+.vscode/
 apps/api/dist-*-check/
 apps/web/.*-tests.json
 apps/web/.tmp-*

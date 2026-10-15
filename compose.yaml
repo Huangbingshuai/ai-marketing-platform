@@ -267,10 +267,10 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  seedance-worker:
+  effect-segment-render-worker:
     profiles: ['effect-segment-render']
     build:
-      context: ./workers/seedance-worker
+      context: ./workers/effect-segment-render
     environment:
       INTERNAL_API_BASE_URL: http://host.docker.internal:${API_PORT:-3000}/api
       EFFECT_SEGMENT_RENDER_WORKER_TOKEN: ${EFFECT_SEGMENT_RENDER_WORKER_TOKEN:-local-effect-segment-render-worker-token}

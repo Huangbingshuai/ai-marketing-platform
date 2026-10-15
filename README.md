@@ -28,7 +28,7 @@
 | ------------ | ---------------------------------------------------------- | -------------------------------------------------- |
 | 效果类六节点 | 正式页面、API 和异步任务链路；具体提交规则见指南           | 每个历史分支无缺陷、每批画面达标或投放必过审       |
 | 项目资产库   | 本次实际浏览了项目、来源分类、视频素材、版本筛选与详情预览 | 全局资产市场、完整跨项目操作、多角色权限已全部验收 |
-| 定制类       | 资料导入、信息提炼、分镜创作的正式页面、API 与独立 Worker | 后续 Prompt / 视频生成已经接通，或已完成分镜付费质量验收       |
+| 定制类       | 资料导入、信息提炼、完整故事、资产定义、分镜与单镜 Prompt 的页面/API/Worker | 资产图片 / 视频渲染已接通，或新制作链路已完成付费质量验收       |
 | 裂变类       | 固定流程、业务职责与需求方向                               | 与效果类相同的实现进度或已完成全部付费链路         |
 | 质量和性能   | 可复核的目标、范围与验收口径                               | 数量、时长、首发率、成本指标已经达到               |
 
@@ -146,12 +146,12 @@ API 通过事务和 Outbox 编排任务，RabbitMQ 投递，Worker 以租约、�
 
 | 工作流              | 节点                                                          | 指南                                                            |
 | ------------------- | ------------------------------------------------------------- | --------------------------------------------------------------- |
-| 定制类              | 资料导入 → 信息提炼 → 分镜创作 → Prompt → 逐镜视频 → 素材交付 | [业务边界](docs/workflows/customized/agent-guide.md)            |
+| 定制类              | 资料导入 → 信息提炼 → 脚本创作 → 资产准备 → 视频制作 → 素材交付 | [业务边界](docs/workflows/customized/agent-guide.md)            |
 | 裂变 · 爆款复刻     | 上传素材 → 深度拆解 → 元素映射 → 成片生成                     | [业务边界](docs/workflows/fission/clone/agent-guide.md)         |
 | 裂变 · 数字人口播   | 选择形象 → 口播文案 → 唇形驱动 → 背景配置 → 渲染输出          | [业务边界](docs/workflows/fission/avatar/agent-guide.md)        |
 | 裂变 · 局部元素替换 | 选择成片 → 替换粒度 → 解析与替换 → 生成提示词 → 渲染输出      | [业务边界](docs/workflows/fission/local-replace/agent-guide.md) |
 
-定制类当前已接通资料导入与信息提炼：上传简报、固定文件版本、独立异步提炼、来源与差异、信息卡编辑及版本确认。执行图和进度复用效果类组件；品牌图片不参与提炼模型。分镜节点已接通多方案 AI 创作、逐份发布独立脚本分支、编辑草稿与正式保存、对比和导入导出；下游 Prompt 与视频任务尚未接通，分镜真实模型质量验收另行记录。运行与验证边界见[定制类指南](docs/workflows/customized/agent-guide.md)。
+定制类当前已接通资料导入与信息提炼：上传简报、固定文件版本、独立异步提炼、来源与差异、信息卡编辑及版本确认。执行图和进度复用效果类组件；品牌图片不参与提炼模型。脚本节点已接通四种视频类型条件分流、多方案 AI 创作、类型专项审校、局部修订与独立复核、逐份发布独立脚本分支、编辑草稿与正式保存、对比和导入导出；第三至第五节点已拆为脚本创作、资产准备、视频制作；新任务生成完整故事后独立整理资产，再于视频工作台拆镜、绑定并生成单镜提示词。资产图片和视频渲染另行接通，新链路真实模型质量验收另行记录。运行与验证边界见[定制类指南](docs/workflows/customized/agent-guide.md)。
 
 ## 界面预览
 
@@ -326,7 +326,7 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 docker compose --profile effect-prompt-generation up -d --build effect-prompt-generation-worker
 
 # Seedance 视频素材渲染
-docker compose --profile effect-segment-render up -d --build seedance-worker
+docker compose --profile effect-segment-render up -d --build effect-segment-render-worker
 
 # 智能填充、包装与最终成片合成共用的 Worker
 docker compose --profile effect-template-mix up -d --build effect-template-mix-worker
@@ -428,7 +428,7 @@ packages/
 workers/
   effect-extraction/           资料解析与信息提炼
   effect-prompt-generation/    素材 Prompt、评估与择优
-  seedance-worker/             素材异步渲染与返修
+  effect-segment-render/       素材异步渲染与返修
   effect-template-mix/         智能填充、包装、最终输出
 docs/                          架构、业务指南、开发说明与证据
 references/prototypes/         冻结原型（不作为运行时代码）
@@ -535,7 +535,7 @@ uv run --frozen pytest
 uv run --frozen mypy src tests
 ```
 
-[提炼 Worker](workers/effect-extraction/README.md) · [Prompt Worker](workers/effect-prompt-generation/README.md) · [Seedance Worker](workers/seedance-worker/README.md)
+[提炼 Worker](workers/effect-extraction/README.md) · [Prompt Worker](workers/effect-prompt-generation/README.md) · [片段渲染 Worker](workers/effect-segment-render/README.md)
 
 混剪、包装、最终输出的当前业务边界优先读 [效果类指南](docs/workflows/effect/agent-guide.md)；历史实施方案与旧 Worker 说明不能覆盖现行提交规则。
 
