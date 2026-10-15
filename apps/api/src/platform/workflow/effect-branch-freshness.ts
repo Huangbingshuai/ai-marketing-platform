@@ -24,6 +24,7 @@ export function effectSavedMixSourcesStale(
 }
 
 type Branch = { id: string; parentWorkflowRunId: string | null; forkNodeId: string | null;
+  editSessionNodeId?: string | null;
   branchPublishedAt?: Date | string | null; createdAt?: Date | string;
   effectTemplateMixAiRuns?: readonly { templateId: string; status?: string; inputSnapshot?: unknown;
     selectionResult?: unknown; completedAt?: Date | string | null }[] };
@@ -40,6 +41,39 @@ type Artifact = {
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
+
+/** An explicitly adopted Prompt is not replaced by an older navigation snapshot.
+ * Revisions from reminted artifacts are not comparable. A later confirmed edit in the
+ * viewing scope still wins, even if its revision number is smaller. Missing evidence
+ * leaves the legacy selection unchanged; it never invents a new global source head.
+ */
+export function effectRenderPromptSource<T extends Artifact>(
+  branches: readonly Branch[], render: Artifact, viewing: T | undefined,
+  sources: readonly T[],
+): T | undefined {
+  const source = record(record(render.payload)?.sourcePrompt);
+  const dependency = render.dependencies?.find((row) => row.sourceNodeId === 'PROMPT_GENERATION');
+  const id = typeof source?.artifactId === 'string' ? source.artifactId : dependency?.sourceArtifactId;
+  const adopted = sources.find((row) => row.id === id && row.nodeId === 'PROMPT_GENERATION' &&
+    row.artifactKey.startsWith('prompt-batch:'));
+  if (!adopted || adopted.id === viewing?.id) return viewing ?? adopted;
+  const revision = source?.revision ?? dependency?.sourceRevision;
+  const hash = source?.contentHash ?? dependency?.sourceHash;
+  if ((typeof revision === 'number' && adopted.revision < revision) ||
+    (adopted.revision === revision && typeof hash === 'string' && adopted.contentHash !== hash)) return viewing;
+  if (effectRenderHead(branches, adopted.workflowRunId) !== effectRenderHead(branches, render.workflowRunId))
+    return viewing;
+  const sourceRun = branches.find((row) => row.id === adopted.workflowRunId);
+  if (sourceRun?.editSessionNodeId || (sourceRun?.parentWorkflowRunId && sourceRun.branchPublishedAt === null))
+    return viewing;
+  if (!viewing) return adopted;
+  if (viewing.availability === 'UNAVAILABLE' || viewing.freshness !== 'CURRENT') return viewing;
+  if (record(record(viewing.metadata)?.branchSource)) return adopted;
+  const adoptedTime = new Date(adopted.updatedAt ?? '').getTime();
+  const viewingTime = new Date(viewing.updatedAt ?? '').getTime();
+  if (!Number.isFinite(adoptedTime) || !Number.isFinite(viewingTime)) return viewing;
+  return viewingTime > adoptedTime ? viewing : adopted;
+}
 
 /** Revision-only edits may cancel. A reliable adopted baseline owns Prompt freshness. */
 const matchesConfirmedPrompt = (clip: Artifact, prompt: Artifact): boolean => {
@@ -298,8 +332,9 @@ export function projectEffectBranchFreshness<T extends Artifact>(
       const candidates = (stages.get(`${owner}:PROMPT_GENERATION`) ?? [])
         .filter((row) => row.artifactKey.startsWith('prompt-batch:'));
       // Clone products may have new IDs; only a unique product pair is safe to project.
-      prompt = candidates.find((row) => row.artifactKey === prompt!.artifactKey) ??
+      const viewing = candidates.find((row) => row.artifactKey === prompt!.artifactKey) ??
         (candidates.length === 1 ? candidates[0] : prompt);
+      prompt = effectRenderPromptSource(branches, artifact, viewing, [prompt]);
     }
     if (!prompt || prompt.availability === 'UNAVAILABLE' || prompt.freshness !== 'CURRENT' ||
       !Array.isArray(record(prompt.payload)?.items)) return null;

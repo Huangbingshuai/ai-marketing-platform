@@ -53,6 +53,13 @@ const isFileTooLarge = (exception: unknown): boolean =>
   'code' in exception &&
   exception.code === 'LIMIT_FILE_SIZE';
 
+// Express/body-parser errors are not Nest HttpExceptions. Never expose their body or stack.
+const isBodyTooLarge = (exception: unknown): boolean =>
+  typeof exception === 'object' &&
+  exception !== null &&
+  'type' in exception &&
+  exception.type === 'entity.too.large';
+
 const isDeletedTemplateWrite = (exception: unknown): boolean =>
   exception instanceof Error && exception.message.includes('EFFECT_TEMPLATE_DELETED');
 
@@ -65,24 +72,33 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ? exception.getStatus()
         : isDeletedTemplateWrite(exception)
           ? HttpStatus.CONFLICT
-        : isFileTooLarge(exception)
-          ? HttpStatus.PAYLOAD_TOO_LARGE
-          : HttpStatus.INTERNAL_SERVER_ERROR;
-    const code = isDeletedTemplateWrite(exception) ? 'VALIDATION_ERROR' : exceptionCode(exception);
-    const message =
-      isDeletedTemplateWrite(exception)
-        ? '此混剪模板已删除，请返回模板列表继续操作'
-      : code === 'FILE_TOO_LARGE'
-        ? '文件大小超过上传限制'
-        : exception instanceof HttpException
-          ? exceptionMessage(exception)
-          : '服务器内部错误';
+          : isFileTooLarge(exception) || isBodyTooLarge(exception)
+            ? HttpStatus.PAYLOAD_TOO_LARGE
+            : HttpStatus.INTERNAL_SERVER_ERROR;
+    const code = isDeletedTemplateWrite(exception)
+      ? 'VALIDATION_ERROR'
+      : isBodyTooLarge(exception)
+        ? 'FILE_TOO_LARGE'
+        : exceptionCode(exception);
+    const message = isDeletedTemplateWrite(exception)
+      ? '此混剪模板已删除，请返回模板列表继续操作'
+      : isBodyTooLarge(exception)
+        ? '保存内容超过接口大小限制，请减少本次提交内容'
+        : code === 'FILE_TOO_LARGE'
+          ? '文件大小超过上传限制'
+          : exception instanceof HttpException
+            ? exceptionMessage(exception)
+            : '服务器内部错误';
     const requestIdHeader = response.getHeader('x-request-id');
     const requestId = Array.isArray(requestIdHeader) ? requestIdHeader[0] : requestIdHeader;
     // This filter takes over from Nest's own handler, which is the thing that normally prints unhandled
     // stacks. Without this line an unexpected 500 leaves no trace anywhere — the response body says only
     // "服务器内部错误", so there is nothing to debug with. Log the stack; keep the body as it is.
-    if (!(exception instanceof HttpException) && !isDeletedTemplateWrite(exception))
+    if (
+      !(exception instanceof HttpException) &&
+      !isDeletedTemplateWrite(exception) &&
+      !isBodyTooLarge(exception)
+    )
       logger.error(
         `[${String(requestId)}] ${exception instanceof Error ? exception.stack : String(exception)}`,
       );

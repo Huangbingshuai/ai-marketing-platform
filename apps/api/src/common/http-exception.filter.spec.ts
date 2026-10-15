@@ -17,19 +17,48 @@ afterEach(() => {
 });
 
 describe('HttpExceptionFilter', () => {
+  it('classifies parser overflow without logging the submitted content', () => {
+    const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const { host, response } = hostFor();
+    new HttpExceptionFilter().catch(
+      Object.assign(new Error('private submitted content'), {
+        type: 'entity.too.large',
+        status: 413,
+      }),
+      host as never,
+    );
+    expect(response.status).toHaveBeenCalledWith(413);
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'FILE_TOO_LARGE',
+        message: '保存内容超过接口大小限制，请减少本次提交内容',
+      }),
+    );
+    expect(logged).not.toHaveBeenCalled();
+  });
   it('reports deleted-template late writes as a safe conflict, without logging raw database data', () => {
     const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     const { host, response } = hostFor();
-    new HttpExceptionFilter().catch(new Error('driver message EFFECT_TEMPLATE_DELETED'), host as never);
+    new HttpExceptionFilter().catch(
+      new Error('driver message EFFECT_TEMPLATE_DELETED'),
+      host as never,
+    );
     expect(response.status).toHaveBeenCalledWith(409);
-    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'VALIDATION_ERROR',
-      message: '此混剪模板已删除，请返回模板列表继续操作' }));
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'VALIDATION_ERROR',
+        message: '此混剪模板已删除，请返回模板列表继续操作',
+      }),
+    );
     expect(logged).not.toHaveBeenCalled();
   });
   it('answers a thrown HttpException with its own status and message', () => {
     const { host, response } = hostFor();
 
-    new HttpExceptionFilter().catch(new ConflictException('校验提交遇到并发写入，请稍后重试'), host as never);
+    new HttpExceptionFilter().catch(
+      new ConflictException('校验提交遇到并发写入，请稍后重试'),
+      host as never,
+    );
 
     expect(response.status).toHaveBeenCalledWith(409);
     expect(response.json).toHaveBeenCalledWith(

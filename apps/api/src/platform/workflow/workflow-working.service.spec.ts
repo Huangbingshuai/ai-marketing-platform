@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { effectTemplateBranchTips } from '@ai-marketing/contracts';
 import { WorkflowWorkingService, workflowStateHash } from './workflow-working.service';
 
 describe('effect mix version scopes', () => {
@@ -101,6 +102,114 @@ describe('effect mix version scopes', () => {
     expect(branches.map((b) => b.templates[0]?.fillRevision)).toEqual([null, 1, 1, 1, 2, 2]);
     expect(branches.map((b) => b.templates[0]?.packagingRevision)).toEqual([null, null, 1, 2, null, 1]);
     expect(branches[3]?.templates[0]?.packagingRevisions).toEqual([1]);
+  });
+
+  it.each(['COMPLETED', 'PARTIAL', 'RUNNING', 'FAILED', 'CANCELED'])('retains a published fill head after first in-place packaging is %s', async (status) => {
+    const fill = run('fill', 'root', 1, 'FILL');
+    const before = await treeOf([run('root', null, 0, 'TEMPLATE'), fill]);
+    fill.effectPackagingRuns = [{ templateId: 'a', status, idempotencyKey: 'first-package', completedAt: at(2) }];
+    fill.workingArtifacts.push(artifact('timeline-package:a:v', 2));
+    const branches = await treeOf([run('root', null, 0, 'TEMPLATE'), fill]);
+    expect(branches.map(b => b.workflowRunId)).toEqual(['root', 'fill']);
+    expect(branches[1]?.forkMixStage).toBe('FILL');
+    expect(branches[1]?.templates[0]?.fillRevision).toBe(before[1]?.templates[0]?.fillRevision);
+    expect(branches[1]?.templates[0]?.timelineVariantCount).toBe(1);
+  });
+
+  it('keeps a re-fill and its first package together without reparenting later packages or renumbering siblings', async () => {
+    const first = run('fill-1', 'root', 1, 'FILL');
+    first.effectPackagingRuns = run('unused', null, 2, 'PACKAGING').effectPackagingRuns;
+    first.workingArtifacts.push(artifact('timeline-package:a:v', 2));
+    const second = run('fill-2', 'fill-1', 3, 'FILL');
+    second.effectPackagingRuns = run('unused', null, 4, 'PACKAGING').effectPackagingRuns;
+    second.workingArtifacts.push(artifact('timeline-package:a:v', 4));
+    const rows = [run('root', null, 0, 'TEMPLATE'), first, second,
+      run('repackage-1', second.id, 5, 'PACKAGING'),
+      run('repackage-2', second.id, 6, 'PACKAGING')];
+    const branches = await treeOf(rows);
+    expect(branches.map(b => b.forkMixStage)).toEqual([null, 'FILL', 'FILL', 'PACKAGING', 'PACKAGING']);
+    expect(branches.map(b => b.templates[0]?.fillRevision)).toEqual([null, 1, 2, 2, 2]);
+    expect(branches.map(b => b.templates[0]?.packagingRevision)).toEqual([null, 1, 1, 2, 3]);
+    // Updating the same confirmed timelines is not a new fill or package branch.
+    second.workingArtifacts[0]!.revision = 8;
+    expect((await treeOf(rows)).map(b => b.templates[0]?.fillRevision)).toEqual([null, 1, 2, 2, 2]);
+  });
+
+  it.each([
+    { idempotencyKey: 'inherit:package:mix:old', inputSnapshot: {} },
+    { idempotencyKey: 'append', inputSnapshot: { incremental: true } },
+    { idempotencyKey: 'trim', inputSnapshot: { trimOnly: true } },
+  ])('does not mistake $idempotencyKey for an owned full fill in a packaging fork', async (task) => {
+    const packaged = run('package', 'fill', 2, 'PACKAGING');
+    Object.assign(packaged, { effectTemplateMixAiRuns: [{ templateId: 'a', outputVariantId: 'v', ...task }] });
+    const branches = await treeOf([run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'), packaged]);
+    expect(branches[2]?.forkMixStage).toBe('PACKAGING');
+    expect(branches[2]?.templates[0]?.fillRevision).toBe(1);
+  });
+
+  it('does not let another template own the targeted packaging fork', async () => {
+    const packaged = run('package', 'fill', 2, 'PACKAGING');
+    Object.assign(packaged, { effectTemplateMixAiRuns: [{ templateId: 'b', outputVariantId: 'v', idempotencyKey: 'fill-b' }] });
+    packaged.workingArtifacts.push(artifact('timeline-project:b:v', 2));
+    const branches = await treeOf([run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'), packaged]);
+    expect(branches[2]?.forkMixStage).toBe('PACKAGING');
+  });
+
+  it('retains the fill layer when its template was only a draft in the parent', async () => {
+    const root = run('root', null, 0, 'TEMPLATE');
+    root.workingArtifacts = [];
+    const fill = run('fill', root.id, 1, 'FILL');
+    fill.workingArtifacts.push(artifact('mix-template:a', 1, { template: { name: '测试1' } }));
+    const before = await treeOf([root, fill]);
+    fill.effectPackagingRuns = run('unused', null, 2, 'PACKAGING').effectPackagingRuns;
+    fill.workingArtifacts.push(artifact('timeline-package:a:v', 2));
+    const after = await treeOf([root, fill]);
+    expect(after[1]?.forkMixStage).toBe('TEMPLATE');
+    expect(after[1]?.forkMixStage).toBe(before[1]?.forkMixStage);
+    expect(after[1]?.templates[0]).toMatchObject({ timelineVariantCount: 1,
+      fillRevision: 1, packagingVariantCount: 1, packagingRevision: 1 });
+  });
+
+  it('exposes a published modern partial batch as the current packaging path and next export head', async () => {
+    const partial = run('partial-package', 'fill', 2, 'PACKAGING');
+    Object.assign(partial.effectPackagingRuns[0]!, { status: 'PARTIAL', operation: 'BATCH_PACKAGE',
+      items: [{ variantId: 'v', status: 'COMPLETED' }, { variantId: 'failed', status: 'FAILED' }] });
+    Object.assign(partial.workingArtifacts[1]!, { id: 'confirmed-package', workflowRunId: partial.id });
+    const published = { ...partial, workingArtifactRevisions: [
+      { workingArtifactId: 'confirmed-package', revision: 1, confirmedAt: at(3) },
+    ] };
+    const next = run('repackage', partial.id, 4, 'PACKAGING');
+    const rows = [run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'), published];
+    const branches = await treeOf(rows);
+    expect(branches.map(b => b.workflowRunId)).toEqual(['root', 'fill', partial.id]);
+    expect(branches[2]?.templates[0]?.packagingRevision).toBe(1);
+    expect(effectTemplateBranchTips(branches, 'root', { current: true }).get('a')?.workflowRunId)
+      .toBe(partial.id);
+    const withChildren = await treeOf([...rows, next, run('export', partial.id, 5, 'DELIVERY')]);
+    expect(withChildren.find(b => b.workflowRunId === next.id)?.templates[0]?.packagingRevision).toBe(2);
+    expect(withChildren.find(b => b.workflowRunId === 'export')?.templates[0]?.deliveryRevision).toBe(1);
+    expect(withChildren.find(b => b.workflowRunId === 'export')?.templates[0]?.packagingRevision).toBe(1);
+    // Re-reading or editing a completed film cannot hide or renumber the published head.
+    partial.workingArtifacts[1]!.revision = 7;
+    expect((await treeOf(rows))[2]?.templates[0]?.packagingRevision).toBe(1);
+  });
+
+  it.each([
+    { operation: undefined, status: 'PARTIAL', successful: true, published: true },
+    { operation: 'BATCH_PACKAGE', status: 'PARTIAL', successful: true, published: false },
+    { operation: 'BATCH_PACKAGE', status: 'RUNNING', successful: true, published: true },
+    { operation: 'BATCH_PACKAGE', status: 'PARTIAL', successful: false, published: true },
+    { operation: 'BATCH_PACKAGE', status: 'FAILED', successful: false, published: true },
+    { operation: 'SINGLE_PACKAGE', status: 'PARTIAL', successful: true, published: true },
+    { operation: 'APPEND_PACKAGE', status: 'PARTIAL', successful: true, published: true },
+  ])('does not expose an ineligible partial packaging head: %j', async (example) => {
+    const partial = run('partial', 'fill', 2, 'PACKAGING');
+    Object.assign(partial.effectPackagingRuns[0]!, { operation: example.operation, status: example.status,
+      items: [{ variantId: 'v', status: example.successful ? 'COMPLETED' : 'FAILED' }] });
+    if (!example.published) Object.assign(partial, { branchPublishedAt: null });
+    const branches = await treeOf([run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'), partial]);
+    expect(branches.map(b => b.workflowRunId)).toEqual(['root', 'fill']);
+    expect(effectTemplateBranchTips(branches, 'root', { current: true }).get('a')?.workflowRunId).toBe('fill');
   });
 
   it('counts each fill branch once, regardless of local-update artifact revisions or film count', async () => {

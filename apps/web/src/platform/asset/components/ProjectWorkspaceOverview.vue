@@ -20,12 +20,15 @@ import {
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import { isAbortError } from '../../../api/http-client';
+import { useProjectContext } from '../../project/project-context';
+import { presentProjectOperation } from '../../project/project-operation-status';
 import {
   getActiveWorkflowRunOverview,
   listWorkingArtifacts,
 } from '../../workflow/api/workflow-working.api';
 import { latestWorkflowNodeStateMap, workflowNodeBaseId } from '../../workflow/workflow-node-id';
 import { SPACE_LABELS, WORKFLOW_META, typeLabel } from '../asset-v4';
+import { EFFECT_NODE_LABELS } from '../../../workflows/effect/shared/effect-node-labels';
 import {
   aggregateWorkspaceArtifacts,
   finalVideoArtifactCounts,
@@ -43,17 +46,18 @@ const props = withDefaults(
   { canResume: false },
 );
 const emit = defineEmits<{ resumeNode: [nodeId: string] }>();
+const { currentProject } = useProjectContext();
 
 type LoadStatus = 'loading' | 'success' | 'error';
 type WorkflowNodeDefinition = { id: string; label: string };
 
 const EFFECT_NODES: readonly WorkflowNodeDefinition[] = [
-  { id: 'SOURCE_IMPORT', label: '资料包导入' },
-  { id: 'INFORMATION_EXTRACTION', label: 'AI 信息提炼' },
-  { id: 'PROMPT_GENERATION', label: 'Prompt 生成' },
-  { id: 'SEGMENT_RENDER', label: '片段渲染' },
-  { id: 'TEMPLATE_MIX', label: '模板混剪' },
-  { id: 'FINAL_OUTPUT', label: '成片生成与批量导出' },
+  { id: 'SOURCE_IMPORT', label: EFFECT_NODE_LABELS.SOURCE_IMPORT },
+  { id: 'INFORMATION_EXTRACTION', label: EFFECT_NODE_LABELS.INFORMATION_EXTRACTION },
+  { id: 'PROMPT_GENERATION', label: EFFECT_NODE_LABELS.PROMPT_GENERATION },
+  { id: 'SEGMENT_RENDER', label: EFFECT_NODE_LABELS.SEGMENT_RENDER },
+  { id: 'TEMPLATE_MIX', label: EFFECT_NODE_LABELS.TEMPLATE_MIX },
+  { id: 'FINAL_OUTPUT', label: EFFECT_NODE_LABELS.FINAL_OUTPUT },
 ] as const;
 
 const status = ref<LoadStatus>('loading');
@@ -102,11 +106,9 @@ const lastSavedAt = computed(() => {
   return timestamps.sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
 });
 
-const projectStatusLabel = computed(() => {
-  if (props.project.status === 'COMPLETED') return '已完成';
-  if (props.project.status === 'ACTIVE') return '进行中';
-  return '草稿';
-});
+const projectStatusLabel = computed(
+  () => presentProjectOperation(props.project, currentProject.value?.id).label,
+);
 
 const formatTime = (value: string | null): string =>
   value
@@ -213,7 +215,10 @@ const load = async (): Promise<void> => {
   artifacts.value = [];
   try {
     const overviewResponse = await getActiveWorkflowRunOverview(
-      props.project.id, props.workflow, props.space, request.signal,
+      props.project.id,
+      props.workflow,
+      props.space,
+      request.signal,
     );
     if (request.signal.aborted || requestGeneration !== generation) return;
     run.value = overviewResponse.data.run;
@@ -399,7 +404,6 @@ onBeforeUnmount(() => controller?.abort());
             </article>
           </div>
         </section>
-
       </div>
     </template>
   </div>

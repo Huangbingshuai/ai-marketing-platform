@@ -6,7 +6,7 @@ describe('per-film packaging edit fence', () => {
   const draft = { templates: [{ id: 't', workspace: { template: { name: 'T' },
     variants: [{ id: 'a', captions: [] }, { id: 'b', captions: [] }] } }] };
   const client = (active: boolean) => ({ effectPackagingItem: { findMany: vi.fn().mockResolvedValue(active ? [
-    { variantId: 'a', snapshot: { operation: 'BATCH_PACKAGE' }, run: { templateId: 't' } },
+    { variantId: 'a', snapshot: { operation: 'BATCH_PACKAGE' }, run: { templateId: 't', workflowRunId: 'w' } },
   ] : []) } }) as unknown as Prisma.TransactionClient;
   it('permits unrelated film edits while protecting active films and shared configuration', async () => {
     const other = structuredClone(draft);
@@ -21,5 +21,13 @@ describe('per-film packaging edit fence', () => {
   });
   it('unlocks terminal films without a template-wide lock', async () => {
     await expect(assertPackagingDraftEditable(client(false), 'p', 'w', draft, { templates: [] })).resolves.toBeUndefined();
+  });
+  it('does not lock the parent baseline while repackaging a child with the same film IDs', async () => {
+    const tx = { effectPackagingItem: { findMany: vi.fn().mockResolvedValue([
+      { variantId: 'a', snapshot: { operation: 'BATCH_PACKAGE' },
+        run: { templateId: 't', workflowRunId: 'child' } },
+    ]) } } as unknown as Prisma.TransactionClient;
+    await expect(assertPackagingDraftEditable(tx, 'p', 'w', draft, { templates: [] })).resolves.toBeUndefined();
+    await expect(assertPackagingDraftEditable(tx, 'p', 'child', draft, { templates: [] })).rejects.toThrow('正在包装');
   });
 });

@@ -6,7 +6,6 @@ import type {
 } from '@ai-marketing/contracts';
 import type { InjectionKey, Ref } from 'vue';
 import { inject } from 'vue';
-import { projectMatchesWorkflow } from '../asset/asset-v4';
 
 export type ProjectBindingState = 'bound' | 'empty' | 'error' | 'loading' | 'unbound';
 
@@ -32,14 +31,9 @@ export const resolveBoundProjectId = (
   projects: readonly Project[],
   currentProjectId: string,
   savedProjectId: string,
-  workflow?: AssetWorkflow,
 ): string =>
   [currentProjectId, savedProjectId].find((id) =>
-    projects.some(
-      (project) =>
-        project.id === id &&
-        (!workflow || projectMatchesWorkflow(project, workflow)),
-    ),
+    projects.some((project) => project.id === id && !project.deletion),
   ) ?? '';
 
 export const workflowProjectStorageKey = (workflow: AssetWorkflow): string =>

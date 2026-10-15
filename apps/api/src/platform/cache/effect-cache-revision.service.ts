@@ -63,6 +63,7 @@ export const CUSTOMIZED_CACHE_TABLES = {
   'customized-extraction': [
     'workflow_runs',
     'working_artifacts',
+    'working_artifact_dependencies',
     'customized_extraction_tasks',
     'customized_extraction_steps',
     'customized_extraction_results',

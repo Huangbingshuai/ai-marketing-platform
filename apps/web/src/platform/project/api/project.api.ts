@@ -1,6 +1,8 @@
 import type {
   ApiResponse,
   CreateProjectRequest,
+  DeleteProjectResult,
+  DeleteProjectRequest,
   Project,
   ProjectListQuery,
 } from '@ai-marketing/contracts';
@@ -27,4 +29,14 @@ export const createProject = (input: CreateProjectRequest): Promise<ApiResponse<
     method: 'POST',
     body: input,
     operation: '创建项目',
+  });
+
+export const deleteProject = (
+  projectId: string,
+  context: DeleteProjectRequest = {},
+): Promise<ApiResponse<DeleteProjectResult>> =>
+  requestJson<ApiResponse<DeleteProjectResult>>(`/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+    body: context,
+    operation: '删除项目',
   });

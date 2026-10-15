@@ -4,6 +4,7 @@ import type {
   FinalOutputSnapshot,
 } from '@ai-marketing/contracts';
 import { randomUUID } from 'node:crypto';
+import { ConflictException } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { workflowStateHash } from './workflow-state-hash';
 import {
@@ -17,7 +18,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from './workflow-working.repository';
 import { visualHash } from '../../workflows/effect/template-mix/effect-packaging.domain';
-import { confirmedEffectRenderSourceRun } from './effect-render-source-context';
+import { confirmedEffectPromptEditSource, confirmedEffectRenderSourceRun } from './effect-render-source-context';
 
 type Tx = Prisma.TransactionClient;
 type IdMap = Record<string, string>;
@@ -42,8 +43,59 @@ const artifactPrefix: Record<EffectWorkflowEditableNodeId, readonly string[]> = 
 const artifactKeyWhere = (nodeId: EffectWorkflowEditableNodeId) => ({
   OR: artifactPrefix[nodeId].map((prefix) => ({ artifactKey: { startsWith: prefix } })),
 });
+export const effectEditStageCopyPolicy = (
+  nodeId: EffectWorkflowEditableNodeId,
+  purpose: 'MANUAL' | 'BATCH',
+) => {
+  const resetsSegmentRender = nodeId === 'SEGMENT_RENDER' && purpose === 'BATCH';
+  return {
+    adoptConfirmedRenderSource: !resetsSegmentRender,
+    copyRenderBatches: !resetsSegmentRender,
+    copyCurrentStageArtifacts: !resetsSegmentRender,
+  };
+};
+
+export const effectEditArtifactStages = (
+  nodeId: EffectWorkflowEditableNodeId,
+  purpose: 'MANUAL' | 'BATCH',
+  preservePackagingBaseline = false,
+): EffectWorkflowEditableNodeId[] => {
+  const index = stageOrder.indexOf(nodeId);
+  // A fresh fill owns new pictures. A fresh package instead retains confirmed pictures/audio
+  // until each replacement commits, including films whose new package ultimately fails.
+  const keepCurrent = index < 4 && effectEditStageCopyPolicy(nodeId, purpose).copyCurrentStageArtifacts ||
+    nodeId === 'TEMPLATE_MIX' && preservePackagingBaseline;
+  return stageOrder.slice(0, index + (keepCurrent ? 1 : 0));
+};
 const json = (value: unknown): Prisma.InputJsonValue =>
   (value === undefined || value === null ? {} : value) as Prisma.InputJsonValue;
+
+/** New branch rows have no consumers before this transaction commits. Write their final
+ * frozen snapshots once, after the artifact ID/hash map is complete, rather than insert,
+ * read back and update every task individually. Do not regenerate provider work. */
+export async function insertEffectRenderBranchTasks(
+  tx: Tx,
+  rows: Prisma.EffectSegmentRenderTaskCreateManyInput[],
+  artifactReplacements: IdMap,
+): Promise<void> {
+  if (!rows.length) return;
+  await tx.effectSegmentRenderTask.createMany({ data: rows.map((row) => ({
+    ...row,
+    requestSnapshot: json(remap(row.requestSnapshot, artifactReplacements)),
+    generationRequestSnapshot: json(remap(row.generationRequestSnapshot, artifactReplacements)),
+  })) });
+}
+
+export const effectEditNodeStateWhere = (
+  projectId: string, parentRunId: string, stage: EffectWorkflowEditableNodeId, sourceRunId: string,
+): Prisma.WorkflowNodeStateWhereInput => ({
+  projectId,
+  OR: [
+    { workflowRunId: sourceRunId, OR: [{ nodeId: stage }, { nodeId: { startsWith: `${stage}:` } }] },
+    ...(stage === 'SEGMENT_RENDER' ? [{ workflowRunId: parentRunId,
+      nodeId: { startsWith: 'SEGMENT_RENDER_SETTINGS:' } }] : []),
+  ],
+});
 const stageDigest = async (
   tx: Tx,
   projectId: string,
@@ -90,9 +142,11 @@ export type EffectEditBeginOptions = {
   preservePackagingBaseline?: boolean;
   /** Reuse the same background child when a task request is retried. */
   creationKey?: string;
+  /** Internal creation fence for the exact parent node draft frozen by the caller. */
+  expectedNodeStateRevision?: number;
   /** Template-local mix/output branches only show the template that produced this version. */
   templateId?: string;
-  /** Internal output-only scope: caller resolved the template tip, and freezes the global pointer. */
+  /** Internal task scope: caller resolved the template tip, and freezes the global pointer. */
   templateScopeActiveRunId?: string;
 };
 
@@ -118,9 +172,23 @@ export async function beginEffectEditInTransaction(
     },
   });
   if (!parent) return null;
+  if (options.expectedNodeStateRevision !== undefined) {
+    await tx.$queryRaw`SELECT "id" FROM "workflow_node_states"
+      WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${parent.id}::uuid
+        AND "nodeId"=${nodeId} FOR UPDATE`;
+    const state = await tx.workflowNodeState.findUnique({ where: {
+      projectId_workflowRunId_nodeId: { projectId, workflowRunId: parent.id, nodeId },
+    } });
+    if (!state || state.revision !== options.expectedNodeStateRevision)
+      throw new ConflictException('包装前原工程已改变，请刷新后重试');
+  }
   const active = await tx.workflowRun.findFirst({
     where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
   });
+  // A replay must respect the same frozen global pointer as a newly cloned package.
+  if (nodeId === 'TEMPLATE_MIX' && options.preservePackagingBaseline &&
+      options.templateScopeActiveRunId &&
+      (active?.id !== options.templateScopeActiveRunId || active.editSessionNodeId)) return null;
   if (options.creationKey) {
     const existing = await tx.workflowRun.findFirst({
       where: {
@@ -193,7 +261,11 @@ export async function beginEffectEditInTransaction(
   const templateScopedOutput = nodeId === 'FINAL_OUTPUT' && options.always &&
     options.templateId && Boolean(options.templateScopeActiveRunId) &&
     options.templateScopeActiveRunId === active?.id;
-  if (active?.id !== parent.id && !templateScopedOutput) return null;
+  const templateScopedPackaging = nodeId === 'TEMPLATE_MIX' && options.always &&
+    options.keepParentActive && options.preservePackagingBaseline && options.templateId &&
+    Boolean(options.templateScopeActiveRunId) && options.templateScopeActiveRunId === active?.id &&
+    !active?.editSessionNodeId;
+  if (active?.id !== parent.id && !templateScopedOutput && !templateScopedPackaging) return null;
   // The parent stays active during an independent full export. The project lock serializes
   // repeated clicks, so reuse only its unfinished output child, never a published version.
   if (nodeId === 'FINAL_OUTPUT' && options.always && options.keepParentActive && options.templateId) {
@@ -209,6 +281,7 @@ export async function beginEffectEditInTransaction(
       productIdMap: {}, taskIdMap: {}, created: false };
   }
   const stageIndex = stageOrder.indexOf(nodeId);
+  const copyPolicy = effectEditStageCopyPolicy(nodeId, purpose);
   const stageSources = new Map<EffectWorkflowEditableNodeId, string>();
   for (const stage of stageOrder.slice(0, stageIndex + 1)) {
     let cursor = parent;
@@ -243,7 +316,11 @@ export async function beginEffectEditInTransaction(
       cursor = ancestor;
     }
   }
-  if (nodeId === 'SEGMENT_RENDER') {
+  const viewingPromptRunId = stageSources.get('PROMPT_GENERATION') ?? parent.id;
+  let promptEditBaseline: { source: { artifactId: string; revision: number; contentHash: string };
+    target: { artifactId: string; revision: number; contentHash: string } } | undefined;
+  let selectedPromptResultId: string | null = null;
+  if (nodeId === 'SEGMENT_RENDER' && copyPolicy.adoptConfirmedRenderSource) {
     const sourceRunId = await confirmedEffectRenderSourceRun(tx, projectId, parent.id);
     if (sourceRunId !== parent.id) {
       stageSources.set('SEGMENT_RENDER', sourceRunId);
@@ -259,6 +336,49 @@ export async function beginEffectEditInTransaction(
         const current = rows.filter((row) => row.workflowRunId === currentRunId);
         if (fromSource.length && Math.max(0, ...current.map((row) => row.revision)) <=
           Math.max(...fromSource.map((row) => row.revision))) stageSources.set(stage, sourceRunId);
+      }
+    }
+  }
+  if (nodeId === 'SEGMENT_RENDER' || nodeId === 'PROMPT_GENERATION') {
+    // A merge may publish the newer pool into the parent while its adopted Prompt still
+    // lives in a mix descendant. Use the same explicit source as reads/confirmation,
+    // not the numeric revision of a reminted snapshot or the render owner's local copy.
+    const prompts = await tx.workingArtifact.findMany({ where: {
+      projectId, workflowRunId: viewingPromptRunId, nodeId: 'PROMPT_GENERATION',
+      artifactKey: { startsWith: 'prompt-batch:' },
+    } });
+    // Current UI has one product. Legacy multi-product copies retain their original rule
+    // rather than guessing a product by a label, count or an unrelated source's revision.
+    if (prompts.length === 1) {
+      const viewing = prompts[0]!;
+      const selected = await confirmedEffectPromptEditSource(tx, projectId, parent.id, viewing);
+      stageSources.set('PROMPT_GENERATION', selected.workflowRunId);
+      if (nodeId === 'PROMPT_GENERATION' && purpose === 'MANUAL') {
+        const identity = (artifact: typeof viewing) => ({ artifactId: artifact.id,
+          revision: artifact.revision, contentHash: artifact.contentHash });
+        promptEditBaseline = { source: identity(selected), target: identity(viewing) };
+        selectedPromptResultId = selected.sourceArtifactId;
+        // Copy exact upstream dependencies too: product/insight IDs are reminted per Run.
+        // Mixing the adopted Prompt with the navigation snapshot would freeze broken input IDs.
+        let dependent = selected;
+        for (const stage of ['INFORMATION_EXTRACTION', 'SOURCE_IMPORT'] as const) {
+          const dependencies = await tx.workingArtifactDependency.findMany({ where: {
+            projectId, dependentArtifactId: dependent.id, sourceType: 'WORKING_ARTIFACT',
+            sourceNodeId: stage,
+          } });
+          if (dependencies.length > 1) throw new ConflictException('Prompt 上游来源不明确，请刷新后重试');
+          if (!dependencies.length) continue;
+          const dependency = dependencies[0]!;
+          const upstream = await tx.workingArtifact.findFirst({ where: {
+            projectId, id: dependency.sourceArtifactId ?? '', nodeId: stage,
+            ...(dependency.sourceRevision !== null ? { revision: dependency.sourceRevision } : {}),
+            ...(dependency.sourceHash !== null ? { contentHash: dependency.sourceHash } : {}),
+            availability: 'AVAILABLE',
+          } });
+          if (!upstream) throw new ConflictException('Prompt 上游已改变，请刷新后重试');
+          stageSources.set(stage, upstream.workflowRunId);
+          dependent = upstream;
+        }
       }
     }
   }
@@ -298,6 +418,7 @@ export async function beginEffectEditInTransaction(
   const ids: IdMap = { [parent.id]: child.id };
   const productIdMap: IdMap = {};
   const taskIdMap: IdMap = {};
+  const renderTaskRows: Prisma.EffectSegmentRenderTaskCreateManyInput[] = [];
   const renderBatchRevisions: Record<string, number> = {};
   const renderEditSnapshot = (value: Prisma.JsonValue | null) => {
     const copy = remap(value, ids) as Record<string, unknown> | null;
@@ -494,6 +615,9 @@ export async function beginEffectEditInTransaction(
     });
     const seen = new Set<string>();
     for (const source of promptRuns) {
+      // Only the result actually committed by the selected artifact is an editing baseline.
+      // A newer completed-but-unconfirmed domain draft must not slip into the copied editor.
+      if (selectedPromptResultId && source.result?.id !== selectedPromptResultId) continue;
       if (seen.has(source.productId)) continue;
       seen.add(source.productId);
       const run = await tx.effectPromptRun.create({
@@ -570,8 +694,10 @@ export async function beginEffectEditInTransaction(
           })),
         });
     }
+    if (selectedPromptResultId && !promptRuns.some((run) => run.result?.id === selectedPromptResultId))
+      throw new ConflictException('已确认 Prompt 结果来源缺失，请刷新后重试');
   }
-  if (stageIndex >= 3) {
+  if (stageIndex >= 3 && copyPolicy.copyRenderBatches) {
     const candidateBatches = await tx.effectSegmentRenderBatch.findMany({
       where: {
         projectId,
@@ -609,8 +735,9 @@ export async function beginEffectEditInTransaction(
       });
       ids[source.id] = batch.id;
       for (const sourceTask of source.tasks) {
-        const task = await tx.effectSegmentRenderTask.create({
-          data: {
+        const taskId = randomUUID();
+        renderTaskRows.push({
+            id: taskId,
             projectId,
             workflowRunId: child.id,
             productId: ids[sourceTask.productId]!,
@@ -660,18 +787,16 @@ export async function beginEffectEditInTransaction(
             queuedAt: sourceTask.queuedAt,
             startedAt: sourceTask.startedAt,
             completedAt: sourceTask.completedAt,
-          },
         });
-        ids[sourceTask.id] = task.id;
-        taskIdMap[sourceTask.id] = task.id;
+        ids[sourceTask.id] = taskId;
+        taskIdMap[sourceTask.id] = taskId;
       }
     }
   }
-  // The mix and output nodes are whole downstream pipelines of their own. Copying their confirmed
-  // artifacts would make the new branch look finished before it regenerated anything, so only the
-  // upstream stages carry artifacts across; the trigger stage keeps its configuration in node state.
-  const artifactStages =
-    stageIndex >= 4 ? stageOrder.slice(0, stageIndex) : stageOrder.slice(0, stageIndex + 1);
+  // Packaging is transactional replacement, not picture regeneration. Copy its confirmed
+  // baseline through the same ID/hash remapping as the retained packaging/output rows below.
+  // Publication still depends on the new task, never on the presence of these baseline copies.
+  const artifactStages = effectEditArtifactStages(nodeId, purpose, options.preservePackagingBaseline);
   const artifacts = (
     await Promise.all(
       artifactStages.map((stage) =>
@@ -681,6 +806,10 @@ export async function beginEffectEditInTransaction(
             workflowRunId: stageSources.get(stage) ?? parent.id,
             nodeId: stage,
             availability: 'AVAILABLE',
+            ...(stage === 'TEMPLATE_MIX' && options.preservePackagingBaseline && options.templateId
+              ? { OR: artifactPrefix.TEMPLATE_MIX.map((prefix) => ({ artifactKey:
+                  prefix === 'mix-template:' ? `${prefix}${options.templateId}` : { startsWith: `${prefix}${options.templateId}:` } })) }
+              : {}),
           },
           include: workingArtifactInclude,
         }),
@@ -690,7 +819,11 @@ export async function beginEffectEditInTransaction(
   const ordered = artifacts.sort(
     (a, b) =>
       stageOrder.indexOf(a.nodeId as EffectWorkflowEditableNodeId) -
-      stageOrder.indexOf(b.nodeId as EffectWorkflowEditableNodeId),
+      stageOrder.indexOf(b.nodeId as EffectWorkflowEditableNodeId) ||
+      // Packages name the reminted visual artifact and its new content hash. Both must be
+      // available before the package is remapped, regardless of PostgreSQL's row order.
+      Number(a.artifactKey.startsWith('timeline-package:')) -
+      Number(b.artifactKey.startsWith('timeline-package:')),
   );
   const artifactIds: IdMap = {};
   const hashMap: IdMap = {};
@@ -710,11 +843,7 @@ export async function beginEffectEditInTransaction(
         .slice(0, stageIndex + 1)
         .map((stage) =>
           tx.workflowNodeState.findMany({
-            where: {
-              projectId,
-              workflowRunId: stageSources.get(stage) ?? parent.id,
-              OR: [{ nodeId: stage }, { nodeId: { startsWith: `${stage}:` } }],
-            },
+            where: effectEditNodeStateWhere(projectId, parent.id, stage, stageSources.get(stage) ?? parent.id),
           }),
         ),
     )
@@ -916,7 +1045,7 @@ export async function beginEffectEditInTransaction(
           variantId: item.variantId,
           name: item.name,
           snapshot: json(snapshot),
-          status: 'QUEUED',
+          status: 'PENDING_RENDER',
           progress: 0,
           fileObjectId: null,
           assetId: null,
@@ -972,21 +1101,7 @@ export async function beginEffectEditInTransaction(
           },
         });
     }
-    const tasks = await tx.effectSegmentRenderTask.findMany({
-      where: { projectId, workflowRunId: child.id },
-    });
-    for (const task of tasks)
-      await tx.effectSegmentRenderTask.update({
-        where: { id: task.id },
-        data: {
-          requestSnapshot: json(
-            remap(task.requestSnapshot, { ...artifactIds, ...hashReplacements }),
-          ),
-          generationRequestSnapshot: json(
-            remap(task.generationRequestSnapshot, { ...artifactIds, ...hashReplacements }),
-          ),
-        },
-      });
+    await insertEffectRenderBranchTasks(tx, renderTaskRows, { ...artifactIds, ...hashReplacements });
   }
   // An auto branch has no session, so it has nothing to compare a baseline against.
   if (!options.always)
@@ -994,7 +1109,8 @@ export async function beginEffectEditInTransaction(
       where: { id: child.id },
       data: {
         editBaselineHash: await stageDigest(tx, projectId, child.id, nodeId),
-        editIdMap: json({ productIdMap, taskIdMap, renderBatchRevisions }),
+        editIdMap: json({ productIdMap, taskIdMap, renderBatchRevisions,
+          ...(promptEditBaseline ? { promptEditBaseline } : {}) }),
       },
     });
   if (!options.keepParentActive) {

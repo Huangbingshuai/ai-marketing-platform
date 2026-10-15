@@ -41,7 +41,8 @@ describe('V4 asset center mapping', () => {
     expect(assetDrawerSource).not.toContain('class="nav-section-label"');
     expect(assetDrawerSource).toContain('@click="enterProject(project)"');
     expect(assetDrawerSource).toContain('class="project-row"');
-    expect(assetDrawerSource).toContain('enterProject(response.data)');
+    expect(assetDrawerSource).toContain("emit('createProject', workflow.value, space.value)");
+    expect(assetDrawerSource).not.toContain("name: '未命名营销项目'");
     expect(assetDrawerSource).not.toContain("view.value = 'current'");
     expect(assetDrawerSource).toContain('@click="backToProjects"');
     expect(assetDrawerSource).not.toContain('globalProjectKeyword');

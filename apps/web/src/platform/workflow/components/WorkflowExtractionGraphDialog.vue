@@ -11,6 +11,9 @@ const props = defineProps<{
   open: boolean;
   title: string;
   subtitle: string;
+  eyebrow?: string;
+  graphLabel?: string;
+  refreshable?: boolean;
   nodes: readonly ExtractionGraphNode[];
   executions: readonly ExtractionStepExecution[];
   selectedNodeId: string | null;
@@ -134,7 +137,7 @@ onBeforeUnmount(() => {
       >
         <header class="workflow-graph-dialog__header">
           <div>
-            <span class="workflow-graph-dialog__eyebrow">实时执行状态</span>
+            <span class="workflow-graph-dialog__eyebrow">{{ eyebrow ?? '实时执行状态' }}</span>
             <h3 id="extraction-graph-title">{{ title }}</h3>
             <p>{{ subtitle }}</p>
           </div>
@@ -150,7 +153,7 @@ onBeforeUnmount(() => {
           <LoaderCircle class="spin" :size="16" />正在同步节点状态…
         </div>
         <div class="workflow-graph-content">
-          <div class="workflow-graph-canvas" aria-label="AI 信息提炼节点执行图">
+          <div class="workflow-graph-canvas" :aria-label="graphLabel ?? 'AI 信息提炼节点执行图'">
             <template v-for="(row, index) in rows" :key="row[0]!.id">
               <div
                 v-if="index"
@@ -211,6 +214,7 @@ onBeforeUnmount(() => {
                   <strong>{{ graphNodeDefinition(selectedGraphNodeId).label }}</strong>
                 </div>
                 <button
+                  v-if="refreshable !== false"
                   type="button"
                   aria-label="刷新当前节点详情"
                   :disabled="graphDetailLoading"

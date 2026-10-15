@@ -9,6 +9,8 @@ import { ApiHttpException } from '../../common/api-http-exception';
 import { Prisma } from '../../generated/prisma/client';
 import type { WorkflowWorkingRepository } from './workflow-working.repository';
 import { importFileFormat } from '../file/import-file-validation';
+import { workflowStateHash } from './workflow-state-hash';
+import { readCustomizedExtractionResult } from './customized-inherited-extraction';
 
 export const customizedScope = (projectId: string) => ({
   projectId,
@@ -100,10 +102,27 @@ export async function beginCustomizedEdit(
   const states = await tx.workflowNodeState.findMany({
     where: { projectId, workflowRunId: runId },
   });
+  const source = artifacts.find((a) => a.artifactKey === CUSTOMIZED_SOURCE_ARTIFACT_KEY);
   for (const state of states) {
+    if (nodeId === 'SOURCE_IMPORT' && source && state.nodeId === 'SOURCE_IMPORT') continue;
     const { id: _id, createdAt: _created, updatedAt: _updated, ...data } = state;
     await tx.workflowNodeState.create({
       data: { ...data, workflowRunId: child.id, state: state.state as Prisma.InputJsonValue },
+    });
+  }
+  // Script branches can have confirmed upstream copies without a page draft.
+  // Seed only on explicit edit; a read/navigation must not manufacture draft revisions.
+  if (source && (nodeId === 'SOURCE_IMPORT' || !states.some((s) => s.nodeId === 'SOURCE_IMPORT'))) {
+    const state = restoreCustomizedImportDraft(source.payload);
+    await tx.workflowNodeState.create({
+      data: {
+        projectId,
+        workflowRunId: child.id,
+        nodeId: 'SOURCE_IMPORT',
+        schemaVersion: 3,
+        state: state as unknown as Prisma.InputJsonValue,
+        contentHash: workflowStateHash(state),
+      },
     });
   }
   const ids = new Map<string, string>();
@@ -153,15 +172,26 @@ export async function beginCustomizedEdit(
         data: { ...data, workflowRunId: child.id, workingArtifactId: ids.get(artifact.id)! },
       });
     }
-  const result = await tx.customizedExtractionResult.findUnique({
-    where: { projectId_workflowRunId: { projectId, workflowRunId: runId } },
-  });
+  const sourceFingerprint = source
+    ? workflowStateHash({
+        artifactId: source.sourceArtifactId ?? source.id,
+        revision: source.revision,
+        payload: normalizeCustomizedImportDraft(source.payload),
+      })
+    : undefined;
+  const resolved = await readCustomizedExtractionResult(tx, projectId, runId, sourceFingerprint);
+  const result = resolved?.record;
   if (result) {
     const { id: _id, createdAt: _created, updatedAt: _updated, ...data } = result;
     await tx.customizedExtractionResult.create({
       data: {
         ...data,
         workflowRunId: child.id,
+        ...(resolved?.inherited &&
+        sourceFingerprint &&
+        artifacts.find((a) => a.artifactKey === 'customized-brief')?.freshness !== 'STALE'
+          ? { sourceFingerprint }
+          : {}),
         generatedResult: data.generatedResult as Prisma.InputJsonValue,
         draftResult: data.draftResult as Prisma.InputJsonValue,
         manualOverrides: data.manualOverrides as Prisma.InputJsonValue,

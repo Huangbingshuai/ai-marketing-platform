@@ -173,6 +173,54 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1').each(stages)(
 );
 
 it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
+  'starts a batch segment rerender with Prompt inputs but no inherited render materials',
+  async () => {
+    const db = new PrismaService(new ConfigService({
+      DATABASE_URL: process.env.DATABASE_URL ??
+        'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
+    }));
+    const repository = new WorkflowWorkingRepository(db);
+    const rollback = new Error('EFFECT_EDIT_TEST_ROLLBACK');
+    try {
+      await expect(db.$transaction(async (tx) => {
+        const source = await tx.workingArtifact.findFirstOrThrow({ where: {
+          nodeId: 'SEGMENT_RENDER', availability: 'AVAILABLE',
+          artifactKey: { startsWith: 'render-batch:' },
+          workflowRun: {
+            workflow: 'EFFECT', workflowSpace: 'EFFECT', ...branchable,
+            effectSegmentRenderBatches: { some: {
+              archivedAt: null, committedAt: { not: null },
+            } },
+          },
+        }, orderBy: { updatedAt: 'desc' } });
+        await activateRun(tx, source.projectId, source.workflowRunId);
+        const begun = await repository.beginEffectNodeEditInTransaction(
+          tx, source.projectId, source.workflowRunId, 'SEGMENT_RENDER', 'BATCH');
+        expect(begun).not.toBeNull();
+        expect(begun!.created).toBe(true);
+        expect(await tx.effectSegmentRenderBatch.count({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+        } })).toBe(0);
+        expect(await tx.effectSegmentRenderTask.count({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+        } })).toBe(0);
+        const artifacts = await tx.workingArtifact.findMany({ where: {
+          projectId: source.projectId, workflowRunId: begun!.runId,
+          availability: 'AVAILABLE',
+        }, select: { nodeId: true, artifactKey: true } });
+        expect(artifacts.some((item) => item.nodeId === 'PROMPT_GENERATION' &&
+          item.artifactKey.startsWith('prompt-batch:'))).toBe(true);
+        expect(artifacts.some((item) => item.nodeId === 'SEGMENT_RENDER' ||
+          item.artifactKey.startsWith('render-'))).toBe(false);
+        throw rollback;
+      }, { timeout: 120_000 })).rejects.toBe(rollback);
+    } finally {
+      await db.$disconnect();
+    }
+  },
+);
+
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
   'publishes a changed edit without modifying the parent or stealing a switched active branch',
   async () => {
     const db = new PrismaService(new ConfigService({

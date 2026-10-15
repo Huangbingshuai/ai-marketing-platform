@@ -15,6 +15,7 @@ import sourceReader from './components/AssetSourceDocumentReader.vue?raw';
 import reader from './components/AssetDocumentReader.vue?raw';
 import browser from './components/ProjectAssetBrowser.vue?raw';
 import thumbnail from './components/AssetMediaThumbnail.vue?raw';
+import viteConfig from '../../../vite.config.ts?raw';
 
 const asset = (name = '资料.docx') =>
   buildBrowserAssets(
@@ -127,6 +128,9 @@ afterEach(() => {
 });
 
 describe('source document reading', () => {
+  it('prebundles the lazy worker parser before a viewer can request its module', () => {
+    expect(viteConfig).toContain("include: ['mammoth/mammoth.browser']");
+  });
   it('extracts real DOCX paragraphs and table text completely, including the tail', async () => {
     const body =
       Array.from({ length: 60 }, (_, i) => paragraph(`资料段落${i + 1}`)).join('') +

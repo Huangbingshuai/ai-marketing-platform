@@ -8,6 +8,7 @@ import { HttpExceptionFilter } from '../../common/http-exception.filter';
 import { ResponseEnvelopeInterceptor } from '../../common/response-envelope.interceptor';
 import { PrismaService } from '../../database/prisma.service';
 import { JobOutboxDispatcher } from '../job/job-outbox.dispatcher';
+import { ProjectDeletionService } from '../project/project-deletion.service';
 import { EffectExtractionLeaseRecovery } from '../../workflows/effect/information-extraction/effect-extraction-lease-recovery';
 import { EffectPromptLeaseRecovery } from '../../workflows/effect/prompt-generation/effect-prompt-lease-recovery';
 import { EffectSegmentRenderLeaseRecovery } from '../../workflows/effect/segment-render/effect-segment-render-lease-recovery';
@@ -33,6 +34,7 @@ it.skipIf(process.env.EFFECT_CACHE_DATABASE_TEST !== '1')(
     const originalEnvironment = new Map(environmentKeys.map((key) => [key, process.env[key]]));
     const hooks = [
       JobOutboxDispatcher,
+      ProjectDeletionService,
       EffectExtractionLeaseRecovery,
       EffectPromptLeaseRecovery,
       EffectSegmentRenderLeaseRecovery,

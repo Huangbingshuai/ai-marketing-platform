@@ -19,6 +19,10 @@ function setup(current = 'old') {
         calls.push(`select:${id}`);
         currentId = id;
       }),
+      flushCurrent: vi.fn(async () => {
+        calls.push('save');
+        return true;
+      }),
       changingWorkflow: false,
     },
   };
@@ -55,7 +59,18 @@ describe('enter project from global asset library', () => {
     const { context } = setup('new');
     context.changingWorkflow = true;
     expect(await enterLibraryProject('new', context)).toBe(true);
-    expect(context.leaveCurrent).toHaveBeenCalledOnce();
+    expect(context.flushCurrent).toHaveBeenCalledOnce();
+    expect(context.leaveCurrent).not.toHaveBeenCalled();
+    expect(context.currentProjectId()).toBe('new');
+  });
+  it('keeps the same project and workflow when saving before navigation fails', async () => {
+    const { context } = setup('new');
+    context.changingWorkflow = true;
+    context.flushCurrent.mockResolvedValue(false);
+    expect(await enterLibraryProject('new', context)).toBe(false);
+    expect(context.leaveCurrent).not.toHaveBeenCalled();
+    expect(context.selectProject).not.toHaveBeenCalled();
+    expect(context.currentProjectId()).toBe('new');
   });
   it('rejects empty targets and failed bindings', async () => {
     const { context } = setup('');
@@ -66,11 +81,37 @@ describe('enter project from global asset library', () => {
   it('keeps browsing separate from activation and wires busy, error and scope controls', () => {
     expect(drawerSource).toContain('进入项目');
     expect(drawerSource).toContain("emit('enterProject', selectedProject.id, workflow, space)");
-    expect(drawerSource).toContain('creating.value || props.entryBusy');
+    expect(drawerSource).toContain('props.entryBusy || props.suspended');
     expect(drawerSource).toContain('role="alert"');
     expect(pageSource).toContain('@enter-project="enterAssetProject"');
     expect(pageSource).toContain('projectMatchesSpace(target, space)');
-    expect(pageSource).toContain('leaveCurrent: exitProject');
+    expect(pageSource).not.toContain('projectMatchesWorkflow');
+    expect(pageSource).toContain('projectBindings.ids[activeWorkflow.value]');
+    expect(pageSource).toContain('projectBindings.reconcile(response.data)');
+    expect(pageSource).toContain('leaveCurrent: () => exitProject()');
+    const enter =
+      pageSource
+        .split('const enterAssetProject = async')[1]
+        ?.split('const handleProjectAction')[0] ?? '';
+    expect(enter.indexOf('await activateWorkflow(workflow)')).toBeLessThan(
+      enter.indexOf('await enterLibraryProject'),
+    );
+    const create = pageSource.split('const submitCreateProject = async')[1] ?? '';
+    expect(create.indexOf('await activateWorkflow(createScope.value.workflow!)')).toBeLessThan(
+      create.indexOf('await exitProject()'),
+    );
+    const workflowSwitch = pageSource
+      .split('const switchWorkflow = async')[1]
+      ?.split('const activeWorkflowMeta')[0];
+    expect(workflowSwitch).toContain('await activateWorkflow(workflow)');
+    const activate = pageSource
+      .split('const activateWorkflow = async')[1]
+      ?.split('const switchWorkflow')[0];
+    expect(activate).toContain('switchProjectWorkflow(workflow,');
+    expect(activate).not.toContain('pauseWorkflowRun');
+    expect(workflowSwitch).not.toContain("selectProject('')");
+    expect(workflowSwitch).not.toContain('exitProject(');
+    expect(workflowSwitch).not.toContain('pauseWorkflowRun');
     const browse = drawerSource
       .split('function enterProject(project: Project): void {')[1]
       ?.split('function backToProjects')[0];

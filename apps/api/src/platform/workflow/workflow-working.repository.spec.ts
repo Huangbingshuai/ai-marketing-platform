@@ -89,7 +89,7 @@ describe('WorkflowWorkingRepository', () => {
         item.workflowRunId === where.workflowRunId || (preloaded && item.id === 'prompt' &&
           where.workflowRunId === 'root' && !where.nodeId && !where.id) : where.workflowRunId.in.includes(item.workflowRunId))) &&
       (!where.nodeId || (typeof where.nodeId === 'string' ? item.nodeId === where.nodeId : where.nodeId.in.includes(item.nodeId))))));
-    return { findMany, repository: new WorkflowWorkingRepository({ workflowRun: {
+    return { rows, branches, findMany, repository: new WorkflowWorkingRepository({ workflowRun: {
       findMany: vi.fn().mockResolvedValue(branches) }, workingArtifact: { findMany } } as unknown as PrismaService) };
   }
   it.each([undefined, 'SEGMENT_RENDER'])('hydrates the adopted sibling source closure without leaking filtered nodes: %s', async (nodeId) => {
@@ -110,6 +110,38 @@ describe('WorkflowWorkingRepository', () => {
     const result = await repository.listArtifacts('p', { workflowRunId: 'root' });
     expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).not.toThrow();
     expect(findMany.mock.calls.filter(([query]) => query.where.nodeId?.in)).toHaveLength(2);
+  });
+  it('omits downstream package payloads on a worker source read, preserving the exact sibling dependency graph', async () => {
+    const { repository, findMany } = sharedRenderFixture();
+    const result = await repository.listArtifacts('p', { workflowRunId: 'root' }, { upstreamOnly: true });
+    expect(result.map((row) => row.id)).toEqual(expect.arrayContaining(['new', 'prompt', 'facts', 'source']));
+    expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).not.toThrow();
+    expect(findMany.mock.calls[0]![0]).toMatchObject({ where: { projectId: 'p', workflowRunId: 'root',
+      nodeId: { in: ['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'] } } });
+  });
+  it('hydrates exact dependencies in a published mix descendant after render edits merge into the root', async () => {
+    const h = sharedRenderFixture();
+    h.rows[1]!.workflowRunId = 'root';
+    const result = await h.repository.listArtifacts('p', { workflowRunId: 'root' });
+    expect(result.map((row) => row.id)).toEqual(expect.arrayContaining(['new', 'prompt', 'facts', 'source']));
+    expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).not.toThrow();
+  });
+  it.each(['foreign-project', 'independent-run', 'revision'] as const)(
+    'preserves exact dependency guards for merged root render sources: %s', async (invalid) => {
+      const h = sharedRenderFixture(invalid);
+      h.rows[1]!.workflowRunId = 'root';
+      const result = await h.repository.listArtifacts('p', { workflowRunId: 'root' });
+      expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).toThrow();
+      if (invalid !== 'revision') expect(result.some((row) => row.id === 'source')).toBe(false);
+    },
+  );
+  it('does not hydrate an unconfirmed sibling Prompt for a merged root render source', async () => {
+    const h = sharedRenderFixture();
+    h.rows[1]!.workflowRunId = 'root';
+    Object.assign(h.branches[1]!, { branchPublishedAt: null });
+    const result = await h.repository.listArtifacts('p', { workflowRunId: 'root' });
+    expect(result.some((row) => row.id === 'prompt')).toBe(false);
+    expect(() => artifactVisitor(result as unknown as Parameters<typeof artifactVisitor>[0]).visit('new')).toThrow();
   });
   it.each(['foreign-project', 'independent-run', 'revision'] as const)('keeps source isolation and exact revision checks: %s', async (invalid) => {
     const { repository } = sharedRenderFixture(invalid);
@@ -321,6 +353,30 @@ describe('WorkflowWorkingRepository', () => {
     });
   });
 
+  it('projects modern partial batch publication without loading frozen packaging inputs', async () => {
+    const batch = (id: string, status = 'PARTIAL') => ({ id, templateId: 't', status,
+      items: [{ variantId: 'v', status: 'COMPLETED' }] });
+    const rows = [{ id: 'w', parentWorkflowRunId: null, workingArtifacts: [],
+      workingArtifactRevisions: [], effectTemplateMixAiRuns: [], nodeStates: [],
+      effectPackagingRuns: [batch('modern'), batch('legacy'), batch('complete', 'COMPLETED'),
+        batch('running', 'RUNNING')] }];
+    const findMany = vi.fn().mockResolvedValue([{ runId: 'modern' }]);
+    const repository = new WorkflowWorkingRepository({
+      workflowRun: { findMany: vi.fn().mockResolvedValue(rows) }, effectPackagingItem: { findMany },
+    } as unknown as PrismaService);
+    const result = await repository.listEffectRunBranches('project-a');
+    expect(findMany).toHaveBeenCalledWith({ where: { projectId: 'project-a',
+      runId: { in: ['modern', 'legacy'] }, status: 'COMPLETED',
+      snapshot: { path: ['operation'], equals: 'BATCH_PACKAGE' } },
+      select: { runId: true }, distinct: ['runId'] });
+    expect(result[0]?.effectPackagingRuns.map(b => b.operation))
+      .toEqual(['BATCH_PACKAGE', undefined, undefined, undefined]);
+    rows[0]!.effectPackagingRuns = [batch('complete', 'COMPLETED')];
+    findMany.mockClear();
+    await repository.listEffectRunBranches('project-a');
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
   it('loads mix drafts alongside confirmed artifacts for the project branch tree', async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const repository = new WorkflowWorkingRepository({
@@ -345,9 +401,9 @@ describe('WorkflowWorkingRepository', () => {
             select: { templateId: true, outputVariantId: true, idempotencyKey: true,
               status: true, inputSnapshot: true, selectionResult: true, completedAt: true },
           },
-          effectPackagingRuns: {
-            select: { templateId: true, status: true, idempotencyKey: true, completedAt: true },
-          },
+          effectPackagingRuns: expect.objectContaining({
+            select: expect.objectContaining({ templateId: true, status: true, idempotencyKey: true, completedAt: true }),
+          }),
         }),
       }),
     );

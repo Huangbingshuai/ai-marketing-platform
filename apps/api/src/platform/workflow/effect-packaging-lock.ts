@@ -7,7 +7,7 @@ export async function activePackagingItems(tx: Prisma.TransactionClient, project
   return tx.effectPackagingItem.findMany({ where: { projectId, status: { in: ['QUEUED', 'RUNNING'] },
     run: { status: { in: ['QUEUED', 'RUNNING'] }, OR: [{ workflowRunId },
       { workflowRun: { parentWorkflowRunId: workflowRunId, forkNodeId: 'TEMPLATE_MIX' } }] },
-  }, select: { variantId: true, snapshot: true, run: { select: { templateId: true } } } });
+  }, select: { variantId: true, snapshot: true, run: { select: { templateId: true, workflowRunId: true } } } });
 }
 
 /** Called under the node row lock also held by packaging creation/commit. */
@@ -16,6 +16,9 @@ export async function assertPackagingDraftEditable(tx: Prisma.TransactionClient,
   const previous = before as EffectTemplateMixDraft;
   const next = after as EffectTemplateMixDraft;
   for (const item of await activePackagingItems(tx, projectId, workflowRunId)) {
+    // Child repackage tasks freeze their own copy, never the editable parent baseline.
+    // Keep the wider parent/child lookup for task-creation overlap checks.
+    if (item.run.workflowRunId !== workflowRunId) continue;
     if (!(item.snapshot as unknown as PackagingSnapshot).operation) continue;
     const oldEntry = previous.templates.find((entry) => entry.id === item.run.templateId);
     const entry = next.templates.find((entry) => entry.id === item.run.templateId);

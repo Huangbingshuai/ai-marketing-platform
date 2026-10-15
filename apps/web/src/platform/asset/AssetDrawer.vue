@@ -9,12 +9,14 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   X,
 } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { isAbortError } from '../../api/http-client';
-import { createProject, listProjects } from '../project/api/project.api';
+import { listProjects } from '../project/api/project.api';
 import { useProjectContext } from '../project/project-context';
+import { presentProjectOperation } from '../project/project-operation-status';
 import { SPACE_LABELS, WORKFLOW_META, WORKFLOW_SPACES, projectMatchesSpace } from './asset-v4';
 import { formatAssetTime } from './project-asset-browser';
 import ProjectAssetBrowser from './components/ProjectAssetBrowser.vue';
@@ -25,30 +27,49 @@ const props = withDefaults(
     open: boolean;
     entryBusy?: boolean;
     entryError?: string;
+    suspended?: boolean;
+    deletingProjectIds?: readonly string[];
+    deletionError?: string;
+    refreshToken?: number;
+    workflowProjectIds?: Readonly<Partial<Record<AssetWorkflow, string>>>;
   }>(),
   {
     initialWorkflow: 'EFFECT',
     entryBusy: false,
     entryError: '',
+    suspended: false,
+    deletingProjectIds: () => [],
+    deletionError: '',
+    refreshToken: 0,
   },
 );
 const emit = defineEmits<{
   close: [];
+  createProject: [workflow: AssetWorkflow, space: AssetWorkflowSpace];
+  deleteProject: [project: Project];
+  deletionsChanged: [];
   resumeNode: [nodeId: string];
   enterProject: [projectId: string, workflow: AssetWorkflow, space: AssetWorkflowSpace];
 }>();
-const { currentProject, reload, selectProject } = useProjectContext();
+const { currentProject } = useProjectContext();
 const workflow = ref<AssetWorkflow>(props.initialWorkflow);
+const scopedProjectId = computed(
+  () => props.workflowProjectIds?.[workflow.value] ?? currentProject.value?.id,
+);
+const isBoundProject = (projectId: string): boolean =>
+  props.workflowProjectIds
+    ? Object.values(props.workflowProjectIds).includes(projectId)
+    : projectId === currentProject.value?.id;
 const space = ref<AssetWorkflowSpace>(WORKFLOW_SPACES[props.initialWorkflow][0]!);
 const projects = ref<Project[]>([]);
 const selectedProject = ref<Project | null>(null);
 const keyword = ref('');
 const loading = ref(false);
 const error = ref('');
-const creating = ref(false);
 const drawer = ref<HTMLElement | null>(null);
 let controller: AbortController | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let generation = 0;
 let trigger: HTMLElement | null = null;
 const matchingProjects = computed(() =>
@@ -61,74 +82,89 @@ const projectSpaces = computed(() =>
 );
 const projectSpaceLabel = (option: AssetWorkflowSpace): string =>
   option === 'FISSION_AVATAR' ? '数字人口播项目' : SPACE_LABELS[option];
-const projectStatus = (project: Project): string =>
-  project.status === 'COMPLETED' ? '已完成' : project.status === 'ACTIVE' ? '进行中' : '草稿';
+const submittingDeletion = (project: Project): boolean =>
+  props.deletingProjectIds.includes(project.id);
+const projectStatus = (project: Project) =>
+  submittingDeletion(project)
+    ? { label: '提交删除中', tone: 'deleting' }
+    : presentProjectOperation(project, scopedProjectId.value);
+const deleting = (project: Project): boolean =>
+  submittingDeletion(project) || Boolean(project.deletion && project.deletion.status !== 'FAILED');
+const canDelete = (project: Project): boolean => !isBoundProject(project.id) && !deleting(project);
+const deletionSignature = (items: Project[]): string =>
+  JSON.stringify(
+    items
+      .filter((item) => item.deletion)
+      .map((item) => [item.id, item.deletion?.status, item.deletion?.phase])
+      .sort(),
+  );
 
-async function loadProjects(): Promise<void> {
+function scheduleDeletionPoll(): void {
+  if (pollTimer) clearTimeout(pollTimer);
+  if (props.open && !selectedProject.value && projects.value.some(deleting)) {
+    pollTimer = setTimeout(() => void loadProjects(true), 2_500);
+  }
+}
+
+async function loadProjects(background = false): Promise<void> {
+  if (pollTimer) clearTimeout(pollTimer);
   controller?.abort();
   const request = new AbortController();
   controller = request;
   const stamp = ++generation;
   if (!props.open || selectedProject.value) return;
-  loading.value = true;
-  error.value = '';
-  projects.value = [];
+  const previousSignature = deletionSignature(projects.value);
+  if (!background) {
+    loading.value = true;
+    error.value = '';
+    projects.value = [];
+  }
   try {
     // Search always remains inside the selected workflow and business space.
     const response = await listProjects(
       { workflow: workflow.value, space: space.value, keyword: keyword.value.trim() },
       request.signal,
     );
-    if (!request.signal.aborted && stamp === generation) projects.value = response.data;
+    if (!request.signal.aborted && stamp === generation) {
+      projects.value = response.data;
+      if (deletionSignature(response.data) !== previousSignature) emit('deletionsChanged');
+    }
   } catch (cause) {
-    if (!request.signal.aborted && stamp === generation && !isAbortError(cause))
+    if (!background && !request.signal.aborted && stamp === generation && !isAbortError(cause))
       error.value = '项目列表加载失败，请稍后重试。';
   } finally {
-    if (!request.signal.aborted && stamp === generation) loading.value = false;
+    if (!request.signal.aborted && stamp === generation) {
+      loading.value = false;
+      scheduleDeletionPoll();
+    }
   }
 }
 function setWorkflow(next: AssetWorkflow): void {
-  if (creating.value || props.entryBusy || workflow.value === next) return;
+  if (props.entryBusy || props.suspended || workflow.value === next) return;
   workflow.value = next;
   space.value = WORKFLOW_SPACES[next][0]!;
   keyword.value = '';
   selectedProject.value = null;
 }
 function enterProject(project: Project): void {
+  if (props.entryBusy || props.suspended || submittingDeletion(project) || project.deletion) return;
   if (!projectMatchesSpace(project, space.value)) return;
   controller?.abort();
   generation += 1;
   selectedProject.value = project;
+  if (pollTimer) clearTimeout(pollTimer);
 }
 function backToProjects(): void {
   if (props.entryBusy) return;
   selectedProject.value = null;
   void loadProjects();
 }
-async function createContextProject(): Promise<void> {
-  if (creating.value) return;
-  creating.value = true;
-  error.value = '';
-  const scope = { workflow: workflow.value, space: space.value };
-  try {
-    const response = await createProject({
-      name: '未命名营销项目',
-      description: '等待补充项目资料',
-      client: '待填写客户',
-      productName: '待填写产品',
-      ...scope,
-    });
-    await reload();
-    selectProject(response.data.id);
-    enterProject(response.data);
-  } catch {
-    error.value = '创建项目失败，请稍后重试。';
-  } finally {
-    creating.value = false;
-  }
+function requestCreateProject(): void {
+  if (props.entryBusy || props.suspended) return;
+  emit('createProject', workflow.value, space.value);
 }
 function close(): void {
-  if (creating.value || props.entryBusy) return;
+  if (props.entryBusy || props.suspended) return;
   emit('close');
   void nextTick(() => trigger?.isConnected && trigger.focus());
 }
@@ -162,12 +198,20 @@ watch([workflow, space], () => {
 });
 watch(keyword, () => {
   controller?.abort();
+  if (pollTimer) clearTimeout(pollTimer);
   generation += 1;
   projects.value = [];
   loading.value = true;
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => void loadProjects(), 250);
 });
+watch(
+  () => props.refreshToken,
+  () => {
+    // A deletion acknowledgement must not interrupt another project or steal focus.
+    if (props.open && !selectedProject.value) void loadProjects(true);
+  },
+);
 watch(
   () => props.initialWorkflow,
   (next) => {
@@ -185,6 +229,7 @@ watch(
       controller?.abort();
       generation += 1;
       if (timer) clearTimeout(timer);
+      if (pollTimer) clearTimeout(pollTimer);
     }
   },
   { immediate: true },
@@ -192,13 +237,20 @@ watch(
 onBeforeUnmount(() => {
   controller?.abort();
   if (timer) clearTimeout(timer);
+  if (pollTimer) clearTimeout(pollTimer);
   generation += 1;
 });
 </script>
 
 <template>
   <Transition name="drawer-fade">
-    <div v-if="open" class="asset-overlay" @mousedown.self="close">
+    <div
+      v-if="open"
+      class="asset-overlay"
+      :inert="suspended"
+      :aria-hidden="suspended ? true : undefined"
+      @mousedown.self="close"
+    >
       <section
         ref="drawer"
         class="asset-drawer"
@@ -218,7 +270,7 @@ onBeforeUnmount(() => {
             type="button"
             class="icon-button"
             aria-label="关闭"
-            :disabled="creating || entryBusy"
+            :disabled="entryBusy || suspended"
             @click="close"
           >
             <X :size="19" />
@@ -234,7 +286,7 @@ onBeforeUnmount(() => {
                 type="button"
                 role="tab"
                 :aria-selected="workflow === key"
-                :disabled="creating || entryBusy"
+                :disabled="entryBusy || suspended"
                 @click="setWorkflow(key)"
               >
                 <span class="workflow-indicator" />{{ meta.label }}<ChevronRight :size="14" />
@@ -251,7 +303,7 @@ onBeforeUnmount(() => {
                 v-for="option in projectSpaces"
                 :key="option"
                 type="button"
-                :disabled="creating || entryBusy"
+                :disabled="entryBusy || suspended"
                 :aria-pressed="space === option"
                 @click="space = option"
               >
@@ -287,13 +339,13 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div v-if="selectedProject" class="project-entry-actions">
-                <span v-if="selectedProject.id === currentProject?.id" class="current-mark"
+                <span v-if="selectedProject.id === scopedProjectId" class="current-mark"
                   >当前项目</span
                 >
                 <button
                   type="button"
                   class="create-button"
-                  :disabled="creating || entryBusy"
+                  :disabled="entryBusy || suspended"
                   @click="emit('enterProject', selectedProject.id, workflow, space)"
                 >
                   <LoaderCircle v-if="entryBusy" class="spinner" :size="15" /><LogIn
@@ -307,18 +359,16 @@ onBeforeUnmount(() => {
                 v-if="!selectedProject"
                 type="button"
                 class="create-button"
-                :disabled="creating"
-                @click="createContextProject"
+                :disabled="entryBusy || suspended"
+                @click="requestCreateProject"
               >
-                <LoaderCircle v-if="creating" class="spinner" :size="15" /><Plus
-                  v-else
-                  :size="15"
-                />新建项目
+                <Plus :size="15" />新建项目
               </button>
             </header>
             <p v-if="entryError && selectedProject" class="project-entry-error" role="alert">
               {{ entryError }}
             </p>
+            <p v-if="deletionError" class="project-entry-error" role="alert">{{ deletionError }}</p>
             <ProjectAssetBrowser
               v-if="selectedProject"
               :key="`${selectedProject.id}:${workflow}:${space}`"
@@ -334,7 +384,7 @@ onBeforeUnmount(() => {
                   ><Search :size="16" /><input
                     v-model="keyword"
                     aria-label="搜索项目"
-                    placeholder="搜索项目名称、客户或产品" /><button
+                    placeholder="搜索项目名称或产品" /><button
                     v-if="keyword"
                     type="button"
                     aria-label="清空项目搜索"
@@ -346,8 +396,8 @@ onBeforeUnmount(() => {
                   type="button"
                   class="icon-button"
                   aria-label="刷新项目列表"
-                  :disabled="loading || creating"
-                  @click="loadProjects"
+                  :disabled="loading || entryBusy || suspended"
+                  @click="loadProjects()"
                 >
                   <RefreshCw :size="16" />
                 </button>
@@ -359,7 +409,7 @@ onBeforeUnmount(() => {
               <div v-else-if="error" class="library-state" role="alert">
                 <h4>项目暂时无法显示</h4>
                 <p>{{ error }}</p>
-                <button type="button" @click="loadProjects">重新加载</button>
+                <button type="button" @click="loadProjects()">重新加载</button>
               </div>
               <div v-else-if="!matchingProjects.length" class="library-state">
                 <Folder :size="32" />
@@ -370,35 +420,78 @@ onBeforeUnmount(() => {
               </div>
               <div v-else class="project-list">
                 <div class="project-columns" aria-hidden="true">
-                  <span>项目名称</span><span>产品 / 客户</span><span>状态</span><span>更新于</span
+                  <span>项目名称</span><span>产品信息</span><span>状态</span><span>更新于</span
                   ><span />
                 </div>
-                <button
+                <div
                   v-for="project in matchingProjects"
                   :key="project.id"
-                  type="button"
-                  class="project-row"
-                  @click="enterProject(project)"
+                  class="project-row-container"
                 >
-                  <span class="project-name"
-                    ><span class="folder-icon"><Folder :size="21" /></span
-                    ><span
-                      ><strong>{{ project.name }}</strong
-                      ><small
-                        v-if="project.description && project.description !== '等待补充项目资料'"
-                        >{{ project.description }}</small
-                      ></span
-                    ><i v-if="project.id === currentProject?.id">当前</i></span
-                  ><span class="project-client">{{
-                    [project.productName, project.client]
-                      .filter((value) => value && !value.startsWith('待填写'))
-                      .join(' / ') || '—'
-                  }}</span
-                  ><span class="project-status"
-                    ><i :class="project.status.toLowerCase()" />{{ projectStatus(project) }}</span
-                  ><span class="project-date">{{ formatAssetTime(project.updatedAt) }}</span
-                  ><ChevronRight :size="16" />
-                </button>
+                  <button
+                    type="button"
+                    class="project-row"
+                    :disabled="
+                      entryBusy ||
+                      suspended ||
+                      submittingDeletion(project) ||
+                      Boolean(project.deletion)
+                    "
+                    @click="enterProject(project)"
+                  >
+                    <span class="project-name"
+                      ><span class="folder-icon"><Folder :size="21" /></span
+                      ><span
+                        ><strong>{{ project.name }}</strong
+                        ><small v-if="project.deletion?.message" class="deletion-message">{{
+                          project.deletion.message
+                        }}</small
+                        ><small
+                          v-else-if="
+                            project.description && project.description !== '等待补充项目资料'
+                          "
+                          >{{ project.description }}</small
+                        ></span
+                      ><i v-if="project.id === scopedProjectId">当前</i></span
+                    ><span class="project-client">{{
+                      [project.productName, project.client]
+                        .filter((value) => value && !value.startsWith('待填写'))
+                        .join(' / ') || '—'
+                    }}</span
+                    ><span class="project-status"
+                      ><i :class="projectStatus(project).tone" />{{
+                        projectStatus(project).label
+                      }}</span
+                    ><span class="project-date">{{ formatAssetTime(project.updatedAt) }}</span
+                    ><ChevronRight :size="16" />
+                  </button>
+                  <button
+                    v-if="!isBoundProject(project.id)"
+                    type="button"
+                    class="delete-project-button"
+                    :aria-label="`删除项目“${project.name}”`"
+                    :disabled="entryBusy || suspended || !canDelete(project)"
+                    :title="
+                      submittingDeletion(project)
+                        ? '正在提交删除'
+                        : deleting(project)
+                          ? '项目正在后台删除'
+                          : '永久删除项目全部数据'
+                    "
+                    @click="canDelete(project) && emit('deleteProject', project)"
+                  >
+                    <LoaderCircle v-if="deleting(project)" class="spinner" :size="15" /><Trash2
+                      v-else
+                      :size="15"
+                    /><span>{{
+                      deleting(project)
+                        ? '删除中'
+                        : project.deletion?.status === 'FAILED'
+                          ? '重试'
+                          : '删除'
+                    }}</span>
+                  </button>
+                </div>
               </div>
             </section>
           </main>
@@ -695,6 +788,36 @@ input:focus-visible {
   padding: 0 28px 28px;
   min-height: 0;
 }
+.project-row-container {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 66px;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid #edf1f7;
+}
+.project-row-container .project-row {
+  flex: 1;
+  min-width: 0;
+  border-top: 0;
+}
+.delete-project-button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 8px;
+  border: 1px solid #f5d6d9;
+  border-radius: 5px;
+  background: #fff;
+  color: #c93645;
+}
+.delete-project-button:hover:not(:disabled) {
+  background: #fff1f2;
+  border-color: #eaa4ac;
+}
+.project-columns {
+  margin-right: 76px;
+}
 .project-columns,
 .project-row {
   display: grid;
@@ -790,6 +913,12 @@ input:focus-visible {
 .project-status i.active {
   background: #27a475;
 }
+.project-status i.deleting {
+  background: #d28b22;
+}
+.project-status i.failed {
+  background: #c93645;
+}
 .library-state {
   display: flex;
   flex: 1;
@@ -871,6 +1000,12 @@ input:focus-visible {
   }
 }
 @media (max-width: 760px) {
+  .project-row-container {
+    grid-template-columns: minmax(0, 1fr) 33px;
+  }
+  .delete-project-button span {
+    display: none;
+  }
   .asset-overlay {
     padding: 8px;
   }

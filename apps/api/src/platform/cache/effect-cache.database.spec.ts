@@ -160,7 +160,7 @@ it.skipIf(process.env.EFFECT_CACHE_DATABASE_TEST !== '1')(
       // Real Lua must reject a lease replaced while the loader was executing.
       const stamp = (await versions.read(scope, 'mix'))!;
       const varyHash = createHash('sha256')
-        .update(JSON.stringify([2, 'lease-race']))
+        .update(JSON.stringify([3, 'lease-race']))
         .digest('hex');
       const leaseKey = `${namespace}:${projectId}:EFFECT:${runId}:mix:${varyHash}:${stamp.version}`;
       expect(

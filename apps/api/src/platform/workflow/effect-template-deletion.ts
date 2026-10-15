@@ -36,30 +36,19 @@ export function templateDeletionRuns(
   runs: readonly Branch[],
   templateId: string,
   legacyRoots: ReadonlySet<string> = new Set(),
+  sharedOrForeignRuns: ReadonlySet<string> = new Set(),
 ): Set<string> {
-  const removed = new Set(
+  // A historical parent/child relationship is not business ownership. Old forks often
+  // have no forkTemplateId even when they start a different template's workflow.
+  // Keep unknown containers rather than cascading through them; cleanup detaches them.
+  return new Set(
     runs
       .filter(
         (run) =>
+          !sharedOrForeignRuns.has(run.id) &&
           ['TEMPLATE_MIX', 'FINAL_OUTPUT'].includes(run.forkNodeId ?? '') &&
           (run.forkTemplateId === templateId || (!run.forkTemplateId && legacyRoots.has(run.id))),
       )
       .map((run) => run.id),
   );
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const run of runs)
-      if (
-        !removed.has(run.id) &&
-        run.parentWorkflowRunId &&
-        removed.has(run.parentWorkflowRunId) &&
-        (!run.forkTemplateId || run.forkTemplateId === templateId) &&
-        ['TEMPLATE_MIX', 'FINAL_OUTPUT'].includes(run.forkNodeId ?? '')
-      ) {
-        removed.add(run.id);
-        changed = true;
-      }
-  }
-  return removed;
 }

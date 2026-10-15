@@ -36,8 +36,8 @@ describe('project binding context', () => {
     expect(resolveBoundProjectId([project], '', '')).toBe('');
     expect(resolveBoundProjectId([project], '', 'project-a')).toBe('project-a');
     expect(resolveBoundProjectId([project], '', 'missing-project')).toBe('');
-    expect(resolveBoundProjectId([project], '', 'project-a', 'CUSTOMIZED')).toBe('');
-    expect(resolveBoundProjectId([project], '', 'project-a', 'EFFECT')).toBe('project-a');
+    // workflowSpaces indexes existing content, not which workflows a project may enter.
+    expect(resolveBoundProjectId([project], 'project-a', '')).toBe('project-a');
   });
 
   it('keeps a separate remembered project id for every workflow', () => {
@@ -45,6 +45,23 @@ describe('project binding context', () => {
     expect(workflowProjectStorageKey('CUSTOMIZED')).toBe(
       'ai-marketing.current-project-id.customized',
     );
+  });
+  it('never restores a queued or failed deletion as the current project', () => {
+    for (const status of ['QUEUED', 'RUNNING', 'FAILED'] as const) {
+      expect(
+        resolveBoundProjectId(
+          [{ ...project, deletion: { status, phase: 'DATABASE' } }],
+          project.id,
+          project.id,
+        ),
+      ).toBe('');
+    }
+  });
+
+  it('preserves a current project before an older workflow-specific binding', () => {
+    const old = { ...project, id: 'old', name: '旧项目' };
+    expect(resolveBoundProjectId([project, old], project.id, old.id)).toBe(project.id);
+    expect(resolveBoundProjectId([project, old], '', project.id)).toBe(project.id);
   });
 
   it('distinguishes bound, unbound, empty, loading and error states', () => {

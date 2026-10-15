@@ -637,9 +637,6 @@ onBeforeUnmount(() => {
           <GitBranch :size="15" />版本树
         </button>
       </div>
-      <p v-if="browseVersion" class="asset-scope-path" :title="browseVersion.path">
-        {{ browseVersion.path }}
-      </p>
     </div>
     <div v-if="errors.length" class="load-alert" role="alert">
       <AlertTriangle :size="16" /><span>{{ errors.join(' ') }}</span
@@ -1129,13 +1126,6 @@ select:focus-visible {
   border-radius: 6px;
   background: #fff;
   font-size: 12px;
-}
-.asset-scope-path {
-  margin: 9px 0 0;
-  color: #72809a;
-  font-size: 11px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
 }
 @media (max-width: 700px) {
   .asset-scope-toolbar {

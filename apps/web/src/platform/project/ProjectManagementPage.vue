@@ -27,18 +27,16 @@ import AssetDrawer from '../asset/AssetDrawer.vue';
 import richiLogoColor from '../../assets/richi-logo-color.png';
 import EffectImportNodePage from '../../workflows/effect/source-import/EffectImportNodePage.vue';
 import CustomizedImportNodePage from '../../workflows/customized/source-import/CustomizedImportNodePage.vue';
-import { createProject, listProjects } from './api/project.api';
-import {
-  presentProjectBinding,
-  projectContextKey,
-  projectCreationScope,
-  resolveBoundProjectId,
-  workflowProjectStorageKey,
-} from './project-context';
+import { createProject, deleteProject, listProjects } from './api/project.api';
+import { requestActionConfirmation } from '../../shared/composables/action-confirmation';
+import { presentProjectBinding, projectContextKey, projectCreationScope } from './project-context';
 import { pauseWorkflowRun } from '../workflow/api/workflow-working.api';
 import { loadProjectListWithRetry } from './project-load-retry';
 import { enterLibraryProject } from './enter-library-project';
-import { projectMatchesSpace, projectMatchesWorkflow, WORKFLOW_SPACES } from '../asset/asset-v4';
+import { switchProjectWorkflow } from './project-workflow-switch';
+import { useWorkflowProjectBindings } from './project-workflow-bindings';
+import { useProjectDeletionRequests } from './project-deletion-requests';
+import { projectMatchesSpace, WORKFLOW_SPACES } from '../asset/asset-v4';
 import type { AssetWorkflowSpace } from '@ai-marketing/contracts';
 
 const assetDrawerOpen = ref(false);
@@ -47,10 +45,12 @@ const createBusy = ref(false);
 const createError = ref('');
 const createToast = ref('');
 const createForm = reactive({ name: '', description: '' });
+const createScope = ref(projectCreationScope('EFFECT'));
+const createFromLibrary = ref(false);
+let createReturnFocus: HTMLElement | null = null;
 const projects = ref<Project[]>([]);
 const projectsLoading = ref(true);
 const projectsError = ref('');
-const currentProjectId = ref('');
 const assetTrigger = ref<HTMLButtonElement | null>(null);
 const createTrigger = ref<HTMLButtonElement | null>(null);
 const createNameInput = ref<HTMLInputElement | null>(null);
@@ -65,18 +65,17 @@ const customizedNode = ref<{
   workflowRunId: string;
 } | null>(null);
 const workflowSwitchBusy = ref(false);
-const rememberWorkflowProject = (workflow: AssetWorkflow, projectId: string): void => {
-  const key = workflowProjectStorageKey(workflow);
-  if (projectId) localStorage.setItem(key, projectId);
-  else localStorage.removeItem(key);
-};
 const exitBusy = ref(false);
 const exitError = ref('');
 const projectEntryBusy = ref(false);
 const projectEntryError = ref('');
+const deletionRequests = useProjectDeletionRequests();
+const deletingProjectIds = deletionRequests.pendingIds;
+const deletionConfirming = ref(false);
+const deletionError = ref('');
+const projectListRevision = ref(0);
 let projectsController: AbortController | undefined;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-const CURRENT_PROJECT_STORAGE_KEY = 'ai-marketing.current-project-id';
 const WORKFLOW_NAV_ITEMS: ReadonlyArray<{
   description: string;
   label: string;
@@ -108,6 +107,8 @@ const activeWorkflow = ref<AssetWorkflow>(
     ? (savedWorkflow as AssetWorkflow)
     : 'EFFECT',
 );
+const projectBindings = useWorkflowProjectBindings(localStorage, activeWorkflow.value);
+const currentProjectId = computed(() => projectBindings.ids[activeWorkflow.value]);
 const activeNode = computed(() =>
   activeWorkflow.value === 'EFFECT'
     ? effectNode.value
@@ -115,9 +116,22 @@ const activeNode = computed(() =>
       ? customizedNode.value
       : null,
 );
+const activateWorkflow = async (workflow: AssetWorkflow): Promise<boolean> => {
+  if (workflow === activeWorkflow.value) return true;
+  const switched = await switchProjectWorkflow(workflow, {
+    flushPendingEdits: async () => activeNode.value?.flushPendingEdits(),
+    activateWorkflow: (next) => {
+      activeWorkflow.value = next;
+      localStorage.setItem('ai-marketing.current-workflow', next);
+    },
+  });
+  if (switched) await nextTick();
+  return switched;
+};
 const switchWorkflow = async (workflow: AssetWorkflow): Promise<void> => {
   if (
     workflowSwitchBusy.value ||
+    createBusy.value ||
     exitBusy.value ||
     projectEntryBusy.value ||
     workflow === activeWorkflow.value
@@ -125,35 +139,13 @@ const switchWorkflow = async (workflow: AssetWorkflow): Promise<void> => {
     return;
   workflowSwitchBusy.value = true;
   try {
-    let clearProjectBinding = false;
-    if (currentProject.value && !projectMatchesWorkflow(currentProject.value, workflow)) {
-      if ((await activeNode.value?.flushPendingEdits()) === false) {
-        showCreateToast('请先保存当前资料和所选文件，再切换工作流');
-        return;
-      }
-      rememberWorkflowProject(activeWorkflow.value, currentProject.value.id);
-      clearProjectBinding = true;
-    } else if ((await activeNode.value?.flushPendingEdits()) === false) {
+    const switched = await activateWorkflow(workflow);
+    if (!switched) {
       showCreateToast('请先保存当前资料和所选文件，再切换工作流');
       return;
     }
-    activeWorkflow.value = workflow;
-    localStorage.setItem('ai-marketing.current-workflow', workflow);
-    if (clearProjectBinding) selectProject('');
-    if (!currentProject.value) {
-      const savedWorkflowProjectId =
-        localStorage.getItem(workflowProjectStorageKey(workflow)) ?? '';
-      const savedWorkflowProject = projects.value.find(
-        (project) => project.id === savedWorkflowProjectId,
-      );
-      if (savedWorkflowProject && projectMatchesWorkflow(savedWorkflowProject, workflow)) {
-        selectProject(savedWorkflowProject.id, workflow);
-      } else if (!projectsLoading.value && savedWorkflowProjectId) {
-        rememberWorkflowProject(workflow, '');
-      }
-    } else {
-      rememberWorkflowProject(workflow, currentProject.value.id);
-    }
+  } catch {
+    showCreateToast('切换工作流前保存失败，请重试');
   } finally {
     workflowSwitchBusy.value = false;
   }
@@ -176,26 +168,32 @@ const projectBinding = computed(() =>
 
 const selectProject = (projectId: string, workflow = activeWorkflow.value): void => {
   if (!projectId) {
-    currentProjectId.value = '';
-    localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
+    projectBindings.select(workflow, '');
     return;
   }
-  if (!projects.value.some((project) => project.id === projectId)) return;
-  if (currentProjectId.value && currentProjectId.value !== projectId) {
+  if (
+    !projects.value.some(
+      (project) =>
+        project.id === projectId && !project.deletion && !deletionRequests.isPending(project.id),
+    )
+  )
+    return;
+  if (projectBindings.ids[workflow] && projectBindings.ids[workflow] !== projectId) {
     showCreateToast('请先退出当前项目，再切换到其他项目');
     return;
   }
-  currentProjectId.value = projectId;
-  localStorage.setItem(CURRENT_PROJECT_STORAGE_KEY, projectId);
-  rememberWorkflowProject(workflow, projectId);
+  projectBindings.select(workflow, projectId);
 };
 
-const loadProjects = async (): Promise<void> => {
+const loadProjects = async (background = false): Promise<void> => {
+  if (background && projectsLoading.value) return;
   projectsController?.abort();
   const controller = new AbortController();
   projectsController = controller;
-  projectsLoading.value = true;
-  projectsError.value = '';
+  if (!background) {
+    projectsLoading.value = true;
+    projectsError.value = '';
+  }
   try {
     const response = await loadProjectListWithRetry(
       (attemptSignal) => listProjects({}, attemptSignal),
@@ -203,29 +201,17 @@ const loadProjects = async (): Promise<void> => {
     );
     if (controller.signal.aborted) return;
     projects.value = response.data;
-    const scopedProjectId =
-      localStorage.getItem(workflowProjectStorageKey(activeWorkflow.value)) ?? '';
-    const legacyProjectId = localStorage.getItem(CURRENT_PROJECT_STORAGE_KEY) ?? '';
-    const preferred =
-      resolveBoundProjectId(
-        response.data,
-        currentProjectId.value,
-        scopedProjectId,
-        activeWorkflow.value,
-      ) || resolveBoundProjectId(response.data, '', legacyProjectId, activeWorkflow.value);
-    if (preferred) selectProject(preferred, activeWorkflow.value);
-    else {
-      currentProjectId.value = '';
-      localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
-      if (scopedProjectId) rememberWorkflowProject(activeWorkflow.value, '');
-    }
+    projectBindings.reconcile(response.data);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
-    projectsError.value = error instanceof Error ? error.message : '项目列表加载失败';
+    if (!background)
+      projectsError.value = error instanceof Error ? error.message : '项目列表加载失败';
   } finally {
     if (!controller.signal.aborted) projectsLoading.value = false;
   }
 };
+
+const refreshProjectsInBackground = (): Promise<void> => loadProjects(true);
 
 provide(projectContextKey, {
   currentProject: readonly(currentProject),
@@ -237,9 +223,76 @@ provide(projectContextKey, {
 });
 
 const closeAssetDrawer = (): void => {
+  if (deletionConfirming.value) return;
   assetDrawerOpen.value = false;
   projectEntryError.value = '';
+  deletionError.value = '';
   void nextTick(() => assetTrigger.value?.focus());
+};
+
+const removeProject = async (project: Project): Promise<void> => {
+  if (
+    projectBindings.isBound(project.id) ||
+    (project.deletion && project.deletion.status !== 'FAILED')
+  )
+    return;
+  if (
+    deletionRequests.isPending(project.id) ||
+    deletionConfirming.value ||
+    projectEntryBusy.value ||
+    exitBusy.value ||
+    createBusy.value
+  )
+    return;
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  deletionError.value = '';
+  deletionConfirming.value = true;
+  const confirmed = await requestActionConfirmation({
+    title: `删除项目“${project.name}”？`,
+    description:
+      '确认后将在后台永久删除该项目所有工作流的资料、草稿、历史版本、素材、生成任务和交付文件，无法恢复。提交后可以继续处理其他项目。',
+    confirmLabel: '永久删除',
+    tone: 'danger',
+  });
+  deletionConfirming.value = false;
+  if (!confirmed) {
+    await nextTick();
+    if (returnFocus?.isConnected) returnFocus.focus();
+    return;
+  }
+  if (projectBindings.isBound(project.id)) return;
+  try {
+    const response = await deletionRequests.submit(project.id, () =>
+      deleteProject(
+        project.id,
+        currentProjectId.value ? { currentProjectId: currentProjectId.value } : {},
+      ),
+    );
+    if (!response) return;
+    // Invalidate in-flight reads so an old active snapshot cannot reopen a queued project.
+    projectsController?.abort();
+    projectsLoading.value = false;
+    projects.value =
+      response.data.status === 'COMPLETED'
+        ? projects.value.filter((item) => item.id !== project.id)
+        : projects.value.map((item) =>
+            item.id === project.id
+              ? {
+                  ...item,
+                  deletion: {
+                    status: response.data.status as 'QUEUED' | 'RUNNING' | 'FAILED',
+                    phase: 'DATABASE' as const,
+                  },
+                }
+              : item,
+          );
+    projectListRevision.value += 1;
+    showCreateToast(
+      response.data.status === 'COMPLETED' ? '项目已删除' : '已提交后台删除，可以继续处理其他项目',
+    );
+  } catch (error) {
+    deletionError.value = `项目“${project.name}”：${error instanceof Error ? error.message : '删除提交失败，请稍后重试'}`;
+  }
 };
 
 const resumeWorkflowNode = async (nodeId: string): Promise<void> => {
@@ -249,7 +302,28 @@ const resumeWorkflowNode = async (nodeId: string): Promise<void> => {
   assetDrawerOpen.value = false;
 };
 
+const createWorkflowLabel = computed(
+  () => WORKFLOW_NAV_ITEMS.find((item) => item.value === createScope.value.workflow)?.label ?? '',
+);
 const openCreateModal = (): void => {
+  createScope.value = projectCreationScope(activeWorkflow.value);
+  createFromLibrary.value = false;
+  prepareCreateModal();
+};
+const openLibraryCreateModal = (workflow: AssetWorkflow, space: AssetWorkflowSpace): void => {
+  if (
+    createBusy.value ||
+    projectEntryBusy.value ||
+    exitBusy.value ||
+    !WORKFLOW_SPACES[workflow].includes(space)
+  )
+    return;
+  createScope.value = { workflow, space };
+  createFromLibrary.value = true;
+  prepareCreateModal();
+};
+const prepareCreateModal = (): void => {
+  createReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   createForm.name = '';
   createForm.description = '';
   createError.value = '';
@@ -260,7 +334,30 @@ const openCreateModal = (): void => {
 const closeCreateModal = (): void => {
   if (createBusy.value) return;
   createModalOpen.value = false;
-  void nextTick(() => createTrigger.value?.focus());
+  void nextTick(() => {
+    if (createReturnFocus?.isConnected) createReturnFocus.focus();
+    else createTrigger.value?.focus();
+  });
+};
+
+const keepCreateDialogFocus = (event: KeyboardEvent): void => {
+  if (event.key !== 'Tab') return;
+  const dialog = event.currentTarget as HTMLElement;
+  const controls = Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+    ),
+  ).filter((element) => element.getClientRects().length > 0);
+  const first = controls[0];
+  const last = controls.at(-1);
+  if (!first || !last) return;
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 };
 
 const showCreateToast = (message: string): void => {
@@ -271,7 +368,7 @@ const showCreateToast = (message: string): void => {
   }, 3000);
 };
 
-const exitProject = async (preserveWorkflowSelection = false): Promise<boolean> => {
+const exitProject = async (): Promise<boolean> => {
   const project = currentProject.value;
   if (exitBusy.value) return false;
   if (!project) return true;
@@ -283,9 +380,6 @@ const exitProject = async (preserveWorkflowSelection = false): Promise<boolean> 
       if (flushed === false) throw new Error('仍有编辑未能自动保存，请修复后重试退出');
       const workflowRunId = activeNode.value.workflowRunId;
       if (workflowRunId) await pauseWorkflowRun(project.id, workflowRunId);
-    }
-    if (project) {
-      rememberWorkflowProject(activeWorkflow.value, preserveWorkflowSelection ? project.id : '');
     }
     selectProject('');
     showCreateToast('草稿已自动保存并退出项目，未创建正式资产');
@@ -304,7 +398,8 @@ const enterAssetProject = async (
   workflow: AssetWorkflow,
   space: AssetWorkflowSpace,
 ): Promise<void> => {
-  if (projectEntryBusy.value || exitBusy.value || createBusy.value) return;
+  if (projectEntryBusy.value || exitBusy.value || createBusy.value || workflowSwitchBusy.value)
+    return;
   projectEntryBusy.value = true;
   projectEntryError.value = '';
   try {
@@ -312,25 +407,29 @@ const enterAssetProject = async (
     const target = projects.value.find((project) => project.id === projectId);
     if (
       !target ||
+      target.deletion ||
+      deletionRequests.isPending(projectId) ||
       !WORKFLOW_SPACES[workflow].includes(space) ||
       !projectMatchesSpace(target, space)
     ) {
       projectEntryError.value = '该项目已不可用或不属于所选工作流，请刷新项目列表。';
       return;
     }
+    if (!(await activateWorkflow(workflow))) {
+      projectEntryError.value = '当前草稿尚未保存，请处理后重试。';
+      return;
+    }
     const entered = await enterLibraryProject(projectId, {
       currentProjectId: () => currentProjectId.value,
-      leaveCurrent: () => exitProject(activeWorkflow.value !== workflow),
+      leaveCurrent: () => exitProject(),
+      flushCurrent: async () => (await activeNode.value?.flushPendingEdits()) !== false,
       selectProject: (id) => selectProject(id, workflow),
-      changingWorkflow: activeWorkflow.value !== workflow,
+      changingWorkflow: false,
     });
     if (!entered) {
       projectEntryError.value = exitError.value || '未能进入项目，请稍后重试。';
       return;
     }
-    activeWorkflow.value = workflow;
-    localStorage.setItem('ai-marketing.current-workflow', workflow);
-    rememberWorkflowProject(workflow, projectId);
     closeAssetDrawer();
   } catch {
     projectEntryError.value = '进入项目失败，请稍后重试。';
@@ -345,6 +444,7 @@ const handleProjectAction = (): void => {
 };
 
 const submitCreateProject = async (): Promise<void> => {
+  if (createBusy.value) return;
   const name = createForm.name.trim();
   if (!name) {
     createError.value = '请输入项目名称';
@@ -355,11 +455,20 @@ const submitCreateProject = async (): Promise<void> => {
   createError.value = '';
   const input: CreateProjectRequest = {
     name,
-    ...projectCreationScope(activeWorkflow.value),
+    ...createScope.value,
     ...(createForm.description.trim() ? { description: createForm.description.trim() } : {}),
   };
 
   try {
+    // Save the visible workflow, then replace only the target workflow's project binding.
+    if (!(await activateWorkflow(createScope.value.workflow!))) {
+      createError.value = '当前草稿尚未保存，请处理后重试';
+      return;
+    }
+    if (currentProject.value && !(await exitProject())) {
+      createError.value = exitError.value || '当前项目尚未保存，请处理后重试';
+      return;
+    }
     const response = await createProject(input);
     projects.value = [
       response.data,
@@ -368,6 +477,8 @@ const submitCreateProject = async (): Promise<void> => {
     selectProject(response.data.id);
     await loadProjects();
     createModalOpen.value = false;
+    if (createFromLibrary.value) closeAssetDrawer();
+    void nextTick(() => createTrigger.value?.focus());
     showCreateToast(`项目“${response.data.name}”创建成功`);
   } catch (error) {
     createError.value = error instanceof Error ? error.message : '创建项目失败，请稍后重试';
@@ -399,7 +510,7 @@ onBeforeUnmount(() => {
           :class="{ active: activeWorkflow === item.value }"
           type="button"
           :aria-pressed="activeWorkflow === item.value"
-          :disabled="projectEntryBusy || exitBusy || workflowSwitchBusy"
+          :disabled="projectEntryBusy || exitBusy || workflowSwitchBusy || createBusy"
           @click="switchWorkflow(item.value)"
         >
           {{ item.label }}
@@ -410,12 +521,18 @@ onBeforeUnmount(() => {
           ref="createTrigger"
           :class="currentProject ? 'exit-entry' : 'create-entry'"
           type="button"
-          :disabled="exitBusy || projectEntryBusy"
+          :disabled="exitBusy || projectEntryBusy || workflowSwitchBusy || createBusy"
           @click="handleProjectAction"
         >
           <LogOut v-if="currentProject" :size="15" />
           <Plus v-else :size="15" />
-          {{ currentProject ? (exitBusy ? '正在保存草稿…' : '退出项目') : '新建项目' }}
+          {{
+            currentProject
+              ? exitBusy || workflowSwitchBusy
+                ? '正在保存草稿…'
+                : '退出项目'
+              : '新建项目'
+          }}
         </button>
         <button
           ref="assetTrigger"
@@ -459,7 +576,7 @@ onBeforeUnmount(() => {
         >
           <Boxes :size="15" />前往项目资产库
         </button>
-        <button v-else-if="projectBinding.state === 'error'" type="button" @click="loadProjects">
+        <button v-else-if="projectBinding.state === 'error'" type="button" @click="loadProjects()">
           重新加载项目
         </button>
       </section>
@@ -483,9 +600,17 @@ onBeforeUnmount(() => {
       :initial-workflow="activeWorkflow"
       :entry-busy="projectEntryBusy"
       :entry-error="projectEntryError"
+      :suspended="createModalOpen || deletionConfirming"
+      :deleting-project-ids="deletingProjectIds"
+      :deletion-error="deletionError"
+      :refresh-token="projectListRevision"
+      :workflow-project-ids="projectBindings.ids"
       @close="closeAssetDrawer"
       @resume-node="resumeWorkflowNode"
       @enter-project="enterAssetProject"
+      @create-project="openLibraryCreateModal"
+      @delete-project="removeProject"
+      @deletions-changed="refreshProjectsInBackground"
     />
 
     <Transition name="modal-fade">
@@ -495,15 +620,14 @@ onBeforeUnmount(() => {
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-project-title"
-          @keydown.esc="closeCreateModal"
+          @keydown.esc.stop="closeCreateModal"
+          @keydown="keepCreateDialogFocus"
         >
           <header class="create-modal-head">
             <div>
               <p>通用基础能力</p>
               <h2 id="create-project-title">新建项目</h2>
-              <span
-                >创建后将自动设为当前项目，并归入{{ activeWorkflowMeta.label }}项目资产库。</span
-              >
+              <span>创建后将自动设为当前项目，并归入{{ createWorkflowLabel }}项目资产库。</span>
             </div>
             <button
               class="modal-close"
@@ -835,7 +959,7 @@ main {
 }
 .create-overlay {
   position: fixed;
-  z-index: 120;
+  z-index: 220;
   inset: 0;
   display: grid;
   padding: 20px;
