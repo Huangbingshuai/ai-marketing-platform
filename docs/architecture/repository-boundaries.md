@@ -6,12 +6,12 @@
 
 ## 运行单元
 
-| 运行单元        | 目录                      | 职责                           |
-| --------------- | ------------------------- | ------------------------------ |
-| Web             | `apps/web`                | 页面、交互状态、调用 API       |
-| API             | `apps/api`                | 业务规则、数据库、创建异步任务 |
-| Seedance Worker | `workers/seedance-worker` | 调用和轮询 Seedance            |
-| Media Worker    | `workers/media-worker`    | FFmpeg、媒体探测和合成         |
+| 运行单元        | 目录                            | 职责                                 |
+| --------------- | ------------------------------- | ------------------------------------ |
+| Web             | `apps/web`                      | 页面、交互状态、调用 API             |
+| API             | `apps/api`                      | 业务规则、数据库、创建异步任务       |
+| 片段渲染 Worker | `workers/effect-segment-render` | 效果类素材渲染、返修及 Seedance 轮询 |
+| Media Worker    | `workers/media-worker`          | FFmpeg、媒体探测和合成               |
 
 ## 前后端协作规则
 

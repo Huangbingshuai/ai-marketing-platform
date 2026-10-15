@@ -116,6 +116,15 @@ docker compose --profile customized-assets --profile customized-production ps cu
 
 受控测试与启动边界见[资产 Worker](../../workers/customized-assets/README.md)、[视频制作 Worker](../../workers/customized-production/README.md)。素材交付后端尚未实现，暂不启动空消费者。资产图片和视频渲染尚未接通。
 
+## 效果类片段渲染 Worker
+
+```powershell
+docker compose --profile effect-segment-render build effect-segment-render-worker
+docker compose --profile effect-segment-render up -d effect-segment-render-worker
+```
+
+代码目录为 `workers/effect-segment-render`，Python 包为 `effect_segment_render`，入口命令为 `effect-segment-render-worker`。从旧服务迁移时，须在没有活动渲染/返修任务时先停止原 `seedance-worker` 容器；新服务不会自动替换旧容器，不得同时运行两个消费者叠加供应商额度。队列、Token 及 `SEEDANCE_*` / `SEGMENT_RENDER_*` 配置保持不变。无付费验证和运行边界见[片段渲染 Worker](../../workers/effect-segment-render/README.md)。
+
 ## 常规验证
 
 API 的 `dev` 脚本先运行 `apps/api/scripts/dev-api.mjs`。该入口按工作区持有进程互斥，重复启动会复用现有服务；Windows 进程退出时内核释放互斥。请经上述 pnpm 入口启动，不再直接运行 `nest start --watch`。迁移前直接启动的 Nest watcher 会被检查并提示 PID，入口不会自动终止它。停止开发入口会结束它启动的 Nest 与运行进程。
