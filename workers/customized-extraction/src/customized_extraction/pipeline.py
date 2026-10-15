@@ -15,6 +15,7 @@ from .documents import (
     restore_docx_form_linebreaks,
 )
 from .provider import Provider
+from .activity import SemanticActivity
 from .quality import (
     AuditValidationError,
     audit_document,
@@ -108,6 +109,7 @@ class Pipeline:
         self.chunk_chars = chunk_chars
         self.current_node = NODES[0]
         self.progress = 0
+        self.activity: SemanticActivity | None = None
 
     async def heartbeat(self) -> None:
         while True:
@@ -243,6 +245,10 @@ class Pipeline:
 
         async def progress(doc: dict[str, Any]) -> None:
             done.add(doc["assetId"])
+            if self.activity:
+                await self.activity.counter("RAW_AUDIT", "DOCUMENT")(
+                    len(done), len(self.input["documents"])
+                )
             self.progress = 64 + int(12 * len(done) / len(self.input["documents"]))
             await self.api.call(
                 "PUT",
@@ -252,6 +258,8 @@ class Pipeline:
 
         async def one(doc: dict[str, Any]) -> tuple[AuditReport, int]:
             async with self.semaphore:
+                audit_progress: dict[str, Any] = {}
+                progress_lock = asyncio.Lock()
                 try:
                     parsed = (
                         await self.api.content(doc["assetId"], parsed=True)
@@ -286,6 +294,13 @@ class Pipeline:
                     document_candidate = Candidate.model_validate(
                         self.checkpoints[("DOCUMENT_EXTRACT", doc["assetId"])]
                     )
+                    async def chunk_progress(completed: int, total: int) -> None:
+                        async with progress_lock:
+                            audit_progress["auditProgress"] = {"completed": completed, "total": total}
+                            await self.checkpoint(
+                                "SEMANTIC_REFINEMENT", doc["assetId"], dict(audit_progress), "RUNNING"
+                            )
+
                     report, count = await audit_document(
                         self.provider,
                         self.model_semaphore,
@@ -294,11 +309,12 @@ class Pipeline:
                         document_candidate,
                         candidate,
                         self.chunk_chars,
+                        chunk_progress,
                     )
                     await self.checkpoint(
                         "SEMANTIC_REFINEMENT",
                         doc["assetId"],
-                        {"auditReport": report.model_dump(), "chunkCount": count},
+                        {"auditReport": report.model_dump(), "chunkCount": count, **audit_progress},
                     )
                     await progress(doc)
                     return report, count
@@ -310,7 +326,7 @@ class Pipeline:
                             error,
                         )
                     await self.checkpoint(
-                        "SEMANTIC_REFINEMENT", doc["assetId"], {}, "FAILED"
+                        "SEMANTIC_REFINEMENT", doc["assetId"], audit_progress, "FAILED"
                     )
                     raise
 
@@ -318,7 +334,10 @@ class Pipeline:
             *(one(doc) for doc in self.input["documents"]), return_exceptions=True
         )
         if any(isinstance(value, BaseException) for value in values):
-            await self.checkpoint("SEMANTIC_REFINEMENT", "", {}, "PARTIAL")
+            if self.activity:
+                await self.activity.fail("PARTIAL")
+            else:
+                await self.checkpoint("SEMANTIC_REFINEMENT", "", {}, "PARTIAL")
             raise PartialFailure("one or more raw document audits failed")
         audited = [
             (report, count)
@@ -363,8 +382,14 @@ class Pipeline:
             validate_provenance(fused, self.input["documents"])
             await self.checkpoint(node, "", fused.model_dump())
         elif node == "SEMANTIC_REFINEMENT":
+            async def save_activity(output: dict[str, Any], status: str) -> None:
+                await self.checkpoint(node, "", output, status)
+
+            self.activity = activity = SemanticActivity(save_activity)
+            await activity.counter("RAW_AUDIT", "DOCUMENT")(0, len(self.input["documents"]))
             candidate = Candidate.model_validate(self.checkpoints[("FUSION", "")])
             reports, chunk_count, document_count = await self.audit_documents(candidate)
+            await activity.set("RAW_AUDIT", "SUCCEEDED")
             audit = AuditReport(
                 checkedFields=reports[0].checkedFields if reports else [],
                 findings=[finding for report in reports for finding in report.findings],
@@ -373,6 +398,7 @@ class Pipeline:
             context_fields = {f.field for f in audit.findings} | {
                 i.field for i in candidate.issues
             }
+            await activity.set("EVIDENCE_RECHECK", "RUNNING" if context_fields else "SKIPPED")
             context = (
                 await collect_repair_context(
                     self.provider,
@@ -391,10 +417,14 @@ class Pipeline:
                     audit,
                     self.chunk_chars,
                     cast(list[BriefField], [issue.field for issue in candidate.issues]),
+                    activity.counter("EVIDENCE_RECHECK", "CHUNK"),
                 )
                 if audit.findings or candidate.issues
                 else []
             )
+            if context_fields:
+                await activity.set("EVIDENCE_RECHECK", "SUCCEEDED")
+            await activity.set("TARGETED_REPAIR", "RUNNING" if audit.findings else "SKIPPED")
             candidate = await repair_candidate(
                 self.provider,
                 self.model_semaphore,
@@ -404,10 +434,14 @@ class Pipeline:
                 self.input["documents"],
                 context,
             )
+            if audit.findings:
+                await activity.set("TARGETED_REPAIR", "SUCCEEDED")
             self.progress = 78
             await self.api.call(
                 "PUT", "progress", {"progress": self.progress, "nodeId": node}
             )
+            has_facts = any(candidate.fields.model_dump().values())
+            await activity.set("FINAL_REVIEW", "RUNNING" if has_facts else "SKIPPED")
             review = (
                 await review_candidate(
                     self.provider,
@@ -423,7 +457,7 @@ class Pipeline:
                     },
                     candidate,
                 )
-                if any(candidate.fields.model_dump().values())
+                if has_facts
                 else Review(issues=[])
             )
             # Only explicit AI decisions can clear false positives; omission keeps conflicts.
@@ -440,7 +474,10 @@ class Pipeline:
             }
             issues.update({i.id: i for i in review.issues})
             candidate.issues = list(issues.values())
+            if has_facts:
+                await activity.set("FINAL_REVIEW", "SUCCEEDED")
             new_issue_fields = {i.field for i in candidate.issues} - context_fields
+            await activity.set("CONFLICT_EVIDENCE", "RUNNING" if new_issue_fields else "SKIPPED")
             if new_issue_fields:
                 context.extend(
                     await collect_repair_context(
@@ -462,8 +499,11 @@ class Pipeline:
                         AuditReport(checkedFields=[], findings=[]),
                         self.chunk_chars,
                         cast(list[BriefField], sorted(new_issue_fields)),
+                        activity.counter("CONFLICT_EVIDENCE", "CHUNK"),
                     )
                 )
+                await activity.set("CONFLICT_EVIDENCE", "SUCCEEDED")
+            await activity.set("CONFLICT_COMPLETION", "RUNNING" if candidate.issues else "SKIPPED")
             candidate = await complete_conflict_alternatives(
                 self.provider,
                 self.model_semaphore,
@@ -473,13 +513,17 @@ class Pipeline:
                     for doc in self.input["documents"]
                 ],
                 context,
+                activity.counter("CONFLICT_COMPLETION", "ISSUE") if candidate.issues else None,
             )
             validate_provenance(candidate, self.input["documents"])
+            if candidate.issues:
+                await activity.set("CONFLICT_COMPLETION", "SUCCEEDED")
             await self.checkpoint(
                 node,
                 "",
                 {
                     **candidate.model_dump(),
+                    "activity": activity.snapshot(),
                     "auditSummary": {
                         "schemaVersion": 1,
                         "documentCount": document_count,
@@ -525,7 +569,10 @@ class Pipeline:
                             node_id,
                             error,
                         )
-                    await self.checkpoint(node_id, "", {}, "FAILED")
+                    if node_id == "SEMANTIC_REFINEMENT" and self.activity:
+                        await self.activity.fail("FAILED")
+                    else:
+                        await self.checkpoint(node_id, "", {}, "FAILED")
                     raise
                 finally:
                     logging.info(

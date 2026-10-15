@@ -6,6 +6,17 @@ import type {
   EffectTemplateMixMaterial,
 } from './effect-template-mix';
 
+/** captionFontSize uses logical pixels on a 360px-high canvas, not output pixels. */
+export const PACKAGING_CAPTION_REFERENCE_HEIGHT = 360;
+
+export function packagingCaptionFontPixels(size: number | undefined, canvasHeight: number): number {
+  const logicalSize = typeof size === 'number' && Number.isFinite(size)
+    ? Math.max(8, Math.min(48, size)) : 16;
+  const height = Number.isFinite(canvasHeight) && canvasHeight > 0
+    ? canvasHeight : PACKAGING_CAPTION_REFERENCE_HEIGHT;
+  return logicalSize * height / PACKAGING_CAPTION_REFERENCE_HEIGHT;
+}
+
 export const PACKAGING_STAGES = [
   'SNAPSHOT',
   'VISION',
@@ -164,7 +175,7 @@ export type PackagingCaptionBox = {
 };
 export type UpdatePackagingAudioRequest = {
   expectedUpdatedAt: string;
-  /** One font size in CSS pixels shared by every subtitle on the packaged timeline. */
+  /** Shared logical font size on a 360px-high canvas, applied to every subtitle. */
   captionFontSize?: number;
   /** Keyed by script line id. */
   voices?: Record<string, PackagingAudioEdit>;
@@ -253,7 +264,7 @@ export type PackagingCheckpoint = {
   voices?: Record<string, PackagingAudio>;
   music?: PackagingAudio;
   captions?: EffectTemplateMixCaption[];
-  /** Global subtitle font size in CSS pixels; historical checkpoints default to 16. */
+  /** Logical font size on a 360px-high canvas; historical checkpoints default to 16. */
   captionFontSize?: number;
   /** Editor-authored caption geometry, keyed by caption id. Untouched by component redos. */
   captionBoxes?: Record<string, PackagingCaptionBox>;

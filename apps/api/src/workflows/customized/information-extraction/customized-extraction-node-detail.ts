@@ -1,6 +1,7 @@
 import {
   CUSTOMIZED_BRIEF_LABELS,
   CUSTOMIZED_EXTRACTION_NODES,
+  CUSTOMIZED_SEMANTIC_ACTIVITY_LABELS,
   CUSTOMIZED_IMAGE_USAGE_LABELS,
   isCustomizedBrief,
   type CustomizedBriefCandidate,
@@ -276,11 +277,88 @@ export function presentCustomizedNodeDetail(
   }
 
   if (nodeId === 'SEMANTIC_REFINEMENT') {
+    const activity = record(record(aggregate?.output).activity);
+    const activitySteps =
+      activity.schemaVersion === 1 && Array.isArray(activity.steps)
+        ? activity.steps.map(record)
+        : [];
+    const unitLabels = { DOCUMENT: '份文档', CHUNK: '个片段', ISSUE: '条差异' } as const;
+    const processingDescriptions: Record<string, string> = {
+      RAW_AUDIT: '逐份对照原文检查全部填写项，核对遗漏、错误归属和实质矛盾。',
+      EVIDENCE_RECHECK: '重读所有文档中相关字段的原文依据，核对互补信息与适用条件。',
+      TARGETED_REPAIR: '结合审校建议与原文依据修正相关信息，保留未涉及的事实和卖点。',
+      FINAL_REVIEW: '核对修正后的事实、品牌约束及每条已有差异，等待模型返回核对结果。',
+      CONFLICT_EVIDENCE: '为最终核对中新发现的差异字段补充原文依据。',
+      CONFLICT_COMPLETION: '逐条整理差异的完整候选内容，保留各候选共有的事实。',
+    };
+    const skipReasons: Record<string, string> = {
+      EVIDENCE_RECHECK: '没有需要复核的审校建议或既有资料差异。',
+      TARGETED_REPAIR: '原文审校未提出需修正的问题。',
+      FINAL_REVIEW: '资料未提供可核对的填写内容。',
+      CONFLICT_EVIDENCE: '最终核对未新增需要补充依据的差异字段。',
+      CONFLICT_COMPLETION: '没有待整理的资料差异。',
+    };
+    const countText = (raw: Record<string, unknown>) => {
+      const unit = unitLabels[raw.unit as keyof typeof unitLabels];
+      return unit &&
+        Number.isSafeInteger(raw.completed) &&
+        Number.isSafeInteger(raw.total) &&
+        (raw.completed as number) >= 0 &&
+        (raw.total as number) > 0 &&
+        (raw.completed as number) <= (raw.total as number)
+        ? `已完成 ${raw.completed} / ${raw.total} ${unit}`
+        : null;
+    };
+    const processSources = Object.entries(CUSTOMIZED_SEMANTIC_ACTIVITY_LABELS).flatMap(
+      ([id, label]) => {
+        const current = activitySteps.find((s) => s.id === id);
+        if (
+          !current ||
+          !['PENDING', 'RUNNING', 'SUCCEEDED', 'SKIPPED', 'FAILED'].includes(String(current.status))
+        )
+          return [];
+        const count = countText(current);
+        return [
+          {
+            name: label,
+            status: current.status as ExtractionNodeDetail['status'],
+            fields: [
+              field(
+                'activity',
+                '处理情况',
+                count ??
+                  (
+                    {
+                      PENDING: '等待前序处理完成',
+                      RUNNING: '正在处理，请稍候',
+                      SUCCEEDED: '处理完成',
+                      SKIPPED: '本次无需执行',
+                      FAILED: '处理未完成，已完成记录保留',
+                    } as Record<string, string>
+                  )[String(current.status)]!,
+              ),
+              ...(current.status === 'RUNNING'
+                ? [field('processing', '处理内容', processingDescriptions[id]!)]
+                : current.status === 'SKIPPED' && skipReasons[id]
+                  ? [field('reason', '无需执行的原因', skipReasons[id]!)]
+                  : []),
+            ],
+            warnings: [],
+          },
+        ];
+      },
+    );
+    const active = processSources.find((s) => s.status === 'RUNNING');
+    if (active) detail.fields.push(field('currentWork', '当前处理', active.name));
+    if (processSources.length) detail.sources.push(...processSources);
     const audits = input.documents.flatMap((doc) => {
       const s = task.steps.find((s) => s.nodeId === nodeId && s.sourceId === doc.assetId);
-      if (!s || !['SUCCEEDED', 'FAILED', 'RUNNING', 'SKIPPED'].includes(s.status)) return [];
-      const output = record(s.output);
-      const report = s.status === 'SUCCEEDED' ? record(output.auditReport) : {};
+      if (!s && execution.status === 'SUCCEEDED') return [];
+      const status = s?.status ?? 'PENDING';
+      if (!['PENDING', 'SUCCEEDED', 'FAILED', 'RUNNING', 'SKIPPED'].includes(status)) return [];
+      const output = record(s?.output);
+      const report = status === 'SUCCEEDED' ? record(output.auditReport) : {};
+      const auditProgress = countText({ ...record(output.auditProgress), unit: 'CHUNK' });
       const checked = Array.isArray(report.checkedFields)
         ? keys.filter((key) => (report.checkedFields as unknown[]).includes(key))
         : [];
@@ -288,9 +366,10 @@ export function presentCustomizedNodeDetail(
       return [
         {
           name: `${name(doc.name)} · 原文审校`,
-          status: s.status as ExtractionNodeDetail['status'],
+          status: status as ExtractionNodeDetail['status'],
           fields: [
             field('version', '文件版本', doc.assetVersion),
+            ...(auditProgress ? [field('auditProgress', '原文片段审校', auditProgress)] : []),
             ...(checked.length
               ? [
                   field(
@@ -324,21 +403,31 @@ export function presentCustomizedNodeDetail(
                 field(`proposal-${i}`, '审校建议', text(finding.proposedValue)),
               ];
             }),
-            ...(s.status === 'SUCCEEDED' && checked.length && !findings.length
+            ...(status === 'SUCCEEDED' && checked.length && !findings.length
               ? [field('findings', '审校结果', '未发现需修正的问题')]
               : []),
-            ...(s.status === 'SKIPPED'
+            ...(status === 'SKIPPED'
               ? [field('skipped', '审校结果', '空白模板不包含填写内容，已跳过')]
               : []),
           ],
           warnings:
-            s.status === 'FAILED'
+            status === 'FAILED'
               ? ['原文审校未完成，不能将本次提炼确认为版本；成功文档的审校记录已保留。']
               : [],
         },
       ];
     });
     detail.sources.push(...audits);
+    if (!result) {
+      detail.summary = active
+        ? `正在${active.name}，下方处理状态随后台执行自动更新。`
+        : execution.status === 'RUNNING'
+          ? '正在核对文档事实与品牌约束，文档审校记录随后台执行自动更新。'
+          : execution.status === 'PENDING'
+            ? '等待前序步骤完成，尚未开始语义精炼。'
+            : '语义精炼未完整完成，以下保留实际处理进展和成功的审校记录。';
+      return detail;
+    }
     const summary = record(record(aggregate?.output).auditSummary);
     if (aggregate?.status === 'SUCCEEDED' && summary.schemaVersion === 1) {
       for (const [key, label] of [

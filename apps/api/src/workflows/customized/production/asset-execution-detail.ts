@@ -96,16 +96,71 @@ export function assetExecutionDetail(
   );
   for (const a of inventory) names.set(text(a.id), text(a.name));
   const objectName = (id: unknown) => names.get(text(id)) || '相关对象';
+  const briefLabels: Record<string, string> = {
+    brandName: '品牌名称',
+    projectName: '项目名称',
+    projectBackground: '项目背景',
+    brandTone: '品牌调性',
+    visualConsistencyRules: '视觉统一规则',
+    avoidedElements: '画面禁用元素',
+    productName: '产品名称',
+    productDescription: '产品介绍',
+    productSpecifications: '产品规格',
+    productAppearance: '产品外观',
+    sellingPoints: '核心卖点',
+    targetAudience: '目标受众',
+  };
+  const businessText = (value: string): string => {
+    let display = value;
+    for (const [id, name] of [...names].sort((a, b) => b[0].length - a[0].length))
+      if (id) display = display.split(id).join(name);
+    return display
+      .replace(
+        /BRIEF\s+\/([A-Za-z]+)(?:\/\d+)?/g,
+        (_, field: string) => `信息卡「${briefLabels[field] ?? '相关资料'}」`,
+      )
+      .replace(
+        /SCRIPT\s+\/story\/beats\/(\d+)(?:\/[A-Za-z]+)?/g,
+        (_, index: string) => `脚本「叙事段落 ${Number(index) + 1}」`,
+      )
+      .replace(/SCRIPT\s+\/story\/content/g, '脚本「故事正文」')
+      .replace(/\bBRIEF\b/g, '信息卡')
+      .replace(/\bSCRIPT\b/g, '脚本')
+      .replace(
+        /(?:preparation\.)?details\.([A-Za-z]+)/g,
+        (_, field: string) => ASSET_FIELD_LABELS[field] ?? '分类特征',
+      )
+      .replace(/\bpreparation\.details\b/g, '分类特征')
+      .replace(
+        /\b(knownFacts|designNotes|imageRequirements|preparation)\b/g,
+        (field) => ASSET_FIELD_LABELS[field] ?? '分类定义',
+      )
+      .replace(/\bREQUIRED\b/g, '需修正')
+      .replace(/\bSUGGESTION\b/g, '优化建议')
+      .replace(/\bquestions\b/g, '待确认事项')
+      .replace(/\basset-(?:\.{3}|…)-\d+\b/g, '相关对象')
+      .replace(/\basset-\d+\b/g, '相关对象');
+  };
   const result = (
     title: string,
     summary: string,
     sections: Section[],
     emptyMessage?: string,
   ): ProductionExecutionDetail => ({
-    title,
-    summary,
-    sections: sections.filter((s) => s.fields.length),
-    ...(emptyMessage ? { emptyMessage } : {}),
+    title: businessText(title),
+    summary: businessText(summary),
+    sections: sections
+      .filter((s) => s.fields.length)
+      .map((s) => ({
+        ...s,
+        title: businessText(s.title),
+        fields: s.fields.map((f) => ({
+          ...f,
+          label: businessText(f.label),
+          value: businessText(f.value),
+        })),
+      })),
+    ...(emptyMessage ? { emptyMessage: businessText(emptyMessage) } : {}),
   });
   const waiting =
     step.status === 'FAILED'

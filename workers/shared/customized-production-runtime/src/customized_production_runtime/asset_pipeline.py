@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import copy
+import logging
 from typing import Any
 from .api import Api
 from .provider import Provider
@@ -103,6 +104,30 @@ def validate_definitions(assets: list[dict[str, Any]], inventory: list[dict[str,
             raise ValueError('invalid category field')
         check_evidence(prep['sources'], index, a['kind'])
 
+
+def definition_schema(objects: list[dict[str, Any]]) -> type[Definitions]:
+    """Constrain generation to this batch, rather than the contextual catalog."""
+    class ScopedDefinitions(Definitions):
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            schema = super().model_json_schema(*args, **kwargs)
+            item = schema['$defs']['AssetDefinition']['properties']
+            item['id']['enum'] = [a['id'] for a in objects]
+            item['kind']['enum'] = sorted({a['kind'] for a in objects})
+            schema['properties']['assets'].update(minItems=len(objects), maxItems=len(objects))
+            return schema
+    return ScopedDefinitions
+
+
+def scope_definitions(candidates: list[dict[str, Any]], batch: list[dict[str, Any]], inventory: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recover exact batch identities from older overbroad responses; never guess IDs."""
+    expected = {a['id'] for a in batch}
+    known = {a['id'] for a in inventory}
+    ids = [a['id'] for a in candidates]
+    if len(ids) != len(set(ids)) or not set(ids) <= known or not expected <= set(ids):
+        raise ValueError('definition changed inventory identities')
+    return [a for a in candidates if a['id'] in expected]
+
 def validate_audit(audit: dict[str, Any], assets: list[dict[str, Any]]) -> None:
     AssetAudit.model_validate(audit)
     ids = {a['id'] for a in assets}
@@ -171,12 +196,17 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
     lock = asyncio.Lock()
     semaphore = asyncio.Semaphore(2)
     stored.setdefault('batches', {})
+    stored.setdefault('definitionCandidates', {})
+    stored.setdefault('definitionCorrections', {})
     instruction = ('为指定objects生成分类定义，精确保留id、kind、treatment、parentId，不新增或遗漏对象。'
         'preparation包含aliases、usage、来源sources、分类details、待确认questions和按需图片images。'
         'PRODUCT的details只用structure/material/markings；CHARACTER只用appearance/styling；SCENE只用layout/lighting；PROP只用appearance/material。'
         '公共外观与事实分开，产品事实只以BRIEF为准，结构位置未知时写待确认，允许创作的内容放designNotes；人物、场景可按故事合理设计。'
+        '人物、场景和普通道具的未指定视觉细节允许给出一套明确且统一的设计方案，写入designNotes、details和图片要求；不能写成资料已确认事实，不要并列多套互斥选项。'
+        '场景与配套道具不得反向确定未知产品事实：若插脚、接口、连接件、容器等制式或适配规格未提供，相关插座、线材或安装位置只写与已确认部分匹配，具体制式待确认，不擅自指定国别标准、孔型或兼容性。'
+        '人物styling只写实际可见的服饰配饰；只有手部出镜时无需设计全身服装，不把动作节奏写成服装。'
         '每条关键事实引用sources中的准确path与连续quote，产品description/knownFacts/结构材质标识仅引用BRIEF。'
-        'questions写具体问题和对制作的影响；不足以确定的产品结构不要自行补全。'
+        'questions仅记录影响产品真实结构、身份或明确品牌限制的关键资料缺口；可合理设计的墙面颜色、人物造型和普通道具材质自行设计，不反复要求用户确认，不询问分镜动作时长。不足以确定的产品结构不要自行补全。'
         'images列出实际需要的图片及用途，陈设通常并入所属场景，不强迫每个对象单独生图；软件按界面与状态制作，不套三视图。'
         '保护protectedDefinitions中的人工内容；旧AI描述不是事实来源。不要生成图片或声称看过图片。')
 
@@ -192,11 +222,39 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
             if key in stored['batches']:
                 validate_definitions(stored['batches'][key], batch, snapshot)
                 continue
-            async with semaphore:
-                result = await provider.generate('ASSET_DEFINE_'+kind, snapshot['models']['detail'], Definitions,
-                    {**context, 'objects': batch, 'catalog': [{'id': a['id'], 'name': a['name'], 'kind': a['kind']} for a in inventory]}, instruction)
-            assets = preserve_manual(result.model_dump()['assets'], snapshot)
-            validate_definitions(assets, batch, snapshot)
+            batch_context = {**context, 'objects': batch, 'catalog': [{'id': a['id'], 'name': a['name'], 'kind': a['kind']} for a in inventory]}
+            schema = definition_schema(batch)
+            if key not in stored['definitionCandidates']:
+                async with semaphore:
+                    result = await provider.generate('ASSET_DEFINE_'+kind, snapshot['models']['detail'], schema,
+                        batch_context, instruction)
+                async with lock:
+                    stored['definitionCandidates'][key] = result.model_dump()['assets']
+                    await checkpoint(kind, 'RUNNING', KIND_NAMES[kind]+'定义待核对', '正在校验对象归属和原文引用，候选内容尚未采用。')
+            try:
+                assets = preserve_manual(scope_definitions(stored['definitionCandidates'][key], batch, inventory), snapshot)
+                validate_definitions(assets, batch, snapshot)
+            except ValueError as error:
+                # These fixed codes contain no document text or provider response.
+                safe_errors = {'asset evidence required', 'asset evidence quote not found', 'product fact must cite brief',
+                    'definition changed inventory identities', 'definition changed category',
+                    'definition changed inclusion relationship', 'invalid category field'}
+                reason = str(error) if str(error) in safe_errors else 'invalid definition schema'
+                logging.warning('Asset definition validation kind=%s reason=%s', kind, reason)
+                if key in stored['definitionCorrections']:
+                    async with lock:
+                        await checkpoint(kind, 'FAILED', KIND_NAMES[kind]+'定义需要核对', '对象定义或资料引用未通过校验，已保留候选内容和其他分类结果。')
+                    raise
+                async with semaphore:
+                    corrected = await provider.generate('ASSET_VALIDATE_'+kind, snapshot['models']['detail'], schema,
+                        {**batch_context, 'candidate': stored['definitionCandidates'][key], 'validationError': reason},
+                        instruction+'\n仅修正validationError指出的结构或原文引用错误，保留其他内容。quote必须是对应source/path原文中的连续逐字片段，不能合并或改写原句；产品事实引用只能来自BRIEF，故事用途引用请标usage。不要补造依据或删除有效对象。')
+                async with lock:
+                    stored['definitionCorrections'][key] = reason
+                    stored['definitionCandidates'][key] = corrected.model_dump()['assets']
+                    await checkpoint(kind, 'RUNNING', KIND_NAMES[kind]+'引用核对', '已核对引用与对象结构，正在重新校验。')
+                assets = preserve_manual(scope_definitions(stored['definitionCandidates'][key], batch, inventory), snapshot)
+                validate_definitions(assets, batch, snapshot)
             async with lock:
                 stored['batches'][key] = assets
                 completed = [a for k, values in stored['batches'].items() if k.startswith(kind+':') for a in values]
@@ -217,6 +275,9 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
     audit_instruction = ('独立核对资产与完整脚本和BRIEF。检查必要对象遗漏、重复身份、产品事实及结构断言、分类特征、空间关系、未知信息、来源语义与图片需求。'
         '每个问题必须定位assetId和允许修改的字段，basis说明原文依据。必要修正标REQUIRED，一般优化标SUGGESTION。'
         '缺少资料但已明确待确认不是必须返修；合理人物场景设计不是产品事实错误。不要要求凭空补产品细节。'
+        '明确区分资料事实与美术设计：knownFacts只能写原文已明确的内容；非产品对象的designNotes、分类details及图片要求允许确定墙面颜色、人物造型、普通道具材质等美术方案，无需原文逐项规定。不得仅因原文未规定这些设计就标REQUIRED，也不要求所有设计均待确认；产品未知结构仍不能补造。'
+        '同一实质问题若影响多个字段，本次一次列全需要修改的字段；复核不应将已经允许的场景设计重新判成产品事实错误。'
+        '跨对象设定若间接确定了未知产品结构、插脚/接口制式或兼容性，首次审校即为REQUIRED，不能只列优化建议后在复核升级。每个assetId+field只列一条，合并该字段内的全部问题。'
         '发现遗漏时定位最相关对象preparation字段并说明缺失对象；遗漏动作必需的独立对象仍属于必须修正的问题，不能用待确认说明掩盖。受保护字段存在冲突应指出，不允许自动重写。')
     if steps['REVIEW']['status'] != 'SUCCEEDED':
         await checkpoint('REVIEW', 'RUNNING', '全局独立审校', '正在核对实际对象、事实依据和制作要求')
@@ -252,7 +313,7 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
             assets = stored['revised']
             if 'recheck' not in stored:
                 audit = await provider.generate('ASSET_RECHECK', snapshot['models']['creative'], AssetAudit,
-                    {**context, 'assets': assets, 'previousFindings': required}, '核查原问题是否解决，复核修订后的完整目录。'+audit_instruction)
+                    {**context, 'assets': assets, 'previousFindings': stored['audit']['findings']}, '核查原问题是否解决，复核修订后的完整目录。对照首次审校全部结论，解释确有新依据的问题；不能仅因未修改原建议就将其升级为必须修改。'+audit_instruction)
                 stored['recheck'] = audit.model_dump()
                 validate_audit(stored['recheck'], assets)
                 await checkpoint('REPAIR', 'RUNNING', '复核结论', stored.get('repairChanges', '')+'\n\n'+audit.summary+'\n'+'\n'.join(f.issue for f in audit.findings))

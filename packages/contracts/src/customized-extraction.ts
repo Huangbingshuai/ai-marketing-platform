@@ -103,6 +103,26 @@ export type CustomizedExtractionAuditSummary = {
   findingCount: number;
   correctedFields: CustomizedBriefField[];
 };
+/** Observable worker checkpoints, not model reasoning or a second execution graph. */
+export const CUSTOMIZED_SEMANTIC_ACTIVITY_LABELS = {
+  RAW_AUDIT: '原文逐项审校',
+  EVIDENCE_RECHECK: '复核原文依据',
+  TARGETED_REPAIR: '修正提炼信息',
+  FINAL_REVIEW: '最终语义核对',
+  CONFLICT_EVIDENCE: '补充差异依据',
+  CONFLICT_COMPLETION: '完善差异候选',
+} as const;
+export type CustomizedSemanticActivity = {
+  schemaVersion: 1;
+  steps: {
+    id: keyof typeof CUSTOMIZED_SEMANTIC_ACTIVITY_LABELS;
+    status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'SKIPPED' | 'FAILED';
+    completed?: number;
+    total?: number;
+    unit?: 'DOCUMENT' | 'CHUNK' | 'ISSUE';
+  }[];
+};
+export type CustomizedAuditProgress = { completed: number; total: number };
 export type CustomizedExtractionTaskStatus =
   'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED';
 export type CustomizedExtractionTask = {

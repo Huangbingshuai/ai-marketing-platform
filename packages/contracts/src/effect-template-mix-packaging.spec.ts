@@ -18,9 +18,33 @@ import {
   packagingTimelineClips,
   packagingTimelineDuration,
   packagingPictureOnlyVariant,
+  packagingCaptionFontPixels,
+  PACKAGING_CAPTION_REFERENCE_HEIGHT,
 } from './effect-template-mix-packaging';
 import type { EffectTemplateMixVariant } from './effect-template-mix';
 import type { PackagingCheckpoint } from './effect-template-mix-packaging';
+
+describe('caption canvas sizing', () => {
+  it('keeps the reference size and historical default stable', () => {
+    expect(PACKAGING_CAPTION_REFERENCE_HEIGHT).toBe(360);
+    expect(packagingCaptionFontPixels(undefined, 360)).toBe(16);
+    expect(packagingCaptionFontPixels(Number.NaN, 360)).toBe(16);
+    expect(packagingCaptionFontPixels(16, 0)).toBe(16);
+    expect(packagingCaptionFontPixels(16, Number.NaN)).toBe(16);
+  });
+  it.each([180, 360, 480, 720, 960, 1080, 1280, 1440, 2160, 3840])(
+    'preserves relative subtitle height on a %ipx canvas', (height) => {
+      expect(packagingCaptionFontPixels(undefined, height) / height).toBeCloseTo(16 / 360);
+      expect(packagingCaptionFontPixels(24, height) / height).toBeCloseTo(24 / 360);
+      expect(packagingCaptionFontPixels(1, height) / height).toBeCloseTo(8 / 360);
+      expect(packagingCaptionFontPixels(100, height) / height).toBeCloseTo(48 / 360);
+    },
+  );
+  it('does not cap a valid high-resolution font at 48 output pixels', () => {
+    expect(packagingCaptionFontPixels(16, 2160)).toBe(96);
+    expect(packagingCaptionFontPixels(24, 960)).toBe(64);
+  });
+});
 
 describe('fresh packaging picture-only projection', () => {
   it('removes every non-video track without mutating the baseline or collapsing gaps and tails', () => {

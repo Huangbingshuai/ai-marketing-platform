@@ -1,0 +1,297 @@
+{
+  "$defs": {
+    "AssetDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "PRODUCT",
+            "CHARACTER",
+            "SCENE",
+            "PROP"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        },
+        "knownFacts": {
+          "maxLength": 20000,
+          "title": "Knownfacts",
+          "type": "string"
+        },
+        "designNotes": {
+          "maxLength": 20000,
+          "title": "Designnotes",
+          "type": "string"
+        },
+        "sourceText": {
+          "maxLength": 20000,
+          "title": "Sourcetext",
+          "type": "string"
+        },
+        "imageRequirements": {
+          "maxLength": 20000,
+          "title": "Imagerequirements",
+          "type": "string"
+        },
+        "preparation": {
+          "$ref": "#/$defs/Preparation"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "description",
+        "knownFacts",
+        "designNotes",
+        "sourceText",
+        "imageRequirements",
+        "preparation"
+      ],
+      "title": "AssetDefinition",
+      "type": "object"
+    },
+    "Detail": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "enum": [
+            "structure",
+            "material",
+            "markings",
+            "appearance",
+            "styling",
+            "layout",
+            "lighting"
+          ],
+          "title": "Key",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 20000,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "Detail",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "enum": [
+            "BRIEF",
+            "SCRIPT"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "quote": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Quote",
+          "type": "string"
+        },
+        "field": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "path",
+        "quote",
+        "field"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "ImageNeed": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "purpose": {
+          "maxLength": 20000,
+          "title": "Purpose",
+          "type": "string"
+        },
+        "requirements": {
+          "maxLength": 20000,
+          "title": "Requirements",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "purpose",
+        "requirements"
+      ],
+      "title": "ImageNeed",
+      "type": "object"
+    },
+    "Preparation": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "usage": {
+          "maxLength": 20000,
+          "title": "Usage",
+          "type": "string"
+        },
+        "treatment": {
+          "enum": [
+            "INDEPENDENT",
+            "SCENE_DETAIL",
+            "CHARACTER_DETAIL"
+          ],
+          "title": "Treatment",
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parentid"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        },
+        "details": {
+          "items": {
+            "$ref": "#/$defs/Detail"
+          },
+          "maxItems": 7,
+          "title": "Details",
+          "type": "array"
+        },
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/Question"
+          },
+          "maxItems": 100,
+          "title": "Questions",
+          "type": "array"
+        },
+        "images": {
+          "items": {
+            "$ref": "#/$defs/ImageNeed"
+          },
+          "maxItems": 30,
+          "title": "Images",
+          "type": "array"
+        }
+      },
+      "required": [
+        "aliases",
+        "usage",
+        "treatment",
+        "parentId",
+        "sources",
+        "details",
+        "questions",
+        "images"
+      ],
+      "title": "Preparation",
+      "type": "object"
+    },
+    "Question": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 20000,
+          "title": "Question",
+          "type": "string"
+        },
+        "impact": {
+          "maxLength": 20000,
+          "title": "Impact",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "question",
+        "impact"
+      ],
+      "title": "Question",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/AssetDefinition"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Assets",
+      "type": "array"
+    }
+  },
+  "required": [
+    "assets"
+  ],
+  "title": "Definitions",
+  "type": "object"
+}

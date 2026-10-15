@@ -24,6 +24,7 @@ import {
   cancelCustomizedEdit,
 } from '../../../platform/workflow/customized-branches';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { readCustomizedExtractionResult } from '../../../platform/workflow/customized-inherited-extraction';
 import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 
 const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -191,9 +192,13 @@ export class CustomizedExtractionRepository {
     return this.db.$transaction(async (tx) => {
       const run = await this.scope(tx, projectId, workflowRunId);
       const input = await this.input(tx, projectId, workflowRunId, false);
-      const result = await tx.customizedExtractionResult.findUnique({
-        where: { projectId_workflowRunId: { projectId, workflowRunId } },
-      });
+      const resolved = await readCustomizedExtractionResult(
+        tx,
+        projectId,
+        workflowRunId,
+        input?.source.fingerprint,
+      );
+      const result = resolved?.record;
       const localTask = await tx.customizedExtractionTask.findFirst({
         where: { projectId, workflowRunId },
         orderBy: { createdAt: 'desc' },
@@ -201,7 +206,7 @@ export class CustomizedExtractionRepository {
       });
       const task =
         localTask ??
-        (result
+        (result && resolved?.evidenceMatches
           ? await tx.customizedExtractionTask.findFirst({
               where: { projectId, id: result.taskId },
               include: { steps: true },
@@ -234,10 +239,11 @@ export class CustomizedExtractionRepository {
         task: task ? presentTask(task) : null,
         committed: Boolean(artifact),
         stale: Boolean(
+          (artifact && !input) ||
           input?.documentsAvailable === false ||
           // A newly generated draft may be fresh while the previously confirmed
           // artifact is still stale. Confirmation is what replaces that artifact.
-          (result
+          (result && !resolved?.inherited
             ? result.sourceFingerprint !== input?.source.fingerprint
             : artifact?.freshness === 'STALE'),
         ),

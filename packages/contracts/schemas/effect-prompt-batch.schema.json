@@ -151,32 +151,32 @@
       "properties": {
         "narrative": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 120
         },
         "scene": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 120
         },
         "persona": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 160
         },
         "productRelation": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 240
         },
         "camera": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 160
         },
         "emotion": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 120
         }
       }
@@ -223,6 +223,19 @@
             "properties": {
               "targetDurationSeconds": {
                 "maximum": 15
+              },
+              "creativeCore": {
+                "minLength": 1
+              },
+              "dimensions": {
+                "properties": {
+                  "narrative": { "minLength": 1 },
+                  "scene": { "minLength": 1 },
+                  "persona": { "minLength": 1 },
+                  "productRelation": { "minLength": 1 },
+                  "camera": { "minLength": 1 },
+                  "emotion": { "minLength": 1 }
+                }
               }
             }
           }
@@ -290,7 +303,7 @@
         },
         "creativeCore": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 160
         },
         "dimensions": {

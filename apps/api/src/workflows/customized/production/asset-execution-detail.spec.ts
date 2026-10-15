@@ -157,3 +157,40 @@ it('distinguishes waiting/partial/empty results and preserves legacy review and 
     ),
   ).toBeUndefined();
 });
+
+it('renders model-written IDs, source paths and field names as readable business references', () => {
+  const value = JSON.stringify(
+    detail('REVIEW', 'SUCCEEDED', {
+      ...output,
+      audit: {
+        summary: `${product.id}：依据BRIEF检查，asset-...-5保留questions。`,
+        findings: [
+          {
+            assetId: product.id,
+            field: 'preparation',
+            severity: 'REQUIRED',
+            issue: 'preparation.details.markings与knownFacts需要同步，asset-4需核对。',
+            basis: 'BRIEF /productAppearance与SCRIPT /story/beats/1、SCRIPT /story/content。',
+          },
+        ],
+      },
+    }),
+  );
+  expect(value).toContain('弧电G65');
+  expect(value).toContain('信息卡「产品外观」');
+  expect(value).toContain('脚本「叙事段落 2」');
+  expect(value).toContain('脚本「故事正文」');
+  for (const hidden of [
+    product.id,
+    'BRIEF',
+    'SCRIPT',
+    '/productAppearance',
+    'preparation.details',
+    'knownFacts',
+    'asset-4',
+    'asset-...-5',
+    'questions',
+  ])
+    expect(value).not.toContain(hidden);
+  expect(output.audit.summary).toBe('插脚位置缺少资料依据，需要修正。');
+});

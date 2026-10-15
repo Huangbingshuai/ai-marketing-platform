@@ -10,6 +10,7 @@ import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { pollAsyncTask } from '../../../platform/workflow/poll-async-task';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import { extractionApi } from './customized-extraction.api';
+import { createLiveNodeDetail } from './live-node-detail';
 import CustomizedInfoExtractionNodePage from './CustomizedInfoExtractionNodePage.vue';
 import WorkflowExtractionFeedback from '../../../platform/workflow/components/WorkflowExtractionFeedback.vue';
 import {
@@ -39,8 +40,26 @@ const selectedNode = ref<string | null>(null),
   detail = ref<ExtractionNodeDetail | null>(null),
   detailLoading = ref(false),
   detailError = ref('');
-let controller = new AbortController(),
-  detailController: AbortController | null = null;
+let controller = new AbortController();
+const liveDetail = createLiveNodeDetail({
+  load: async (selection, signal) =>
+    (await extractionApi.detail(selection.projectId, selection.taskId, selection.nodeId, signal))
+      .data,
+  reset: () => {
+    detail.value = null;
+    detailError.value = '';
+  },
+  loading: (value) => {
+    detailLoading.value = value;
+  },
+  publish: (value) => {
+    detail.value = value;
+    detailError.value = '';
+  },
+  error: (error) => {
+    detailError.value = errorText(error);
+  },
+});
 let disposed = false,
   dirty = false,
   conflict = false,
@@ -57,6 +76,7 @@ async function recover() {
 }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : '操作未完成，请重试');
 function apply(data: CustomizedExtractionWorkspace) {
+  if (workspace.value?.task?.id !== data.task?.id) closeGraph();
   workspace.value = data;
   const task = data.task;
   view.value = {
@@ -136,6 +156,7 @@ async function monitor(taskId: string, current: AbortController) {
               '等待提炼服务接单',
             error: task.errorMessage ?? '',
           };
+          void liveDetail.refresh(task.id);
         },
       },
     );
@@ -323,40 +344,25 @@ async function save() {
   }
 }
 function closeGraph() {
-  detailController?.abort();
-  detailLoading.value = false;
+  liveDetail.cancel();
+  selectedNode.value = null;
 }
 async function selectNode(nodeId: string) {
-  detailController?.abort();
-  const current = new AbortController();
-  detailController = current;
   selectedNode.value = nodeId;
-  detail.value = null;
-  detailError.value = '';
   if (!workspace.value?.task) return;
-  detailLoading.value = true;
-  try {
-    const response = await extractionApi.detail(
-      props.projectId,
-      workspace.value.task.id,
-      nodeId,
-      current.signal,
-    );
-    if (detailController === current && !current.signal.aborted && !disposed)
-      detail.value = response.data;
-  } catch (e) {
-    if (!isAbortError(e) && detailController === current && !current.signal.aborted && !disposed)
-      detailError.value = errorText(e);
-  } finally {
-    if (detailController === current) detailLoading.value = false;
-  }
+  await liveDetail.select({
+    projectId: props.projectId,
+    workflowRunId: props.workflowRunId,
+    taskId: workspace.value.task.id,
+    nodeId,
+  });
 }
 watch(
   () => [props.projectId, props.workflowRunId],
   async () => {
     controller.abort();
     monitorController?.abort();
-    detailController?.abort();
+    liveDetail.cancel();
     controller = new AbortController();
     clearTimeout(saveTimer);
     workspace.value = null;
@@ -381,7 +387,7 @@ watch(
 onBeforeUnmount(() => {
   disposed = true;
   controller.abort();
-  detailController?.abort();
+  liveDetail.cancel();
   clearTimeout(saveTimer);
 });
 defineExpose({ flushPendingEdits: flush });

@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Assetid",
+          "type": "string"
+        },
+        "field": {
+          "enum": [
+            "name",
+            "description",
+            "knownFacts",
+            "designNotes",
+            "sourceText",
+            "imageRequirements",
+            "preparation"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "issue": {
+          "maxLength": 20000,
+          "title": "Issue",
+          "type": "string"
+        },
+        "basis": {
+          "maxLength": 20000,
+          "title": "Basis",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "REQUIRED",
+            "SUGGESTION"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetId",
+        "field",
+        "issue",
+        "basis",
+        "severity"
+      ],
+      "title": "Finding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "maxItems": 1000,
+      "title": "Findings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary",
+    "findings"
+  ],
+  "title": "AssetAudit",
+  "type": "object"
+}

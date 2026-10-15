@@ -584,6 +584,8 @@ export type GetEffectPromptResultData = {
   /** Read-only candidates recovered from a failed run; never a committed short batch. */
   isPartialPreview: boolean;
   previewRunId: string | null;
+  /** Full-batch source counts, independent of filters and pagination. */
+  sourceCounts?: Record<EffectPromptItemOrigin, number> | undefined;
   result: Omit<EffectPromptBatchResult, 'items'>;
   items: EffectPromptItem[];
   total: number;
@@ -598,6 +600,7 @@ export type GetEffectPromptResultQuery = {
   query?: string | undefined;
   purpose?: EffectPromptFragmentType | undefined;
   purposeMatch?: EffectPromptPurposeMatchMode | undefined;
+  origin?: EffectPromptItemOrigin | undefined;
 };
 
 export type StartEffectPromptRunRequest = {
@@ -847,13 +850,11 @@ export type UpsertEffectPromptItemRequest = Pick<
   'content' | 'targetDurationSeconds'
 > & {
   primaryPurpose?: EffectPromptFragmentType;
+  compatiblePurposes?: EffectPromptFragmentType[];
   creativeCore?: string;
-  dimensions?: EffectPromptDimensions;
+  /** Optional user notes; each dimension can be supplied independently. */
+  dimensions?: Partial<EffectPromptDimensions>;
   expectedRevision: number;
-  /** Internal compatibility flag: save the Prompt and queue asynchronous creative-structure autofill. */
-  evaluateAfterSave?: boolean;
-  expectedSettingsRevision?: number;
-  idempotencyKey?: string;
 };
 
 export type UpdateEffectPromptSharedPromptRequest = {
@@ -871,8 +872,6 @@ export type UpdateEffectPromptResultData = {
   affectedItemId?: string;
   /** Zero-based position in the unfiltered display order after the mutation. */
   affectedItemIndex?: number;
-  evaluationRun?: EffectPromptRun;
-  evaluationStartError?: string;
 };
 
 export type ApplyEffectPromptRegenerationRequest = {

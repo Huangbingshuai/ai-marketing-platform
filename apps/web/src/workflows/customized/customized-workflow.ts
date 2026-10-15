@@ -17,7 +17,7 @@ export const customizedWorkflowNodes = [
     label: '脚本创作',
     status: '待接入',
     title: '脚本创作',
-    description: '围绕已确认简报创作多个完整故事，选定脚本后准备资产',
+    description: '围绕已确认简报创作多个完整脚本，选定脚本后准备资产',
   },
   {
     label: '资产准备',

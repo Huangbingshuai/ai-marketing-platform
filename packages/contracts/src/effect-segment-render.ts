@@ -25,6 +25,37 @@ export type EffectSegmentRenderSettings = {
   capabilityKey: EffectPromptRenderCapabilityKey;
 };
 
+/** Per-Prompt settings only; never changes the saved defaults. */
+export type EffectSegmentRenderPromptSettings = {
+  promptId: string;
+  settings: EffectSegmentRenderSettings;
+};
+
+export type EffectSegmentRenderPromptInput = {
+  promptId: string;
+  promptCode: string;
+  /** Confirmed upstream text for read-only review; not a render override. */
+  promptText?: string;
+  durationSeconds: number;
+  origin: 'AI' | 'MANUAL';
+};
+
+export function effectPromptRenderSettingsIssues(
+  settings: EffectSegmentRenderSettings,
+  input: Pick<EffectSegmentRenderPromptInput, 'durationSeconds' | 'origin'>,
+): string[] {
+  const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[settings.capabilityKey];
+  if (!capability) return ['请选择可用的视频模型'];
+  const maximum = input.origin === 'MANUAL' && settings.capabilityKey === 'SEEDANCE_1_5_PRO'
+    ? 30 : capability.maxDurationSeconds;
+  const issues: string[] = [];
+  if (!Number.isInteger(input.durationSeconds) || input.durationSeconds < capability.minDurationSeconds || input.durationSeconds > maximum)
+    issues.push(`该模型支持 ${capability.minDurationSeconds}～${maximum} 秒，当前提示词为 ${input.durationSeconds} 秒`);
+  if (!capability.resolutions.includes(settings.resolution)) issues.push(`该模型不支持 ${settings.resolution} 分辨率`);
+  if (!capability.ratios.includes(settings.ratio)) issues.push('该模型不支持所选画幅');
+  return issues;
+}
+
 export const DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS: EffectSegmentRenderSettings = {
   ratio: '9:16',
   resolution: '720p',
@@ -401,6 +432,10 @@ export type EffectSegmentRenderTask = EffectSegmentImportCreativeMetadata & {
   source: 'PROMPT';
   origin: EffectSegmentRenderOrigin;
   independentImport?: boolean;
+  /** Aspect ratio of the active media, for example `9:16`. */
+  mediaAspectRatio?: string;
+  /** Resolution of the active media, for example `720p` or `4k`. */
+  mediaResolution?: string;
   /** Short-side pixels of the active media, not the originally imported file after regeneration. */
   mediaShortSidePixels?: number;
   sourceName: string;
@@ -444,6 +479,15 @@ export type EffectSegmentRenderBatch = {
   refreshSignature?: string;
   /** New frozen local updates may be saved even if newer Prompt differences remain. */
   canSaveFrozenResults?: boolean;
+  /** This isolated local update commits automatically after complete validation. */
+  autoCommitPending?: boolean;
+  /** Actual generation tasks in the latest operation; excludes unchanged clips and free updates. */
+  progressTaskIds?: string[];
+  /** Free operations already completed atomically in this update, separate from generation. */
+  progressSynchronizedCount?: number;
+  progressRemovedCount?: number;
+  /** Original branch which has already adopted this isolated edit's results. */
+  committedWorkflowRunId?: string;
   /** Current confirmed upstream head, separate from the actual consumed sourcePrompt. */
   latestPromptRevision?: number | null;
   latestPromptCount?: number;
@@ -465,6 +509,7 @@ export type GetEffectSegmentRenderWorkspaceData = {
   promptArtifactRevision: number | null;
   settings: EffectSegmentRenderSettings;
   settingsRevision: number | null;
+  promptRenderInputs?: EffectSegmentRenderPromptInput[];
   batch: EffectSegmentRenderBatch | null;
 };
 
@@ -487,6 +532,7 @@ export type StartEffectSegmentRenderBatchRequest = {
   expectedPromptArtifactRevision: number;
   expectedSettingsRevision: number;
   idempotencyKey: string;
+  promptSettings?: EffectSegmentRenderPromptSettings[];
 };
 
 export type StartEffectSegmentRenderBatchData = {
@@ -502,6 +548,7 @@ export type RefreshEffectSegmentRenderBatchRequest = {
   expectedPromptArtifactRevision: number;
   expectedDifferenceSignature?: string;
   idempotencyKey: string;
+  promptSettings?: EffectSegmentRenderPromptSettings[];
   /** Defaults belong to the displayed workspace, which may inherit an ancestor batch. */
   settingsContext?: {
     workflowRunId: string;

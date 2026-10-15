@@ -18,6 +18,7 @@ from .models import (
 )
 from .provider import Provider
 from extraction_runtime.documents import split_document_markdown
+from .activity import Progress
 
 Validator = Callable[[Candidate, list[dict[str, Any]]], None]
 
@@ -97,11 +98,20 @@ async def collect_repair_context(
     report: AuditReport,
     chunk_chars: int,
     additional_fields: list[BriefField] | None = None,
+    on_progress: Progress | None = None,
 ) -> list[dict[str, Any]]:
     """Read every source chunk for affected fields, including evidence the critic overlooked."""
     fields = sorted({f.field for f in report.findings} | set(additional_fields or []))
     if not fields:
         return []
+    chunks = [
+        (doc, index, chunk)
+        for doc, text in documents
+        for index, chunk in enumerate(split_document_markdown(text, max_chars=chunk_chars))
+    ]
+    done: set[tuple[str, int]] = set()
+    if on_progress:
+        await on_progress(0, len(chunks))
 
     async def read(doc: dict[str, Any], index: int, text: str) -> dict[str, Any]:
         # Number verbatim source segments so models reference evidence without retyping it.
@@ -136,6 +146,9 @@ async def collect_repair_context(
             raise AuditValidationError(
                 "repair context references an invalid source line"
             )
+        done.add((doc["assetId"], index))
+        if on_progress:
+            await on_progress(len(done), len(chunks))
         return {
             "assetId": doc["assetId"],
             "assetVersion": doc["assetVersion"],
@@ -152,10 +165,7 @@ async def collect_repair_context(
     values = await asyncio.gather(
         *(
             read(doc, index, chunk)
-            for doc, text in documents
-            for index, chunk in enumerate(
-                split_document_markdown(text, max_chars=chunk_chars)
-            )
+            for doc, index, chunk in chunks
         ),
         return_exceptions=True,
     )
@@ -206,8 +216,12 @@ async def complete_conflict_alternatives(
     candidate: Candidate,
     document_candidates: list[dict[str, Any]],
     context: list[dict[str, Any]],
+    on_progress: Progress | None = None,
 ) -> Candidate:
     """AI separates shared facts from exclusive choices; formatting cannot drop shared facts."""
+    done: set[int] = set()
+    if on_progress:
+        await on_progress(0, len(candidate.issues))
 
     async def refine(index: int) -> list[str]:
         issue = candidate.issues[index]
@@ -256,6 +270,9 @@ async def complete_conflict_alternatives(
             raise AuditValidationError(
                 "conflict alternatives contain duplicate choices"
             )
+        done.add(index)
+        if on_progress:
+            await on_progress(len(done), len(candidate.issues))
         return alternatives
 
     values = await asyncio.gather(
@@ -358,10 +375,14 @@ async def audit_document(
     document_candidate: Candidate,
     global_candidate: Candidate,
     chunk_chars: int,
+    on_progress: Progress | None = None,
 ) -> tuple[AuditReport, int]:
     chunks = split_document_markdown(text, max_chars=chunk_chars)
     if not chunks:
         raise ValueError("parsed document contains no auditable text")
+    done: set[int] = set()
+    if on_progress:
+        await on_progress(0, len(chunks))
 
     async def audit(index: int, chunk: str) -> AuditReport:
         instruction = AUDIT_INSTRUCTION
@@ -416,6 +437,9 @@ async def audit_document(
                     {"checkedFields": raw_report.checkedFields, "findings": findings}
                 )
                 validate_audit(report, document, chunk, global_candidate)
+                done.add(index)
+                if on_progress:
+                    await on_progress(len(done), len(chunks))
                 return report
             except AuditValidationError as error:
                 logging.warning(

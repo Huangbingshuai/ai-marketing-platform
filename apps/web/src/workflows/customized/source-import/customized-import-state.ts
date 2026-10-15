@@ -4,13 +4,52 @@ export {
   validateCustomizedImportDraft,
 } from '@ai-marketing/contracts';
 import {
+  CUSTOMIZED_SOURCE_ARTIFACT_KEY,
   CUSTOMIZED_BRAND_IMAGE_USAGES,
   CUSTOMIZED_IMAGE_USAGE_LABELS,
   CUSTOMIZED_IMPORT_LIMITS,
   type Asset,
   type CustomizedImageUsage,
   type CustomizedImportDraftState,
+  type WorkflowRun,
+  type WorkflowNodeState,
+  type WorkingArtifact,
 } from '@ai-marketing/contracts';
+import { restoreCustomizedImportDraft } from '@ai-marketing/contracts';
+
+/** Confirmed branch snapshots are authoritative outside an explicit source edit. */
+export const restoreCustomizedImportWorkspace = (
+  projectId: string,
+  run: WorkflowRun | null,
+  states: WorkflowNodeState[],
+  artifacts: WorkingArtifact[],
+): CustomizedImportDraftState => {
+  if (
+    !run ||
+    run.projectId !== projectId ||
+    run.workflow !== 'CUSTOMIZED' ||
+    run.workflowSpace !== 'CUSTOMIZED_PROJECT'
+  )
+    return restoreCustomizedImportDraft(undefined);
+  const state = states.find(
+    (s) => s.projectId === projectId && s.workflowRunId === run.id && s.nodeId === 'SOURCE_IMPORT',
+  );
+  const confirmed = artifacts.find(
+    (a) =>
+      a.projectId === projectId &&
+      a.workflowRunId === run.id &&
+      a.nodeId === 'SOURCE_IMPORT' &&
+      a.artifactKey === CUSTOMIZED_SOURCE_ARTIFACT_KEY &&
+      a.availability === 'AVAILABLE',
+  );
+  return restoreCustomizedImportDraft(
+    run.editNodeId === 'SOURCE_IMPORT' && state
+      ? state.state
+      : confirmed
+        ? confirmed.payload
+        : state?.state,
+  );
+};
 
 /** Keep only this file's historical usage selectable; never relabel it on read. */
 export const customizedImageUsageOptions = (current?: CustomizedImageUsage) => {

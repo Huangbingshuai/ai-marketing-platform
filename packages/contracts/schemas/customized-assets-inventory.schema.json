@@ -1,0 +1,155 @@
+{
+  "$defs": {
+    "Candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "existingId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Existingid"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "PRODUCT",
+            "CHARACTER",
+            "SCENE",
+            "PROP"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "aliases": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "usage": {
+          "maxLength": 20000,
+          "title": "Usage",
+          "type": "string"
+        },
+        "treatment": {
+          "enum": [
+            "INDEPENDENT",
+            "SCENE_DETAIL",
+            "CHARACTER_DETAIL"
+          ],
+          "title": "Treatment",
+          "type": "string"
+        },
+        "parentKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parentkey"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "existingId",
+        "name",
+        "kind",
+        "aliases",
+        "usage",
+        "treatment",
+        "parentKey",
+        "sources"
+      ],
+      "title": "Candidate",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "enum": [
+            "BRIEF",
+            "SCRIPT"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "quote": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Quote",
+          "type": "string"
+        },
+        "field": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "path",
+        "quote",
+        "field"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "objects": {
+      "items": {
+        "$ref": "#/$defs/Candidate"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Objects",
+      "type": "array"
+    }
+  },
+  "required": [
+    "objects"
+  ],
+  "title": "Inventory",
+  "type": "object"
+}

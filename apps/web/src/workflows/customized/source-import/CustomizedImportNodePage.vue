@@ -33,6 +33,7 @@ import { useProjectContext } from '../../../platform/project/project-context';
 import {
   activateWorkflowNode,
   getActiveWorkflowRunOverview,
+  listWorkingArtifacts,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
@@ -68,7 +69,7 @@ import {
   isCustomizedSourceAsset,
   isCustomizedImage,
   sectionFileError,
-  restoreCustomizedImportDraft,
+  restoreCustomizedImportWorkspace,
   validateCustomizedImportDraft,
 } from './customized-import-state';
 
@@ -285,7 +286,28 @@ const load = async (options: { preserveView?: boolean } = {}) => {
         item.projectId === projectId &&
         item.workflowRunId === data.run?.id,
     );
-    const nextDraft = restoreCustomizedImportDraft(state?.state);
+    const artifacts = data.run
+      ? (
+          await listWorkingArtifacts(
+            projectId,
+            {
+              workflowRunId: data.run.id,
+              workflow: 'CUSTOMIZED',
+              space: 'CUSTOMIZED_PROJECT',
+              nodeId: 'SOURCE_IMPORT',
+              view: 'SNAPSHOT',
+            },
+            controller.signal,
+          )
+        ).data.items
+      : [];
+    if (disposed || controller.signal.aborted) return;
+    const nextDraft = restoreCustomizedImportWorkspace(
+      projectId,
+      data.run,
+      data.nodeStates,
+      artifacts,
+    );
     const assetLoads = Promise.allSettled(
       nextDraft.materials.map(async (item) => {
         const { data: asset } = await getAssetVersion(

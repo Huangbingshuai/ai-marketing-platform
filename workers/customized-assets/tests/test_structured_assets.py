@@ -1,7 +1,7 @@
 import copy
 from typing import Any
 import pytest
-from customized_production_runtime.asset_pipeline import run_assets, align_inventory, apply_repair
+from customized_production_runtime.asset_pipeline import run_assets, align_inventory, apply_repair, definition_schema, scope_definitions
 from customized_production_runtime.asset_models import DETAIL_KEYS
 
 STEPS = ['SNAPSHOT', 'INVENTORY', 'IDENTITY', 'PRODUCT', 'CHARACTER', 'SCENE', 'PROP', 'IMAGE_PLAN', 'REVIEW', 'REPAIR', 'SAVE']
@@ -120,3 +120,82 @@ async def test_evidence_and_repair_scope_are_mechanically_checked() -> None:
     with pytest.raises(ValueError, match='outside'):
         apply_repair(assets, {'patches':[{'assetId':assets[1]['id'], 'field':'description', 'text':'改他人', 'preparation':None}]},
             {'findings':[{'assetId':assets[0]['id'], 'field':'description', 'severity':'REQUIRED'}]}, claim['input'])
+
+class InvalidEvidenceProvider(Provider):
+    def __init__(self, *, correction_fails: bool = False) -> None:
+        super().__init__()
+        self.correction_fails = correction_fails
+
+    async def generate(self, stage: str, model: str, schema: Any, context: dict[str, Any], instruction: str) -> Any:
+        if stage == 'ASSET_VALIDATE_PRODUCT':
+            self.calls.append(stage)
+            data = copy.deepcopy(context['candidate'])
+            if not self.correction_fails:
+                data[0]['preparation']['sources'] = context['objects'][0]['sources']
+            return schema.model_validate({'assets': data})
+        result = await super().generate(stage, model, schema, context, instruction)
+        if stage == 'ASSET_DEFINE_PRODUCT':
+            data = result.model_dump()
+            data['assets'][0]['preparation']['sources'][0]['quote'] = '改写后而非原文的内容'
+            return schema.model_validate(data)
+        return result
+
+@pytest.mark.asyncio
+async def test_bad_definition_evidence_is_corrected_once_without_regenerating_other_categories() -> None:
+    claim = fixture(); api = Api(claim); provider = InvalidEvidenceProvider()
+    await run_assets(api, provider, claim)  # type: ignore[arg-type]
+    assert api.completed is not None
+    assert provider.calls.count('ASSET_DEFINE_PRODUCT') == 1
+    assert provider.calls.count('ASSET_VALIDATE_PRODUCT') == 1
+    assert claim['output']['definitionCorrections']['PRODUCT:0'] == 'asset evidence quote not found'
+
+@pytest.mark.asyncio
+async def test_failed_definition_correction_keeps_candidate_and_does_not_pay_again_on_resume() -> None:
+    claim = fixture(); api = Api(claim); provider = InvalidEvidenceProvider(correction_fails=True)
+    with pytest.raises(ValueError, match='quote'):
+        await run_assets(api, provider, claim)  # type: ignore[arg-type]
+    assert claim['output']['definitionCandidates']['PRODUCT:0']
+    assert api.completed is None
+    retry = InvalidEvidenceProvider()
+    with pytest.raises(ValueError, match='quote'):
+        await run_assets(api, retry, claim)  # type: ignore[arg-type]
+    assert retry.calls == []
+
+def test_batch_schema_restricts_output_count_category_and_exact_identity() -> None:
+    schema = definition_schema([{'id': 'product-one', 'kind': 'PRODUCT'}]).model_json_schema()
+    assert schema['properties']['assets']['minItems'] == 1
+    assert schema['properties']['assets']['maxItems'] == 1
+    assert schema['$defs']['AssetDefinition']['properties']['id']['enum'] == ['product-one']
+    assert schema['$defs']['AssetDefinition']['properties']['kind']['enum'] == ['PRODUCT']
+
+def test_overbroad_checkpoint_is_scoped_by_exact_ids_and_rejects_unknown_or_duplicate_ids() -> None:
+    batch = [{'id': 'product', 'kind': 'PRODUCT'}]
+    inventory = batch + [{'id': 'person', 'kind': 'CHARACTER'}]
+    assert scope_definitions(inventory, batch, inventory) == batch
+    for invalid in [inventory + [inventory[0]], batch + [{'id': 'invented'}], inventory[1:]]:
+        with pytest.raises(ValueError, match='identities'):
+            scope_definitions(invalid, batch, inventory)
+
+@pytest.mark.asyncio
+async def test_recheck_receives_original_suggestions_as_well_as_required_findings() -> None:
+    class ReviewProvider(Provider):
+        def __init__(self) -> None:
+            super().__init__(repair=True)
+            self.previous: list[dict[str, Any]] = []
+
+        async def generate(self, stage: str, model: str, schema: Any, context: dict[str, Any], instruction: str) -> Any:
+            value = await super().generate(stage, model, schema, context, instruction)
+            if stage == 'ASSET_REVIEW':
+                data = value.model_dump()
+                data['findings'].append({'assetId': context['assets'][2]['id'], 'field': 'designNotes',
+                    'issue': '可选的场景美术优化', 'basis': '允许创作的场景', 'severity': 'SUGGESTION'})
+                return schema.model_validate(data)
+            if stage == 'ASSET_RECHECK':
+                self.previous = context['previousFindings']
+            return value
+
+    claim = fixture(); api = Api(claim); provider = ReviewProvider()
+    await run_assets(api, provider, claim)  # type: ignore[arg-type]
+    assert api.completed is not None
+    assert {f['severity'] for f in provider.previous} == {'REQUIRED', 'SUGGESTION'}
+    assert api.completed['assets'][2]['designNotes'] == '允许设计'

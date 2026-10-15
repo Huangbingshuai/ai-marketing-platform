@@ -74,7 +74,7 @@ export class CustomizedExtractionService implements OnModuleInit, OnModuleDestro
       'customized-extraction',
       () => this.repository.workspace(projectId, workflowRunId),
       // Retire projections that derived draft freshness from the old confirmed artifact.
-      { projectionVersion: 2 },
+      { projectionVersion: 3 },
     );
   }
   async start(projectId: string, body: StartCustomizedExtractionRequest) {

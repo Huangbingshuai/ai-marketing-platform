@@ -63,6 +63,78 @@ const task = (steps: ReturnType<typeof step>[]) => ({
 });
 
 describe('customized extraction public node details', () => {
+  it('shows real semantic steps and chunk counts while running without a finished information card', () => {
+    const detail = presentCustomizedNodeDetail(
+      task([
+        step(
+          'SEMANTIC_REFINEMENT',
+          '',
+          {
+            activity: {
+              schemaVersion: 1,
+              steps: [
+                { id: 'RAW_AUDIT', status: 'SUCCEEDED', completed: 2, total: 2, unit: 'DOCUMENT' },
+                {
+                  id: 'EVIDENCE_RECHECK',
+                  status: 'RUNNING',
+                  completed: 1,
+                  total: 4,
+                  unit: 'CHUNK',
+                },
+                { id: 'TARGETED_REPAIR', status: 'PENDING' },
+              ],
+            },
+          },
+          'RUNNING',
+        ),
+        step('SEMANTIC_REFINEMENT', 'a', { auditProgress: { completed: 2, total: 2 } }),
+        step('SEMANTIC_REFINEMENT', 'b', { auditProgress: { completed: 1, total: 3 } }, 'RUNNING'),
+      ]),
+      execution('SEMANTIC_REFINEMENT', 'RUNNING'),
+    );
+    expect(detail.fields).toEqual([
+      expect.objectContaining({ key: 'currentWork', value: '复核原文依据' }),
+    ]);
+    expect(detail.summary).toContain('自动更新');
+    expect(detail.sources.slice(0, 3).map((s) => s.status)).toEqual([
+      'SUCCEEDED',
+      'RUNNING',
+      'PENDING',
+    ]);
+    expect(detail.sources[1]?.fields[0]?.value).toBe('已完成 1 / 4 个片段');
+    expect(detail.sources.at(-1)?.fields.find((f) => f.key === 'auditProgress')?.value).toBe(
+      '已完成 1 / 3 个片段',
+    );
+    expect(JSON.stringify(detail)).not.toContain('%');
+  });
+  it('preserves failed and skipped steps, ignores unsafe activity counts and unknown steps', () => {
+    const detail = presentCustomizedNodeDetail(
+      task([
+        step(
+          'SEMANTIC_REFINEMENT',
+          '',
+          {
+            activity: {
+              schemaVersion: 1,
+              steps: [
+                { id: 'RAW_AUDIT', status: 'SUCCEEDED' },
+                { id: 'TARGETED_REPAIR', status: 'SKIPPED' },
+                { id: 'FINAL_REVIEW', status: 'FAILED', completed: 99, total: 2, unit: 'CHUNK' },
+                { id: 'secret', status: 'RUNNING' },
+              ],
+            },
+          },
+          'FAILED',
+        ),
+      ]),
+      execution('SEMANTIC_REFINEMENT', 'FAILED'),
+    );
+    expect(detail.sources[1]?.fields[0]?.value).toBe('本次无需执行');
+    expect(detail.sources[2]?.fields[0]?.value).toContain('已完成记录保留');
+    expect(detail.sources.some((s) => s.name === 'secret')).toBe(false);
+    expect(detail.fields.some((f) => f.key === 'currentWork')).toBe(false);
+    expect(detail.sources.at(-1)?.status).toBe('PENDING');
+  });
   it('shows the pinned input revision and image usage without treating images as extracted facts', () => {
     const detail = presentCustomizedNodeDetail(task([]), execution('LOAD_AND_SNAPSHOT'));
     expect(detail.fields.find((f) => f.key === 'sourceRevision')?.value).toBe(3);
