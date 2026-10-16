@@ -1,4 +1,9 @@
 import type { CustomizedStoryboardScript } from './customized-storyboard';
+import {
+  CUSTOMIZED_IMAGE_STAGES,
+  type CustomizedImageSettings,
+} from './customized-image-generation';
+export * from './customized-image-generation';
 import type { StoryboardSource, StoryboardStatus } from './customized-storyboard-generation';
 import {
   ASSET_STAGES,
@@ -38,7 +43,7 @@ export type ProductionShot = {
 };
 export type ProductionPrompt = { shotId: string; content: string; assetIds: string[] };
 export type ProductionDocument = { assets: ProductionAsset[]; shots: ProductionShot[] };
-export type ProductionOperation = 'ASSETS' | 'SHOTS' | 'PROMPT';
+export type ProductionOperation = 'ASSETS' | 'SHOTS' | 'PROMPT' | 'IMAGE';
 export type ProductionInput = {
   script: CustomizedStoryboardScript;
   brief: unknown;
@@ -51,6 +56,7 @@ export type ProductionInput = {
   assetWorkflowVersion?: 2;
   targetAssetId?: string | null;
   identitySeed?: string;
+  imageSettings?: CustomizedImageSettings;
 };
 export const PRODUCTION_STAGES = [
   { id: 'SNAPSHOT', label: '创作依据', description: '读取本次选定的故事与已确认资料' },
@@ -61,6 +67,7 @@ export const PRODUCTION_STAGES = [
   { id: 'SAVE', label: '保存结果', description: '保存通过校验的实际产物' },
 ] as const;
 export function productionStages(operation: ProductionOperation, assetWorkflowVersion?: number) {
+  if (operation === 'IMAGE') return CUSTOMIZED_IMAGE_STAGES;
   if (operation === 'ASSETS' && assetWorkflowVersion === 2) return ASSET_STAGES;
   const names =
     operation === 'ASSETS'
@@ -97,8 +104,11 @@ export type ProductionTask = {
   targetAssetId?: string | null;
   errorMessage: string | null;
   shotId: string | null;
+  imageSettings?: CustomizedImageSettings;
+  reviewDraftState?: 'AVAILABLE' | 'ADOPTED';
 };
 export type ProductionWorkspace = {
+  brandImageReferences?: { assetId: string; version: number; name: string }[];
   script: CustomizedStoryboardScript;
   source: StoryboardSource;
   sourceReady: boolean;

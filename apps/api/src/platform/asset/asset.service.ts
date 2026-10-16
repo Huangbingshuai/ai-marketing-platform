@@ -226,8 +226,9 @@ const assetMimeType = (
     : normalizedMimeType;
 };
 
-const recordMimeType = (record: Pick<AssetRecord, 'type' | 'tags' | 'originalFileName' | 'mimeType'>) =>
-  assetMimeType(record.type, record.tags, record.originalFileName, record.mimeType);
+const recordMimeType = (
+  record: Pick<AssetRecord, 'type' | 'tags' | 'originalFileName' | 'mimeType'>,
+) => assetMimeType(record.type, record.tags, record.originalFileName, record.mimeType);
 
 const toAsset = (
   record: AssetRecord,
@@ -647,6 +648,9 @@ export class AssetService {
       type: AssetType;
       contentIdentity?: string;
       editableCustomizedRunId?: string;
+      /** Internal callers that already validated their node scope. */
+      sourceRunId?: string;
+      sourceNode?: string;
     },
     files: UploadedAssetFile[],
   ): Promise<Asset[]> {
@@ -742,7 +746,10 @@ export class AssetService {
                   qualityStatus: 'PENDING_REVIEW',
                   idempotencyKey,
                   ...(contentHash
-                    ? { sourceRunId: metadata.editableCustomizedRunId, sourceNode: 'SOURCE_IMPORT' }
+                    ? {
+                        sourceRunId: metadata.sourceRunId ?? metadata.editableCustomizedRunId,
+                        sourceNode: metadata.sourceNode ?? 'SOURCE_IMPORT',
+                      }
                     : {}),
                 },
                 `上传 ${originalFileName}`,

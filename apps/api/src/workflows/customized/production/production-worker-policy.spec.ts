@@ -11,6 +11,9 @@ import { ProductionWorkerGuard } from './production.controller';
 describe('one node per worker', () => {
   it('routes only assets to the new durable queue', () => {
     expect(productionQueue('ASSETS')).toBe('customized.assets.requested');
+    expect(productionQueue('IMAGE')).toBe('customized.assets.requested');
+    expect(() => assertWorkerOperation('IMAGE', 'VIDEO')).toThrow();
+    expect(() => assertWorkerOperation('IMAGE', 'ASSETS')).not.toThrow();
     for (const op of ['SHOTS', 'PROMPT'] as const) {
       expect(productionQueue(op)).toBe('customized.production.requested');
       expect(() => assertWorkerOperation(op, 'ASSETS')).toThrow();

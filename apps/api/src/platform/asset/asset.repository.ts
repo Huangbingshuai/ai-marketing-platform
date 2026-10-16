@@ -164,91 +164,110 @@ export class AssetRepository {
     operationKey?: string,
     editableCustomizedRunId?: string,
   ): Promise<AssetRecord> {
-    return this.prisma.$transaction(async (transaction) => {
-      if (editableCustomizedRunId) {
-        await assertCustomizedImportEditable(transaction, projectId, editableCustomizedRunId);
-        // Archived files remain historical records, but must not reserve a future upload identity.
-        if (data.idempotencyKey)
-          await transaction.asset.updateMany({
-            where: {
-              projectId,
-              storageWorkflow: 'CUSTOMIZED',
-              workflowSpace: 'CUSTOMIZED_PROJECT',
-              idempotencyKey: data.idempotencyKey,
-              archivedAt: { not: null },
-            },
-            data: { idempotencyKey: null },
-          });
-      }
-      if (operationKey) {
-        const receipt = await transaction.assetOperationReceipt.findUnique({
-          where: { projectId_operationKey: { projectId, operationKey } },
+    return this.prisma.$transaction((transaction) =>
+      this.createInTransaction(
+        transaction,
+        projectId,
+        data,
+        changeNote,
+        operationKey,
+        editableCustomizedRunId,
+      ),
+    );
+  }
+
+  /** Reuse asset/version/file registration inside a caller's fenced business transaction. */
+  async createInTransaction(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    data: CreateAssetRecord,
+    changeNote = '初始导入版本',
+    operationKey?: string,
+    editableCustomizedRunId?: string,
+  ): Promise<AssetRecord> {
+    if (editableCustomizedRunId) {
+      await assertCustomizedImportEditable(transaction, projectId, editableCustomizedRunId);
+      // Archived files remain historical records, but must not reserve a future upload identity.
+      if (data.idempotencyKey)
+        await transaction.asset.updateMany({
+          where: {
+            projectId,
+            storageWorkflow: 'CUSTOMIZED',
+            workflowSpace: 'CUSTOMIZED_PROJECT',
+            idempotencyKey: data.idempotencyKey,
+            archivedAt: { not: null },
+          },
+          data: { idempotencyKey: null },
         });
-        if (receipt) {
-          return transaction.asset.findFirstOrThrow({
-            where: { projectId, id: receipt.assetId, archivedAt: null },
-          });
-        }
-      }
-      const { content, businessData, dependencies, workflowFile, ...assetFields } = data;
-      const asset = await transaction.asset.create({
-        data: compact({
-          projectId,
-          ...assetFields,
-          ...jsonField('content', content),
-          ...jsonField('businessData', businessData),
-          ...jsonField('dependencies', dependencies),
-        }) as Prisma.AssetUncheckedCreateInput,
+    }
+    if (operationKey) {
+      const receipt = await transaction.assetOperationReceipt.findUnique({
+        where: { projectId_operationKey: { projectId, operationKey } },
       });
-      const assetVersion = await transaction.assetVersion.create({
-        data: compact({
+      if (receipt) {
+        return transaction.asset.findFirstOrThrow({
+          where: { projectId, id: receipt.assetId, archivedAt: null },
+        });
+      }
+    }
+    const { content, businessData, dependencies, workflowFile, ...assetFields } = data;
+    const asset = await transaction.asset.create({
+      data: compact({
+        projectId,
+        ...assetFields,
+        ...jsonField('content', content),
+        ...jsonField('businessData', businessData),
+        ...jsonField('dependencies', dependencies),
+      }) as Prisma.AssetUncheckedCreateInput,
+    });
+    const assetVersion = await transaction.assetVersion.create({
+      data: compact({
+        projectId,
+        assetId: asset.id,
+        version: asset.currentVersion,
+        changeNote,
+        status: asset.status,
+        qualityStatus: asset.qualityStatus,
+        ...jsonField('content', asset.content),
+        ...jsonField('businessData', asset.businessData),
+        originalFileName: asset.originalFileName,
+        mimeType: asset.mimeType,
+        sizeBytes: asset.sizeBytes,
+        storageKey: asset.storageKey,
+      }) as Prisma.AssetVersionUncheckedCreateInput,
+    });
+    if (workflowFile) {
+      await transaction.fileObject.upsert({
+        where: { projectId_storageKey: { projectId, storageKey: asset.storageKey } },
+        create: {
           projectId,
-          assetId: asset.id,
-          version: asset.currentVersion,
-          changeNote,
-          status: asset.status,
-          qualityStatus: asset.qualityStatus,
-          ...jsonField('content', asset.content),
-          ...jsonField('businessData', asset.businessData),
+          workflowRunId: workflowFile.workflowRunId,
+          nodeId: workflowFile.nodeId,
           originalFileName: asset.originalFileName,
           mimeType: asset.mimeType,
           sizeBytes: asset.sizeBytes,
           storageKey: asset.storageKey,
-        }) as Prisma.AssetVersionUncheckedCreateInput,
+          sha256: workflowFile.sha256,
+        },
+        update: {
+          status: 'AVAILABLE',
+          orphanedAt: null,
+          sha256: workflowFile.sha256,
+        },
       });
-      if (workflowFile) {
-        await transaction.fileObject.upsert({
-          where: { projectId_storageKey: { projectId, storageKey: asset.storageKey } },
-          create: {
-            projectId,
-            workflowRunId: workflowFile.workflowRunId,
-            nodeId: workflowFile.nodeId,
-            originalFileName: asset.originalFileName,
-            mimeType: asset.mimeType,
-            sizeBytes: asset.sizeBytes,
-            storageKey: asset.storageKey,
-            sha256: workflowFile.sha256,
-          },
-          update: {
-            status: 'AVAILABLE',
-            orphanedAt: null,
-            sha256: workflowFile.sha256,
-          },
-        });
-      }
-      if (operationKey) {
-        await transaction.assetOperationReceipt.create({
-          data: {
-            projectId,
-            operationKey,
-            assetId: asset.id,
-            assetVersionId: assetVersion.id,
-            version: assetVersion.version,
-          },
-        });
-      }
-      return asset;
-    });
+    }
+    if (operationKey) {
+      await transaction.assetOperationReceipt.create({
+        data: {
+          projectId,
+          operationKey,
+          assetId: asset.id,
+          assetVersionId: assetVersion.id,
+          version: assetVersion.version,
+        },
+      });
+    }
+    return asset;
   }
 
   find(projectId: string, assetId: string): Promise<AssetRecord | null> {

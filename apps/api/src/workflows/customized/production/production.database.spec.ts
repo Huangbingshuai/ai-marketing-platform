@@ -1,4 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { StoragePort } from '../../../platform/file/storage.port';
+import { ProductionImageService } from './production-image.service';
+import type { AssetService } from '../../../platform/asset/asset.service';
 import { ConfigService } from '@nestjs/config';
 import { it, expect, vi } from 'vitest';
 import {
@@ -169,6 +175,111 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       expect(initial.sourceReady).toBe(true);
       expect(initial.document.shots).toHaveLength(0);
       await expect(repo.workspace(other, r)).rejects.toThrow();
+      const reviewTask = await repo.start(p, r, 0, 'ASSETS', randomUUID(), null, {
+        creative: 'controlled',
+        detail: 'controlled',
+      });
+      const reviewClaim = await repo.claim(p, reviewTask.id, 'ASSETS');
+      const reviewInput = reviewClaim.input as { identitySeed: string };
+      const reviewAsset = {
+        id: `asset-${reviewInput.identitySeed}-1`,
+        kind: 'PRODUCT' as const,
+        name: '陶瓷杯',
+        description: '陶瓷杯',
+        knownFacts: '陶瓷材质',
+        designNotes: '颜色待确认',
+        sourceText: '陶瓷杯',
+        imageRequirements: '公共参考图',
+        preparation: {
+          aliases: [],
+          usage: '故事主体',
+          treatment: 'INDEPENDENT' as const,
+          parentId: null,
+          sources: [
+            {
+              source: 'BRIEF' as const,
+              path: '/productName',
+              quote: '陶瓷杯',
+              field: 'description',
+            },
+          ],
+          details: [],
+          questions: [],
+          images: [],
+        },
+      };
+      await db.customizedProductionTask.update({
+        where: { id: reviewTask.id },
+        data: { status: 'FAILED', attemptToken: null, leaseExpiresAt: null },
+      });
+      await expect(repo.reviewDraft(p, reviewTask.id, 0)).rejects.toThrow('没有可供');
+      await db.customizedProductionTask.update({
+        where: { id: reviewTask.id },
+        data: {
+          steps: [
+            'SNAPSHOT',
+            'INVENTORY',
+            'IDENTITY',
+            'PRODUCT',
+            'CHARACTER',
+            'SCENE',
+            'PROP',
+            'IMAGE_PLAN',
+            'REVIEW',
+            'REPAIR',
+            'SAVE',
+          ].map((id) => ({
+            id,
+            title: id,
+            content: '受控测试',
+            status: id === 'REPAIR' ? 'FAILED' : id === 'SAVE' ? 'PENDING' : 'SUCCEEDED',
+          })),
+          output: { inventory: [{ id: reviewAsset.id }], revised: [reviewAsset] },
+        },
+      });
+      expect((await repo.getTask(p, reviewTask.id)).reviewDraftState).toBe('AVAILABLE');
+      await expect(repo.reviewDraft(other, reviewTask.id, 0)).rejects.toThrow();
+      await expect(repo.reviewDraft(p, reviewTask.id, 99)).rejects.toThrow('草稿已改变');
+      const reviewBrief = await db.workingArtifact.findFirstOrThrow({
+        where: { projectId: p, workflowRunId: r, artifactKey: 'customized-brief' },
+      });
+      await db.workingArtifact.update({
+        where: { id: reviewBrief.id },
+        data: { freshness: 'STALE' },
+      });
+      await expect(repo.reviewDraft(p, reviewTask.id, 0)).rejects.toThrow('任务来源已变化');
+      await db.workingArtifact.update({
+        where: { id: reviewBrief.id },
+        data: { freshness: 'CURRENT' },
+      });
+      const adopted = await repo.reviewDraft(p, reviewTask.id, 0);
+      const reviewed = await repo.workspace(p, r);
+      expect(reviewed.document.assets[0]!.manualFields).toEqual([]);
+      expect(reviewed.confirmedDocument.assets).toHaveLength(0);
+      expect((await repo.getTask(p, reviewTask.id)).status).toBe('FAILED');
+      expect((await repo.getTask(p, reviewTask.id)).reviewDraftState).toBe('ADOPTED');
+      expect(
+        await db.workingArtifact.count({
+          where: { projectId: p, workflowRunId: r, artifactKey: 'customized-asset-catalog' },
+        }),
+      ).toBe(0);
+      await expect(repo.reviewDraft(p, reviewTask.id, adopted.revision)).rejects.toThrow(
+        '没有可供',
+      );
+      await expect(
+        repo.complete(
+          p,
+          reviewTask.id,
+          reviewClaim.attemptToken!,
+          { assets: [reviewAsset], shots: [] },
+          'ASSETS',
+        ),
+      ).rejects.toThrow();
+      reviewed.document.assets[0]!.designNotes = '人工核对后的颜色设定';
+      await repo.save(p, r, adopted.revision, reviewed.document, 'ASSETS', false);
+      expect((await repo.workspace(p, r)).document.assets[0]!.manualFields).toEqual([
+        'designNotes',
+      ]);
       const doc: ProductionDocument = {
         assets: [
           {
@@ -192,7 +303,9 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
         ],
         shots: [],
       };
-      let revision = (await repo.save(p, r, 0, doc, 'ASSETS', true)).revision;
+      let revision = (
+        await repo.save(p, r, (await repo.workspace(p, r)).draftRevision, doc, 'ASSETS', true)
+      ).revision;
       const catalog = await db.workingArtifact.findFirstOrThrow({
         where: { projectId: p, artifactKey: 'customized-asset-catalog' },
       });
@@ -416,11 +529,184 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       expect(restored.document.assets.find((a) => a.id === 'cup')?.description).toBe(
         cup.description,
       );
+      // Real DB + real file validation, with controlled storage and no model calls.
+      const imageDocument = {
+        ...restored.document,
+        assets: [
+          ...restored.document.assets,
+          {
+            id: 'constructor',
+            kind: 'PROP' as const,
+            name: '阅读灯',
+            description: '木质灯座',
+            knownFacts: '',
+            designNotes: '',
+            sourceText: '故事',
+          },
+        ],
+      };
+      revision = (await repo.save(p, r, restored.draftRevision, imageDocument, 'ASSETS', true))
+        .revision;
+      const settings = {
+        model: 'doubao-seedream-5-0-pro-260628',
+        resolution: '2K',
+        ratio: '1:1',
+        assetIds: ['cup', 'room', 'constructor'],
+      } as const;
+      const imageSettings = { ...settings, assetIds: [...settings.assetIds] };
+      const imageKey = randomUUID();
+      const images = await repo.start(
+        p,
+        r,
+        revision,
+        'IMAGE',
+        imageKey,
+        null,
+        models,
+        null,
+        imageSettings,
+      );
+      expect(
+        (await repo.start(p, r, revision, 'IMAGE', imageKey, null, models, null, imageSettings)).id,
+      ).toBe(images.id);
+      await expect(
+        repo.start(p, r, revision, 'IMAGE', imageKey, null, models, null, {
+          ...imageSettings,
+          model: 'doubao-seedream-5-0-flash-260915',
+        }),
+      ).rejects.toThrow();
+      await expect(repo.claim(p, images.id, 'VIDEO')).rejects.toThrow();
+      let imageLease = await repo.claim(p, images.id, 'ASSETS');
+      await repo.checkpoint(
+        p,
+        images.id,
+        imageLease.attemptToken!,
+        { id: 'SNAPSHOT', status: 'SUCCEEDED', title: '制作依据', content: '陶瓷杯与阅读室' },
+        undefined,
+        'ASSETS',
+      );
+      await expect(
+        repo.complete(p, images.id, imageLease.attemptToken!, {}, 'ASSETS'),
+      ).rejects.toThrow();
+      const temporary = await mkdtemp(join(tmpdir(), 'customized-image-test-'));
+      const keys = new Set<string>();
+      const storage = {
+        put: async (input: Parameters<StoragePort['put']>[0]) => {
+          for await (const chunk of input.stream) {
+            expect(chunk.length).toBeGreaterThan(0);
+          }
+          const key = `controlled/${randomUUID()}.png`;
+          keys.add(key);
+          return { key, sizeBytes: input.sizeBytes };
+        },
+        delete: async (key: string) => {
+          keys.delete(key);
+        },
+      } as unknown as StoragePort;
+      const service = new ProductionImageService(repo, storage, {} as AssetService);
+      try {
+        const png = Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6D1kAAAAASUVORK5CYII=',
+          'base64',
+        );
+        const path = join(temporary, 'asset.png');
+        await writeFile(path, png);
+        const file = { path, originalname: 'asset.png', mimetype: 'image/png', size: png.length };
+        await expect(
+          service.upload(other, images.id, imageLease.attemptToken!, 'cup', file),
+        ).rejects.toThrow();
+        const first = await service.upload(p, images.id, imageLease.attemptToken!, 'cup', file);
+        expect(await service.upload(p, images.id, imageLease.attemptToken!, 'cup', file)).toEqual(
+          first,
+        );
+        expect(keys.size).toBe(1);
+        await repo.fail(p, images.id, imageLease.attemptToken!, false, 'ASSETS');
+        expect(
+          (await repo.workspace(p, r)).document.assets.find((a) => a.id === 'cup')?.image,
+        ).toEqual(first);
+        const oldToken = imageLease.attemptToken!;
+        await repo.action(p, images.id, false);
+        imageLease = await repo.claim(p, images.id, 'ASSETS');
+        expect(imageLease.output).toEqual({ cup: first });
+        await expect(service.upload(p, images.id, oldToken, 'room', file)).rejects.toThrow();
+        await service.upload(p, images.id, imageLease.attemptToken!, 'room', file);
+        // Dictionary-like object IDs cannot impersonate saved image references.
+        await expect(
+          repo.complete(p, images.id, imageLease.attemptToken!, {}, 'ASSETS'),
+        ).rejects.toThrow();
+        await service.upload(p, images.id, imageLease.attemptToken!, 'constructor', file);
+        await repo.complete(p, images.id, imageLease.attemptToken!, {}, 'ASSETS');
+        await repo.complete(p, images.id, imageLease.attemptToken!, {}, 'ASSETS');
+        expect(await db.asset.count({ where: { projectId: p } })).toBe(3);
+        const generated = await repo.workspace(p, r);
+        expect(generated.document.assets.every((a) => a.image)).toBe(true);
+        expect(generated.confirmedDocument.assets.some((a) => a.image)).toBe(false);
+        revision = (
+          await repo.save(p, r, generated.draftRevision, generated.document, 'ASSETS', true)
+        ).revision;
+        const cancelled = await repo.start(
+          p,
+          r,
+          revision,
+          'IMAGE',
+          randomUUID(),
+          null,
+          models,
+          null,
+          {
+            ...imageSettings,
+            assetIds: ['cup'],
+            inputs: [{ assetId: 'cup', prompt: '暖白陶瓷杯，柔和侧光', references: [first] }],
+          },
+        );
+        const cancelLease = await repo.claim(p, cancelled.id, 'ASSETS');
+        expect(
+          await repo.imageReferenceScope(
+            p,
+            cancelled.id,
+            cancelLease.attemptToken!,
+            first.assetId,
+            first.version,
+          ),
+        ).toMatchObject({ mimeType: 'image/png', sizeBytes: png.length });
+        await expect(
+          repo.imageReferenceScope(
+            other,
+            cancelled.id,
+            cancelLease.attemptToken!,
+            first.assetId,
+            first.version,
+          ),
+        ).rejects.toThrow();
+        await expect(
+          repo.imageReferenceScope(p, cancelled.id, cancelLease.attemptToken!, first.assetId, 999),
+        ).rejects.toThrow();
+        await repo.action(p, cancelled.id, true);
+        await expect(
+          repo.imageReferenceScope(
+            p,
+            cancelled.id,
+            cancelLease.attemptToken!,
+            first.assetId,
+            first.version,
+          ),
+        ).rejects.toThrow();
+        await expect(
+          service.upload(p, cancelled.id, cancelLease.attemptToken!, 'cup', file),
+        ).rejects.toThrow();
+        expect(
+          (await repo.workspace(p, r)).document.assets.find((a) => a.id === 'cup')?.image,
+        ).toEqual(first);
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
       expect(await db.jobOutbox.count({ where: { projectId: p, status: 'PENDING' } })).toBe(0);
     } finally {
       delivery.mockRestore();
       await db.workingArtifactDependency.deleteMany({ where: { projectId: p } });
       await db.workingArtifactRevisionSnapshot.deleteMany({ where: { projectId: p } });
+      await db.assetVersion.deleteMany({ where: { projectId: p } });
+      await db.asset.deleteMany({ where: { projectId: p } });
       await db.project.deleteMany({ where: { id: { in: [p, other] } } });
       await db.$disconnect();
     }

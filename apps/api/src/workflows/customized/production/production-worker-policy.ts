@@ -3,9 +3,11 @@ import { customizedConflict } from '../../../platform/workflow/customized-branch
 export type ProductionWorkerNode = 'ASSETS' | 'VIDEO';
 
 export function productionQueue(operation: string) {
-  if (!['ASSETS', 'SHOTS', 'PROMPT'].includes(operation))
+  if (!['ASSETS', 'SHOTS', 'PROMPT', 'IMAGE'].includes(operation))
     return customizedConflict('未知制作任务类型');
-  return operation === 'ASSETS' ? 'customized.assets.requested' : 'customized.production.requested';
+  return ['ASSETS', 'IMAGE'].includes(operation)
+    ? 'customized.assets.requested'
+    : 'customized.production.requested';
 }
 
 export function workerNodeForPath(path: string): ProductionWorkerNode | undefined {
@@ -15,6 +17,6 @@ export function workerNodeForPath(path: string): ProductionWorkerNode | undefine
 
 export function assertWorkerOperation(operation: string, node?: ProductionWorkerNode) {
   productionQueue(operation);
-  if (node && (operation === 'ASSETS') !== (node === 'ASSETS'))
+  if (node && ['ASSETS', 'IMAGE'].includes(operation) !== (node === 'ASSETS'))
     return customizedConflict('任务不属于此节点 Worker');
 }

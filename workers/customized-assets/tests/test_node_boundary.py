@@ -9,7 +9,7 @@ from ai_runtime.responses import ProviderError
 
 def test_asset_worker_is_a_single_node_with_an_independent_queue_and_credential() -> None:
     worker = WORKERS['ASSETS']
-    assert worker.operations == ('ASSETS',)
+    assert worker.operations == ('ASSETS', 'IMAGE')
     assert worker.queue == 'customized.assets.requested'
     assert worker.token_env != WORKERS['VIDEO'].token_env
     for operation in ('SHOTS', 'PROMPT'):

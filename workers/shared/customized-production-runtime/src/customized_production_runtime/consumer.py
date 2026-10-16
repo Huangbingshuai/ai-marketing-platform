@@ -13,6 +13,7 @@ from ai_runtime.responses import ProviderError
 from .api import Api
 from .models import QueueMessage
 from .pipeline import run
+from .image_generation import run_image
 from .provider import Provider, task_context
 
 
@@ -25,7 +26,7 @@ class NodeWorker:
 
 
 WORKERS = {
-    'ASSETS': NodeWorker('customized-assets', 'customized.assets.requested', 'CUSTOMIZED_ASSETS_WORKER_TOKEN', ('ASSETS',)),
+    'ASSETS': NodeWorker('customized-assets', 'customized.assets.requested', 'CUSTOMIZED_ASSETS_WORKER_TOKEN', ('ASSETS', 'IMAGE')),
     'VIDEO': NodeWorker('customized-production', 'customized.production.requested', 'CUSTOMIZED_PRODUCTION_WORKER_TOKEN', ('SHOTS', 'PROMPT')),
 }
 
@@ -64,7 +65,8 @@ async def execute(api: Api, provider: Provider, worker: NodeWorker) -> None:
                 await asyncio.sleep(20)
                 await api.call('PUT', 'heartbeat')
 
-        pending = [asyncio.create_task(heartbeat()), asyncio.create_task(run(api, provider, claim))]
+        pipeline = run_image if claim['input']['operation'] == 'IMAGE' else run
+        pending = [asyncio.create_task(heartbeat()), asyncio.create_task(pipeline(api, provider, claim))]
         done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             await task

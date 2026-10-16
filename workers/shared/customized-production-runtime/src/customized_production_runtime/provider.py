@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextvars import ContextVar
 from typing import Any, TypeVar
 import httpx
@@ -77,3 +78,11 @@ class Provider(StructuredResponsesMixin):
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def generate_image(self, prompt: str, settings: Any, references: list[str] | None = None) -> bytes:
+        from .image_generation import generate_image
+        async with self._semaphore:
+            async with httpx.AsyncClient(base_url=self._client.base_url,
+                    headers=self._client.headers,
+                    timeout=max(10, float(os.getenv('CUSTOMIZED_ASSET_IMAGE_TIMEOUT_SECONDS', '180')))) as client:
+                return await generate_image(client, prompt, settings, references=references)

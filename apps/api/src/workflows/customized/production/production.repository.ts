@@ -15,6 +15,10 @@ import {
   isCustomizedStoryboardScript,
   isProductionDocument,
   isProductionPrompt,
+  isCustomizedImageSettings,
+  normalizeCustomizedImportDraft,
+  CUSTOMIZED_IMAGE_REFERENCE_MAX_BYTES,
+  type CustomizedImageSettings,
   productionStages,
   type ProductionDocument,
   type ProductionOperation,
@@ -30,6 +34,7 @@ import type {
   WorkingArtifact,
 } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
+import { AssetRepository } from '../../../platform/asset/asset.repository';
 import { WorkflowWorkingRepository } from '../../../platform/workflow/workflow-working.repository';
 import {
   customizedScope,
@@ -51,12 +56,21 @@ type Snapshot = ProductionInput;
 const snapshot = (t: CustomizedProductionTask) => t.inputSnapshot as unknown as Snapshot;
 export const presentProductionTask = (t: CustomizedProductionTask): ProductionTask => {
   const steps = t.steps as unknown as ProductionStep[];
+  const saved = t.output as Record<string, unknown> | null;
   return {
     id: t.id,
     operation: t.operation as ProductionOperation,
     shotId: t.shotId,
     status: t.status as ProductionTask['status'],
     errorMessage: t.errorMessage,
+    ...(t.status === 'FAILED' && t.operation === 'ASSETS' && Array.isArray(saved?.revised)
+      ? {
+          reviewDraftState: saved.manualDraftAdoptedRevision
+            ? ('ADOPTED' as const)
+            : ('AVAILABLE' as const),
+        }
+      : {}),
+    ...(snapshot(t).imageSettings ? { imageSettings: snapshot(t).imageSettings } : {}),
     steps: steps.map((step) => {
       const detail = assetExecutionDetail(step, snapshot(t), t.output);
       return detail ? { ...step, detail } : step;
@@ -70,13 +84,23 @@ export const presentProductionTask = (t: CustomizedProductionTask): ProductionTa
     progress:
       t.status === 'COMPLETED'
         ? 100
-        : Math.min(
-            99,
-            Math.round(
-              (steps.filter((s) => s.status === 'SUCCEEDED').length * 100) /
-                Math.max(1, steps.length),
+        : t.operation === 'IMAGE'
+          ? Math.min(
+              99,
+              Math.round(
+                steps.filter((s) => s.id === 'SNAPSHOT' && s.status === 'SUCCEEDED').length * 10 +
+                  (Object.keys((t.output ?? {}) as object).length /
+                    Math.max(1, snapshot(t).imageSettings?.assetIds.length ?? 1)) *
+                    85,
+              ),
+            )
+          : Math.min(
+              99,
+              Math.round(
+                (steps.filter((s) => s.status === 'SUCCEEDED').length * 100) /
+                  Math.max(1, steps.length),
+              ),
             ),
-          ),
   };
 };
 @Injectable()
@@ -161,7 +185,28 @@ export class ProductionRepository {
       orderBy: { createdAt: 'desc' },
       take: 30,
     });
+    const brandMaterials = normalizeCustomizedImportDraft(
+      artifacts.find((a) => a.artifactKey === 'customized-source-package')?.payload,
+    ).materials.filter((m) => m.category === 'VISUAL_REFERENCE');
+    const brandVersions = brandMaterials.length
+      ? await tx.assetVersion.findMany({
+          where: {
+            projectId: p,
+            OR: brandMaterials.map((m) => ({ assetId: m.assetId, version: m.assetVersion })),
+            mimeType: { in: ['image/png', 'image/jpeg', 'image/webp'] },
+            status: { not: 'UNAVAILABLE' },
+            asset: {
+              storageWorkflow: 'CUSTOMIZED',
+              workflowSpace: 'CUSTOMIZED_PROJECT',
+              archivedAt: null,
+            },
+          },
+        })
+      : [];
     return {
+      brandImageReferences: brandVersions
+        .filter((v) => v.storageKey && v.sizeBytes <= CUSTOMIZED_IMAGE_REFERENCE_MAX_BYTES)
+        .map((v) => ({ assetId: v.assetId, version: v.version, name: v.originalFileName })),
       script: script.payload,
       source: { artifactId: script.id, revision: script.revision, fingerprint: script.contentHash },
       sourceReady: script.freshness === 'CURRENT',
@@ -483,7 +528,19 @@ export class ProductionRepository {
     shotId: string | null,
     models: Snapshot['models'],
     targetAssetId: string | null = null,
+    imageSettings?: CustomizedImageSettings,
   ) {
+    if (operation === 'IMAGE' && isCustomizedImageSettings(imageSettings) && imageSettings.inputs)
+      imageSettings = {
+        ...imageSettings,
+        inputs: imageSettings.inputs.map((i) => ({
+          ...i,
+          references: i.references.map((reference) => ({
+            ...reference,
+            assetId: reference.assetId.toLowerCase(),
+          })),
+        })),
+      };
     return this.db.$transaction(
       async (tx) => {
         await lockCustomizedProject(tx, p);
@@ -496,6 +553,8 @@ export class ProductionRepository {
             previous.workflowRunId !== r ||
             previous.operation !== operation ||
             previous.shotId !== shotId ||
+            workflowStateHash(snapshot(previous).imageSettings ?? null) !==
+              workflowStateHash(imageSettings ?? null) ||
             (snapshot(previous).targetAssetId ?? null) !== targetAssetId
           )
             return customizedConflict('请求标识已用于其他操作');
@@ -531,6 +590,40 @@ export class ProductionRepository {
             return customizedConflict('请先保存并确认资产目录');
           source.push(catalog);
         }
+        if (operation === 'IMAGE') {
+          if (
+            !isCustomizedImageSettings(imageSettings) ||
+            imageSettings.assetIds.some(
+              (id) => !w.document.assets.some((a) => a.id === id && a.description.trim()),
+            )
+          )
+            invalid('请选择有效的生图模型、尺寸和已填写公共形象的资产');
+          if (!brief || brief.freshness !== 'CURRENT')
+            return customizedConflict('品牌信息已变化，请先确认创作依据');
+          source.push(brief);
+          for (const reference of imageSettings!.inputs?.flatMap((i) => i.references) ?? []) {
+            const file = await tx.assetVersion.findFirst({
+              where: {
+                projectId: p,
+                assetId: reference.assetId,
+                version: reference.version,
+                status: { not: 'UNAVAILABLE' },
+                mimeType: { in: ['image/png', 'image/jpeg', 'image/webp'] },
+                asset: {
+                  storageWorkflow: 'CUSTOMIZED',
+                  workflowSpace: 'CUSTOMIZED_PROJECT',
+                  archivedAt: null,
+                },
+              },
+            });
+            if (
+              !file?.storageKey ||
+              file.sizeBytes <= 0 ||
+              file.sizeBytes > CUSTOMIZED_IMAGE_REFERENCE_MAX_BYTES
+            )
+              invalid('参考图片版本不可用，请移除后重新选择');
+          }
+        } else if (imageSettings) invalid('此任务不接受图片设置');
         if (operation === 'PROMPT') {
           const shot = w.document.shots.find((s) => s.id === shotId),
             a = artifacts.find(
@@ -549,6 +642,7 @@ export class ProductionRepository {
           models,
           operation,
           shotId,
+          ...(imageSettings ? { imageSettings } : {}),
           ...(operation === 'ASSETS'
             ? { assetWorkflowVersion: 2 as const, targetAssetId, identitySeed: randomUUID() }
             : {}),
@@ -595,7 +689,31 @@ export class ProductionRepository {
     )
       return customizedConflict('任务来源已变化，请基于当前内容重新生成');
     const state = await this.state(tx, t.projectId, t.workflowRunId);
-    if ((state?.revision ?? 0) !== input.draftRevision)
+    if (input.operation === 'IMAGE') {
+      const current = (await this.read(tx, t.projectId, t.workflowRunId)).document;
+      const withoutImages = (doc: ProductionDocument) => ({
+        ...doc,
+        assets: doc.assets.map((a) => ({ ...a, image: null })),
+      });
+      if (
+        workflowStateHash(withoutImages(current)) !==
+        workflowStateHash(withoutImages(input.document))
+      )
+        return customizedConflict('资产定义已变化，请重新生成图片');
+      const images = (t.output ?? {}) as Record<string, unknown>;
+      if (
+        current.assets.some(
+          (a) =>
+            workflowStateHash(a.image ?? null) !==
+            workflowStateHash(
+              (Object.hasOwn(images, a.id) ? images[a.id] : undefined) ??
+                input.document.assets.find((v) => v.id === a.id)?.image ??
+                null,
+            ),
+        )
+      )
+        return customizedConflict('资产图片已被替换，请创建新的制作任务');
+    } else if ((state?.revision ?? 0) !== input.draftRevision)
       return customizedConflict('制作草稿已改变，请重新生成');
   }
   private async task(tx: Tx, p: string, id: string) {
@@ -609,6 +727,75 @@ export class ProductionRepository {
       await this.scope(tx, p, t.workflowRunId);
       return presentProductionTask(t);
     });
+  }
+  reviewDraft(p: string, id: string, expectedRevision: number) {
+    return this.db.$transaction(
+      async (tx) => {
+        await lockCustomizedProject(tx, p);
+        const t = await this.task(tx, p, id);
+        const input = snapshot(t),
+          saved = t.output as Record<string, unknown> | null;
+        if (
+          t.status !== 'FAILED' ||
+          t.operation !== 'ASSETS' ||
+          input.assetWorkflowVersion !== 2 ||
+          !Array.isArray(saved?.revised) ||
+          saved.manualDraftAdoptedRevision
+        )
+          return customizedConflict('没有可供人工核对的完整草稿');
+        await this.valid(tx, t);
+        const w = await this.read(tx, p, t.workflowRunId);
+        if (
+          await tx.customizedProductionTask.count({
+            where: {
+              projectId: p,
+              workflowRunId: t.workflowRunId,
+              status: { in: ['QUEUED', 'RUNNING'] },
+            },
+          })
+        )
+          return customizedConflict('已有制作任务执行中，请等待完成');
+        if (w.draftRevision !== expectedRevision)
+          return customizedConflict('草稿已改变，本地修改已保留');
+        const value = { assets: saved.revised, shots: [] };
+        if (!isProductionDocument(value)) invalid('人工核对草稿结构不完整');
+        const document = value as ProductionDocument;
+        if (!input.targetAssetId && !document.assets.some((a) => a.kind === 'PRODUCT'))
+          invalid('资产草稿缺少产品定义');
+        const issue = validatePreparedAssets(document, input);
+        if (issue) invalid(issue);
+        const inventory = saved.inventory as { id: string }[] | undefined;
+        if (
+          !Array.isArray(inventory) ||
+          inventory.length !== document.assets.length ||
+          new Set(inventory.map((a) => a.id)).size !== document.assets.length ||
+          inventory.some((a) => !document.assets.some((v) => v.id === a.id)) ||
+          !['PRODUCT', 'CHARACTER', 'SCENE', 'PROP', 'IMAGE_PLAN', 'REVIEW'].every((id) =>
+            (t.steps as unknown as ProductionStep[]).some(
+              (s) => s.id === id && s.status === 'SUCCEEDED',
+            ),
+          )
+        )
+          return customizedConflict('资产定义尚未完整生成，不能进入人工核对');
+        const draft = await this.writeDraft(
+          tx,
+          p,
+          t.workflowRunId,
+          {
+            assets: mergePreparedAssets(input.document.assets, document.assets),
+            shots: input.document.shots,
+          },
+          input.sources[0]!.revision,
+          expectedRevision,
+        );
+        await tx.customizedProductionTask.update({
+          where: { id },
+          data: { output: json({ ...saved, manualDraftAdoptedRevision: draft.revision }) },
+        });
+        return { revision: draft.revision };
+      },
+      { timeout: 15000 },
+    );
   }
   claim(p: string, id: string, node?: ProductionWorkerNode) {
     return this.db.$transaction(async (tx) => {
@@ -681,6 +868,137 @@ export class ProductionRepository {
       return { accepted: true };
     });
   }
+  imageScope(p: string, id: string, token: string, objectId: string) {
+    return this.db.$transaction(async (tx) => {
+      const t = await this.lease(tx, p, id, token, 'ASSETS');
+      const input = snapshot(t);
+      if (t.operation !== 'IMAGE' || !input.imageSettings?.assetIds.includes(objectId))
+        invalid('图片不属于本次选定资产');
+      const asset = input.document.assets.find((a) => a.id === objectId)!;
+      const project = await tx.project.findUniqueOrThrow({ where: { id: p } });
+      return { name: asset.name, projectName: project.name };
+    });
+  }
+  imageReferenceScope(p: string, id: string, token: string, assetId: string, version: number) {
+    return this.db.$transaction(async (tx) => {
+      const t = await this.lease(tx, p, id, token, 'ASSETS');
+      if (
+        t.operation !== 'IMAGE' ||
+        !snapshot(t).imageSettings?.inputs?.some((i) =>
+          i.references.some((r) => r.assetId === assetId && r.version === version),
+        )
+      )
+        invalid('参考图片不属于本次任务');
+      const file = await tx.assetVersion.findFirst({
+        where: {
+          projectId: p,
+          assetId,
+          version,
+          status: { not: 'UNAVAILABLE' },
+          mimeType: { in: ['image/png', 'image/jpeg', 'image/webp'] },
+          asset: { storageWorkflow: 'CUSTOMIZED', workflowSpace: 'CUSTOMIZED_PROJECT' },
+        },
+      });
+      if (!file?.storageKey || file.sizeBytes > CUSTOMIZED_IMAGE_REFERENCE_MAX_BYTES)
+        return missing();
+      return { storageKey: file.storageKey, mimeType: file.mimeType, sizeBytes: file.sizeBytes };
+    });
+  }
+  acceptImage(
+    p: string,
+    id: string,
+    token: string,
+    objectId: string,
+    file: {
+      storageKey: string;
+      sizeBytes: number;
+      mimeType: string;
+      originalFileName: string;
+      sha256: string;
+    },
+  ) {
+    return this.db.$transaction(
+      async (tx) => {
+        const t = await this.lease(tx, p, id, token, 'ASSETS');
+        const input = snapshot(t);
+        if (t.operation !== 'IMAGE' || !input.imageSettings?.assetIds.includes(objectId))
+          invalid('图片不属于本次选定资产');
+        const images = Object.assign(
+          Object.create(null) as Record<string, { assetId: string; version: number }>,
+          t.output ?? {},
+        );
+        if (images[objectId]) return { image: images[objectId], stored: false };
+        const definition = input.document.assets.find((a) => a.id === objectId)!;
+        const { sha256, ...metadata } = file;
+        const record = await new AssetRepository(this.db).createInTransaction(
+          tx,
+          p,
+          {
+            ...metadata,
+            name: definition.name.slice(0, 120),
+            directory: 'VISUAL_ASSETS',
+            type: (
+              {
+                PRODUCT: 'PRODUCT_ASSET',
+                CHARACTER: 'PERSON_ASSET',
+                SCENE: 'SCENE_BACKGROUND',
+                PROP: 'VISUAL_ASSET',
+              } as const
+            )[definition.kind],
+            storageWorkflow: 'CUSTOMIZED',
+            workflowSpace: 'CUSTOMIZED_PROJECT',
+            status: 'PENDING_REVIEW',
+            qualityStatus: 'PENDING_REVIEW',
+            tags: [],
+            notes: 'AI 生成公共形象，使用前请核对',
+            sourceRunId: t.workflowRunId,
+            sourceNode: 'SHOT_PROMPT',
+            sourceArtifactId: `customized-object:${objectId}`,
+            idempotencyKey: `customized-image:${id}:${objectId}`,
+            businessData: json({ objectId, taskId: id, model: input.imageSettings!.model }),
+            workflowFile: { workflowRunId: t.workflowRunId, nodeId: 'SHOT_PROMPT', sha256 },
+          },
+          '资产图片生成',
+        );
+        const image = { assetId: record.id, version: record.currentVersion };
+        images[objectId] = image;
+        const w = await this.read(tx, p, t.workflowRunId);
+        await this.writeDraft(
+          tx,
+          p,
+          t.workflowRunId,
+          {
+            ...w.document,
+            assets: w.document.assets.map((a) => (a.id === objectId ? { ...a, image } : a)),
+          },
+          w.source.revision,
+          w.draftRevision,
+        );
+        const finished = input.imageSettings!.assetIds.every((assetId) => images[assetId]);
+        const content = input
+          .imageSettings!.assetIds.map((assetId) => {
+            const name = input.document.assets.find((a) => a.id === assetId)!.name;
+            return `${name}：${images[assetId] ? '图片已保存并关联' : '等待生成'}`;
+          })
+          .join('\n');
+        await tx.customizedProductionTask.update({
+          where: { id },
+          data: {
+            output: json(images),
+            steps: json(
+              (t.steps as unknown as ProductionStep[]).map((s) =>
+                s.id === 'GENERATE'
+                  ? { ...s, status: finished ? 'SUCCEEDED' : 'RUNNING', content }
+                  : s,
+              ),
+            ),
+          },
+        });
+        return { image, stored: true };
+      },
+      { timeout: 30000 },
+    );
+  }
   checkpoint(
     p: string,
     id: string,
@@ -699,6 +1017,8 @@ export class ProductionRepository {
         invalid('执行步骤不正确');
       if (JSON.stringify(output ?? null).length > 2_000_000 || step.content.length > 100000)
         invalid('结果超过大小限制');
+      if (t.operation === 'IMAGE' && (output !== undefined || step.id === 'GENERATE'))
+        invalid('图片完成状态只能由已保存的文件更新');
       const steps = t.steps as unknown as ProductionStep[];
       const old = steps.find((s) => s.id === step.id)!;
       if (old.status === 'SUCCEEDED') return { accepted: true };
@@ -722,6 +1042,33 @@ export class ProductionRepository {
         const t = await this.lease(tx, p, id, token, node),
           input = snapshot(t),
           steps = t.steps as unknown as ProductionStep[];
+        if (t.operation === 'IMAGE') {
+          const results = (t.output ?? {}) as Record<string, { assetId: string; version: number }>;
+          if (
+            !input.imageSettings?.assetIds.every((id) => Object.hasOwn(results, id)) ||
+            !steps.filter((s) => s.id !== 'SAVE').every((s) => s.status === 'SUCCEEDED')
+          )
+            return customizedConflict('仍有资产图片未生成');
+          await tx.customizedProductionTask.update({
+            where: { id },
+            data: {
+              status: 'COMPLETED',
+              leaseExpiresAt: null,
+              steps: json(
+                steps.map((s) =>
+                  s.id === 'SAVE'
+                    ? {
+                        ...s,
+                        status: 'SUCCEEDED',
+                        content: '图片已关联到对应资产，保存修改后确认用于后续制作',
+                      }
+                    : s,
+                ),
+              ),
+            },
+          });
+          return { accepted: true };
+        }
         if (
           !steps.filter((s) => s.id !== 'SAVE').every((s) => s.status === 'SUCCEEDED') ||
           workflowStateHash(output) !==
