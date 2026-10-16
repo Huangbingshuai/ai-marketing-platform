@@ -41,10 +41,10 @@ class _StructuredEnvelope(BaseModel):
     [
         (4, "SHORT_FOCUS", "一个可立即看懂"),
         (8, "SHORT_FOCUS", "一个可立即看懂"),
-        (9, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
-        (11, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
-        (12, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
-        (15, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
+        (9, "COMPLETE_ACTION", "连续子动作"),
+        (11, "COMPLETE_ACTION", "连续子动作"),
+        (12, "COMPLETE_ACTION", "连续子动作"),
+        (15, "COMPLETE_ACTION", "连续子动作"),
     ],
 )
 def test_temporal_intent_scales_continuous_action_beats(
@@ -56,13 +56,10 @@ def test_temporal_intent_scales_continuous_action_beats(
 
     assert intent["band"] == band
     assert required_text in intent["guidance"]
-    assert "软参考" in intent["detailGuidance"]
-    if duration <= 8:
-        assert "首帧就位" in intent["guidance"]
-    else:
-        assert "结果停留并入最后一个" in intent["guidance"]
-        assert "软建议" in intent["guidance"]
-        assert "1～2 个节拍" in intent["detailGuidance"]
+    assert "首帧就位" in intent["guidance"]
+    assert "不设固定节拍数量" in intent["guidance"]
+    assert "durationSeconds" in intent["detailGuidance"]
+    assert "总和等于目标" in intent["detailGuidance"]
     assert f"本次为 {duration} 秒" in intent["detailGuidance"]
 
 
@@ -442,6 +439,8 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert call.value.items[0].shot_plan is not None
     shot_plan_schema = seen["text"]["format"]["schema"]["$defs"]["MaterialShotBeat"]  # type: ignore[index]
     assert "dialogue" not in shot_plan_schema["properties"]
+    assert "durationSeconds" in shot_plan_schema["required"]
+    assert shot_plan_schema["properties"]["durationSeconds"]["type"] == "number"
     overview_schema = seen["text"]["format"]["schema"]["$defs"]["MaterialShotOverview"]  # type: ignore[index]
     assert "audioDirection" not in overview_schema["properties"]
 
@@ -481,6 +480,7 @@ async def test_director_request_and_compilation_across_products_and_durations(
         beats=[{
             "sequence": 1,
             "durationWeight": 1,
+                "durationSeconds": duration,
             "framing": "手部与产品同框近景",
             "action": action,
             "camera": "固定机位",

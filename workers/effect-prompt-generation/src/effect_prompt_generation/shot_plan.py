@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from .models import (
     MAX_PROMPT_DURATION_SECONDS,
@@ -9,7 +10,7 @@ from .models import (
     MaterialShotPlan,
 )
 
-_TIME_RANGE_LINE = re.compile(r"^\s*\d+\s*[–—-]\s*\d+\s*秒\s*$")
+_TIME_RANGE_LINE = re.compile(r"^\s*\d+(?:\.\d+)?\s*[–—-]\s*\d+(?:\.\d+)?\s*秒\s*$")
 _FORMAT_LABELS = (
     "目标：",
     "质感：",
@@ -45,7 +46,7 @@ def compile_material_shot_plan(
         <= MAX_PROMPT_DURATION_SECONDS
     ):
         raise ShotPlanCompilationError("target duration must be between 4 and 15")
-    if len(plan.beats) > target_duration_seconds:
+    if plan.beats[0].duration_seconds is None and len(plan.beats) > target_duration_seconds:
         raise ShotPlanCompilationError(
             "shot plan cannot contain more beats than available seconds"
         )
@@ -77,7 +78,7 @@ def compile_material_shot_plan(
         detail += f" 结果：{_sentence(beat.visible_result)}"
         if beat.sound:
             detail += f" 同步声：{_sentence(beat.sound)}"
-        lines.extend((f"{start}–{end}秒", detail))
+        lines.extend((f"{start:g}–{end:g}秒", detail))
     lines.extend(("【结束画面】", _sentence(plan.final_frame)))
     return "\n".join(lines)
 
@@ -101,7 +102,33 @@ def _allocate_time_ranges(
     beats: list[MaterialShotBeat],
     *,
     target_duration_seconds: int,
-) -> list[tuple[int, int]]:
+) -> list[tuple[float, float]]:
+    durations = [beat.duration_seconds for beat in beats]
+    if any(value is not None for value in durations):
+        if any(value is None for value in durations):
+            raise ShotPlanCompilationError("shot plan contains mixed duration formats")
+        # Integer tenths avoid floating-point drift, without inventing timings.
+        ticks = []
+        for value in durations:
+            tick = Decimal(str(value)) * 10
+            if (
+                not tick.is_finite()
+                or abs(tick - tick.to_integral_value()) > Decimal("0.00000001")
+                or tick <= 0
+            ):
+                raise ShotPlanCompilationError("beat duration must use positive tenths")
+            ticks.append(int(tick.to_integral_value()))
+        if sum(ticks) != target_duration_seconds * 10:
+            raise ShotPlanCompilationError("beat durations must equal target duration")
+        result: list[tuple[float, float]] = []
+        cursor = 0
+        for tick_count in ticks:
+            end = cursor + tick_count
+            result.append((cursor / 10, end / 10))
+            cursor = end
+        return result
+
+    # Historical weight-only plans keep their exact original integer allocation.
     weights = [beat.duration_weight for beat in beats]
     remaining = target_duration_seconds - len(beats)
     total_weight = sum(weights)
@@ -117,15 +144,15 @@ def _allocate_time_ranges(
     for index in ranked[:remainder]:
         extras[index] += 1
 
-    result: list[tuple[int, int]] = []
+    legacy_result: list[tuple[float, float]] = []
     cursor = 0
     for extra in extras:
         end = cursor + 1 + extra
-        result.append((cursor, end))
+        legacy_result.append((cursor, end))
         cursor = end
     if cursor != target_duration_seconds:
         raise ShotPlanCompilationError("compiled time ranges do not cover duration")
-    return result
+    return legacy_result
 
 
 def _sentence(value: str) -> str:

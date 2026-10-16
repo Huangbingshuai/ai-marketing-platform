@@ -885,6 +885,7 @@ class ArkResponsesProvider:
     ) -> AiCallResult[ExecutionCorrectionBatch]:
         by_id = {task.slot_id: task for task in tasks}
         schema = ExecutionCorrectionBatch.model_json_schema(by_alias=True)
+        _require_decimal_shot_durations(schema)
         schema["properties"]["items"].update(minItems=len(candidates), maxItems=len(candidates))
         schema["$defs"]["ExecutionCorrectionItem"]["properties"]["slotId"]["enum"] = [
             item.slot_id for item in candidates
@@ -2374,6 +2375,9 @@ class ArkResponsesProvider:
             max_output_tokens=min(self._candidate_max_output_tokens, 6144),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(EXECUTION_REPAIR_PROMPT),
+            response_schema=_require_decimal_shot_durations(
+                ExecutionRepairDraft.model_json_schema(by_alias=True)
+            ),
         )
 
     async def evaluate_creatives(
@@ -3559,36 +3563,19 @@ def _creative_fact_aliases(
 def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
     if not MIN_PROMPT_DURATION_SECONDS <= duration_seconds <= MAX_PROMPT_DURATION_SECONDS:
         raise ValueError("target duration must be between 4 and 15 seconds")
-    if duration_seconds <= 8:
-        lower_chars = 65 + (duration_seconds - 4) * 10
-        upper_chars = 100 + (duration_seconds - 4) * 15
-        return {
-            "band": "SHORT_FOCUS",
-            "guidance": (
-                "只围绕一个可立即看懂的视觉事件。主体、商品和关键道具在首帧就位，直接完成"
-                "一个主要产品动作并停在该动作形成的清晰结果上；不要先走入、寻找或拿取后再"
-                "开始另一项使用动作，也不要切换到第二阶段。"
-            ),
-            "detailGuidance": (
-                f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
-                "写清首帧、一个具体主动作、镜头如何看见变化和结束状态；"
-                "依靠画面而不是台词完成表达，声音只描述环境声或动作声。"
-            ),
-        }
-    lower_chars = 120 + (duration_seconds - 9) * 7
-    upper_chars = 180 + (duration_seconds - 9) * 16
-    beat_guidance = "1～2 个"
     return {
-        "band": "COMPLETE_ACTION",
+        "band": "SHORT_FOCUS" if duration_seconds <= 8 else "COMPLETE_ACTION",
         "guidance": (
-            f"在同一主场景和同一目标下，通常用 {beat_guidance}连续动作节拍完成一个英雄事件。"
-            "主体、商品与必要工具在首帧就位；过程与结果自然衔接，结果停留并入最后一个"
-            "动作节拍，不另拆一拍，不为填满时长加入第二项任务。节拍数是软建议。"
+            "围绕一个可立即看懂的商业事件，主体和必要工具在首帧就位。"
+            "以真实正常速度安排连续子动作、观察揭示和自然收束；节拍不是切镜。"
+            "短片及时发生变化，长片继续提供同一事件的新信息，不增加无关任务。"
+            "不默认慢动作或长时间悬停，不设固定节拍数量。"
         ),
         "detailGuidance": (
-            f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
-            f"首帧和结束状态完整，{beat_guidance}节拍均写清主体、对象、可见变化和镜头配合；"
-            "片段静音时也必须能看懂，声音只描述环境声或动作声。"
+            f"本次为 {duration_seconds} 秒，每拍 durationSeconds 使用 0.1 秒粒度，"
+            "总和等于目标。各拍写清实际变化与观察关系，不把同一慢动作拆段凑数；"
+            "有持续观看价值的静物或慢过程可保留。正文简洁但不按字数压缩动作信息。"
+            "静音也能看懂，只保留同步环境声和动作声。"
         ),
     }
 
@@ -3622,6 +3609,17 @@ def _validate_direction_event_capacity(response: CreativeDirectionResponse) -> N
                             error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
 
 
+def _require_decimal_shot_durations(schema: dict[str, Any]) -> dict[str, Any]:
+    """Require timing in new AI responses, while stored plans remain optional."""
+    beat = schema["$defs"]["MaterialShotBeat"]
+    duration = beat["properties"]["durationSeconds"]
+    beat["properties"]["durationSeconds"] = next(
+        option for option in duration["anyOf"] if option.get("type") == "number"
+    )
+    beat["required"] = list(dict.fromkeys([*beat["required"], "durationSeconds"]))
+    return schema
+
+
 def _creative_shot_response_schema(tasks: Sequence[CreativeTask] = ()) -> dict[str, Any]:
     schema = CreativeCandidateDraftBatch.model_json_schema(by_alias=True)
     if tasks:
@@ -3632,7 +3630,7 @@ def _creative_shot_response_schema(tasks: Sequence[CreativeTask] = ()) -> dict[s
         draft["round"]["enum"] = sorted({task.round for task in tasks})
     beat = schema["$defs"]["MaterialShotBeat"]
     beat["required"] = list(dict.fromkeys([*beat["required"], "focus", "motionSource"]))
-    return schema
+    return _require_decimal_shot_durations(schema)
 
 
 def _compile_creative_evaluation(

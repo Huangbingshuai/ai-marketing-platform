@@ -38,7 +38,11 @@ async def test_unchanged_is_identical_and_changed_syncs_without_changing_sources
     )
     assert apply_execution_corrections([original], unchanged, durations)[0] is original
     plan = original.shot_plan.model_copy(
-        update={"final_frame": "手部停在商品旁，商品稳定置于台面。"}
+        update={
+            "final_frame": "手部停在商品旁，商品稳定置于台面。",
+            "beats": [beat.model_copy(update={"duration_seconds": seconds})
+                      for beat, seconds in zip(original.shot_plan.beats, [1.5, 13.5], strict=True)],
+        }
     )
     row = ExecutionCorrectionItem(
         slot_id=original.slot_id,
@@ -54,6 +58,7 @@ async def test_unchanged_is_identical_and_changed_syncs_without_changing_sources
     assert corrected.dimensions == row.dimensions
     assert corrected.shot_plan == plan
     assert plan.final_frame in corrected.content
+    assert "0–1.5秒" in corrected.content and "1.5–15秒" in corrected.content
     for field in ("slot_id", "ordinal", "round", "declared_fact_ids", "generated_at"):
         assert getattr(corrected, field) == getattr(original, field)
 

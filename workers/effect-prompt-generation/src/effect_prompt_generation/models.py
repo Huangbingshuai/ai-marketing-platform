@@ -1311,6 +1311,11 @@ class MaterialShotScene(ApiModel):
 class MaterialShotBeat(ApiModel):
     sequence: int = Field(ge=1, le=6)
     duration_weight: int = Field(default=1, ge=1, le=5)
+    # Internal shooting-plan field; absent on historical checkpoints.
+    duration_seconds: float | None = Field(
+        default=None, ge=0.1, le=15, multiple_of=0.1,
+        exclude_if=lambda value: value is None,
+    )
     framing: str = Field(min_length=1, max_length=100)
     action: str = Field(min_length=1, max_length=320)
     camera: str = Field(min_length=1, max_length=180)
@@ -1353,6 +1358,9 @@ class MaterialShotPlan(ApiModel):
         sequence = [beat.sequence for beat in self.beats]
         if sequence != list(range(1, len(self.beats) + 1)):
             raise ValueError("shot plan beat sequence must be contiguous from 1")
+        timed = [beat.duration_seconds is not None for beat in self.beats]
+        if any(timed) and not all(timed):
+            raise ValueError("shot plan durations must be supplied for every beat or none")
         return self
 
 

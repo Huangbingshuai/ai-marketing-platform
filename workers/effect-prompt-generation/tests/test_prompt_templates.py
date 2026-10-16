@@ -117,7 +117,7 @@ def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> No
     assert "静音状态下仍能被理解" in creative
     assert "节拍数量是软建议，不是配额" in creative
     assert "单一英雄事件" in creative
-    assert "9～15 秒通常 1～2 个" in creative
+    assert "不设固定节拍配额" in creative
     assert "不得为了观察内部而翻转已打开容器" in creative
     assert "不要求生成式视频精确保证" in creative
     assert "多人同框也可以承载关系" in creative
@@ -138,7 +138,7 @@ def test_commercial_camera_guidance_is_motivated_and_vendor_independent() -> Non
     assert "每个镜头段落统一确定相机与主体谁动" in creative
     assert "相邻段落换观察面，明确切镜或连续路径" in creative
     assert "相机与主体同步绕转未必揭示新面" in creative
-    assert "9～15 秒通常 1～2 个" in creative
+    assert "不设固定节拍配额" in creative
     assert "camera 只写相机自身机位/运动" in creative
     assert "镜头不是独立装饰" in task
     assert "固定机位不能同时推进或平移" in audit
@@ -284,13 +284,33 @@ def test_route_execution_suggestions_do_not_override_safe_creative_intent() -> N
 
 def test_creative_guidance_is_compact_and_explains_support_and_observer_relationships() -> None:
     creative = load_prompt("creative_base.system.prompt.txt")
-    assert len(creative) < 3500
+    assert len(creative) < 4300
     assert "factApplications.value" in creative
     assert "不能为自己推导的物性作证" in creative
     assert "已占用的手先放稳原物" in creative
     assert "焦点转移不会改变相机高度" in creative
     assert "不能正俯视不动却看清被遮住的底面" in creative
     assert "不把全批简化成夹起后悬停" in creative
+
+
+def test_dynamic_pacing_is_product_agnostic_and_aligned_across_stages() -> None:
+    generation = load_prompt("creative_base.system.prompt.txt")
+    correction = load_prompt("execution_correction.system.prompt.txt")
+    repair = load_prompt("execution_repair.system.prompt.txt")
+    evaluation = load_prompt("evaluation_base.system.prompt.txt")
+    for prompt in [generation, correction, repair]:
+        assert "durationSeconds" in prompt
+        assert "0.1 秒" in prompt
+        assert "节拍不等于切镜" in prompt or "节拍不是切镜" in prompt
+        assert "广式腊肠" not in prompt and "紫苏梅子" not in prompt
+        assert "1～2 个节拍" not in prompt
+    assert "一个商业事件不等于一个动作节拍" in generation
+    assert "不能把同一句慢动作拆段" in generation
+    assert "保留合理动态与商业运镜" in correction
+    assert "DURATION_TOO_SPARSE" in evaluation
+    assert "不按节拍/镜头数量打分" in evaluation
+    assert "一个主动作并停留" not in evaluation
+    assert "不因数字精细就加分" in evaluation
 
 
 def test_direction_ai_reviews_actual_routes_without_new_worker_semantic_gate() -> None:
@@ -323,7 +343,7 @@ def test_intent_planning_does_not_lock_execution_and_repair_rewrites_one_plan() 
     assert "完整连贯的新 shotPlan" in editing
     assert "可以重组节拍数量、顺序和 durationWeight" in editing
     assert "Worker" not in editing
-    assert "不要另起场景" in editing
+    assert "不另起场景" in editing
     for name in ["creative_base.system.prompt.txt", "execution_repair.system.prompt.txt"]:
         assert "紫苏梅子" not in load_prompt(name)
         assert "广式腊肠" not in load_prompt(name)
