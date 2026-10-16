@@ -79,6 +79,7 @@ if (state.taskId && process.argv.includes('--retry')) {
   await persist();
 }
 if (!state.taskId) {
+  assert.equal(Number(option('count', '1')), 1, 'New creation produces exactly one script.');
   const workspace = await request(`${root}?workflowRunId=${state.workflowRunId}`);
   assert.ok(workspace.sourceReady && workspace.source, 'A valid confirmed Brief is required.');
   assert.ok(!workspace.scripts.some((s) => s.editing), 'Do not modify an active user edit.');
@@ -88,7 +89,7 @@ if (!state.taskId) {
   state.settings = {
     ...workspace.settings,
     targetDurationSeconds: Number(option('seconds', '30')),
-    variantCount: Number(option('count', '3')),
+    variantCount: 1,
     structureMode: option('mode', 'AI'),
     structure: option('structure', ''),
     instructions: option('instructions', ''),

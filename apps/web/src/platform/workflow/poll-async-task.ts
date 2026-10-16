@@ -19,11 +19,23 @@ export async function pollAsyncTask<T>(
     intervalMs?: number | undefined;
     signal?: AbortSignal | undefined;
     onUpdate?: ((task: T) => void) | undefined;
+    retryDelayMs?: ((error: unknown, failures: number) => number | null) | undefined;
   } = {},
 ): Promise<T> {
+  let failures = 0;
   for (;;) {
     options.signal?.throwIfAborted();
-    const task = await load(options.signal);
+    let task: T;
+    try {
+      task = await load(options.signal);
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      const delay = options.retryDelayMs?.(error, ++failures);
+      if (delay == null) throw error;
+      await waitForTaskPoll(delay, options.signal);
+      continue;
+    }
+    failures = 0;
     options.signal?.throwIfAborted();
     options.onUpdate?.(task);
     if (terminal(task)) return task;

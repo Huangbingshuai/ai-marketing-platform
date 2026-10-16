@@ -6,7 +6,7 @@ import {
   type CustomizedStoryboardScript,
   type DeleteStoryboardScriptResult,
 } from '@ai-marketing/contracts';
-import { ApiClientError, isAbortError } from '../../../api/http-client';
+import { ApiClientError, isAbortError, isNetworkError } from '../../../api/http-client';
 import { pollAsyncTask } from '../../../platform/workflow/poll-async-task';
 import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import WorkflowExtractionFeedback from '../../../platform/workflow/components/WorkflowExtractionFeedback.vue';
@@ -39,6 +39,7 @@ const loading = ref(true),
   saving = ref(false),
   loadError = ref(''),
   error = ref(''),
+  pollInterrupted = ref(false),
   savedMessage = ref('');
 const page = ref<InstanceType<typeof CustomizedStoryboardNodePage> | null>(null);
 const graphTask = computed(() => workspace.value?.task ?? null);
@@ -67,7 +68,7 @@ const progress = computed(() =>
     ? {
         value: graphTask.value.progress,
         summary:
-          graphTask.value.status === 'QUEUED' ? '等待创作' : '正在创作，完成的脚本会逐份显示',
+          pollInterrupted.value ? '正在同步创作状态' : graphTask.value.status === 'QUEUED' ? '等待创作' : '正在创作脚本',
         terminal: false,
       }
     : undefined,
@@ -147,6 +148,7 @@ async function load() {
   loading.value = true;
   loadError.value = '';
   error.value = '';
+  pollInterrupted.value = false;
   conflict = false;
   deletingId.value = null;
   try {
@@ -231,13 +233,21 @@ function startPolling() {
     {
       intervalMs: 1600,
       signal: polling.signal,
+      retryDelayMs: (e, failures) => {
+        if (!current(scope) || polling !== pollController || isAbortError(e)) return null;
+        if (!isNetworkError(e) && !(e instanceof ApiClientError && (e.status >= 500 || e.status === 429))) return null;
+        pollInterrupted.value = true;
+        return Math.min(30000, 2000 * 2 ** Math.min(4, failures - 1));
+      },
       onUpdate: (v) => {
-        if (current(scope) && polling === pollController) apply(v);
+        if (current(scope) && polling === pollController) {
+          pollInterrupted.value = false;
+          apply(v);
+        }
       },
     },
   ).catch((e) => {
-    if (current(scope) && !isAbortError(e))
-      error.value = '任务查询中断，后台仍可能继续执行。点击重新加载恢复查询。';
+    if (current(scope) && polling === pollController && !isAbortError(e)) failure(e);
   });
 }
 async function generate() {
@@ -278,23 +288,14 @@ async function generate() {
     if (current(scope)) saving.value = false;
   }
 }
-async function retry(cancel = false) {
+async function retry() {
   if (!graphTask.value) return;
   const scope = controller;
-  if (
-    cancel &&
-    !(await requestActionConfirmation({
-      title: '取消本次创作？',
-      description: '已发布脚本会保留，尚未完成的方案停止继续执行。',
-      confirmLabel: '取消创作',
-    }))
-  )
-    return;
   try {
-    await storyboardApi.retry(props.projectId, graphTask.value.id, cancel, scope.signal);
+    await storyboardApi.retry(props.projectId, graphTask.value.id, false, scope.signal);
     if (!current(scope)) return;
     await refresh();
-    if (!cancel) startPolling();
+    startPolling();
   } catch (e) {
     if (current(scope)) failure(e);
   }
@@ -614,7 +615,6 @@ defineExpose({ flushPendingEdits, selectByRun, nextRunId });
     @reload="reload"
     @generate="generate"
     @retry="retry()"
-    @stop="retry(true)"
     @select="select"
     @create="create"
     @remove="remove"

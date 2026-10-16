@@ -425,7 +425,9 @@ describe('storyboard workspace boundaries', () => {
         }),
       );
       expect(html.includes(`真实任务 ${status}`)).toBe(running);
-      expect(html.includes('取消本次创作')).toBe(running);
+      expect(html).not.toContain('取消本次创作');
+      expect(html).not.toContain('aria-label="方案数量"');
+      if (running) expect(html.indexOf('创作设置')).toBeLessThan(html.indexOf(`真实任务 ${status}`));
       expect(html).toContain('查看工作流');
       expect(html.includes('恢复未完成方案')).toBe(
         ['FAILED', 'PARTIAL', 'CANCELLED'].includes(status),

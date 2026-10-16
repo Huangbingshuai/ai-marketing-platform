@@ -21,7 +21,7 @@ export const emptyStoryboardDraft = (): CustomizedStoryboardDraft => ({
   source: null,
   settings: {
     targetDurationSeconds: 30,
-    variantCount: 3,
+    variantCount: 1,
     structureMode: 'AI',
     structure: '',
     instructions: '',

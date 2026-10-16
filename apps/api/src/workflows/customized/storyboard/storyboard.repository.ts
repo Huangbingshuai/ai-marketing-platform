@@ -62,14 +62,14 @@ const invalid = (message: string): never => {
 };
 export function storyboardHistoryConcept(scriptId: string, value: unknown, route?: StoryboardInput['routeId']) {
   if (!isCustomizedStoryboardScript(value)) return [];
-  if ((route === 'ECOMMERCE' || route === 'DRAMA') && value.creation?.videoType && value.creation.videoType !== route) return [];
+  if (route && value.creation?.videoType && value.creation.videoType !== route) return [];
   return [{ scriptId, name: value.name, synopsis: value.synopsis }];
 }
 const defaults: StoryboardSettings = {
   videoType: 'BRAND_AD',
   structureSections: [],
   targetDurationSeconds: 30,
-  variantCount: 3,
+  variantCount: 1,
   structureMode: 'AI',
   structure: '',
   instructions: '',
@@ -159,7 +159,8 @@ export class StoryboardRepository {
       { settings?: StoryboardSettings; selectedScriptId?: string | null } | undefined;
     return {
       revision: s?.revision ?? 0,
-      settings: value?.settings ?? defaults,
+      // New creation is always single-script. Historical task snapshots retain their own count.
+      settings: { ...(value?.settings ?? defaults), variantCount: 1 },
       selectedScriptId: value?.selectedScriptId ?? null,
     };
   }
@@ -275,7 +276,7 @@ export class StoryboardRepository {
       )
         throw missing();
       const state = {
-          settings,
+          settings: { ...settings, variantCount: 1 },
           selectedScriptId:
             selectedScriptId === undefined ? old.selectedScriptId : selectedScriptId,
         },
@@ -338,7 +339,7 @@ export class StoryboardRepository {
       });
       if (active) return presentStoryboardTask(active);
       const previous = await tx.customizedStoryboardScript.findMany({
-        where: { projectId, sourceRunId: run.id, status: 'COMPLETED' },
+        where: { projectId, status: 'COMPLETED' },
       });
       const confirmed = await tx.workingArtifact.findMany({
         where: {
@@ -369,6 +370,7 @@ export class StoryboardRepository {
         brief: b.payload,
         settings: {
           ...state.settings,
+          variantCount: 1,
           videoType: state.settings.videoType ?? 'DRAMA',
           instructions: '',
           structureSections:
@@ -384,7 +386,7 @@ export class StoryboardRepository {
               ? ''
               : state.settings.structureSections?.join(' → ') || state.settings.structure,
         },
-        scriptIds: Array.from({ length: state.settings.variantCount }, () => randomUUID()),
+        scriptIds: [randomUUID()],
         models,
         brandReferences: materials.filter(
           (v) => (v as { category?: string })?.category === 'VISUAL_REFERENCE',

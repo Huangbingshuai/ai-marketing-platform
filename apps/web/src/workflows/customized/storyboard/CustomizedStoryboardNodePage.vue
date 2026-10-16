@@ -74,7 +74,6 @@ const emit = defineEmits<{
   reload: [];
   generate: [];
   retry: [];
-  stop: [];
   select: [id: string];
   create: [script: CustomizedStoryboardScript, origin: 'MANUAL' | 'IMPORT'];
   next: [];
@@ -281,26 +280,13 @@ defineExpose({ guardEditor });
       title="信息卡已有变化"
       message="当前脚本草稿基于较早的信息卡，请核对产品事实和品牌约束。旧内容会保留，不会自动重写。"
     />
-    <WorkflowRunProgress
-      v-if="progress && !progress.terminal"
-      :progress="progress.value"
-      :summary="progress.summary"
-      :terminal="progress.terminal"
-      action-label="查看工作流"
-      @show-details="graphOpen = true"
-    />
     <WorkflowExtractionFeedback
       v-if="!running && task?.errorMessage && !error"
       title="本次创作未完成"
       :message="task.errorMessage"
     />
-    <div v-if="task && task.status !== 'COMPLETED'" class="toolbar-actions task-actions">
-      <button v-if="running" type="button" @click="emit('stop')">取消本次创作</button
-      ><button
-        v-else-if="['FAILED', 'PARTIAL', 'CANCELLED'].includes(task.status)"
-        type="button"
-        @click="emit('retry')"
-      >
+    <div v-if="task && ['FAILED', 'PARTIAL', 'CANCELLED'].includes(task.status)" class="toolbar-actions task-actions">
+      <button type="button" @click="emit('retry')">
         恢复未完成方案
       </button>
     </div>
@@ -348,14 +334,6 @@ defineExpose({ guardEditor });
               aria-label="参考时长"
             /><span>秒</span></span
           ></label
-        ><label
-          >方案数量<select
-            v-model.number="draft.settings.variantCount"
-            :disabled="!settingsEditable"
-            aria-label="方案数量"
-          >
-            <option v-for="n in 5" :key="n" :value="n">{{ n }} 套方案</option>
-          </select></label
         >
       </div>
       <div v-if="settingsExpanded" class="advanced-settings structure-editor">
@@ -428,6 +406,14 @@ defineExpose({ guardEditor });
         已启用自定义结构：{{ structureSections.join(' → ') }}
       </p>
     </WorkflowInformationCard>
+    <WorkflowRunProgress
+      v-if="progress && !progress.terminal"
+      :progress="progress.value"
+      :summary="progress.summary"
+      :terminal="progress.terminal"
+      action-label="查看工作流"
+      @show-details="graphOpen = true"
+    />
     <div class="scripts-toolbar">
       <div class="section-title">
         <Layers3 :size="18" />
