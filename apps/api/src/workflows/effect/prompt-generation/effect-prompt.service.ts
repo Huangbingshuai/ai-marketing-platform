@@ -533,6 +533,10 @@ export class EffectPromptService {
   }
 
   async workspace(projectId: string, workflowRunId: string): Promise<GetEffectPromptWorkspaceData> {
+    // A child task's progress must survive refresh without changing the parent's
+    // results or allowing its cached projection to hide the pending generation.
+    if (this.readCache && await this.repository.backgroundBatchRun(projectId, workflowRunId))
+      return this.loadWorkspace(projectId, workflowRunId);
     return this.readCache
       ? this.readCache.read(
           { projectId, workflowRunId },
@@ -554,8 +558,10 @@ export class EffectPromptService {
         const latestRunRecord = product.promptRuns[0]
           ? await this.repository.run(projectId, product.promptRuns[0].id)
           : null;
-        const runRecord =
+        const ownRunRecord =
           latestRunRecord && currentSnapshot(latestRunRecord) ? latestRunRecord : null;
+        const backgroundRun = await this.repository.backgroundBatchRun(projectId, workflowRunId, product.id);
+        const runRecord = backgroundRun && currentSnapshot(backgroundRun) ? backgroundRun : ownRunRecord;
         const resultRecord =
           latestRunRecord?.result ??
           (await this.repository.latestResult(projectId, workflowRunId, product.id));

@@ -1133,10 +1133,8 @@ const generateCurrentBatch = async (): Promise<void> => {
         },
         controller.signal,
       );
-      if (run.workflowRunId !== props.workflowRunId) {
-        emit('branchActivated');
-        return;
-      }
+      // A regeneration runs in an unpublished child. Keep viewing the parent
+      // and its confirmed results; only terminal publication may change branches.
       updateRun(productId, run);
       startPolling(productId, run);
     } catch (error) {

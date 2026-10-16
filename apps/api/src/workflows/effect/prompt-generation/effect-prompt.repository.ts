@@ -252,6 +252,22 @@ export class EffectPromptRepository {
     });
   }
 
+  backgroundBatchRun(projectId: string, parentRunId: string, productId?: string) {
+    return this.prisma.effectPromptRun.findFirst({
+      where: {
+        projectId, operation: 'BATCH_GENERATE',
+        workflowRun: {
+          projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+          parentWorkflowRunId: parentRunId, forkNodeId: 'PROMPT_GENERATION',
+          branchPublishedAt: null, editSessionPurpose: 'BATCH',
+          branchCreationKey: { startsWith: productId ? `prompt-batch:${productId}:` : 'prompt-batch:' },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      include: promptRunInclude,
+    });
+  }
+
   settingsNode(projectId: string, workflowRunId: string, productId: string) {
     return this.prisma.workflowNodeState.findUnique({
       where: {
@@ -563,8 +579,14 @@ export class EffectPromptRepository {
       const active = await transaction.effectPromptRun.findFirst({
         where: {
           projectId,
-          workflowRunId,
-          productId,
+          OR: [
+            { workflowRunId, productId },
+            { operation: 'BATCH_GENERATE', workflowRun: {
+              projectId, parentWorkflowRunId: workflowRunId,
+              forkNodeId: 'PROMPT_GENERATION', branchPublishedAt: null,
+              branchCreationKey: { startsWith: `prompt-batch:${productId}:` },
+            } },
+          ],
           status: { in: ['QUEUED', 'RUNNING'] },
         },
       });
@@ -576,6 +598,7 @@ export class EffectPromptRepository {
       if (input.operation === 'BATCH_GENERATE' && this.workingRepository) {
         const edit = await this.workingRepository.beginEffectNodeEditInTransaction(
           transaction, projectId, workflowRunId, 'PROMPT_GENERATION', 'BATCH',
+          { keepParentActive: true, creationKey: `prompt-batch:${productId}:${input.idempotencyKey}` },
         );
         if (!edit) return { kind: 'ACTIVE_CONFLICT' as const };
         taskWorkflowRunId = edit.runId;
@@ -602,6 +625,20 @@ export class EffectPromptRepository {
           };
           snapshot.baseResultId = childResult?.id ?? null;
           snapshot.baseResultRevision = childResult?.revision ?? null;
+          // The adopted Prompt may come from another ancestor than the visible
+          // settings draft. Freeze this request's settings explicitly in its child.
+          await transaction.workflowNodeState.upsert({
+            where: { projectId_workflowRunId_nodeId: {
+              projectId, workflowRunId: taskWorkflowRunId,
+              nodeId: `PROMPT_GENERATION:${taskProductId}`,
+            } },
+            create: { projectId, workflowRunId: taskWorkflowRunId,
+              nodeId: `PROMPT_GENERATION:${taskProductId}`, schemaVersion: 1,
+              revision: settingsNode.revision, state: json(settings), contentHash: settingsHash,
+              executionInputHash: settingsHash, executionInputSchemaVersion: 1 },
+            update: { state: json(settings), contentHash: settingsHash,
+              executionInputHash: settingsHash, executionInputSchemaVersion: 1 },
+          });
         }
       }
       const sourceFingerprint = workflowStateHash({
@@ -2186,7 +2223,7 @@ export class EffectPromptRepository {
           },
         },
       });
-      const currentSettings = readEffectPromptSettings(settingsNode?.state);
+      let currentSettings = readEffectPromptSettings(settingsNode?.state);
       const editingRun = await transaction.workflowRun.findFirst({
         where: { projectId, id: result.workflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT' },
       });
@@ -2194,6 +2231,23 @@ export class EffectPromptRepository {
         editingRun?.parentWorkflowRunId && !editingRun.branchPublishedAt &&
         editingRun.editSessionNodeId === 'PROMPT_GENERATION',
       );
+      if (!settingsNode && hiddenPromptEdit && editingRun?.editSessionPurpose === 'BATCH' &&
+          workflowStateHash(snapshot.settings) === result.settingsHash) {
+        // Recover only a missing legacy child draft from its validated frozen
+        // request. Never overwrite an existing settings draft or the parent.
+        const recovered = await transaction.workflowNodeState.upsert({
+          where: { projectId_workflowRunId_nodeId: {
+            projectId, workflowRunId: result.workflowRunId,
+            nodeId: `PROMPT_GENERATION:${result.productId}`,
+          } },
+          create: { projectId, workflowRunId: result.workflowRunId,
+            nodeId: `PROMPT_GENERATION:${result.productId}`, state: json(snapshot.settings),
+            contentHash: result.settingsHash, executionInputHash: result.settingsHash,
+            schemaVersion: 1, executionInputSchemaVersion: 1 },
+          update: {},
+        });
+        currentSettings = readEffectPromptSettings(recovered.state);
+      }
       if (
         !insight ||
         !currentSettings ||
@@ -2509,6 +2563,20 @@ export class EffectPromptRepository {
           transaction, projectId, result.workflowRunId, 'PROMPT_GENERATION',
         );
         if (!published) throw new Error('PROMPT_EDIT_PUBLISH_FAILED');
+        // A background regeneration publishes only its own child. Navigation
+        // may have changed while models ran: never steal another active Run.
+        if (editingRun?.editSessionPurpose === 'BATCH' && published.createdBranch &&
+            editingRun.parentWorkflowRunId) {
+          const activated = await transaction.workflowRun.updateMany({
+            where: { projectId, id: editingRun.parentWorkflowRunId, activeKey: 'ACTIVE',
+              editSessionNodeId: null },
+            data: { activeKey: null },
+          });
+          if (activated.count === 1) await transaction.workflowRun.update({
+            where: { id: result.workflowRunId },
+            data: { activeKey: 'ACTIVE', lastActiveAt: new Date() },
+          });
+        }
         if (!published.createdBranch && published.runId !== targetRunId) {
           const idMap = (editingRun?.editIdMap ?? {}) as {
             productIdMap?: Record<string, string>;

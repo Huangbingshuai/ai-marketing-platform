@@ -242,6 +242,7 @@ describe('EffectPromptService settings contract', () => {
         .mockResolvedValue([
           { id: 'product-a', updatedAt: run.updatedAt, promptRuns: [{ id: 'run-a' }] },
         ]),
+      backgroundBatchRun: vi.fn().mockResolvedValue(null),
       run: vi.fn().mockResolvedValue(run),
       latestResult: vi.fn(),
       settingsNode: vi.fn().mockResolvedValue({
@@ -264,6 +265,17 @@ describe('EffectPromptService settings contract', () => {
 
     expect(output.products[0]?.status).toBe('COMPLETED');
     expect(output.products[0]?.settings).toEqual(normalizeEffectPromptSettings(legacySettings));
+    repository.backgroundBatchRun.mockResolvedValue({ ...run, id: 'background-task',
+      workflowRunId: 'background-child', status: 'RUNNING', progress: 42,
+      result: { id: 'background-draft-must-not-replace-parent' },
+    } as never);
+    const pending = await service.workspace('project-a', 'workflow-a');
+    expect(pending.products[0]?.runId).toBe('background-task');
+    expect(pending.products[0]?.status).toBe('PROCESSING');
+    expect(pending.products[0]?.progress).toBe(42);
+    expect(pending.products[0]?.resultId).toBe(output.products[0]?.resultId);
+    expect(pending.products[0]?.resultRevision).toBe(output.products[0]?.resultRevision);
+    expect(pending.products[0]?.metrics).toEqual(output.products[0]?.metrics);
   });
 
   it('rejects mock completion unless the deployment explicitly opts in', async () => {

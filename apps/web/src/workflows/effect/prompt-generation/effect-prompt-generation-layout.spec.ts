@@ -8,6 +8,14 @@ import editorSource from './components/EffectPromptItemDialog.vue?raw';
 import graphSource from './effect-prompt-generation-graph.ts?raw';
 
 describe('effect prompt generation current layout', () => {
+  it('polls regenerated child tasks without entering their editing workspace on acceptance', () => {
+    const start = pageSource.indexOf('const generateCurrentBatch =');
+    const end = pageSource.indexOf('async function handleMutationError', start);
+    const code = pageSource.slice(start, end);
+    expect(code).toContain('startPolling(productId, run)');
+    expect(code).not.toContain("emit('branchActivated')");
+    expect(code).not.toContain('synchronizeEditRun');
+  });
   it('filters by persisted source independently of purposes and manual editing', () => {
     expect(pageSource).toContain('aria-label="按来源筛选 Prompt"');
     expect(pageSource).toContain('{{ option.label }} <small>{{ originCount(option.value) }}</small>');

@@ -131,9 +131,9 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1').each([false, true])(
   },
 );
 
-it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
-  'starts a paid Prompt batch in a hidden child and publishes that same child after confirmation',
-  async () => {
+it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1').each([false, true])(
+  'keeps the parent unchanged while a background Prompt child runs (user switched=%s)',
+  async (userSwitched) => {
     const db = new PrismaService(new ConfigService({
       DATABASE_URL: process.env.DATABASE_URL ??
         'postgresql://postgres:postgres@localhost:5432/ai_marketing?schema=public',
@@ -174,6 +174,24 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         const child = await tx.workflowRun.findUniqueOrThrow({ where: { id: childId } });
         expect(child.branchPublishedAt).toBeNull();
         expect(child.editSessionNodeId).toBe('PROMPT_GENERATION');
+        const childSettings = await tx.workflowNodeState.findUniqueOrThrow({ where: {
+          projectId_workflowRunId_nodeId: { projectId: source.projectId,
+            workflowRunId: childId, nodeId: `PROMPT_GENERATION:${started.run.productId}` },
+        } });
+        expect(childSettings.state).toEqual(settings.state);
+        expect(child.activeKey).toBeNull();
+        expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: source.workflowRunId } })).activeKey)
+          .toBe('ACTIVE');
+        expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: source.workflowRunId } })).editSessionNodeId)
+          .toBeNull();
+        expect((await new EffectPromptRepository(tx as unknown as PrismaService)
+          .backgroundBatchRun(source.projectId, source.workflowRunId,
+          parentResult.productId))?.id).toBe(started.run.id);
+        const duplicate = await prompt.startRun(source.projectId, source.workflowRunId,
+          parentResult.productId, { operation: 'BATCH_GENERATE', targetItemId: null,
+            expectedSettingsRevision: settings.revision, expectedResultRevision: parentResult.revision,
+            idempotencyKey: `background-duplicate:${crypto.randomUUID()}` });
+        expect(duplicate.kind).toBe('ACTIVE_CONFLICT');
         const childArtifact = await tx.workingArtifact.findFirstOrThrow({ where: {
           projectId: source.projectId, workflowRunId: childId,
           nodeId: 'PROMPT_GENERATION',
@@ -209,6 +227,17 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
             sourceRevision: dependency.sourceRevision, sourceHash: dependency.sourceHash,
           })),
         };
+        let switchedRunId: string | undefined;
+        if (userSwitched) {
+          // Legacy copies could omit the product-scoped settings node. Confirm
+          // safely restores only this child's frozen settings, without model work.
+          await tx.workflowNodeState.delete({ where: { id: childSettings.id } });
+          await tx.workflowRun.update({ where: { id: source.workflowRunId }, data: { activeKey: null } });
+          switchedRunId = (await tx.workflowRun.create({ data: {
+            projectId: source.projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
+            status: 'ACTIVE', activeKey: 'ACTIVE', currentNodeId: 'SOURCE_IMPORT',
+          } })).id;
+        }
         const committed = await (prompt as unknown as {
           commitValidatedResultInTransaction: (
             transaction: Prisma.TransactionClient, projectId: string, resultId: string,
@@ -217,6 +246,10 @@ it.skipIf(process.env.EFFECT_EDIT_DATABASE_TEST !== '1')(
         }).commitValidatedResultInTransaction(tx, source.projectId, result.id, result.revision, input);
         expect(committed.kind).toBe('COMMITTED');
         expect(committed.workflowRunId).toBe(childId);
+        const active = await tx.workflowRun.findFirstOrThrow({ where: {
+          projectId: source.projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
+        } });
+        expect(active.id).toBe(userSwitched ? switchedRunId : childId);
         expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: childId } })).branchPublishedAt)
           .not.toBeNull();
         expect(await tx.workflowRun.count({ where: {
