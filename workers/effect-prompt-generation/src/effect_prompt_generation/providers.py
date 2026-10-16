@@ -208,12 +208,51 @@ class ProviderError(RuntimeError):
         error_type: ProviderErrorType = ProviderErrorType.UNKNOWN,
         attempts: int = 1,
         elapsed_ms: int = 0,
+        http_status: int | None = None,
+        supplier_error_code: str | None = None,
+        supplier_request_id: str | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.error_type = error_type
         self.attempts = max(1, attempts)
         self.elapsed_ms = max(0, elapsed_ms)
+        self.http_status = http_status
+        self.supplier_error_code = supplier_error_code
+        self.supplier_request_id = supplier_request_id
+
+
+def _safe_http_diagnostic(response: httpx.Response) -> dict[str, Any]:
+    """Never retain the provider message: it may echo input or credentials."""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    error = payload.get("error", {})
+    if not isinstance(error, dict):
+        error = {}
+    raw_code = error.get("code")
+    known = {
+        "MissingParameter", "InvalidParameter", "InvalidEndpoint", "AuthenticationError",
+        "Unauthorized", "InvalidApiKey", "AccessDenied", "PermissionDenied",
+        "RateLimitExceeded", "ServerOverloaded", "InternalServiceError",
+        "InputTextSensitiveContentDetected", "OutputTextSensitiveContentDetected",
+        "InputImageSensitiveContentDetected", "InputTextRiskDetection", "ContentSecurityDetectionError",
+    }
+    base = raw_code.split(".", 1)[0] if isinstance(raw_code, str) else ""
+    code = base if base in known else "UNRECOGNIZED"
+    request_id = (response.headers.get("x-request-id") or response.headers.get("x-tt-logid")
+                  or payload.get("request_id") or error.get("request_id"))
+    if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}", request_id):
+        request_id = None
+    return {
+        "http_status": response.status_code, "supplier_code": code,
+        "supplier_code_hash": hashlib.sha256(raw_code.encode()).hexdigest()
+        if isinstance(raw_code, str) else None,
+        "supplier_request_id": request_id,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -911,6 +950,14 @@ class ArkResponsesProvider:
         schema["$defs"]["ExecutionReview"]["properties"]["slotId"]["enum"] = [
             item.slot_id for item in candidates
         ]
+        schema["$defs"]["ExecutionReview"]["properties"]["issues"]["maxItems"] = 10
+        beat_schema = schema["$defs"]["ExecutionBeatReview"]
+        for name in ("noveltyKind", "visibleDelta", "stateBefore", "stateAfter",
+                     "cameraMotion", "cameraConflict", "handoffGap"):
+            beat_schema["properties"][name] = {
+                key: value for key, value in beat_schema["properties"][name]["anyOf"][0].items()
+            }
+            beat_schema["required"].append(name)
         payload = {
             "items": [{"task": _creative_task_brief(
                 by_id[item.slot_id], assignment=_creative_fact_assignment(by_id[item.slot_id], application),
@@ -941,6 +988,14 @@ class ArkResponsesProvider:
         schema["$defs"]["ExecutionCorrectionItem"]["properties"]["slotId"]["enum"] = [
             item.slot_id for item in candidates
         ]
+        if reviews is not None:
+            row_schema = schema["$defs"]["ExecutionCorrectionItem"]
+            row_schema["properties"]["changed"] = {"type": "boolean", "const": True}
+            for name in ("creativeCore", "dimensions", "shotPlan"):
+                row_schema["properties"][name] = row_schema["properties"][name]["anyOf"][0]
+                row_schema["required"].append(name)
+            row_schema["properties"]["resolutions"]["minItems"] = 1
+            row_schema["required"].append("resolutions")
         payload = {
             "items": [{
                 "task": _creative_task_brief(
@@ -2656,6 +2711,7 @@ class ArkResponsesProvider:
         error_type = ProviderErrorType.UNKNOWN
         retryable = False
         attempts = 0
+        http_diagnostic: dict[str, Any] = {}
         for attempt in range(1, self._max_attempts + 1):
             attempts = attempt
             LOGGER.info(
@@ -2671,6 +2727,16 @@ class ArkResponsesProvider:
             except httpx.TransportError as exc:
                 last_error, error_type, retryable = exc, ProviderErrorType.NETWORK, True
             else:
+                if response.is_error:
+                    http_diagnostic = _safe_http_diagnostic(response)
+                    LOGGER.warning(
+                        "Ark HTTP error stage=%s step=%s http_status=%s supplier_code=%s supplier_code_hash=%s supplier_request_id=%s input_hash=%s schema_hash=%s",
+                        stage, schema_name, http_diagnostic["http_status"],
+                        http_diagnostic["supplier_code"], http_diagnostic["supplier_code_hash"],
+                        http_diagnostic["supplier_request_id"], hashlib.sha256(prompt.encode()).hexdigest(),
+                        hashlib.sha256(json.dumps(response_schema or model_type.model_json_schema(by_alias=True),
+                                                  sort_keys=True).encode()).hexdigest(),
+                    )
                 if not response.is_error:
                     try:
                         response_payload = response.json()
@@ -2811,6 +2877,9 @@ class ArkResponsesProvider:
             error_type=error_type,
             attempts=attempts,
             elapsed_ms=elapsed,
+            http_status=http_diagnostic.get("http_status"),
+            supplier_error_code=http_diagnostic.get("supplier_code"),
+            supplier_request_id=http_diagnostic.get("supplier_request_id"),
         ) from last_error
 
 

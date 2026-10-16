@@ -11,7 +11,7 @@ from pydantic import Field, model_validator
 
 from .models import (
     ApiModel, CreativeCandidate, CreativeDimensions, MaterialShotPlan,
-    ExecutionReview, ExecutionReviewBatch, ExecutionIssueResolution,
+    ExecutionReview, ExecutionReviewBatch, ExecutionIssue, ExecutionIssueResolution,
 )
 from .shot_plan import compile_material_shot_plan
 
@@ -22,7 +22,7 @@ class ExecutionCorrectionItem(ApiModel):
     creative_core: str | None = Field(default=None, min_length=1, max_length=160)
     dimensions: CreativeDimensions | None = None
     shot_plan: MaterialShotPlan | None = None
-    resolutions: list[ExecutionIssueResolution] = Field(default_factory=list, max_length=8)
+    resolutions: list[ExecutionIssueResolution] = Field(default_factory=list, max_length=12)
 
     @model_validator(mode="after")
     def complete_replacement(self) -> ExecutionCorrectionItem:
@@ -76,6 +76,25 @@ def validate_execution_reviews(
             raise ValueError("execution review duplicate issue IDs")
         if any(not 0 <= seq <= count for issue in review.issues for seq in issue.sequences):
             raise ValueError("execution review issue sequence out of range")
+        # Reconcile explicit AI decisions only. Never infer a conflict from words,
+        # novelty enums or time thresholds, and never reject a semantic candidate.
+        issues = list(review.issues)
+        for flag, code in (("camera_conflict", "CAMERA_VIEW"), ("handoff_gap", "TOOL_CONTINUITY")):
+            uncovered = [beat for beat in review.beats if getattr(beat, flag) is True
+                         and not any(issue.code == code and (0 in issue.sequences
+                                      or beat.sequence in issue.sequences) for issue in issues)]
+            if uncovered:
+                issue_id = f"AI_{code}"
+                suffix = 1
+                while issue_id in {issue.issue_id for issue in issues}:
+                    issue_id = f"AI_{code}_{suffix}"
+                    suffix += 1
+                issues.append(ExecutionIssue(
+                    issue_id=issue_id, code=code,  # type: ignore[arg-type]
+                    sequences=[beat.sequence for beat in uncovered],
+                    diagnosis="；".join(beat.evidence for beat in uncovered)[:240],
+                ))
+        reviews[item.slot_id] = review.model_copy(update={"issues": issues})
     return reviews
 
 

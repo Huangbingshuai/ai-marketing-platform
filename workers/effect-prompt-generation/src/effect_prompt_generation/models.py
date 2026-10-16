@@ -1402,6 +1402,22 @@ class ExecutionBeatReview(ApiModel):
     sequence: int = Field(ge=1, le=6)
     information_status: Literal["NEW", "REPEAT", "HOLD"]
     evidence: str = Field(min_length=1, max_length=140)
+    novelty_kind: Literal["OBJECT_STATE", "CONTACT_CHANGE", "REVEAL_OCCLUDED",
+                          "REAL_EVOLUTION", "CAMERA_ONLY", "NONE"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    visible_delta: str | None = Field(default=None, min_length=1, max_length=140,
+                                     exclude_if=lambda value: value is None)
+    state_before: str | None = Field(default=None, min_length=1, max_length=160,
+                                    exclude_if=lambda value: value is None)
+    state_after: str | None = Field(default=None, min_length=1, max_length=160,
+                                   exclude_if=lambda value: value is None)
+    camera_motion: Literal["FIXED", "PAN_TILT", "ZOOM", "TRANSLATE", "ORBIT",
+                           "CUT", "SEQUENCE"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    camera_conflict: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    handoff_gap: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class ExecutionIssue(ApiModel):
@@ -1415,7 +1431,7 @@ class ExecutionIssue(ApiModel):
 class ExecutionReview(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     beats: list[ExecutionBeatReview] = Field(min_length=1, max_length=6)
-    issues: list[ExecutionIssue] = Field(default_factory=list, max_length=8)
+    issues: list[ExecutionIssue] = Field(default_factory=list, max_length=12)
 
 
 class ExecutionReviewBatch(ApiModel):
