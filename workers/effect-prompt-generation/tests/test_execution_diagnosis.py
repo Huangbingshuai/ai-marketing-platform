@@ -14,6 +14,7 @@ from effect_prompt_generation.models import (
 )
 from effect_prompt_generation.providers import MockAiProvider, ProviderError
 from test_material_planning import ready
+from test_shot_plan import _timed_plan
 
 
 class DiagnosedProvider(MockAiProvider):
@@ -113,3 +114,25 @@ async def test_review_uses_actual_plan_and_rejects_only_protocol_errors() -> Non
     review.issues[0].sequences = [7]
     with pytest.raises(ValueError, match="out of range"):
         validate_execution_reviews([item], ExecutionReviewBatch(items=[review]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("product", ["果酱", "护理液", "磁吸电源", "旅行箱"])
+@pytest.mark.parametrize("duration", range(4, 16))
+async def test_targeted_rewrite_protocol_is_product_and_duration_independent(product: str, duration: int) -> None:
+    pipeline, runtime, _ = await ready()
+    shard = (await pipeline.plan_creatives(runtime, round_number=0))[0]
+    original = (await pipeline.generate_creative_shard(runtime, shard))[0]
+    review = original.execution_correction.review.model_copy(deep=True)
+    review.issues = [ExecutionIssue(issue_id="I1", code="TOOL_CONTINUITY", sequences=[1],
+                                   diagnosis=f"{product}工具交接的 AI 诊断协议样例")]
+    rewritten = apply_execution_corrections([original], ExecutionCorrectionBatch(items=[
+        ExecutionCorrectionItem(slot_id=original.slot_id, changed=True,
+            creative_core=product + "既有使用事件", dimensions=original.dimensions,
+            shot_plan=_timed_plan([1.5, duration - 2, 0.5]),
+            resolutions=[ExecutionIssueResolution(issue_id="I1", revised_sequences=[1, 2],
+                                                  change_summary="明确支撑与工具交接")])
+    ]), {original.slot_id: duration}, {original.slot_id: review})[0]
+    assert sum(beat.duration_seconds for beat in rewritten.shot_plan.beats) == duration
+    assert rewritten.declared_fact_ids == original.declared_fact_ids
+    assert f"{duration}秒" in rewritten.content
