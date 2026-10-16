@@ -50,6 +50,20 @@ class DramaDevelopment(Model):
         return self
 
 
+class PremiseFirstDramaDevelopment(DramaDevelopment):
+    """Same validated business data; only new strategies ask for the premise first."""
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        schema = super().model_json_schema(*args, **kwargs)
+        idea = schema['$defs']['DramaIdea']
+        order = ('id', 'name', 'viewingPromise', 'informationDesign', 'emotionalMovement',
+                 'weakness', 'devices', 'dialogueIntent', 'factIds', 'plan')
+        idea['properties'] = {key: idea['properties'][key] for key in order}
+        idea['required'] = list(order)
+        return schema
+
+
 class DramaEvaluation(Model):
     ideaId: Id
     verdict: Literal['ADVANCE', 'REJECT']
@@ -112,27 +126,35 @@ def concept_for(idea: DramaIdea, script_id: str) -> TypedConcept:
 async def develop_drama(p: Pipeline) -> TypedConcepts:
     from .routes import strategy_for
     strategy = strategy_for('DRAMA',p.input['strategyVersions']['concept'])
+    development_schema = PremiseFirstDramaDevelopment if getattr(strategy, 'PREMISE_FIRST', False) else DramaDevelopment
     node, count = 'DRAMA_CONCEPT', min(7,len(p.input['scriptIds'])+2)
     facts = fact_catalog(p.input['brief'])
     saved = p.checkpoints.get((node,''),{})
     partial: dict[str,Any] = dict(saved.get('output') or {})
     context = {'candidateCount':count,'factCatalog':facts,'existingTitles':[v['name'] for v in p.input['existingConcepts']]}
+    if getattr(strategy, 'DEVELOPMENT_HISTORY', False):
+        context['existingConcepts'] = p.input['existingConcepts']
+    development_facts = facts
+    if hasattr(strategy, 'DEVELOPMENT_BRIEF_FIELDS'):
+        context['brief'] = {k:v for k,v in p.input['brief'].items() if k in strategy.DEVELOPMENT_BRIEF_FIELDS}
+        development_facts = [f for f in facts if f['field'] in strategy.DEVELOPMENT_FACT_FIELDS]
+        context['factCatalog'] = development_facts
     if saved.get('status') == 'SUCCEEDED':
         development = DramaDevelopment.model_validate(partial['development'])
         selection = DramaSelection.model_validate({k:v for k,v in partial.items() if k in DramaSelection.model_fields})
     else:
         if partial.get('exhausted'):
             raise ValueError('drama redevelopment budget exhausted')
-        development = await checked_model(p,node,'developmentResult',DramaDevelopment,context,strategy.DEVELOP,partial,
-            lambda v:validate_development(v,facts,count))
+        development = await checked_model(p,node,'developmentResult',development_schema,context,strategy.DEVELOP,partial,
+            lambda v:validate_development(v,development_facts,count))
         if development.readiness.status == 'NEEDS_INFORMATION':
             selection = DramaSelection(status='NEEDS_INFORMATION',reason=development.readiness.reason[:240],missing=development.readiness.missing,evaluations=[],choices=[])
         else:
             for attempt in range(2):
                 if attempt:
-                    development = await checked_model(p,node,'redevelopmentResult',DramaDevelopment,
+                    development = await checked_model(p,node,'redevelopmentResult',development_schema,
                         {**context,'previousDevelopment':development.model_dump(),'rejectedSelection':selection.model_dump()},strategy.DEVELOP,partial,
-                        lambda v:validate_development(v,facts,count))
+                        lambda v:validate_development(v,development_facts,count))
                 selection = await checked_model(p,node,'selectionResult' if not attempt else 'secondSelectionResult',DramaSelection,
                     {'auditRole':'DRAMA_SELECTION','development':development.model_dump(),'factCatalog':facts,
                         'scriptIds':p.input['scriptIds'],'selectionCount':len(p.input['scriptIds']),'existingConcepts':p.input['existingConcepts']},

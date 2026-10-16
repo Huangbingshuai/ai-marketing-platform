@@ -2,8 +2,8 @@ import type { CustomizedBrief } from './customized-extraction';
 import type { ScriptCreativePlan, ScriptReadiness } from './customized-script-routes';
 import { brandFactCatalog } from './customized-brand-creation';
 
-export const DRAMA_CREATION_VERSION = '2026-10-14-drama.3';
-export const DRAMA_CREATION_VERSIONS: readonly string[] = ['2026-10-14-drama.1', '2026-10-14-drama.2', DRAMA_CREATION_VERSION];
+export const DRAMA_CREATION_VERSION = '2026-10-16-drama.11';
+export const DRAMA_CREATION_VERSIONS: readonly string[] = ['2026-10-14-drama.1', '2026-10-14-drama.2', '2026-10-14-drama.3', '2026-10-16-drama.4', '2026-10-16-drama.5', '2026-10-16-drama.6', '2026-10-16-drama.7', '2026-10-16-drama.8', '2026-10-16-drama.9', '2026-10-16-drama.10', DRAMA_CREATION_VERSION];
 export const isDramaStrategy = (version: string | undefined) => DRAMA_CREATION_VERSIONS.includes(version ?? '');
 export const DRAMA_DEVELOPMENT_FIELDS = {
   viewingPromise: '观众想看到的答案', informationDesign: '信息揭示安排',

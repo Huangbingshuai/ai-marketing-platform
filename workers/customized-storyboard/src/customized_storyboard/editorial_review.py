@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, TYPE_CHECKING
 from pydantic import ValidationError
 from .review_calibration import ObservedReview, EditorialReview, resolve_observations, OBSERVATION_INSTRUCTION
+from .drama_audit import DramaEditorialReview, DramaMeritReview, resolve_drama_audit, resolve_drama_merit
 from .review_evidence import evidence_context, EVIDENCE_INSTRUCTION
 from .typed_creation import TypedStory, TypedReview, TypedReviewV4, check_review, materialize_quality_findings
 from .routes import COMMERCE_VERSIONS, PRESENTER_VERSIONS, DRAMA_VERSIONS, strategy_for
@@ -41,19 +42,30 @@ async def review_editorial(p: Pipeline, stage: str, sid: str, context: dict[str,
         if 'factReview' in partial:
             result = TypedReview.model_validate(partial['factReview'])
         else:
+            strategy = strategy_for(p.input['routeId'], p.input['strategyVersions']['review'])
             factual_context: dict[str, Any] = {
                 'auditRole': 'FACTS', 'story': story.model_dump(exclude={'content'}),
                 'originalReview': context.get('originalReview'),
             }
+            if getattr(strategy, 'FOCUSED_REVIEW', False) and factual_context['originalReview']:
+                factual_context['originalReview'] = {'findings': factual_context['originalReview']['findings']}
+            if getattr(strategy, 'STORY_DURATION_ADVISORY', False):
+                factual_context['auditScope'] = 'STORY_BEFORE_SHOTS'
+                factual_context['story']['beats'] = [
+                    {k:v for k,v in beat.items() if k != 'durationSeconds'}
+                    for beat in factual_context['story']['beats']
+                ]
             if (p.input['routeId'] == 'DRAMA' and p.input['strategyVersions']['review'] in DRAMA_VERSIONS) or (p.input['routeId'] == 'ECOMMERCE' and p.input['strategyVersions']['review'] in {'2026-10-14-commerce.5', *PRESENTER_VERSIONS}):
                 # Reference duration guides writing; it is not factual audit evidence.
                 # Preserve actual beat durations and the immutable generation settings.
                 settings = dict(p.context['settings'])
                 settings.pop('targetDurationSeconds', None)
                 factual_context.update(settings=settings, durationPolicy=(
+                    '篇章估时仅为剧本规模建议，不是已确定镜头时长；不作逐段最低秒数审查，精确计时归后续分镜。'
+                    if getattr(strategy, 'STORY_DURATION_ADVISORY', False) else
                     '只检查正文各篇章实际估时能否容纳动作、对白、停顿和字幕；'
                     '不以任何参考总时长判定过短、过长或覆盖不足。'))
-            result = await p.model(stage, TypedReview, factual_context, FACT_REVIEW)
+            result = await p.model(stage, TypedReview, factual_context, getattr(strategy, 'FACT_REVIEW', FACT_REVIEW))
             check_review(result, story)
             await checkpoint('factReview', result.model_dump())
         check_review(result, story)
@@ -94,10 +106,15 @@ async def review_editorial(p: Pipeline, stage: str, sid: str, context: dict[str,
             opportunity = commitment.get('opportunity') or {}
             evaluation['reviewScope'] = {'purchaseQuestion': opportunity.get('purchaseQuestion', '')}
         current = evaluation
+        review_schema = DramaMeritReview if getattr(strategy, 'MERIT_AUDIT', False) else DramaEditorialReview if getattr(strategy, 'MECHANISM_AUDIT', False) else (
+            EditorialReview if commerce or drama or p.input['strategyVersions']['review'] in {
+                '2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1',
+                '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5',
+                '2026-10-14.6', '2026-10-14.7'} else ObservedReview)
         for attempt in range(2):
-            decision = await p.model(stage, EditorialReview if commerce or drama or p.input['strategyVersions']['review'] in {'2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'} else ObservedReview, current, instruction)
+            decision = await p.model(stage, review_schema, current, instruction)
             try:
-                result = resolve_observations(decision, sources)
+                result = resolve_drama_merit(decision, sources) if isinstance(decision, DramaMeritReview) else resolve_drama_audit(decision, sources) if isinstance(decision, DramaEditorialReview) else resolve_observations(decision, sources)
                 if result.routeId != p.input['routeId']:
                     raise ValueError('quality route mismatch')
                 check_review(result, story)

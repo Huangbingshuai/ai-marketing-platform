@@ -1,11 +1,22 @@
 import { expect, it } from 'vitest';
 import fixture from '../fixtures/customized-drama-creation.json';
-import { DRAMA_CREATION_VERSION, dramaConcept, validateDramaDevelopment, validateDramaSelection, type DramaDevelopment } from './customized-drama-creation';
+import { DRAMA_CREATION_VERSION, DRAMA_CREATION_VERSIONS, isDramaStrategy, dramaConcept, validateDramaDevelopment, validateDramaSelection, type DramaDevelopment } from './customized-drama-creation';
 import { storyboardStages, validateStoryboardCheckpoint, type StoryboardInput } from './customized-storyboard-generation';
 import { scriptStrategyVersion } from './customized-script-routes';
 const input=fixture.input as unknown as StoryboardInput;
 const selection=fixture.selection;
 const development=selection.development as DramaDevelopment;
+it('keeps historical drama tasks valid while new tasks freeze the current strategy',()=>{
+  expect(DRAMA_CREATION_VERSION).toBe('2026-10-16-drama.11');
+  expect(scriptStrategyVersion('DRAMA')).toBe(DRAMA_CREATION_VERSION);
+  expect(DRAMA_CREATION_VERSIONS).toEqual(['2026-10-14-drama.1','2026-10-14-drama.2','2026-10-14-drama.3','2026-10-16-drama.4','2026-10-16-drama.5','2026-10-16-drama.6','2026-10-16-drama.7','2026-10-16-drama.8','2026-10-16-drama.9','2026-10-16-drama.10',DRAMA_CREATION_VERSION]);
+  for(const version of DRAMA_CREATION_VERSIONS) {
+    expect(isDramaStrategy(version)).toBe(true);
+    const frozen={...input,strategyVersions:{concept:version,story:version,review:version,repair:version}};
+    expect(validateStoryboardCheckpoint('DRAMA_CONCEPT',selection,frozen,'')).toBe(true);
+  }
+  expect(isDramaStrategy('2026-10-16-drama.unknown')).toBe(false);
+});
 it('shares original drama selection and projection with Python without a subtype selector',()=>{
   expect(scriptStrategyVersion('DRAMA')).toBe(DRAMA_CREATION_VERSION);
   expect(validateDramaDevelopment(development,input.brief,1)).toBe(true);

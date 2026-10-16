@@ -175,6 +175,34 @@ async def test_video_script_repair_uses_capacity_reasoning_without_changing_lega
 
 
 @pytest.mark.parametrize(('version', 'stage', 'role', 'route', 'effort'), [
+    ('2026-10-16-drama.11', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.11', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.11', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.11', 'DRAMA_REVIEW', 'FACTS', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.11', 'REPAIR', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.11', 'RECHECK', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.10', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.10', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.10', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.10', 'DRAMA_REVIEW', 'FACTS', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.10', 'REPAIR', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.10', 'RECHECK', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.9', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.9', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.9', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.9', 'DRAMA_REVIEW', 'FACTS', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.9', 'REPAIR', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.9', 'RECHECK', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.5', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.5', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.5', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.5', 'REPAIR', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.4', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.4', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.4', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.4', 'DRAMA_REVIEW', 'FACTS', 'DRAMA', 'medium'),
+    ('2026-10-16-drama.4', 'REPAIR', None, 'DRAMA', 'medium'),
+    ('2026-10-16-drama.4', 'RECHECK', 'EDITORIAL', 'DRAMA', 'medium'),
     ('2026-10-14-drama.3', 'DRAMA_CONCEPT', 'DRAMA_SELECTION', 'DRAMA', 'medium'),
     ('2026-10-14-drama.3', 'DRAMA_STORY', None, 'DRAMA', 'medium'),
     ('2026-10-14-drama.3', 'DRAMA_REVIEW', 'EDITORIAL', 'DRAMA', 'medium'),
@@ -230,7 +258,8 @@ async def test_reasoning_budget_follows_frozen_stage_not_every_call(version, sta
         await provider.close()
 
 
-async def test_drama_short_development_uses_low_budget_without_weakening_independent_selection():
+@pytest.mark.parametrize('version', ['2026-10-14-drama.3', '2026-10-16-drama.4', '2026-10-16-drama.5', '2026-10-16-drama.6', '2026-10-16-drama.7', '2026-10-16-drama.8', '2026-10-16-drama.9', '2026-10-16-drama.10'])
+async def test_drama_short_development_uses_low_budget_without_weakening_independent_selection(version):
     async def handler(request):
         payload=json.loads(request.content)
         assert payload['reasoning']['effort']=='low'
@@ -239,7 +268,7 @@ async def test_drama_short_development_uses_low_budget_without_weakening_indepen
     provider=await configured(handler)
     try:
         await provider.generate('DRAMA_CONCEPT','fixed-pro',Review,{
-            'storyFormat':'VIDEO_SCRIPT_V3','strategyVersion':'2026-10-14-drama.3',
+            'storyFormat':'VIDEO_SCRIPT_V3','strategyVersion':version,
             'settings':{'videoType':'DRAMA'},'candidateCount':3},'短故事开发')
     finally:
         await provider.close()

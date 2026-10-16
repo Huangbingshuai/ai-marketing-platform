@@ -10,6 +10,7 @@ from customized_storyboard.typed_creation import (
 from customized_storyboard.routes import STRATEGIES, VERSION, strategy_for
 from customized_storyboard.review_evidence import EvidenceReview, evidence_context, resolve_evidence
 from customized_storyboard.review_calibration import ObservedReview, EditorialReview, resolve_observations
+from customized_storyboard.drama_audit import DramaEditorialReview, DramaMeritReview
 from customized_storyboard.creative_options import CreativeSlate
 from customized_storyboard.brand_development import BrandDevelopment, BrandSelection
 from customized_storyboard.brand_selection import LeanBrandSelection
@@ -77,7 +78,7 @@ class Provider:
                 body['structureMapping'] = []
             return schema.model_validate(body)
         if stage == 'REPAIR':
-            assert strategy.WRITE in instruction
+            assert getattr(strategy, 'REPAIR', strategy.WRITE) in instruction
             body = draft()
             if not context.get('structureRequirements'):
                 body['structureMapping'] = []
@@ -89,9 +90,9 @@ class Provider:
             assert 'concept' not in context
         error = self.repair and stage.endswith('_REVIEW') or self.recheck_error and stage == 'RECHECK'
         result = {'summary': '独立核对全文', 'findings': [{'severity': 'ERROR', 'category': 'STORY', 'shotIds': [], 'beatIds': ['P01'], 'message': '推进不足', 'evidence': '轮廓', 'suggestion': '展开变化'}] if error else []}
-        if schema in {TypedReviewV4, EvidenceReview, ObservedReview, EditorialReview}:
+        if schema in {TypedReviewV4, EvidenceReview, ObservedReview, EditorialReview, DramaEditorialReview, DramaMeritReview}:
             beat = context['story']['beats'][0]
-            actual_quote = beat['excerpts'][0]['text'] if schema in {EvidenceReview, ObservedReview, EditorialReview} else beat['content'].split('\n\n')[-1]
+            actual_quote = beat['excerpts'][0]['text'] if schema in {EvidenceReview, ObservedReview, EditorialReview, DramaEditorialReview, DramaMeritReview} else beat['content'].split('\n\n')[-1]
             result.update({'routeId': self.route, 'qualityChecks': [
                 {'criterion': criterion,
                  'verdict': 'FAIL' if self.quality_fail and stage.endswith('_REVIEW') and i == 0 else 'PASS',
@@ -99,16 +100,25 @@ class Provider:
                  'reason': '正文有可见动作' if i else '计划未在正文形成清楚变化',
                  'suggestion': '增加正文画面变化' if i == 0 else ''}
                 for i, criterion in enumerate(QUALITY_CRITERIA[self.route])]})
-            if schema in {EvidenceReview, ObservedReview, EditorialReview}:
+            if schema in {EvidenceReview, ObservedReview, EditorialReview, DramaEditorialReview, DramaMeritReview}:
                 for check in result['qualityChecks']:
                     check.pop('evidence')
                     check.pop('beatIds')
                     check['evidenceId'] = beat['excerpts'][0]['id']
-                    if schema in {ObservedReview, EditorialReview}:
+                    if schema in {ObservedReview, EditorialReview, DramaEditorialReview, DramaMeritReview}:
                         check['observed'] = check.pop('reason')
                         check['defectScope'] = 'STRUCTURAL' if check['verdict'] == 'FAIL' else 'NONE'
                         check['limitation'] = '正文未体现' if check['verdict'] == 'FAIL' else ''
                         check['assessment'] = 'NOT_DEMONSTRATED' if check.pop('verdict') == 'FAIL' else 'DEMONSTRATED'
+        if issubclass(schema, DramaEditorialReview):
+            ref = context['story']['beats'][0]['excerpts'][0]['id']
+            result['mechanism'] = {'mainLine':'角色采取行动后得到具体回应', 'dialogueMode':'DRAMATIC_EXCHANGE',
+                'dialogueEvidenceIds':[ref], 'dialogueReason':'对白推动实际交锋', 'dialogueRevision':'',
+                'endingMode':'DEVELOPED_PAYOFF','endingSetupEvidenceId':ref,'endingEvidenceId':ref,
+                'endingReason':'前文的动作在结尾得到回应','endingRevision':''}
+        if schema is DramaMeritReview:
+            result['viewingValue'] = {'viewingEvent':'角色的试探引出具体行为回应','classification':'DRAMA_DRIVEN',
+                'evidenceId':context['story']['beats'][0]['excerpts'][0]['id'],'reason':'动作中实际展开了信息与关系变化','revision':''}
         return schema.model_validate(result)
 
 
@@ -174,7 +184,7 @@ async def test_quality_evidence_must_quote_body() -> None:
     class FabricatedReview(Provider):
         async def generate(self, stage: str, model: str, schema: Any, context: Any, instruction: str) -> Any:
             result = await super().generate(stage, model, schema, context, instruction)
-            if stage == 'BRAND_AD_REVIEW' and schema in {ObservedReview, EditorialReview}:
+            if stage == 'BRAND_AD_REVIEW' and schema in {ObservedReview, EditorialReview, DramaEditorialReview, DramaMeritReview}:
                 result.qualityChecks[0].evidenceId = 'P99:E99'
             return result
     api, provider = Api(), FabricatedReview('BRAND_AD')
@@ -187,7 +197,7 @@ async def test_invalid_quote_corrects_once_without_regenerating_body() -> None:
     class CorrectedReview(Provider):
         async def generate(self, stage: str, model: str, schema: Any, context: Any, instruction: str) -> Any:
             result = await super().generate(stage, model, schema, context, instruction)
-            if stage == 'BRAND_AD_REVIEW' and schema in {ObservedReview, EditorialReview} and 'previousReview' not in context:
+            if stage == 'BRAND_AD_REVIEW' and schema in {ObservedReview, EditorialReview, DramaEditorialReview, DramaMeritReview} and 'previousReview' not in context:
                 result.qualityChecks[0].evidenceId = 'P99:E99'
             return result
     api, provider = Api(), CorrectedReview('BRAND_AD')

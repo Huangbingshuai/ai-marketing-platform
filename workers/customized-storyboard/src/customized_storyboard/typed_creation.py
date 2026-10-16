@@ -476,11 +476,17 @@ async def create(p: Pipeline, concept: TypedConcept, concepts: TypedConcepts, re
                     capacity_note = ('\n逐项解决全部ERROR。容量不足时按修订后的实际对白、动作与停顿重新估时；参考时长不是总量上限，不必从其他正常篇章扣秒，也不能删少量文字后反而缩短该段估时。优先保留戏剧关键行为、删除重复解释。' if p.input['strategyVersions']['repair'] in {VERSION, *COMMERCE_VERSIONS, *DRAMA_VERSIONS, '2026-10-14.6', '2026-10-14.5', '2026-10-14.4', '2026-10-14.3', '2026-10-14.2', '2026-10-14.1', '2026-10-13.11', '2026-10-13.10', '2026-10-13.9', '2026-10-13.8', '2026-10-13.6', '2026-10-13.7'} else '')
                     if p.input['strategyVersions']['repair'] in COMMERCE_VERSIONS:
                         capacity_note = '\n逐项解决全部ERROR，保留核心购买动机与可观察结果；先删无关参数、重复旁白及不必要动作，再按真实容量估时，不能仅靠加秒数逃避短片聚焦。'
+                    if hasattr(strategy, 'REPAIR_CAPACITY'):
+                        capacity_note = '\n' + strategy.REPAIR_CAPACITY
+                    repair_review = {'findings': [f.model_dump() for f in review.findings if f.severity == 'ERROR']} if getattr(strategy, 'FOCUSED_REVIEW', False) else review.model_dump()
                     patch = TypedPatch.model_validate(partial['patch']) if 'patch' in partial else await p.model(stage, TypedPatch,
-                        {**context, 'story': review_context(story, True), 'review': review.model_dump()},
-                        strategy.WRITE + body_format + '\n仅返回需要修改的正文单元replacements，按原beatId替换其完整content和实际时长，不输出未改正文。不得新增、删除或重编号；必要的内容重组在原有篇章内完成。metadata只列确实变化的辅助字段。保留未受影响段落；同步concept和structureMapping，引用最终正文。不变更scriptId或视频类型。' + capacity_note)
+                        {**context, 'story': review_context(story, True), 'review': repair_review},
+                        getattr(strategy, 'REPAIR', strategy.WRITE + body_format) + '\n仅返回需要修改的正文单元replacements，按原beatId替换其完整content和实际时长，不输出未改正文。不得新增、删除或重编号；必要的内容重组在原有篇章内完成。metadata只列确实变化的辅助字段。保留未受影响段落；同步concept和structureMapping，引用最终正文。不变更scriptId或视频类型。' + capacity_note)
                     await p.step(stage, sid, 'RUNNING', {'patch': patch.model_dump()})
-                    revised, changes = apply_patch(story, patch, requirements)
+                    # AI-arranged structure has no user requirement IDs. Canonicalize
+                    # this empty mapping, preserving the raw patch and all body edits.
+                    applied_patch = patch.model_copy(update={'structureMapping': []}) if getattr(strategy, 'FOCUSED_REVIEW', False) and not requirements else patch
+                    revised, changes = apply_patch(story, applied_patch, requirements)
                     updated_concept = patch.concept
                 else:
                     revision = TypedRevision.model_validate(partial['revision']) if 'revision' in partial else await p.model(stage, TypedRevision,
