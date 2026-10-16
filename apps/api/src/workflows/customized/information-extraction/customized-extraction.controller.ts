@@ -3,13 +3,14 @@ import {
   Controller,
   Get,
   HttpCode,
+  Inject,
   Param,
   ParseUUIDPipe,
   Post,
   Put,
   Query,
 } from '@nestjs/common';
-import type { CustomizedExtractionService } from './customized-extraction.service';
+import { CustomizedExtractionService } from './customized-extraction.service';
 import type {
   ConfirmCustomizedExtractionDto,
   ExtractionScopeDto,
@@ -18,7 +19,9 @@ import type {
 } from './customized-extraction.dto';
 @Controller('projects/:projectId/workflows/customized/information-extraction')
 export class CustomizedExtractionController {
-  constructor(private readonly service: CustomizedExtractionService) {}
+  constructor(
+    @Inject(CustomizedExtractionService) private readonly service: CustomizedExtractionService,
+  ) {}
   @Get() workspace(
     @Param('projectId', new ParseUUIDPipe()) projectId: string,
     @Query() q: ExtractionScopeDto,
