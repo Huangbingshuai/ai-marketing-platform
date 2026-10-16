@@ -20,7 +20,6 @@ import type { ProductionAsset, ProductionShot } from '@ai-marketing/contracts';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
-import ProductionRenderDialog from './ProductionRenderDialog.vue';
 import ProductionAssetPreparation from './ProductionAssetPreparation.vue';
 const props = defineProps<{
   projectId: string;
@@ -36,6 +35,7 @@ const emit = defineEmits<{
   merge: [id: string];
   edit: [];
   regenerate: [id: string];
+  images: [assets: ProductionAsset[]];
 }>();
 const categories = [
   { id: 'PRODUCT', name: '产品', icon: Box, description: '产品形象、结构与标识' },
@@ -49,8 +49,6 @@ const category = ref('ALL'),
 const detailId = ref(''),
   draft = ref<ProductionAsset | null>(null),
   detailEditing = ref(false);
-const renderAssets = ref<ProductionAsset[]>([]),
-  renderOpen = ref(false);
 const adding = ref(false);
 const selected = computed(() => props.assets.find((a) => a.id === detailId.value));
 const filtered = computed(() =>
@@ -93,8 +91,7 @@ function apply() {
 }
 function render(items: ProductionAsset[]) {
   detailId.value = '';
-  renderAssets.value = items;
-  renderOpen.value = true;
+  if (!props.locked) emit('images', items);
 }
 function add() {
   adding.value = true;
@@ -258,7 +255,7 @@ watch(
           <strong>{{ selected.image ? '已关联图片' : '图片待准备' }}</strong>
           <p>先确定公共形象，图片无需立即生成。</p>
           <button class="studio-button" :disabled="locked" @click="render([selected])">
-            <ImagePlus :size="15" />生成图片
+            <ImagePlus :size="15" />{{ selected.image ? '重新生成图片' : '生成图片' }}
           </button>
         </div>
       </div>
@@ -367,12 +364,6 @@ watch(
       </footer>
     </div>
   </WorkflowInformationDialog>
-  <ProductionRenderDialog
-    :open="renderOpen"
-    type="IMAGE"
-    :assets="renderAssets"
-    @close="renderOpen = false"
-  />
 </template>
 <style scoped>
 .asset-detail :deep(.information-field textarea) {

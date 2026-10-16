@@ -1,8 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { ImagePlus, Video, CircleHelp } from '@lucide/vue';
-import type { ProductionAsset, ProductionShot } from '@ai-marketing/contracts';
+import { BaseButton } from '@ai-marketing/ui';
+import {
+  CUSTOMIZED_IMAGE_MODELS,
+  CUSTOMIZED_IMAGE_RESOLUTIONS,
+  CUSTOMIZED_IMAGE_RATIOS,
+  type CustomizedImageSettings,
+  type ProductionAsset,
+  type ProductionShot,
+} from '@ai-marketing/contracts';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
+import ProductionImageComposer from './ProductionImageComposer.vue';
+import { defaultAssetImagePrompt } from './production-image-input';
 const props = defineProps<{
   open: boolean;
   type: 'IMAGE' | 'VIDEO';
@@ -11,13 +21,58 @@ const props = defineProps<{
   prompt?: string;
   ratio?: string;
   resolution?: string;
+  busy?: boolean;
+  error?: string;
+  projectId?: string;
+  workflowRunId?: string;
+  brandReferences?: { assetId: string; version: number; name: string }[] | undefined;
+  settings?: CustomizedImageSettings | undefined;
 }>();
-defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; generate: [settings: CustomizedImageSettings] }>();
+const model = ref<CustomizedImageSettings['model']>(CUSTOMIZED_IMAGE_MODELS[0].id);
+const imageResolution = ref<CustomizedImageSettings['resolution']>('2K');
+const imageRatio = ref<CustomizedImageSettings['ratio']>('1:1');
+const selectedIds = ref<string[]>([]);
+watch(
+  () => props.open,
+  (open) => {
+    if (!open) return;
+    const missing = props.assets.filter((a) => !a.image);
+    selectedIds.value = (props.assets.length > 1 && missing.length ? missing : props.assets)
+      .slice(0, 20)
+      .map((a) => a.id);
+  },
+  { immediate: true },
+);
+const selectedAssets = computed(() => props.assets.filter((a) => selectedIds.value.includes(a.id)));
+const singleAsset = computed(() => (props.assets.length === 1 ? props.assets[0] : undefined));
+const valid = computed(
+  () =>
+    selectedAssets.value.length > 0 &&
+    selectedAssets.value.length <= 20 &&
+    selectedAssets.value.every((a) => a.description.trim()),
+);
+function submit() {
+  if (!valid.value || props.busy) return;
+  emit('generate', {
+    model: model.value,
+    resolution: imageResolution.value,
+    ratio: imageRatio.value,
+    assetIds: selectedIds.value,
+    inputs: selectedAssets.value.map((asset) => ({
+      assetId: asset.id,
+      prompt: defaultAssetImagePrompt(asset),
+      references: [],
+    })),
+  });
+}
 const title = computed(() =>
   props.type === 'IMAGE'
     ? props.assets.length > 1
       ? '批量生成资产图片'
-      : '生成资产图片'
+      : singleAsset.value?.image
+        ? '重新生成资产图片'
+        : '生成资产图片'
     : '渲染当前镜头',
 );
 </script>
@@ -28,12 +83,26 @@ const title = computed(() =>
     description="核对本次制作内容"
     @close="$emit('close')"
   >
-    <div class="render-review">
+    <ProductionImageComposer
+      v-if="open && type === 'IMAGE' && singleAsset && projectId && workflowRunId"
+      :asset="singleAsset"
+      :project-id="projectId"
+      :workflow-run-id="workflowRunId"
+      :brand-references="brandReferences"
+      :settings="settings"
+      :busy="busy"
+      :error="error"
+      @generate="emit('generate', $event)"
+      @close="emit('close')"
+    />
+    <div v-else class="render-review">
       <div class="render-intro">
         <component :is="type === 'IMAGE' ? ImagePlus : Video" :size="23" />
         <div>
           <strong>{{
-            type === 'IMAGE' ? `${assets.length} 项资产` : shot?.title || '当前镜头'
+            type === 'IMAGE'
+              ? singleAsset?.name || `${assets.length} 项资产`
+              : shot?.title || '当前镜头'
           }}</strong>
           <p>
             {{
@@ -44,18 +113,63 @@ const title = computed(() =>
           </p>
         </div>
       </div>
-      <template v-if="type === 'IMAGE'"
-        ><article v-for="a in assets" :key="a.id">
-          <h3>{{ a.name }}</h3>
-          <p>{{ a.description || '尚未补充公共形象' }}</p>
-          <dl>
-            <dt>图像制作要求</dt>
-            <dd>{{ a.imageRequirements || '尚未填写' }}</dd>
-            <dt>设计与待确认内容</dt>
-            <dd>{{ a.designNotes || '无额外设计要求' }}</dd>
-          </dl>
-        </article></template
-      >
+      <div v-if="type === 'IMAGE'" class="image-production-layout">
+        <aside class="image-settings">
+          <h3>制作设置</h3>
+          <label
+            >生图模型<select v-model="model" :disabled="busy" aria-label="生图模型">
+              <option v-for="item in CUSTOMIZED_IMAGE_MODELS" :key="item.id" :value="item.id">
+                {{ item.label }}
+              </option>
+            </select></label
+          >
+          <p class="model-description">
+            {{
+              model === CUSTOMIZED_IMAGE_MODELS[0].id
+                ? '适合精细的公共形象与材质表现'
+                : '适合快速探索形象与场景方案'
+            }}
+          </p>
+          <label
+            >图片清晰度<select v-model="imageResolution" :disabled="busy" aria-label="图片清晰度">
+              <option v-for="item in CUSTOMIZED_IMAGE_RESOLUTIONS" :key="item">{{ item }}</option>
+            </select></label
+          >
+          <label
+            >图片画幅<select v-model="imageRatio" :disabled="busy" aria-label="图片画幅">
+              <option v-for="item in CUSTOMIZED_IMAGE_RATIOS" :key="item">{{ item }}</option>
+            </select></label
+          >
+          <p>
+            每项制作一张多视角设定图，同一张图包含该对象的多个角度。生成后保存修改，用于后续镜头。
+          </p>
+        </aside>
+        <section class="image-subjects" aria-label="本次生成的资产">
+          <h3 v-if="singleAsset">当前资产</h3>
+          <h3 v-else>本次制作 · 已选 {{ selectedIds.length }} / {{ assets.length }}</h3>
+          <article v-for="a in assets" :key="a.id">
+            <label class="subject-choice"
+              ><input
+                v-if="!singleAsset"
+                v-model="selectedIds"
+                type="checkbox"
+                :value="a.id"
+                :disabled="busy"
+              /><strong>{{ a.name }}</strong></label
+            >
+            <span class="image-state">{{
+              a.image ? '重新制作 · 完成前保留原图' : '首次制作'
+            }}</span>
+            <p>{{ a.description || '尚未补充公共形象' }}</p>
+            <dl>
+              <dt>图像制作要求</dt>
+              <dd>{{ a.imageRequirements || '尚未填写' }}</dd>
+              <dt>设计与待确认内容</dt>
+              <dd>{{ a.designNotes || '无额外设计要求' }}</dd>
+            </dl>
+          </article>
+        </section>
+      </div>
       <template v-else
         ><h3>当前镜头提示词</h3>
         <p class="prompt">{{ prompt || '请先生成并保存当前镜头提示词' }}</p>
@@ -66,26 +180,101 @@ const title = computed(() =>
           ><span v-if="!assets.length">本镜尚未绑定素材</span>
         </div></template
       >
-      <div class="unavailable">
+      <div v-if="type === 'VIDEO'" class="unavailable">
         <CircleHelp :size="18" />
-        <p>
-          {{
-            type === 'IMAGE'
-              ? '图片生成服务尚未接通。可先整理资产定义并继续分镜，图片稍后补齐。'
-              : '视频渲染服务尚未接通。分镜、素材绑定与提示词可正常编辑和保存。'
-          }}
-        </p>
+        <p>视频渲染服务尚未接通。分镜、素材绑定与提示词可正常编辑和保存。</p>
       </div>
+      <p v-if="type === 'IMAGE' && !valid" role="alert">
+        请补齐公共形象描述，每次最多生成 20 项资产。
+      </p>
+      <p v-if="error" class="generation-error" role="alert">{{ error }}</p>
       <footer>
         <button @click="$emit('close')">返回工作台</button
-        ><button class="primary" disabled>
-          {{ type === 'IMAGE' ? '图片生成暂不可用' : '视频渲染暂不可用' }}
-        </button>
+        ><BaseButton v-if="type === 'IMAGE'" :disabled="!valid" :loading="busy" @click="submit">
+          <ImagePlus v-if="!busy" :size="16" />{{
+            busy
+              ? '正在提交'
+              : singleAsset
+                ? singleAsset.image
+                  ? '重新生成此图片'
+                  : '生成此图片'
+                : '开始生成图片'
+          }} </BaseButton
+        ><button v-else class="primary" disabled>视频渲染暂不可用</button>
       </footer>
     </div>
   </WorkflowInformationDialog>
 </template>
 <style scoped>
+.image-production-layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 28px;
+}
+.image-settings {
+  padding-right: 24px;
+  border-right: 1px solid #e8edf4;
+}
+.image-settings label {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+  color: #596278;
+  font-size: 13px;
+  font-weight: 650;
+}
+.image-settings select {
+  width: 100%;
+  height: 42px;
+  padding: 0 11px;
+  font: inherit;
+  font-weight: 400;
+  color: #42526a;
+  background: #fff;
+  border: 1px solid #dce3ec;
+  border-radius: 10px;
+}
+.image-settings select:focus-visible {
+  outline: 3px solid #2563eb14;
+  border-color: #7da7ef;
+}
+.image-subjects {
+  max-height: 390px;
+  overflow: auto;
+  padding-right: 8px;
+}
+.image-subjects article + article {
+  padding-top: 18px;
+}
+.image-subjects dl {
+  grid-template-columns: 100px 1fr;
+}
+.image-state {
+  color: #7d899d;
+  font-size: 11px;
+}
+.subject-choice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.subject-choice input {
+  accent-color: #315ff2;
+  width: 16px;
+  height: 16px;
+}
+.model-description {
+  font-size: 12px;
+}
+.generation-error {
+  color: #b64a42;
+}
+.render-review footer :deep(.base-button) {
+  min-height: 44px;
+}
 .render-review {
   display: grid;
   gap: 20px;
@@ -191,6 +380,16 @@ button:disabled {
   cursor: not-allowed;
 }
 @media (max-width: 600px) {
+  .image-production-layout {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+  .image-settings {
+    padding-right: 0;
+    padding-bottom: 20px;
+    border-right: 0;
+    border-bottom: 1px solid #e8edf4;
+  }
   dl {
     grid-template-columns: 1fr;
     gap: 6px;

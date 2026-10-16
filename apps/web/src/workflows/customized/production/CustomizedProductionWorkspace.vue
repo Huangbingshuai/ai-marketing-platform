@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
-  Boxes,
   Clapperboard,
   Plus,
   Trash2,
   ArrowUp,
   ArrowDown,
-  Image,
   RefreshCw,
   Sparkles,
   Save,
@@ -20,6 +18,7 @@ import {
   type ProductionAsset,
   type ProductionOperation,
   type ProductionTask,
+  type CustomizedImageSettings,
 } from '@ai-marketing/contracts';
 import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import WorkflowNodeEditActions from '../../../platform/workflow/components/WorkflowNodeEditActions.vue';
@@ -47,6 +46,7 @@ const editing = ref(false);
 const loading = ref(true),
   busy = ref(false),
   error = ref(''),
+  pollingInterrupted = ref(false),
   notice = ref(''),
   kind = ref<ProductionAsset['kind']>('PRODUCT'),
   selectedShotId = ref(''),
@@ -57,18 +57,73 @@ const mergeSource = ref(''),
   mergeTarget = ref('');
 const inspectAsset = ref<ProductionAsset | null>(null);
 const imageAssets = ref<ProductionAsset[]>([]);
+const previousImageSettings = computed(
+  () =>
+    workspace.value?.tasks.find(
+      (t) =>
+        t.operation === 'IMAGE' &&
+        imageAssets.value.length === 1 &&
+        t.imageSettings?.assetIds.includes(imageAssets.value[0]!.id),
+    )?.imageSettings,
+);
 const imageDialogOpen = ref(false);
-function prepareImage(asset: ProductionAsset) {
-  inspectAsset.value = null;
-  imageAssets.value = [asset];
+const imageSubmitting = ref(false),
+  imageError = ref('');
+let imageSubmission = 0;
+function prepareImages(assets: ProductionAsset[]) {
+  if (busy.value || running.value || imageSubmitting.value || !assets.length) return;
+  imageError.value = '';
+  imageAssets.value = assets;
   imageDialogOpen.value = true;
 }
+function prepareImage(asset: ProductionAsset) {
+  inspectAsset.value = null;
+  prepareImages([asset]);
+}
+async function generateImages(settings: CustomizedImageSettings) {
+  if (!workspace.value || busy.value || running.value || imageSubmitting.value) return;
+  const project = props.projectId,
+    run = props.workflowRunId;
+  const submission = ++imageSubmission;
+  imageSubmitting.value = true;
+  imageError.value = '';
+  try {
+    if ((dirty.value || !workspace.value.assetsConfirmed || editing.value) && !(await save(true))) {
+      imageError.value = error.value || '请先保存资产定义';
+      return;
+    }
+    if (project !== props.projectId || run !== props.workflowRunId || disposed) return;
+    // save() refreshes the scope; bind this request to the refreshed current Run.
+    const active = controller;
+    const task = await productionApi.start(
+      props.projectId,
+      props.workflowRunId,
+      workspace.value!.draftRevision,
+      'IMAGE',
+      undefined,
+      active.signal,
+      undefined,
+      settings,
+    );
+    if (active !== controller || !workspace.value) return;
+    workspace.value.tasks = [task, ...workspace.value.tasks];
+    graphTaskId.value = task.id;
+    imageDialogOpen.value = false;
+    schedule();
+  } catch (e) {
+    if (submission === imageSubmission && !isAbortError(e))
+      imageError.value = e instanceof Error ? e.message : '图片任务创建失败';
+  } finally {
+    if (submission === imageSubmission) imageSubmitting.value = false;
+  }
+}
 function updateAsset(asset: ProductionAsset) {
-  if (busy.value || running.value) return;
+  if (busy.value || running.value || imageSubmitting.value) return;
   const current = document.value.assets.find((a) => a.id === asset.id);
   if (current) Object.assign(current, asset);
 }
 function createAsset(assetKind: ProductionAsset['kind']) {
+  if (busy.value || running.value || imageSubmitting.value) return;
   kind.value = assetKind;
   editing.value = true;
   addAsset();
@@ -86,10 +141,15 @@ let controller = new AbortController(),
   disposed = false;
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const dirty = computed(() => JSON.stringify(document.value) !== baseline);
+const assetsPending = computed(
+  () =>
+    workspace.value &&
+    JSON.stringify(document.value.assets) !==
+      JSON.stringify(workspace.value.confirmedDocument.assets),
+);
 const promptDirty = computed(() => promptText.value !== promptBase.value);
 const tasks = computed(() => workspace.value?.tasks ?? []);
 const running = computed(() => tasks.value.find((t) => ['RUNNING', 'QUEUED'].includes(t.status)));
-const shownAssets = computed(() => document.value.assets.filter((a) => a.kind === kind.value));
 const shot = computed(
   () => document.value.shots.find((s) => s.id === selectedShotId.value) ?? document.value.shots[0],
 );
@@ -98,7 +158,9 @@ const prompt = computed(() =>
 );
 const graphTasks = computed(() =>
   tasks.value.filter((t) =>
-    props.mode === 'ASSETS' ? t.operation === 'ASSETS' : t.operation !== 'ASSETS',
+    props.mode === 'ASSETS'
+      ? ['ASSETS', 'IMAGE'].includes(t.operation)
+      : ['SHOTS', 'PROMPT'].includes(t.operation),
   ),
 );
 const graphTask = computed(
@@ -167,6 +229,7 @@ async function load() {
   clearTimeout(poll);
   loading.value = true;
   error.value = '';
+  pollingInterrupted.value = false;
   try {
     const result = await productionApi.workspace(
       props.projectId,
@@ -206,9 +269,22 @@ async function refreshTask() {
   try {
     const result = await productionApi.task(props.projectId, current.id, scope.signal);
     if (scope !== controller || !workspace.value) return;
+    pollingInterrupted.value = false;
     workspace.value.tasks = workspace.value.tasks.map((t) => (t.id === result.id ? result : t));
-    if (['RUNNING', 'QUEUED'].includes(result.status)) schedule();
-    else {
+    if (['RUNNING', 'QUEUED'].includes(result.status)) {
+      if (result.operation === 'IMAGE' && !dirty.value) {
+        const refreshed = await productionApi.workspace(
+          props.projectId,
+          props.workflowRunId,
+          scope.signal,
+        );
+        if (scope !== controller) return;
+        workspace.value = refreshed;
+        document.value = clone(refreshed.document);
+        baseline = JSON.stringify(document.value);
+      }
+      schedule();
+    } else {
       // A prompt commits independently of the shot draft. Refresh the shared
       // canvas as soon as the task settles, including when local edits remain.
       emit('saved');
@@ -217,9 +293,39 @@ async function refreshTask() {
     }
   } catch (e) {
     if (scope === controller && !isAbortError(e)) {
-      error.value = '进度查询暂时中断，后台任务仍会继续';
+      pollingInterrupted.value = true;
       poll = setTimeout(() => void refreshTask(), 5000);
     }
+  }
+}
+async function reviewFailedDraft(task: ProductionTask) {
+  if (!workspace.value || busy.value || running.value || dirty.value) return;
+  if (
+    !(await requestActionConfirmation({
+      title: '进入人工核对？',
+      description:
+        'AI复核未通过。将完整结果载入编辑草稿，请对照工作流问题逐项核对并修改，再保存确认。失败记录继续保留，此操作不调用模型。',
+      confirmLabel: '载入核对草稿',
+    }))
+  )
+    return;
+  busy.value = true;
+  const scope = controller;
+  try {
+    await productionApi.reviewDraft(
+      props.projectId,
+      task.id,
+      workspace.value.draftRevision,
+      scope.signal,
+    );
+    if (scope !== controller) return;
+    await load();
+    notice.value = '已载入人工核对草稿，请查看工作流问题、修改后保存确认';
+  } catch (e) {
+    if (scope === controller && !isAbortError(e))
+      error.value = e instanceof Error ? e.message : '草稿载入失败';
+  } finally {
+    if (scope === controller) busy.value = false;
   }
 }
 async function mergeAssets() {
@@ -308,7 +414,7 @@ async function save(confirm = true) {
   }
 }
 async function generate(operation: ProductionOperation, shotId?: string, targetAssetId?: string) {
-  if (!workspace.value || busy.value || running.value) return;
+  if (!workspace.value || busy.value || running.value || imageSubmitting.value) return;
   if (promptDirty.value && !(await savePrompt())) return;
   if (dirty.value && !(await save())) return;
   if (
@@ -499,7 +605,13 @@ watch(
 );
 watch(
   () => [props.projectId, props.workflowRunId, props.mode],
-  () => void load(),
+  () => {
+    imageSubmission++;
+    imageSubmitting.value = false;
+    imageDialogOpen.value = false;
+    imageError.value = '';
+    void load();
+  },
   { immediate: true },
 );
 onBeforeUnmount(() => {
@@ -565,6 +677,14 @@ defineExpose({ flushPendingEdits });
       @action="load"
     />
     <WorkflowExtractionFeedback
+      v-if="pollingInterrupted && !error"
+      tone="information"
+      title="正在恢复进度查询"
+      message="查询暂时中断，后台任务仍会继续；连接恢复后自动更新。"
+      action="重新加载"
+      @action="load"
+    />
+    <WorkflowExtractionFeedback
       v-if="workspace && !workspace.sourceReady"
       tone="warning"
       title="创作依据已变化"
@@ -576,9 +696,11 @@ defineExpose({ flushPendingEdits });
       :summary="
         running.operation === 'ASSETS'
           ? '正在整理资产定义'
-          : running.operation === 'SHOTS'
-            ? '正在创作连续分镜'
-            : '正在生成当前镜头提示词'
+          : running.operation === 'IMAGE'
+            ? '正在生成资产图片'
+            : running.operation === 'SHOTS'
+              ? '正在创作连续分镜'
+              : '正在生成当前镜头提示词'
       "
       :terminal="false"
       action-label="查看工作流"
@@ -594,8 +716,24 @@ defineExpose({ flushPendingEdits });
       v-else-if="tasks[0] && ['FAILED', 'CANCELLED'].includes(tasks[0].status)"
       class="task-note"
     >
-      <span>{{ tasks[0].errorMessage || '任务已取消，已保存的内容保留' }}</span
-      ><button @click="taskAction(tasks[0]!, false)">恢复任务</button>
+      <span>{{
+        tasks[0].reviewDraftState === 'ADOPTED'
+          ? 'AI复核未通过，结果已转入人工核对；失败记录保留'
+          : tasks[0].errorMessage || '任务已取消，已保存的内容保留'
+      }}</span>
+      <button
+        v-if="tasks[0].reviewDraftState === 'AVAILABLE'"
+        :disabled="busy || dirty"
+        @click="reviewFailedDraft(tasks[0]!)"
+      >
+        人工核对草稿
+      </button>
+      <button
+        v-else-if="tasks[0].reviewDraftState !== 'ADOPTED'"
+        @click="taskAction(tasks[0]!, false)"
+      >
+        恢复任务
+      </button>
     </div>
     <template v-if="workspace">
       <ProductionAssetStudio
@@ -604,13 +742,14 @@ defineExpose({ flushPendingEdits });
         :assets="document.assets"
         :shots="document.shots"
         :editing="editing"
-        :locked="busy || !!running"
+        :locked="busy || !!running || imageSubmitting"
         @edit="editing = true"
         @update="updateAsset"
         @add="createAsset"
         @remove="removeAsset"
         @merge="mergeSource = $event"
         @regenerate="generate('ASSETS', undefined, $event)"
+        @images="prepareImages"
       />
       <div v-else class="video-workspace">
         <aside class="shot-directory">
@@ -798,14 +937,25 @@ defineExpose({ flushPendingEdits });
       :back-label="mode === 'ASSETS' ? '上一步：脚本创作' : '上一步：资产准备'"
       :next-label="mode === 'ASSETS' ? '下一步：视频制作' : '下一步：素材交付'"
       :show-validate="false"
-      :next-disabled="mode === 'ASSETS' ? !workspace?.assetsConfirmed || dirty : true"
+      :next-disabled="
+        mode === 'ASSETS'
+          ? !workspace?.assetsConfirmed || dirty || !!assetsPending || !!running
+          : true
+      "
       @back="emit('back')"
       @next="emit('next')"
     />
     <ProductionRenderDialog
       :open="imageDialogOpen"
+      :project-id="projectId"
+      :workflow-run-id="workflowRunId"
+      :brand-references="workspace?.brandImageReferences"
+      :settings="previousImageSettings"
       type="IMAGE"
       :assets="imageAssets"
+      :busy="imageSubmitting"
+      :error="imageError"
+      @generate="generateImages"
       @close="imageDialogOpen = false"
     />
     <WorkflowInformationDialog

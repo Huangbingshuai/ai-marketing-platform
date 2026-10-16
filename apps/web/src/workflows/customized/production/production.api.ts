@@ -5,6 +5,8 @@ import type {
   ProductionTask,
   ProductionWorkspace,
   ProductionPrompt,
+  CustomizedImageSettings,
+  Asset,
 } from '@ai-marketing/contracts';
 import { requestJson } from '../../../api/http-client';
 const base = (p: string) => `/projects/${encodeURIComponent(p)}/workflows/customized/production`;
@@ -18,6 +20,20 @@ async function call<T>(
   return (await requestJson<ApiResponse<T>>(base(p) + path, { method, body, signal })).data;
 }
 export const productionApi = {
+  reviewDraft: (p: string, id: string, expectedRevision: number, signal?: AbortSignal) =>
+    call<{ revision: number }>(
+      p,
+      `/tasks/${id}/review-draft`,
+      'POST',
+      { expectedRevision },
+      signal,
+    ),
+  uploadImageReference: (p: string, r: string, file: File, signal?: AbortSignal) => {
+    const form = new FormData();
+    form.set('workflowRunId', r);
+    form.set('image', file);
+    return call<Asset>(p, '/image-references', 'POST', form, signal);
+  },
   prompt: (
     p: string,
     r: string,
@@ -51,6 +67,7 @@ export const productionApi = {
     shotId?: string,
     signal?: AbortSignal,
     targetAssetId?: string,
+    imageSettings?: CustomizedImageSettings,
   ) =>
     call<ProductionTask>(
       p,
@@ -62,6 +79,7 @@ export const productionApi = {
         operation,
         shotId,
         targetAssetId,
+        imageSettings,
         idempotencyKey: crypto.randomUUID(),
       },
       signal,
