@@ -1316,6 +1316,18 @@ class MaterialShotBeat(ApiModel):
         default=None, ge=0.1, le=15, multiple_of=0.1,
         exclude_if=lambda value: value is None,
     )
+    # Planning evidence, never provider-ready text or product facts. Absent
+    # legacy fields remain omitted to preserve checkpoint fingerprints.
+    information_delta: str | None = Field(
+        default=None, min_length=1, max_length=90,
+        description="Compared with the previous beat, what becomes newly visible? State the actual change/reveal, not an adjective or repeated hold.",
+        exclude_if=lambda value: value is None,
+    )
+    continuity_state: str | None = Field(
+        default=None, min_length=1, max_length=110,
+        description="End-of-beat state: occupied hands/tools, load-bearing support and orientation, camera/viewpoint. Must follow the actual action, not self-certification.",
+        exclude_if=lambda value: value is None,
+    )
     framing: str = Field(min_length=1, max_length=100)
     action: str = Field(min_length=1, max_length=320)
     camera: str = Field(min_length=1, max_length=180)

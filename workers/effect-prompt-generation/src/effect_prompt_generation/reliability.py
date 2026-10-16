@@ -28,8 +28,8 @@ def creative_item_output_tokens(duration_seconds: int) -> int:
     """Estimate one structured shot plan without imposing a text-length rule."""
 
     return min(
-        1_350 + MAX_PROMPT_DURATION_SECONDS * 30,
-        1_350 + duration_seconds * 30,
+        1_650 + MAX_PROMPT_DURATION_SECONDS * 30,
+        1_650 + duration_seconds * 30,
     )
 
 

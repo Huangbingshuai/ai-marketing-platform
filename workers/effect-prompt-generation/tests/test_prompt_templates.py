@@ -284,7 +284,7 @@ def test_route_execution_suggestions_do_not_override_safe_creative_intent() -> N
 
 def test_creative_guidance_is_compact_and_explains_support_and_observer_relationships() -> None:
     creative = load_prompt("creative_base.system.prompt.txt")
-    assert len(creative) < 4300
+    assert len(creative) < 5000
     assert "factApplications.value" in creative
     assert "不能为自己推导的物性作证" in creative
     assert "已占用的手先放稳原物" in creative
@@ -313,6 +313,22 @@ def test_dynamic_pacing_is_product_agnostic_and_aligned_across_stages() -> None:
     assert "不因数字精细就加分" in evaluation
 
 
+def test_information_progression_and_physical_state_are_cross_stage_not_product_rules() -> None:
+    for name in ("creative_base.system.prompt.txt", "material_creative.user.prompt.txt",
+                 "execution_correction.system.prompt.txt", "evaluation_base.system.prompt.txt"):
+        prompt = load_prompt(name)
+        assert "informationDelta" in prompt and "continuityState" in prompt
+        assert "广式腊肠" not in prompt and "紫苏梅子" not in prompt
+    correction = load_prompt("execution_correction.system.prompt.txt")
+    assert "多个静止段连在一起仍是长停留" in correction
+    assert "握持对象与移动对象必须一致" in correction
+    assert "工具抽走前物体已落到真正承重面" in correction
+    assert "framing/camera/focus/visibleResult" in correction
+    assert "不能相信 informationDelta/continuityState 的自我声明" in load_prompt(
+        "evaluation_base.system.prompt.txt"
+    )
+
+
 def test_direction_ai_reviews_actual_routes_without_new_worker_semantic_gate() -> None:
     audit = load_prompt("creative_direction_audit.system.prompt.txt")
     assert "逐条看 executionRoutes 的实际事件" in audit
@@ -335,7 +351,7 @@ def test_intent_planning_does_not_lock_execution_and_repair_rewrites_one_plan() 
         assert "先采用固定观察位" not in prompt
     generation = load_prompt("creative_base.system.prompt.txt")
     assert "首帧状态→连续动作→结束状态" in generation
-    assert "尤其工具从接触处撤离后才能闭合" in generation
+    assert "工具撤离后才能闭合" in generation
     assert "每个镜头段落统一确定" in generation
     assert "固定并变焦、转焦" in generation
     editing = load_prompt("execution_repair.system.prompt.txt")

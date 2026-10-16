@@ -157,9 +157,9 @@ def test_semantic_families_cannot_dilute_high_content_similarity() -> None:
 
 
 def test_structured_creative_shards_shrink_for_longer_durations() -> None:
-    assert _creative_shard_size_for_duration(8) == 4
-    assert _creative_shard_size_for_duration(9) == 4
-    assert _creative_shard_size_for_duration(15) == 4
+    assert _creative_shard_size_for_duration(8) == 3
+    assert _creative_shard_size_for_duration(9) == 3
+    assert _creative_shard_size_for_duration(15) == 3
 
 
 def test_structured_creative_shards_follow_configured_token_limit() -> None:

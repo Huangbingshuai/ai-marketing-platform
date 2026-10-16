@@ -3574,6 +3574,8 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
         "detailGuidance": (
             f"本次为 {duration_seconds} 秒，每拍 durationSeconds 使用 0.1 秒粒度，"
             "总和等于目标。各拍写清实际变化与观察关系，不把同一慢动作拆段凑数；"
+            "informationDelta 写相对前拍新增的可见信息，continuityState 写拍末握持、支撑与机位状态。"
+            "换角度复看同一悬停不自动算新信息；新揭示须点明之前被遮住或尚未发生的具体内容。"
             "有持续观看价值的静物或慢过程可保留。正文简洁但不按字数压缩动作信息。"
             "静音也能看懂，只保留同步环境声和动作声。"
         ),
@@ -3610,13 +3612,18 @@ def _validate_direction_event_capacity(response: CreativeDirectionResponse) -> N
 
 
 def _require_decimal_shot_durations(schema: dict[str, Any]) -> dict[str, Any]:
-    """Require timing in new AI responses, while stored plans remain optional."""
+    """Require new planning fields without invalidating historical checkpoints."""
     beat = schema["$defs"]["MaterialShotBeat"]
     duration = beat["properties"]["durationSeconds"]
     beat["properties"]["durationSeconds"] = next(
         option for option in duration["anyOf"] if option.get("type") == "number"
     )
     beat["required"] = list(dict.fromkeys([*beat["required"], "durationSeconds"]))
+    for name in ("informationDelta", "continuityState"):
+        field = beat["properties"][name]
+        non_null = next(option for option in field["anyOf"] if option.get("type") == "string")
+        beat["properties"][name] = {**non_null, "description": field["description"]}
+        beat["required"].append(name)
     return schema
 
 

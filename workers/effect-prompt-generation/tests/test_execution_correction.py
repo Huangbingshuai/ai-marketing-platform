@@ -40,7 +40,9 @@ async def test_unchanged_is_identical_and_changed_syncs_without_changing_sources
     plan = original.shot_plan.model_copy(
         update={
             "final_frame": "手部停在商品旁，商品稳定置于台面。",
-            "beats": [beat.model_copy(update={"duration_seconds": seconds})
+            "beats": [beat.model_copy(update={"duration_seconds": seconds,
+                       "information_delta": "本拍新增的实际关系",
+                       "continuity_state": "内部核对：手、承重、观察面"})
                       for beat, seconds in zip(original.shot_plan.beats, [1.5, 13.5], strict=True)],
         }
     )
@@ -59,6 +61,8 @@ async def test_unchanged_is_identical_and_changed_syncs_without_changing_sources
     assert corrected.shot_plan == plan
     assert plan.final_frame in corrected.content
     assert "0–1.5秒" in corrected.content and "1.5–15秒" in corrected.content
+    assert "内部核对" not in corrected.content
+    assert "本拍新增的实际关系" not in corrected.content
     for field in ("slot_id", "ordinal", "round", "declared_fact_ids", "generated_at"):
         assert getattr(corrected, field) == getattr(original, field)
 
@@ -243,3 +247,5 @@ async def test_provider_429_signals_limiter_and_correction_uses_candidate_model(
     assert limiter.limit == 2 and len(requests) == 2
     assert all(request["model"] == "candidate" for request in requests)
     assert len(call.value.items) == len(candidates)
+    beat = requests[-1]["text"]["format"]["schema"]["$defs"]["MaterialShotBeat"]
+    assert {"durationSeconds", "informationDelta", "continuityState"}.issubset(beat["required"])

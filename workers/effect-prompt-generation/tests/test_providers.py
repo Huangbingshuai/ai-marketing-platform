@@ -71,10 +71,10 @@ def test_temporal_intent_rejects_duration_above_15_seconds() -> None:
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (4, 6_534),
-        (8, 7_067),
-        (9, 7_200),
-        (15, 8_000),
+        (4, 7_867),
+        (8, 8_400),
+        (9, 8_534),
+        (15, 9_334),
     ],
 )
 def test_creative_shard_reserves_duration_appropriate_output_budget(
@@ -102,7 +102,7 @@ def test_single_max_duration_creative_reserves_supplement_headroom() -> None:
         targetDurationSeconds=15,
     )
 
-    assert _creative_output_token_budget([task]) == 2_000
+    assert _creative_output_token_budget([task]) == 2_334
 
 
 def test_evaluation_chunks_shrink_only_for_unusually_large_candidate_text() -> None:
@@ -441,6 +441,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert "dialogue" not in shot_plan_schema["properties"]
     assert "durationSeconds" in shot_plan_schema["required"]
     assert shot_plan_schema["properties"]["durationSeconds"]["type"] == "number"
+    assert {"informationDelta", "continuityState"}.issubset(shot_plan_schema["required"])
     overview_schema = seen["text"]["format"]["schema"]["$defs"]["MaterialShotOverview"]  # type: ignore[index]
     assert "audioDirection" not in overview_schema["properties"]
 

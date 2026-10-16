@@ -1584,7 +1584,9 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
             and task.creative_direction.direction_id == direction_id
         )
         assert sibling_indexes == list(range(1, sibling_total + 1))
-    assert len(shards) == 20
+    # The compact state/delta fields need output headroom, not extra candidates.
+    assert len(shards) == 24
+    assert max(len(shard.tasks) for shard in shards) <= 3
     assert all(len(shard.tasks) <= 4 for shard in shards)
     shard_indexes_by_direction: dict[str, set[int]] = {}
     for shard_index, shard in enumerate(shards):
@@ -1594,7 +1596,7 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
                     task.creative_direction.direction_id, set()
                 ).add(shard_index)
     assert all(
-        len(indexes) == 1
+        1 <= len(indexes) <= 2
         for direction_id, indexes in shard_indexes_by_direction.items()
     )
 
