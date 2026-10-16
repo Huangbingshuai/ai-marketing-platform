@@ -14,8 +14,13 @@ export function outputFileDescription(item: FinalOutputItem, status: FinalOutput
 export function outputTemplateStatus(run: FinalOutputRun) {
   if (run.counts.stale) return `${run.counts.stale} 条成片待更新`;
   const status: Record<FinalOutputRun['status'], string> = {
-    PENDING_RENDER: '待渲染', QUEUED: '排队中', RUNNING: '渲染中', COMPLETED: '已完成',
-    PARTIAL: '部分失败', FAILED: '失败', CANCELLED: '已取消',
+    PENDING_RENDER: '待渲染',
+    QUEUED: '排队中',
+    RUNNING: '渲染中',
+    COMPLETED: '已完成',
+    PARTIAL: '部分失败',
+    FAILED: '失败',
+    CANCELLED: '已取消',
   };
   return `${run.counts.total} 条成片 · ${status[run.status]}`;
 }

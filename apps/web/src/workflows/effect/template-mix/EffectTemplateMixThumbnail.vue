@@ -39,13 +39,7 @@ watch(
 
 <template>
   <span ref="host" class="thumbnail-frame">
-    <img
-      v-if="thumbnailUrl"
-      :src="thumbnailUrl"
-      :alt="alt"
-      draggable="false"
-      @dragstart.prevent
-    />
+    <img v-if="thumbnailUrl" :src="thumbnailUrl" :alt="alt" draggable="false" @dragstart.prevent />
     <span v-else class="thumbnail-loading" aria-hidden="true"><Film :size="16" /></span>
   </span>
 </template>

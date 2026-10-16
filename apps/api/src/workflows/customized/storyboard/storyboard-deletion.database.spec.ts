@@ -85,9 +85,22 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
       });
       const legacyInput = { ...(historical.inputSnapshot as unknown as StoryboardInput) };
       // Multi-script deletion remains supported for historical batches only.
-      const prototype = await db.customizedStoryboardScript.findUniqueOrThrow({ where: { id: legacyInput.scriptIds[0]! } });
+      const prototype = await db.customizedStoryboardScript.findUniqueOrThrow({
+        where: { id: legacyInput.scriptIds[0]! },
+      });
       const historicalSiblingId = randomUUID();
-      await db.customizedStoryboardScript.create({ data: { id: historicalSiblingId, projectId, sourceRunId: prototype.sourceRunId, taskId: prototype.taskId, origin: prototype.origin, status: prototype.status, sourceSnapshot: prototype.sourceSnapshot as Prisma.InputJsonValue, draft: prototype.draft as Prisma.InputJsonValue } });
+      await db.customizedStoryboardScript.create({
+        data: {
+          id: historicalSiblingId,
+          projectId,
+          sourceRunId: prototype.sourceRunId,
+          taskId: prototype.taskId,
+          origin: prototype.origin,
+          status: prototype.status,
+          sourceSnapshot: prototype.sourceSnapshot as Prisma.InputJsonValue,
+          draft: prototype.draft as Prisma.InputJsonValue,
+        },
+      });
       legacyInput.scriptIds.push(historicalSiblingId);
       legacyInput.settings = { ...legacyInput.settings, variantCount: 2 };
       delete legacyInput.graphVersion;

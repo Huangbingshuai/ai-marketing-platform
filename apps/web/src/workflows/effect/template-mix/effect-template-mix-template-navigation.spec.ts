@@ -5,48 +5,111 @@ import page from './EffectTemplateMixNodePage.vue?raw';
 import parentPage from '../source-import/EffectImportNodePage.vue?raw';
 
 // Run the page's real orchestration while keeping the project active pointer unchanged.
-const source = page.split('async function openTemplateWorkspace(')[1]!
+const source = page
+  .split('async function openTemplateWorkspace(')[1]!
   .split('\nconst selectVariant =')[0]!;
 function harness() {
   const context = {
-    saveState: { value: 'dirty' }, pendingSave: null,
-    controller: null, requestedWorkspaceScope: { value: null },
-    runSwitching: { value: false }, mutating: { value: false }, projectEditLocked: { value: false },
-    pageState: { value: 'READY' }, installedWorkspaceScope: { value: 'project:t3' },
-    currentWorkspaceScope: { value: 'project:t3' }, props: { projectId: 'project', workflowRunId: 't3' },
-    workbenchActive: true, templateNavigationPending: { value: false },
-    templateNavigationTarget: { value: null as string | null }, activeTemplateId: { value: 'template2' },
-    view: { value: 'CONFIG' }, uiByTemplate: { template2: { selectedVariantId: 'v1' } },
-    templateDirectory: { value: { workflowRunIds: { template2: 't2-package', new: 't3' },
-      workspaces: {} as Record<string, unknown>, entries: [] } },
-    templateListCatalog: { value: [] }, cloneMix: <T>(value: T): T => structuredClone(value),
+    saveState: { value: 'dirty' },
+    pendingSave: null,
+    controller: null,
+    requestedWorkspaceScope: { value: null },
+    runSwitching: { value: false },
+    mutating: { value: false },
+    projectEditLocked: { value: false },
+    pageState: { value: 'READY' },
+    installedWorkspaceScope: { value: 'project:t3' },
+    currentWorkspaceScope: { value: 'project:t3' },
+    props: { projectId: 'project', workflowRunId: 't3' },
+    workbenchActive: true,
+    templateNavigationPending: { value: false },
+    templateNavigationTarget: { value: null as string | null },
+    activeTemplateId: { value: 'template2' },
+    view: { value: 'CONFIG' },
+    uiByTemplate: { template2: { selectedVariantId: 'v1' } },
+    templateDirectory: {
+      value: {
+        workflowRunIds: { template2: 't2-package', new: 't3' },
+        workspaces: {} as Record<string, unknown>,
+        entries: [],
+      },
+    },
+    templateListCatalog: { value: [] },
+    cloneMix: <T>(value: T): T => structuredClone(value),
     catalog: { value: [{ id: 'template2' }, { id: 'new' }] },
     selectedTemplateWorkflowRunId: { value: null as string | null },
-    installWorkspaceData: vi.fn(), loadedWorkspaceRunId: 't3',
+    installWorkspaceData: vi.fn(),
+    loadedWorkspaceRunId: 't3',
     flushPendingEdits: vi.fn().mockResolvedValue(true),
     releaseExplicitWorkspaceTarget: vi.fn(),
-    getEffectWorkflowBranchTree: vi.fn().mockResolvedValue({ data: {
-      activeWorkflowRunId: 't3', branches: [
-        { workflowRunId: 'render', parentWorkflowRunId: null, forkNodeId: 'SEGMENT_RENDER',
-          createdAt: '2026-10-01', templates: [] },
-        { workflowRunId: 't2-fill', parentWorkflowRunId: 'render', forkNodeId: 'TEMPLATE_MIX',
-          forkTemplateId: 'template2', createdAt: '2026-10-02', templates: [{ templateId: 'template2' }] },
-        { workflowRunId: 't2-package', parentWorkflowRunId: 't2-fill', forkNodeId: 'TEMPLATE_MIX',
-          forkTemplateId: 'template2', createdAt: '2026-10-03', templates: [{ templateId: 'template2' }] },
-        { workflowRunId: 't3', parentWorkflowRunId: 'render', forkNodeId: 'TEMPLATE_MIX',
-          forkTemplateId: 'template3', createdAt: '2026-10-04',
-          templates: [{ templateId: 'template2' }, { templateId: 'template3' }, { templateId: 'new' }] },
-        { workflowRunId: 'unrelated', parentWorkflowRunId: null, forkNodeId: 'SEGMENT_RENDER',
-          forkTemplateId: 'template2', createdAt: '2026-10-05', templates: [{ templateId: 'template2' }] },
-      ],
-    } }),
-    effectTemplateBranchTips, activateEffectWorkflowBranch: vi.fn().mockResolvedValue({}),
-    rememberWorkbench: vi.fn(), emit: vi.fn(), showNotice: vi.fn(),
-    selectTemplate: vi.fn(), enterEditor: vi.fn(),
+    getEffectWorkflowBranchTree: vi.fn().mockResolvedValue({
+      data: {
+        activeWorkflowRunId: 't3',
+        branches: [
+          {
+            workflowRunId: 'render',
+            parentWorkflowRunId: null,
+            forkNodeId: 'SEGMENT_RENDER',
+            createdAt: '2026-10-01',
+            templates: [],
+          },
+          {
+            workflowRunId: 't2-fill',
+            parentWorkflowRunId: 'render',
+            forkNodeId: 'TEMPLATE_MIX',
+            forkTemplateId: 'template2',
+            createdAt: '2026-10-02',
+            templates: [{ templateId: 'template2' }],
+          },
+          {
+            workflowRunId: 't2-package',
+            parentWorkflowRunId: 't2-fill',
+            forkNodeId: 'TEMPLATE_MIX',
+            forkTemplateId: 'template2',
+            createdAt: '2026-10-03',
+            templates: [{ templateId: 'template2' }],
+          },
+          {
+            workflowRunId: 't3',
+            parentWorkflowRunId: 'render',
+            forkNodeId: 'TEMPLATE_MIX',
+            forkTemplateId: 'template3',
+            createdAt: '2026-10-04',
+            templates: [
+              { templateId: 'template2' },
+              { templateId: 'template3' },
+              { templateId: 'new' },
+            ],
+          },
+          {
+            workflowRunId: 'unrelated',
+            parentWorkflowRunId: null,
+            forkNodeId: 'SEGMENT_RENDER',
+            forkTemplateId: 'template2',
+            createdAt: '2026-10-05',
+            templates: [{ templateId: 'template2' }],
+          },
+        ],
+      },
+    }),
+    effectTemplateBranchTips,
+    activateEffectWorkflowBranch: vi.fn().mockResolvedValue({}),
+    rememberWorkbench: vi.fn(),
+    emit: vi.fn(),
+    showNotice: vi.fn(),
+    selectTemplate: vi.fn(),
+    enterEditor: vi.fn(),
   };
   const script = transpileModule(`async function openTemplateWorkspace(${source}`, {}).outputText;
-  const execute = new Function(...Object.keys(context), `${script}\nreturn openTemplateWorkspace;`)
-    (...Object.values(context)) as (templateId: string, view: 'CONFIG' | 'EDITOR', action?: 'SOURCE_UPDATE') => Promise<boolean>;
+  const createExecutor = new Function(
+    ...Object.keys(context),
+    `${script}\nreturn openTemplateWorkspace;`,
+  );
+  const execute = createExecutor(...Object.values(context)) as (
+    templateId: string,
+    view: 'CONFIG' | 'EDITOR',
+    action?: 'SOURCE_UPDATE',
+  ) => Promise<boolean>;
   return { context, execute };
 }
 
@@ -59,8 +122,13 @@ describe('template workbench selects the template current workspace without glob
   it('hands an update click to the actual branch without submitting copied draft data', async () => {
     const { context: c, execute } = harness();
     expect(await execute('template2', 'EDITOR', 'SOURCE_UPDATE')).toBe(false);
-    expect(c.rememberWorkbench).toHaveBeenCalledWith({ workflowRunId: 't2-package',
-      templateId: 'template2', variantId: 'v1', view: 'EDITOR', action: 'SOURCE_UPDATE' });
+    expect(c.rememberWorkbench).toHaveBeenCalledWith({
+      workflowRunId: 't2-package',
+      templateId: 'template2',
+      variantId: 'v1',
+      view: 'EDITOR',
+      action: 'SOURCE_UPDATE',
+    });
     expect(c.enterEditor).not.toHaveBeenCalled();
   });
 
@@ -88,18 +156,26 @@ describe('template workbench selects the template current workspace without glob
     expect(c.activateEffectWorkflowBranch).not.toHaveBeenCalled();
     expect(c.emit).not.toHaveBeenCalled();
   });
-  it.each(['CONFIG', 'EDITOR'] as const)('loads template2 on its actual confirmed packaging path (%s)', async (view) => {
-    const { context: c, execute } = harness();
-    await execute('template2', view);
-    expect(c.activateEffectWorkflowBranch).not.toHaveBeenCalled();
-    expect(c.selectedTemplateWorkflowRunId.value).toBe('t2-package');
-    expect(c.flushPendingEdits).toHaveBeenCalledOnce();
-    expect(c.rememberWorkbench).toHaveBeenCalledWith({ workflowRunId: 't2-package', templateId: 'template2', variantId: 'v1', view });
-    expect(c.emit).not.toHaveBeenCalled();
-    expect(c.enterEditor).not.toHaveBeenCalled(); // Never expose the copied t3 draft as confirmed t2.
-    expect(c.templateNavigationPending.value).toBe(true);
-    expect(c.templateNavigationTarget.value).toBe('project:t2-package');
-  });
+  it.each(['CONFIG', 'EDITOR'] as const)(
+    'loads template2 on its actual confirmed packaging path (%s)',
+    async (view) => {
+      const { context: c, execute } = harness();
+      await execute('template2', view);
+      expect(c.activateEffectWorkflowBranch).not.toHaveBeenCalled();
+      expect(c.selectedTemplateWorkflowRunId.value).toBe('t2-package');
+      expect(c.flushPendingEdits).toHaveBeenCalledOnce();
+      expect(c.rememberWorkbench).toHaveBeenCalledWith({
+        workflowRunId: 't2-package',
+        templateId: 'template2',
+        variantId: 'v1',
+        view,
+      });
+      expect(c.emit).not.toHaveBeenCalled();
+      expect(c.enterEditor).not.toHaveBeenCalled(); // Never expose the copied t3 draft as confirmed t2.
+      expect(c.templateNavigationPending.value).toBe(true);
+      expect(c.templateNavigationTarget.value).toBe('project:t2-package');
+    },
+  );
 
   it('defers cached editor selection and source-update handoffs to the fresh scoped loader', async () => {
     const { context: c, execute } = harness();
@@ -145,7 +221,6 @@ describe('template workbench selects the template current workspace without glob
 
   it('does not load a stale target after the project changes during save', async () => {
     const { context: c, execute } = harness();
-    const tree = await c.getEffectWorkflowBranchTree();
     c.flushPendingEdits.mockImplementation(async () => {
       c.props.projectId = 'other';
       return true;
@@ -169,7 +244,10 @@ describe('template workbench selects the template current workspace without glob
   it('unlocks the current page when the template is no longer in the directory', async () => {
     const { context: c, execute } = harness();
     await execute('removed', 'EDITOR');
-    expect(c.showNotice).toHaveBeenCalledWith('所选模板已不在当前素材分支中，请刷新后重试', 'error');
+    expect(c.showNotice).toHaveBeenCalledWith(
+      '所选模板已不在当前素材分支中，请刷新后重试',
+      'error',
+    );
     expect(c.emit).not.toHaveBeenCalled();
     expect(c.templateNavigationPending.value).toBe(false);
   });

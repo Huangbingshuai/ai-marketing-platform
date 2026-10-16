@@ -21,8 +21,10 @@ let diskCache: Promise<Cache | null> | undefined;
 let persistedWrites = 0;
 const MAX_PERSISTENT_WAVEFORMS = 256;
 const openDiskCache = (): Promise<Cache | null> => {
-  diskCache ??= typeof caches === 'undefined' ? Promise.resolve(null)
-    : caches.open('effect-template-mix-waveforms-v1').catch(() => null);
+  diskCache ??=
+    typeof caches === 'undefined'
+      ? Promise.resolve(null)
+      : caches.open('effect-template-mix-waveforms-v1').catch(() => null);
   return diskCache;
 };
 const cacheRequest = (source: string): string =>
@@ -35,25 +37,40 @@ const restoreWaveform = async (source: string): Promise<EffectTemplateMixWavefor
     const value: unknown = await response.json();
     if (!value || typeof value !== 'object') return null;
     const waveform = value as EffectTemplateMixWaveform;
-    if (waveform.status !== 'READY' || !Number.isFinite(waveform.duration) || waveform.duration <= 0 ||
-      !Array.isArray(waveform.samples) || waveform.samples.length > MAX_SAMPLES ||
-      !waveform.samples.every((sample) => typeof sample === 'number' && Number.isFinite(sample) && sample >= 0 && sample <= 1)) return null;
+    if (
+      waveform.status !== 'READY' ||
+      !Number.isFinite(waveform.duration) ||
+      waveform.duration <= 0 ||
+      !Array.isArray(waveform.samples) ||
+      waveform.samples.length > MAX_SAMPLES ||
+      !waveform.samples.every(
+        (sample) =>
+          typeof sample === 'number' && Number.isFinite(sample) && sample >= 0 && sample <= 1,
+      )
+    )
+      return null;
     return waveform;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 };
 const saveWaveform = async (source: string, waveform: EffectTemplateMixWaveform): Promise<void> => {
   try {
     const cache = await openDiskCache();
     if (!cache) return;
-    await cache.put(cacheRequest(source), new Response(JSON.stringify(waveform),
-      { headers: { 'Content-Type': 'application/json' } }));
+    await cache.put(
+      cacheRequest(source),
+      new Response(JSON.stringify(waveform), { headers: { 'Content-Type': 'application/json' } }),
+    );
     persistedWrites += 1;
     if (persistedWrites % 32 === 0) {
       const stored = await cache.keys();
       for (const request of stored.slice(0, Math.max(0, stored.length - MAX_PERSISTENT_WAVEFORMS)))
         await cache.delete(request);
     }
-  } catch { /* Optional browser storage must not interrupt real waveform decoding. */ }
+  } catch {
+    /* Optional browser storage must not interrupt real waveform decoding. */
+  }
 };
 
 const setWaveform = (source: string, waveform: EffectTemplateMixWaveform): void => {
@@ -73,7 +90,10 @@ const decodeWaveform = async (source: string): Promise<void> => {
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
     const restored = await restoreWaveform(source);
-    if (restored) { setWaveform(source, restored); return; }
+    if (restored) {
+      setWaveform(source, restored);
+      return;
+    }
     const response = await fetch(source, { credentials: 'include', signal: controller.signal });
     if (!response.ok) throw new Error(`视频读取失败：${response.status}`);
     const encoded = await response.arrayBuffer();

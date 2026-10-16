@@ -30,7 +30,11 @@ const normalizedProgress = computed(() => Math.min(100, Math.max(0, props.progre
 <template>
   <section
     class="workflow-run-progress"
-    :class="{ 'without-action': !actionLabel, 'is-update': tone === 'update', 'is-terminal': terminal }"
+    :class="{
+      'without-action': !actionLabel,
+      'is-update': tone === 'update',
+      'is-terminal': terminal,
+    }"
     aria-live="polite"
   >
     <div

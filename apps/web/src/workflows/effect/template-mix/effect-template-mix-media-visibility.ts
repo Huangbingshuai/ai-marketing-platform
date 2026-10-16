@@ -7,9 +7,12 @@ export const useEffectTemplateMixMediaVisibility = () => {
   let observer: IntersectionObserver | undefined;
   onMounted(() => {
     if (typeof IntersectionObserver === 'undefined' || !host.value) return;
-    observer = new IntersectionObserver(([entry]) => {
-      visible.value = entry?.isIntersecting ?? false;
-    }, { rootMargin: '200px' });
+    observer = new IntersectionObserver(
+      ([entry]) => {
+        visible.value = entry?.isIntersecting ?? false;
+      },
+      { rootMargin: '200px' },
+    );
     observer.observe(host.value);
   });
   onBeforeUnmount(() => observer?.disconnect());

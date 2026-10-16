@@ -82,13 +82,7 @@ const safeFileName = (value: string): string =>
 
 type RunBranchRecord = {
   branch:
-    | 'DOCUMENT'
-    | 'IMAGE'
-    | 'COMMERCE'
-    | 'FORM'
-    | 'FUSION'
-    | 'SEMANTIC_REFINEMENT'
-    | 'NORMALIZATION';
+    'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'SEMANTIC_REFINEMENT' | 'NORMALIZATION';
   status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'SKIPPED' | 'FAILED';
   warnings: unknown;
   errorCode?: string | null;
@@ -393,11 +387,19 @@ export class EffectExtractionService {
 
   async workspace(projectId: string, draftId: string): Promise<GetEffectExtractionWorkspaceData> {
     return this.readCache
-      ? this.readCache.read({ projectId, draftId }, 'extraction', () => this.loadWorkspace(projectId, draftId), draftId)
+      ? this.readCache.read(
+          { projectId, draftId },
+          'extraction',
+          () => this.loadWorkspace(projectId, draftId),
+          draftId,
+        )
       : this.loadWorkspace(projectId, draftId);
   }
 
-  private async loadWorkspace(projectId: string, draftId: string): Promise<GetEffectExtractionWorkspaceData> {
+  private async loadWorkspace(
+    projectId: string,
+    draftId: string,
+  ): Promise<GetEffectExtractionWorkspaceData> {
     await this.projects.get(projectId);
     const draft = await this.repository.workspace(projectId, draftId);
     if (!draft) throw notFound('效果类资料草稿不存在');
@@ -1209,9 +1211,7 @@ const extractionValueProvenance = (
     const sourceNamesFor = (value: unknown, origin: EffectExtractionValueOrigin): string[] => {
       if (overridden.has(field)) return ['人工修改'];
       const allowedBranches =
-        origin === 'AI_IMAGE_SUGGESTION'
-          ? new Set(['IMAGE'])
-          : new Set(['DOCUMENT', 'COMMERCE']);
+        origin === 'AI_IMAGE_SUGGESTION' ? new Set(['IMAGE']) : new Set(['DOCUMENT', 'COMMERCE']);
       const names = candidateSources
         .filter((entry) => {
           if (!allowedBranches.has(entry.branch)) return false;

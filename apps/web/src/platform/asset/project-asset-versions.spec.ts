@@ -103,7 +103,7 @@ describe('asset library branch scopes', () => {
     expect(browserSource).not.toContain('putWorkflowNodeState');
     if (treeSource.includes('class="branch-copy-button"'))
       expect(treeSource).toContain('v-if="!assetBrowse"');
-    else expect(treeSource).not.toContain("@click=\"emit('fork')\"");
+    else expect(treeSource).not.toContain('@click="emit(\'fork\')"');
     expect(treeSource).toContain('selectableNodeKeys?.includes(node.key)');
   });
 });

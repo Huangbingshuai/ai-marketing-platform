@@ -21,11 +21,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "id",
-        "content",
-        "durationSeconds"
-      ],
+      "required": ["id", "content", "durationSeconds"],
       "title": "Beat",
       "type": "object"
     },
@@ -56,11 +52,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "requirementId",
-        "beatIds",
-        "evidence"
-      ],
+      "required": ["requirementId", "beatIds", "evidence"],
       "title": "StructureMapping",
       "type": "object"
     }

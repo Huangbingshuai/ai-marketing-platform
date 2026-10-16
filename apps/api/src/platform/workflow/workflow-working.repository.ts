@@ -7,9 +7,13 @@ import {
   customizedScope,
   lockCustomizedProject,
   customizedConflict,
-} from "./customized-branches";
-import { CUSTOMIZED_SOURCE_ARTIFACT_KEY } from "@ai-marketing/contracts";
-import { EFFECT_WORKFLOW_BRANCH_NODES, EFFECT_WORKFLOW_EDITABLE_NODES, EFFECT_TEMPLATE_CURRENT_PATH_NODE_ID } from '@ai-marketing/contracts';
+} from './customized-branches';
+import { CUSTOMIZED_SOURCE_ARTIFACT_KEY } from '@ai-marketing/contracts';
+import {
+  EFFECT_WORKFLOW_BRANCH_NODES,
+  EFFECT_WORKFLOW_EDITABLE_NODES,
+  EFFECT_TEMPLATE_CURRENT_PATH_NODE_ID,
+} from '@ai-marketing/contracts';
 import type {
   EffectWorkflowBranchNodeId,
   EffectWorkflowEditableNodeId,
@@ -25,9 +29,17 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Prisma, type WorkflowNodeState } from '../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { workflowStateHash } from './workflow-state-hash';
-import { effectArtifactSourceOwner, effectRenderClipHeads, effectRenderHead,
-  projectEffectBranchFreshness } from './effect-branch-freshness';
-import { activeMixSourceUpdates, assertMixSourceUpdateDraftEditable, lockMixNodeForSourceUpdate } from './effect-mix-source-update-lock';
+import {
+  effectArtifactSourceOwner,
+  effectRenderClipHeads,
+  effectRenderHead,
+  projectEffectBranchFreshness,
+} from './effect-branch-freshness';
+import {
+  activeMixSourceUpdates,
+  assertMixSourceUpdateDraftEditable,
+  lockMixNodeForSourceUpdate,
+} from './effect-mix-source-update-lock';
 import { assertPackagingDraftEditable } from './effect-packaging-lock';
 import {
   beginEffectEditInTransaction,
@@ -99,13 +111,20 @@ type EffectForkScope = { forkNodeId: string | null; forkTemplateId: string | nul
 
 // This is owned by a single batch transaction, never by the repository or a Run cache.
 // Only mix/output batches can reuse it: they do not modify their render source heads.
-type ArtifactValidationReadCache = { sharedRenderSources?: Promise<WorkingArtifactRecord[]>;
+type ArtifactValidationReadCache = {
+  sharedRenderSources?: Promise<WorkingArtifactRecord[]>;
   sharedPromptRunIds?: Promise<string[]>;
   frozenRenderSources?: readonly EffectTemplateMixMaterial[];
-  frozenPromptSources?: readonly FrozenRenderPromptSource[] };
+  frozenPromptSources?: readonly FrozenRenderPromptSource[];
+};
 
 /** Private commit authority, built from persisted render task inputs, never from an HTTP DTO. */
-export type FrozenRenderPromptSource = { artifactId: string; revision: number; contentHash: string; artifactKey: string };
+export type FrozenRenderPromptSource = {
+  artifactId: string;
+  revision: number;
+  contentHash: string;
+  artifactKey: string;
+};
 
 /** An ancestor is readable only before the child fork (or outside its template scope). */
 export const inheritedEffectArtifactVisible = (
@@ -401,8 +420,12 @@ export class WorkflowWorkingRepository {
   }
 
   private deletedTemplates(projectId: string) {
-    return this.prisma.effectTemplateDeletion?.findMany?.({ where: { projectId },
-      select: { templateId: true, workflowRunIds: true } }) ?? Promise.resolve([]);
+    return (
+      this.prisma.effectTemplateDeletion?.findMany?.({
+        where: { projectId },
+        select: { templateId: true, workflowRunIds: true },
+      }) ?? Promise.resolve([])
+    );
   }
 
   async findRun(projectId: string, workflowRunId: string) {
@@ -566,13 +589,34 @@ export class WorkflowWorkingRepository {
         },
         effectPackagingRuns: {
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          select: { id: true, templateId: true, status: true, idempotencyKey: true, completedAt: true,
-            items: { orderBy: { id: 'desc' }, select: { variantId: true, status: true, completedAt: true, checkpoint: true } } },
+          select: {
+            id: true,
+            templateId: true,
+            status: true,
+            idempotencyKey: true,
+            completedAt: true,
+            items: {
+              orderBy: { id: 'desc' },
+              select: { variantId: true, status: true, completedAt: true, checkpoint: true },
+            },
+          },
         },
         effectFinalOutputRuns: {
-          select: { id: true, templateId: true, status: true,
-            items: { select: { id: true, variantId: true, status: true,
-              fileObjectId: true, assetId: true, snapshot: true } } },
+          select: {
+            id: true,
+            templateId: true,
+            status: true,
+            items: {
+              select: {
+                id: true,
+                variantId: true,
+                status: true,
+                fileObjectId: true,
+                assetId: true,
+                snapshot: true,
+              },
+            },
+          },
         },
         workingArtifacts: {
           where: { availability: 'AVAILABLE' },
@@ -598,32 +642,66 @@ export class WorkflowWorkingRepository {
     });
     // Only the new batch protocol publishes partial success. Read its operation through a JSON
     // predicate rather than loading every film's large frozen input/baseline into the tree.
-    const partialBatchIds = rows.filter((r) => !removedRuns.has(r.id)).flatMap((r) =>
-      r.effectPackagingRuns.filter((batch) => batch.status === 'PARTIAL' &&
-        !deletedIds.has(batch.templateId)).map((batch) => batch.id));
-    const publishedPartialBatches = new Set(partialBatchIds.length
-      ? (await this.prisma.effectPackagingItem.findMany({
-          where: { projectId, runId: { in: partialBatchIds }, status: 'COMPLETED',
-            snapshot: { path: ['operation'], equals: 'BATCH_PACKAGE' } },
-          select: { runId: true }, distinct: ['runId'],
-        })).map((item) => item.runId)
-      : []);
-    return rows.filter((r) => !removedRuns.has(r.id)).map((r) => {
-      let parent = r.parentWorkflowRunId;
-      const seen = new Set<string>();
-      while (parent && removedRuns.has(parent) && !seen.has(parent)) {
-        seen.add(parent); parent = rows.find((row) => row.id === parent)?.parentWorkflowRunId ?? null;
-      }
-      const visibleArtifacts = r.workingArtifacts.filter((a) => !deletedIds.has(artifactTemplateId(a.artifactKey) ?? ''));
-      const visibleIds = new Set(visibleArtifacts.map((a) => a.id));
-      return { ...r, parentWorkflowRunId: parent, workingArtifacts: visibleArtifacts,
-        workingArtifactRevisions: r.workingArtifactRevisions.filter((s) => visibleIds.has(s.workingArtifactId)),
-        effectTemplateMixAiRuns: r.effectTemplateMixAiRuns.filter((t) => !deletedIds.has(t.templateId)),
-        effectPackagingRuns: r.effectPackagingRuns.filter((t) => !deletedIds.has(t.templateId))
-          .map((batch) => ({ ...batch,
-            operation: publishedPartialBatches.has(batch.id) ? 'BATCH_PACKAGE' as const : undefined })),
-        nodeStates: r.nodeStates.map((s) => ({ ...s, state: pruneDeletedTemplates(s.state, deletedIds) as Prisma.JsonValue })) };
-    });
+    const partialBatchIds = rows
+      .filter((r) => !removedRuns.has(r.id))
+      .flatMap((r) =>
+        r.effectPackagingRuns
+          .filter((batch) => batch.status === 'PARTIAL' && !deletedIds.has(batch.templateId))
+          .map((batch) => batch.id),
+      );
+    const publishedPartialBatches = new Set(
+      partialBatchIds.length
+        ? (
+            await this.prisma.effectPackagingItem.findMany({
+              where: {
+                projectId,
+                runId: { in: partialBatchIds },
+                status: 'COMPLETED',
+                snapshot: { path: ['operation'], equals: 'BATCH_PACKAGE' },
+              },
+              select: { runId: true },
+              distinct: ['runId'],
+            })
+          ).map((item) => item.runId)
+        : [],
+    );
+    return rows
+      .filter((r) => !removedRuns.has(r.id))
+      .map((r) => {
+        let parent = r.parentWorkflowRunId;
+        const seen = new Set<string>();
+        while (parent && removedRuns.has(parent) && !seen.has(parent)) {
+          seen.add(parent);
+          parent = rows.find((row) => row.id === parent)?.parentWorkflowRunId ?? null;
+        }
+        const visibleArtifacts = r.workingArtifacts.filter(
+          (a) => !deletedIds.has(artifactTemplateId(a.artifactKey) ?? ''),
+        );
+        const visibleIds = new Set(visibleArtifacts.map((a) => a.id));
+        return {
+          ...r,
+          parentWorkflowRunId: parent,
+          workingArtifacts: visibleArtifacts,
+          workingArtifactRevisions: r.workingArtifactRevisions.filter((s) =>
+            visibleIds.has(s.workingArtifactId),
+          ),
+          effectTemplateMixAiRuns: r.effectTemplateMixAiRuns.filter(
+            (t) => !deletedIds.has(t.templateId),
+          ),
+          effectPackagingRuns: r.effectPackagingRuns
+            .filter((t) => !deletedIds.has(t.templateId))
+            .map((batch) => ({
+              ...batch,
+              operation: publishedPartialBatches.has(batch.id)
+                ? ('BATCH_PACKAGE' as const)
+                : undefined,
+            })),
+          nodeStates: r.nodeStates.map((s) => ({
+            ...s,
+            state: pruneDeletedTemplates(s.state, deletedIds) as Prisma.JsonValue,
+          })),
+        };
+      });
   }
 
   async activateEffectRunBranch(
@@ -735,9 +813,15 @@ export class WorkflowWorkingRepository {
     const row = await this.prisma.workflowNodeState.findUnique({
       where: { projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId } },
     });
-    if (!row || !['TEMPLATE_MIX', 'FINAL_OUTPUT', EFFECT_TEMPLATE_CURRENT_PATH_NODE_ID].includes(nodeId)) return row;
+    if (
+      !row ||
+      !['TEMPLATE_MIX', 'FINAL_OUTPUT', EFFECT_TEMPLATE_CURRENT_PATH_NODE_ID].includes(nodeId)
+    )
+      return row;
     const deleted = new Set((await this.deletedTemplates(projectId)).map((d) => d.templateId));
-    return deleted.size ? { ...row, state: pruneDeletedTemplates(row.state, deleted) as Prisma.JsonValue } : row;
+    return deleted.size
+      ? { ...row, state: pruneDeletedTemplates(row.state, deleted) as Prisma.JsonValue }
+      : row;
   }
 
   async activateNode(projectId: string, workflowRunId: string, nodeId: string) {
@@ -822,7 +906,13 @@ export class WorkflowWorkingRepository {
         if (expectedRevision !== current.revision)
           return { record: current, unchanged: false, conflict: true };
         if (nodeId === 'TEMPLATE_MIX')
-          await assertPackagingDraftEditable(transaction, projectId, workflowRunId, current.state, state);
+          await assertPackagingDraftEditable(
+            transaction,
+            projectId,
+            workflowRunId,
+            current.state,
+            state,
+          );
         if (nodeId === 'TEMPLATE_MIX')
           assertMixSourceUpdateDraftEditable(
             current.state,
@@ -968,21 +1058,39 @@ export class WorkflowWorkingRepository {
     // and its exact dependency closure; hiding the template must not hide its
     // shared upstream pool from another live Run. Historical/deleted-Run reads
     // remain hidden, and template-owned outputs are always excluded.
-    const sharedSourceRead = Boolean(filters.workflowRunId &&
-      !removedRuns.has(filters.workflowRunId) && filters.view !== 'SNAPSHOT');
-    return (await this.loadArtifacts(projectId, filters, options)).filter((a) =>
-      !ids.has(artifactTemplateId(a.artifactKey) ?? '') &&
-      (!removedRuns.has(a.workflowRunId) || (sharedSourceRead &&
-        ['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(a.nodeId))));
+    const sharedSourceRead = Boolean(
+      filters.workflowRunId &&
+      !removedRuns.has(filters.workflowRunId) &&
+      filters.view !== 'SNAPSHOT',
+    );
+    return (await this.loadArtifacts(projectId, filters, options)).filter(
+      (a) =>
+        !ids.has(artifactTemplateId(a.artifactKey) ?? '') &&
+        (!removedRuns.has(a.workflowRunId) ||
+          (sharedSourceRead &&
+            [
+              'SOURCE_IMPORT',
+              'INFORMATION_EXTRACTION',
+              'PROMPT_GENERATION',
+              'SEGMENT_RENDER',
+            ].includes(a.nodeId))),
+    );
   }
 
-  private async loadArtifacts(projectId: string, filters: WorkingArtifactListQuery,
-    options: { upstreamOnly?: boolean } = {}): Promise<WorkingArtifactRecord[]> {
+  private async loadArtifacts(
+    projectId: string,
+    filters: WorkingArtifactListQuery,
+    options: { upstreamOnly?: boolean } = {},
+  ): Promise<WorkingArtifactRecord[]> {
     // Worker checkpoints need the same branch/legacy/dependency projection as the
     // UI, but never need to hydrate every sibling timeline and its full package.
-    const nodeFilter = filters.nodeId ?? (options.upstreamOnly ? {
-      in: ['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'],
-    } : undefined);
+    const nodeFilter =
+      filters.nodeId ??
+      (options.upstreamOnly
+        ? {
+            in: ['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'],
+          }
+        : undefined);
     const where: Prisma.WorkingArtifactWhereInput = {
       projectId,
       ...(filters.workflowRunId ? { workflowRunId: filters.workflowRunId } : {}),
@@ -1473,8 +1581,11 @@ export class WorkflowWorkingRepository {
       where: { id: workflowRunId, projectId, status: { in: [...openRunStatuses] } },
     });
     if (!run) throw new Error('WORKFLOW_RUN_NOT_FOUND');
-    const captureEffectRevision = (run.workflow === 'EFFECT' && run.workflowSpace === 'EFFECT') ||
-      (run.workflow === 'CUSTOMIZED' && run.workflowSpace === 'CUSTOMIZED_PROJECT' && nodeId === 'STORYBOARD');
+    const captureEffectRevision =
+      (run.workflow === 'EFFECT' && run.workflowSpace === 'EFFECT') ||
+      (run.workflow === 'CUSTOMIZED' &&
+        run.workflowSpace === 'CUSTOMIZED_PROJECT' &&
+        nodeId === 'STORYBOARD');
     const unique = { projectId, workflowRunId, nodeId, artifactKey };
     const previous = await transaction.workingArtifact.findUnique({
       where: { projectId_workflowRunId_nodeId_artifactKey: unique },
@@ -1882,11 +1993,18 @@ export class WorkflowWorkingRepository {
               })
               .then((branches) => {
                 const head = effectRenderHead(branches, workflowRunId);
-                return [...new Set([
-                  ...allowedRunIds,
-                  ...branches.filter((branch) => branch.branchPublishedAt &&
-                    effectRenderHead(branches, branch.id) === head).map((branch) => branch.id),
-                ])];
+                return [
+                  ...new Set([
+                    ...allowedRunIds,
+                    ...branches
+                      .filter(
+                        (branch) =>
+                          branch.branchPublishedAt &&
+                          effectRenderHead(branches, branch.id) === head,
+                      )
+                      .map((branch) => branch.id),
+                  ]),
+                ];
               }));
             source = await transaction.workingArtifact.findFirst({
               where: {

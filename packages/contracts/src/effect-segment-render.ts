@@ -46,12 +46,21 @@ export function effectPromptRenderSettingsIssues(
 ): string[] {
   const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[settings.capabilityKey];
   if (!capability) return ['请选择可用的视频模型'];
-  const maximum = input.origin === 'MANUAL' && settings.capabilityKey === 'SEEDANCE_1_5_PRO'
-    ? 30 : capability.maxDurationSeconds;
+  const maximum =
+    input.origin === 'MANUAL' && settings.capabilityKey === 'SEEDANCE_1_5_PRO'
+      ? 30
+      : capability.maxDurationSeconds;
   const issues: string[] = [];
-  if (!Number.isInteger(input.durationSeconds) || input.durationSeconds < capability.minDurationSeconds || input.durationSeconds > maximum)
-    issues.push(`该模型支持 ${capability.minDurationSeconds}～${maximum} 秒，当前提示词为 ${input.durationSeconds} 秒`);
-  if (!capability.resolutions.includes(settings.resolution)) issues.push(`该模型不支持 ${settings.resolution} 分辨率`);
+  if (
+    !Number.isInteger(input.durationSeconds) ||
+    input.durationSeconds < capability.minDurationSeconds ||
+    input.durationSeconds > maximum
+  )
+    issues.push(
+      `该模型支持 ${capability.minDurationSeconds}～${maximum} 秒，当前提示词为 ${input.durationSeconds} 秒`,
+    );
+  if (!capability.resolutions.includes(settings.resolution))
+    issues.push(`该模型不支持 ${settings.resolution} 分辨率`);
   if (!capability.ratios.includes(settings.ratio)) issues.push('该模型不支持所选画幅');
   return issues;
 }
@@ -330,15 +339,22 @@ export function effectSegmentRenderPromptDifference(
   latest: EffectSegmentRenderPromptBaseline | null,
 ): EffectSegmentRenderUpdateKind | undefined {
   if (!latest) return 'REMOVE';
-  if (adopted.promptContentHash !== latest.promptContentHash ||
-      adopted.sharedPromptHash !== latest.sharedPromptHash ||
-      adopted.targetDurationSeconds !== latest.targetDurationSeconds) return 'RENDER';
-  if (adopted.primaryPurpose !== latest.primaryPurpose ||
-      JSON.stringify([...adopted.compatiblePurposes].sort()) !==
-        JSON.stringify([...latest.compatiblePurposes].sort()) ||
-      (adopted.creativeCore !== undefined && adopted.creativeCore !== latest.creativeCore) ||
-      (adopted.dimensions !== undefined && Object.entries(adopted.dimensions).some(
-        ([key, value]) => latest.dimensions?.[key as keyof EffectPromptDimensions] !== value)))
+  if (
+    adopted.promptContentHash !== latest.promptContentHash ||
+    adopted.sharedPromptHash !== latest.sharedPromptHash ||
+    adopted.targetDurationSeconds !== latest.targetDurationSeconds
+  )
+    return 'RENDER';
+  if (
+    adopted.primaryPurpose !== latest.primaryPurpose ||
+    JSON.stringify([...adopted.compatiblePurposes].sort()) !==
+      JSON.stringify([...latest.compatiblePurposes].sort()) ||
+    (adopted.creativeCore !== undefined && adopted.creativeCore !== latest.creativeCore) ||
+    (adopted.dimensions !== undefined &&
+      Object.entries(adopted.dimensions).some(
+        ([key, value]) => latest.dimensions?.[key as keyof EffectPromptDimensions] !== value,
+      ))
+  )
     return 'METADATA';
   return undefined;
 }

@@ -25,10 +25,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "summary",
-    "issues"
-  ],
+  "required": ["summary", "issues"],
   "title": "Audit",
   "type": "object"
 }

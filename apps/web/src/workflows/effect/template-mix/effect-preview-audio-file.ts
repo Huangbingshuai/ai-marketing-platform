@@ -2,15 +2,16 @@
 export async function readPreviewAudioFile(
   url: string,
   request: (url: string, init: RequestInit) => Promise<Response> = fetch,
-  delay: (milliseconds: number) => Promise<void> = milliseconds =>
-    new Promise(resolve => setTimeout(resolve, milliseconds)),
+  delay: (milliseconds: number) => Promise<void> = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
 ): Promise<ArrayBuffer> {
   for (let attempt = 0; ; attempt++) {
     let response: Response;
     try {
       response = await request(url, { signal: AbortSignal.timeout(12_000) });
     } catch (error) {
-      const retryable = error instanceof TypeError ||
+      const retryable =
+        error instanceof TypeError ||
         (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name));
       if (!retryable || attempt >= 2) throw error;
       await delay(250 * (attempt + 1));
@@ -32,7 +33,8 @@ export async function readPreviewAudioFile(
       if (content.byteLength > 100 * 1024 * 1024) throw new Error('音频超过预览容量');
       return content;
     } catch (error) {
-      const retryable = error instanceof TypeError ||
+      const retryable =
+        error instanceof TypeError ||
         (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name));
       if (!retryable || attempt >= 2) throw error;
       await delay(250 * (attempt + 1));

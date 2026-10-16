@@ -4,7 +4,7 @@ import {
   customizedWorkflowNodeId,
   type CustomizedWorkflowBranchTreeData,
   type CustomizedWorkflowVersionData,
-} from "@ai-marketing/contracts";
+} from '@ai-marketing/contracts';
 import type {
   ActivateEffectWorkflowBranchData,
   CreateEffectWorkflowBranchData,
@@ -28,7 +28,10 @@ import type {
   WorkflowNodeState,
   WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
-import { EFFECT_WORKFLOW_BRANCH_NODES, EFFECT_WORKFLOW_EDITABLE_NODES } from '@ai-marketing/contracts';
+import {
+  EFFECT_WORKFLOW_BRANCH_NODES,
+  EFFECT_WORKFLOW_EDITABLE_NODES,
+} from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import { EffectReadCacheService } from '../cache/effect-read-cache.service';
 import { ApiHttpException } from '../../common/api-http-exception';
@@ -44,10 +47,18 @@ import {
 } from './workflow-working.repository';
 import { workflowStateHash } from './workflow-state-hash';
 import { isInheritedFillKey } from './effect-branch-clone';
-import { effectArtifactSourceOwner, effectRenderClipHeads, effectSavedMixSourcesStale, projectEffectBranchFreshness } from './effect-branch-freshness';
+import {
+  effectArtifactSourceOwner,
+  effectRenderClipHeads,
+  effectSavedMixSourcesStale,
+  projectEffectBranchFreshness,
+} from './effect-branch-freshness';
 import type { EffectEditBeginOptions } from './effect-edit-session';
 import { selectedEffectTemplatePaths } from './effect-template-current-path';
-import { finalOutputConfirmedProjectIds, finalOutputSavedBatchStale } from '../../workflows/effect/final-output/effect-final-output-freshness';
+import {
+  finalOutputConfirmedProjectIds,
+  finalOutputSavedBatchStale,
+} from '../../workflows/effect/final-output/effect-final-output-freshness';
 
 export { workflowStateHash } from './workflow-state-hash';
 
@@ -68,8 +79,13 @@ const previewKind = (mimeType: string | null): AssetPreviewKind => {
 
 const mixDraftTemplates = (
   value: unknown,
-): Array<{ id: string; name: string; createdAt: string | null; variantIds: string[] | null;
-  variants: EffectTemplateMixVariant[] | null }> => {
+): Array<{
+  id: string;
+  name: string;
+  createdAt: string | null;
+  variantIds: string[] | null;
+  variants: EffectTemplateMixVariant[] | null;
+}> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
   const draft = value as Record<string, unknown>;
   if (draft.schemaVersion !== 1 || !Array.isArray(draft.templates)) return [];
@@ -98,10 +114,19 @@ const mixDraftTemplates = (
             name: name.trim() || `模板 ${id.slice(0, 8)}`,
             createdAt: typeof createdAt === 'string' ? createdAt : null,
             variantIds,
-            variants: Array.isArray(variants) && variants.every((variant) => variant &&
-              typeof variant === 'object' && Array.isArray(variant.slots) && variant.bindings &&
-              variant.bindingRevisions && variant.offsets)
-              ? variants as EffectTemplateMixVariant[] : null,
+            variants:
+              Array.isArray(variants) &&
+              variants.every(
+                (variant) =>
+                  variant &&
+                  typeof variant === 'object' &&
+                  Array.isArray(variant.slots) &&
+                  variant.bindings &&
+                  variant.bindingRevisions &&
+                  variant.offsets,
+              )
+                ? (variants as EffectTemplateMixVariant[])
+                : null,
           },
         ]
       : [];
@@ -150,8 +175,11 @@ const toRun = (record: {
   forkNodeId: record.forkNodeId,
   forkTemplateId: record.forkTemplateId,
   branchLabel: record.branchLabel,
-  isTemporaryBranch: Boolean(record.parentWorkflowRunId && !record.branchPublishedAt && record.editSessionNodeId),
-  editNodeId: EFFECT_WORKFLOW_EDITABLE_NODES.find((node) => node === record.editSessionNodeId) ?? null,
+  isTemporaryBranch: Boolean(
+    record.parentWorkflowRunId && !record.branchPublishedAt && record.editSessionNodeId,
+  ),
+  editNodeId:
+    EFFECT_WORKFLOW_EDITABLE_NODES.find((node) => node === record.editSessionNodeId) ?? null,
   workflow: record.workflow!,
   workflowSpace: record.workflowSpace!,
   status: record.status,
@@ -369,10 +397,8 @@ export class WorkflowWorkingService {
     space: NonNullable<WorkingArtifactListQuery['space']>,
   ): Promise<WorkflowRunOverviewData> {
     if (this.readCache && workflow === 'CUSTOMIZED' && space === 'CUSTOMIZED_PROJECT')
-      return this.readCache.read(
-        { projectId, workflow: 'CUSTOMIZED' },
-        'customized-overview',
-        () => this.loadActiveRunOverview(projectId, workflow, space),
+      return this.readCache.read({ projectId, workflow: 'CUSTOMIZED' }, 'customized-overview', () =>
+        this.loadActiveRunOverview(projectId, workflow, space),
       );
     return this.loadActiveRunOverview(projectId, workflow, space);
   }
@@ -435,16 +461,26 @@ export class WorkflowWorkingService {
               (item) => customizedWorkflowNodeId(item.nodeId) === nodeId,
             );
             if (nodeId === 'SHOT_PROMPT') {
-              const catalog = artifacts.find((item) => item.artifactKey === 'customized-asset-catalog');
+              const catalog = artifacts.find(
+                (item) => item.artifactKey === 'customized-asset-catalog',
+              );
               const payload = catalog?.payload as { assets?: unknown[] } | undefined;
               const count = Array.isArray(payload?.assets) ? payload.assets.length : 0;
               return {
                 nodeId,
-                status: !count ? 'PENDING' as const : catalog?.freshness === 'STALE' ? 'STALE' as const : 'CONFIRMED' as const,
+                status: !count
+                  ? ('PENDING' as const)
+                  : catalog?.freshness === 'STALE'
+                    ? ('STALE' as const)
+                    : ('CONFIRMED' as const),
                 artifactCount: count,
                 revision: count ? catalog!.revision : null,
-                artifactCreatedAt: count ? (run.forkNodeId === 'SHOT_PROMPT' && run.branchPublishedAt
-                  ? run.branchPublishedAt : catalog!.createdAt).toISOString() : null,
+                artifactCreatedAt: count
+                  ? (run.forkNodeId === 'SHOT_PROMPT' && run.branchPublishedAt
+                      ? run.branchPublishedAt
+                      : catalog!.createdAt
+                    ).toISOString()
+                  : null,
               };
             }
             return {
@@ -574,8 +610,12 @@ export class WorkflowWorkingService {
 
   async getEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
     return this.readCache
-      ? this.readCache.read({ projectId }, 'tree', () => this.loadEffectBranchTree(projectId),
-        'fill-head-lineage-v6:confirmed-output-membership-v1:upstream-publication-time-v1')
+      ? this.readCache.read(
+          { projectId },
+          'tree',
+          () => this.loadEffectBranchTree(projectId),
+          'fill-head-lineage-v6:confirmed-output-membership-v1:upstream-publication-time-v1',
+        )
       : this.loadEffectBranchTree(projectId);
   }
 
@@ -587,24 +627,35 @@ export class WorkflowWorkingService {
     // Copied tasks, APPEND and trim repairs only inherit/mutate an existing head.
     const fullFillHead = (aiRun: { idempotencyKey: string; inputSnapshot?: unknown }): boolean => {
       if (isInheritedFillKey(aiRun.idempotencyKey)) return false;
-      const snapshot = aiRun.inputSnapshot && typeof aiRun.inputSnapshot === 'object' &&
-        !Array.isArray(aiRun.inputSnapshot) ? aiRun.inputSnapshot as Record<string, unknown> : null;
+      const snapshot =
+        aiRun.inputSnapshot &&
+        typeof aiRun.inputSnapshot === 'object' &&
+        !Array.isArray(aiRun.inputSnapshot)
+          ? (aiRun.inputSnapshot as Record<string, unknown>)
+          : null;
       return !snapshot?.incremental && !snapshot?.trimOnly;
     };
     const ownFill = (run: (typeof runs)[number], templateId: string): boolean =>
       (run.effectTemplateMixAiRuns ?? []).some(
         (aiRun) => aiRun.templateId === templateId && fullFillHead(aiRun),
-      ) && run.workingArtifacts.some((artifact) =>
-        artifact.artifactKey.startsWith(`timeline-project:${templateId}:`));
+      ) &&
+      run.workingArtifacts.some((artifact) =>
+        artifact.artifactKey.startsWith(`timeline-project:${templateId}:`),
+      );
     const ownsForkFill = (run: (typeof runs)[number]): boolean =>
-      run.forkTemplateId ? ownFill(run, run.forkTemplateId) :
-        (run.effectTemplateMixAiRuns ?? []).some((aiRun) => ownFill(run, aiRun.templateId));
+      run.forkTemplateId
+        ? ownFill(run, run.forkTemplateId)
+        : (run.effectTemplateMixAiRuns ?? []).some((aiRun) => ownFill(run, aiRun.templateId));
     // Modern batch packaging publishes its successful films and retains failed films' baselines.
     // Its published PARTIAL head must be usable for the next package/output just like COMPLETED.
     // Legacy partial batches still use their old completeness gate; no unfinished batch publishes.
-    const publishedPackagingBatch = (batch: (typeof runs)[number]['effectPackagingRuns'][number]): boolean =>
-      batch.status === 'COMPLETED' || (batch.status === 'PARTIAL' &&
-        batch.operation === 'BATCH_PACKAGE' && batch.items.some((item) => item.status === 'COMPLETED'));
+    const publishedPackagingBatch = (
+      batch: (typeof runs)[number]['effectPackagingRuns'][number],
+    ): boolean =>
+      batch.status === 'COMPLETED' ||
+      (batch.status === 'PARTIAL' &&
+        batch.operation === 'BATCH_PACKAGE' &&
+        batch.items.some((item) => item.status === 'COMPLETED'));
     const packagingUnfinished = (run: (typeof runs)[number]): boolean => {
       if (run.forkNodeId !== 'TEMPLATE_MIX') return false;
       // First packaging does not unpublish the already confirmed fill in this same Run.
@@ -758,8 +809,10 @@ export class WorkflowWorkingService {
     ): 'TEMPLATE' | 'FILL' | 'PACKAGING' | null => {
       if (forkNodeId !== 'TEMPLATE_MIX') return null;
       const local = run.workingArtifacts;
-      if (!ownsForkFill(run) &&
-        local.some((artifact) => artifact.artifactKey.startsWith('timeline-package:')))
+      if (
+        !ownsForkFill(run) &&
+        local.some((artifact) => artifact.artifactKey.startsWith('timeline-package:'))
+      )
         return 'PACKAGING';
       const inheritedTemplates = new Map(
         (run.parentWorkflowRunId ? effectiveArtifacts(run.parentWorkflowRunId) : [])
@@ -924,11 +977,17 @@ export class WorkflowWorkingService {
         const delivery = run.workingArtifacts.find(
           (artifact) => artifact.artifactKey === `final-delivery:${templateId}`,
         );
-        const inheritedDelivery = delivery?.metadata && typeof delivery.metadata === 'object' &&
-          !Array.isArray(delivery.metadata) && 'branchSource' in delivery.metadata;
+        const inheritedDelivery =
+          delivery?.metadata &&
+          typeof delivery.metadata === 'object' &&
+          !Array.isArray(delivery.metadata) &&
+          'branchSource' in delivery.metadata;
         // Historical first exports can live in their mix Run. Draw their actual confirmed
         // delivery, while copied manifests continue to inherit the original head's ordinal.
-        if (delivery && (!run.parentWorkflowRunId || run.forkNodeId === 'FINAL_OUTPUT' || !inheritedDelivery))
+        if (
+          delivery &&
+          (!run.parentWorkflowRunId || run.forkNodeId === 'FINAL_OUTPUT' || !inheritedDelivery)
+        )
           recordVersion('DELIVERY', run.id, templateId);
       }
     }
@@ -940,7 +999,8 @@ export class WorkflowWorkingService {
           (run.effectPackagingRuns ?? [])
             .filter(
               (packaging) =>
-                publishedPackagingBatch(packaging) && !packaging.idempotencyKey.includes(':package:'),
+                publishedPackagingBatch(packaging) &&
+                !packaging.idempotencyKey.includes(':package:'),
             )
             .map((packaging) => packaging.templateId),
         );
@@ -1010,16 +1070,24 @@ export class WorkflowWorkingService {
         .filter((artifact) => artifact.id)
         .map((artifact) => [artifact.id, artifact.freshness]),
     );
-    const upstreamArtifacts = runs.flatMap((run) => run.workingArtifacts)
+    const upstreamArtifacts = runs
+      .flatMap((run) => run.workingArtifacts)
       .filter((artifact) => EFFECT_WORKFLOW_BRANCH_NODES.indexOf(artifact.nodeId as never) < 4);
     const scopedRenderFreshness = new Map<string, Map<string, string>>();
     const renderFreshnessFor = (runId: string) => {
-      const promptOwner = effectArtifactSourceOwner(runs, runId, 'PROMPT_GENERATION', upstreamArtifacts);
+      const promptOwner = effectArtifactSourceOwner(
+        runs,
+        runId,
+        'PROMPT_GENERATION',
+        upstreamArtifacts,
+      );
       let result = scopedRenderFreshness.get(promptOwner);
       if (!result) {
-        result = new Map(projectEffectBranchFreshness(runs, upstreamArtifacts, undefined, runId)
-          .filter((artifact) => artifact.nodeId === 'SEGMENT_RENDER')
-          .map((artifact) => [artifact.id, artifact.freshness]));
+        result = new Map(
+          projectEffectBranchFreshness(runs, upstreamArtifacts, undefined, runId)
+            .filter((artifact) => artifact.nodeId === 'SEGMENT_RENDER')
+            .map((artifact) => [artifact.id, artifact.freshness]),
+        );
         scopedRenderFreshness.set(promptOwner, result);
       }
       return result;
@@ -1032,8 +1100,11 @@ export class WorkflowWorkingService {
         : artifacts.length
           ? ('CONFIRMED' as const)
           : ('PENDING' as const);
-    const outputBatches = new Map(runs.flatMap((run) =>
-      (run.effectFinalOutputRuns ?? []).map((batch) => [batch.id, batch] as const)));
+    const outputBatches = new Map(
+      runs.flatMap((run) =>
+        (run.effectFinalOutputRuns ?? []).map((batch) => [batch.id, batch] as const),
+      ),
+    );
     const branches: EffectWorkflowBranch[] = runs
       .filter((run) => inTree.has(run.id) && drawn(run))
       .map((run) => {
@@ -1203,15 +1274,26 @@ export class WorkflowWorkingService {
           // A repackage carries older baseline artifacts. Its label belongs to the first
           // successful local result, never to an inherited artifact's creation time.
           const packageTimes = (run.effectPackagingRuns ?? [])
-            .filter((batch) => batch.templateId === template.templateId &&
-              publishedPackagingBatch(batch) && !batch.idempotencyKey.includes(':package:'))
+            .filter(
+              (batch) =>
+                batch.templateId === template.templateId &&
+                publishedPackagingBatch(batch) &&
+                !batch.idempotencyKey.includes(':package:'),
+            )
             .flatMap((batch) => {
-              const successes = (batch.items ?? []).filter((item) => item.status === 'COMPLETED' && item.completedAt)
+              const successes = (batch.items ?? [])
+                .filter((item) => item.status === 'COMPLETED' && item.completedAt)
                 .map((item) => item.completedAt!.getTime());
-              return successes.length ? successes : batch.completedAt ? [batch.completedAt.getTime()] : [];
+              return successes.length
+                ? successes
+                : batch.completedAt
+                  ? [batch.completedAt.getTime()]
+                  : [];
             });
-          template.packagingCreatedAt = packages.length && packageTimes.length
-            ? new Date(Math.min(...packageTimes)).toISOString() : artifactCreatedAt(packages);
+          template.packagingCreatedAt =
+            packages.length && packageTimes.length
+              ? new Date(Math.min(...packageTimes)).toISOString()
+              : artifactCreatedAt(packages);
           template.deliveryCreatedAt = artifactCreatedAt(deliveries);
           template.templateStatus = artifactStatus(
             visibleArtifacts.filter(
@@ -1232,9 +1314,16 @@ export class WorkflowWorkingService {
           // actual delivery batch with this branch's own saved engineering, never an active
           // sibling's draft. Missing legacy data is unknown, not a deleted project.
           const variants = currentDraftTemplates?.get(template.templateId)?.variants ?? null;
-          const sourceStaleVariantIds = variants && deliveries.length
-            ? effectSavedMixSourcesStale(runs, runs.flatMap((branch) => branch.workingArtifacts),
-              run.id, template.templateId, variants) : new Set<string>();
+          const sourceStaleVariantIds =
+            variants && deliveries.length
+              ? effectSavedMixSourcesStale(
+                  runs,
+                  runs.flatMap((branch) => branch.workingArtifacts),
+                  run.id,
+                  template.templateId,
+                  variants,
+                )
+              : new Set<string>();
           const packaging = new Map<string, PackagingCheckpoint>();
           const seenPackages = new Set<string>();
           for (const packageRun of run.effectPackagingRuns ?? []) {
@@ -1242,14 +1331,23 @@ export class WorkflowWorkingService {
             for (const item of packageRun.items ?? []) {
               if (seenPackages.has(item.variantId)) continue;
               seenPackages.add(item.variantId);
-              if (item.status === 'COMPLETED') packaging.set(item.variantId, item.checkpoint as PackagingCheckpoint);
+              if (item.status === 'COMPLETED')
+                packaging.set(item.variantId, item.checkpoint as PackagingCheckpoint);
             }
           }
           for (const delivery of deliveries) {
             const payload = delivery.payload as { runId?: string } | null;
             const batch = payload?.runId ? outputBatches.get(payload.runId) : undefined;
-            if (batch?.templateId === template.templateId && finalOutputSavedBatchStale(batch, variants, packaging,
-              sourceStaleVariantIds, finalOutputConfirmedProjectIds(template.templateId, visibleArtifacts)))
+            if (
+              batch?.templateId === template.templateId &&
+              finalOutputSavedBatchStale(
+                batch,
+                variants,
+                packaging,
+                sourceStaleVariantIds,
+                finalOutputConfirmedProjectIds(template.templateId, visibleArtifacts),
+              )
+            )
               template.deliveryStatus = 'STALE';
           }
         }
@@ -1322,26 +1420,43 @@ export class WorkflowWorkingService {
             );
             const count = {
               current: statusArtifacts.filter(
-                (artifact) => ((nodeId === 'SEGMENT_RENDER' ? renderFreshness : freshnessById).get(artifact.id) ?? artifact.freshness) === 'CURRENT',
+                (artifact) =>
+                  ((nodeId === 'SEGMENT_RENDER' ? renderFreshness : freshnessById).get(
+                    artifact.id,
+                  ) ?? artifact.freshness) === 'CURRENT',
               ).length,
               stale: statusArtifacts.filter(
-                (artifact) => ((nodeId === 'SEGMENT_RENDER' ? renderFreshness : freshnessById).get(artifact.id) ?? artifact.freshness) === 'STALE',
+                (artifact) =>
+                  ((nodeId === 'SEGMENT_RENDER' ? renderFreshness : freshnessById).get(
+                    artifact.id,
+                  ) ?? artifact.freshness) === 'STALE',
               ).length,
             };
             return {
               nodeId,
-              status: count.stale || (nodeId === 'FINAL_OUTPUT' && [...templatesById.values()]
-                .some((template) => (template.deliveryCount ?? 0) > 0 && template.deliveryStatus === 'STALE'))
-                ? ('STALE' as const)
-                : count.current
-                  ? ('CONFIRMED' as const)
-                  : ('PENDING' as const),
+              status:
+                count.stale ||
+                (nodeId === 'FINAL_OUTPUT' &&
+                  [...templatesById.values()].some(
+                    (template) =>
+                      (template.deliveryCount ?? 0) > 0 && template.deliveryStatus === 'STALE',
+                  ))
+                  ? ('STALE' as const)
+                  : count.current
+                    ? ('CONFIRMED' as const)
+                    : ('PENDING' as const),
               artifactCount: count.current + count.stale,
               revisions: revisionsOf(revisionArtifacts),
               revision: sharedRevision(revisionArtifacts),
               artifactCreatedAt:
-                run.parentWorkflowRunId && forkNodeId === nodeId &&
-                ['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId) &&
+                run.parentWorkflowRunId &&
+                forkNodeId === nodeId &&
+                [
+                  'SOURCE_IMPORT',
+                  'INFORMATION_EXTRACTION',
+                  'PROMPT_GENERATION',
+                  'SEGMENT_RENDER',
+                ].includes(nodeId) &&
                 run.branchPublishedAt
                   ? run.branchPublishedAt.toISOString()
                   : artifactCreatedAt(revisionArtifacts),

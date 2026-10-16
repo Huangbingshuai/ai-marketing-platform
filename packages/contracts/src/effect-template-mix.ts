@@ -1,4 +1,6 @@
 import type { WorkingArtifactCommitSummary } from './workflow-working';
+import type { EffectVideoTransform } from './effect-template-mix-transform';
+import type { PackagingFact } from './effect-template-mix-packaging';
 
 export type EffectTemplateMixPurpose = 'EFFECT' | 'END_CONVERSION' | 'HOOK' | 'PRODUCT_DISPLAY';
 export type EffectTemplateMixRole =
@@ -108,7 +110,7 @@ export type EffectTemplateMixFrozenSourceContext = {
   /** Full source-repair target set; retained after successful per-film checkpoints. */
   affectedVariantIds?: string[];
   packageNewVariants: boolean;
-  facts: import('./effect-template-mix-packaging').PackagingFact[];
+  facts: PackagingFact[];
 };
 /** Mechanical signature shared by the confirmation UI and API; no semantic heuristics. */
 export function effectTemplateMixSourceUpdateSignature(
@@ -336,7 +338,7 @@ export type EffectTemplateMixBindingMetadata = {
 export type EffectTemplateMixVariant = {
   /** Manual canvas override; missing uses the adopted generation ratio or material majority. */
   canvasRatio?: string;
-  videoTransforms?: Record<string, import('./effect-template-mix-transform').EffectVideoTransform>;
+  videoTransforms?: Record<string, EffectVideoTransform>;
   id: string;
   name: string;
   /** Local template edit sequence, NOT WorkingArtifact revision. */

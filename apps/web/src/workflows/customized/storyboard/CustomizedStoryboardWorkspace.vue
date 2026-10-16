@@ -67,8 +67,11 @@ const progress = computed(() =>
   graphTask.value && running.value
     ? {
         value: graphTask.value.progress,
-        summary:
-          pollInterrupted.value ? '正在同步创作状态' : graphTask.value.status === 'QUEUED' ? '等待创作' : '正在创作脚本',
+        summary: pollInterrupted.value
+          ? '正在同步创作状态'
+          : graphTask.value.status === 'QUEUED'
+            ? '等待创作'
+            : '正在创作脚本',
         terminal: false,
       }
     : undefined,
@@ -132,7 +135,9 @@ function apply(value: StoryboardWorkspace, initial = false) {
       ? oldSelection
       : (value.selectedScriptId ?? draft.value.scripts[0]?.id ?? null);
   if (value.scripts.filter((s) => s.confirmedRevision).length > oldCount) {
-    savedMessage.value = currentRecord.value?.confirmedRevision ? `当前脚本版本 ${currentRecord.value.confirmedRevision}` : '';
+    savedMessage.value = currentRecord.value?.confirmedRevision
+      ? `当前脚本版本 ${currentRecord.value.confirmedRevision}`
+      : '';
     emit('published');
   }
   if (initial && props.viewedRunId) {
@@ -235,7 +240,11 @@ function startPolling() {
       signal: polling.signal,
       retryDelayMs: (e, failures) => {
         if (!current(scope) || polling !== pollController || isAbortError(e)) return null;
-        if (!isNetworkError(e) && !(e instanceof ApiClientError && (e.status >= 500 || e.status === 429))) return null;
+        if (
+          !isNetworkError(e) &&
+          !(e instanceof ApiClientError && (e.status >= 500 || e.status === 429))
+        )
+          return null;
         pollInterrupted.value = true;
         return Math.min(30000, 2000 * 2 ** Math.min(4, failures - 1));
       },

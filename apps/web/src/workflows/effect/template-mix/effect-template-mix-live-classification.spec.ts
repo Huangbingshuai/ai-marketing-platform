@@ -108,7 +108,13 @@ describe('live APPEND classification uses existing lightweight library refresh',
   it('keeps full fill polling without locking unrelated template navigation', async () => {
     const { c, execute } = harness();
     c.getEffectTemplateMixAiRun.mockResolvedValue({
-      data: { id: 'fill', workflowRunId: 'workflow', operation: 'FILL', status: 'RUNNING', progress: 20 },
+      data: {
+        id: 'fill',
+        workflowRunId: 'workflow',
+        operation: 'FILL',
+        status: 'RUNNING',
+        progress: 20,
+      },
     });
     await execute('fill');
     expect(c.refreshMaterialSources).not.toHaveBeenCalled();
@@ -116,15 +122,18 @@ describe('live APPEND classification uses existing lightweight library refresh',
     expect(c.aiRuns.value[0]).toMatchObject({ id: 'fill', status: 'RUNNING' });
     expect(c.pollTimers.has('fill')).toBe(true);
   });
-  it.each(['APPEND', 'FILL'])('does not release another committing request while polling %s', async (operation) => {
-    const { c, execute } = harness();
-    c.mutating.value = true;
-    c.getEffectTemplateMixAiRun.mockResolvedValue({
-      data: { id: 'task', workflowRunId: 'workflow', operation, status: 'RUNNING' },
-    });
-    await execute('task');
-    expect(c.mutating.value).toBe(true);
-  });
+  it.each(['APPEND', 'FILL'])(
+    'does not release another committing request while polling %s',
+    async (operation) => {
+      const { c, execute } = harness();
+      c.mutating.value = true;
+      c.getEffectTemplateMixAiRun.mockResolvedValue({
+        data: { id: 'task', workflowRunId: 'workflow', operation, status: 'RUNNING' },
+      });
+      await execute('task');
+      expect(c.mutating.value).toBe(true);
+    },
+  );
   it('does not release a committing request on a transient poll failure', async () => {
     const { c, execute } = harness();
     c.mutating.value = true;
@@ -139,7 +148,15 @@ describe('live APPEND classification uses existing lightweight library refresh',
       c.getEffectTemplateMixAiRun.mockImplementation(async () => {
         if (scope === 'abort') c.pollControllers.get('append').abort();
         else c.props[scope as 'projectId' | 'workflowRunId'] = 'other';
-        return { data: { id: 'append', workflowRunId: 'workflow', operation: 'APPEND', status: 'RUNNING', progress: 78 } };
+        return {
+          data: {
+            id: 'append',
+            workflowRunId: 'workflow',
+            operation: 'APPEND',
+            status: 'RUNNING',
+            progress: 78,
+          },
+        };
       });
       await execute('append');
       expect(c.aiRuns.value).toEqual([]);
@@ -162,15 +179,28 @@ describe('live APPEND classification uses existing lightweight library refresh',
     await execute();
     expect(c.load).toHaveBeenCalledOnce();
     c.draftRevision.value = 2;
-    c.loadEffectTemplateMixSources.mockResolvedValue({ data: { materials: [{ id: 'new' }],
-      classificationPools: [], pendingAddedMaterialIds: {}, draftRevision: 3 } });
+    c.loadEffectTemplateMixSources.mockResolvedValue({
+      data: {
+        materials: [{ id: 'new' }],
+        classificationPools: [],
+        pendingAddedMaterialIds: {},
+        draftRevision: 3,
+      },
+    });
     await execute();
     expect(c.load).toHaveBeenCalledTimes(2);
   });
   it('rejects a task response whose identity does not match the poll owner', async () => {
     const { c, execute } = harness();
-    c.getEffectTemplateMixAiRun.mockResolvedValue({ data: { id: 'append', workflowRunId: 'other',
-      operation: 'APPEND', status: 'COMPLETED', progress: 100 } });
+    c.getEffectTemplateMixAiRun.mockResolvedValue({
+      data: {
+        id: 'append',
+        workflowRunId: 'other',
+        operation: 'APPEND',
+        status: 'COMPLETED',
+        progress: 100,
+      },
+    });
     await execute('append');
     expect(c.aiRuns.value).toEqual([]);
     expect(c.finishAiRun).not.toHaveBeenCalled();
@@ -183,15 +213,18 @@ describe('live APPEND classification uses existing lightweight library refresh',
     expect(c.sourceMaterials.value).toEqual([{ id: 'old' }]);
     expect(c.load).not.toHaveBeenCalled();
   });
-  it.each(['revision', 'epoch'])('rejects old classification responses after an update (%s)', async (reason) => {
-    const { c, execute } = sourceHarness();
-    if (reason === 'revision') c.workspaceRevisionFence.isCurrent.mockReturnValue(false);
-    else c.draftRace.canInstall.mockReturnValue(false);
-    await execute();
-    expect(c.classificationPools.value).toEqual([{ templateId: 'old', items: [] }]);
-    expect(c.sourceMaterials.value).toEqual([{ id: 'old' }]);
-    expect(c.load).not.toHaveBeenCalled();
-  });
+  it.each(['revision', 'epoch'])(
+    'rejects old classification responses after an update (%s)',
+    async (reason) => {
+      const { c, execute } = sourceHarness();
+      if (reason === 'revision') c.workspaceRevisionFence.isCurrent.mockReturnValue(false);
+      else c.draftRace.canInstall.mockReturnValue(false);
+      await execute();
+      expect(c.classificationPools.value).toEqual([{ templateId: 'old', items: [] }]);
+      expect(c.sourceMaterials.value).toEqual([{ id: 'old' }]);
+      expect(c.load).not.toHaveBeenCalled();
+    },
+  );
   it('ignores classifications arriving after the source scope changes', async () => {
     const { c, execute } = sourceHarness();
     c.loadEffectTemplateMixSources.mockImplementation(async () => {

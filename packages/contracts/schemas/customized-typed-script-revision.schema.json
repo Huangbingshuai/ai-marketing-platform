@@ -21,11 +21,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "id",
-        "content",
-        "durationSeconds"
-      ],
+      "required": ["id", "content", "durationSeconds"],
       "title": "Beat",
       "type": "object"
     },
@@ -254,11 +250,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "requirementId",
-        "beatIds",
-        "evidence"
-      ],
+      "required": ["requirementId", "beatIds", "evidence"],
       "title": "StructureMapping",
       "type": "object"
     },
@@ -427,10 +419,7 @@
       "$ref": "#/$defs/TypedConcept"
     }
   },
-  "required": [
-    "story",
-    "concept"
-  ],
+  "required": ["story", "concept"],
   "title": "TypedRevision",
   "type": "object"
 }

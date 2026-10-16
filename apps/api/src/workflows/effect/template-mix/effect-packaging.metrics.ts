@@ -16,15 +16,19 @@ export function packagingExecution(
     : 0;
   const completed = items.filter((i) => i.status === 'COMPLETED');
   // A rolling completion interval includes slow in-flight work; do not extrapolate only fast items.
-  const windowStart = Math.max(startedAt?.getTime() ?? now, now - (captionsOnly ? 60_000 : 300_000));
+  const windowStart = Math.max(
+    startedAt?.getTime() ?? now,
+    now - (captionsOnly ? 60_000 : 300_000),
+  );
   const recent = completed.filter((i) => i.completedAt && Date.parse(i.completedAt) >= windowStart);
   const observed = recent.length >= 2 && now > windowStart;
   const stalled = !terminal && elapsed > 160 && !recent.length;
   // A retry can reuse the original run's startedAt. For a local caption-only redo,
   // measure the recent completion burst rather than counting the earlier failed attempt.
-  const observedStart = captionsOnly && observed
-    ? Math.max(windowStart, Math.min(...recent.map((i) => Date.parse(i.completedAt!))) - 20_000)
-    : windowStart;
+  const observedStart =
+    captionsOnly && observed
+      ? Math.max(windowStart, Math.min(...recent.map((i) => Date.parse(i.completedAt!))) - 20_000)
+      : windowStart;
   const rate = observed ? (recent.length * 60_000) / (now - observedStart) : stalled ? 0 : null;
   const pending = items.filter((i) => ['QUEUED', 'RUNNING'].includes(i.status)).length;
   const estimate =
@@ -75,24 +79,48 @@ export function packagingExecution(
   };
 }
 
-export function packagingPerformance(items: PackagingItem[]): NonNullable<PackagingExecution['performance']> {
+export function packagingPerformance(
+  items: PackagingItem[],
+): NonNullable<PackagingExecution['performance']> {
   const values: Record<string, number[]> = {};
-  let cacheHits = 0, cacheLookups = 0;
+  let cacheHits = 0,
+    cacheLookups = 0;
   for (const item of items) {
     for (const [id, row] of Object.entries(item.checkpoint?.timings ?? {})) {
-      if (row.cacheHit !== undefined) { cacheLookups++; if (row.cacheHit) cacheHits++; }
+      if (row.cacheHit !== undefined) {
+        cacheLookups++;
+        if (row.cacheHit) cacheHits++;
+      }
       for (const [stage, seconds] of Object.entries(row)) {
         // Script is one batched request, count once, not once per returned slot.
-        if (stage === 'cacheHit' || typeof seconds !== 'number' || !Number.isFinite(seconds) ||
-          (stage === 'scriptSeconds' && id !== '_item')) continue;
+        if (
+          stage === 'cacheHit' ||
+          typeof seconds !== 'number' ||
+          !Number.isFinite(seconds) ||
+          (stage === 'scriptSeconds' && id !== '_item')
+        )
+          continue;
         (values[stage] ??= []).push(seconds);
       }
     }
   }
-  return { cacheHits, cacheLookups, cacheHitRate: cacheLookups ? cacheHits / cacheLookups : null,
-    stages: Object.fromEntries(Object.entries(values).map(([key, samples]) => {
-      samples.sort((a, b) => a - b);
-      return [key, { samples: samples.length, p50Seconds: samples[Math.ceil(samples.length * .5) - 1]!,
-        p95Seconds: samples[Math.ceil(samples.length * .95) - 1]!, totalSeconds: samples.reduce((a, b) => a + b, 0) }];
-    })) };
+  return {
+    cacheHits,
+    cacheLookups,
+    cacheHitRate: cacheLookups ? cacheHits / cacheLookups : null,
+    stages: Object.fromEntries(
+      Object.entries(values).map(([key, samples]) => {
+        samples.sort((a, b) => a - b);
+        return [
+          key,
+          {
+            samples: samples.length,
+            p50Seconds: samples[Math.ceil(samples.length * 0.5) - 1]!,
+            p95Seconds: samples[Math.ceil(samples.length * 0.95) - 1]!,
+            totalSeconds: samples.reduce((a, b) => a + b, 0),
+          },
+        ];
+      }),
+    ),
+  };
 }

@@ -153,20 +153,29 @@ const captureThumbnail = (initialJob: ThumbnailJob): void => {
     timeout = window.setTimeout(fail, 20_000);
     capturing = false;
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
-    targetTime = duration > 0
-      ? Math.min(Math.max(0.04, job.time), Math.max(0.04, duration - 0.04)) : 0;
+    targetTime =
+      duration > 0 ? Math.min(Math.max(0.04, job.time), Math.max(0.04, duration - 0.04)) : 0;
     if (Math.abs(video.currentTime - targetTime) < 0.02) capture();
     else video.currentTime = targetTime;
   };
   const nextFrame = (): void => {
     runningKeys.delete(job.key);
     while (!completed) {
-      const index = queue.findIndex((pending) => pending.source === source && pending.version === version);
-      if (index < 0) { close(); return; }
+      const index = queue.findIndex(
+        (pending) => pending.source === source && pending.version === version,
+      );
+      if (index < 0) {
+        close();
+        return;
+      }
       job = queue.splice(index, 1)[0]!;
       queuedKeys.delete(job.key);
-      if (!pinCounts.has(job.key) || thumbnailUrls.has(job.key) ||
-        Date.now() < (retryAfter.get(job.key) ?? 0)) continue;
+      if (
+        !pinCounts.has(job.key) ||
+        thumbnailUrls.has(job.key) ||
+        Date.now() < (retryAfter.get(job.key) ?? 0)
+      )
+        continue;
       runningKeys.add(job.key);
       seekFrame();
       return;
@@ -221,11 +230,7 @@ const captureThumbnail = (initialJob: ThumbnailJob): void => {
   video.playsInline = true;
   video.preload = 'auto';
   video.addEventListener('error', fail, { once: true });
-  video.addEventListener(
-    'loadedmetadata',
-    seekFrame,
-    { once: true },
-  );
+  video.addEventListener('loadedmetadata', seekFrame, { once: true });
   // These events may arrive before the seek has decoded a frame. Keep
   // listening until the requested timestamp is actually drawable.
   video.addEventListener('seeked', capture);
@@ -238,7 +243,9 @@ const captureThumbnail = (initialJob: ThumbnailJob): void => {
 function drainQueue(): void {
   if (capturesPaused) return;
   while (runningSources.size < MAX_CONCURRENT_CAPTURES && queue.length) {
-    const index = queue.findIndex((pending) => !runningSources.has(JSON.stringify([pending.source, pending.version])));
+    const index = queue.findIndex(
+      (pending) => !runningSources.has(JSON.stringify([pending.source, pending.version])),
+    );
     if (index < 0) return;
     const job = queue.splice(index, 1)[0];
     if (!job) return;

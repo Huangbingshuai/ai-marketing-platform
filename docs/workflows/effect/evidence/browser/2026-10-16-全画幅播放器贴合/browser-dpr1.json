@@ -22,18 +22,9 @@
       "ratio": "16:9",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        817,
-        460
-      ],
-      "frame": [
-        817,
-        460
-      ],
-      "source": [
-        426,
-        240
-      ],
+      "stage": [817, 460],
+      "frame": [817, 460],
+      "source": [426, 240],
       "pictureAspect": 1.7733161500373058,
       "objectFit": "cover",
       "frameCovers": true,
@@ -43,18 +34,9 @@
       "ratio": "16:9",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        817,
-        460
-      ],
-      "frame": [
-        817,
-        460
-      ],
-      "source": [
-        426,
-        240
-      ],
+      "stage": [817, 460],
+      "frame": [817, 460],
+      "source": [426, 240],
       "pictureAspect": 1.7733161500373058,
       "objectFit": "cover",
       "frameCovers": true,
@@ -64,18 +46,9 @@
       "ratio": "16:9",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        181
-      ],
-      "frame": [
-        322,
-        181
-      ],
-      "source": [
-        426,
-        240
-      ],
+      "stage": [322, 181],
+      "frame": [322, 181],
+      "source": [426, 240],
       "pictureAspect": 1.7762454749181176,
       "objectFit": "cover",
       "frameCovers": true,
@@ -85,18 +58,9 @@
       "ratio": "16:9",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        817,
-        460
-      ],
-      "frame": [
-        817,
-        460
-      ],
-      "source": [
-        434,
-        240
-      ],
+      "stage": [817, 460],
+      "frame": [817, 460],
+      "source": [434, 240],
       "pictureAspect": 1.8065896739130434,
       "objectFit": "cover",
       "frameCovers": true,
@@ -106,18 +70,9 @@
       "ratio": "16:9",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        817,
-        460
-      ],
-      "frame": [
-        817,
-        460
-      ],
-      "source": [
-        434,
-        240
-      ],
+      "stage": [817, 460],
+      "frame": [817, 460],
+      "source": [434, 240],
       "pictureAspect": 1.8065896739130434,
       "objectFit": "cover",
       "frameCovers": true,
@@ -127,18 +82,9 @@
       "ratio": "16:9",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        181
-      ],
-      "frame": [
-        322,
-        181
-      ],
-      "source": [
-        434,
-        240
-      ],
+      "stage": [322, 181],
+      "frame": [322, 181],
+      "source": [434, 240],
       "pictureAspect": 1.8095649171270718,
       "objectFit": "cover",
       "frameCovers": true,
@@ -148,18 +94,9 @@
       "ratio": "16:9",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        817,
-        460
-      ],
-      "frame": [
-        817,
-        460
-      ],
-      "source": [
-        426,
-        244
-      ],
+      "stage": [817, 460],
+      "frame": [817, 460],
+      "source": [426, 244],
       "pictureAspect": 1.7442706074657237,
       "objectFit": "cover",
       "frameCovers": true,
@@ -169,18 +106,9 @@
       "ratio": "16:9",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        817,
-        460
-      ],
-      "frame": [
-        817,
-        460
-      ],
-      "source": [
-        426,
-        244
-      ],
+      "stage": [817, 460],
+      "frame": [817, 460],
+      "source": [426, 244],
       "pictureAspect": 1.7442706074657237,
       "objectFit": "cover",
       "frameCovers": true,
@@ -190,18 +118,9 @@
       "ratio": "16:9",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        181
-      ],
-      "frame": [
-        322,
-        181
-      ],
-      "source": [
-        426,
-        244
-      ],
+      "stage": [322, 181],
+      "frame": [322, 181],
+      "source": [426, 244],
       "pictureAspect": 1.7471810089020772,
       "objectFit": "cover",
       "frameCovers": true,
@@ -211,18 +130,9 @@
       "ratio": "4:3",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        613,
-        460
-      ],
-      "frame": [
-        613,
-        460
-      ],
-      "source": [
-        320,
-        240
-      ],
+      "stage": [613, 460],
+      "frame": [613, 460],
+      "source": [320, 240],
       "pictureAspect": 1.3326086956521739,
       "objectFit": "cover",
       "frameCovers": true,
@@ -232,18 +142,9 @@
       "ratio": "4:3",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        613,
-        460
-      ],
-      "frame": [
-        613,
-        460
-      ],
-      "source": [
-        320,
-        240
-      ],
+      "stage": [613, 460],
+      "frame": [613, 460],
+      "source": [320, 240],
       "pictureAspect": 1.3326086956521739,
       "objectFit": "cover",
       "frameCovers": true,
@@ -253,18 +154,9 @@
       "ratio": "4:3",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        241
-      ],
-      "frame": [
-        322,
-        241
-      ],
-      "source": [
-        320,
-        240
-      ],
+      "stage": [322, 241],
+      "frame": [322, 241],
+      "source": [320, 240],
       "pictureAspect": 1.3360995850622406,
       "objectFit": "cover",
       "frameCovers": true,
@@ -274,18 +166,9 @@
       "ratio": "4:3",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        613,
-        460
-      ],
-      "frame": [
-        613,
-        460
-      ],
-      "source": [
-        326,
-        240
-      ],
+      "stage": [613, 460],
+      "frame": [613, 460],
+      "source": [326, 240],
       "pictureAspect": 1.3575747282608697,
       "objectFit": "cover",
       "frameCovers": true,
@@ -295,18 +178,9 @@
       "ratio": "4:3",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        613,
-        460
-      ],
-      "frame": [
-        613,
-        460
-      ],
-      "source": [
-        326,
-        240
-      ],
+      "stage": [613, 460],
+      "frame": [613, 460],
+      "source": [326, 240],
       "pictureAspect": 1.3575747282608697,
       "objectFit": "cover",
       "frameCovers": true,
@@ -316,18 +190,9 @@
       "ratio": "4:3",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        241
-      ],
-      "frame": [
-        322,
-        241
-      ],
-      "source": [
-        326,
-        240
-      ],
+      "stage": [322, 241],
+      "frame": [322, 241],
+      "source": [326, 240],
       "pictureAspect": 1.361125518672199,
       "objectFit": "cover",
       "frameCovers": true,
@@ -337,18 +202,9 @@
       "ratio": "4:3",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        613,
-        460
-      ],
-      "frame": [
-        613,
-        460
-      ],
-      "source": [
-        320,
-        244
-      ],
+      "stage": [613, 460],
+      "frame": [613, 460],
+      "source": [320, 244],
       "pictureAspect": 1.3107918476445037,
       "objectFit": "cover",
       "frameCovers": true,
@@ -358,18 +214,9 @@
       "ratio": "4:3",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        613,
-        460
-      ],
-      "frame": [
-        613,
-        460
-      ],
-      "source": [
-        320,
-        244
-      ],
+      "stage": [613, 460],
+      "frame": [613, 460],
+      "source": [320, 244],
       "pictureAspect": 1.3107918476445037,
       "objectFit": "cover",
       "frameCovers": true,
@@ -379,18 +226,9 @@
       "ratio": "4:3",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        241
-      ],
-      "frame": [
-        322,
-        241
-      ],
-      "source": [
-        320,
-        244
-      ],
+      "stage": [322, 241],
+      "frame": [322, 241],
+      "source": [320, 244],
       "pictureAspect": 1.3142019003890058,
       "objectFit": "cover",
       "frameCovers": true,
@@ -400,18 +238,9 @@
       "ratio": "2.35:1",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        972,
-        413
-      ],
-      "frame": [
-        972,
-        413
-      ],
-      "source": [
-        564,
-        240
-      ],
+      "stage": [972, 413],
+      "frame": [972, 413],
+      "source": [564, 240],
       "pictureAspect": 2.3535108958837774,
       "objectFit": "cover",
       "frameCovers": true,
@@ -421,18 +250,9 @@
       "ratio": "2.35:1",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        972,
-        413
-      ],
-      "frame": [
-        972,
-        413
-      ],
-      "source": [
-        564,
-        240
-      ],
+      "stage": [972, 413],
+      "frame": [972, 413],
+      "source": [564, 240],
       "pictureAspect": 2.3535108958837774,
       "objectFit": "cover",
       "frameCovers": true,
@@ -442,18 +262,9 @@
       "ratio": "2.35:1",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        137
-      ],
-      "frame": [
-        322,
-        137
-      ],
-      "source": [
-        564,
-        240
-      ],
+      "stage": [322, 137],
+      "frame": [322, 137],
+      "source": [564, 240],
       "pictureAspect": 2.3503649635036497,
       "objectFit": "cover",
       "frameCovers": true,
@@ -463,18 +274,9 @@
       "ratio": "2.35:1",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        972,
-        413
-      ],
-      "frame": [
-        972,
-        413
-      ],
-      "source": [
-        576,
-        240
-      ],
+      "stage": [972, 413],
+      "frame": [972, 413],
+      "source": [576, 240],
       "pictureAspect": 2.403563861985472,
       "objectFit": "cover",
       "frameCovers": true,
@@ -484,18 +286,9 @@
       "ratio": "2.35:1",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        972,
-        413
-      ],
-      "frame": [
-        972,
-        413
-      ],
-      "source": [
-        576,
-        240
-      ],
+      "stage": [972, 413],
+      "frame": [972, 413],
+      "source": [576, 240],
       "pictureAspect": 2.403563861985472,
       "objectFit": "cover",
       "frameCovers": true,
@@ -505,18 +298,9 @@
       "ratio": "2.35:1",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        137
-      ],
-      "frame": [
-        322,
-        137
-      ],
-      "source": [
-        576,
-        240
-      ],
+      "stage": [322, 137],
+      "frame": [322, 137],
+      "source": [576, 240],
       "pictureAspect": 2.4003193430656933,
       "objectFit": "cover",
       "frameCovers": true,
@@ -526,18 +310,9 @@
       "ratio": "2.35:1",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        972,
-        413
-      ],
-      "frame": [
-        972,
-        413
-      ],
-      "source": [
-        564,
-        244
-      ],
+      "stage": [972, 413],
+      "frame": [972, 413],
+      "source": [564, 244],
       "pictureAspect": 2.3149746948496577,
       "objectFit": "cover",
       "frameCovers": true,
@@ -547,18 +322,9 @@
       "ratio": "2.35:1",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        972,
-        413
-      ],
-      "frame": [
-        972,
-        413
-      ],
-      "source": [
-        564,
-        244
-      ],
+      "stage": [972, 413],
+      "frame": [972, 413],
+      "source": [564, 244],
       "pictureAspect": 2.3149746948496577,
       "objectFit": "cover",
       "frameCovers": true,
@@ -568,18 +334,9 @@
       "ratio": "2.35:1",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        137
-      ],
-      "frame": [
-        322,
-        137
-      ],
-      "source": [
-        564,
-        244
-      ],
+      "stage": [322, 137],
+      "frame": [322, 137],
+      "source": [564, 244],
       "pictureAspect": 2.3118689701593,
       "objectFit": "cover",
       "frameCovers": true,
@@ -589,18 +346,9 @@
       "ratio": "2:1",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        920,
-        460
-      ],
-      "frame": [
-        920,
-        460
-      ],
-      "source": [
-        480,
-        240
-      ],
+      "stage": [920, 460],
+      "frame": [920, 460],
+      "source": [480, 240],
       "pictureAspect": 2,
       "objectFit": "cover",
       "frameCovers": true,
@@ -610,18 +358,9 @@
       "ratio": "2:1",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        920,
-        460
-      ],
-      "frame": [
-        920,
-        460
-      ],
-      "source": [
-        480,
-        240
-      ],
+      "stage": [920, 460],
+      "frame": [920, 460],
+      "source": [480, 240],
       "pictureAspect": 2,
       "objectFit": "cover",
       "frameCovers": true,
@@ -631,18 +370,9 @@
       "ratio": "2:1",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        161
-      ],
-      "frame": [
-        322,
-        161
-      ],
-      "source": [
-        480,
-        240
-      ],
+      "stage": [322, 161],
+      "frame": [322, 161],
+      "source": [480, 240],
       "pictureAspect": 2,
       "objectFit": "cover",
       "frameCovers": true,
@@ -652,18 +382,9 @@
       "ratio": "2:1",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        920,
-        460
-      ],
-      "frame": [
-        920,
-        460
-      ],
-      "source": [
-        490,
-        240
-      ],
+      "stage": [920, 460],
+      "frame": [920, 460],
+      "source": [490, 240],
       "pictureAspect": 2.0416440217391303,
       "objectFit": "cover",
       "frameCovers": true,
@@ -673,18 +394,9 @@
       "ratio": "2:1",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        920,
-        460
-      ],
-      "frame": [
-        920,
-        460
-      ],
-      "source": [
-        490,
-        240
-      ],
+      "stage": [920, 460],
+      "frame": [920, 460],
+      "source": [490, 240],
       "pictureAspect": 2.0416440217391303,
       "objectFit": "cover",
       "frameCovers": true,
@@ -694,18 +406,9 @@
       "ratio": "2:1",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        161
-      ],
-      "frame": [
-        322,
-        161
-      ],
-      "source": [
-        490,
-        240
-      ],
+      "stage": [322, 161],
+      "frame": [322, 161],
+      "source": [490, 240],
       "pictureAspect": 2.0416343167701863,
       "objectFit": "cover",
       "frameCovers": true,
@@ -715,18 +418,9 @@
       "ratio": "2:1",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        920,
-        460
-      ],
-      "frame": [
-        920,
-        460
-      ],
-      "source": [
-        480,
-        244
-      ],
+      "stage": [920, 460],
+      "frame": [920, 460],
+      "source": [480, 244],
       "pictureAspect": 1.967256932843301,
       "objectFit": "cover",
       "frameCovers": true,
@@ -736,18 +430,9 @@
       "ratio": "2:1",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        920,
-        460
-      ],
-      "frame": [
-        920,
-        460
-      ],
-      "source": [
-        480,
-        244
-      ],
+      "stage": [920, 460],
+      "frame": [920, 460],
+      "source": [480, 244],
       "pictureAspect": 1.967256932843301,
       "objectFit": "cover",
       "frameCovers": true,
@@ -757,18 +442,9 @@
       "ratio": "2:1",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        161
-      ],
-      "frame": [
-        322,
-        161
-      ],
-      "source": [
-        480,
-        244
-      ],
+      "stage": [322, 161],
+      "frame": [322, 161],
+      "source": [480, 244],
       "pictureAspect": 1.9673508353221958,
       "objectFit": "cover",
       "frameCovers": true,
@@ -778,18 +454,9 @@
       "ratio": "1.85:1",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        851,
-        460
-      ],
-      "frame": [
-        851,
-        460
-      ],
-      "source": [
-        444,
-        240
-      ],
+      "stage": [851, 460],
+      "frame": [851, 460],
+      "source": [444, 240],
       "pictureAspect": 1.85,
       "objectFit": "cover",
       "frameCovers": true,
@@ -799,18 +466,9 @@
       "ratio": "1.85:1",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        851,
-        460
-      ],
-      "frame": [
-        851,
-        460
-      ],
-      "source": [
-        444,
-        240
-      ],
+      "stage": [851, 460],
+      "frame": [851, 460],
+      "source": [444, 240],
       "pictureAspect": 1.85,
       "objectFit": "cover",
       "frameCovers": true,
@@ -820,18 +478,9 @@
       "ratio": "1.85:1",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        174
-      ],
-      "frame": [
-        322,
-        174
-      ],
-      "source": [
-        444,
-        240
-      ],
+      "stage": [322, 174],
+      "frame": [322, 174],
+      "source": [444, 240],
       "pictureAspect": 1.8505747126436782,
       "objectFit": "cover",
       "frameCovers": true,
@@ -841,18 +490,9 @@
       "ratio": "1.85:1",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        851,
-        460
-      ],
-      "frame": [
-        851,
-        460
-      ],
-      "source": [
-        452,
-        240
-      ],
+      "stage": [851, 460],
+      "frame": [851, 460],
+      "source": [452, 240],
       "pictureAspect": 1.8833220108695652,
       "objectFit": "cover",
       "frameCovers": true,
@@ -862,18 +502,9 @@
       "ratio": "1.85:1",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        851,
-        460
-      ],
-      "frame": [
-        851,
-        460
-      ],
-      "source": [
-        452,
-        240
-      ],
+      "stage": [851, 460],
+      "frame": [851, 460],
+      "source": [452, 240],
       "pictureAspect": 1.8833220108695652,
       "objectFit": "cover",
       "frameCovers": true,
@@ -883,18 +514,9 @@
       "ratio": "1.85:1",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        174
-      ],
-      "frame": [
-        322,
-        174
-      ],
-      "source": [
-        452,
-        240
-      ],
+      "stage": [322, 174],
+      "frame": [322, 174],
+      "source": [452, 240],
       "pictureAspect": 1.8838900862068966,
       "objectFit": "cover",
       "frameCovers": true,
@@ -904,18 +526,9 @@
       "ratio": "1.85:1",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        851,
-        460
-      ],
-      "frame": [
-        851,
-        460
-      ],
-      "source": [
-        444,
-        244
-      ],
+      "stage": [851, 460],
+      "frame": [851, 460],
+      "source": [444, 244],
       "pictureAspect": 1.8197126628800535,
       "objectFit": "cover",
       "frameCovers": true,
@@ -925,18 +538,9 @@
       "ratio": "1.85:1",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        851,
-        460
-      ],
-      "frame": [
-        851,
-        460
-      ],
-      "source": [
-        444,
-        244
-      ],
+      "stage": [851, 460],
+      "frame": [851, 460],
+      "source": [444, 244],
       "pictureAspect": 1.8197126628800535,
       "objectFit": "cover",
       "frameCovers": true,
@@ -946,18 +550,9 @@
       "ratio": "1.85:1",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        174
-      ],
-      "frame": [
-        322,
-        174
-      ],
-      "source": [
-        444,
-        244
-      ],
+      "stage": [322, 174],
+      "frame": [322, 174],
+      "source": [444, 244],
       "pictureAspect": 1.8203338927656567,
       "objectFit": "cover",
       "frameCovers": true,
@@ -967,18 +562,9 @@
       "ratio": "9:16",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        240,
-        426
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [240, 426],
       "pictureAspect": 0.56171875,
       "objectFit": "cover",
       "frameCovers": true,
@@ -988,18 +574,9 @@
       "ratio": "9:16",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        240,
-        426
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [240, 426],
       "pictureAspect": 0.56171875,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1009,18 +586,9 @@
       "ratio": "9:16",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        240,
-        426
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [240, 426],
       "pictureAspect": 0.56171875,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1030,18 +598,9 @@
       "ratio": "9:16",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        244,
-        426
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [244, 426],
       "pictureAspect": 0.57109375,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1051,18 +610,9 @@
       "ratio": "9:16",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        244,
-        426
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [244, 426],
       "pictureAspect": 0.57109375,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1072,18 +622,9 @@
       "ratio": "9:16",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        244,
-        426
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [244, 426],
       "pictureAspect": 0.57109375,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1093,18 +634,9 @@
       "ratio": "9:16",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        240,
-        434
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [240, 434],
       "pictureAspect": 0.5513925065117211,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1114,18 +646,9 @@
       "ratio": "9:16",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        240,
-        434
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [240, 434],
       "pictureAspect": 0.5513925065117211,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1135,18 +658,9 @@
       "ratio": "9:16",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        258,
-        460
-      ],
-      "frame": [
-        258,
-        460
-      ],
-      "source": [
-        240,
-        434
-      ],
+      "stage": [258, 460],
+      "frame": [258, 460],
+      "source": [240, 434],
       "pictureAspect": 0.5513925065117211,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1156,18 +670,9 @@
       "ratio": "3:4",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        345,
-        460
-      ],
-      "frame": [
-        345,
-        460
-      ],
-      "source": [
-        240,
-        320
-      ],
+      "stage": [345, 460],
+      "frame": [345, 460],
+      "source": [240, 320],
       "pictureAspect": 0.75,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1177,18 +682,9 @@
       "ratio": "3:4",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        345,
-        460
-      ],
-      "frame": [
-        345,
-        460
-      ],
-      "source": [
-        240,
-        320
-      ],
+      "stage": [345, 460],
+      "frame": [345, 460],
+      "source": [240, 320],
       "pictureAspect": 0.75,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1198,18 +694,9 @@
       "ratio": "3:4",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        429
-      ],
-      "frame": [
-        322,
-        429
-      ],
-      "source": [
-        240,
-        320
-      ],
+      "stage": [322, 429],
+      "frame": [322, 429],
+      "source": [240, 320],
       "pictureAspect": 0.7505827505827506,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1219,18 +706,9 @@
       "ratio": "3:4",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        345,
-        460
-      ],
-      "frame": [
-        345,
-        460
-      ],
-      "source": [
-        244,
-        320
-      ],
+      "stage": [345, 460],
+      "frame": [345, 460],
+      "source": [244, 320],
       "pictureAspect": 0.7625,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1240,18 +718,9 @@
       "ratio": "3:4",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        345,
-        460
-      ],
-      "frame": [
-        345,
-        460
-      ],
-      "source": [
-        244,
-        320
-      ],
+      "stage": [345, 460],
+      "frame": [345, 460],
+      "source": [244, 320],
       "pictureAspect": 0.7625,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1261,18 +730,9 @@
       "ratio": "3:4",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        429
-      ],
-      "frame": [
-        322,
-        429
-      ],
-      "source": [
-        244,
-        320
-      ],
+      "stage": [322, 429],
+      "frame": [322, 429],
+      "source": [244, 320],
       "pictureAspect": 0.7630754662004662,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1282,18 +742,9 @@
       "ratio": "3:4",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        345,
-        460
-      ],
-      "frame": [
-        345,
-        460
-      ],
-      "source": [
-        240,
-        326
-      ],
+      "stage": [345, 460],
+      "frame": [345, 460],
+      "source": [240, 326],
       "pictureAspect": 0.7361963190184049,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1303,18 +754,9 @@
       "ratio": "3:4",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        345,
-        460
-      ],
-      "frame": [
-        345,
-        460
-      ],
-      "source": [
-        240,
-        326
-      ],
+      "stage": [345, 460],
+      "frame": [345, 460],
+      "source": [240, 326],
       "pictureAspect": 0.7361963190184049,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1324,18 +766,9 @@
       "ratio": "3:4",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        429
-      ],
-      "frame": [
-        322,
-        429
-      ],
-      "source": [
-        240,
-        326
-      ],
+      "stage": [322, 429],
+      "frame": [322, 429],
+      "source": [240, 326],
       "pictureAspect": 0.7367894172327494,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1345,18 +778,9 @@
       "ratio": "9:19.5",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        240,
-        520
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [240, 520],
       "pictureAspect": 0.4608695652173913,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1366,18 +790,9 @@
       "ratio": "9:19.5",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        240,
-        520
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [240, 520],
       "pictureAspect": 0.4608695652173913,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1387,18 +802,9 @@
       "ratio": "9:19.5",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        240,
-        520
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [240, 520],
       "pictureAspect": 0.4608695652173913,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1408,18 +814,9 @@
       "ratio": "9:19.5",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        244,
-        520
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [244, 520],
       "pictureAspect": 0.4685461956521739,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1429,18 +826,9 @@
       "ratio": "9:19.5",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        244,
-        520
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [244, 520],
       "pictureAspect": 0.4685461956521739,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1450,18 +838,9 @@
       "ratio": "9:19.5",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        244,
-        520
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [244, 520],
       "pictureAspect": 0.4685461956521739,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1471,18 +850,9 @@
       "ratio": "9:19.5",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        240,
-        530
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [240, 530],
       "pictureAspect": 0.4521762314203826,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1492,18 +862,9 @@
       "ratio": "9:19.5",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        240,
-        530
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [240, 530],
       "pictureAspect": 0.4521762314203826,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1513,18 +874,9 @@
       "ratio": "9:19.5",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        212,
-        460
-      ],
-      "frame": [
-        212,
-        460
-      ],
-      "source": [
-        240,
-        530
-      ],
+      "stage": [212, 460],
+      "frame": [212, 460],
+      "source": [240, 530],
       "pictureAspect": 0.4521762314203826,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1534,18 +886,9 @@
       "ratio": "1:1",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        460,
-        460
-      ],
-      "frame": [
-        460,
-        460
-      ],
-      "source": [
-        240,
-        240
-      ],
+      "stage": [460, 460],
+      "frame": [460, 460],
+      "source": [240, 240],
       "pictureAspect": 1,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1555,18 +898,9 @@
       "ratio": "1:1",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        460,
-        460
-      ],
-      "frame": [
-        460,
-        460
-      ],
-      "source": [
-        240,
-        240
-      ],
+      "stage": [460, 460],
+      "frame": [460, 460],
+      "source": [240, 240],
       "pictureAspect": 1,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1576,18 +910,9 @@
       "ratio": "1:1",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        322
-      ],
-      "frame": [
-        322,
-        322
-      ],
-      "source": [
-        240,
-        240
-      ],
+      "stage": [322, 322],
+      "frame": [322, 322],
+      "source": [240, 240],
       "pictureAspect": 1,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1597,18 +922,9 @@
       "ratio": "1:1",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        460,
-        460
-      ],
-      "frame": [
-        460,
-        460
-      ],
-      "source": [
-        244,
-        240
-      ],
+      "stage": [460, 460],
+      "frame": [460, 460],
+      "source": [244, 240],
       "pictureAspect": 1.0166440217391304,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1618,18 +934,9 @@
       "ratio": "1:1",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        460,
-        460
-      ],
-      "frame": [
-        460,
-        460
-      ],
-      "source": [
-        244,
-        240
-      ],
+      "stage": [460, 460],
+      "frame": [460, 460],
+      "source": [244, 240],
       "pictureAspect": 1.0166440217391304,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1639,18 +946,9 @@
       "ratio": "1:1",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        322
-      ],
-      "frame": [
-        322,
-        322
-      ],
-      "source": [
-        244,
-        240
-      ],
+      "stage": [322, 322],
+      "frame": [322, 322],
+      "source": [244, 240],
       "pictureAspect": 1.0166440217391304,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1660,18 +958,9 @@
       "ratio": "1:1",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        460,
-        460
-      ],
-      "frame": [
-        460,
-        460
-      ],
-      "source": [
-        240,
-        244
-      ],
+      "stage": [460, 460],
+      "frame": [460, 460],
+      "source": [240, 244],
       "pictureAspect": 0.9836284664216505,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1681,18 +970,9 @@
       "ratio": "1:1",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        460,
-        460
-      ],
-      "frame": [
-        460,
-        460
-      ],
-      "source": [
-        240,
-        244
-      ],
+      "stage": [460, 460],
+      "frame": [460, 460],
+      "source": [240, 244],
       "pictureAspect": 0.9836284664216505,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1702,18 +982,9 @@
       "ratio": "1:1",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        322
-      ],
-      "frame": [
-        322,
-        322
-      ],
-      "source": [
-        240,
-        244
-      ],
+      "stage": [322, 322],
+      "frame": [322, 322],
+      "source": [240, 244],
       "pictureAspect": 0.9836284664216505,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1723,18 +994,9 @@
       "ratio": "7:5",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        644,
-        460
-      ],
-      "frame": [
-        644,
-        460
-      ],
-      "source": [
-        336,
-        240
-      ],
+      "stage": [644, 460],
+      "frame": [644, 460],
+      "source": [336, 240],
       "pictureAspect": 1.4,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1744,18 +1006,9 @@
       "ratio": "7:5",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        644,
-        460
-      ],
-      "frame": [
-        644,
-        460
-      ],
-      "source": [
-        336,
-        240
-      ],
+      "stage": [644, 460],
+      "frame": [644, 460],
+      "source": [336, 240],
       "pictureAspect": 1.4,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1765,18 +1018,9 @@
       "ratio": "7:5",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        230
-      ],
-      "frame": [
-        322,
-        230
-      ],
-      "source": [
-        336,
-        240
-      ],
+      "stage": [322, 230],
+      "frame": [322, 230],
+      "source": [336, 240],
       "pictureAspect": 1.4,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1786,18 +1030,9 @@
       "ratio": "7:5",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        644,
-        460
-      ],
-      "frame": [
-        644,
-        460
-      ],
-      "source": [
-        342,
-        240
-      ],
+      "stage": [644, 460],
+      "frame": [644, 460],
+      "source": [342, 240],
       "pictureAspect": 1.425,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1807,18 +1042,9 @@
       "ratio": "7:5",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        644,
-        460
-      ],
-      "frame": [
-        644,
-        460
-      ],
-      "source": [
-        342,
-        240
-      ],
+      "stage": [644, 460],
+      "frame": [644, 460],
+      "source": [342, 240],
       "pictureAspect": 1.425,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1828,18 +1054,9 @@
       "ratio": "7:5",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        230
-      ],
-      "frame": [
-        322,
-        230
-      ],
-      "source": [
-        342,
-        240
-      ],
+      "stage": [322, 230],
+      "frame": [322, 230],
+      "source": [342, 240],
       "pictureAspect": 1.425,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1849,18 +1066,9 @@
       "ratio": "7:5",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        644,
-        460
-      ],
-      "frame": [
-        644,
-        460
-      ],
-      "source": [
-        336,
-        244
-      ],
+      "stage": [644, 460],
+      "frame": [644, 460],
+      "source": [336, 244],
       "pictureAspect": 1.3770798529903108,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1870,18 +1078,9 @@
       "ratio": "7:5",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        644,
-        460
-      ],
-      "frame": [
-        644,
-        460
-      ],
-      "source": [
-        336,
-        244
-      ],
+      "stage": [644, 460],
+      "frame": [644, 460],
+      "source": [336, 244],
       "pictureAspect": 1.3770798529903108,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1891,18 +1090,9 @@
       "ratio": "7:5",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        230
-      ],
-      "frame": [
-        322,
-        230
-      ],
-      "source": [
-        336,
-        244
-      ],
+      "stage": [322, 230],
+      "frame": [322, 230],
+      "source": [336, 244],
       "pictureAspect": 1.3770798529903108,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1912,18 +1102,9 @@
       "ratio": "1:4",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        240,
-        960
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [240, 960],
       "pictureAspect": 0.25,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1933,18 +1114,9 @@
       "ratio": "1:4",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        240,
-        960
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [240, 960],
       "pictureAspect": 0.25,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1954,18 +1126,9 @@
       "ratio": "1:4",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        240,
-        960
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [240, 960],
       "pictureAspect": 0.25,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1975,18 +1138,9 @@
       "ratio": "1:4",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        244,
-        960
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [244, 960],
       "pictureAspect": 0.2541440217391304,
       "objectFit": "cover",
       "frameCovers": true,
@@ -1996,18 +1150,9 @@
       "ratio": "1:4",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        244,
-        960
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [244, 960],
       "pictureAspect": 0.2541440217391304,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2017,18 +1162,9 @@
       "ratio": "1:4",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        244,
-        960
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [244, 960],
       "pictureAspect": 0.2541440217391304,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2038,18 +1174,9 @@
       "ratio": "1:4",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        240,
-        980
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [240, 980],
       "pictureAspect": 0.24490067547333044,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2059,18 +1186,9 @@
       "ratio": "1:4",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        240,
-        980
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [240, 980],
       "pictureAspect": 0.24490067547333044,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2080,18 +1198,9 @@
       "ratio": "1:4",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        115,
-        460
-      ],
-      "frame": [
-        115,
-        460
-      ],
-      "source": [
-        240,
-        980
-      ],
+      "stage": [115, 460],
+      "frame": [115, 460],
+      "source": [240, 980],
       "pictureAspect": 0.24490067547333044,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2101,18 +1210,9 @@
       "ratio": "4:1",
       "direction": 0,
       "viewport": 1440,
-      "stage": [
-        972,
-        243
-      ],
-      "frame": [
-        972,
-        243
-      ],
-      "source": [
-        960,
-        240
-      ],
+      "stage": [972, 243],
+      "frame": [972, 243],
+      "source": [960, 240],
       "pictureAspect": 4,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2122,18 +1222,9 @@
       "ratio": "4:1",
       "direction": 0,
       "viewport": 1920,
-      "stage": [
-        972,
-        243
-      ],
-      "frame": [
-        972,
-        243
-      ],
-      "source": [
-        960,
-        240
-      ],
+      "stage": [972, 243],
+      "frame": [972, 243],
+      "source": [960, 240],
       "pictureAspect": 4,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2143,18 +1234,9 @@
       "ratio": "4:1",
       "direction": 0,
       "viewport": 390,
-      "stage": [
-        322,
-        80
-      ],
-      "frame": [
-        322,
-        80
-      ],
-      "source": [
-        960,
-        240
-      ],
+      "stage": [322, 80],
+      "frame": [322, 80],
+      "source": [960, 240],
       "pictureAspect": 4.025,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2164,18 +1246,9 @@
       "ratio": "4:1",
       "direction": 1,
       "viewport": 1440,
-      "stage": [
-        972,
-        243
-      ],
-      "frame": [
-        972,
-        243
-      ],
-      "source": [
-        980,
-        240
-      ],
+      "stage": [972, 243],
+      "frame": [972, 243],
+      "source": [980, 240],
       "pictureAspect": 4.083333333333333,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2185,18 +1258,9 @@
       "ratio": "4:1",
       "direction": 1,
       "viewport": 1920,
-      "stage": [
-        972,
-        243
-      ],
-      "frame": [
-        972,
-        243
-      ],
-      "source": [
-        980,
-        240
-      ],
+      "stage": [972, 243],
+      "frame": [972, 243],
+      "source": [980, 240],
       "pictureAspect": 4.083333333333333,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2206,18 +1270,9 @@
       "ratio": "4:1",
       "direction": 1,
       "viewport": 390,
-      "stage": [
-        322,
-        80
-      ],
-      "frame": [
-        322,
-        80
-      ],
-      "source": [
-        980,
-        240
-      ],
+      "stage": [322, 80],
+      "frame": [322, 80],
+      "source": [980, 240],
       "pictureAspect": 4.1087890625,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2227,18 +1282,9 @@
       "ratio": "4:1",
       "direction": -1,
       "viewport": 1440,
-      "stage": [
-        972,
-        243
-      ],
-      "frame": [
-        972,
-        243
-      ],
-      "source": [
-        960,
-        244
-      ],
+      "stage": [972, 243],
+      "frame": [972, 243],
+      "source": [960, 244],
       "pictureAspect": 3.934475997723104,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2248,18 +1294,9 @@
       "ratio": "4:1",
       "direction": -1,
       "viewport": 1920,
-      "stage": [
-        972,
-        243
-      ],
-      "frame": [
-        972,
-        243
-      ],
-      "source": [
-        960,
-        244
-      ],
+      "stage": [972, 243],
+      "frame": [972, 243],
+      "source": [960, 244],
       "pictureAspect": 3.934475997723104,
       "objectFit": "cover",
       "frameCovers": true,
@@ -2269,18 +1306,9 @@
       "ratio": "4:1",
       "direction": -1,
       "viewport": 390,
-      "stage": [
-        322,
-        80
-      ],
-      "frame": [
-        322,
-        80
-      ],
-      "source": [
-        960,
-        244
-      ],
+      "stage": [322, 80],
+      "frame": [322, 80],
+      "source": [960, 244],
       "pictureAspect": 3.9592699327569645,
       "objectFit": "cover",
       "frameCovers": true,

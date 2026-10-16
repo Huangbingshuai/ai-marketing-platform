@@ -65,11 +65,16 @@ describe('packaging lightweight read scope', () => {
       { id: 'import', name: '导入素材', payload: null },
     ] as never);
     await expect(repo.materialLabels('p', ['old', 'import'])).resolves.toEqual([
-      { id: 'old', code: 'R-03', name: '煎制' }, { id: 'import', code: '导入素材', name: '导入素材' },
+      { id: 'old', code: 'R-03', name: '煎制' },
+      { id: 'import', code: '导入素材', name: '导入素材' },
     ]);
     expect(db.workingArtifact.findMany).toHaveBeenCalledWith({
-      where: { projectId: 'p', id: { in: ['old', 'import'] }, nodeId: 'SEGMENT_RENDER',
-        artifactKey: { startsWith: 'render-clip:' } },
+      where: {
+        projectId: 'p',
+        id: { in: ['old', 'import'] },
+        nodeId: 'SEGMENT_RENDER',
+        artifactKey: { startsWith: 'render-clip:' },
+      },
       select: { id: true, name: true, payload: true },
     });
     expect(db.workflowNodeState.findUnique).not.toHaveBeenCalled();
@@ -82,90 +87,175 @@ describe('packaging lightweight read scope', () => {
   });
 });
 describe('packaging lease and durable task repository', () => {
-  it.each([false, true])('serializes modern creation and rejects only overlapping targets, overlap=%s', async (overlap) => {
-    const { db, repo } = harness();
-    db.effectPackagingRun.count.mockResolvedValue(overlap ? 1 : 0);
-    const task = repo.create({ projectId: 'p', workflowRunId: 'w', templateId: 't',
-      idempotencyKey: 'single', requestHash: 'hash', expectedDraftRevision: 1,
-      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
-      snapshots: [{ operation: 'SINGLE_PACKAGE', variant: { id: 'selected' } } as PackagingSnapshot],
-    });
-    if (overlap) {
-      await expect(task).rejects.toThrow('已有包装任务');
-      expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
-      expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
-    } else {
-      await expect(task).resolves.toBe('run');
-      expect(db.effectPackagingRun.create).toHaveBeenCalledOnce();
-    }
-    expect(db.$executeRaw).toHaveBeenCalled();
-    expect(db.effectPackagingRun.count).toHaveBeenCalledWith({ where: {
-      projectId: 'p', workflowRunId: 'w', templateId: 't', status: { in: ['QUEUED', 'RUNNING'] },
-      items: { some: { variantId: { in: ['selected'] }, status: { in: ['QUEUED', 'RUNNING'] } } },
-    } });
-    expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(db.effectPackagingRun.count.mock.invocationCallOrder[0]!);
-  });
+  it.each([false, true])(
+    'serializes modern creation and rejects only overlapping targets, overlap=%s',
+    async (overlap) => {
+      const { db, repo } = harness();
+      db.effectPackagingRun.count.mockResolvedValue(overlap ? 1 : 0);
+      const task = repo.create({
+        projectId: 'p',
+        workflowRunId: 'w',
+        templateId: 't',
+        idempotencyKey: 'single',
+        requestHash: 'hash',
+        expectedDraftRevision: 1,
+        expectedTemplateHash: templateConfigurationHash(testTemplate),
+        checkpoints: [{}],
+        snapshots: [
+          { operation: 'SINGLE_PACKAGE', variant: { id: 'selected' } } as PackagingSnapshot,
+        ],
+      });
+      if (overlap) {
+        await expect(task).rejects.toThrow('已有包装任务');
+        expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
+        expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+      } else {
+        await expect(task).resolves.toBe('run');
+        expect(db.effectPackagingRun.create).toHaveBeenCalledOnce();
+      }
+      expect(db.$executeRaw).toHaveBeenCalled();
+      expect(db.effectPackagingRun.count).toHaveBeenCalledWith({
+        where: {
+          projectId: 'p',
+          workflowRunId: 'w',
+          templateId: 't',
+          status: { in: ['QUEUED', 'RUNNING'] },
+          items: {
+            some: { variantId: { in: ['selected'] }, status: { in: ['QUEUED', 'RUNNING'] } },
+          },
+        },
+      });
+      expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        db.effectPackagingRun.count.mock.invocationCallOrder[0]!,
+      );
+    },
+  );
   it('retains the whole-template concurrency barrier for legacy packaging tasks', async () => {
     const { db, repo } = harness();
     db.effectPackagingRun.count.mockResolvedValue(1);
-    await expect(repo.create({ projectId: 'p', workflowRunId: 'w', templateId: 't',
-      idempotencyKey: 'legacy', requestHash: 'hash', expectedDraftRevision: 1,
-      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
-      snapshots: [{ variant: { id: 'selected' } } as PackagingSnapshot],
-    })).rejects.toThrow('已有包装任务');
-    expect(db.effectPackagingRun.count).toHaveBeenCalledWith({ where: {
-      projectId: 'p', workflowRunId: 'w', templateId: 't', status: { in: ['QUEUED', 'RUNNING'] },
-    } });
+    await expect(
+      repo.create({
+        projectId: 'p',
+        workflowRunId: 'w',
+        templateId: 't',
+        idempotencyKey: 'legacy',
+        requestHash: 'hash',
+        expectedDraftRevision: 1,
+        expectedTemplateHash: templateConfigurationHash(testTemplate),
+        checkpoints: [{}],
+        snapshots: [{ variant: { id: 'selected' } } as PackagingSnapshot],
+      }),
+    ).rejects.toThrow('已有包装任务');
+    expect(db.effectPackagingRun.count).toHaveBeenCalledWith({
+      where: {
+        projectId: 'p',
+        workflowRunId: 'w',
+        templateId: 't',
+        status: { in: ['QUEUED', 'RUNNING'] },
+      },
+    });
     expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
   });
   it('does not admit a disjoint modern task beside an active legacy task in the same Run', async () => {
     const { db, repo } = harness();
-    db.effectPackagingItem.findMany.mockResolvedValue([{ variantId: 'other', snapshot: {},
-      run: { templateId: 't', workflowRunId: 'w' } }] as never);
-    await expect(repo.create({ projectId: 'p', workflowRunId: 'w', sourceWorkflowRunId: 'w', templateId: 't',
-      idempotencyKey: 'modern-after-legacy', requestHash: 'hash', expectedDraftRevision: 1,
-      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
-      snapshots: [{ operation: 'SINGLE_PACKAGE', variant: { id: 'selected' } } as PackagingSnapshot],
-    })).rejects.toThrow('已有包装任务');
+    db.effectPackagingItem.findMany.mockResolvedValue([
+      { variantId: 'other', snapshot: {}, run: { templateId: 't', workflowRunId: 'w' } },
+    ] as never);
+    await expect(
+      repo.create({
+        projectId: 'p',
+        workflowRunId: 'w',
+        sourceWorkflowRunId: 'w',
+        templateId: 't',
+        idempotencyKey: 'modern-after-legacy',
+        requestHash: 'hash',
+        expectedDraftRevision: 1,
+        expectedTemplateHash: templateConfigurationHash(testTemplate),
+        checkpoints: [{}],
+        snapshots: [
+          { operation: 'SINGLE_PACKAGE', variant: { id: 'selected' } } as PackagingSnapshot,
+        ],
+      }),
+    ).rejects.toThrow('已有包装任务');
     expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
   });
-  it.each(['none', 'source', 'target'] as const)('keeps independent source and target fences (%s changed)', async (changed) => {
-    const { db, repo } = harness();
-    db.workflowNodeState.findUnique
-      .mockResolvedValueOnce({ id: 'source', revision: changed === 'source' ? 34 : 33, state: testDraft })
-      .mockResolvedValueOnce({ id: 'target', revision: changed === 'target' ? 35 : 34, state: testDraft });
-    const task = repo.create({ projectId: 'p', workflowRunId: 'child', sourceWorkflowRunId: 'w', templateId: 't',
-      idempotencyKey: 'fenced-create', requestHash: 'hash', expectedDraftRevision: 34, expectedSourceDraftRevision: 33,
-      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
-      snapshots: [{ operation: 'BATCH_PACKAGE', variant: { id: 'v' } } as PackagingSnapshot],
-    });
-    if (changed === 'none') {
-      await expect(task).resolves.toBe('run');
-      expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
-    } else {
-      await expect(task).rejects.toThrow(changed === 'source' ? '原工程已改变' : '混剪草稿已变化');
-      expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
-      expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
-    }
-  });
+  it.each(['none', 'source', 'target'] as const)(
+    'keeps independent source and target fences (%s changed)',
+    async (changed) => {
+      const { db, repo } = harness();
+      db.workflowNodeState.findUnique
+        .mockResolvedValueOnce({
+          id: 'source',
+          revision: changed === 'source' ? 34 : 33,
+          state: testDraft,
+        })
+        .mockResolvedValueOnce({
+          id: 'target',
+          revision: changed === 'target' ? 35 : 34,
+          state: testDraft,
+        });
+      const task = repo.create({
+        projectId: 'p',
+        workflowRunId: 'child',
+        sourceWorkflowRunId: 'w',
+        templateId: 't',
+        idempotencyKey: 'fenced-create',
+        requestHash: 'hash',
+        expectedDraftRevision: 34,
+        expectedSourceDraftRevision: 33,
+        expectedTemplateHash: templateConfigurationHash(testTemplate),
+        checkpoints: [{}],
+        snapshots: [{ operation: 'BATCH_PACKAGE', variant: { id: 'v' } } as PackagingSnapshot],
+      });
+      if (changed === 'none') {
+        await expect(task).resolves.toBe('run');
+        expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+      } else {
+        await expect(task).rejects.toThrow(
+          changed === 'source' ? '原工程已改变' : '混剪草稿已变化',
+        );
+        expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
+        expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+      }
+    },
+  );
   it('rejects an overlapping child task under the source node lock', async () => {
     const { db, repo } = harness();
-    db.effectPackagingItem.findMany.mockResolvedValue([{ variantId: 'v', run: { templateId: 't' },
-      snapshot: { operation: 'SINGLE_PACKAGE' } }] as never);
-    await expect(repo.create({ projectId: 'p', workflowRunId: 'child', sourceWorkflowRunId: 'w', templateId: 't',
-      idempotencyKey: 'new', requestHash: 'hash', expectedDraftRevision: 1,
-      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
-      snapshots: [{ operation: 'BATCH_PACKAGE', variant: { id: 'v' } } as PackagingSnapshot],
-    })).rejects.toThrow('已有包装任务');
+    db.effectPackagingItem.findMany.mockResolvedValue([
+      { variantId: 'v', run: { templateId: 't' }, snapshot: { operation: 'SINGLE_PACKAGE' } },
+    ] as never);
+    await expect(
+      repo.create({
+        projectId: 'p',
+        workflowRunId: 'child',
+        sourceWorkflowRunId: 'w',
+        templateId: 't',
+        idempotencyKey: 'new',
+        requestHash: 'hash',
+        expectedDraftRevision: 1,
+        expectedTemplateHash: templateConfigurationHash(testTemplate),
+        checkpoints: [{}],
+        snapshots: [{ operation: 'BATCH_PACKAGE', variant: { id: 'v' } } as PackagingSnapshot],
+      }),
+    ).rejects.toThrow('已有包装任务');
     expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
   });
-  it.each(['FAILED', 'CANCELLED'])('does not reopen a %s film on a late checkpoint', async (status) => {
-    const { db, repo } = harness();
-    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', status, snapshot: { operation: 'SINGLE_PACKAGE' } });
-    await expect(repo.checkpoint('p', 'r', 'token', 'i', 'VOICE', {})).resolves.toEqual({ accepted: true });
-    expect(db.effectPackagingItem.update).not.toHaveBeenCalled();
-  });
+  it.each(['FAILED', 'CANCELLED'])(
+    'does not reopen a %s film on a late checkpoint',
+    async (status) => {
+      const { db, repo } = harness();
+      db.effectPackagingItem.findFirst.mockResolvedValue({
+        id: 'i',
+        status,
+        snapshot: { operation: 'SINGLE_PACKAGE' },
+      });
+      await expect(repo.checkpoint('p', 'r', 'token', 'i', 'VOICE', {})).resolves.toEqual({
+        accepted: true,
+      });
+      expect(db.effectPackagingItem.update).not.toHaveBeenCalled();
+    },
+  );
   it('loads one worker item scoped by project and run without hydrating the batch', async () => {
     const { db, repo } = harness();
     db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i' });
@@ -179,12 +269,14 @@ describe('packaging lease and durable task repository', () => {
   it('reads required revisions from the active run source graph, including inherited sources', async () => {
     const { db, repo } = harness();
     const source = { id: 'a', revision: 3, freshness: 'CURRENT', availability: 'AVAILABLE' };
-    const projection = vi.spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
+    const projection = vi
+      .spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
       .mockResolvedValue([source, { ...source, id: 'unconsumed' }] as never);
     try {
       expect(await repo.sourceArtifacts('p', 'w', ['a'])).toEqual([source]);
       expect(db.workflowRun.findFirst).toHaveBeenCalledWith({
-        where: { projectId: 'p', id: 'w', status: { in: ['ACTIVE', 'PAUSED'] } }, select: { id: true },
+        where: { projectId: 'p', id: 'w', status: { in: ['ACTIVE', 'PAUSED'] } },
+        select: { id: true },
       });
       expect(projection).toHaveBeenCalledWith('p', { workflowRunId: 'w' }, { upstreamOnly: true });
       expect(await repo.sourceArtifacts('p', 'w', [])).toEqual([]);
@@ -200,8 +292,14 @@ describe('packaging lease and durable task repository', () => {
   it('shares only in-flight source reads, not resolved revisions or another project/Run', async () => {
     const { repo } = harness();
     let release!: (value: never) => void;
-    const projection = vi.spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
-      .mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const projection = vi
+      .spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
     const source = { id: 'a', revision: 1, freshness: 'CURRENT', availability: 'AVAILABLE' };
     try {
       const reads = [repo.sourceArtifacts('p', 'w', ['a']), repo.sourceArtifacts('p', 'w', ['a'])];
@@ -213,38 +311,63 @@ describe('packaging lease and durable task repository', () => {
       await repo.sourceArtifacts('other', 'w', ['a']);
       await repo.sourceArtifacts('p', 'other', ['a']);
       expect(projection).toHaveBeenCalledTimes(4);
-    } finally { projection.mockRestore(); }
+    } finally {
+      projection.mockRestore();
+    }
   });
   it('falls back to the full consumed dependency closure for a legacy non-head source ID', async () => {
     const { repo } = harness();
-    const historical = { id: 'old-exact-id', revision: 1, freshness: 'CURRENT', availability: 'AVAILABLE' };
-    const projection = vi.spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
-      .mockResolvedValueOnce([]).mockResolvedValueOnce([historical] as never);
+    const historical = {
+      id: 'old-exact-id',
+      revision: 1,
+      freshness: 'CURRENT',
+      availability: 'AVAILABLE',
+    };
+    const projection = vi
+      .spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([historical] as never);
     try {
       expect(await repo.sourceArtifacts('p', 'w', ['old-exact-id'])).toEqual([historical]);
       expect(projection).toHaveBeenLastCalledWith('p', { workflowRunId: 'w' });
-    } finally { projection.mockRestore(); }
+    } finally {
+      projection.mockRestore();
+    }
   });
   it('uses the same verified render projection for creation and worker execution without masking real staleness', async () => {
     const { repo } = harness();
-    const source = { id: 'clip', nodeId: 'SEGMENT_RENDER', artifactKey: 'render-clip:c',
-      revision: 1, freshness: 'STALE', availability: 'AVAILABLE',
-      metadata: { promptSourcePending: true }, payload: { promptText: '冻结正文',
-        adoptedPrompt: { promptContentHash: createHash('sha256').update('冻结正文').digest('hex') } } };
-    const invalid = { ...source, id: 'invalid', payload: { ...source.payload,
-      adoptedPrompt: { promptContentHash: 'mismatch' } } };
+    const source = {
+      id: 'clip',
+      nodeId: 'SEGMENT_RENDER',
+      artifactKey: 'render-clip:c',
+      revision: 1,
+      freshness: 'STALE',
+      availability: 'AVAILABLE',
+      metadata: { promptSourcePending: true },
+      payload: {
+        promptText: '冻结正文',
+        adoptedPrompt: { promptContentHash: createHash('sha256').update('冻结正文').digest('hex') },
+      },
+    };
+    const invalid = {
+      ...source,
+      id: 'invalid',
+      payload: { ...source.payload, adoptedPrompt: { promptContentHash: 'mismatch' } },
+    };
     const stale = { ...source, id: 'other-stale', metadata: {} };
     const missing = { ...source, id: 'missing', availability: 'MISSING' };
-    const projection = vi.spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
+    const projection = vi
+      .spyOn(WorkflowWorkingRepository.prototype, 'listArtifacts')
       .mockResolvedValue([source, invalid, stale, missing] as never);
     try {
-      expect(await repo.sourceArtifacts('p', 'w', ['clip', 'invalid', 'other-stale', 'missing']))
-        .toEqual([
-          { id: 'clip', revision: 1, freshness: 'CURRENT', availability: 'AVAILABLE' },
-          { id: 'invalid', revision: 1, freshness: 'STALE', availability: 'AVAILABLE' },
-          { id: 'other-stale', revision: 1, freshness: 'STALE', availability: 'AVAILABLE' },
-          { id: 'missing', revision: 1, freshness: 'STALE', availability: 'MISSING' },
-        ]);
+      expect(
+        await repo.sourceArtifacts('p', 'w', ['clip', 'invalid', 'other-stale', 'missing']),
+      ).toEqual([
+        { id: 'clip', revision: 1, freshness: 'CURRENT', availability: 'AVAILABLE' },
+        { id: 'invalid', revision: 1, freshness: 'STALE', availability: 'AVAILABLE' },
+        { id: 'other-stale', revision: 1, freshness: 'STALE', availability: 'AVAILABLE' },
+        { id: 'missing', revision: 1, freshness: 'STALE', availability: 'MISSING' },
+      ]);
       expect(source.freshness).toBe('STALE');
     } finally {
       projection.mockRestore();
@@ -303,21 +426,49 @@ describe('packaging lease and durable task repository', () => {
   it('saves source rebindings only into the requested new packaging branch', async () => {
     const { db, repo } = harness();
     const state = structuredClone(testDraft);
-    const old = { id: 'variant', name: '成片 01', appliedTemplateVersion: 1, slots: [],
-      bindings: { a: 'old' }, bindingRevisions: { a: 1 }, offsets: { a: 5 } };
+    const old = {
+      id: 'variant',
+      name: '成片 01',
+      appliedTemplateVersion: 1,
+      slots: [],
+      bindings: { a: 'old' },
+      bindingRevisions: { a: 1 },
+      offsets: { a: 5 },
+    };
     state.templates[0]!.workspace.variants = [old] as never;
     db.workflowNodeState.findUnique.mockResolvedValue({ id: 'child-state', revision: 1, state });
     const fresh = { ...old, bindings: { a: 'new' }, bindingRevisions: { a: 2 }, offsets: { a: 0 } };
-    const snapshot = { duration: 4, variant: fresh, sourceTimelineHash: 'fresh', facts: [], clips: [], dependencies: [],
-      sourceTrimMaterials: [{ slotId: 'a', material: { id: 'new', fileObjectId: 'new-file' } }] } as unknown as PackagingSnapshot;
-    await repo.create({ projectId: 'p', workflowRunId: 'child', templateId: 't', idempotencyKey: 'fresh',
-      requestHash: 'fresh-request', snapshots: [snapshot], checkpoints: [{}], expectedDraftRevision: 1,
-      expectedTemplateHash: templateConfigurationHash(testTemplate) });
+    const snapshot = {
+      duration: 4,
+      variant: fresh,
+      sourceTimelineHash: 'fresh',
+      facts: [],
+      clips: [],
+      dependencies: [],
+      sourceTrimMaterials: [{ slotId: 'a', material: { id: 'new', fileObjectId: 'new-file' } }],
+    } as unknown as PackagingSnapshot;
+    await repo.create({
+      projectId: 'p',
+      workflowRunId: 'child',
+      templateId: 't',
+      idempotencyKey: 'fresh',
+      requestHash: 'fresh-request',
+      snapshots: [snapshot],
+      checkpoints: [{}],
+      expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate),
+    });
     expect(db.workflowNodeState.update).toHaveBeenCalledOnce();
-    expect(db.workflowNodeState.update.mock.calls[0]![0]).toMatchObject({ where: { id: 'child-state' },
-      data: { revision: { increment: 1 }, state: { templates: [{ workspace: { variants: [fresh], editVersion: 2 } }] } } });
+    expect(db.workflowNodeState.update.mock.calls[0]![0]).toMatchObject({
+      where: { id: 'child-state' },
+      data: {
+        revision: { increment: 1 },
+        state: { templates: [{ workspace: { variants: [fresh], editVersion: 2 } }] },
+      },
+    });
     expect(db.effectPackagingRun.create.mock.calls[0]![0].data.workflowRunId).toBe('child');
-    expect(old.bindings.a).toBe('old'); expect(old.offsets.a).toBe(5);
+    expect(old.bindings.a).toBe('old');
+    expect(old.offsets.a).toBe(5);
   });
   it('uses the existing queue with an explicit schema-2 discriminator', async () => {
     const { db, repo } = harness();
@@ -360,13 +511,20 @@ describe('packaging lease and durable task repository', () => {
       expectedTemplateHash: templateConfigurationHash(testTemplate),
     });
     expect(db.workflowNodeState.update).not.toHaveBeenCalled();
-    db.effectPackagingRun.findMany.mockResolvedValue([{ templateId: 't', items: [{ snapshot: {} }] }] as never);
+    db.effectPackagingRun.findMany.mockResolvedValue([
+      { templateId: 't', items: [{ snapshot: {} }] },
+    ] as never);
     expect(await repo.sourceLockedTemplateIds('p', 'w')).toEqual(['t']);
     expect(db.effectPackagingRun.findMany).toHaveBeenCalledWith({
-      where: { projectId: 'p', status: { in: ['QUEUED', 'RUNNING'] },
-        OR: [{ workflowRunId: 'w' },
-          { workflowRun: { parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX' } }],
-      }, select: { templateId: true, items: { select: { snapshot: true } } },
+      where: {
+        projectId: 'p',
+        status: { in: ['QUEUED', 'RUNNING'] },
+        OR: [
+          { workflowRunId: 'w' },
+          { workflowRun: { parentWorkflowRunId: 'w', forkNodeId: 'TEMPLATE_MIX' } },
+        ],
+      },
+      select: { templateId: true, items: { select: { snapshot: true } } },
     });
     db.effectPackagingRun.findMany.mockResolvedValue([]);
     expect(await repo.sourceLockedTemplateIds('p', 'w')).toEqual([]);
@@ -474,8 +632,11 @@ describe('packaging lease and durable task repository', () => {
   });
   it('locks editor audio edits by updatedAt and rejects lost updates', async () => {
     const { db, repo } = harness();
-    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', variantId: 'v',
-      run: { workflowRunId: 'w', templateId: 't' } });
+    db.effectPackagingItem.findFirst.mockResolvedValue({
+      id: 'i',
+      variantId: 'v',
+      run: { workflowRunId: 'w', templateId: 't' },
+    });
     db.effectPackagingItem.updateMany.mockResolvedValue({ count: 1 });
     db.effectPackagingItem.findFirstOrThrow.mockResolvedValue({ id: 'i' });
     await repo.updateCheckpoint('p', 'i', { musicTaskId: 'x' }, '2026-01-01T00:00:00.000Z');
@@ -492,16 +653,31 @@ describe('packaging lease and durable task repository', () => {
   });
   it('rejects edits to updating captions/audio but leaves other projects editable', async () => {
     const { db, repo } = harness();
-    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', variantId: 'v',
-      run: { workflowRunId: 'w', templateId: 't' } });
-    db.effectFinalOutputItem.findMany.mockResolvedValue([{ snapshot: { sourceRefresh: {
-      workflowRunId: 'w', templateId: 't', baselineVariant: { id: 'v' },
-    } } }]);
-    await expect(repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z'))
-      .rejects.toThrow('局部更新正在进行');
+    db.effectPackagingItem.findFirst.mockResolvedValue({
+      id: 'i',
+      variantId: 'v',
+      run: { workflowRunId: 'w', templateId: 't' },
+    });
+    db.effectFinalOutputItem.findMany.mockResolvedValue([
+      {
+        snapshot: {
+          sourceRefresh: {
+            workflowRunId: 'w',
+            templateId: 't',
+            baselineVariant: { id: 'v' },
+          },
+        },
+      },
+    ]);
+    await expect(repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z')).rejects.toThrow(
+      '局部更新正在进行',
+    );
     expect(db.effectPackagingItem.updateMany).not.toHaveBeenCalled();
-    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', variantId: 'sibling',
-      run: { workflowRunId: 'w', templateId: 't' } });
+    db.effectPackagingItem.findFirst.mockResolvedValue({
+      id: 'i',
+      variantId: 'sibling',
+      run: { workflowRunId: 'w', templateId: 't' },
+    });
     db.effectPackagingItem.updateMany.mockResolvedValue({ count: 1 });
     await repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z');
     expect(db.effectPackagingItem.updateMany).toHaveBeenCalledOnce();
@@ -509,16 +685,33 @@ describe('packaging lease and durable task repository', () => {
   });
   it('keeps parent audio editable during a child repackage while fencing its own active film', async () => {
     const { db, repo } = harness();
-    db.effectPackagingItem.findFirst.mockResolvedValue({ id: 'i', variantId: 'v',
-      run: { workflowRunId: 'w', templateId: 't' } });
-    db.effectPackagingItem.findMany.mockResolvedValue([{ variantId: 'v',
-      snapshot: { operation: 'BATCH_PACKAGE' }, run: { workflowRunId: 'child', templateId: 't' } }]);
+    db.effectPackagingItem.findFirst.mockResolvedValue({
+      id: 'i',
+      variantId: 'v',
+      run: { workflowRunId: 'w', templateId: 't' },
+    });
+    db.effectPackagingItem.findMany.mockResolvedValue([
+      {
+        variantId: 'v',
+        snapshot: { operation: 'BATCH_PACKAGE' },
+        run: { workflowRunId: 'child', templateId: 't' },
+      },
+    ]);
     db.effectPackagingItem.updateMany.mockResolvedValue({ count: 1 });
-    await expect(repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z')).resolves.toBeUndefined();
+    await expect(
+      repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z'),
+    ).resolves.toBeUndefined();
     expect(db.effectPackagingItem.updateMany).toHaveBeenCalledOnce();
-    db.effectPackagingItem.findMany.mockResolvedValue([{ variantId: 'v',
-      snapshot: { operation: 'BATCH_PACKAGE' }, run: { workflowRunId: 'w', templateId: 't' } }]);
-    await expect(repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z')).rejects.toThrow('正在包装');
+    db.effectPackagingItem.findMany.mockResolvedValue([
+      {
+        variantId: 'v',
+        snapshot: { operation: 'BATCH_PACKAGE' },
+        run: { workflowRunId: 'w', templateId: 't' },
+      },
+    ]);
+    await expect(repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z')).rejects.toThrow(
+      '正在包装',
+    );
     expect(db.effectPackagingItem.updateMany).toHaveBeenCalledOnce();
   });
   it('cancel invalidates the attempt and only cancels unfinished items', async () => {

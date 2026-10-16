@@ -191,8 +191,11 @@ export function effectTemplateBranchTips(
   const renderOwner = (branch: EffectWorkflowBranch): string => {
     const seen = new Set<string>();
     let cursor = branch;
-    while (cursor.parentWorkflowRunId && !seen.has(cursor.workflowRunId) &&
-      (cursor.forkNodeId === 'TEMPLATE_MIX' || cursor.forkNodeId === 'FINAL_OUTPUT')) {
+    while (
+      cursor.parentWorkflowRunId &&
+      !seen.has(cursor.workflowRunId) &&
+      (cursor.forkNodeId === 'TEMPLATE_MIX' || cursor.forkNodeId === 'FINAL_OUTPUT')
+    ) {
       seen.add(cursor.workflowRunId);
       const parent = byId.get(cursor.parentWorkflowRunId);
       if (!parent) break;
@@ -200,31 +203,55 @@ export function effectTemplateBranchTips(
     }
     return cursor.workflowRunId;
   };
-  const scoped = context ? branches.filter((branch) => renderOwner(branch) === renderOwner(context)) : [];
+  const scoped = context
+    ? branches.filter((branch) => renderOwner(branch) === renderOwner(context))
+    : [];
   const tips = new Map<string, EffectWorkflowBranch>();
-  for (const templateId of new Set(scoped.flatMap((branch) => branch.templates.map((t) => t.templateId)))) {
+  for (const templateId of new Set(
+    scoped.flatMap((branch) => branch.templates.map((t) => t.templateId)),
+  )) {
     const confirmedAt = (branch: EffectWorkflowBranch) =>
       branch.templates.find((item) => item.templateId === templateId)?.currentConfirmedAt;
     // Older APIs cannot distinguish a local overwrite from branch creation. Retain their
     // explicit context instead of guessing a different history from missing timestamps.
     const current = options.current && scoped.some((branch) => Boolean(confirmedAt(branch)));
-    const latest = scoped.filter((branch) =>
-      (branch.forkTemplateId === templateId &&
-        (branch.forkNodeId === 'TEMPLATE_MIX' || branch.forkNodeId === 'FINAL_OUTPUT')) ||
-      (current && Boolean(confirmedAt(branch))))
-      .sort((a, b) => (current ? confirmedAt(b) ?? b.createdAt : b.createdAt)
-        .localeCompare(current ? confirmedAt(a) ?? a.createdAt : a.createdAt) ||
-        b.createdAt.localeCompare(a.createdAt) || b.workflowRunId.localeCompare(a.workflowRunId))[0];
-    const chosen = scoped.filter(branch => Boolean(branch.templates.find(t =>
-      t.templateId === templateId)?.currentSelectedAt)).sort((a, b) =>
-      b.templates.find(t => t.templateId === templateId)!.currentSelectedAt!.localeCompare(
-        a.templates.find(t => t.templateId === templateId)!.currentSelectedAt!) ||
-      b.workflowRunId.localeCompare(a.workflowRunId))[0];
-    const selected = ((!options.current || (!current && !chosen)) && context?.forkTemplateId === templateId) ||
-      options.selectedTemplateId === templateId ? context : undefined;
-    const fallback = context?.templates.some((t) => t.templateId === templateId) ? context :
-      scoped.find((branch) => branch.templates.some((t) => t.templateId === templateId));
-    if (selected ?? chosen ?? latest ?? fallback) tips.set(templateId, (selected ?? chosen ?? latest ?? fallback)!);
+    const latest = scoped
+      .filter(
+        (branch) =>
+          (branch.forkTemplateId === templateId &&
+            (branch.forkNodeId === 'TEMPLATE_MIX' || branch.forkNodeId === 'FINAL_OUTPUT')) ||
+          (current && Boolean(confirmedAt(branch))),
+      )
+      .sort(
+        (a, b) =>
+          (current ? (confirmedAt(b) ?? b.createdAt) : b.createdAt).localeCompare(
+            current ? (confirmedAt(a) ?? a.createdAt) : a.createdAt,
+          ) ||
+          b.createdAt.localeCompare(a.createdAt) ||
+          b.workflowRunId.localeCompare(a.workflowRunId),
+      )[0];
+    const chosen = scoped
+      .filter((branch) =>
+        Boolean(branch.templates.find((t) => t.templateId === templateId)?.currentSelectedAt),
+      )
+      .sort(
+        (a, b) =>
+          b.templates
+            .find((t) => t.templateId === templateId)!
+            .currentSelectedAt!.localeCompare(
+              a.templates.find((t) => t.templateId === templateId)!.currentSelectedAt!,
+            ) || b.workflowRunId.localeCompare(a.workflowRunId),
+      )[0];
+    const selected =
+      ((!options.current || (!current && !chosen)) && context?.forkTemplateId === templateId) ||
+      options.selectedTemplateId === templateId
+        ? context
+        : undefined;
+    const fallback = context?.templates.some((t) => t.templateId === templateId)
+      ? context
+      : scoped.find((branch) => branch.templates.some((t) => t.templateId === templateId));
+    if (selected ?? chosen ?? latest ?? fallback)
+      tips.set(templateId, (selected ?? chosen ?? latest ?? fallback)!);
   }
   return tips;
 }

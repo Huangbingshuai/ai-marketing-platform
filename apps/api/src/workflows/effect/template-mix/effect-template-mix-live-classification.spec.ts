@@ -123,15 +123,25 @@ function harness() {
 describe('read-only live APPEND classification checkpoint projection', () => {
   it('does not return an already classified addition to pending after a later trim completion', () => {
     const { read, live, old } = harness();
-    const append = { ...live, status: 'COMPLETED', inputSnapshot: {
-      ...live.inputSnapshot, materials: [live.inputSnapshot.materials[1]],
-    } };
-    const trim = { ...old, id: 'later-trim', workflowRunId: 'run',
-      inputSnapshot: { ...old.inputSnapshot, trimOnly: true } };
+    const append = {
+      ...live,
+      status: 'COMPLETED',
+      inputSnapshot: {
+        ...live.inputSnapshot,
+        materials: [live.inputSnapshot.materials[1]],
+      },
+    };
+    const trim = {
+      ...old,
+      id: 'later-trim',
+      workflowRunId: 'run',
+      inputSnapshot: { ...old.inputSnapshot, trimOnly: true },
+    };
     const result = read([trim, append], [old]);
     expect(result.classificationPools).toHaveLength(1);
-    expect(result.classificationPools[0]!.items.map(({ materialId }) => materialId).sort())
-      .toEqual(['new', 'old']);
+    expect(result.classificationPools[0]!.items.map(({ materialId }) => materialId).sort()).toEqual(
+      ['new', 'old'],
+    );
     expect(result.classificationPools[0]!.runId).toBe('later-trim');
   });
   it('returns a partial checkpoint through the actual lightweight materialSources method', async () => {
@@ -193,18 +203,22 @@ describe('read-only live APPEND classification checkpoint projection', () => {
     const before = structuredClone(draft);
     const result = read([live], [old]);
     expect(result.classificationPools[0]!.runId).toBe('live');
-    expect(result.classificationPools[0]!.items.map(({ materialId }) => materialId).sort())
-      .toEqual(['new', 'old']);
+    expect(result.classificationPools[0]!.items.map(({ materialId }) => materialId).sort()).toEqual(
+      ['new', 'old'],
+    );
     expect(result.draftRevision).toBe(1);
     expect(draft).toEqual(before);
     expect((await readSources()).classificationPools?.[0]?.runId).toBe('live');
     expect(live.status).toBe('FAILED');
   });
-  it.each(['FAILED', 'CANCELLED', 'QUEUED'])('never exposes partial or unconfirmed %s checkpoints', (status) => {
-    const { read, live, old } = harness();
-    live.status = status;
-    expect(read([live], [old]).classificationPools[0]!.runId).toBe('completed');
-  });
+  it.each(['FAILED', 'CANCELLED', 'QUEUED'])(
+    'never exposes partial or unconfirmed %s checkpoints',
+    (status) => {
+      const { read, live, old } = harness();
+      live.status = status;
+      expect(read([live], [old]).classificationPools[0]!.runId).toBe('completed');
+    },
+  );
   it.each(['RUNNING', 'FAILED'])('excludes %s full refill and ancestor/sibling tasks', (status) => {
     const { read, live } = harness();
     live.status = status;
@@ -223,15 +237,17 @@ describe('read-only live APPEND classification checkpoint projection', () => {
     expect(read([live]).classificationPools).toEqual([]);
   });
   it.each(['fileObjectId', 'artifactRevision', 'contentHash', 'prompt'])(
-    'rejects failed checkpoint rows with changed %s while retaining unchanged identities', (field) => {
+    'rejects failed checkpoint rows with changed %s while retaining unchanged identities',
+    (field) => {
       const { read, live } = harness();
       live.status = 'FAILED';
       live.classificationResult.push({ materialId: 'old', scores });
       Object.assign(live.inputSnapshot.materials[1]!, {
         [field]: field === 'artifactRevision' ? 99 : 'obsolete',
       });
-      expect(read([live]).classificationPools[0]!.items.map(({ materialId }) => materialId))
-        .toEqual(['old']);
+      expect(
+        read([live]).classificationPools[0]!.items.map(({ materialId }) => materialId),
+      ).toEqual(['old']);
     },
   );
   it.each(['fileObjectId', 'artifactRevision', 'contentHash'])(

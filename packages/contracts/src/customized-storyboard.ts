@@ -1,3 +1,5 @@
+import type { ScriptStructureMapping } from './customized-script-routes';
+
 /** Editable STORYBOARD node state. This is not a confirmed script artifact. */
 export const CUSTOMIZED_VIDEO_TYPES = ['ECOMMERCE', 'LOCAL_STORE', 'BRAND_AD', 'DRAMA'] as const;
 export type CustomizedVideoType = (typeof CUSTOMIZED_VIDEO_TYPES)[number];
@@ -63,7 +65,7 @@ export type CustomizedStoryboardScript = {
   };
   /** Full story; absent only in scripts created before the production split. */
   story?: {
-    structureMapping?: import('./customized-script-routes').ScriptStructureMapping[];
+    structureMapping?: ScriptStructureMapping[];
     content: string;
     opening: string;
     development: string;

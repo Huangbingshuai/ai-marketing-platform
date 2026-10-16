@@ -80,24 +80,57 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               ),
             );
             const promptId = randomUUID();
-            const prompt = await tx.workingArtifact.create({ data: {
-              projectId, workflowRunId, nodeId: 'PROMPT_GENERATION',
-              artifactKey: `prompt-batch:${promptId}`, kind: 'STRUCTURED', name: '测试素材 Prompt',
-              directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT', contentHash: 'e'.repeat(64),
-              payload: { items: [{ id: promptId, content: '隔离测试商品画面' }] },
-            } });
-            const material = await tx.workingArtifact.create({ data: {
-              projectId, workflowRunId, nodeId: 'SEGMENT_RENDER',
-              artifactKey: `render-clip:${randomUUID()}`, kind: 'FILE', name: '测试素材',
-              directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT', contentHash: 'f'.repeat(64),
-              payload: { promptId, fileObjectId: files[0]!.id, durationSeconds: 20 },
-              dependencies: { create: [{ sourceType: 'WORKING_ARTIFACT',
-                sourceArtifactId: prompt.id, sourceKey: prompt.artifactKey, sourceRevision: 1 }] },
-            } });
+            const prompt = await tx.workingArtifact.create({
+              data: {
+                projectId,
+                workflowRunId,
+                nodeId: 'PROMPT_GENERATION',
+                artifactKey: `prompt-batch:${promptId}`,
+                kind: 'STRUCTURED',
+                name: '测试素材 Prompt',
+                directory: 'EDITING_PROJECTS',
+                type: 'TIMELINE_PROJECT',
+                contentHash: 'e'.repeat(64),
+                payload: { items: [{ id: promptId, content: '隔离测试商品画面' }] },
+              },
+            });
+            const material = await tx.workingArtifact.create({
+              data: {
+                projectId,
+                workflowRunId,
+                nodeId: 'SEGMENT_RENDER',
+                artifactKey: `render-clip:${randomUUID()}`,
+                kind: 'FILE',
+                name: '测试素材',
+                directory: 'EDITING_PROJECTS',
+                type: 'TIMELINE_PROJECT',
+                contentHash: 'f'.repeat(64),
+                payload: { promptId, fileObjectId: files[0]!.id, durationSeconds: 20 },
+                dependencies: {
+                  create: [
+                    {
+                      sourceType: 'WORKING_ARTIFACT',
+                      sourceArtifactId: prompt.id,
+                      sourceKey: prompt.artifactKey,
+                      sourceRevision: 1,
+                    },
+                  ],
+                },
+              },
+            });
             const variants: EffectTemplateMixVariant[] = Array.from({ length: 100 }, (_, i) => ({
               id: randomUUID(),
               name: `测试成片${i + 1}`,
-              slots: [{ id: 's', role: 'PRODUCT', purpose: 'PRODUCT_DISPLAY', label: '产品', duration: 10, transition: '硬切' }],
+              slots: [
+                {
+                  id: 's',
+                  role: 'PRODUCT',
+                  purpose: 'PRODUCT_DISPLAY',
+                  label: '产品',
+                  duration: 10,
+                  transition: '硬切',
+                },
+              ],
               bindings: { s: material.id },
               bindingRevisions: { s: 1 },
               offsets: { s: 0 },
@@ -118,7 +151,11 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 nodeId: 'TEMPLATE_MIX',
                 revision: 1,
                 contentHash: 'c'.repeat(64),
-                state: { templates: [{ id: templateId, workspace: { template: { name: '隔离测试' }, variants } }] },
+                state: {
+                  templates: [
+                    { id: templateId, workspace: { template: { name: '隔离测试' }, variants } },
+                  ],
+                },
               },
             });
             const packaging = await tx.effectPackagingRun.create({
@@ -156,7 +193,16 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                     checkpoint: {
                       narrationLayoutVersion: 'SLOT_V1',
                       vision: [{ start: 0, end: 10, description: '测试画面' }],
-                      script: [{ id: 'line', slotId: 's', text: '商品', start: 0, end: 10, factIds: ['f'] }],
+                      script: [
+                        {
+                          id: 'line',
+                          slotId: 's',
+                          text: '商品',
+                          start: 0,
+                          end: 10,
+                          factIds: ['f'],
+                        },
+                      ],
                       voices: {
                         line: { fileObjectId: files[1]!.id, start: 0, duration: 2, volume: 1 },
                       },
@@ -186,15 +232,33 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             }));
             const outputSourceWorkspace = async (_projectId: string, runId: string) => {
               const [state, artifacts] = await Promise.all([
-                tx.workflowNodeState.findFirstOrThrow({ where: { projectId, workflowRunId: runId,
-                  nodeId: 'TEMPLATE_MIX' } }),
-                tx.workingArtifact.findMany({ where: { projectId, workflowRunId: runId },
-                  include: { dependencies: true } }),
+                tx.workflowNodeState.findFirstOrThrow({
+                  where: { projectId, workflowRunId: runId, nodeId: 'TEMPLATE_MIX' },
+                }),
+                tx.workingArtifact.findMany({
+                  where: { projectId, workflowRunId: runId },
+                  include: { dependencies: true },
+                }),
               ]);
-              const clip = artifacts.find((artifact) => artifact.artifactKey.startsWith('render-clip:'))!;
-              return { draft: state.state, artifacts, materials: [{ id: clip.id, artifactId: clip.id,
-                artifactRevision: clip.revision, fileObjectId: files[0]!.id, duration: 20,
-                available: true, contentHash: clip.contentHash, ratio: '3:4' }] };
+              const clip = artifacts.find((artifact) =>
+                artifact.artifactKey.startsWith('render-clip:'),
+              )!;
+              return {
+                draft: state.state,
+                artifacts,
+                materials: [
+                  {
+                    id: clip.id,
+                    artifactId: clip.id,
+                    artifactRevision: clip.revision,
+                    fileObjectId: files[0]!.id,
+                    duration: 20,
+                    available: true,
+                    contentHash: clip.contentHash,
+                    ratio: '3:4',
+                  },
+                ],
+              };
             };
             const mix = {
               prepareValidation: async () => ({ variants, inputs }),
@@ -211,7 +275,10 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 uploaded += 1;
                 // A fresh key per upload: a constant key would make the second artifact commit look
                 // unchanged and silently no-op, hiding the re-render path.
-                return { key: `test/${projectId}/final-${uploaded}.mp4`, sizeBytes: input.sizeBytes };
+                return {
+                  key: `test/${projectId}/final-${uploaded}.mp4`,
+                  sizeBytes: input.sizeBytes,
+                };
               },
               putShared: async () => {
                 throw new Error('This transaction test never uploads shared media');
@@ -228,9 +295,21 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
               mix,
               new WorkflowWorkingRepository(scopedDb),
               storage,
-              { getEffectBranchTree: async () => ({ projectId, activeWorkflowRunId: workflowRunId,
-                branches: [{ workflowRunId, parentWorkflowRunId: null, forkNodeId: null,
-                  forkTemplateId: null, createdAt: new Date().toISOString(), templates: [{ templateId }] }] })
+              {
+                getEffectBranchTree: async () => ({
+                  projectId,
+                  activeWorkflowRunId: workflowRunId,
+                  branches: [
+                    {
+                      workflowRunId,
+                      parentWorkflowRunId: null,
+                      forkNodeId: null,
+                      forkTemplateId: null,
+                      createdAt: new Date().toISOString(),
+                      templates: [{ templateId }],
+                    },
+                  ],
+                }),
               } as unknown as WorkflowWorkingService,
             );
             // A package that is still running must not queue anything or commit a version.
@@ -272,12 +351,16 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             expect(run.workflowRunId).not.toBe(workflowRunId);
             expect(run.status).toBe('QUEUED');
             expect(run.items).toHaveLength(100);
-            expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: workflowRunId } })).activeKey)
-              .toBe('ACTIVE');
-            expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: run.workflowRunId } })).activeKey)
-              .toBeNull();
             expect(
-              (await tx.effectFinalOutputRun.findUniqueOrThrow({ where: { id: queued.id } })).status,
+              (await tx.workflowRun.findUniqueOrThrow({ where: { id: workflowRunId } })).activeKey,
+            ).toBe('ACTIVE');
+            expect(
+              (await tx.workflowRun.findUniqueOrThrow({ where: { id: run.workflowRunId } }))
+                .activeKey,
+            ).toBeNull();
+            expect(
+              (await tx.effectFinalOutputRun.findUniqueOrThrow({ where: { id: queued.id } }))
+                .status,
             ).toBe('PENDING_RENDER');
             // The same package arriving twice names the same version, so it reuses the queued batch.
             await service.upsertFromPackaging(projectId, workflowRunId, templateId);
@@ -372,8 +455,11 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             // previous version, and that snapshot still points at this file. Only the blob behind it
             // is queued for cleanup, so nothing leaks and nothing the history needs is dropped.
             expect(
-              (await tx.fileObject.findUniqueOrThrow({ where: { id: beforeRerender.fileObjectId! } }))
-                .status,
+              (
+                await tx.fileObject.findUniqueOrThrow({
+                  where: { id: beforeRerender.fileObjectId! },
+                })
+              ).status,
             ).toBe('AVAILABLE');
             expect(
               await tx.workingArtifactRevisionFile.count({

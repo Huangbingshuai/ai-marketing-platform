@@ -170,66 +170,130 @@ describe('full-template regeneration entry through successful completion', () =>
     expect(h.repo.listRecent).toHaveBeenCalledWith('p', 'child', 't');
     expect(inheritedMixAiRuns).toHaveBeenCalledExactlyOnceWith('p', 'child', 't');
     expect(h.repo.create).toHaveBeenCalledOnce();
-    expect(h.repo.create.mock.calls[0]![0]).toMatchObject({ templateId: 't', workflowRunId: 'child' });
-    expect(h.child().templates.find((entry) => entry.id === 'other'))
-      .toEqual(h.parent.templates.find((entry) => entry.id === 'other'));
+    expect(h.repo.create.mock.calls[0]![0]).toMatchObject({
+      templateId: 't',
+      workflowRunId: 'child',
+    });
+    expect(h.child().templates.find((entry) => entry.id === 'other')).toEqual(
+      h.parent.templates.find((entry) => entry.id === 'other'),
+    );
   });
-  it.each([false, true])('APPEND retains edited material purposes but not old visual checkpoints (frozen: %s)', async (frozen) => {
-    const h = harness();
-    const addedId = 'HOOK-4';
-    Object.assign(h.repo, { successfulPackagingTemplateIds: vi.fn().mockResolvedValue([]) });
-    const oldSnapshot = {
-      template: structuredClone(h.child().templates[0]!.workspace.template),
-      promptArtifacts: [],
-      materials: h.clips.filter((clip) => clip.id !== addedId).map((clip, index) => ({
-        id: clip.id, artifactId: clip.id, artifactKey: clip.artifactKey,
-        artifactRevision: clip.revision, contentHash: clip.contentHash,
-        fileObjectId: clip.payload.fileObjectId, duration: 10,
-        promptId: clip.payload.promptId, prompt: `画面描述 ${index}`,
-      })),
-    };
-    h.repo.listRecent.mockResolvedValue([{
-      id: 'completed-fill', workflowRunId: 'child', templateId: 't', status: 'COMPLETED',
-      inputSnapshot: oldSnapshot, classificationResult: h.rows.filter((row) => row.materialId !== addedId),
-    }] as never);
-    h.prompt.payload.items[0]!.content = '编辑后的另一种镜头';
-    h.clips[0]!.revision = 2;
-    h.clips[0]!.payload.fileObjectId = 'new-edited-file';
-    const before = structuredClone(h.child());
-    const operation = {
-      protocol: 'FROZEN_RENDER_V1', id: 'retained-operation',
-      templateHash: workflowStateHash(h.child().templates[0]!.workspace.template),
-      addedMaterialIds: [addedId], packageNewVariants: false, facts: [],
-      promptArtifacts: [{id:h.prompt.id, artifactKey:h.prompt.artifactKey, revision:1, contentHash:h.prompt.contentHash}],
-      materials: h.clips.map((clip, index) => ({
-        id:clip.id, artifactId:clip.id, artifactKey:clip.artifactKey,
-        artifactRevision:clip.revision, artifactContentHash:clip.contentHash,
-        fileObjectId:clip.payload.fileObjectId, contentHash:clip.payload.contentHash,
-        sourcePromptId:clip.payload.promptId, promptText:h.prompt.payload.items[index]!.content,
-        code:clip.id, name:clip.id, duration:10, available:true, activeSource:true,
-        purpose:'HOOK', compatiblePurposes:[], contentUrl:'/video', ratio:'9:16', resolution:'720p',
-      })),
-    };
-    if (frozen) {
-      Object.assign(h.repo, {findOperationRun:vi.fn().mockResolvedValue(null),sourceOperation:vi.fn().mockResolvedValue(operation)});
-      // A newer live head must not replace the local operation's frozen footage or purpose.
-      h.repo.sourceArtifacts.mockResolvedValue([h.prompt] as never);
-    }
-    await h.service.createAiRun('p','child','t',7,'retained-role',undefined,false,true,
-      frozen ? operation.id : undefined);
-    expect(h.snapshot().materialRoleAssignments?.['HOOK-0']).toBe('HOOK');
-    expect(h.snapshot().materialRoleAssignments?.[addedId]).toBeUndefined();
-    expect(h.snapshot().incremental?.materialIds).toEqual([addedId]);
-    expect(h.repo.create.mock.calls[0]![0].initialClassifications.some(
-      (row: EffectTemplateMixAiClassification) => row.materialId === 'HOOK-0')).toBe(false);
-    expect(h.snapshot().materials.find((m) => m.id === 'HOOK-0')?.fileObjectId).toBe('new-edited-file');
-    expect(h.child()).toEqual(before);
-    const classifications = structuredClone(h.rows);
-    classifications[0]!.scores = Object.fromEntries(roles.map((role) => [role, Number(role === 'END')])) as EffectTemplateMixAiClassification['scores'];
-    const result = await h.service.classifyAiRun('p','fill-run','lease',classifications);
-    expect(result.selections.filter((s) => s.materialId === 'HOOK-0').every((s) => s.role === 'HOOK')).toBe(true);
-    expect(h.snapshot().materialRoleAssignments?.['HOOK-0']).toBe('HOOK');
-  });
+  it.each([false, true])(
+    'APPEND retains edited material purposes but not old visual checkpoints (frozen: %s)',
+    async (frozen) => {
+      const h = harness();
+      const addedId = 'HOOK-4';
+      Object.assign(h.repo, { successfulPackagingTemplateIds: vi.fn().mockResolvedValue([]) });
+      const oldSnapshot = {
+        template: structuredClone(h.child().templates[0]!.workspace.template),
+        promptArtifacts: [],
+        materials: h.clips
+          .filter((clip) => clip.id !== addedId)
+          .map((clip, index) => ({
+            id: clip.id,
+            artifactId: clip.id,
+            artifactKey: clip.artifactKey,
+            artifactRevision: clip.revision,
+            contentHash: clip.contentHash,
+            fileObjectId: clip.payload.fileObjectId,
+            duration: 10,
+            promptId: clip.payload.promptId,
+            prompt: `画面描述 ${index}`,
+          })),
+      };
+      h.repo.listRecent.mockResolvedValue([
+        {
+          id: 'completed-fill',
+          workflowRunId: 'child',
+          templateId: 't',
+          status: 'COMPLETED',
+          inputSnapshot: oldSnapshot,
+          classificationResult: h.rows.filter((row) => row.materialId !== addedId),
+        },
+      ] as never);
+      h.prompt.payload.items[0]!.content = '编辑后的另一种镜头';
+      h.clips[0]!.revision = 2;
+      h.clips[0]!.payload.fileObjectId = 'new-edited-file';
+      const before = structuredClone(h.child());
+      const operation = {
+        protocol: 'FROZEN_RENDER_V1',
+        id: 'retained-operation',
+        templateHash: workflowStateHash(h.child().templates[0]!.workspace.template),
+        addedMaterialIds: [addedId],
+        packageNewVariants: false,
+        facts: [],
+        promptArtifacts: [
+          {
+            id: h.prompt.id,
+            artifactKey: h.prompt.artifactKey,
+            revision: 1,
+            contentHash: h.prompt.contentHash,
+          },
+        ],
+        materials: h.clips.map((clip, index) => ({
+          id: clip.id,
+          artifactId: clip.id,
+          artifactKey: clip.artifactKey,
+          artifactRevision: clip.revision,
+          artifactContentHash: clip.contentHash,
+          fileObjectId: clip.payload.fileObjectId,
+          contentHash: clip.payload.contentHash,
+          sourcePromptId: clip.payload.promptId,
+          promptText: h.prompt.payload.items[index]!.content,
+          code: clip.id,
+          name: clip.id,
+          duration: 10,
+          available: true,
+          activeSource: true,
+          purpose: 'HOOK',
+          compatiblePurposes: [],
+          contentUrl: '/video',
+          ratio: '9:16',
+          resolution: '720p',
+        })),
+      };
+      if (frozen) {
+        Object.assign(h.repo, {
+          findOperationRun: vi.fn().mockResolvedValue(null),
+          sourceOperation: vi.fn().mockResolvedValue(operation),
+        });
+        // A newer live head must not replace the local operation's frozen footage or purpose.
+        h.repo.sourceArtifacts.mockResolvedValue([h.prompt] as never);
+      }
+      await h.service.createAiRun(
+        'p',
+        'child',
+        't',
+        7,
+        'retained-role',
+        undefined,
+        false,
+        true,
+        frozen ? operation.id : undefined,
+      );
+      expect(h.snapshot().materialRoleAssignments?.['HOOK-0']).toBe('HOOK');
+      expect(h.snapshot().materialRoleAssignments?.[addedId]).toBeUndefined();
+      expect(h.snapshot().incremental?.materialIds).toEqual([addedId]);
+      expect(
+        h.repo.create.mock.calls[0]![0].initialClassifications.some(
+          (row: EffectTemplateMixAiClassification) => row.materialId === 'HOOK-0',
+        ),
+      ).toBe(false);
+      expect(h.snapshot().materials.find((m) => m.id === 'HOOK-0')?.fileObjectId).toBe(
+        'new-edited-file',
+      );
+      expect(h.child()).toEqual(before);
+      const classifications = structuredClone(h.rows);
+      classifications[0]!.scores = Object.fromEntries(
+        roles.map((role) => [role, Number(role === 'END')]),
+      ) as EffectTemplateMixAiClassification['scores'];
+      const result = await h.service.classifyAiRun('p', 'fill-run', 'lease', classifications);
+      expect(
+        result.selections.filter((s) => s.materialId === 'HOOK-0').every((s) => s.role === 'HOOK'),
+      ).toBe(true);
+      expect(h.snapshot().materialRoleAssignments?.['HOOK-0']).toBe('HOOK');
+    },
+  );
   it.each(['HOOK', 'PAIN_POINT', 'END'] as const)(
     'append commits real holes after deletion empties %s, without moving other slots',
     async (deletedRole) => {

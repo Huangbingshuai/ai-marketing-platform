@@ -159,13 +159,23 @@ it.skipIf(process.env.EFFECT_SOURCE_POOL_DATABASE_TEST !== '1').each([
             const copied = await render.promptArtifact(projectId, edit!.runId, childProduct);
             expect(copied?.revision).toBe(selected?.revision);
             if (nodeId === 'PROMPT_GENERATION') {
-              const session = await tx.workflowRun.findUniqueOrThrow({ where: { id: edit!.runId } });
-              expect(session.editIdMap).toMatchObject({ promptEditBaseline: {
-                source: { artifactId: selected!.id, revision: selected!.revision,
-                  contentHash: selected!.contentHash },
-                target: { artifactId: prompts[0]!.id, revision: prompts[0]!.revision,
-                  contentHash: prompts[0]!.contentHash },
-              } });
+              const session = await tx.workflowRun.findUniqueOrThrow({
+                where: { id: edit!.runId },
+              });
+              expect(session.editIdMap).toMatchObject({
+                promptEditBaseline: {
+                  source: {
+                    artifactId: selected!.id,
+                    revision: selected!.revision,
+                    contentHash: selected!.contentHash,
+                  },
+                  target: {
+                    artifactId: prompts[0]!.id,
+                    revision: prompts[0]!.revision,
+                    contentHash: prompts[0]!.contentHash,
+                  },
+                },
+              });
               const exit = await working.cancelEffectNodeEdit(projectId, edit!.runId, nodeId);
               expect(exit?.runId).toBe(root.id);
             }

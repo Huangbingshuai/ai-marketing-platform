@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { completeEffectNodeHandoff, flushEffectNodeNavigation } from './effect-node-navigation';
-import { isPromptWorkspaceScopeReady, resolvePromptTransitionValue } from '../prompt-generation/effect-prompt-generation-state';
+import {
+  isPromptWorkspaceScopeReady,
+  resolvePromptTransitionValue,
+} from '../prompt-generation/effect-prompt-generation-state';
 import promptSource from '../prompt-generation/EffectPromptGenerationNodePage.vue?raw';
 import renderSource from '../segment-render/EffectSegmentRenderNodePage.vue?raw';
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
@@ -10,13 +13,17 @@ describe('effect editing node navigation', () => {
     const button = promptSource.split('@click="exportBatch"')[0]!.split('<button').at(-1)!;
     expect(button).not.toContain(':disabled');
     expect(button).toContain(':aria-busy="exporting"');
-    const handler = promptSource.split('const exportBatch =')[1]!.split('const validatePromptBatch')[0]!;
+    const handler = promptSource
+      .split('const exportBatch =')[1]!
+      .split('const validatePromptBatch')[0]!;
     expect(handler).not.toContain('workspaceSynchronizing.value');
     expect(handler).not.toContain('resultLoading.value');
     expect(handler).not.toContain('editPending.value');
     expect(handler).not.toContain('currentRunning.value');
     expect(handler).toContain('if (batchExportPending) return;');
-    expect(handler.indexOf('await runSynchronization')).toBeLessThan(handler.indexOf('downloadEffectPromptBatch('));
+    expect(handler.indexOf('await runSynchronization')).toBeLessThan(
+      handler.indexOf('downloadEffectPromptBatch('),
+    );
     expect(handler).toContain('result.resultId !== state.resultId');
     expect(handler).toContain('result.projectId !== projectId');
     expect(handler).toContain('batchExportPending = false;');
@@ -24,11 +31,20 @@ describe('effect editing node navigation', () => {
   it('does not finish a handoff at parent installation while node data is still loading', async () => {
     let install!: () => void;
     let finishRead!: () => void;
-    const parent = new Promise<void>((resolve) => { install = resolve; });
+    const parent = new Promise<void>((resolve) => {
+      install = resolve;
+    });
     let latest: Promise<void> | null = null;
     let settled = false;
-    const handoff = completeEffectNodeHandoff(() => parent, () => latest).then(() => { settled = true; });
-    latest = new Promise<void>((resolve) => { finishRead = resolve; });
+    const handoff = completeEffectNodeHandoff(
+      () => parent,
+      () => latest,
+    ).then(() => {
+      settled = true;
+    });
+    latest = new Promise<void>((resolve) => {
+      finishRead = resolve;
+    });
     install();
     await Promise.resolve();
     await Promise.resolve();
@@ -40,11 +56,20 @@ describe('effect editing node navigation', () => {
   it('waits for a replacement node read instead of releasing controls after an aborted read', async () => {
     let finishFirst!: () => void;
     let finishReplacement!: () => void;
-    let latest = new Promise<void>((resolve) => { finishFirst = resolve; });
+    let latest = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
     let settled = false;
-    const handoff = completeEffectNodeHandoff(async () => undefined, () => latest).then(() => { settled = true; });
+    const handoff = completeEffectNodeHandoff(
+      async () => undefined,
+      () => latest,
+    ).then(() => {
+      settled = true;
+    });
     await Promise.resolve();
-    latest = new Promise<void>((resolve) => { finishReplacement = resolve; });
+    latest = new Promise<void>((resolve) => {
+      finishReplacement = resolve;
+    });
     finishFirst();
     await Promise.resolve();
     await Promise.resolve();
@@ -54,7 +79,9 @@ describe('effect editing node navigation', () => {
     expect(settled).toBe(true);
   });
   it('keeps the source control mode until the complete edit handoff settles', () => {
-    const synchronization = promptSource.split('const synchronizeEditRun =')[1]!.split('const exporting')[0]!;
+    const synchronization = promptSource
+      .split('const synchronizeEditRun =')[1]!
+      .split('const exporting')[0]!;
     expect(synchronization).toContain('completeEffectNodeHandoff(');
     expect(synchronization).toContain('() => activeWorkspaceLoad');
     expect(promptSource).toContain('v-if="hasConfirmedPrompt && !displayEditing"');
@@ -62,7 +89,9 @@ describe('effect editing node navigation', () => {
     expect(promptSource).toContain("editTransition === 'cancel' ? '正在退出…' : '取消编辑'");
   });
   it('keeps save visible and does not turn same-scope background reads into edit locks', () => {
-    const permission = promptSource.split('const canEditPrompt =')[1]!.split('const canEnterPromptEdit')[0]!;
+    const permission = promptSource
+      .split('const canEditPrompt =')[1]!
+      .split('const canEnterPromptEdit')[0]!;
     expect(permission).not.toContain('workspaceSynchronizing');
     expect(permission).not.toContain('resultLoading');
     expect(permission).toContain('loadedWorkspaceContext.value');
@@ -72,9 +101,13 @@ describe('effect editing node navigation', () => {
     expect(permission).toContain('!validating.value');
     expect(permission).toContain('!editorSaving.value');
     expect(permission).toContain('itemOperation.value === null');
-    expect(promptSource).toContain('v-if="displayEditing || (!editTransition && !hasConfirmedPrompt)"');
+    expect(promptSource).toContain(
+      'v-if="displayEditing || (!editTransition && !hasConfirmedPrompt)"',
+    );
     expect(promptSource).not.toContain('v-if="canEditPrompt"');
-    const fence = promptSource.split('const invalidatePromptReadRequests =')[1]!.split('const commitEditor')[0]!;
+    const fence = promptSource
+      .split('const invalidatePromptReadRequests =')[1]!
+      .split('const commitEditor')[0]!;
     expect(fence).toContain('workspaceController?.abort()');
     expect(fence).toContain('resultController?.abort()');
     expect(fence).toContain('workspaceGeneration += 1');
@@ -86,7 +119,9 @@ describe('effect editing node navigation', () => {
     ]) {
       const operation = promptSource.split(start!)[1]!.split(end!)[0]!;
       expect(operation.indexOf('invalidatePromptReadRequests()')).toBeGreaterThan(-1);
-      expect(operation.indexOf('invalidatePromptReadRequests()')).toBeLessThan(operation.indexOf(busy!));
+      expect(operation.indexOf('invalidatePromptReadRequests()')).toBeLessThan(
+        operation.indexOf(busy!),
+      );
     }
   });
   it('retains the product while an edit handoff remaps IDs, then uses the new loaded value', () => {
@@ -98,22 +133,38 @@ describe('effect editing node navigation', () => {
     expect(resolvePromptTransitionValue(cloned, transition, scope)).toBe(cloned);
     expect(resolvePromptTransitionValue(null, null, scope)).toBeNull();
     expect(resolvePromptTransitionValue(null, transition, { ...scope, projectId: 'b' })).toBeNull();
-    expect(resolvePromptTransitionValue(null, transition, { ...scope, workflowRunId: 'other' })).toBeNull();
+    expect(
+      resolvePromptTransitionValue(null, transition, { ...scope, workflowRunId: 'other' }),
+    ).toBeNull();
     // Cancelling uses a distinct explicit handoff back to the parent, not arbitrary cached data.
     const parentScope = { ...scope, workflowRunId: 'parent' };
-    expect(resolvePromptTransitionValue(null, { ...parentScope, value: cloned }, parentScope)).toBe(cloned);
+    expect(resolvePromptTransitionValue(null, { ...parentScope, value: cloned }, parentScope)).toBe(
+      cloned,
+    );
   });
   it('keeps the transition view until workspace and result finish loading and parallelizes parent reads', () => {
-    const synchronize = promptSource.split('const synchronizeEditRun =')[1]!.split('const exporting')[0]!;
-    expect(synchronize.indexOf('transitionView.value =')).toBeLessThan(synchronize.indexOf("emit('branchActivated'"));
-    const loader = promptSource.split('async function readPromptWorkspace')[1]!.split('const productSignature')[0]!;
-    expect(loader.indexOf('await loadCurrentResult(prefetchedResult)')).toBeLessThan(loader.indexOf('transitionView.value = null'));
+    const synchronize = promptSource
+      .split('const synchronizeEditRun =')[1]!
+      .split('const exporting')[0]!;
+    expect(synchronize.indexOf('transitionView.value =')).toBeLessThan(
+      synchronize.indexOf("emit('branchActivated'"),
+    );
+    const loader = promptSource
+      .split('async function readPromptWorkspace')[1]!
+      .split('const productSignature')[0]!;
+    expect(loader.indexOf('await loadCurrentResult(prefetchedResult)')).toBeLessThan(
+      loader.indexOf('transitionView.value = null'),
+    );
     expect(loader).toContain('const [snapshot, prefetchedResult] = await Promise.all([');
     expect(loader).toContain('transitionView.value.workflowRunId === loadedContext.workflowRunId');
     expect(promptSource).toContain('prefetched?.key === resultViewKey(productId)');
     expect(loader).toContain('if (generation === workspaceGeneration)');
-    const refresh = parentSource.split('const activeRunRefreshQueue =')[1]!.split('const refreshActiveRunInPlace')[0]!;
-    expect(refresh).toContain('const [workspaceResponse, initialDraftResponse, overview] = await Promise.all([');
+    const refresh = parentSource
+      .split('const activeRunRefreshQueue =')[1]!
+      .split('const refreshActiveRunInPlace')[0]!;
+    expect(refresh).toContain(
+      'const [workspaceResponse, initialDraftResponse, overview] = await Promise.all([',
+    );
     expect(refresh).toContain('nextWorkspace.drafts.SINGLE.id !== draftResponse.data.id');
     expect(refresh).toContain('if (refreshBranchTree) scheduleAdjacentWorkspacePrefetch();');
     expect(synchronize).toContain('refreshBranchTree = false');
@@ -125,13 +176,23 @@ describe('effect editing node navigation', () => {
     expect(isPromptWorkspaceScopeReady('loading', current, current)).toBe(false);
     expect(isPromptWorkspaceScopeReady('error', current, current)).toBe(false);
     expect(isPromptWorkspaceScopeReady('ready', null, current)).toBe(false);
-    expect(isPromptWorkspaceScopeReady('ready', { ...current, workflowRunId: 'run-b' }, current)).toBe(false);
-    expect(isPromptWorkspaceScopeReady('ready', { ...current, projectId: 'project-b' }, current)).toBe(false);
-    const canEnter = promptSource.split('const canEnterPromptEdit =')[1]!.split('const canEditSettings')[0]!;
+    expect(
+      isPromptWorkspaceScopeReady('ready', { ...current, workflowRunId: 'run-b' }, current),
+    ).toBe(false);
+    expect(
+      isPromptWorkspaceScopeReady('ready', { ...current, projectId: 'project-b' }, current),
+    ).toBe(false);
+    const canEnter = promptSource
+      .split('const canEnterPromptEdit =')[1]!
+      .split('const canEditSettings')[0]!;
     expect(canEnter).not.toContain('workspaceSynchronizing');
     expect(promptSource).toContain(':disabled="!canEnterPromptEdit"');
-    const begin = promptSource.split('const beginPromptEdit =')[1]!.split('const cancelPromptEdit')[0]!;
-    expect(begin.indexOf('workspaceController?.abort()')).toBeLessThan(begin.indexOf('await beginEffectWorkflowNodeEdit('));
+    const begin = promptSource
+      .split('const beginPromptEdit =')[1]!
+      .split('const cancelPromptEdit')[0]!;
+    expect(begin.indexOf('workspaceController?.abort()')).toBeLessThan(
+      begin.indexOf('await beginEffectWorkflowNodeEdit('),
+    );
     expect(begin).toContain('workspaceGeneration += 1');
   });
   it('allows leaving an abortable read-only workspace load', async () => {
@@ -206,6 +267,8 @@ describe('effect editing node navigation', () => {
       .split('const updateRun')[0]!;
     expect(resultLoader).toContain('!nodeActive ||');
     expect(resultLoader).toContain('loadedWorkspaceContext.value?.projectId !== props.projectId');
-    expect(resultLoader).toContain('loadedWorkspaceContext.value.workflowRunId !== props.workflowRunId');
+    expect(resultLoader).toContain(
+      'loadedWorkspaceContext.value.workflowRunId !== props.workflowRunId',
+    );
   });
 });

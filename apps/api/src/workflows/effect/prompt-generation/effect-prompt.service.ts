@@ -14,7 +14,6 @@ import type {
   EffectPromptBatchResult,
   EffectPromptRenderProfile,
   EffectPromptNodeExecution,
-  EffectPromptNodeId,
   EffectPromptProductState,
   EffectPromptRun,
   EffectPromptRegenerationPreview,
@@ -535,7 +534,7 @@ export class EffectPromptService {
   async workspace(projectId: string, workflowRunId: string): Promise<GetEffectPromptWorkspaceData> {
     // A child task's progress must survive refresh without changing the parent's
     // results or allowing its cached projection to hide the pending generation.
-    if (this.readCache && await this.repository.backgroundBatchRun(projectId, workflowRunId))
+    if (this.readCache && (await this.repository.backgroundBatchRun(projectId, workflowRunId)))
       return this.loadWorkspace(projectId, workflowRunId);
     return this.readCache
       ? this.readCache.read(
@@ -560,8 +559,13 @@ export class EffectPromptService {
           : null;
         const ownRunRecord =
           latestRunRecord && currentSnapshot(latestRunRecord) ? latestRunRecord : null;
-        const backgroundRun = await this.repository.backgroundBatchRun(projectId, workflowRunId, product.id);
-        const runRecord = backgroundRun && currentSnapshot(backgroundRun) ? backgroundRun : ownRunRecord;
+        const backgroundRun = await this.repository.backgroundBatchRun(
+          projectId,
+          workflowRunId,
+          product.id,
+        );
+        const runRecord =
+          backgroundRun && currentSnapshot(backgroundRun) ? backgroundRun : ownRunRecord;
         const resultRecord =
           latestRunRecord?.result ??
           (await this.repository.latestResult(projectId, workflowRunId, product.id));

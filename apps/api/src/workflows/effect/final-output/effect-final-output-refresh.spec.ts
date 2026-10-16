@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FinalOutputSnapshot, PackagingCheckpoint } from '@ai-marketing/contracts';
+import type { EffectTemplateMixVariant } from '@ai-marketing/contracts';
 import {
   assertRefreshPreservesContent,
   validateRefreshCheckpoint,
@@ -114,13 +115,24 @@ describe('same-branch source-refresh content boundaries', () => {
     expect(() => assertRefreshPreservesContent(input, cp)).toThrow('不能重新写回');
   });
   it('retains holes and extent when deleting the last and every occurrence, including detached original audio', () => {
-    const v = { id: 'v', slots: [{ id: 'a', duration: 4 }, { id: 'b', duration: 4 }],
-      bindings: { a: 'file', b: 'file' }, bindingRevisions: { a: 1, b: 1 }, offsets: { a: 2, b: 3 },
-      bindingMetadata: { a: { matchScore: .9 } }, timelineStarts: { a: 1, b: 9 }, videoLanes: { b: 2 },
-      manualSlotIds: ['a'], conflictSlotIds: ['a'], captions: [],
+    const v = {
+      id: 'v',
+      slots: [
+        { id: 'a', duration: 4 },
+        { id: 'b', duration: 4 },
+      ],
+      bindings: { a: 'file', b: 'file' },
+      bindingRevisions: { a: 1, b: 1 },
+      offsets: { a: 2, b: 3 },
+      bindingMetadata: { a: { matchScore: 0.9 } },
+      timelineStarts: { a: 1, b: 9 },
+      videoLanes: { b: 2 },
+      manualSlotIds: ['a'],
+      conflictSlotIds: ['a'],
+      captions: [],
       detachedAudios: [{ id: 'original', sourceSlotId: 'b', start: 9, duration: 4 }],
       audioLanes: { 'detached:original': 4, 'voice:a': 3, music: 2 },
-    } as unknown as import('@ai-marketing/contracts').EffectTemplateMixVariant;
+    } as unknown as EffectTemplateMixVariant;
     const cleared = clearRemovedSourceSlots(v, baseline(), ['a', 'b']);
     expect(cleared.bindings).toEqual({});
     expect(cleared.offsets).toEqual({});
@@ -134,9 +146,14 @@ describe('same-branch source-refresh content boundaries', () => {
     expect(v.bindings.a).toBe('file');
   });
   it('starts a new source refresh with a fresh retry budget without mutating old packaging', () => {
-    const cp = { ...baseline(), automaticRetries: 2,
+    const cp = {
+      ...baseline(),
+      automaticRetries: 2,
       recovery: { startedAt: '2026-10-11T01:00:00Z', attempts: { VOICE: 2 } },
-      voiceRecovery: { previous: { startedAt: '2026-10-11T01:00:00Z', pending: true, attempts: 1 } } };
+      voiceRecovery: {
+        previous: { startedAt: '2026-10-11T01:00:00Z', pending: true, attempts: 1 },
+      },
+    };
     const refreshed = withoutChangedSlots(cp, ['a']);
     expect(refreshed.automaticRetries).toBeUndefined();
     expect(refreshed.recovery).toBeUndefined();
@@ -149,15 +166,31 @@ describe('same-branch source-refresh content boundaries', () => {
   });
   it('clears edited split-caption lineage and uniquely linked historical split voices, never independent audio', () => {
     const cp = baseline();
-    cp.captions!.push({ id: 'split-caption', sourceSlotId: 'a', manual: true, text: '剪开并修改', start: 7, end: 8 });
-    const v = { ...snapshot(cp).timeline.variant, bindings: { a: 'picture' }, bindingRevisions: { a: 1 },
-      offsets: { a: 0 }, captions: [], manualSlotIds: [], conflictSlotIds: [],
+    cp.captions!.push({
+      id: 'split-caption',
+      sourceSlotId: 'a',
+      manual: true,
+      text: '剪开并修改',
+      start: 7,
+      end: 8,
+    });
+    const v = {
+      ...snapshot(cp).timeline.variant,
+      bindings: { a: 'picture' },
+      bindingRevisions: { a: 1 },
+      offsets: { a: 0 },
+      captions: [],
+      manualSlotIds: [],
+      conflictSlotIds: [],
       detachedAudios: [
         { id: 'split-voice', audioKind: 'VOICE', fileObjectId: 'old-voice', start: 8, duration: 1 },
         { id: 'independent', fileObjectId: 'old-voice', start: 9, duration: 1 },
-      ], audioLanes: { 'detached:split-voice': 2, 'detached:independent': 3 },
-    } as unknown as import('@ai-marketing/contracts').EffectTemplateMixVariant;
-    expect(withoutRemovedSlots(cp, ['a']).captions!.map((caption) => caption.id)).toEqual(['manual']);
+      ],
+      audioLanes: { 'detached:split-voice': 2, 'detached:independent': 3 },
+    } as unknown as EffectTemplateMixVariant;
+    expect(withoutRemovedSlots(cp, ['a']).captions!.map((caption) => caption.id)).toEqual([
+      'manual',
+    ]);
     const result = clearRemovedSourceSlots(v, cp, ['a']);
     expect(result.detachedAudios!.map((audio) => audio.id)).toEqual(['independent']);
     expect(result.audioLanes).toEqual({ 'detached:independent': 3 });
@@ -222,8 +255,8 @@ describe('same-branch source-refresh content boundaries', () => {
     const cp = refreshed(original);
     cp.voices!.new!.speechRanges = structuredClone(ranges);
     const caption = cp.captions!.find((row) => row.id === 'new-caption')!;
-    caption.start = .2;
-    caption.end = .9;
+    caption.start = 0.2;
+    caption.end = 0.9;
     expect(() => validateRefreshCheckpoint(input, cp, true)).not.toThrow();
     cp.voices!.new!.speechRanges![0]!.startFrame = 2400;
     expect(() => assertRefreshPreservesContent(input, cp)).toThrow(

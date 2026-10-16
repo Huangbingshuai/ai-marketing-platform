@@ -23,31 +23,86 @@ import {
 } from './effect-segment-render';
 
 describe('effect segment render contract', () => {
-  it.each([4, 15, 16, 20, 21, 30])('checks manual %s-second Prompt settings without silently routing', (durationSeconds) => {
-    const defaults = { capabilityKey: 'SEEDANCE_1_0', ratio: '9:16', resolution: '720p' } as const;
-    const source = { durationSeconds, origin: 'MANUAL' } as const;
-    expect(effectPromptRenderSettingsIssues(defaults, source).length > 0).toBe(durationSeconds > 15);
-    expect(effectPromptRenderSettingsIssues({ ...defaults, capabilityKey: 'SEEDANCE_1_5_PRO' }, source)).toEqual([]);
-    expect(defaults.capabilityKey).toBe('SEEDANCE_1_0');
-  });
+  it.each([4, 15, 16, 20, 21, 30])(
+    'checks manual %s-second Prompt settings without silently routing',
+    (durationSeconds) => {
+      const defaults = {
+        capabilityKey: 'SEEDANCE_1_0',
+        ratio: '9:16',
+        resolution: '720p',
+      } as const;
+      const source = { durationSeconds, origin: 'MANUAL' } as const;
+      expect(effectPromptRenderSettingsIssues(defaults, source).length > 0).toBe(
+        durationSeconds > 15,
+      );
+      expect(
+        effectPromptRenderSettingsIssues(
+          { ...defaults, capabilityKey: 'SEEDANCE_1_5_PRO' },
+          source,
+        ),
+      ).toEqual([]);
+      expect(defaults.capabilityKey).toBe('SEEDANCE_1_0');
+    },
+  );
   it('validates duration, ratio and resolution together, including 4K after choosing 2.5', () => {
-    const settings = { capabilityKey: 'SEEDANCE_1_5_PRO', ratio: '9:16', resolution: '4k' } as const;
-    expect(effectPromptRenderSettingsIssues(settings, { durationSeconds: 20, origin: 'MANUAL' })).toEqual(['该模型不支持 4k 分辨率']);
-    expect(effectPromptRenderSettingsIssues({ ...settings, resolution: '1080p' }, { durationSeconds: 20, origin: 'MANUAL' })).toEqual([]);
-    expect(effectPromptRenderSettingsIssues({ ...settings, resolution: '1080p' }, { durationSeconds: 31, origin: 'MANUAL' })).toHaveLength(1);
-    expect(effectPromptRenderSettingsIssues({ ...settings, resolution: '1080p' }, { durationSeconds: 20, origin: 'AI' })).toHaveLength(1);
+    const settings = {
+      capabilityKey: 'SEEDANCE_1_5_PRO',
+      ratio: '9:16',
+      resolution: '4k',
+    } as const;
+    expect(
+      effectPromptRenderSettingsIssues(settings, { durationSeconds: 20, origin: 'MANUAL' }),
+    ).toEqual(['该模型不支持 4k 分辨率']);
+    expect(
+      effectPromptRenderSettingsIssues(
+        { ...settings, resolution: '1080p' },
+        { durationSeconds: 20, origin: 'MANUAL' },
+      ),
+    ).toEqual([]);
+    expect(
+      effectPromptRenderSettingsIssues(
+        { ...settings, resolution: '1080p' },
+        { durationSeconds: 31, origin: 'MANUAL' },
+      ),
+    ).toHaveLength(1);
+    expect(
+      effectPromptRenderSettingsIssues(
+        { ...settings, resolution: '1080p' },
+        { durationSeconds: 20, origin: 'AI' },
+      ),
+    ).toHaveLength(1);
   });
   it('compares consumed Prompt content, not revision churn, and separates paid/free/deleted changes', () => {
-    const baseline: EffectSegmentRenderPromptBaseline = { promptContentHash: 'body', sharedPromptHash: 'shared',
-      targetDurationSeconds: 5, primaryPurpose: 'PRODUCT_DISPLAY', compatiblePurposes: ['PRODUCT_DISPLAY', 'HOOK'],
-      creativeCore: '主线', sourcePrompt: { artifactId: 'source', revision: 1, contentHash: 'old-batch' } };
-    const restored = { ...baseline, sourcePrompt: { ...baseline.sourcePrompt!, revision: 7, contentHash: 'latest-batch' },
-      compatiblePurposes: ['HOOK', 'PRODUCT_DISPLAY'] as EffectSegmentRenderPromptBaseline['compatiblePurposes'] };
+    const baseline: EffectSegmentRenderPromptBaseline = {
+      promptContentHash: 'body',
+      sharedPromptHash: 'shared',
+      targetDurationSeconds: 5,
+      primaryPurpose: 'PRODUCT_DISPLAY',
+      compatiblePurposes: ['PRODUCT_DISPLAY', 'HOOK'],
+      creativeCore: '主线',
+      sourcePrompt: { artifactId: 'source', revision: 1, contentHash: 'old-batch' },
+    };
+    const restored = {
+      ...baseline,
+      sourcePrompt: { ...baseline.sourcePrompt!, revision: 7, contentHash: 'latest-batch' },
+      compatiblePurposes: [
+        'HOOK',
+        'PRODUCT_DISPLAY',
+      ] as EffectSegmentRenderPromptBaseline['compatiblePurposes'],
+    };
     expect(effectSegmentRenderPromptDifference(baseline, restored)).toBeUndefined();
-    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, promptContentHash: 'new' })).toBe('RENDER');
-    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, sharedPromptHash: 'new' })).toBe('RENDER');
-    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, targetDurationSeconds: 8 })).toBe('RENDER');
-    expect(effectSegmentRenderPromptDifference(baseline, { ...restored, creativeCore: '新主线' })).toBe('METADATA');
+    expect(
+      effectSegmentRenderPromptDifference(baseline, { ...restored, promptContentHash: 'new' }),
+    ).toBe('RENDER');
+    expect(
+      effectSegmentRenderPromptDifference(baseline, { ...restored, sharedPromptHash: 'new' }),
+    ).toBe('RENDER');
+    expect(
+      effectSegmentRenderPromptDifference(baseline, { ...restored, targetDurationSeconds: 8 }),
+    ).toBe('RENDER');
+    expect(
+      effectSegmentRenderPromptDifference(baseline, { ...restored, creativeCore: '新主线' }),
+    ).toBe('METADATA');
     expect(effectSegmentRenderPromptDifference(baseline, null)).toBe('REMOVE');
   });
   it.each([

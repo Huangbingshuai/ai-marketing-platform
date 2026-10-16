@@ -2,9 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { transpileModule } from 'typescript';
 import { computed, ref } from 'vue';
 import page from './EffectTemplateMixNodePage.vue?raw';
-import { createMixLocalUpdateProgressTracker, mixLocalUpdateProgress } from './effect-template-mix-operation-progress';
+import {
+  createMixLocalUpdateProgressTracker,
+  mixLocalUpdateProgress,
+} from './effect-template-mix-operation-progress';
 
-const frozenOperation = { sourceOperationHasAdditions: true, sourceOperationId: 'frozen-operation' };
+const frozenOperation = {
+  sourceOperationHasAdditions: true,
+  sourceOperationId: 'frozen-operation',
+};
 
 function harness(changed = 0, added = 0) {
   const context = {
@@ -23,7 +29,8 @@ function harness(changed = 0, added = 0) {
     installedWorkspaceScope: ref('project:workflow'),
     currentWorkspaceScope: ref('project:workflow'),
     workbenchActive: true,
-    view: ref('EDITOR'), enterEditor: vi.fn(),
+    view: ref('EDITOR'),
+    enterEditor: vi.fn(),
     templatePendingUpdateCount: vi.fn(() => changed),
     updateSourceProjects: vi.fn().mockResolvedValue(undefined),
     startAiFill: vi.fn().mockResolvedValue(undefined),
@@ -108,14 +115,17 @@ describe('one local-update action for additions, replacements and deletions', ()
     expect(c.startAiFill).toHaveBeenCalledExactlyOnceWith(null, false, true, 'frozen-operation');
   });
   it('restores a local-update handoff through the unified action, never source-only orchestration', () => {
-    const recovery = page.split("handoff?.action === 'SOURCE_UPDATE'")[1]!
+    const recovery = page
+      .split("handoff?.action === 'SOURCE_UPDATE'")[1]!
       .split('for (const run of running')[0]!;
     expect(recovery).toContain('void updateCurrentTemplate()');
     expect(recovery).not.toContain('void updateSourceProjects()');
   });
   it('preserves only explicit history or in-flight work, never the obsolete editor visual mode', () => {
     expect(page).not.toContain("view.value === 'CONFIG' || configNavigation");
-    expect(page).toContain('explicit: historyTemplateId === initialTemplateId || previewTemplateId === initialTemplateId');
+    expect(page).toContain(
+      'explicit: historyTemplateId === initialTemplateId || previewTemplateId === initialTemplateId',
+    );
     expect(page).toContain('running: runningOnTemplate');
   });
   it('chooses a single progress display for starting, source updates and APPEND, hiding at completion', () => {
@@ -139,8 +149,10 @@ describe('one local-update action for additions, replacements and deletions', ()
       sourceUpdateItemIds: ref(['one', 'two']),
       sourceUpdateStarting: ref(false),
       appendProgress: ref<{ progress: number } | null>(null),
-      activeAppendRun: ref(null), activeAppendPackaging: ref(null),
-      autoPackagingTemplateIds: ref([]), activeTemplateId: ref('template'),
+      activeAppendRun: ref(null),
+      activeAppendPackaging: ref(null),
+      autoPackagingTemplateIds: ref([]),
+      activeTemplateId: ref('template'),
       localUpdateStarting: ref(false),
       mutating: ref(false),
     };

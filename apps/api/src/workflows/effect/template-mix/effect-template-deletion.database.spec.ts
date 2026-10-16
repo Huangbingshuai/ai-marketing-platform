@@ -724,9 +724,8 @@ it.skipIf(process.env.EFFECT_TEMPLATE_DELETE_DATABASE_TEST !== '1')(
       service.onModuleDestroy();
     } finally {
       await db?.$disconnect();
-      if (!/^template_delete_test_[a-f0-9]{32}$/.test(schema))
-        throw new Error('INVALID_TEST_SCHEMA');
-      await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      if (/^template_delete_test_[a-f0-9]{32}$/.test(schema))
+        await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await admin.end();
     }
   },

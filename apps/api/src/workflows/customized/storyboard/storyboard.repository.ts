@@ -60,7 +60,11 @@ const missing = () => new ApiHttpException('分镜记录不存在', 404, 'ASSET_
 const invalid = (message: string): never => {
   throw new ApiHttpException(message, 400, 'VALIDATION_ERROR');
 };
-export function storyboardHistoryConcept(scriptId: string, value: unknown, route?: StoryboardInput['routeId']) {
+export function storyboardHistoryConcept(
+  scriptId: string,
+  value: unknown,
+  route?: StoryboardInput['routeId'],
+) {
   if (!isCustomizedStoryboardScript(value)) return [];
   if (route && value.creation?.videoType && value.creation.videoType !== route) return [];
   return [{ scriptId, name: value.name, synopsis: value.synopsis }];
@@ -79,7 +83,11 @@ const inputOf = (t: CustomizedStoryboardTask) => t.inputSnapshot as unknown as S
 export const presentStoryboardTask = (t: Task): StoryboardTask => ({
   ...(inputOf(t).outputMode ? { outputMode: inputOf(t).outputMode! } : {}),
   ...(inputOf(t).graphVersion
-    ? { graphVersion: inputOf(t).graphVersion!, routeId: inputOf(t).routeId!, ...(inputOf(t).strategyVersions ? { strategyVersions: inputOf(t).strategyVersions! } : {}) }
+    ? {
+        graphVersion: inputOf(t).graphVersion!,
+        routeId: inputOf(t).routeId!,
+        ...(inputOf(t).strategyVersions ? { strategyVersions: inputOf(t).strategyVersions! } : {}),
+      }
     : {}),
   id: t.id,
   workflowRunId: t.workflowRunId,
@@ -656,23 +664,57 @@ export class StoryboardRepository {
           !['SUCCEEDED', 'SKIPPED'].includes(find(stages[index - 1]!.id)?.status ?? '')
         )
           invalid('前置阶段尚未完成');
-        if (value.nodeId === 'BRAND_AD_CONCEPT' && value.status === 'SUCCEEDED' && ['2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(input.strategyVersions?.concept ?? '')) {
+        if (
+          value.nodeId === 'BRAND_AD_CONCEPT' &&
+          value.status === 'SUCCEEDED' &&
+          [
+            '2026-10-14.1',
+            '2026-10-14.2',
+            '2026-10-14.3',
+            '2026-10-14.4',
+            '2026-10-14.5',
+            '2026-10-14.6',
+            '2026-10-14.7',
+          ].includes(input.strategyVersions?.concept ?? '')
+        ) {
           const decision = value.output as Record<string, unknown>;
           const development = decision.redevelopment ?? find('BRAND_AD_IDEAS')?.output;
-          if (!validateBrandDevelopment(development, input.brief, Math.min(8, Math.max(6, input.scriptIds.length + 3))) ||
-              !validateBrandSelection(decision, development, input.scriptIds, input.brief)) invalid('品牌创意选择或事实引用无效');
+          if (
+            !validateBrandDevelopment(
+              development,
+              input.brief,
+              Math.min(8, Math.max(6, input.scriptIds.length + 3)),
+            ) ||
+            !validateBrandSelection(decision, development, input.scriptIds, input.brief)
+          )
+            invalid('品牌创意选择或事实引用无效');
         }
-        if (value.nodeId === 'ECOMMERCE_CONCEPT' && value.status === 'SUCCEEDED' && isCommerceStrategy(input.strategyVersions?.concept)) {
+        if (
+          value.nodeId === 'ECOMMERCE_CONCEPT' &&
+          value.status === 'SUCCEEDED' &&
+          isCommerceStrategy(input.strategyVersions?.concept)
+        ) {
           const decision = value.output as Record<string, unknown>;
           const development = decision.redevelopment ?? find('ECOMMERCE_MOTIVATION')?.output;
-          if (!validateCommerceDevelopment(development, input.brief) ||
-              (isPresenterStrategy(input.strategyVersions?.concept) && !validatePresenterDevelopment(development, input.brief)) ||
-              !validateCommerceSelection(decision, development, input.scriptIds)) invalid('口播讲述、演示依据或方案归属无效');
+          if (
+            !validateCommerceDevelopment(development, input.brief) ||
+            (isPresenterStrategy(input.strategyVersions?.concept) &&
+              !validatePresenterDevelopment(development, input.brief)) ||
+            !validateCommerceSelection(decision, development, input.scriptIds)
+          )
+            invalid('口播讲述、演示依据或方案归属无效');
         }
-        if (value.nodeId === 'DRAMA_CONCEPT' && value.status === 'SUCCEEDED' && isDramaStrategy(input.strategyVersions?.concept)) {
+        if (
+          value.nodeId === 'DRAMA_CONCEPT' &&
+          value.status === 'SUCCEEDED' &&
+          isDramaStrategy(input.strategyVersions?.concept)
+        ) {
           const decision = value.output as Record<string, unknown>;
-          if (!validateDramaDevelopment(decision.development, input.brief, input.scriptIds.length) ||
-              !validateDramaSelection(decision, decision.development, input.scriptIds)) invalid('剧情开发、事实依据或独立择优结果无效');
+          if (
+            !validateDramaDevelopment(decision.development, input.brief, input.scriptIds.length) ||
+            !validateDramaSelection(decision, decision.development, input.scriptIds)
+          )
+            invalid('剧情开发、事实依据或独立择优结果无效');
         }
         if (role === 'STORY') {
           const planning = find(`${input.routeId}_CONCEPT`)?.output as {
@@ -702,7 +744,16 @@ export class StoryboardRepository {
               '2026-10-13.5',
               '2026-10-13.6',
               '2026-10-13.7',
-              '2026-10-13.8', '2026-10-13.9', '2026-10-13.10', '2026-10-13.11', '2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6',
+              '2026-10-13.8',
+              '2026-10-13.9',
+              '2026-10-13.10',
+              '2026-10-13.11',
+              '2026-10-14.1',
+              '2026-10-14.2',
+              '2026-10-14.3',
+              '2026-10-14.4',
+              '2026-10-14.5',
+              '2026-10-14.6',
             ].includes(input.strategyVersions?.review ?? '') &&
               review.qualityChecks?.some(
                 (check) =>

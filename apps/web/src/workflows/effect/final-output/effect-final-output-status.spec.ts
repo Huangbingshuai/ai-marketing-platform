@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { FinalOutputItem, FinalOutputRun } from '@ai-marketing/contracts';
-import { outputFileDescription, outputPackagingLabel, outputTemplateStatus } from './effect-final-output-status';
+import {
+  outputFileDescription,
+  outputPackagingLabel,
+  outputTemplateStatus,
+} from './effect-final-output-status';
 
-const item = (fields: Partial<FinalOutputItem> = {}) => ({ duration: 38, unpackaged: true, ...fields }) as FinalOutputItem;
+const item = (fields: Partial<FinalOutputItem> = {}) =>
+  ({ duration: 38, unpackaged: true, ...fields }) as FinalOutputItem;
 describe('concise final output status', () => {
   it('hides the packaging label after the current engineering package finishes, even for an old file', () => {
     expect(outputPackagingLabel(item({ currentPackagingReady: true, stale: true }))).toBeNull();
-    expect(outputPackagingLabel(item({ currentPackagingReady: true, unpackaged: false }))).toBeNull();
+    expect(
+      outputPackagingLabel(item({ currentPackagingReady: true, unpackaged: false })),
+    ).toBeNull();
   });
   it('uses one 未包装 label for all unpackaged outputs and supports old responses', () => {
     expect(outputPackagingLabel(item({ currentPackagingReady: false }))?.text).toBe('未包装');
@@ -17,8 +24,9 @@ describe('concise final output status', () => {
     expect(outputPackagingLabel(legacy)).toBeNull();
   });
   it('keeps file metadata short regardless of package and stale state', () => {
-    expect(outputFileDescription(item({ currentPackagingReady: true, stale: true }), 'COMPLETED'))
-      .toBe('38.0 秒 · H.264 / AAC');
+    expect(
+      outputFileDescription(item({ currentPackagingReady: true, stale: true }), 'COMPLETED'),
+    ).toBe('38.0 秒 · H.264 / AAC');
     expect(outputFileDescription(item(), 'COMPLETED')).toBe('38.0 秒 · H.264 / AAC');
     expect(outputFileDescription(item(), 'PENDING_RENDER')).toBe('预计 38.0 秒 · 待导出');
   });

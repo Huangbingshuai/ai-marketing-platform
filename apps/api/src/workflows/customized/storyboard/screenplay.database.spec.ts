@@ -93,9 +93,14 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1').each([false, 
       await step('BRAND_AD_PROPOSITION', brandFixture.development);
       await step('BRAND_AD_IDEAS', brandFixture.development);
       await step('BRAND_AD_CONCEPT', {
-        status: 'READY', reason: '独立评估候选', missing: [],
+        status: 'READY',
+        reason: '独立评估候选',
+        missing: [],
         evaluations: brandFixture.selection.evaluations,
-        commitments: input.scriptIds.map((scriptId,i) => ({...brandFixture.selection.commitments[i]!,scriptId})),
+        commitments: input.scriptIds.map((scriptId, i) => ({
+          ...brandFixture.selection.commitments[i]!,
+          scriptId,
+        })),
         readiness: { status: 'READY', reason: '产品资料充分', missing: [] },
         concepts: input.scriptIds.map((scriptId) => ({
           scriptId,

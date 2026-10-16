@@ -13,6 +13,7 @@ import {
 } from '@ai-marketing/contracts';
 import type {
   EffectTemplateMixMaterial,
+  EffectTemplateMixFrozenSourceContext,
   EffectTemplateMixVariant,
   PackagingCheckpoint,
   PackagingSnapshot,
@@ -247,7 +248,7 @@ export function packagingSnapshot(
   materials: EffectTemplateMixMaterial[],
   artifacts: WorkingArtifact[],
   musicSources: ReadonlyMap<string, { fileObjectId: string; sourceDuration: number }> = new Map(),
-  sourceOperation?: import('@ai-marketing/contracts').EffectTemplateMixFrozenSourceContext,
+  sourceOperation?: EffectTemplateMixFrozenSourceContext,
 ): PackagingSnapshot {
   const boundaryError = packagingSlotBoundaryError(variant);
   if (boundaryError) throw new BadRequestException(boundaryError);
@@ -503,30 +504,54 @@ export function validatePackagingCheckpoint(
       checkpoint.automaticRetries > (snapshot.operation ? 5 : 2))
   )
     fail();
-  const timestamp = (value: unknown) => typeof value === 'string' && value.length <= 40 &&
-    /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+  const timestamp = (value: unknown) =>
+    typeof value === 'string' &&
+    value.length <= 40 &&
+    /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    Number.isFinite(Date.parse(value));
   const objectValue = (value: unknown): value is Record<string, unknown> =>
     Boolean(value && typeof value === 'object' && !Array.isArray(value));
   const stageValid = (value: unknown) => PACKAGING_STAGES.some((stage) => stage === value);
   if (checkpoint.recovery !== undefined) {
     const recovery = checkpoint.recovery;
-    if (!objectValue(recovery) || !timestamp(recovery.startedAt) ||
-        !objectValue(recovery.attempts) ||
-        Object.keys(recovery).some((key) => !['startedAt', 'attempts', 'waitingUntil', 'stage'].includes(key)) ||
-        Object.entries(recovery.attempts).some(([stage, count]) =>
-          !stageValid(stage) || !Number.isInteger(count) || count < 0 || count > 5) ||
-        (recovery.stage !== undefined && !stageValid(recovery.stage)) ||
-        (recovery.waitingUntil !== undefined && (!timestamp(recovery.waitingUntil) ||
-          !stageValid(recovery.stage)))) fail();
+    if (
+      !objectValue(recovery) ||
+      !timestamp(recovery.startedAt) ||
+      !objectValue(recovery.attempts) ||
+      Object.keys(recovery).some(
+        (key) => !['startedAt', 'attempts', 'waitingUntil', 'stage'].includes(key),
+      ) ||
+      Object.entries(recovery.attempts).some(
+        ([stage, count]) =>
+          !stageValid(stage) || !Number.isInteger(count) || count < 0 || count > 5,
+      ) ||
+      (recovery.stage !== undefined && !stageValid(recovery.stage)) ||
+      (recovery.waitingUntil !== undefined &&
+        (!timestamp(recovery.waitingUntil) || !stageValid(recovery.stage)))
+    )
+      fail();
   }
   if (checkpoint.voiceRecovery !== undefined) {
-    if (!objectValue(checkpoint.voiceRecovery) || Object.keys(checkpoint.voiceRecovery).length > 120) fail();
+    if (
+      !objectValue(checkpoint.voiceRecovery) ||
+      Object.keys(checkpoint.voiceRecovery).length > 120
+    )
+      fail();
     for (const [key, value] of Object.entries(checkpoint.voiceRecovery)) {
-      if (!/^[a-f0-9]{64}$/.test(key) || !objectValue(value) || !timestamp(value.startedAt) ||
-          !Number.isInteger(value.attempts) || value.attempts < 0 || value.attempts > 20 ||
-          Object.keys(value).some((field) => !['startedAt', 'attempts', 'waitingUntil', 'pending'].includes(field)) ||
-          (value.waitingUntil !== undefined && !timestamp(value.waitingUntil)) ||
-          (value.pending !== undefined && typeof value.pending !== 'boolean')) fail();
+      if (
+        !/^[a-f0-9]{64}$/.test(key) ||
+        !objectValue(value) ||
+        !timestamp(value.startedAt) ||
+        !Number.isInteger(value.attempts) ||
+        value.attempts < 0 ||
+        value.attempts > 20 ||
+        Object.keys(value).some(
+          (field) => !['startedAt', 'attempts', 'waitingUntil', 'pending'].includes(field),
+        ) ||
+        (value.waitingUntil !== undefined && !timestamp(value.waitingUntil)) ||
+        (value.pending !== undefined && typeof value.pending !== 'boolean')
+      )
+        fail();
     }
   }
   if (checkpoint.narrationMetrics) {

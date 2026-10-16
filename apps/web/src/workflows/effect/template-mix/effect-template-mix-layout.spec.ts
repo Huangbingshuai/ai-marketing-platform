@@ -25,29 +25,41 @@ describe('effect template mix workbench layout', () => {
 
   it('shows the shared vertical guide during video edge trimming and clears it on release', () => {
     const begin = timelineSource.split('const beginEdgeTrim =')[1]?.split('const audioAreaTop')[0];
-    const move = timelineSource.split('if (edgeTrimDrag.value) {')[1]?.split('if (audioDrag.value) {')[0];
-    expect(begin).toContain("snapGuideTime.value = side === 'LEFT' ? initialStart : initialStart + slot.duration");
+    const move = timelineSource
+      .split('if (edgeTrimDrag.value) {')[1]
+      ?.split('if (audioDrag.value) {')[0];
+    expect(begin).toContain(
+      "snapGuideTime.value = side === 'LEFT' ? initialStart : initialStart + slot.duration",
+    );
     expect(move).toContain('snapEdgeTime(movingEdge, new Set([drag.slotId])');
-    expect(move).toContain("snapGuideTime.value = drag.side === 'LEFT' ? resized.start : resized.start + resized.duration");
+    expect(move).toContain(
+      "snapGuideTime.value = drag.side === 'LEFT' ? resized.start : resized.start + resized.duration",
+    );
     expect(move).toContain('snapped.guide !== null');
     expect(move).toContain('0.00001');
-    const release = timelineSource.split('function onWindowPointerUp(): void {')[1]?.split('const onWheel')[0];
+    const release = timelineSource
+      .split('function onWindowPointerUp(): void {')[1]
+      ?.split('const onWheel')[0];
     expect(release).toContain('snapGuideTime.value = null;');
     expect(timelineSource).toContain('class="snap-guide"');
   });
 
   it('keeps only the workbench entry in the template configuration footer', () => {
-    const footer = pageSource.split('<footer class="template-config-actions">')[1]?.split('</footer>')[0];
+    const footer = pageSource
+      .split('<footer class="template-config-actions">')[1]
+      ?.split('</footer>')[0];
     expect(footer).toBeDefined();
     expect(footer?.match(/<button\b/gu)).toHaveLength(1);
-    expect(footer).toContain("@click=\"openTemplateWorkspace(activeTemplateId, 'EDITOR')\"");
+    expect(footer).toContain('@click="openTemplateWorkspace(activeTemplateId, \'EDITOR\')"');
     expect(footer).toContain('进入精修工作台');
     expect(footer).not.toContain('局部更新');
     expect(footer).not.toContain('已载入');
     expect(footer).not.toContain('已有');
     expect(footer).not.toContain('<p');
     expect(footer).not.toContain('<small');
-    expect(pageSource).toContain('.config-panel > .template-config-actions {\n  justify-content: flex-end;');
+    expect(pageSource).toContain(
+      '.config-panel > .template-config-actions {\n  justify-content: flex-end;',
+    );
     const workbench = pageSource.split('class="workbench-head"')[1]?.split('</header>')[0];
     expect(workbench).toContain('@click="updateCurrentTemplate"');
     expect(workbench).not.toContain('@click="updateSourceProjects"');
@@ -55,8 +67,12 @@ describe('effect template mix workbench layout', () => {
   });
   it('regenerates the whole batch from the toolbar independently of selected-film locks', () => {
     expect(pageSource).toContain('const refill = (): void => void startAiFill(null);');
-    expect(pageSource).not.toContain('const refill = (): void => void startAiFill(selectedVariant.value);');
-    const eligibility = pageSource.split('const aiFillBlockReason =')[1]?.split('const selectedBindingMetadata')[0];
+    expect(pageSource).not.toContain(
+      'const refill = (): void => void startAiFill(selectedVariant.value);',
+    );
+    const eligibility = pageSource
+      .split('const aiFillBlockReason =')[1]
+      ?.split('const selectedBindingMetadata')[0];
     expect(eligibility).toContain('const candidates = availableMaterials.value');
     expect(eligibility).not.toContain('selectedVariant');
     expect(eligibility).not.toContain('manualSlotIds');
@@ -67,31 +83,47 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('<b>智能填充失败</b>');
     expect(pageSource).not.toContain('v-if="failedAiRun"');
     expect(pageSource).not.toContain('retryFailedAiRun');
-    const workflow = pageSource.split('const workflowRunForDisplay =')[1]?.split('const workflowStageState')[0];
+    const workflow = pageSource
+      .split('const workflowRunForDisplay =')[1]
+      ?.split('const workflowStageState')[0];
     expect(workflow).toContain('failedAiRun.value');
-    expect(pageSource).toContain("if (run.status === 'FAILED' && stageIndex === currentIndex) return 'failed';");
+    expect(pageSource).toContain(
+      "if (run.status === 'FAILED' && stageIndex === currentIndex) return 'failed';",
+    );
   });
   it('blends selected blue borders with amber warnings on stale template cards', () => {
     const row = pageSource.split('class="template-list__row"')[1]?.split('<button')[0];
-    expect(compactSource(row!)).toContain("'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(templateAddedMaterialIds(entry.id).length)");
+    expect(compactSource(row!)).toContain(
+      "'is-source-stale': templatePendingUpdateCount(entry) > 0 || Boolean(templateAddedMaterialIds(entry.id).length)",
+    );
     expect(row).toContain('active: entry.id === activeTemplateId');
     const style = pageSource.split('.template-list__row.is-source-stale {')[1]?.split('}')[0];
     expect(style).toContain('border-color: #f59e0b;');
     expect(style).toContain('box-shadow: inset 0 0 0 1px #f59e0b;');
     expect(style).not.toContain('background:');
-    expect(pageSource.indexOf('.template-list__row.is-source-stale {'))
-      .toBeGreaterThan(pageSource.indexOf('.template-list__row.active {'));
-    const selectedStale = pageSource.split('.template-list__row.active.is-source-stale {')[1]?.split('}')[0];
-    expect(selectedStale).toContain('linear-gradient(112deg, #2563eb 0%, #7652c8 48%, #d97706 100%) border-box;');
-    expect(selectedStale).toContain('linear-gradient(135deg, #edf4ff 0%, #fff2d9 100%) padding-box');
+    expect(pageSource.indexOf('.template-list__row.is-source-stale {')).toBeGreaterThan(
+      pageSource.indexOf('.template-list__row.active {'),
+    );
+    const selectedStale = pageSource
+      .split('.template-list__row.active.is-source-stale {')[1]
+      ?.split('}')[0];
+    expect(selectedStale).toContain(
+      'linear-gradient(112deg, #2563eb 0%, #7652c8 48%, #d97706 100%) border-box;',
+    );
+    expect(selectedStale).toContain(
+      'linear-gradient(135deg, #edf4ff 0%, #fff2d9 100%) padding-box',
+    );
     expect(selectedStale).not.toContain('0 0 0');
-    expect(pageSource.indexOf('.template-list__row.active.is-source-stale {'))
-      .toBeGreaterThan(pageSource.indexOf('.template-list__row.is-source-stale {'));
+    expect(pageSource.indexOf('.template-list__row.active.is-source-stale {')).toBeGreaterThan(
+      pageSource.indexOf('.template-list__row.is-source-stale {'),
+    );
   });
   it('labels affected film counts inside template cards instead of ambiguous artifact counts', () => {
     expect(pageSource).toContain('{{ templatePendingUpdateCount(entry) }} 个成片待更新');
     expect(pageSource).not.toContain('{{ templatePendingUpdateCount(entry) }} 个待更新');
-    const templateSelection = pageSource.split('class="template-list__select"')[1]?.split('</button>')[0];
+    const templateSelection = pageSource
+      .split('class="template-list__select"')[1]
+      ?.split('</button>')[0];
     expect(templateSelection).toContain('个成片待更新');
     expect(pageSource).toContain('.template-list__select .source-update-badge');
     expect(pageSource).toContain('justify-self: start;');
@@ -102,25 +134,35 @@ describe('effect template mix workbench layout', () => {
     expect(refresh).toContain('loadEffectTemplateMixSources(projectId, owner, request.signal)');
     expect(refresh).toContain('owner === workflowRunId');
     expect(pageSource).toContain('sourceMaterials.value = data.materials');
-    expect(pageSource).toContain('if (data.classificationPools) classificationPools.value = data.classificationPools');
+    expect(pageSource).toContain(
+      'if (data.classificationPools) classificationPools.value = data.classificationPools',
+    );
     expect(pageSource).not.toContain('watch([activeTemplateId, activeClassificationPool]');
     expect(pageSource).toContain('entry.workspace.materials = data.materials');
     expect(pageSource).toContain("saveState.value === 'saved' && !pendingSave");
-    expect(pageSource).toContain('projectId !== props.projectId || workflowRunId !== props.workflowRunId');
+    expect(pageSource).toContain(
+      'projectId !== props.projectId || workflowRunId !== props.workflowRunId',
+    );
     expect(pageSource).toContain('sourcePollController?.abort()');
     expect(pageSource).toContain('clearInterval(sourcePollTimer)');
     expect(pageSource).toContain('createMixSourceChangesReader(');
-    expect(vueScriptDeclaration(pageSource, 'variantSourceChanges')).toContain('readSourceChanges(variant, sourceMaterials.value)');
+    expect(vueScriptDeclaration(pageSource, 'variantSourceChanges')).toContain(
+      'readSourceChanges(variant, sourceMaterials.value)',
+    );
     expect(pageSource).toContain('templatePendingUpdateCount(entry)');
     expect(pageSource).toContain('variantSourceChanges(variant).length');
     expect(pageSource).toContain('@click="updateCurrentTemplate"');
-    expect(vueScriptDeclaration(pageSource, 'updateCurrentTemplate')).toContain('updateSourceProjects(');
+    expect(vueScriptDeclaration(pageSource, 'updateCurrentTemplate')).toContain(
+      'updateSourceProjects(',
+    );
     expect(pageSource).not.toContain('请在成片输出节点执行局部更新');
     expect(pageSource).not.toContain('@click="refreshSourceTrims"');
   });
   it('marks changed track clips and keeps project actions readable in narrow panels', () => {
     expect(timelineSource).toContain("'is-source-stale': pendingSourceSlotIds.has(slot.id)");
-    expect(timelineSource).toContain('effectTemplateMixSourceChanges(props.variant, props.materials)');
+    expect(timelineSource).toContain(
+      'effectTemplateMixSourceChanges(props.variant, props.materials)',
+    );
     expect(timelineSource).toContain('border: 2px solid #f59e0b;');
     expect(timelineSource).toContain('class="source-stale-label">待更新');
     expect(pageSource).toContain('flex: 0 0 136px;');
@@ -133,7 +175,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('sourceUpdateRun.value = null;');
   });
   it('shows prefill role filters and saves material categories independently of timeline bindings', () => {
-    expect(pageSource).toContain('<div class="material-role-filters" aria-label="素材归槽筛选" tabindex="0">');
+    expect(pageSource).toContain(
+      '<div class="material-role-filters" aria-label="素材归槽筛选" tabindex="0">',
+    );
     expect(pageSource).toContain('@click="selectMaterialRole(\'UNASSIGNED\')"');
     expect(pageSource).toContain('待归槽 <small>{{ unassignedMaterialCount }}</small>');
     expect(pageSource).toContain('@click="chooseMaterialSlot(null)"');
@@ -157,14 +201,18 @@ describe('effect template mix workbench layout', () => {
   });
   it('keeps undo and redo history separately for each project, run, template, and film', () => {
     expect(pageSource).toContain('createScopedTimelineHistory<TimelineEditSnapshot>()');
-    expect(compactSource(vueScriptDeclaration(pageSource, 'timelineHistoryScope'))).toContain("props.projectId, props.workflowRunId, activeTemplateId.value, selectedVariant.value?.id ?? '',");
+    expect(compactSource(vueScriptDeclaration(pageSource, 'timelineHistoryScope'))).toContain(
+      "props.projectId, props.workflowRunId, activeTemplateId.value, selectedVariant.value?.id ?? '',",
+    );
     expect(pageSource).toContain('const activateTimelineHistoryScope = (): void =>');
     expect(pageSource).toContain('timelineHistoryStore.switchScope(timelineHistoryScope.value, {');
     expect(pageSource).toContain('timelineUndoStack.value = history.undo;');
     expect(pageSource).toContain('timelineRedoStack.value = history.redo;');
     expect(pageSource).toContain('activeTemplateId.value = id;\n  activateTimelineHistoryScope();');
     expect(pageSource).toContain('activeUi.value.selectedVariantId = id;');
-    expect(pageSource).toContain('activateTimelineHistoryScope();\n  void syncPlayerToPlayhead(false);');
+    expect(pageSource).toContain(
+      'activateTimelineHistoryScope();\n  void syncPlayerToPlayhead(false);',
+    );
     expect(pageSource).not.toContain('clearTimelineHistory');
   });
   it('keeps the step arrows clickable at both boundaries and also handles keyboard attempts', () => {
@@ -198,14 +246,20 @@ describe('effect template mix workbench layout', () => {
     );
     expect(pageSource).toContain('title: `删除模板「${entry.workspace.template.name}」？`');
     expect(pageSource).not.toContain('window.confirm(');
-    expect(compactSource(pageSource)).toContain('模板列表 <small v-if="templateDirectoryStatus === \'READY\'" class="template-list__count" >共 {{ templateListCatalog.length }} 个</small>');
+    expect(compactSource(pageSource)).toContain(
+      '模板列表 <small v-if="templateDirectoryStatus === \'READY\'" class="template-list__count" >共 {{ templateListCatalog.length }} 个</small>',
+    );
     expect(pageSource).toContain(
       "showNotice('尚未检测到已完成的渲染批次，正在刷新状态…', 'warning');",
     );
-    expect(pageSource).toContain(':disabled="checkingTemplateCreation || templateDirectoryStatus !== \'READY\'"');
+    expect(pageSource).toContain(
+      ':disabled="checkingTemplateCreation || templateDirectoryStatus !== \'READY\'"',
+    );
   });
   it('leaves the transition track empty at a direct cut while keeping drop-to-add available', () => {
-    expect(timelineSource).toContain("variant.slots.slice(1).filter((slot, index) => slot.transition !== '硬切' && variant?.bindings[slot.id] && variant?.bindings[variant.slots[index]!.id])");
+    expect(timelineSource).toContain(
+      "variant.slots.slice(1).filter((slot, index) => slot.transition !== '硬切' && variant?.bindings[slot.id] && variant?.bindings[variant.slots[index]!.id])",
+    );
     expect(timelineSource).not.toContain('is-hard-cut');
     expect(timelineSource).toContain('onTransitionDrop(event)');
     expect(pageSource).toContain("item === '硬切' ? '无转场' : item");
@@ -316,11 +370,17 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('const canValidate');
   });
   it('syncs each saved draft silently and flushes the last edit on exit', () => {
-    const saveSignal = pageSource.indexOf('notifyOutputChange(props.projectId, props.workflowRunId);');
-    const queueDrain = pageSource.indexOf('if (!outputSyncTask) outputSyncTask = drainOutputSync();');
+    const saveSignal = pageSource.indexOf(
+      'notifyOutputChange(props.projectId, props.workflowRunId);',
+    );
+    const queueDrain = pageSource.indexOf(
+      'if (!outputSyncTask) outputSyncTask = drainOutputSync();',
+    );
     expect(saveSignal).toBeGreaterThan(-1);
     expect(saveSignal).toBeLessThan(queueDrain);
-    expect(pageSource).toContain("window.dispatchEvent(new CustomEvent('effect-final-output-sync', { detail }))");
+    expect(pageSource).toContain(
+      "window.dispatchEvent(new CustomEvent('effect-final-output-sync', { detail }))",
+    );
     expect(pageSource).toContain('if (response.data.refreshed.length)');
     expect(pageSource).toContain('syncEffectFinalOutput');
     expect(pageSource).toContain('queueOutputSync(result.data.draftRevision, savedTemplateId)');
@@ -371,7 +431,9 @@ describe('effect template mix workbench layout', () => {
     // Recovery is automatic; starting the ordinary packaging action creates a fresh task.
     expect(source).not.toContain('@click="command(\'retry\')"');
     expect(source).not.toContain('恢复未完成项');
-    expect(source).toContain("operation: variantId ? 'SINGLE_PACKAGE' as const : 'BATCH_PACKAGE' as const");
+    expect(source).toContain(
+      "operation: variantId ? 'SINGLE_PACKAGE' as const : 'BATCH_PACKAGE' as const",
+    );
   });
   it('keeps configuration and refinement as separate views', () => {
     expect(pageSource).toContain('进入精修工作台');
@@ -409,21 +471,27 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const availableMaterials = computed(');
     expect(pageSource).toContain('const expiredMaterialCount = computed(');
     expect(pageSource).toContain('const aiFillBlockReason = computed<string | null>(');
-    expect(pageSource).toContain('if (!target && !refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {');
+    expect(pageSource).toContain(
+      'if (!target && !refreshAffectedSlots && !appendNewMaterials && aiFillBlockReason.value) {',
+    );
     expect(pageSource).not.toContain("mutating.value = run.operation !== 'APPEND';");
     expect(pageSource).toContain('class="material-expired-banner"');
     expect(pageSource).not.toContain('class="material-expired-badge"');
     expect(pageSource).not.toContain(
       '!selectedVariant ||\n                workspace.materials.length < 6',
     );
-    expect(pageSource).toContain('<LoaderCircle v-if="activeFillRun || fillStartPending" class="spin" :size="15" />');
+    expect(pageSource).toContain(
+      '<LoaderCircle v-if="activeFillRun || fillStartPending" class="spin" :size="15" />',
+    );
     expect(pageSource).toContain('<RefreshCw v-else-if="selectedVariant" :size="15" />');
     expect(pageSource).not.toContain('<Play v-else :size="15" />{{');
     expect(pageSource).toContain('WorkflowRunProgress');
     expect(pageSource).toContain('class="editor-workflow-progress"');
     expect(pageSource).toContain('class="mix-run-progress"');
     expect(packagingSource).toContain('v-if="batchProgressVisible"');
-    expect(vueScriptDeclaration(packagingSource, 'batchProgressVisible')).toContain('batchSubmitting.value || Boolean(progressRun.value)');
+    expect(vueScriptDeclaration(packagingSource, 'batchProgressVisible')).toContain(
+      'batchSubmitting.value || Boolean(progressRun.value)',
+    );
     expect(packagingSource).toContain('class="workflow-graph-content"');
     expect(packagingSource).not.toContain('class="workflow-version-notice"');
     expect(packagingSource).not.toContain('class="summary"');
@@ -547,7 +615,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('const resetTimelinePlayerState = (): void => {');
     expect(pageSource).toContain('positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();');
     expect(pageSource).not.toContain('drift > 0.12');
-    expect(pageSource).toContain(':preload="slot.id === previewSlot?.id ? \'auto\' : \'metadata\'"');
+    expect(pageSource).toContain(":preload=\"slot.id === previewSlot?.id ? 'auto' : 'metadata'\"");
     expect(vueScriptDeclaration(pageSource, 'primeUpcomingTimelinePlayer')).toContain(
       "player.preload = keep.has(slotId) ? 'auto' : 'metadata'",
     );
@@ -596,12 +664,16 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('lane: variant.videoLanes?.[range.id] ?? 0');
     expect(pageSource).toContain('coverMaterial(variant)');
     expect(pageSource).toContain('封面');
-    expect(vueScriptDeclaration(pageSource, 'variantDuration')).toContain('packagingTimelineDuration(variant)');
+    expect(vueScriptDeclaration(pageSource, 'variantDuration')).toContain(
+      'packagingTimelineDuration(variant)',
+    );
     expect(vueScriptDeclaration(pageSource, 'currentDuration')).toContain(
       'effectTemplateMixContentDuration(variant, selectedPackaging.value?.checkpoint)',
     );
     expect(pageSource).toContain('variantDuration(variant)');
-    expect(pageSource).toContain('framePresentation.present(video, sourceTime, 1 / TIMELINE_FPS, publish)');
+    expect(pageSource).toContain(
+      'framePresentation.present(video, sourceTime, 1 / TIMELINE_FPS, publish)',
+    );
     expect(pageSource).toContain('framePresentation.presentPlayback(video, publish)');
     expect(pageSource).toContain('player-transition-frame');
     expect(pageSource).not.toContain('resource-tabs-count');
@@ -631,7 +703,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('<div class="config-head__actions">');
     const create = pageSource.match(/<button\b[^>]*class="button new-template"[^>]*>/u)?.[0];
     expect(create).toBeDefined();
-    expect(create).toContain('checkingTemplateCreation || templateDirectoryStatus !== \'READY\'');
+    expect(create).toContain("checkingTemplateCreation || templateDirectoryStatus !== 'READY'");
     expect(create).toContain('@click="openCreate"');
     expect(pageSource).toContain(':class="{ \'is-empty\': !workspace.variants.length }"');
     expect(pageSource).toContain('.projects > div.is-empty');
@@ -902,8 +974,12 @@ describe('effect template mix workbench layout', () => {
     // which would otherwise catch on the position it was dragged away from.
     expect(timelineSource).toContain('if (ignored.has(edge.ownerId)) continue;');
     const audioMove = compactSource(vueScriptDeclaration(timelineSource, 'onWindowPointerMove'));
-    expect(audioMove).toContain('const ignoredIds = new Set([ drag.id, ...(selectedAudioIds.value.includes(drag.id) ? selectedAudioIds.value : dragGroupIds(drag.id)), ...selectedClipIds.value, ]);');
-    expect(vueScriptDeclaration(timelineSource, 'updateDragTarget')).toContain('new Set([...drag.selectedSlotIds, ...selectedAudioIds.value])');
+    expect(audioMove).toContain(
+      'const ignoredIds = new Set([ drag.id, ...(selectedAudioIds.value.includes(drag.id) ? selectedAudioIds.value : dragGroupIds(drag.id)), ...selectedClipIds.value, ]);',
+    );
+    expect(vueScriptDeclaration(timelineSource, 'updateDragTarget')).toContain(
+      'new Set([...drag.selectedSlotIds, ...selectedAudioIds.value])',
+    );
     // Both ends of the dragged block get a turn at every edge, not just its head.
     expect(timelineSource).toContain('const snapDraggedBlock = (');
     expect(timelineSource).toContain('[0, rawStart],');
@@ -1059,7 +1135,9 @@ describe('effect template mix workbench layout', () => {
   it('lets an existing clip and a music track open a row on the border they were dropped on', () => {
     // Dragging a clip already on the timeline sees the same borders a library clip does, but only a
     // single one can use it: a group slides rigidly and has no one row to open for the whole of it.
-    expect(compactSource(vueScriptDeclaration(timelineSource, 'updateDragTarget'))).toContain('const border = drag.selectedSlotIds.length === 1 && !selectedAudioIds.value.length ? trackInsertTargetFrom(clientY, VIDEO_INSERT_KINDS) : null;');
+    expect(compactSource(vueScriptDeclaration(timelineSource, 'updateDragTarget'))).toContain(
+      'const border = drag.selectedSlotIds.length === 1 && !selectedAudioIds.value.length ? trackInsertTargetFrom(clientY, VIDEO_INSERT_KINDS) : null;',
+    );
     expect(timelineSource).toContain(
       "drag.insertLane = border?.kind === 'VIDEO' ? border.lane : null;",
     );
@@ -1070,7 +1148,9 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain(
       "emit('moveClip', moves[0].slotId, moves[0].start, moves[0].lane, drag.insertLane ?? undefined);",
     );
-    expect(compactSource(vueScriptDeclaration(pageSource, 'moveTimelineClip'))).toContain('const moveTimelineClip = (slotId: string, start: number, lane: number, insertLane?: number): void => moveTimelineClips([{ slotId, start, lane, insertLane }]);');
+    expect(compactSource(vueScriptDeclaration(pageSource, 'moveTimelineClip'))).toContain(
+      'const moveTimelineClip = (slotId: string, start: number, lane: number, insertLane?: number): void => moveTimelineClips([{ slotId, start, lane, insertLane }]);',
+    );
     // A border asks for a row of its own rather than a row to sit in, so it never looks for a free one.
     expect(pageSource).toContain('insertLane !== undefined || nextLane < currentLane,');
     // A music track dropped on a border opens an audio row: the rows from there down move one
@@ -1968,7 +2048,9 @@ describe('effect template mix workbench layout', () => {
     expect(rawPageSource).toContain('@background-started="handleBackgroundPackagingStarted"');
     const completion = vueScriptDeclaration(rawPageSource, 'handleBackgroundPackagingFinished');
     expect(completion).toContain('if (!published)');
-    expect(completion).toContain('await activateEffectWorkflowBranch(projectId, run.workflowRunId)');
+    expect(completion).toContain(
+      'await activateEffectWorkflowBranch(projectId, run.workflowRunId)',
+    );
   });
   it('keeps the workbench mounted and restores its selection when the fork changes Run', () => {
     expect(workflowSource).toContain(':key="`mix:${currentProjectId}`"');
@@ -1978,7 +2060,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain(
       "import { peekWorkbench, rememberWorkbench, takeWorkbench } from './effect-template-mix-workbench-handoff';",
     );
-    expect(compactSource(vueScriptDeclaration(pageSource, 'load'))).toContain('const handoff = !wasReady || switchedRun || templateNavigationTarget.value === `${projectId}:${workflowRunId}` ? takeWorkbench(workflowRunId) : null;');
+    expect(compactSource(vueScriptDeclaration(pageSource, 'load'))).toContain(
+      'const handoff = !wasReady || switchedRun || templateNavigationTarget.value === `${projectId}:${workflowRunId}` ? takeWorkbench(workflowRunId) : null;',
+    );
     expect(pageSource).toContain('isMixWorkspaceSwitching(');
     expect(pageSource).toContain("if (!wasReady) pageState.value = 'LOADING';");
     expect(pageSource).toContain('requestController !== controller ||');

@@ -11,7 +11,9 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import { StoryboardRepository } from './storyboard.repository';
 
 // Real HTTP + PostgreSQL + Python pipeline, with model calls replaced only in this test.
-it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1').each(['BRAND_AD', 'ECOMMERCE', 'DRAMA'] as const)(
+it
+  .skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1')
+  .each(['BRAND_AD', 'ECOMMERCE', 'DRAMA'] as const)(
   'publishes %s through protected HTTP using the real Python pipeline without model charges',
   async (route) => {
     const rootPath = resolve(process.cwd(), '../..');
@@ -55,7 +57,18 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1').each(['BRAND_AD',
           contentHash: workflowStateHash(brief),
         },
       });
-      const revision = route !== 'BRAND_AD' ? await repo.settings(projectId, run.id, 0, { videoType: route, targetDurationSeconds: 30, variantCount: 3, structureMode: 'AI', structure: '', structureSections: [], instructions: '' }) : 0;
+      const revision =
+        route !== 'BRAND_AD'
+          ? await repo.settings(projectId, run.id, 0, {
+              videoType: route,
+              targetDurationSeconds: 30,
+              variantCount: 3,
+              structureMode: 'AI',
+              structure: '',
+              structureSections: [],
+              instructions: '',
+            })
+          : 0;
       const key = randomUUID(),
         task = await repo.create(projectId, run.id, revision, key, {
           creative: 'controlled-pro',
@@ -74,7 +87,11 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_HTTP_TEST !== '1').each(['BRAND_AD',
       const duplicate = await fetch(`${api}/tasks`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workflowRunId: run.id, expectedRevision: revision, idempotencyKey: key }),
+        body: JSON.stringify({
+          workflowRunId: run.id,
+          expectedRevision: revision,
+          idempotencyKey: key,
+        }),
       });
       expect(duplicate.status).toBe(202);
       expect(((await duplicate.json()) as { data: { id: string } }).data.id).toBe(task.id);
@@ -138,7 +155,9 @@ asyncio.run(run())`;
         ((await repairDetail.json()) as { data: { sections: unknown } }).data.sections,
       );
       expect(repairSections).toContain('保留实际变化');
-      expect(workspace.scripts.every((s) => s.script.shots.length === 0 && s.script.story)).toBe(true);
+      expect(workspace.scripts.every((s) => s.script.shots.length === 0 && s.script.story)).toBe(
+        true,
+      );
       const recheckDetail = await fetch(
         `${api}/tasks/${task.id}/nodes/RECHECK?page=0&scriptId=${workspace.scripts[0]!.id}`,
       );

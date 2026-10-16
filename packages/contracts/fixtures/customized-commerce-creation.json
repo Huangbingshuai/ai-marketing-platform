@@ -18,9 +18,7 @@
     },
     "brief": {
       "productName": "充电器",
-      "sellingPoints": [
-        "已确认的适用特点"
-      ],
+      "sellingPoints": ["已确认的适用特点"],
       "targetAudience": "简报中的使用者"
     },
     "settings": {
@@ -28,15 +26,10 @@
       "targetDurationSeconds": 30,
       "variantCount": 1,
       "structureMode": "CUSTOM",
-      "structureSections": [
-        "吸引注意",
-        "价值兑现"
-      ],
+      "structureSections": ["吸引注意", "价值兑现"],
       "instructions": "unused"
     },
-    "scriptIds": [
-      "s0"
-    ],
+    "scriptIds": ["s0"],
     "existingConcepts": [],
     "models": {
       "creative": "controlled",
@@ -57,9 +50,7 @@
         "situationBasis": "CREATIVE_HYPOTHESIS",
         "buyingReason": "已知特点支持需要1",
         "purchaseQuestion": "如何选择1",
-        "factIds": [
-          "F02"
-        ],
+        "factIds": ["F02"],
         "demonstration": {
           "setup": "实际任务尚未完成",
           "action": "产品按已知方式参与",
@@ -76,9 +67,7 @@
         "situationBasis": "CREATIVE_HYPOTHESIS",
         "buyingReason": "已知特点支持需要2",
         "purchaseQuestion": "如何选择2",
-        "factIds": [
-          "F02"
-        ],
+        "factIds": ["F02"],
         "demonstration": {
           "setup": "实际任务尚未完成",
           "action": "产品按已知方式参与",
@@ -95,9 +84,7 @@
         "situationBasis": "CREATIVE_HYPOTHESIS",
         "buyingReason": "已知特点支持需要3",
         "purchaseQuestion": "如何选择3",
-        "factIds": [
-          "F02"
-        ],
+        "factIds": ["F02"],
         "demonstration": {
           "setup": "实际任务尚未完成",
           "action": "产品按已知方式参与",
@@ -114,9 +101,7 @@
         "situationBasis": "CREATIVE_HYPOTHESIS",
         "buyingReason": "已知特点支持需要4",
         "purchaseQuestion": "如何选择4",
-        "factIds": [
-          "F02"
-        ],
+        "factIds": ["F02"],
         "demonstration": {
           "setup": "实际任务尚未完成",
           "action": "产品按已知方式参与",
@@ -133,9 +118,7 @@
         "situationBasis": "CREATIVE_HYPOTHESIS",
         "buyingReason": "已知特点支持需要5",
         "purchaseQuestion": "如何选择5",
-        "factIds": [
-          "F02"
-        ],
+        "factIds": ["F02"],
         "demonstration": {
           "setup": "实际任务尚未完成",
           "action": "产品按已知方式参与",
@@ -152,9 +135,7 @@
         "situationBasis": "CREATIVE_HYPOTHESIS",
         "buyingReason": "已知特点支持需要6",
         "purchaseQuestion": "如何选择6",
-        "factIds": [
-          "F02"
-        ],
+        "factIds": ["F02"],
         "demonstration": {
           "setup": "实际任务尚未完成",
           "action": "产品按已知方式参与",
@@ -206,10 +187,7 @@
       {
         "scriptId": "s0",
         "opportunityId": "O01",
-        "mustPreserve": [
-          "具体购买需要",
-          "实际观察结果"
-        ]
+        "mustPreserve": ["具体购买需要", "实际观察结果"]
       }
     ],
     "readiness": {

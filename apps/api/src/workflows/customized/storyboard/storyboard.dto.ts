@@ -20,7 +20,11 @@ import type {
   StoryboardStep,
   StoryboardFinish,
 } from '@ai-marketing/contracts';
-import { CUSTOMIZED_VIDEO_TYPES, typedScriptStages, scriptStrategyVersion } from '@ai-marketing/contracts';
+import {
+  CUSTOMIZED_VIDEO_TYPES,
+  typedScriptStages,
+  scriptStrategyVersion,
+} from '@ai-marketing/contracts';
 export class StoryboardScopeDto {
   @IsUUID() workflowRunId!: string;
 }

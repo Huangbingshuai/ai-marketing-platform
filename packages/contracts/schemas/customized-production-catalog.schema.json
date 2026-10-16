@@ -10,12 +10,7 @@
           "type": "string"
         },
         "kind": {
-          "enum": [
-            "PRODUCT",
-            "CHARACTER",
-            "SCENE",
-            "PROP"
-          ],
+          "enum": ["PRODUCT", "CHARACTER", "SCENE", "PROP"],
           "title": "Kind",
           "type": "string"
         },
@@ -52,15 +47,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "kind",
-        "name",
-        "description",
-        "knownFacts",
-        "designNotes",
-        "sourceText"
-      ],
+      "required": ["id", "kind", "name", "description", "knownFacts", "designNotes", "sourceText"],
       "title": "ObjectDefinition",
       "type": "object"
     }
@@ -77,9 +64,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "assets"
-  ],
+  "required": ["assets"],
   "title": "Catalog",
   "type": "object"
 }

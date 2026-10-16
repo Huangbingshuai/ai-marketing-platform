@@ -51,7 +51,8 @@ export const effectMixHistoryTemplateId = (
   target.nodeId === 'TEMPLATE_MIX' &&
   (target.mixStage === 'FILL' || target.mixStage === 'PACKAGING') &&
   (view === 'EDITOR' || pendingNavigation)
-    ? target.templateId : null;
+    ? target.templateId
+    : null;
 
 /** Keep the selected template on the exact branch when moving from mix to output. */
 export const effectTemplateStepNavigation = (

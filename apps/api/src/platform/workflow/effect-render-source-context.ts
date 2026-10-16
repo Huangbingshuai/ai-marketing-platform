@@ -9,21 +9,35 @@ export async function confirmedEffectPromptEditSource(
   viewing: WorkingArtifact,
 ): Promise<WorkingArtifact> {
   const owner = await confirmedEffectRenderSourceRun(db, projectId, workflowRunId);
-  const pools = await db.workingArtifact.findMany({ where: {
-    projectId, workflowRunId: owner, nodeId: 'SEGMENT_RENDER',
-    artifactKey: { startsWith: 'render-batch:' }, availability: 'AVAILABLE',
-  } });
+  const pools = await db.workingArtifact.findMany({
+    where: {
+      projectId,
+      workflowRunId: owner,
+      nodeId: 'SEGMENT_RENDER',
+      artifactKey: { startsWith: 'render-batch:' },
+      availability: 'AVAILABLE',
+    },
+  });
   // Multi-product historical pools require explicit mapping, never a label/order guess.
   if (pools.length !== 1) return viewing;
-  const source = (pools[0]!.payload as { sourcePrompt?: {
-    artifactId?: string; revision?: number; contentHash?: string;
-  } } | null)?.sourcePrompt;
+  const source = (
+    pools[0]!.payload as {
+      sourcePrompt?: {
+        artifactId?: string;
+        revision?: number;
+        contentHash?: string;
+      };
+    } | null
+  )?.sourcePrompt;
   if (!source?.artifactId) return viewing;
-  return await confirmedEffectRenderPromptArtifact(db, projectId, workflowRunId, viewing, {
-    workflowRunId: owner, sourcePromptArtifactId: source.artifactId,
-    ...(source.revision !== undefined ? { sourcePromptRevision: source.revision } : {}),
-    ...(source.contentHash !== undefined ? { sourcePromptHash: source.contentHash } : {}),
-  }) ?? viewing;
+  return (
+    (await confirmedEffectRenderPromptArtifact(db, projectId, workflowRunId, viewing, {
+      workflowRunId: owner,
+      sourcePromptArtifactId: source.artifactId,
+      ...(source.revision !== undefined ? { sourcePromptRevision: source.revision } : {}),
+      ...(source.contentHash !== undefined ? { sourcePromptHash: source.contentHash } : {}),
+    })) ?? viewing
+  );
 }
 
 /** Shared by reads, refresh confirmation and isolated-edit preparation. */

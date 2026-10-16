@@ -11,7 +11,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { EffectPromptService } from './effect-prompt.service';
-import { compileEffectPromptSharedPrompt, pendingEffectPromptSemanticEvaluation, recomputePromptQuality } from './effect-prompt.quality';
+import {
+  compileEffectPromptSharedPrompt,
+  pendingEffectPromptSemanticEvaluation,
+  recomputePromptQuality,
+} from './effect-prompt.quality';
 
 const completionGateFixture = (duplicate = false) => {
   const settings = { targetCount: 10, defaultDurationSeconds: 5 };
@@ -79,8 +83,13 @@ const completionGateFixture = (duplicate = false) => {
 describe('prompt result source filtering', () => {
   it('restores a deleted batch assessment for display without writes, AI calls or changed revisions', async () => {
     const generated = completionGateFixture();
-    generated.metrics.semanticEvaluation = { status: 'VERIFIED', duplicateRate: 20,
-      duplicateCount: 2, evaluatedCount: 10, duplicateGroupCount: 1 };
+    generated.metrics.semanticEvaluation = {
+      status: 'VERIFIED',
+      duplicateRate: 20,
+      duplicateCount: 2,
+      evaluatedCount: 10,
+      duplicateGroupCount: 1,
+    };
     const draft = structuredClone(generated);
     draft.items.pop();
     draft.metrics.semanticEvaluation = pendingEffectPromptSemanticEvaluation();
@@ -90,13 +99,27 @@ describe('prompt result source filtering', () => {
       workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
       latestResult: vi.fn().mockResolvedValue(record),
     };
-    const service = new EffectPromptService(repository as never,
-      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never, {} as never);
+    const service = new EffectPromptService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
     for (const origin of [undefined, 'AI', 'MANUAL'] as const) {
-      const output = await service.result('project-a', 'workflow-a', 'product-a', 1, 5,
-        '', undefined, 'PRIMARY', origin);
+      const output = await service.result(
+        'project-a',
+        'workflow-a',
+        'product-a',
+        1,
+        5,
+        '',
+        undefined,
+        'PRIMARY',
+        origin,
+      );
       expect(output.revision).toBe(15);
-      expect(output.result.metrics.semanticEvaluation).toEqual(generated.metrics.semanticEvaluation);
+      expect(output.result.metrics.semanticEvaluation).toEqual(
+        generated.metrics.semanticEvaluation,
+      );
       expect(output.result.metrics.acceptedCount).toBe(9);
     }
     expect(record).toEqual(before);
@@ -114,35 +137,72 @@ describe('prompt result source filtering', () => {
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
     const cacheQueries: unknown[] = [];
     const cache = {
-      read: vi.fn(async (
-        _scope: unknown,
-        _key: string,
-        load: () => Promise<unknown>,
-        query: unknown,
-      ) => {
-        cacheQueries.push(query);
-        return load();
-      }),
+      read: vi.fn(
+        async (_scope: unknown, _key: string, load: () => Promise<unknown>, query: unknown) => {
+          cacheQueries.push(query);
+          return load();
+        },
+      ),
     };
     const service = new EffectPromptService(
-      repository as never, projects as never, {} as never,
-      undefined, undefined, cache as never,
+      repository as never,
+      projects as never,
+      {} as never,
+      undefined,
+      undefined,
+      cache as never,
     );
     const all = await service.result('project-a', 'workflow-a', 'product-a', 1, 100);
-    const manual = await service.result('project-a', 'workflow-a', 'product-a', 2, 1,
-      '', undefined, 'PRIMARY', 'MANUAL');
-    const ai = await service.result('project-a', 'workflow-a', 'product-a', 1, 100,
-      '', undefined, 'PRIMARY', 'AI');
-    const combined = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
-      '晨光', 'HOOK', 'PRIMARY_OR_COMPATIBLE', 'MANUAL');
-    const empty = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
-      '', 'EFFECT', 'PRIMARY', 'MANUAL');
+    const manual = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      2,
+      1,
+      '',
+      undefined,
+      'PRIMARY',
+      'MANUAL',
+    );
+    const ai = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      100,
+      '',
+      undefined,
+      'PRIMARY',
+      'AI',
+    );
+    const combined = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '晨光',
+      'HOOK',
+      'PRIMARY_OR_COMPATIBLE',
+      'MANUAL',
+    );
+    const empty = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '',
+      'EFFECT',
+      'PRIMARY',
+      'MANUAL',
+    );
     expect(all.total).toBe(10);
     expect(manual.total).toBe(2);
-    expect(manual.items.map(item => item.code)).toEqual(['P009']);
+    expect(manual.items.map((item) => item.code)).toEqual(['P009']);
     expect(ai.total).toBe(8);
-    expect(ai.items.some(item => item.code === 'P001' && item.manualEdited)).toBe(true);
-    expect(combined.items.map(item => item.code)).toEqual(['P002']);
+    expect(ai.items.some((item) => item.code === 'P001' && item.manualEdited)).toBe(true);
+    expect(combined.items.map((item) => item.code)).toEqual(['P002']);
     expect(empty.total).toBe(0);
     expect(empty.items).toEqual([]);
     for (const result of [all, manual, ai, combined, empty]) {
@@ -274,8 +334,12 @@ describe('EffectPromptService settings contract', () => {
 
     expect(output.products[0]?.status).toBe('COMPLETED');
     expect(output.products[0]?.settings).toEqual(normalizeEffectPromptSettings(legacySettings));
-    repository.backgroundBatchRun.mockResolvedValue({ ...run, id: 'background-task',
-      workflowRunId: 'background-child', status: 'RUNNING', progress: 42,
+    repository.backgroundBatchRun.mockResolvedValue({
+      ...run,
+      id: 'background-task',
+      workflowRunId: 'background-child',
+      status: 'RUNNING',
+      progress: 42,
       result: { id: 'background-draft-must-not-replace-parent' },
     } as never);
     const pending = await service.workspace('project-a', 'workflow-a');
@@ -1639,10 +1703,28 @@ describe('EffectPromptService settings contract', () => {
     expect(output.items[0]?.content).toContain('广式腊肠');
     expect(output.items.some(({ content }) => content.includes('窗边桌面'))).toBe(true);
     expect(output.result.qualityStatus).toBe('NEEDS_REVIEW');
-    const aiOnly = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
-      '', undefined, 'PRIMARY', 'AI');
-    const manualOnly = await service.result('project-a', 'workflow-a', 'product-a', 1, 10,
-      '', undefined, 'PRIMARY', 'MANUAL');
+    const aiOnly = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '',
+      undefined,
+      'PRIMARY',
+      'AI',
+    );
+    const manualOnly = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '',
+      undefined,
+      'PRIMARY',
+      'MANUAL',
+    );
     expect(aiOnly.total).toBe(2);
     expect(manualOnly.total).toBe(0);
     expect(manualOnly.items).toEqual([]);

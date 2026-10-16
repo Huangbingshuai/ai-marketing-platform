@@ -33,10 +33,18 @@ describe('template current branch tips', () => {
       expect(tips.get('a')?.workflowRunId).toBe('a1');
       expect(tips.get('b')?.workflowRunId).toBe('b2');
     }
-    const foreign = { ...branch('foreign', 'root', 'SEGMENT_RENDER', 'a', '5'),
-      templates: [{ ...a2.templates[0]!, currentSelectedAt: '2026-10-09T01:00:00.000Z' }] };
-    expect(effectTemplateBranchTips([root, a1, a2, foreign], 'root', { current: true }).get('a')?.workflowRunId).toBe('a1');
-    expect(effectTemplateBranchTips([root, a1, a2, foreign], 'foreign', { current: true }).get('a')?.workflowRunId).toBe('foreign');
+    const foreign = {
+      ...branch('foreign', 'root', 'SEGMENT_RENDER', 'a', '5'),
+      templates: [{ ...a2.templates[0]!, currentSelectedAt: '2026-10-09T01:00:00.000Z' }],
+    };
+    expect(
+      effectTemplateBranchTips([root, a1, a2, foreign], 'root', { current: true }).get('a')
+        ?.workflowRunId,
+    ).toBe('a1');
+    expect(
+      effectTemplateBranchTips([root, a1, a2, foreign], 'foreign', { current: true }).get('a')
+        ?.workflowRunId,
+    ).toBe('foreign');
   });
   it('uses an in-place confirmation instead of reviving a later-created obsolete fork', () => {
     const root = branch('root', null, null, null, '2026-10-01');
@@ -46,10 +54,14 @@ describe('template current branch tips', () => {
     obsolete.templates[0]!.currentConfirmedAt = '2026-10-04';
     const rows = [root, updated, obsolete];
     for (const context of ['root', 'updated', 'obsolete'])
-      expect(effectTemplateBranchTips(rows, context, { current: true }).get('a')?.workflowRunId)
-        .toBe('updated');
-    expect(effectTemplateBranchTips(rows, 'obsolete', { current: true, selectedTemplateId: 'a' })
-      .get('a')?.workflowRunId).toBe('obsolete');
+      expect(
+        effectTemplateBranchTips(rows, context, { current: true }).get('a')?.workflowRunId,
+      ).toBe('updated');
+    expect(
+      effectTemplateBranchTips(rows, 'obsolete', { current: true, selectedTemplateId: 'a' }).get(
+        'a',
+      )?.workflowRunId,
+    ).toBe('obsolete');
     expect(effectTemplateBranchTips(rows, 'obsolete').get('a')?.workflowRunId).toBe('obsolete');
     expect(updated.createdAt).toBe('2026-10-02');
   });

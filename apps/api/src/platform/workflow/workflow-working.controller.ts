@@ -1,10 +1,10 @@
 import type {
   CustomizedWorkflowBranchTreeData,
   CustomizedWorkflowVersionData,
-} from "@ai-marketing/contracts";
+} from '@ai-marketing/contracts';
 // DTO requires a runtime import for validation metadata.
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
-import { SaveCustomizedSourceVersionDto } from "./dto/save-customized-source-version.dto";
+import { SaveCustomizedSourceVersionDto } from './dto/save-customized-source-version.dto';
 import type { ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 
@@ -46,8 +46,8 @@ import { ListWorkingArtifactsQueryDto } from './dto/list-working-artifacts-query
 import { GetWorkflowRunOverviewQueryDto } from './dto/get-workflow-run-overview-query.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { PutWorkflowNodeStateDto } from './dto/put-workflow-node-state.dto';
-import { CreateEffectWorkflowBranchDto } from './dto/create-effect-workflow-branch.dto';
-import { ActivateEffectWorkflowBranchDto } from './dto/activate-effect-workflow-branch.dto';
+import type { CreateEffectWorkflowBranchDto } from './dto/create-effect-workflow-branch.dto';
+import type { ActivateEffectWorkflowBranchDto } from './dto/activate-effect-workflow-branch.dto';
 import { WorkflowWorkingService } from './workflow-working.service';
 
 @Controller('projects/:projectId')
@@ -121,49 +121,41 @@ export class WorkflowWorkingController {
     return this.service.initializeCustomizedRun(projectId);
   }
 
-  @Get("workflow-runs/customized/branches")
+  @Get('workflow-runs/customized/branches')
   getCustomizedBranchTree(
-    @Param("projectId", new ParseUUIDPipe({ version: "4" })) projectId: string,
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
   ): Promise<CustomizedWorkflowBranchTreeData> {
     return this.service.getCustomizedBranchTree(projectId);
   }
-  @Post("workflow-runs/customized/branches/:workflowRunId/nodes/:nodeId/edit")
+  @Post('workflow-runs/customized/branches/:workflowRunId/nodes/:nodeId/edit')
   beginCustomizedNodeEdit(
-    @Param("projectId", new ParseUUIDPipe({ version: "4" })) projectId: string,
-    @Param("workflowRunId", new ParseUUIDPipe({ version: "4" })) runId: string,
-    @Param("nodeId") nodeId: string,
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Param('nodeId') nodeId: string,
   ): Promise<ActivateWorkflowNodeData> {
     return this.service.beginCustomizedNodeEdit(projectId, runId, nodeId);
   }
-  @Post(
-    "workflow-runs/customized/branches/:workflowRunId/nodes/:nodeId/edit/cancel",
-  )
+  @Post('workflow-runs/customized/branches/:workflowRunId/nodes/:nodeId/edit/cancel')
   cancelCustomizedNodeEdit(
-    @Param("projectId", new ParseUUIDPipe({ version: "4" })) projectId: string,
-    @Param("workflowRunId", new ParseUUIDPipe({ version: "4" })) runId: string,
-    @Param("nodeId") nodeId: string,
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Param('nodeId') nodeId: string,
   ): Promise<ActivateWorkflowNodeData> {
     return this.service.cancelCustomizedNodeEdit(projectId, runId, nodeId);
   }
-  @Post("workflow-runs/customized/branches/:workflowRunId/source-version")
+  @Post('workflow-runs/customized/branches/:workflowRunId/source-version')
   saveCustomizedSourceVersion(
-    @Param("projectId", new ParseUUIDPipe({ version: "4" })) projectId: string,
-    @Param("workflowRunId", new ParseUUIDPipe({ version: "4" })) runId: string,
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) runId: string,
     @Body() body: SaveCustomizedSourceVersionDto,
   ): Promise<CustomizedWorkflowVersionData> {
-    return this.service.saveCustomizedSourceVersion(
-      projectId,
-      runId,
-      body.expectedRevision,
-    );
+    return this.service.saveCustomizedSourceVersion(projectId, runId, body.expectedRevision);
   }
-  @Post(
-    "workflow-runs/customized/branches/:workflowRunId/nodes/:nodeId/activate",
-  )
+  @Post('workflow-runs/customized/branches/:workflowRunId/nodes/:nodeId/activate')
   activateCustomizedBranch(
-    @Param("projectId", new ParseUUIDPipe({ version: "4" })) projectId: string,
-    @Param("workflowRunId", new ParseUUIDPipe({ version: "4" })) runId: string,
-    @Param("nodeId") nodeId: string,
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Param('nodeId') nodeId: string,
   ): Promise<ActivateWorkflowNodeData> {
     return this.service.activateCustomizedBranch(projectId, runId, nodeId);
   }

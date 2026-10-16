@@ -44,7 +44,6 @@ import {
   effectTemplateMixSlotDurationValid,
   PACKAGING_AUDIO_DB_CEILING,
   PACKAGING_AUDIO_DB_FLOOR,
-  PACKAGING_AUDIO_GAIN_CEILING,
   packagingAudioFade,
   packagingAudioFromDb,
   packagingAudioToDb,
@@ -387,6 +386,8 @@ const packagingResultByVariant = computed(() =>
  * quietly loses its narration is a surprise, so every one of them is named.
  */
 const packagingFailures = ref<{ variantId: string; name: string; message: string }[]>([]);
+// Retained for source-level packaging failure regression coverage.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const packagingFailureByVariant = computed(
   () => new Map(packagingFailures.value.map((failure) => [failure.variantId, failure])),
 );
@@ -1027,7 +1028,7 @@ async function pollSourceUpdate(
         'error',
       );
     }
-  } catch (error) {
+  } catch (_error) {
     if (!ownsUpdate()) return;
     // A failed read is not a failed durable task. Keep the confirmed operation and retry;
     // only its explicit terminal status above can report an update failure.
@@ -1564,7 +1565,7 @@ const syncTransitionPlaybackAnimation = (
   if (!incoming || !outgoing || transition.end <= playbackTime || typeof incoming.animate !== 'function') return;
   transitionPlaybackSignature = signature;
   const frames = effectTemplateMixTransitionPlaybackKeyframes(transition.transition);
-  const animate = (element: HTMLElement, keyframes: Keyframe[]): void => {
+  const animate = (element: HTMLElement, keyframes: Parameters<HTMLElement['animate']>[0]): void => {
     const animation = element.animate(keyframes, {
       duration: transition.duration * 1000, easing: 'linear', fill: 'both',
     });
@@ -1792,7 +1793,7 @@ const startPlayerScrubberMotion = (startSeconds: number): void => {
   if (safeStart >= duration) return;
   const startProgress = safeStart / duration;
   const width = scrubber.clientWidth;
-  const timing: KeyframeAnimationOptions = {
+  const timing: Parameters<HTMLElement['animate']>[1] = {
     duration: (duration - safeStart) * 1000,
     easing: 'linear',
     fill: 'both',
@@ -2076,6 +2077,8 @@ const variantEmptySlotCount = (variant: EffectTemplateMixVariant) =>
   variant.slots.filter(
     (slot) => !variant.bindings[slot.id] && variant.intentionallyEmptySlotIds?.includes(slot.id),
   ).length;
+// The raw-source regression suite extracts this computation to verify completeness semantics.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const complete = computed(
   () =>
     Boolean(workspace.value?.variants.length) &&
@@ -2093,6 +2096,8 @@ const complete = computed(
         }),
     ),
 );
+// The raw-source regression suite extracts this computation to verify save-state semantics.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const validated = computed(
   () =>
     Boolean(workspace.value) &&
@@ -3070,6 +3075,7 @@ const persistNow = async (keepalive = false): Promise<boolean> => {
         draftSaveBlocked = true;
         throw new Error(
           '当前模板在其他页面也有修改，本页编辑已保留，未覆盖对方内容。请先处理另一页面的编辑。',
+          { cause: error },
         );
       }
       draftRevision.value = latest.data.draftRevision;
@@ -4484,7 +4490,7 @@ const deleteTemplate = async (entry: EffectTemplateMixTemplateEntry): Promise<vo
       const current = deletionInput(templateListCatalog.value.find(({ id }) => id === entry.id));
       if (!sameEditableMixTemplate(confirmed, current) ||
         !sameEditableMixTemplate(confirmed, deletionInput(remote)))
-        throw new Error('目标模板内容已变化，已保留模板，请核对后再确认删除');
+        throw new Error('目标模板内容已变化，已保留模板，请核对后再确认删除', { cause: error });
       if (latest.data.draftRevision === null) throw error;
       expectedRevision = latest.data.draftRevision;
       result = await deleteEffectTemplateMix(projectId, targetRunId, entry.id, expectedRevision);
@@ -5221,8 +5227,10 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
     }
   }
   clearDetachedTransitions(variant);
-  activeUi.value &&
-    (activeUi.value.selectedSlotId = resolved.at(-1)?.slot.id ?? activeUi.value.selectedSlotId);
+  if (activeUi.value) {
+    activeUi.value.selectedSlotId =
+      resolved.at(-1)?.slot.id ?? activeUi.value.selectedSlotId;
+  }
   resetTimelinePlayerState();
   bump();
   showNotice(`已粘贴 ${items.length} 个视频素材`);
@@ -5466,25 +5474,7 @@ const assignDroppedMaterial = (materialId: string, slotId: string): void => {
   if (!material) return;
   applyMaterialToSlot(material, slotId);
 };
-const changeTrimStart = (raw: string): void => {
-  const variant = selectedVariant.value;
-  const slot = selectedSlot.value;
-  const material = selectedMaterial.value;
-  if (!variant || !slot || !material) return;
-  const value = Math.round(Number(raw) * 1000) / 1000;
-  if (!Number.isFinite(value)) return;
-  const nextValue = Math.min(Math.max(0, value), Math.max(0, material.duration - slot.duration));
-  if (nextValue === (variant.offsets[slot.id] ?? 0)) return;
-  rememberTimelineEdit();
-  variant.offsets[slot.id] = nextValue;
-  variant.bindingMetadata ??= {};
-  variant.bindingMetadata[slot.id] = {
-    ...(variant.bindingMetadata[slot.id] ?? { source: 'MANUAL' }),
-    trimReason: '人工调整截取起点',
-  };
-  bump();
-};
-const changeTimelineTrimStart = (slotId: string, raw: number): void => {
+const changeTrimStart = (slotId: string, raw: number): void => {
   const variant = selectedVariant.value;
   const slot = variant?.slots.find(({ id }) => id === slotId);
   const material = slot ? materialForSlot(slot.id) : null;
@@ -6438,27 +6428,6 @@ const placeGeneratedCaptionVoice = (clipId: string, start: number): void => {
   resetTimelinePlayerState();
   bump();
 };
-const changeProjectDuration = (raw: string): void => {
-  if (!selectedSlot.value || !selectedVariant.value) return;
-  const duration = Math.round(Number(raw) * 10) / 10;
-  const material = materialForSlot(selectedSlot.value.id);
-  if (!effectTemplateMixSlotDurationValid(duration, templateSlotDurationLimit.value)) {
-    showNotice(effectTemplateMixSlotDurationMessage(templateSlotDurationLimit.value), 'warning');
-    return;
-  }
-  if (
-    material &&
-    duration + (selectedVariant.value.offsets[selectedSlot.value.id] ?? 0) > material.duration
-  ) {
-    showNotice('槽位时长不能超过素材可用时长', 'warning');
-    return;
-  }
-  if (selectedSlot.value.duration === duration) return;
-  rememberTimelineEdit();
-  selectedSlot.value.duration = duration;
-  resetTimelinePlayerState();
-  bump();
-};
 const changeTransitionForSlot = (slotId: string, transition: EffectTemplateMixTransition): void => {
   const variant = selectedVariant.value;
   const slot = variant?.slots.find(({ id }) => id === slotId);
@@ -7026,7 +6995,7 @@ const handleBackgroundFillFinished = async (
       toRevision,
     });
     switched = true;
-  } catch (error) {
+  } catch (_error) {
     // Only read/publication coordination failed. Keep the completed receipt and reconnect.
   } finally {
     if (openingFillRunId === run.id) openingFillRunId = null;
@@ -7856,7 +7825,7 @@ const onTimelinePlayerWaiting = (slotId: string, event: Event): void => {
     !active || video.readyState >= 3) return;
   holdTimelinePlayback(slotId, video);
 };
-const holdTimelinePlayback = (slotId: string, video: HTMLVideoElement): void => {
+const holdTimelinePlayback = (slotId: string, _video: HTMLVideoElement): void => {
   if (playbackStarting) return;
   const range = currentTiming.value.slots.find(({ id }) => id === slotId);
   if (!range || !selectedVariant.value) return;
@@ -9860,7 +9829,7 @@ defineExpose({
           @select-caption-clips="onCaptionClipsSelected"
           @select-slot="selectSlot"
           @select-video-clips="selectedVideoTransformIds = $event"
-          @trim-slot="changeTimelineTrimStart"
+          @trim-slot="changeTrimStart"
           @resize-slot="resizeTimelineSlot"
           @preview-transition-duration="previewTransitionDuration"
           @update-transition-duration="changeTransitionDuration"

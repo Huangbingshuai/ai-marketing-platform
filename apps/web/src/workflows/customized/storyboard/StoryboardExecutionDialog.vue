@@ -41,7 +41,9 @@ const stages = computed(() => {
   if (!typed.value || !showAllRoutes.value) return actual;
   return [
     ...actual.slice(0, 3),
-    ...CUSTOMIZED_VIDEO_TYPES.flatMap((t) => typedScriptStages(t, props.task?.strategyVersions?.concept).slice(3, -3)),
+    ...CUSTOMIZED_VIDEO_TYPES.flatMap((t) =>
+      typedScriptStages(t, props.task?.strategyVersions?.concept).slice(3, -3),
+    ),
     ...actual.slice(-3),
   ];
 });
@@ -51,8 +53,20 @@ const rows = computed(() =>
         ['SNAPSHOT'],
         ['PREPARE'],
         ['ROUTE'],
-        ...(['2026-10-14.1','2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(props.task?.strategyVersions?.concept ?? '') ? [['BRAND_AD_PROPOSITION'], ['BRAND_AD_IDEAS']] : []),
-        ...(isCommerceStrategy(props.task?.strategyVersions?.concept) ? [['ECOMMERCE_MOTIVATION']] : []),
+        ...([
+          '2026-10-14.1',
+          '2026-10-14.2',
+          '2026-10-14.3',
+          '2026-10-14.4',
+          '2026-10-14.5',
+          '2026-10-14.6',
+          '2026-10-14.7',
+        ].includes(props.task?.strategyVersions?.concept ?? '')
+          ? [['BRAND_AD_PROPOSITION'], ['BRAND_AD_IDEAS']]
+          : []),
+        ...(isCommerceStrategy(props.task?.strategyVersions?.concept)
+          ? [['ECOMMERCE_MOTIVATION']]
+          : []),
         ...['CONCEPT', 'STORY', 'REVIEW'].map((stage) =>
           CUSTOMIZED_VIDEO_TYPES.map((t) => `${t}_${stage}`),
         ),
@@ -70,7 +84,12 @@ const edges = computed(() => {
     { from: 'PREPARE', to: 'ROUTE' },
     ...routes.flatMap((route) => {
       const muted = route !== props.task?.routeId;
-      const chain = ['ROUTE', ...typedScriptStages(route, props.task?.strategyVersions?.concept).slice(3, -3).map(n => n.id)];
+      const chain = [
+        'ROUTE',
+        ...typedScriptStages(route, props.task?.strategyVersions?.concept)
+          .slice(3, -3)
+          .map((n) => n.id),
+      ];
       return [
         ...chain.slice(1).map((to, i) => ({ from: chain[i]!, to, muted })),
         { from: `${route}_REVIEW`, to: 'REPAIR', label: muted ? '' : '需修订', muted },

@@ -3,18 +3,16 @@ import type {
   PackagingCheckpoint,
   PackagingSnapshot,
 } from './effect-template-mix-packaging';
-import type { EffectTemplateMixMaterial, EffectTemplateMixVariant, EffectTemplateMixFrozenSourceContext } from './effect-template-mix';
+import type {
+  EffectTemplateMixMaterial,
+  EffectTemplateMixVariant,
+  EffectTemplateMixFrozenSourceContext,
+} from './effect-template-mix';
 export const FINAL_OUTPUT_RESOLUTIONS = ['480p', '720p', '1080p', '2K', '4K'] as const;
 export type FinalOutputResolution = (typeof FINAL_OUTPUT_RESOLUTIONS)[number];
 
 export type FinalOutputStatus =
-  | 'PENDING_RENDER'
-  | 'QUEUED'
-  | 'RUNNING'
-  | 'COMPLETED'
-  | 'PARTIAL'
-  | 'FAILED'
-  | 'CANCELLED';
+  'PENDING_RENDER' | 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED';
 
 /** Synchronize saved mix drafts without starting a paid final render. */
 export type SyncFinalOutputRequest = {
@@ -64,7 +62,12 @@ export type FinalOutputDependency = {
 };
 export type FinalOutputSnapshot = {
   /** Fence a locally appended/manual output against later draft edits or deletion. */
-  sourceDraft?: { workflowRunId: string; templateId: string; variantId: string; contentHash: string };
+  sourceDraft?: {
+    workflowRunId: string;
+    templateId: string;
+    variantId: string;
+    contentHash: string;
+  };
   /** Durable continuation for the same authorized local update, even after refresh commits. */
   sourceOperation?: EffectTemplateMixFrozenSourceContext;
   /** Source repair of unexported projects reuses the refresh worker without encoding a final video. */
@@ -93,8 +96,16 @@ export type FinalOutputSnapshot = {
     trimsReady?: boolean;
     ready?: boolean;
     stage?: string;
-    uploadedAudios?: Record<string, { fileObjectId: string; sha256: string; duration: number; segmentFrames?: number[];
-      speechRanges?: PackagingAudio['speechRanges'] }>;
+    uploadedAudios?: Record<
+      string,
+      {
+        fileObjectId: string;
+        sha256: string;
+        duration: number;
+        segmentFrames?: number[];
+        speechRanges?: PackagingAudio['speechRanges'];
+      }
+    >;
   };
   timeline: PackagingSnapshot;
   packaging: PackagingCheckpoint;
@@ -151,8 +162,13 @@ export type FinalOutputRun = {
   items: FinalOutputItem[];
   /** Live project membership differences; absent when the source workspace was not loaded. */
   projectChanges?: {
-    added: { variantId: string; name: string; duration?: number;
-      cover?: FinalOutputItem['cover']; blockedReason?: string }[];
+    added: {
+      variantId: string;
+      name: string;
+      duration?: number;
+      cover?: FinalOutputItem['cover'];
+      blockedReason?: string;
+    }[];
     removedItemIds: string[];
     draftRevision?: number;
   };
@@ -167,12 +183,21 @@ export type FinalOutputRun = {
   };
 };
 /** Compact, project-scoped status for one background export; no timeline snapshots. */
-export type FinalOutputExportProgress = Pick<FinalOutputRun,
-  'id' | 'workflowRunId' | 'backgroundExportSourceRunId' | 'backgroundExportPublished' |
-  'templateId' | 'createdAt' | 'status'> & {
+export type FinalOutputExportProgress = Pick<
+  FinalOutputRun,
+  | 'id'
+  | 'workflowRunId'
+  | 'backgroundExportSourceRunId'
+  | 'backgroundExportPublished'
+  | 'templateId'
+  | 'createdAt'
+  | 'status'
+> & {
   counts: Pick<FinalOutputRun['counts'], 'total' | 'queued' | 'running' | 'completed' | 'failed'>;
-  items: Pick<FinalOutputItem,
-    'id' | 'variantId' | 'status' | 'progress' | 'fileObjectId' | 'assetId' | 'errorMessage'>[];
+  items: Pick<
+    FinalOutputItem,
+    'id' | 'variantId' | 'status' | 'progress' | 'fileObjectId' | 'assetId' | 'errorMessage'
+  >[];
 };
 export type FinalOutputQueueMessage = {
   schemaVersion: 2;

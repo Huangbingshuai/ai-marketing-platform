@@ -116,7 +116,10 @@ function readableObjectText(value: string, scripts: unknown[]): string {
     );
   // Proposed objects may not exist in either catalog yet. Do not invent their identity.
   return text
-    .replace(/\b([SP])(\d+):E\d+\b/g, (_match, _prefix: string, index: string) => `篇章 ${Number(index)} 原文`)
+    .replace(
+      /\b([SP])(\d+):E\d+\b/g,
+      (_match, _prefix: string, index: string) => `篇章 ${Number(index)} 原文`,
+    )
     .replace(
       /\b(char|prod|scene)_[A-Za-z0-9_]+\b/g,
       (_id, kind: string) =>
@@ -213,31 +216,85 @@ export function storyboardDetail(
       prefix = concepts.find((c) => c.scriptId === s.scriptId)?.name;
     let rows: Row[] = [];
     const brandFacts = brandFactCatalog(input.brief);
-    const factText = (refs: unknown) => list(refs).map(id => brandFacts.find(f => f.id === id)?.text ?? '').filter(Boolean).join('\n');
+    const factText = (refs: unknown) =>
+      list(refs)
+        .map((id) => brandFacts.find((f) => f.id === id)?.text ?? '')
+        .filter(Boolean)
+        .join('\n');
     if (nodeId === 'BRAND_AD_PROPOSITION') {
-      rows = fields(o.proposition, { message: '主要传播命题', audienceObservation: '受众观察', requiredReason: '必须展示信息的判断' });
+      rows = fields(o.proposition, {
+        message: '主要传播命题',
+        audienceObservation: '受众观察',
+        requiredReason: '必须展示信息的判断',
+      });
       const proposition = record(o.proposition);
-      if (proposition.observationBasis) rows.push({ title: '观察依据', content: proposition.observationBasis === 'BRIEF' ? '来自已确认简报' : '用于创作探索的假设，未经受众调研验证' });
+      if (proposition.observationBasis)
+        rows.push({
+          title: '观察依据',
+          content:
+            proposition.observationBasis === 'BRIEF'
+              ? '来自已确认简报'
+              : '用于创作探索的假设，未经受众调研验证',
+        });
       rows.push({ title: '产品依据', content: factText(proposition.supportingFactIds) });
-      if (list(proposition.requiredFactIds).length) rows.push({ title: '明确需要展示的信息', content: factText(proposition.requiredFactIds) });
+      if (list(proposition.requiredFactIds).length)
+        rows.push({ title: '明确需要展示的信息', content: factText(proposition.requiredFactIds) });
     }
-    if (nodeId === 'BRAND_AD_IDEAS') rows = list(o.ideas).map(record).map(idea => ({
-      title: str(idea.name), content: [BRAND_EXPRESSION_LABELS[str(idea.approach)],
-        ...fields(idea, { viewingHook: '观看吸引点', mechanism: '表达方式', keyImages: '关键画面', productRole: '产品参与', memory: '品牌记忆', risk: '需要警惕的问题' }).map(r => `${r.title}：${r.content}`),
-        `产品依据：${factText(idea.factIds)}`].filter(Boolean).join('\n'),
-    }));
+    if (nodeId === 'BRAND_AD_IDEAS')
+      rows = list(o.ideas)
+        .map(record)
+        .map((idea) => ({
+          title: str(idea.name),
+          content: [
+            BRAND_EXPRESSION_LABELS[str(idea.approach)],
+            ...fields(idea, {
+              viewingHook: '观看吸引点',
+              mechanism: '表达方式',
+              keyImages: '关键画面',
+              productRole: '产品参与',
+              memory: '品牌记忆',
+              risk: '需要警惕的问题',
+            }).map((r) => `${r.title}：${r.content}`),
+            `产品依据：${factText(idea.factIds)}`,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        }));
     if (nodeId === 'ECOMMERCE_MOTIVATION') {
       rows = fields(record(o.readiness), { reason: '策划依据', missing: '需要补充的产品依据' });
-      rows.push(...list(o.opportunities).map(record).map(opportunity => {
-        const demo = record(opportunity.demonstration);
-        return { title: str(opportunity.name), content: [
-          ...fields(opportunity, { audienceSituation: '适用处境', buyingReason: '购买理由', purchaseQuestion: '回应的购买疑问', creativeIdea: '具体创意', progression: '内容推进', ending: '收束' }).map(r => `${r.title}：${r.content}`),
-          ...fields(opportunity.approach, PRESENTER_APPROACH_FIELDS).map(r => `${r.title}：${r.content}`),
-          opportunity.situationBasis === 'CREATIVE_HYPOTHESIS' ? '处境依据：创作假设，未经受众调研验证' : '处境依据：已确认简报',
-          ...fields(demo, { setup: '演示起点', action: '实际过程', observableResult: '可观察结果', claimBoundary: '表达边界' }).map(r => `${r.title}：${r.content}`),
-          `产品依据：${factText(opportunity.factIds)}`,
-        ].join('\n') };
-      }));
+      rows.push(
+        ...list(o.opportunities)
+          .map(record)
+          .map((opportunity) => {
+            const demo = record(opportunity.demonstration);
+            return {
+              title: str(opportunity.name),
+              content: [
+                ...fields(opportunity, {
+                  audienceSituation: '适用处境',
+                  buyingReason: '购买理由',
+                  purchaseQuestion: '回应的购买疑问',
+                  creativeIdea: '具体创意',
+                  progression: '内容推进',
+                  ending: '收束',
+                }).map((r) => `${r.title}：${r.content}`),
+                ...fields(opportunity.approach, PRESENTER_APPROACH_FIELDS).map(
+                  (r) => `${r.title}：${r.content}`,
+                ),
+                opportunity.situationBasis === 'CREATIVE_HYPOTHESIS'
+                  ? '处境依据：创作假设，未经受众调研验证'
+                  : '处境依据：已确认简报',
+                ...fields(demo, {
+                  setup: '演示起点',
+                  action: '实际过程',
+                  observableResult: '可观察结果',
+                  claimBoundary: '表达边界',
+                }).map((r) => `${r.title}：${r.content}`),
+                `产品依据：${factText(opportunity.factIds)}`,
+              ].join('\n'),
+            };
+          }),
+      );
     }
     if (nodeId === 'SNAPSHOT' && s.output) rows = fields(input.brief, CUSTOMIZED_BRIEF_LABELS);
     if (role === 'CONCEPT')
@@ -270,70 +327,161 @@ export function storyboardDetail(
         );
     }
     if (nodeId === 'DRAMA_CONCEPT' && isDramaStrategy(input.strategyVersions?.concept)) {
-      const development = record(o.development ?? record(o.redevelopmentResult ?? o.developmentResult).value);
+      const development = record(
+        o.development ?? record(o.redevelopmentResult ?? o.developmentResult).value,
+      );
       const ideas = list(development.ideas).map(record);
-      const decision = o.status ? o : record(record(o.secondSelectionResult ?? o.selectionResult).value);
-      const readable = (text: string) => ideas.reduce((result, idea) => result.replaceAll(str(idea.id), str(idea.name)), text);
-      rows = fields(development.readiness, {reason:'资料充分性判断',missing:'需要补充的依据'});
-      rows.push(...ideas.map(idea => ({title:`候选故事 · ${str(idea.name)}`, content:[
-        `创作手法：${list(idea.devices).map(str).join('、')}`,
-        ...fields(idea, DRAMA_DEVELOPMENT_FIELDS).map(r => `${r.title}：${r.content}`),
-        ...fields(idea.plan, SCRIPT_PLAN_FIELDS.DRAMA).map(r => `${r.title}：${r.content}`),
-        `产品依据：${factText(idea.factIds)}`,
-      ].join('\n')})));
-      rows.push(...fields(decision, {reason:'独立择优结论',missing:'需要补充的依据'}));
-      rows.push(...list(decision.evaluations).map(record).map(e => ({
-        title:`${str(ideas.find(i => i.id === e.ideaId)?.name)} · ${e.verdict === 'ADVANCE' ? '适合展开' : '本次不采用'}`,
-        content:readable(str(e.reason)),
-      })));
-      rows.push(...list(decision.choices).map(record).map(c => ({
-        title:`${str(ideas.find(i => i.id === c.ideaId)?.name)} · 正文需要兑现`,
-        content:list(c.mustPreserve).map(str).join('\n'),
-      })));
-      rows.push(...fields(o.initialSelection ?? record(o.selectionResult).value, {reason:'原组候选取舍依据'}));
-      rows = rows.map(row => ({...row, content:readable(row.content)}));
+      const decision = o.status
+        ? o
+        : record(record(o.secondSelectionResult ?? o.selectionResult).value);
+      const readable = (text: string) =>
+        ideas.reduce((result, idea) => result.replaceAll(str(idea.id), str(idea.name)), text);
+      rows = fields(development.readiness, { reason: '资料充分性判断', missing: '需要补充的依据' });
+      rows.push(
+        ...ideas.map((idea) => ({
+          title: `候选故事 · ${str(idea.name)}`,
+          content: [
+            `创作手法：${list(idea.devices).map(str).join('、')}`,
+            ...fields(idea, DRAMA_DEVELOPMENT_FIELDS).map((r) => `${r.title}：${r.content}`),
+            ...fields(idea.plan, SCRIPT_PLAN_FIELDS.DRAMA).map((r) => `${r.title}：${r.content}`),
+            `产品依据：${factText(idea.factIds)}`,
+          ].join('\n'),
+        })),
+      );
+      rows.push(...fields(decision, { reason: '独立择优结论', missing: '需要补充的依据' }));
+      rows.push(
+        ...list(decision.evaluations)
+          .map(record)
+          .map((e) => ({
+            title: `${str(ideas.find((i) => i.id === e.ideaId)?.name)} · ${e.verdict === 'ADVANCE' ? '适合展开' : '本次不采用'}`,
+            content: readable(str(e.reason)),
+          })),
+      );
+      rows.push(
+        ...list(decision.choices)
+          .map(record)
+          .map((c) => ({
+            title: `${str(ideas.find((i) => i.id === c.ideaId)?.name)} · 正文需要兑现`,
+            content: list(c.mustPreserve).map(str).join('\n'),
+          })),
+      );
+      rows.push(
+        ...fields(o.initialSelection ?? record(o.selectionResult).value, {
+          reason: '原组候选取舍依据',
+        }),
+      );
+      rows = rows.map((row) => ({ ...row, content: readable(row.content) }));
     }
     if (nodeId === 'ECOMMERCE_CONCEPT' && isCommerceStrategy(input.strategyVersions?.concept)) {
-      const source = record(o.redevelopment ?? steps.find(v => v.nodeId === 'ECOMMERCE_MOTIVATION')?.output);
+      const source = record(
+        o.redevelopment ?? steps.find((v) => v.nodeId === 'ECOMMERCE_MOTIVATION')?.output,
+      );
       const opportunities = list(source.opportunities).map(record);
       const decision = o.status ? o : record(record(o.secondSelection ?? o.selection).value);
       rows = fields(decision, { reason: '独立择优结论', missing: '需要补充的依据' });
-      rows.push(...list(decision.choices).map(record).map(c => {
-        const opportunity = record(opportunities.find(v => v.id === c.opportunityId));
-        return { title: `${str(opportunity.name)} · 需要兑现的演示`, content: [
-          ...fields(opportunity, { audienceSituation: '适用处境', buyingReason: '购买理由', purchaseQuestion: '购买疑问', creativeIdea: '具体创意' }).map(r => `${r.title}：${r.content}`),
-          ...fields(opportunity.approach, PRESENTER_APPROACH_FIELDS).map(r => `${r.title}：${r.content}`),
-          ...fields(opportunity.demonstration, { setup: '演示起点', action: '实际过程', observableResult: '可观察结果', claimBoundary: '表达边界' }).map(r => `${r.title}：${r.content}`),
-          ...list(c.mustPreserve).map(str), `产品依据：${factText(opportunity.factIds)}`,
-        ].join('\n') };
-      }));
-      rows.push(...list(decision.evaluations).map(record).map(e => ({
-        title: `${str(opportunities.find(v => v.id === e.opportunityId)?.name)} · ${e.verdict === 'ADVANCE' ? '适合展开' : '本次不采用'}`,
-        content: str(e.reason),
-      })));
+      rows.push(
+        ...list(decision.choices)
+          .map(record)
+          .map((c) => {
+            const opportunity = record(opportunities.find((v) => v.id === c.opportunityId));
+            return {
+              title: `${str(opportunity.name)} · 需要兑现的演示`,
+              content: [
+                ...fields(opportunity, {
+                  audienceSituation: '适用处境',
+                  buyingReason: '购买理由',
+                  purchaseQuestion: '购买疑问',
+                  creativeIdea: '具体创意',
+                }).map((r) => `${r.title}：${r.content}`),
+                ...fields(opportunity.approach, PRESENTER_APPROACH_FIELDS).map(
+                  (r) => `${r.title}：${r.content}`,
+                ),
+                ...fields(opportunity.demonstration, {
+                  setup: '演示起点',
+                  action: '实际过程',
+                  observableResult: '可观察结果',
+                  claimBoundary: '表达边界',
+                }).map((r) => `${r.title}：${r.content}`),
+                ...list(c.mustPreserve).map(str),
+                `产品依据：${factText(opportunity.factIds)}`,
+              ].join('\n'),
+            };
+          }),
+      );
+      rows.push(
+        ...list(decision.evaluations)
+          .map(record)
+          .map((e) => ({
+            title: `${str(opportunities.find((v) => v.id === e.opportunityId)?.name)} · ${e.verdict === 'ADVANCE' ? '适合展开' : '本次不采用'}`,
+            content: str(e.reason),
+          })),
+      );
       if (o.redevelopment) {
         rows.push(...fields(record(o.initialSelection), { reason: '原组候选未采用的原因' }));
-        rows.push(...opportunities.map(v => ({ title: `替代方案 · ${str(v.name)}`, content: `${str(v.buyingReason)}\n${str(record(v.demonstration).observableResult)}` })));
+        rows.push(
+          ...opportunities.map((v) => ({
+            title: `替代方案 · ${str(v.name)}`,
+            content: `${str(v.buyingReason)}\n${str(record(v.demonstration).observableResult)}`,
+          })),
+        );
       }
     }
-    if (nodeId === 'BRAND_AD_CONCEPT' && ['2026-10-14.1','2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(input.strategyVersions?.concept ?? '')) {
+    if (
+      nodeId === 'BRAND_AD_CONCEPT' &&
+      [
+        '2026-10-14.1',
+        '2026-10-14.2',
+        '2026-10-14.3',
+        '2026-10-14.4',
+        '2026-10-14.5',
+        '2026-10-14.6',
+        '2026-10-14.7',
+      ].includes(input.strategyVersions?.concept ?? '')
+    ) {
       const decision = o.status ? o : record(o.secondSelection ?? o.selection);
-      const development = record(o.redevelopment ?? steps.find(v => v.nodeId === 'BRAND_AD_IDEAS')?.output);
+      const development = record(
+        o.redevelopment ?? steps.find((v) => v.nodeId === 'BRAND_AD_IDEAS')?.output,
+      );
       const ideas = list(development.ideas).map(record);
       rows.push(...fields(decision, { reason: '独立择优结论', missing: '需补充依据' }));
-      rows.push(...list(decision.evaluations).map(record).map(e => ({
-        title: `${str(ideas.find(i => i.id === e.ideaId)?.name)} · ${e.verdict === 'ADVANCE' ? '适合展开' : '本次不采用'}`,
-        content: `${str(e.reason)}\n观看吸引力 ${str(e.attraction)}/5 · 产品关联 ${str(e.productConnection)}/5 · 表达清晰度 ${str(e.clarity)}/5 · 方案区别 ${str(e.distinctiveness)}/5`,
-      })));
-      rows.push(...list(decision.commitments).map(record).map(c => ({
-        title: `${str(list(decision.concepts).map(record).find(v => v.scriptId === c.scriptId)?.name)} · 创意保留清单`,
-        content: `${BRAND_EXPRESSION_LABELS[str(c.approach)] ?? ''}\n${list(c.mustPreserve).map(str).join('\n')}\n必要产品依据：${factText(c.essentialFactIds)}`,
-      })));
+      rows.push(
+        ...list(decision.evaluations)
+          .map(record)
+          .map((e) => ({
+            title: `${str(ideas.find((i) => i.id === e.ideaId)?.name)} · ${e.verdict === 'ADVANCE' ? '适合展开' : '本次不采用'}`,
+            content: `${str(e.reason)}\n观看吸引力 ${str(e.attraction)}/5 · 产品关联 ${str(e.productConnection)}/5 · 表达清晰度 ${str(e.clarity)}/5 · 方案区别 ${str(e.distinctiveness)}/5`,
+          })),
+      );
+      rows.push(
+        ...list(decision.commitments)
+          .map(record)
+          .map((c) => ({
+            title: `${str(
+              list(decision.concepts)
+                .map(record)
+                .find((v) => v.scriptId === c.scriptId)?.name,
+            )} · 创意保留清单`,
+            content: `${BRAND_EXPRESSION_LABELS[str(c.approach)] ?? ''}\n${list(c.mustPreserve).map(str).join('\n')}\n必要产品依据：${factText(c.essentialFactIds)}`,
+          })),
+      );
       if (o.redevelopment) {
-        rows.push(...fields(record(o.initialSelection), {reason:'原组候选未采用的原因'}));
-        rows.push(...fields(development.proposition, {message:'替代传播命题', audienceObservation:'替代受众观察'}));
+        rows.push(...fields(record(o.initialSelection), { reason: '原组候选未采用的原因' }));
+        rows.push(
+          ...fields(development.proposition, {
+            message: '替代传播命题',
+            audienceObservation: '替代受众观察',
+          }),
+        );
       }
-      if (o.redevelopment) rows.push(...list(development.ideas).map(record).map(i => ({ title: `替代短创意 · ${str(i.name)}`, content: `${str(i.viewingHook)}\n${str(i.mechanism)}\n${list(i.keyImages).map(str).join('\n')}` })));
+      if (o.redevelopment)
+        rows.push(
+          ...list(development.ideas)
+            .map(record)
+            .map((i) => ({
+              title: `替代短创意 · ${str(i.name)}`,
+              content: `${str(i.viewingHook)}\n${str(i.mechanism)}\n${list(i.keyImages).map(str).join('\n')}`,
+            })),
+        );
     }
     if (nodeId === 'PREPARE' && s.output)
       rows = [
@@ -452,17 +600,30 @@ ${str(mapping.evidence)}`,
       steps.find((v) => v.nodeId === 'ASSETS' && v.scriptId === s.scriptId)?.output,
       steps.find((v) => scriptStageRole(v.nodeId) === 'STORY' && v.scriptId === s.scriptId)?.output,
     ];
-    const candidateIds = list(record(steps.find(v => v.nodeId === 'BRAND_AD_IDEAS')?.output).ideas).map(record);
+    const candidateIds = list(
+      record(steps.find((v) => v.nodeId === 'BRAND_AD_IDEAS')?.output).ideas,
+    ).map(record);
     const readableBrandText = (text: string) => {
       let result = text.replace(/CREATIVE_HYPOTHESIS[：:]?\s*/g, '创作假设：');
       for (const [index, idea] of candidateIds.entries()) {
         const id = str(idea.id);
         if (id) result = result.split(id).join(`候选创意 ${index + 1}`);
       }
-      const development = record(record(conceptStep?.output).redevelopment ?? steps.find(v => v.nodeId === 'ECOMMERCE_MOTIVATION')?.output);
+      const development = record(
+        record(conceptStep?.output).redevelopment ??
+          steps.find((v) => v.nodeId === 'ECOMMERCE_MOTIVATION')?.output,
+      );
       for (const opportunity of list(development.opportunities).map(record)) {
-        const id = str(opportunity.id), name = str(opportunity.name);
-        if (id && name) result = result.replace(new RegExp(`(?<![A-Za-z0-9_-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`, 'g'), () => `“${name}”`);
+        const id = str(opportunity.id),
+          name = str(opportunity.name);
+        if (id && name)
+          result = result.replace(
+            new RegExp(
+              `(?<![A-Za-z0-9_-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`,
+              'g',
+            ),
+            () => `“${name}”`,
+          );
       }
       return result;
     };

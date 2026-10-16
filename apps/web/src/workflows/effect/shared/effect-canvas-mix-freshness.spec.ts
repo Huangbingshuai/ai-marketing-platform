@@ -96,13 +96,24 @@ afterEach(() => {
 describe('mix canvas and template directory agree', () => {
   it('does not publish copied artifact warnings while the first current-path source read is still pending', async () => {
     let resolveSources!: (value: unknown) => void;
-    mocks.sources.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveSources = resolve;
-    }));
-    mocks.artifacts.mockResolvedValue({ data: { items: [{
-      id: 'copied-timeline', nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:t:old',
-      freshness: 'STALE',
-    }] } });
+    mocks.sources.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSources = resolve;
+        }),
+    );
+    mocks.artifacts.mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: 'copied-timeline',
+            nodeId: 'TEMPLATE_MIX',
+            artifactKey: 'timeline-project:t:old',
+            freshness: 'STALE',
+          },
+        ],
+      },
+    });
     const { app, state } = mount();
     await vi.advanceTimersByTimeAsync(0);
     expect(state.staleCounts.value[4]).toBe(0);
@@ -229,7 +240,9 @@ describe('mix canvas and template directory agree', () => {
     const { app, state } = mount();
     await vi.advanceTimersByTimeAsync(0);
     state.acceptMix({ projectId: 'p', workflowRunId: 'w', pendingProjectCount: 2 });
-    mocks.sources.mockResolvedValue({ data: { materials: [], draftRevision: 1, pendingProjectCount: 0 } });
+    mocks.sources.mockResolvedValue({
+      data: { materials: [], draftRevision: 1, pendingProjectCount: 0 },
+    });
     await vi.advanceTimersByTimeAsync(12000);
     expect(state.staleCounts.value[4]).toBe(2);
     app.unmount();

@@ -1,11 +1,20 @@
-import { COMMERCE_CREATION_VERSION, isCommerceStrategy, isPresenterStrategy } from './customized-commerce-creation';
+import {
+  COMMERCE_CREATION_VERSION,
+  isCommerceStrategy,
+  isPresenterStrategy,
+} from './customized-commerce-creation';
 import { DRAMA_CREATION_VERSION, isDramaStrategy } from './customized-drama-creation';
 import type { CustomizedVideoType } from './customized-storyboard';
 import type { StoryboardInput, StoryboardStory } from './customized-storyboard-generation';
 
 export const TYPED_CREATION_VERSION = 'TYPED_CREATION_V1' as const;
 export const SCRIPT_ROUTE_VERSION = '2026-10-14.7';
-export const scriptStrategyVersion = (route: CustomizedVideoType) => route === 'ECOMMERCE' ? COMMERCE_CREATION_VERSION : route === 'DRAMA' ? DRAMA_CREATION_VERSION : SCRIPT_ROUTE_VERSION;
+export const scriptStrategyVersion = (route: CustomizedVideoType) =>
+  route === 'ECOMMERCE'
+    ? COMMERCE_CREATION_VERSION
+    : route === 'DRAMA'
+      ? DRAMA_CREATION_VERSION
+      : SCRIPT_ROUTE_VERSION;
 export const SCRIPT_QUALITY_CRITERIA = {
   ECOMMERCE: ['BUYING_REASON', 'VALUE_DEMONSTRATION', 'INFORMATION_CAPACITY'],
   LOCAL_STORE: ['VENUE_EVIDENCE', 'VISIT_EXPERIENCE', 'TRUSTWORTHY_DETAIL'],
@@ -27,7 +36,13 @@ export const SCRIPT_ROUTE_LABELS = {
   DRAMA: '剧情',
 } as const;
 export type TypedScriptStage =
-  'PREPARE' | 'ROUTE' | 'RECHECK' | 'ECOMMERCE_MOTIVATION' | 'BRAND_AD_PROPOSITION' | 'BRAND_AD_IDEAS' | `${CustomizedVideoType}_${'CONCEPT' | 'STORY' | 'REVIEW'}`;
+  | 'PREPARE'
+  | 'ROUTE'
+  | 'RECHECK'
+  | 'ECOMMERCE_MOTIVATION'
+  | 'BRAND_AD_PROPOSITION'
+  | 'BRAND_AD_IDEAS'
+  | `${CustomizedVideoType}_${'CONCEPT' | 'STORY' | 'REVIEW'}`;
 export type ScriptStructureMapping = { requirementId: string; beatIds: string[]; evidence: string };
 export const SCRIPT_PLAN_FIELDS = {
   ECOMMERCE: {
@@ -88,16 +103,90 @@ export const typedScriptStages = (route: CustomizedVideoType, version?: string) 
       weight: 5,
     },
     { id: 'ROUTE', label: '视频类型路由', description: '按本次选择进入专属创作线路', weight: 0 },
-    ...(route === 'ECOMMERCE' && isCommerceStrategy(version) ? [{ id: 'ECOMMERCE_MOTIVATION' as const, label: isPresenterStrategy(version) ? '口播推荐策略与创意' : '购买动机与演示策划', description: isPresenterStrategy(version) ? '设计讲述者、推荐逻辑、具体创意和演示分工' : '围绕具体购买问题设计有依据的价值演示', weight: 7 }] : []),
-    ...(route === 'BRAND_AD' && ['2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(version ?? '') ? [
-      { id: 'BRAND_AD_PROPOSITION' as const, label: '品牌传播命题', description: '从简报明确主要表达、受众观察与事实边界', weight: 4 },
-      { id: 'BRAND_AD_IDEAS' as const, label: '品牌短创意开发', description: '比较不同观看机制的短创意', weight: 5 },
-    ] : []),
+    ...(route === 'ECOMMERCE' && isCommerceStrategy(version)
+      ? [
+          {
+            id: 'ECOMMERCE_MOTIVATION' as const,
+            label: isPresenterStrategy(version) ? '口播推荐策略与创意' : '购买动机与演示策划',
+            description: isPresenterStrategy(version)
+              ? '设计讲述者、推荐逻辑、具体创意和演示分工'
+              : '围绕具体购买问题设计有依据的价值演示',
+            weight: 7,
+          },
+        ]
+      : []),
+    ...(route === 'BRAND_AD' &&
+    [
+      '2026-10-14.1',
+      '2026-10-14.2',
+      '2026-10-14.3',
+      '2026-10-14.4',
+      '2026-10-14.5',
+      '2026-10-14.6',
+      '2026-10-14.7',
+    ].includes(version ?? '')
+      ? [
+          {
+            id: 'BRAND_AD_PROPOSITION' as const,
+            label: '品牌传播命题',
+            description: '从简报明确主要表达、受众观察与事实边界',
+            weight: 4,
+          },
+          {
+            id: 'BRAND_AD_IDEAS' as const,
+            label: '品牌短创意开发',
+            description: '比较不同观看机制的短创意',
+            weight: 5,
+          },
+        ]
+      : []),
     {
       id: `${route}_CONCEPT`,
-      label: route === 'DRAMA' && isDramaStrategy(version) ? '剧情开发与独立择优' : route === 'ECOMMERCE' && isCommerceStrategy(version) ? (isPresenterStrategy(version) ? '口播创意独立择优' : '带货方案独立择优') : route === 'BRAND_AD' && ['2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(version ?? '') ? '品牌创意独立择优' : `${SCRIPT_ROUTE_LABELS[route]}方案构思`,
-      description: route === 'BRAND_AD' && ['2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(version ?? '') ? '独立比较候选，确定方案与创意保留清单' : '判断资料依据并规划差异化方案',
-      weight: route === 'BRAND_AD' && ['2026-10-14.1', '2026-10-14.2', '2026-10-14.3', '2026-10-14.4', '2026-10-14.5', '2026-10-14.6', '2026-10-14.7'].includes(version ?? '') ? 6 : 15,
+      label:
+        route === 'DRAMA' && isDramaStrategy(version)
+          ? '剧情开发与独立择优'
+          : route === 'ECOMMERCE' && isCommerceStrategy(version)
+            ? isPresenterStrategy(version)
+              ? '口播创意独立择优'
+              : '带货方案独立择优'
+            : route === 'BRAND_AD' &&
+                [
+                  '2026-10-14.1',
+                  '2026-10-14.2',
+                  '2026-10-14.3',
+                  '2026-10-14.4',
+                  '2026-10-14.5',
+                  '2026-10-14.6',
+                  '2026-10-14.7',
+                ].includes(version ?? '')
+              ? '品牌创意独立择优'
+              : `${SCRIPT_ROUTE_LABELS[route]}方案构思`,
+      description:
+        route === 'BRAND_AD' &&
+        [
+          '2026-10-14.1',
+          '2026-10-14.2',
+          '2026-10-14.3',
+          '2026-10-14.4',
+          '2026-10-14.5',
+          '2026-10-14.6',
+          '2026-10-14.7',
+        ].includes(version ?? '')
+          ? '独立比较候选，确定方案与创意保留清单'
+          : '判断资料依据并规划差异化方案',
+      weight:
+        route === 'BRAND_AD' &&
+        [
+          '2026-10-14.1',
+          '2026-10-14.2',
+          '2026-10-14.3',
+          '2026-10-14.4',
+          '2026-10-14.5',
+          '2026-10-14.6',
+          '2026-10-14.7',
+        ].includes(version ?? '')
+          ? 6
+          : 15,
     },
     {
       id: `${route}_STORY`,
@@ -116,7 +205,19 @@ export const typedScriptStages = (route: CustomizedVideoType, version?: string) 
     { id: 'SAVE', label: '保存脚本分支', description: '通过校验后保存当前完整脚本', weight: 2 },
   ] as const;
 export function isSharedScriptStage(node: string): boolean {
-  return ['SNAPSHOT', 'PREPARE', 'ROUTE', 'CONCEPT', 'BRAND_AD_PROPOSITION', 'BRAND_AD_IDEAS', 'ECOMMERCE_MOTIVATION'].includes(node) || node.endsWith('_CONCEPT') || node.endsWith('_MOTIVATION');
+  return (
+    [
+      'SNAPSHOT',
+      'PREPARE',
+      'ROUTE',
+      'CONCEPT',
+      'BRAND_AD_PROPOSITION',
+      'BRAND_AD_IDEAS',
+      'ECOMMERCE_MOTIVATION',
+    ].includes(node) ||
+    node.endsWith('_CONCEPT') ||
+    node.endsWith('_MOTIVATION')
+  );
 }
 export function scriptStageRole(node: string): string {
   return /_(CONCEPT|STORY|REVIEW)$/.exec(node)?.[1] ?? node;

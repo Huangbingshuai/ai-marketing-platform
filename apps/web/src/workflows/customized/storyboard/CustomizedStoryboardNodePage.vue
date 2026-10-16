@@ -285,10 +285,11 @@ defineExpose({ guardEditor });
       title="本次创作未完成"
       :message="task.errorMessage"
     />
-    <div v-if="task && ['FAILED', 'PARTIAL', 'CANCELLED'].includes(task.status)" class="toolbar-actions task-actions">
-      <button type="button" @click="emit('retry')">
-        恢复未完成方案
-      </button>
+    <div
+      v-if="task && ['FAILED', 'PARTIAL', 'CANCELLED'].includes(task.status)"
+      class="toolbar-actions task-actions"
+    >
+      <button type="button" @click="emit('retry')">恢复未完成方案</button>
     </div>
     <WorkflowInformationCard class="creation-settings"
       ><div class="settings-head">

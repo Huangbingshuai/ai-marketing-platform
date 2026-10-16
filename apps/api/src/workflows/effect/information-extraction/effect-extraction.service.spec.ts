@@ -76,7 +76,9 @@ describe('EffectExtractionService', () => {
 
     await expect(
       service.start('project-a', 'product-a', {
-        draftId: 'draft-a', expectedRevision: 1, idempotencyKey: 'request-a',
+        draftId: 'draft-a',
+        expectedRevision: 1,
+        idempotencyKey: 'request-a',
       }),
     ).rejects.toBe(denied);
     expect(repository.startRun).not.toHaveBeenCalled();

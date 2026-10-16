@@ -18,7 +18,10 @@ import {
   type WorkingArtifactUpsertInput,
 } from './workflow-working.repository';
 import { visualHash } from '../../workflows/effect/template-mix/effect-packaging.domain';
-import { confirmedEffectPromptEditSource, confirmedEffectRenderSourceRun } from './effect-render-source-context';
+import {
+  confirmedEffectPromptEditSource,
+  confirmedEffectRenderSourceRun,
+} from './effect-render-source-context';
 
 type Tx = Prisma.TransactionClient;
 type IdMap = Record<string, string>;
@@ -63,8 +66,9 @@ export const effectEditArtifactStages = (
   const index = stageOrder.indexOf(nodeId);
   // A fresh fill owns new pictures. A fresh package instead retains confirmed pictures/audio
   // until each replacement commits, including films whose new package ultimately fails.
-  const keepCurrent = index < 4 && effectEditStageCopyPolicy(nodeId, purpose).copyCurrentStageArtifacts ||
-    nodeId === 'TEMPLATE_MIX' && preservePackagingBaseline;
+  const keepCurrent =
+    (index < 4 && effectEditStageCopyPolicy(nodeId, purpose).copyCurrentStageArtifacts) ||
+    (nodeId === 'TEMPLATE_MIX' && preservePackagingBaseline);
   return stageOrder.slice(0, index + (keepCurrent ? 1 : 0));
 };
 const json = (value: unknown): Prisma.InputJsonValue =>
@@ -79,21 +83,30 @@ export async function insertEffectRenderBranchTasks(
   artifactReplacements: IdMap,
 ): Promise<void> {
   if (!rows.length) return;
-  await tx.effectSegmentRenderTask.createMany({ data: rows.map((row) => ({
-    ...row,
-    requestSnapshot: json(remap(row.requestSnapshot, artifactReplacements)),
-    generationRequestSnapshot: json(remap(row.generationRequestSnapshot, artifactReplacements)),
-  })) });
+  await tx.effectSegmentRenderTask.createMany({
+    data: rows.map((row) => ({
+      ...row,
+      requestSnapshot: json(remap(row.requestSnapshot, artifactReplacements)),
+      generationRequestSnapshot: json(remap(row.generationRequestSnapshot, artifactReplacements)),
+    })),
+  });
 }
 
 export const effectEditNodeStateWhere = (
-  projectId: string, parentRunId: string, stage: EffectWorkflowEditableNodeId, sourceRunId: string,
+  projectId: string,
+  parentRunId: string,
+  stage: EffectWorkflowEditableNodeId,
+  sourceRunId: string,
 ): Prisma.WorkflowNodeStateWhereInput => ({
   projectId,
   OR: [
-    { workflowRunId: sourceRunId, OR: [{ nodeId: stage }, { nodeId: { startsWith: `${stage}:` } }] },
-    ...(stage === 'SEGMENT_RENDER' ? [{ workflowRunId: parentRunId,
-      nodeId: { startsWith: 'SEGMENT_RENDER_SETTINGS:' } }] : []),
+    {
+      workflowRunId: sourceRunId,
+      OR: [{ nodeId: stage }, { nodeId: { startsWith: `${stage}:` } }],
+    },
+    ...(stage === 'SEGMENT_RENDER'
+      ? [{ workflowRunId: parentRunId, nodeId: { startsWith: 'SEGMENT_RENDER_SETTINGS:' } }]
+      : []),
   ],
 });
 const stageDigest = async (
@@ -176,9 +189,11 @@ export async function beginEffectEditInTransaction(
     await tx.$queryRaw`SELECT "id" FROM "workflow_node_states"
       WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${parent.id}::uuid
         AND "nodeId"=${nodeId} FOR UPDATE`;
-    const state = await tx.workflowNodeState.findUnique({ where: {
-      projectId_workflowRunId_nodeId: { projectId, workflowRunId: parent.id, nodeId },
-    } });
+    const state = await tx.workflowNodeState.findUnique({
+      where: {
+        projectId_workflowRunId_nodeId: { projectId, workflowRunId: parent.id, nodeId },
+      },
+    });
     if (!state || state.revision !== options.expectedNodeStateRevision)
       throw new ConflictException('包装前原工程已改变，请刷新后重试');
   }
@@ -186,9 +201,13 @@ export async function beginEffectEditInTransaction(
     where: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE' },
   });
   // A replay must respect the same frozen global pointer as a newly cloned package.
-  if (nodeId === 'TEMPLATE_MIX' && options.preservePackagingBaseline &&
-      options.templateScopeActiveRunId &&
-      (active?.id !== options.templateScopeActiveRunId || active.editSessionNodeId)) return null;
+  if (
+    nodeId === 'TEMPLATE_MIX' &&
+    options.preservePackagingBaseline &&
+    options.templateScopeActiveRunId &&
+    (active?.id !== options.templateScopeActiveRunId || active.editSessionNodeId)
+  )
+    return null;
   if (options.creationKey) {
     const existing = await tx.workflowRun.findFirst({
       where: {
@@ -227,21 +246,25 @@ export async function beginEffectEditInTransaction(
   }) => run.editSessionNodeId === nodeId && run.editSessionPurpose === purpose;
   // A frozen render draft can host a nested Prompt manual edit. Saving/cancelling that
   // child returns to the still-running render draft; its tasks are never cloned or cancelled.
-  const nestedPromptEdit = nodeId === 'PROMPT_GENERATION' && purpose === 'MANUAL' &&
-    !options.always && parent.editSessionNodeId === 'SEGMENT_RENDER' &&
-    parent.editSessionPurpose === 'MANUAL' && active?.id === parent.id &&
+  const nestedPromptEdit =
+    nodeId === 'PROMPT_GENERATION' &&
+    purpose === 'MANUAL' &&
+    !options.always &&
+    parent.editSessionNodeId === 'SEGMENT_RENDER' &&
+    parent.editSessionPurpose === 'MANUAL' &&
+    active?.id === parent.id &&
     (parent.editIdMap as { frozenPromptRefresh?: boolean } | null)?.frozenPromptRefresh === true;
   if (parent.parentWorkflowRunId && !parent.branchPublishedAt) {
     if (!isOwnSession(parent) && !isOwnAutoBranch(parent) && !nestedPromptEdit) return null;
     if (!nestedPromptEdit) {
-    const map = (parent.editIdMap ?? {}) as { productIdMap?: IdMap; taskIdMap?: IdMap };
-    return {
-      runId: parent.id,
-      parentWorkflowRunId: parent.parentWorkflowRunId,
-      productIdMap: map.productIdMap ?? {},
-      taskIdMap: map.taskIdMap ?? {},
-      created: false,
-    };
+      const map = (parent.editIdMap ?? {}) as { productIdMap?: IdMap; taskIdMap?: IdMap };
+      return {
+        runId: parent.id,
+        parentWorkflowRunId: parent.parentWorkflowRunId,
+        productIdMap: map.productIdMap ?? {},
+        taskIdMap: map.taskIdMap ?? {},
+        created: false,
+      };
     }
   }
   if (
@@ -258,27 +281,58 @@ export async function beginEffectEditInTransaction(
       created: false,
     };
   }
-  const templateScopedOutput = nodeId === 'FINAL_OUTPUT' && options.always &&
-    options.templateId && Boolean(options.templateScopeActiveRunId) &&
+  const templateScopedOutput =
+    nodeId === 'FINAL_OUTPUT' &&
+    options.always &&
+    options.templateId &&
+    Boolean(options.templateScopeActiveRunId) &&
     options.templateScopeActiveRunId === active?.id;
-  const templateScopedPackaging = nodeId === 'TEMPLATE_MIX' && options.always &&
-    options.keepParentActive && options.preservePackagingBaseline && options.templateId &&
-    Boolean(options.templateScopeActiveRunId) && options.templateScopeActiveRunId === active?.id &&
+  const templateScopedPackaging =
+    nodeId === 'TEMPLATE_MIX' &&
+    options.always &&
+    options.keepParentActive &&
+    options.preservePackagingBaseline &&
+    options.templateId &&
+    Boolean(options.templateScopeActiveRunId) &&
+    options.templateScopeActiveRunId === active?.id &&
     !active?.editSessionNodeId;
   if (active?.id !== parent.id && !templateScopedOutput && !templateScopedPackaging) return null;
   // The parent stays active during an independent full export. The project lock serializes
   // repeated clicks, so reuse only its unfinished output child, never a published version.
-  if (nodeId === 'FINAL_OUTPUT' && options.always && options.keepParentActive && options.templateId) {
-    const pending = await tx.workflowRun.findFirst({ where: {
-      projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
-      parentWorkflowRunId: parent.id, forkNodeId: 'FINAL_OUTPUT',
-      forkTemplateId: options.templateId, branchPublishedAt: null,
-      editSessionNodeId: null,
-      effectFinalOutputRuns: { some: { projectId, templateId: options.templateId,
-        status: { in: ['PENDING_RENDER', 'QUEUED', 'RUNNING'] } } },
-    }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
-    if (pending) return { runId: pending.id, parentWorkflowRunId: parent.id,
-      productIdMap: {}, taskIdMap: {}, created: false };
+  if (
+    nodeId === 'FINAL_OUTPUT' &&
+    options.always &&
+    options.keepParentActive &&
+    options.templateId
+  ) {
+    const pending = await tx.workflowRun.findFirst({
+      where: {
+        projectId,
+        workflow: 'EFFECT',
+        workflowSpace: 'EFFECT',
+        parentWorkflowRunId: parent.id,
+        forkNodeId: 'FINAL_OUTPUT',
+        forkTemplateId: options.templateId,
+        branchPublishedAt: null,
+        editSessionNodeId: null,
+        effectFinalOutputRuns: {
+          some: {
+            projectId,
+            templateId: options.templateId,
+            status: { in: ['PENDING_RENDER', 'QUEUED', 'RUNNING'] },
+          },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    if (pending)
+      return {
+        runId: pending.id,
+        parentWorkflowRunId: parent.id,
+        productIdMap: {},
+        taskIdMap: {},
+        created: false,
+      };
   }
   const stageIndex = stageOrder.indexOf(nodeId);
   const copyPolicy = effectEditStageCopyPolicy(nodeId, purpose);
@@ -317,8 +371,12 @@ export async function beginEffectEditInTransaction(
     }
   }
   const viewingPromptRunId = stageSources.get('PROMPT_GENERATION') ?? parent.id;
-  let promptEditBaseline: { source: { artifactId: string; revision: number; contentHash: string };
-    target: { artifactId: string; revision: number; contentHash: string } } | undefined;
+  let promptEditBaseline:
+    | {
+        source: { artifactId: string; revision: number; contentHash: string };
+        target: { artifactId: string; revision: number; contentHash: string };
+      }
+    | undefined;
   let selectedPromptResultId: string | null = null;
   if (nodeId === 'SEGMENT_RENDER' && copyPolicy.adoptConfirmedRenderSource) {
     const sourceRunId = await confirmedEffectRenderSourceRun(tx, projectId, parent.id);
@@ -329,13 +387,24 @@ export async function beginEffectEditInTransaction(
       // A genuinely newer upstream revision must remain selected so its real change is visible.
       for (const stage of stageOrder.slice(0, 3)) {
         const currentRunId = stageSources.get(stage) ?? parent.id;
-        const rows = await tx.workingArtifact.findMany({ where: { projectId, nodeId: stage,
-          workflowRunId: { in: [currentRunId, sourceRunId] }, availability: 'AVAILABLE',
-          ...artifactKeyWhere(stage) }, select: { workflowRunId: true, revision: true } });
+        const rows = await tx.workingArtifact.findMany({
+          where: {
+            projectId,
+            nodeId: stage,
+            workflowRunId: { in: [currentRunId, sourceRunId] },
+            availability: 'AVAILABLE',
+            ...artifactKeyWhere(stage),
+          },
+          select: { workflowRunId: true, revision: true },
+        });
         const fromSource = rows.filter((row) => row.workflowRunId === sourceRunId);
         const current = rows.filter((row) => row.workflowRunId === currentRunId);
-        if (fromSource.length && Math.max(0, ...current.map((row) => row.revision)) <=
-          Math.max(...fromSource.map((row) => row.revision))) stageSources.set(stage, sourceRunId);
+        if (
+          fromSource.length &&
+          Math.max(0, ...current.map((row) => row.revision)) <=
+            Math.max(...fromSource.map((row) => row.revision))
+        )
+          stageSources.set(stage, sourceRunId);
       }
     }
   }
@@ -343,10 +412,14 @@ export async function beginEffectEditInTransaction(
     // A merge may publish the newer pool into the parent while its adopted Prompt still
     // lives in a mix descendant. Use the same explicit source as reads/confirmation,
     // not the numeric revision of a reminted snapshot or the render owner's local copy.
-    const prompts = await tx.workingArtifact.findMany({ where: {
-      projectId, workflowRunId: viewingPromptRunId, nodeId: 'PROMPT_GENERATION',
-      artifactKey: { startsWith: 'prompt-batch:' },
-    } });
+    const prompts = await tx.workingArtifact.findMany({
+      where: {
+        projectId,
+        workflowRunId: viewingPromptRunId,
+        nodeId: 'PROMPT_GENERATION',
+        artifactKey: { startsWith: 'prompt-batch:' },
+      },
+    });
     // Current UI has one product. Legacy multi-product copies retain their original rule
     // rather than guessing a product by a label, count or an unrelated source's revision.
     if (prompts.length === 1) {
@@ -354,27 +427,41 @@ export async function beginEffectEditInTransaction(
       const selected = await confirmedEffectPromptEditSource(tx, projectId, parent.id, viewing);
       stageSources.set('PROMPT_GENERATION', selected.workflowRunId);
       if (nodeId === 'PROMPT_GENERATION' && purpose === 'MANUAL') {
-        const identity = (artifact: typeof viewing) => ({ artifactId: artifact.id,
-          revision: artifact.revision, contentHash: artifact.contentHash });
+        const identity = (artifact: typeof viewing) => ({
+          artifactId: artifact.id,
+          revision: artifact.revision,
+          contentHash: artifact.contentHash,
+        });
         promptEditBaseline = { source: identity(selected), target: identity(viewing) };
         selectedPromptResultId = selected.sourceArtifactId;
         // Copy exact upstream dependencies too: product/insight IDs are reminted per Run.
         // Mixing the adopted Prompt with the navigation snapshot would freeze broken input IDs.
         let dependent = selected;
         for (const stage of ['INFORMATION_EXTRACTION', 'SOURCE_IMPORT'] as const) {
-          const dependencies = await tx.workingArtifactDependency.findMany({ where: {
-            projectId, dependentArtifactId: dependent.id, sourceType: 'WORKING_ARTIFACT',
-            sourceNodeId: stage,
-          } });
-          if (dependencies.length > 1) throw new ConflictException('Prompt 上游来源不明确，请刷新后重试');
+          const dependencies = await tx.workingArtifactDependency.findMany({
+            where: {
+              projectId,
+              dependentArtifactId: dependent.id,
+              sourceType: 'WORKING_ARTIFACT',
+              sourceNodeId: stage,
+            },
+          });
+          if (dependencies.length > 1)
+            throw new ConflictException('Prompt 上游来源不明确，请刷新后重试');
           if (!dependencies.length) continue;
           const dependency = dependencies[0]!;
-          const upstream = await tx.workingArtifact.findFirst({ where: {
-            projectId, id: dependency.sourceArtifactId ?? '', nodeId: stage,
-            ...(dependency.sourceRevision !== null ? { revision: dependency.sourceRevision } : {}),
-            ...(dependency.sourceHash !== null ? { contentHash: dependency.sourceHash } : {}),
-            availability: 'AVAILABLE',
-          } });
+          const upstream = await tx.workingArtifact.findFirst({
+            where: {
+              projectId,
+              id: dependency.sourceArtifactId ?? '',
+              nodeId: stage,
+              ...(dependency.sourceRevision !== null
+                ? { revision: dependency.sourceRevision }
+                : {}),
+              ...(dependency.sourceHash !== null ? { contentHash: dependency.sourceHash } : {}),
+              availability: 'AVAILABLE',
+            },
+          });
           if (!upstream) throw new ConflictException('Prompt 上游已改变，请刷新后重试');
           stageSources.set(stage, upstream.workflowRunId);
           dependent = upstream;
@@ -694,7 +781,10 @@ export async function beginEffectEditInTransaction(
           })),
         });
     }
-    if (selectedPromptResultId && !promptRuns.some((run) => run.result?.id === selectedPromptResultId))
+    if (
+      selectedPromptResultId &&
+      !promptRuns.some((run) => run.result?.id === selectedPromptResultId)
+    )
       throw new ConflictException('已确认 Prompt 结果来源缺失，请刷新后重试');
   }
   if (stageIndex >= 3 && copyPolicy.copyRenderBatches) {
@@ -737,56 +827,56 @@ export async function beginEffectEditInTransaction(
       for (const sourceTask of source.tasks) {
         const taskId = randomUUID();
         renderTaskRows.push({
-            id: taskId,
-            projectId,
-            workflowRunId: child.id,
-            productId: ids[sourceTask.productId]!,
-            batchId: batch.id,
-            promptId: sourceTask.promptId,
-            promptCode: sourceTask.promptCode,
-            renderCode: sourceTask.renderCode,
-            sourceFingerprint: sourceTask.sourceFingerprint,
-            requestSnapshot: renderEditSnapshot(sourceTask.requestSnapshot),
-            generationRequestSnapshot: renderEditSnapshot(sourceTask.generationRequestSnapshot),
-            operationKind: sourceTask.operationKind,
-            status: sourceTask.status,
-            progress: sourceTask.progress,
-            renderVersion: sourceTask.renderVersion,
-            activeOutputVersion: sourceTask.activeOutputVersion,
-            retryCount: sourceTask.retryCount,
-            maxAutoRetries: sourceTask.maxAutoRetries,
-            attemptCount: sourceTask.attemptCount,
-            providerTaskId: sourceTask.providerTaskId,
-            outputFileObjectId: sourceTask.outputFileObjectId,
-            outputStorageKey: sourceTask.outputStorageKey,
-            outputFileName: sourceTask.outputFileName,
-            outputMimeType: sourceTask.outputMimeType,
-            outputSizeBytes: sourceTask.outputSizeBytes,
-            outputContentHash: sourceTask.outputContentHash,
-            ...(sourceTask.outputPoster ? { outputPoster: json(sourceTask.outputPoster) } : {}),
-            repairStatus: sourceTask.repairStatus,
-            repairSourceVersion: sourceTask.repairSourceVersion,
-            repairStartMs: sourceTask.repairStartMs,
-            repairEndMs: sourceTask.repairEndMs,
-            ...(sourceTask.repairRegion ? { repairRegion: json(sourceTask.repairRegion) } : {}),
-            repairInstruction: sourceTask.repairInstruction,
-            repairRequestHash: sourceTask.repairRequestHash,
-            repairCandidateFileObjectId: sourceTask.repairCandidateFileObjectId,
-            repairCandidateStorageKey: sourceTask.repairCandidateStorageKey,
-            repairCandidateFileName: sourceTask.repairCandidateFileName,
-            repairCandidateMimeType: sourceTask.repairCandidateMimeType,
-            repairCandidateSizeBytes: sourceTask.repairCandidateSizeBytes,
-            repairCandidateContentHash: sourceTask.repairCandidateContentHash,
-            ...(sourceTask.repairCandidatePoster
-              ? { repairCandidatePoster: json(sourceTask.repairCandidatePoster) }
-              : {}),
-            repairCandidateVersion: sourceTask.repairCandidateVersion,
-            repairCandidateCreatedAt: sourceTask.repairCandidateCreatedAt,
-            errorCode: sourceTask.errorCode,
-            errorMessage: sourceTask.errorMessage,
-            queuedAt: sourceTask.queuedAt,
-            startedAt: sourceTask.startedAt,
-            completedAt: sourceTask.completedAt,
+          id: taskId,
+          projectId,
+          workflowRunId: child.id,
+          productId: ids[sourceTask.productId]!,
+          batchId: batch.id,
+          promptId: sourceTask.promptId,
+          promptCode: sourceTask.promptCode,
+          renderCode: sourceTask.renderCode,
+          sourceFingerprint: sourceTask.sourceFingerprint,
+          requestSnapshot: renderEditSnapshot(sourceTask.requestSnapshot),
+          generationRequestSnapshot: renderEditSnapshot(sourceTask.generationRequestSnapshot),
+          operationKind: sourceTask.operationKind,
+          status: sourceTask.status,
+          progress: sourceTask.progress,
+          renderVersion: sourceTask.renderVersion,
+          activeOutputVersion: sourceTask.activeOutputVersion,
+          retryCount: sourceTask.retryCount,
+          maxAutoRetries: sourceTask.maxAutoRetries,
+          attemptCount: sourceTask.attemptCount,
+          providerTaskId: sourceTask.providerTaskId,
+          outputFileObjectId: sourceTask.outputFileObjectId,
+          outputStorageKey: sourceTask.outputStorageKey,
+          outputFileName: sourceTask.outputFileName,
+          outputMimeType: sourceTask.outputMimeType,
+          outputSizeBytes: sourceTask.outputSizeBytes,
+          outputContentHash: sourceTask.outputContentHash,
+          ...(sourceTask.outputPoster ? { outputPoster: json(sourceTask.outputPoster) } : {}),
+          repairStatus: sourceTask.repairStatus,
+          repairSourceVersion: sourceTask.repairSourceVersion,
+          repairStartMs: sourceTask.repairStartMs,
+          repairEndMs: sourceTask.repairEndMs,
+          ...(sourceTask.repairRegion ? { repairRegion: json(sourceTask.repairRegion) } : {}),
+          repairInstruction: sourceTask.repairInstruction,
+          repairRequestHash: sourceTask.repairRequestHash,
+          repairCandidateFileObjectId: sourceTask.repairCandidateFileObjectId,
+          repairCandidateStorageKey: sourceTask.repairCandidateStorageKey,
+          repairCandidateFileName: sourceTask.repairCandidateFileName,
+          repairCandidateMimeType: sourceTask.repairCandidateMimeType,
+          repairCandidateSizeBytes: sourceTask.repairCandidateSizeBytes,
+          repairCandidateContentHash: sourceTask.repairCandidateContentHash,
+          ...(sourceTask.repairCandidatePoster
+            ? { repairCandidatePoster: json(sourceTask.repairCandidatePoster) }
+            : {}),
+          repairCandidateVersion: sourceTask.repairCandidateVersion,
+          repairCandidateCreatedAt: sourceTask.repairCandidateCreatedAt,
+          errorCode: sourceTask.errorCode,
+          errorMessage: sourceTask.errorMessage,
+          queuedAt: sourceTask.queuedAt,
+          startedAt: sourceTask.startedAt,
+          completedAt: sourceTask.completedAt,
         });
         ids[sourceTask.id] = taskId;
         taskIdMap[sourceTask.id] = taskId;
@@ -796,7 +886,11 @@ export async function beginEffectEditInTransaction(
   // Packaging is transactional replacement, not picture regeneration. Copy its confirmed
   // baseline through the same ID/hash remapping as the retained packaging/output rows below.
   // Publication still depends on the new task, never on the presence of these baseline copies.
-  const artifactStages = effectEditArtifactStages(nodeId, purpose, options.preservePackagingBaseline);
+  const artifactStages = effectEditArtifactStages(
+    nodeId,
+    purpose,
+    options.preservePackagingBaseline,
+  );
   const artifacts = (
     await Promise.all(
       artifactStages.map((stage) =>
@@ -807,8 +901,14 @@ export async function beginEffectEditInTransaction(
             nodeId: stage,
             availability: 'AVAILABLE',
             ...(stage === 'TEMPLATE_MIX' && options.preservePackagingBaseline && options.templateId
-              ? { OR: artifactPrefix.TEMPLATE_MIX.map((prefix) => ({ artifactKey:
-                  prefix === 'mix-template:' ? `${prefix}${options.templateId}` : { startsWith: `${prefix}${options.templateId}:` } })) }
+              ? {
+                  OR: artifactPrefix.TEMPLATE_MIX.map((prefix) => ({
+                    artifactKey:
+                      prefix === 'mix-template:'
+                        ? `${prefix}${options.templateId}`
+                        : { startsWith: `${prefix}${options.templateId}:` },
+                  })),
+                }
               : {}),
           },
           include: workingArtifactInclude,
@@ -819,11 +919,11 @@ export async function beginEffectEditInTransaction(
   const ordered = artifacts.sort(
     (a, b) =>
       stageOrder.indexOf(a.nodeId as EffectWorkflowEditableNodeId) -
-      stageOrder.indexOf(b.nodeId as EffectWorkflowEditableNodeId) ||
+        stageOrder.indexOf(b.nodeId as EffectWorkflowEditableNodeId) ||
       // Packages name the reminted visual artifact and its new content hash. Both must be
       // available before the package is remapped, regardless of PostgreSQL's row order.
       Number(a.artifactKey.startsWith('timeline-package:')) -
-      Number(b.artifactKey.startsWith('timeline-package:')),
+        Number(b.artifactKey.startsWith('timeline-package:')),
   );
   const artifactIds: IdMap = {};
   const hashMap: IdMap = {};
@@ -839,13 +939,16 @@ export async function beginEffectEditInTransaction(
   const clonedIds: IdMap = { ...ids, ...artifactIds };
   const states = (
     await Promise.all(
-      stageOrder
-        .slice(0, stageIndex + 1)
-        .map((stage) =>
-          tx.workflowNodeState.findMany({
-            where: effectEditNodeStateWhere(projectId, parent.id, stage, stageSources.get(stage) ?? parent.id),
-          }),
-        ),
+      stageOrder.slice(0, stageIndex + 1).map((stage) =>
+        tx.workflowNodeState.findMany({
+          where: effectEditNodeStateWhere(
+            projectId,
+            parent.id,
+            stage,
+            stageSources.get(stage) ?? parent.id,
+          ),
+        }),
+      ),
     )
   ).flat();
   if (states.length)
@@ -910,14 +1013,27 @@ export async function beginEffectEditInTransaction(
       type: artifact.type,
       tags: artifact.tags,
       payload: remap(artifact.payload, { ...ids, ...artifactIds, ...hashReplacements }),
-      metadata: { ...((remap(artifact.metadata, { ...ids, ...artifactIds, ...hashReplacements }) ?? {}) as object),
-        branchSource: { artifactId: artifact.id, revision: artifact.revision,
+      metadata: {
+        ...((remap(artifact.metadata, { ...ids, ...artifactIds, ...hashReplacements }) ??
+          {}) as object),
+        branchSource: {
+          artifactId: artifact.id,
+          revision: artifact.revision,
           ancestorArtifactIds: (() => {
-            const source = (artifact.metadata as { branchSource?: { artifactId?: string;
-              ancestorArtifactIds?: string[] } } | null)?.branchSource;
-            return [...new Set([...(source?.artifactId ? [source.artifactId] : []),
-              ...(source?.ancestorArtifactIds ?? [])])];
-          })() } },
+            const source = (
+              artifact.metadata as {
+                branchSource?: { artifactId?: string; ancestorArtifactIds?: string[] };
+              } | null
+            )?.branchSource;
+            return [
+              ...new Set([
+                ...(source?.artifactId ? [source.artifactId] : []),
+                ...(source?.ancestorArtifactIds ?? []),
+              ]),
+            ];
+          })(),
+        },
+      },
       originalFileName: artifact.originalFileName,
       mimeType: artifact.mimeType,
       sizeBytes: artifact.sizeBytes,
@@ -996,7 +1112,7 @@ export async function beginEffectEditInTransaction(
       { ...ids, ...artifactIds, ...hashReplacements },
     );
   }
-  if (stageIndex >= 5 || stageIndex === 4 && options.preservePackagingBaseline) {
+  if (stageIndex >= 5 || (stageIndex === 4 && options.preservePackagingBaseline)) {
     // The output stage is downstream of the mix stage: the branch keeps the packaging it exports
     // from, but every film starts unrendered so the export has to run again in this branch.
     // Every artifact is cloned by now, so the snapshots can be re-pointed in one pass here; a
@@ -1101,7 +1217,10 @@ export async function beginEffectEditInTransaction(
           },
         });
     }
-    await insertEffectRenderBranchTasks(tx, renderTaskRows, { ...artifactIds, ...hashReplacements });
+    await insertEffectRenderBranchTasks(tx, renderTaskRows, {
+      ...artifactIds,
+      ...hashReplacements,
+    });
   }
   // An auto branch has no session, so it has nothing to compare a baseline against.
   if (!options.always)
@@ -1109,12 +1228,19 @@ export async function beginEffectEditInTransaction(
       where: { id: child.id },
       data: {
         editBaselineHash: await stageDigest(tx, projectId, child.id, nodeId),
-        editIdMap: json({ productIdMap, taskIdMap, renderBatchRevisions,
-          ...(promptEditBaseline ? { promptEditBaseline } : {}) }),
+        editIdMap: json({
+          productIdMap,
+          taskIdMap,
+          renderBatchRevisions,
+          ...(promptEditBaseline ? { promptEditBaseline } : {}),
+        }),
       },
     });
   if (!options.keepParentActive) {
-    await tx.workflowRun.update({ where: { id: active?.id ?? parent.id }, data: { activeKey: null } });
+    await tx.workflowRun.update({
+      where: { id: active?.id ?? parent.id },
+      data: { activeKey: null },
+    });
     await tx.workflowRun.update({
       where: { id: child.id },
       data: {

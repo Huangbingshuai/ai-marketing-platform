@@ -8,18 +8,22 @@ import {
 import { EFFECT_TEMPLATE_MIX_TRANSITIONS } from './effect-template-mix-state';
 
 describe('effect template mix transition presentation', () => {
-  it.each(EFFECT_TEMPLATE_MIX_TRANSITIONS)('animates every layer of %s independently of editor ticks', (transition) => {
-    const frames = effectTemplateMixTransitionPlaybackKeyframes(transition);
-    for (const layer of ['incoming', 'outgoing', 'overlay'] as const) {
-      expect(frames[layer]).toHaveLength(61);
-      for (const index of [0, 15, 30, 45, 60]) {
-        const offset = index / 60;
-        expect(frames[layer][index]).toEqual({
-          ...effectTemplateMixTransitionPresentation(transition, offset)[layer], offset,
-        });
+  it.each(EFFECT_TEMPLATE_MIX_TRANSITIONS)(
+    'animates every layer of %s independently of editor ticks',
+    (transition) => {
+      const frames = effectTemplateMixTransitionPlaybackKeyframes(transition);
+      for (const layer of ['incoming', 'outgoing', 'overlay'] as const) {
+        expect(frames[layer]).toHaveLength(61);
+        for (const index of [0, 15, 30, 45, 60]) {
+          const offset = index / 60;
+          expect(frames[layer][index]).toEqual({
+            ...effectTemplateMixTransitionPresentation(transition, offset)[layer],
+            offset,
+          });
+        }
       }
-    }
-  });
+    },
+  );
   it('fades the incoming clip over an opaque outgoing frame without revealing the stage background', () => {
     for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
       const presentation = effectTemplateMixTransitionPresentation('叠化', progress);

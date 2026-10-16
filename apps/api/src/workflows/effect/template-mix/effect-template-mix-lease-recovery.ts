@@ -21,7 +21,9 @@ export class EffectTemplateMixLeaseRecovery implements OnModuleInit, OnModuleDes
     @Optional()
     @Inject(EffectPackagingRepository)
     private readonly packaging?: EffectPackagingRepository,
-    @Optional() @Inject(EffectFinalOutputService) private readonly output?: EffectFinalOutputService,
+    @Optional()
+    @Inject(EffectFinalOutputService)
+    private readonly output?: EffectFinalOutputService,
     @Optional() @Inject(EffectVoiceRepository) private readonly voices?: EffectVoiceRepository,
   ) {}
   onModuleInit(): void {

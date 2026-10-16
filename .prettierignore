@@ -7,5 +7,28 @@ apps/api/src/generated
 .tmp
 **/.venv
 **/.pytest_cache
+**/.pytest-*
 **/__pycache__
+**/.mypy_cache
+**/.ruff_cache
+**/.playwright-mcp
+**/.cache
 .codex-browser-mock.*
+**/.tmp
+**/.tmp-*
+.local-storage
+tmp
+output
+.mcf-*
+.t*
+.w*
+**/dist-*
+# Frozen Vue source fixtures are inspected as raw text by layout regression tests.
+apps/web/src/workflows/effect/final-output/EffectFinalOutputNodePage.vue
+apps/web/src/workflows/effect/template-mix/EffectTemplateMixNodePage.vue
+apps/web/src/workflows/effect/template-mix/EffectTemplateMixTimeline.vue
+apps/web/src/workflows/effect/template-mix/EffectTemplateMixPackaging.vue
+apps/web/src/workflows/effect/segment-render/EffectSegmentRenderNodePage.vue
+apps/web/src/workflows/effect/source-import/EffectImportNodePage.vue
+# API-source contract tests inspect these exact snippets.
+apps/api/src/workflows/customized/information-extraction/customized-extraction.service.ts

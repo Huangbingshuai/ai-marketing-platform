@@ -71,9 +71,13 @@ type CreativeFactAssignment = {
 focusFactId: string;
 focusFactEvidence: {
   evidenceText: string;
-  evidenceSource: "CONTENT" | "CREATIVE_CORE" | "NARRATIVE" |
-    "SCENE" | "PERSONA" | "PRODUCT_RELATION";
-};
+  evidenceSource: 'CONTENT' |
+    'CREATIVE_CORE' |
+    'NARRATIVE' |
+    'SCENE' |
+    'PERSONA' |
+    'PRODUCT_RELATION';
+}
 ```
 
 Worker 只做确定性检查：

@@ -11,9 +11,12 @@ describe('splitRangeAtPlayhead', () => {
     });
   });
 
-  it.each([0, 2, 6, 6.1])('does not split when the playhead is at or outside the clip (%s)', (at) => {
-    expect(splitRangeAtPlayhead(2, 4, at, 30)).toBeNull();
-  });
+  it.each([0, 2, 6, 6.1])(
+    'does not split when the playhead is at or outside the clip (%s)',
+    (at) => {
+      expect(splitRangeAtPlayhead(2, 4, at, 30)).toBeNull();
+    },
+  );
 
   it('does not create a sub-frame sliver at a rounded edge', () => {
     expect(splitRangeAtPlayhead(2, 4, 2.001, 30)).toBeNull();

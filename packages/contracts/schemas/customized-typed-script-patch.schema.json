@@ -4,13 +4,7 @@
       "additionalProperties": false,
       "properties": {
         "field": {
-          "enum": [
-            "title",
-            "opening",
-            "development",
-            "ending",
-            "dialoguePlan"
-          ],
+          "enum": ["title", "opening", "development", "ending", "dialoguePlan"],
           "title": "Field",
           "type": "string"
         },
@@ -20,10 +14,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "field",
-        "value"
-      ],
+      "required": ["field", "value"],
       "title": "BodyMetadata",
       "type": "object"
     },
@@ -54,12 +45,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "beatId",
-        "content",
-        "durationSeconds",
-        "reason"
-      ],
+      "required": ["beatId", "content", "durationSeconds", "reason"],
       "title": "BodyReplacement",
       "type": "object"
     },
@@ -288,11 +274,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "requirementId",
-        "beatIds",
-        "evidence"
-      ],
+      "required": ["requirementId", "beatIds", "evidence"],
       "title": "StructureMapping",
       "type": "object"
     },
@@ -431,13 +413,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "reason",
-    "replacements",
-    "metadata",
-    "concept",
-    "structureMapping"
-  ],
+  "required": ["reason", "replacements", "metadata", "concept", "structureMapping"],
   "title": "TypedPatch",
   "type": "object"
 }

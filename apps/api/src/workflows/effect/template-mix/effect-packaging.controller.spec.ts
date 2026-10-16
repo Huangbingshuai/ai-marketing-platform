@@ -25,8 +25,9 @@ describe('packaging audio update DTO', () => {
         captionFontSize,
       });
 
-      expect(JSON.stringify(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })))
-        .toContain('captionFontSize');
+      expect(
+        JSON.stringify(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })),
+      ).toContain('captionFontSize');
     }
   });
 
@@ -160,9 +161,7 @@ describe('caption narration request DTO', () => {
       text: '限时五折',
     });
 
-    expect(
-      await validate(dto, { whitelist: true, forbidNonWhitelisted: true }),
-    ).toEqual([]);
+    expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
   });
 
   it('rejects a caption id that is not a plain editor key and text longer than a caption', async () => {

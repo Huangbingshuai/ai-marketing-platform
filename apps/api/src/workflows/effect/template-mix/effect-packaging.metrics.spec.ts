@@ -5,16 +5,27 @@ import { packagingExecution, packagingPerformance } from './effect-packaging.met
 
 describe('server packaging throughput', () => {
   it('reports persisted measurements and does not count a batched script once per slot', () => {
-    const items = [{ checkpoint: { timings: {
-      _item: { scriptSeconds: 12, musicWaitSeconds: 20 },
-      a: { scriptSeconds: 6, voiceSeconds: 2, cacheHit: true, localQueueSeconds: .5 },
-      b: { scriptSeconds: 6, voiceSeconds: 4, cacheHit: false, preprocessingSeconds: 1 },
-    } } }] as unknown as PackagingItem[];
+    const items = [
+      {
+        checkpoint: {
+          timings: {
+            _item: { scriptSeconds: 12, musicWaitSeconds: 20 },
+            a: { scriptSeconds: 6, voiceSeconds: 2, cacheHit: true, localQueueSeconds: 0.5 },
+            b: { scriptSeconds: 6, voiceSeconds: 4, cacheHit: false, preprocessingSeconds: 1 },
+          },
+        },
+      },
+    ] as unknown as PackagingItem[];
     const result = packagingPerformance(items);
-    expect(result.cacheHitRate).toBe(.5);
-    expect(result.stages.scriptSeconds).toEqual({ samples: 1, p50Seconds: 12, p95Seconds: 12, totalSeconds: 12 });
+    expect(result.cacheHitRate).toBe(0.5);
+    expect(result.stages.scriptSeconds).toEqual({
+      samples: 1,
+      p50Seconds: 12,
+      p95Seconds: 12,
+      totalSeconds: 12,
+    });
     expect(result.stages.voiceSeconds?.p95Seconds).toBe(4);
-    expect(result.stages.localQueueSeconds?.totalSeconds).toBe(.5);
+    expect(result.stages.localQueueSeconds?.totalSeconds).toBe(0.5);
     expect(packagingPerformance([]).cacheHitRate).toBeNull();
   });
   it.each([1, 10, 100])(
@@ -50,7 +61,9 @@ describe('server packaging throughput', () => {
   });
   it('uses a short local baseline for subtitle-only work and ignores a failed attempt in its rate', () => {
     const items = rows();
-    expect(packagingExecution(items, null, null, 'QUEUED', 4, 300_000, true).estimatedRemainingSeconds).toBe(200);
+    expect(
+      packagingExecution(items, null, null, 'QUEUED', 4, 300_000, true).estimatedRemainingSeconds,
+    ).toBe(200);
     for (const item of items.slice(0, 20)) {
       item.status = 'COMPLETED';
       item.completedAt = new Date(290_000).toISOString();

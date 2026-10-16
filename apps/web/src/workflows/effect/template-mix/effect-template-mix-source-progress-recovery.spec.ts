@@ -4,23 +4,47 @@ import { transpileModule } from 'typescript';
 import page from './EffectTemplateMixNodePage.vue?raw';
 
 function recovery(frozen?: string[]) {
-  const items = Array.from({ length: 9 }, (_, index) => ({ id: `i${index}`, variantId: `v${index}`,
-    status: index < 6 ? 'COMPLETED' : 'QUEUED', progress: index < 6 ? 100 : 0 }));
-  const run = { id: 'task', workflowRunId: 'run', templateId: 'template', status: 'RUNNING',
-    items, ...(frozen ? { sourceOperationVariantIds: frozen } : {}) };
-  const context = {
-    computed, sourceUpdateRun: ref<unknown>(null), sourceUpdateItemIds: ref<string[]>([]),
-    sourceUpdateGeneration: 1, stopSourceUpdatePolling: vi.fn(),
-    props: { projectId: 'project', workflowRunId: 'run' }, activeTemplateId: ref('template'),
-    loadMixFinalOutputRuns: vi.fn(async () => ({ data: [run] })),
-    pollSourceUpdate: vi.fn(), continueFrozenAppend: vi.fn(),
+  const items = Array.from({ length: 9 }, (_, index) => ({
+    id: `i${index}`,
+    variantId: `v${index}`,
+    status: index < 6 ? 'COMPLETED' : 'QUEUED',
+    progress: index < 6 ? 100 : 0,
+  }));
+  const run = {
+    id: 'task',
+    workflowRunId: 'run',
+    templateId: 'template',
+    status: 'RUNNING',
+    items,
+    ...(frozen ? { sourceOperationVariantIds: frozen } : {}),
   };
-  const source = page.slice(page.indexOf('async function resumeSourceUpdate()'),
-    page.indexOf('async function continueFrozenAppend(')) + '\n' +
-    page.slice(page.indexOf('const sourceUpdateProgress ='), page.indexOf('const localUpdateBusy ='));
+  const context = {
+    computed,
+    sourceUpdateRun: ref<unknown>(null),
+    sourceUpdateItemIds: ref<string[]>([]),
+    sourceUpdateGeneration: 1,
+    stopSourceUpdatePolling: vi.fn(),
+    props: { projectId: 'project', workflowRunId: 'run' },
+    activeTemplateId: ref('template'),
+    loadMixFinalOutputRuns: vi.fn(async () => ({ data: [run] })),
+    pollSourceUpdate: vi.fn(),
+    continueFrozenAppend: vi.fn(),
+  };
+  const source =
+    page.slice(
+      page.indexOf('async function resumeSourceUpdate()'),
+      page.indexOf('async function continueFrozenAppend('),
+    ) +
+    '\n' +
+    page.slice(
+      page.indexOf('const sourceUpdateProgress ='),
+      page.indexOf('const localUpdateBusy ='),
+    );
   const script = transpileModule(source, {}).outputText;
-  const functions = new Function(...Object.keys(context),
-    `${script}\nreturn { resumeSourceUpdate, sourceUpdateProgress };`)(...Object.values(context));
+  const functions = new Function(
+    ...Object.keys(context),
+    `${script}\nreturn { resumeSourceUpdate, sourceUpdateProgress };`,
+  )(...Object.values(context));
   return { ...context, ...functions };
 }
 

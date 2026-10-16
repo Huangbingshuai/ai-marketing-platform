@@ -9,7 +9,11 @@ import {
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { parseVoiceSegmentFrames, parseVoiceSpeechRanges, wavDuration } from './effect-packaging-audio';
+import {
+  parseVoiceSegmentFrames,
+  parseVoiceSpeechRanges,
+  wavDuration,
+} from './effect-packaging-audio';
 export { parseVoiceSegmentFrames, wavDuration } from './effect-packaging-audio';
 import type {
   CreatePackagingCaptionVoiceRequest,
@@ -24,7 +28,12 @@ import type {
   FinalOutputSourceTrim,
   UpdatePackagingAudioRequest,
 } from '@ai-marketing/contracts';
-import { packagingPictureOnlyVariant, packagingVisualTimeline, effectTemplateMixSourceChanges, effectTemplateBranchTips } from '@ai-marketing/contracts';
+import {
+  packagingPictureOnlyVariant,
+  packagingVisualTimeline,
+  effectTemplateMixSourceChanges,
+  effectTemplateBranchTips,
+} from '@ai-marketing/contracts';
 import { packagingExecution } from './effect-packaging.metrics';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectTemplateMixService } from './effect-template-mix.service';
@@ -75,7 +84,6 @@ function fadeFields(
   };
 }
 
-
 @Injectable()
 export class EffectPackagingService {
   private readonly logger = new Logger(EffectPackagingService.name);
@@ -98,15 +106,20 @@ export class EffectPackagingService {
    */
   async finish(projectId: string, runId: string, token: string) {
     const current = await this.repo.get(projectId, runId);
-    const operation = (current?.items[0]?.snapshot as unknown as PackagingSnapshot | undefined)?.operation;
+    const operation = (current?.items[0]?.snapshot as unknown as PackagingSnapshot | undefined)
+      ?.operation;
     if (operation) {
       await this.repo.authorized(projectId, runId, token);
       if (current!.items.some((item) => ['QUEUED', 'RUNNING'].includes(item.status)))
         throw new ConflictException('包装任务仍有未完成成片');
       // Publication is retried by lease recovery if it fails; never terminalize first.
-      if (operation === 'BATCH_PACKAGE' && current!.items.some((item) => item.status === 'COMPLETED'))
+      if (
+        operation === 'BATCH_PACKAGE' &&
+        current!.items.some((item) => item.status === 'COMPLETED')
+      )
         await this.finalOutput.publishMixBranch(projectId, current!.workflowRunId);
-      const appendId = (current!.items[0]?.snapshot as unknown as PackagingSnapshot).incrementalFillRunId;
+      const appendId = (current!.items[0]?.snapshot as unknown as PackagingSnapshot)
+        .incrementalFillRunId;
       // A terminal failed film has retained its baseline. It is not unfinished
       // continuation and must never require a second local-update click.
       if (appendId) await this.mix.recordAppendContinuation(projectId, appendId, false);
@@ -114,18 +127,26 @@ export class EffectPackagingService {
       return { accepted: true };
     }
     const result = await this.repo.finish(projectId, runId, token);
-    const fillRunId = result.items.map((item) =>
-      (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId).find(Boolean);
+    const fillRunId = result.items
+      .map((item) => (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId)
+      .find(Boolean);
     if (result.status === 'COMPLETED' || result.status === 'PARTIAL')
       try {
         await this.finalOutput.upsertFromPackaging(
           projectId,
           result.workflowRunId,
           result.templateId,
-          { publish: result.status === 'COMPLETED' && !result.items.some((item) =>
-              (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId),
-            ...(result.items.some((item) => (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId)
-              ? { onlyVariantIds: result.items.map((item) => item.variantId) } : {}),
+          {
+            publish:
+              result.status === 'COMPLETED' &&
+              !result.items.some(
+                (item) => (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId,
+              ),
+            ...(result.items.some(
+              (item) => (item.snapshot as unknown as PackagingSnapshot).incrementalFillRunId,
+            )
+              ? { onlyVariantIds: result.items.map((item) => item.variantId) }
+              : {}),
           },
         );
         if (fillRunId) await this.mix.recordAppendContinuation(projectId, fillRunId, false);
@@ -145,7 +166,12 @@ export class EffectPackagingService {
 
   async createIncremental(projectId: string, fillRunId: string) {
     const fill = await this.mix.aiRun(projectId, fillRunId);
-    if (fill.status !== 'COMPLETED' || fill.operation !== 'APPEND' || !fill.packageNewVariants || !fill.outputVariantIds?.length)
+    if (
+      fill.status !== 'COMPLETED' ||
+      fill.operation !== 'APPEND' ||
+      !fill.packageNewVariants ||
+      !fill.outputVariantIds?.length
+    )
       throw new ConflictException('追加成片尚未完成或不需要自动包装');
     const key = `append-package:${fillRunId}`;
     const replay = await this.repo.db.effectPackagingRun.findUnique({
@@ -153,18 +179,33 @@ export class EffectPackagingService {
     });
     if (replay) return this.get(projectId, replay.id);
     const workspace = await this.mix.workspace(projectId, fill.workflowRunId);
-    return this.create(projectId, fill.templateId, {
-      workflowRunId: fill.workflowRunId, expectedRevision: workspace.draftRevision ?? 0,
-      idempotencyKey: key, component: 'ALL',
-    }, { fillRunId, variantIds: fill.outputVariantIds });
+    return this.create(
+      projectId,
+      fill.templateId,
+      {
+        workflowRunId: fill.workflowRunId,
+        expectedRevision: workspace.draftRevision ?? 0,
+        idempotencyKey: key,
+        component: 'ALL',
+      },
+      { fillRunId, variantIds: fill.outputVariantIds },
+    );
   }
 
-  async create(projectId: string, templateId: string, body: CreatePackagingRequest,
-    append?: { fillRunId: string; variantIds: string[] }) {
-    if (body.operation && (body.component && body.component !== 'ALL' || body.slotId ||
-        (body.operation === 'SINGLE_PACKAGE' ? !body.variantId : Boolean(body.variantId))))
+  async create(
+    projectId: string,
+    templateId: string,
+    body: CreatePackagingRequest,
+    append?: { fillRunId: string; variantIds: string[] },
+  ) {
+    if (
+      body.operation &&
+      ((body.component && body.component !== 'ALL') ||
+        body.slotId ||
+        (body.operation === 'SINGLE_PACKAGE' ? !body.variantId : Boolean(body.variantId)))
+    )
       throw new BadRequestException('包装操作与成片范围不一致');
-    const operation = append ? 'APPEND_PACKAGE' as const : body.operation;
+    const operation = append ? ('APPEND_PACKAGE' as const) : body.operation;
     const requestHash = workflowStateHash({ ...body, templateId, ...(append ? { append } : {}) });
     const replay = await this.repo.db.effectPackagingRun.findUnique({
       where: { projectId_idempotencyKey: { projectId, idempotencyKey: body.idempotencyKey } },
@@ -180,34 +221,56 @@ export class EffectPackagingService {
     if (sourceWorkspace.draftRevision !== body.expectedRevision)
       throw new ConflictException('草稿已改变，请刷新后重试');
     const sourceEntry = sourceWorkspace.draft.templates.find((entry) => entry.id === templateId);
-    if (
-      !operation && sourceEntry?.packagingSourceLocked
-    )
+    if (!operation && sourceEntry?.packagingSourceLocked)
       throw new ConflictException('智能成片包装正在进行，暂时不能再次包装');
     // Packaging never acts as a local source update, including full repackaging.
-    if (!append && (sourceWorkspace.pendingAddedMaterialIds?.[templateId]?.length ||
-        sourceEntry?.workspace.variants.some((variant) =>
-          effectTemplateMixSourceChanges(variant, sourceWorkspace.materials).length > 0)))
+    if (
+      !append &&
+      (sourceWorkspace.pendingAddedMaterialIds?.[templateId]?.length ||
+        sourceEntry?.workspace.variants.some(
+          (variant) =>
+            effectTemplateMixSourceChanges(variant, sourceWorkspace.materials).length > 0,
+        ))
+    )
       throw new ConflictException('当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。');
-    if (!operation && await this.repo.activeUnpublishedChild?.(projectId, body.workflowRunId, templateId))
+    if (
+      !operation &&
+      (await this.repo.activeUnpublishedChild?.(projectId, body.workflowRunId, templateId))
+    )
       throw new ConflictException('此模板已有新分支正在智能成片包装，请等待任务完成');
     // A picture-only delivery already owns a published output branch. Its first package fills
     // the missing mix layer of that same branch; the delivered files remain untouched until the
     // user explicitly asks for a local update. Repackaging an existing package still forks, so
     // the earlier audio arrangement remains editable in its original branch.
     const [activeSource, delivered, packaged] = await Promise.all([
-      this.repo.db.workflowRun.findFirst({ where: {
-        projectId, id: body.workflowRunId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
-        activeKey: 'ACTIVE',
-      }, select: { id: true } }),
-      this.repo.db.workingArtifact.findFirst({ where: {
-        projectId, workflowRunId: body.workflowRunId, nodeId: 'FINAL_OUTPUT',
-        artifactKey: `final-delivery:${templateId}`,
-      }, select: { id: true } }),
-      this.repo.db.workingArtifact.findFirst({ where: {
-        projectId, workflowRunId: body.workflowRunId, nodeId: 'TEMPLATE_MIX',
-        artifactKey: { startsWith: `timeline-package:${templateId}:` },
-      }, select: { id: true } }),
+      this.repo.db.workflowRun.findFirst({
+        where: {
+          projectId,
+          id: body.workflowRunId,
+          workflow: 'EFFECT',
+          workflowSpace: 'EFFECT',
+          activeKey: 'ACTIVE',
+        },
+        select: { id: true },
+      }),
+      this.repo.db.workingArtifact.findFirst({
+        where: {
+          projectId,
+          workflowRunId: body.workflowRunId,
+          nodeId: 'FINAL_OUTPUT',
+          artifactKey: `final-delivery:${templateId}`,
+        },
+        select: { id: true },
+      }),
+      this.repo.db.workingArtifact.findFirst({
+        where: {
+          projectId,
+          workflowRunId: body.workflowRunId,
+          nodeId: 'TEMPLATE_MIX',
+          artifactKey: { startsWith: `timeline-package:${templateId}:` },
+        },
+        select: { id: true },
+      }),
     ]);
     const packageInDeliveredRun = Boolean(
       activeSource && delivered && !packaged && !sourceEntry?.packagingLocked,
@@ -221,61 +284,98 @@ export class EffectPackagingService {
       // resolved current template path, then freeze the global pointer during the clone.
       const [tree, active] = await Promise.all([
         this.working.getEffectBranchTree(projectId),
-        this.repo.db.workflowRun.findFirst({ where: {
-          projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT', activeKey: 'ACTIVE',
-          status: { in: ['ACTIVE', 'PAUSED'] },
-        }, select: { id: true, editSessionNodeId: true } }),
+        this.repo.db.workflowRun.findFirst({
+          where: {
+            projectId,
+            workflow: 'EFFECT',
+            workflowSpace: 'EFFECT',
+            activeKey: 'ACTIVE',
+            status: { in: ['ACTIVE', 'PAUSED'] },
+          },
+          select: { id: true, editSessionNodeId: true },
+        }),
       ]);
-      if (!active || active.editSessionNodeId || tree.activeWorkflowRunId !== active.id ||
-          effectTemplateBranchTips(tree.branches, tree.activeWorkflowRunId, { current: true })
-            .get(templateId)?.workflowRunId !== body.workflowRunId)
+      if (
+        !active ||
+        active.editSessionNodeId ||
+        tree.activeWorkflowRunId !== active.id ||
+        effectTemplateBranchTips(tree.branches, tree.activeWorkflowRunId, { current: true }).get(
+          templateId,
+        )?.workflowRunId !== body.workflowRunId
+      )
         throw new ConflictException('模板当前分支已变化，请重新读取后再包装');
       templateScopeActiveRunId = active.id;
     }
-    const workflowRunId = append || body.operation === 'SINGLE_PACKAGE' || firstBatchInPlace || (!operation && packageInDeliveredRun)
-      ? body.workflowRunId
-      : (await this.working.beginEffectNodeEdit(
-          projectId,
-          body.workflowRunId,
-          'TEMPLATE_MIX',
-          'BATCH',
-          {
-            always: true,
-            keepParentActive: true,
-            ...(operation === 'BATCH_PACKAGE' ? { preservePackagingBaseline: true } : {}),
-            ...(templateScopeActiveRunId ? { templateId, templateScopeActiveRunId } : {}),
-            expectedNodeStateRevision: body.expectedRevision,
-            creationKey: `mix-package:${workflowStateHash(body.idempotencyKey)}`,
-          },
-        )).run.id;
+    const workflowRunId =
+      append ||
+      body.operation === 'SINGLE_PACKAGE' ||
+      firstBatchInPlace ||
+      (!operation && packageInDeliveredRun)
+        ? body.workflowRunId
+        : (
+            await this.working.beginEffectNodeEdit(
+              projectId,
+              body.workflowRunId,
+              'TEMPLATE_MIX',
+              'BATCH',
+              {
+                always: true,
+                keepParentActive: true,
+                ...(operation === 'BATCH_PACKAGE' ? { preservePackagingBaseline: true } : {}),
+                ...(templateScopeActiveRunId ? { templateId, templateScopeActiveRunId } : {}),
+                expectedNodeStateRevision: body.expectedRevision,
+                creationKey: `mix-package:${workflowStateHash(body.idempotencyKey)}`,
+              },
+            )
+          ).run.id;
     const workspace = await this.mix.workspace(projectId, workflowRunId);
-    const frozenAppendSource = append ? await this.mix.frozenAppendSources(projectId, append.fillRunId) : undefined;
+    const frozenAppendSource = append
+      ? await this.mix.frozenAppendSources(projectId, append.fillRunId)
+      : undefined;
     // The clone protocol preserves the source revision. Do not accept an orphan/reused
     // child edited since it was cloned merely because we just read its latest revision.
     if (workspace.draftRevision !== body.expectedRevision)
       throw new ConflictException('草稿已改变，请刷新后重试');
     const entry = workspace.draft.templates.find((t) => t.id === templateId);
     if (!entry) throw new NotFoundException('模板不存在');
-    if (frozenAppendSource && workflowStateHash(entry.workspace.template) !== frozenAppendSource.templateHash)
+    if (
+      frozenAppendSource &&
+      workflowStateHash(entry.workspace.template) !== frozenAppendSource.templateHash
+    )
       throw new ConflictException('模板已变化，不能继续原局部更新包装');
     // Recheck after forking: a source edit racing the initial read must not silently enter packaging.
-    if (!append && (workspace.pendingAddedMaterialIds?.[templateId]?.length ||
-        entry.workspace.variants.some((variant) =>
-          effectTemplateMixSourceChanges(variant, workspace.materials).length > 0)))
+    if (
+      !append &&
+      (workspace.pendingAddedMaterialIds?.[templateId]?.length ||
+        entry.workspace.variants.some(
+          (variant) => effectTemplateMixSourceChanges(variant, workspace.materials).length > 0,
+        ))
+    )
       throw new ConflictException('当前模板有素材待更新，请先完成局部更新，再进行智能成片包装。');
     if (!append && entry.needsAiFill)
       throw new ConflictException(
         '模板已改动，或仍有成片未按当前模板重新智能填充；请完成需要更新的成片后再包装',
       );
-    const baselineVariants = entry.workspace.variants.filter(
-      (v) =>
-        (append ? append.variantIds.includes(v.id) : (!body.variantId || v.id === body.variantId)) &&
-        v.slots.some((s) => v.bindings[s.id]),
-    ).map((variant) => structuredClone(variant));
+    const baselineVariants = entry.workspace.variants
+      .filter(
+        (v) =>
+          (append
+            ? append.variantIds.includes(v.id)
+            : !body.variantId || v.id === body.variantId) && v.slots.some((s) => v.bindings[s.id]),
+      )
+      .map((variant) => structuredClone(variant));
     const history = await this.repo.list(projectId, workflowRunId, templateId);
-    const variants = operation ? baselineVariants.map((variant) => packagingPictureOnlyVariant(variant,
-      history.flatMap((run) => run.items).find((item) => item.variantId === variant.id && item.status === 'COMPLETED')
-        ?.checkpoint as PackagingCheckpoint | undefined)) : baselineVariants;
+    const variants = operation
+      ? baselineVariants.map((variant) =>
+          packagingPictureOnlyVariant(
+            variant,
+            history
+              .flatMap((run) => run.items)
+              .find((item) => item.variantId === variant.id && item.status === 'COMPLETED')
+              ?.checkpoint as PackagingCheckpoint | undefined,
+          ),
+        )
+      : baselineVariants;
     if (!variants.length) throw new BadRequestException('没有可包装的视频成片');
     if (append && variants.length !== append.variantIds.length)
       throw new ConflictException('新增成片工程已变化，不能包装旧目标');
@@ -350,7 +450,13 @@ export class EffectPackagingService {
       musicSources.set(asset.id, { fileObjectId: file.id, sourceDuration: audio.sourceDuration! });
     }
     const snapshots = variants.map((v) => {
-      const snapshot = packagingSnapshot(v, workspace.materials, artifacts, musicSources, frozenAppendSource);
+      const snapshot = packagingSnapshot(
+        v,
+        workspace.materials,
+        artifacts,
+        musicSources,
+        frozenAppendSource,
+      );
       if (operation) {
         snapshot.operation = operation;
         snapshot.baselineVariant = baselineVariants.find((variant) => variant.id === v.id)!;
@@ -462,7 +568,9 @@ export class EffectPackagingService {
         }
         if (body.component === 'CAPTIONS') {
           if (Object.values(cp.voices ?? {}).some((audio) => !audio.speechRanges?.length))
-            throw new BadRequestException('口播缺少本次合成的字词时间戳，不能严格对齐字幕；请重新生成该槽位口播');
+            throw new BadRequestException(
+              '口播缺少本次合成的字词时间戳，不能严格对齐字幕；请重新生成该槽位口播',
+            );
           delete cp.captions;
         }
         checkpoints[index] = cp;
@@ -490,7 +598,10 @@ export class EffectPackagingService {
     await this.assertReadScope(projectId, run.workflowRunId);
     return this.present(run, await this.presentationSources(projectId, [run]));
   }
-  private frozenMaterialName(snapshot: PackagingSnapshot, clip: PackagingSnapshot['clips'][number]) {
+  private frozenMaterialName(
+    snapshot: PackagingSnapshot,
+    clip: PackagingSnapshot['clips'][number],
+  ) {
     const name = [clip.materialCode, clip.materialName].filter(Boolean).join(' · ');
     if (name) return name;
     const adopted = snapshot.variant.bindingSources?.[clip.slotId];
@@ -498,7 +609,10 @@ export class EffectPackagingService {
       ? [adopted.code, adopted.name].filter(Boolean).join(' · ')
       : '';
   }
-  private async presentationSources(projectId: string, runs: PackagingRunRow[]): Promise<PackagingPresentation> {
+  private async presentationSources(
+    projectId: string,
+    runs: PackagingRunRow[],
+  ): Promise<PackagingPresentation> {
     const missing = new Set<string>();
     for (const run of runs)
       for (const item of run.items) {
@@ -508,12 +622,11 @@ export class EffectPackagingService {
       }
     // Progress comes from durable task rows. Do not hydrate editable timelines,
     // source freshness or the whole project merely to display a task's clip names.
-    return { materials: missing.size ? await this.repo.materialLabels(projectId, [...missing]) : [] };
+    return {
+      materials: missing.size ? await this.repo.materialLabels(projectId, [...missing]) : [],
+    };
   }
-  private presentItems(
-    run: PackagingRunRow,
-    workspace: PackagingPresentation,
-  ): PackagingItem[] {
+  private presentItems(run: PackagingRunRow, workspace: PackagingPresentation): PackagingItem[] {
     return run.items.map((i) => {
       const snapshot = i.snapshot as unknown as PackagingSnapshot;
       const checkpoint = { ...(i.checkpoint as PackagingCheckpoint) };
@@ -523,7 +636,9 @@ export class EffectPackagingService {
         (checkpoint.script ?? []).flatMap(({ factIds }) => factIds),
       );
       return {
-        ...(snapshot.operation ? { operation: snapshot.operation, workflowRunId: run.workflowRunId } : {}),
+        ...(snapshot.operation
+          ? { operation: snapshot.operation, workflowRunId: run.workflowRunId }
+          : {}),
         id: i.id,
         runId: run.id,
         variantId: i.variantId,
@@ -920,7 +1035,7 @@ export class EffectPackagingService {
   }
   private async assertReadScope(projectId: string, workflowRunId: string) {
     await this.projects.get(projectId);
-    if (!await this.repo.readRunScope(projectId, workflowRunId))
+    if (!(await this.repo.readRunScope(projectId, workflowRunId)))
       throw new NotFoundException('工作流运行不存在');
   }
   async retry(projectId: string, id: string) {
@@ -933,64 +1048,128 @@ export class EffectPackagingService {
       throw new ConflictException('旧版任务不能恢复，请按槽位重新包装');
     return this.repo.retry(projectId, id);
   }
-  async sourceTrims(projectId: string, runId: string, token: string, itemId: string,
-    trims: FinalOutputSourceTrim[]) {
+  async sourceTrims(
+    projectId: string,
+    runId: string,
+    token: string,
+    itemId: string,
+    trims: FinalOutputSourceTrim[],
+  ) {
     const { run } = await this.workerItem(projectId, runId, token, itemId);
     return this.repo.db.$transaction(async (tx) => {
-      const renewed = await tx.effectPackagingRun.updateMany({ where: { id: runId, projectId,
-        status: 'RUNNING', attemptToken: token, leaseExpiresAt: { gt: new Date() } },
-        data: { leaseExpiresAt: new Date(Date.now() + 120_000) } });
+      const renewed = await tx.effectPackagingRun.updateMany({
+        where: {
+          id: runId,
+          projectId,
+          status: 'RUNNING',
+          attemptToken: token,
+          leaseExpiresAt: { gt: new Date() },
+        },
+        data: { leaseExpiresAt: new Date(Date.now() + 120_000) },
+      });
       if (!renewed.count) throw new ConflictException('包装任务租约已失效');
       await tx.$queryRaw`SELECT id FROM workflow_node_states WHERE "projectId"=${projectId}::uuid AND "workflowRunId"=${run.workflowRunId}::uuid AND "nodeId"='TEMPLATE_MIX' FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM effect_packaging_items WHERE id=${itemId}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
-      const item = await tx.effectPackagingItem.findFirstOrThrow({ where: { projectId, id: itemId, runId } });
+      const item = await tx.effectPackagingItem.findFirstOrThrow({
+        where: { projectId, id: itemId, runId },
+      });
       const snapshot = item.snapshot as unknown as PackagingSnapshot;
-      if (!snapshot.sourceTrimMaterials?.length) throw new ConflictException('本任务没有待重新选区的素材');
-      for (const dependency of [...snapshot.dependencies].sort((a, b) => a.artifactId.localeCompare(b.artifactId))) {
+      if (!snapshot.sourceTrimMaterials?.length)
+        throw new ConflictException('本任务没有待重新选区的素材');
+      for (const dependency of [...snapshot.dependencies].sort((a, b) =>
+        a.artifactId.localeCompare(b.artifactId),
+      )) {
         await tx.$queryRaw`SELECT id FROM working_artifacts WHERE id=${dependency.artifactId}::uuid AND "projectId"=${projectId}::uuid FOR SHARE`;
-        const current = await tx.workingArtifact.findFirst({ where: { projectId, id: dependency.artifactId,
-          revision: dependency.revision, contentHash: dependency.contentHash,
-          freshness: 'CURRENT', availability: 'AVAILABLE' } });
+        const current = await tx.workingArtifact.findFirst({
+          where: {
+            projectId,
+            id: dependency.artifactId,
+            revision: dependency.revision,
+            contentHash: dependency.contentHash,
+            freshness: 'CURRENT',
+            availability: 'AVAILABLE',
+          },
+        });
         if (!current) throw new ConflictException('素材或包装输入再次发生变化，请重新包装');
       }
       if (snapshot.sourceTrimsReady) return { snapshot };
-      const state = await tx.workflowNodeState.findUniqueOrThrow({ where: { projectId_workflowRunId_nodeId: {
-        projectId, workflowRunId: run.workflowRunId, nodeId: 'TEMPLATE_MIX',
-      } } });
+      const state = await tx.workflowNodeState.findUniqueOrThrow({
+        where: {
+          projectId_workflowRunId_nodeId: {
+            projectId,
+            workflowRunId: run.workflowRunId,
+            nodeId: 'TEMPLATE_MIX',
+          },
+        },
+      });
       const draft = state.state as unknown as EffectTemplateMixDraft;
-      const baseline = draft.templates.find((entry) => entry.id === run.templateId)?.workspace.variants
-        .find((variant) => variant.id === item.variantId);
-      if (!baseline || workflowStateHash(baseline) !== workflowStateHash(snapshot.baselineVariant ?? snapshot.variant))
+      const baseline = draft.templates
+        .find((entry) => entry.id === run.templateId)
+        ?.workspace.variants.find((variant) => variant.id === item.variantId);
+      if (
+        !baseline ||
+        workflowStateHash(baseline) !==
+          workflowStateHash(snapshot.baselineVariant ?? snapshot.variant)
+      )
         throw new ConflictException('包装执行期间该成片工程已被修改');
       const variant = snapshot.operation ? structuredClone(snapshot.variant) : baseline;
-      if (trims.length !== snapshot.sourceTrimMaterials.length || new Set(trims.map((row) => row.slotId)).size !== trims.length)
+      if (
+        trims.length !== snapshot.sourceTrimMaterials.length ||
+        new Set(trims.map((row) => row.slotId)).size !== trims.length
+      )
         throw new BadRequestException('截取结果缺失或重复');
       for (const trim of trims) {
         const source = snapshot.sourceTrimMaterials.find((row) => row.slotId === trim.slotId);
         const clip = snapshot.clips.find((row) => row.slotId === trim.slotId);
-        if (!source || !clip || !Number.isFinite(trim.offset) || trim.offset < 0 ||
-            trim.offset + clip.duration > source.material.duration + .001)
+        if (
+          !source ||
+          !clip ||
+          !Number.isFinite(trim.offset) ||
+          trim.offset < 0 ||
+          trim.offset + clip.duration > source.material.duration + 0.001
+        )
           throw new BadRequestException('模型截取区间超出素材长度');
-        const current = await tx.workingArtifact.findFirst({ where: { projectId, id: source.material.artifactId,
-          revision: source.material.artifactRevision, freshness: 'CURRENT', availability: 'AVAILABLE' } });
-        if (!current || (current.payload as { fileObjectId?: string }).fileObjectId !== source.material.fileObjectId)
+        const current = await tx.workingArtifact.findFirst({
+          where: {
+            projectId,
+            id: source.material.artifactId,
+            revision: source.material.artifactRevision,
+            freshness: 'CURRENT',
+            availability: 'AVAILABLE',
+          },
+        });
+        if (
+          !current ||
+          (current.payload as { fileObjectId?: string }).fileObjectId !==
+            source.material.fileObjectId
+        )
           throw new ConflictException('素材再次发生变化，请重新包装');
         variant.offsets[trim.slotId] = trim.offset;
         snapshot.variant.offsets[trim.slotId] = trim.offset;
         clip.offset = trim.offset;
-        for (const audio of variant.detachedAudios ?? []) if (audio.sourceSlotId === trim.slotId) audio.offset = trim.offset;
+        for (const audio of variant.detachedAudios ?? [])
+          if (audio.sourceSlotId === trim.slotId) audio.offset = trim.offset;
       }
       snapshot.variant = variant;
       snapshot.detachedAudios = variant.detachedAudios ?? [];
       snapshot.sourceTimelineHash = visualHash(variant);
       snapshot.sourceTrimsReady = true;
-      if (!snapshot.operation) await tx.workflowNodeState.update({ where: { id: state.id }, data: {
-        state: JSON.parse(JSON.stringify(draft)), contentHash: workflowStateHash(draft),
-        revision: { increment: 1 },
-      } });
-      await tx.effectPackagingItem.update({ where: { id: itemId }, data: {
-        snapshot: JSON.parse(JSON.stringify(snapshot)), sourceTimelineHash: snapshot.sourceTimelineHash,
-      } });
+      if (!snapshot.operation)
+        await tx.workflowNodeState.update({
+          where: { id: state.id },
+          data: {
+            state: JSON.parse(JSON.stringify(draft)),
+            contentHash: workflowStateHash(draft),
+            revision: { increment: 1 },
+          },
+        });
+      await tx.effectPackagingItem.update({
+        where: { id: itemId },
+        data: {
+          snapshot: JSON.parse(JSON.stringify(snapshot)),
+          sourceTimelineHash: snapshot.sourceTimelineHash,
+        },
+      });
       return { snapshot };
     });
   }
@@ -1009,19 +1188,37 @@ export class EffectPackagingService {
     ]);
     if (snapshot.sourceOperation?.protocol === 'FROZEN_RENDER_V1') {
       const workspace = await this.mix.workspace(projectId, run.workflowRunId);
-      const template = workspace.draft.templates.find((entry) => entry.id === run.templateId)?.workspace.template;
-      const files = await this.repo.db.fileObject.findMany({ where: { projectId,
-        id: { in: snapshot.clips.map((clip) => clip.fileObjectId) }, status: 'AVAILABLE' } });
-      if (!variant || !template || workflowStateHash(template) !== snapshot.sourceOperation.templateHash ||
-        workflowStateHash(variant) !== workflowStateHash(snapshot.baselineVariant ?? snapshot.variant) ||
-        snapshot.clips.some((clip) => !files.some((file) => file.id === clip.fileObjectId && file.sha256 === clip.contentHash)))
+      const template = workspace.draft.templates.find((entry) => entry.id === run.templateId)
+        ?.workspace.template;
+      const files = await this.repo.db.fileObject.findMany({
+        where: {
+          projectId,
+          id: { in: snapshot.clips.map((clip) => clip.fileObjectId) },
+          status: 'AVAILABLE',
+        },
+      });
+      if (
+        !variant ||
+        !template ||
+        workflowStateHash(template) !== snapshot.sourceOperation.templateHash ||
+        workflowStateHash(variant) !==
+          workflowStateHash(snapshot.baselineVariant ?? snapshot.variant) ||
+        snapshot.clips.some(
+          (clip) =>
+            !files.some(
+              (file) => file.id === clip.fileObjectId && file.sha256 === clip.contentHash,
+            ),
+        )
+      )
         throw new ConflictException('包装执行期间该成片工程被编辑或冻结文件不可用');
       return { run, item, snapshot };
     }
     if (
       !variant ||
-      (snapshot.operation && workflowStateHash(variant) !== workflowStateHash(snapshot.baselineVariant)) ||
-      (snapshot.sourceTrimMaterials?.length && workflowStateHash(variant) !== workflowStateHash(snapshot.variant)) ||
+      (snapshot.operation &&
+        workflowStateHash(variant) !== workflowStateHash(snapshot.baselineVariant)) ||
+      (snapshot.sourceTrimMaterials?.length &&
+        workflowStateHash(variant) !== workflowStateHash(snapshot.variant)) ||
       snapshot.dependencies.some(
         (dependency) =>
           !artifacts.some(
@@ -1062,8 +1259,12 @@ export class EffectPackagingService {
     if (snapshot.captionTimingPolicy === 'SYNTHESIS_WORDS_V1')
       for (const [lineId, audio] of Object.entries(patch.voices ?? {})) {
         const saved = old.voices?.[lineId];
-        if (audio.speechRanges && (!saved?.speechRanges || saved.fileObjectId !== audio.fileObjectId ||
-            workflowStateHash(saved.speechRanges) !== workflowStateHash(audio.speechRanges)))
+        if (
+          audio.speechRanges &&
+          (!saved?.speechRanges ||
+            saved.fileObjectId !== audio.fileObjectId ||
+            workflowStateHash(saved.speechRanges) !== workflowStateHash(audio.speechRanges))
+        )
           throw new BadRequestException('口播字词时间戳与已上传音频不一致');
       }
     const next = { ...old, ...patch, voices: { ...old.voices, ...patch.voices } };
@@ -1104,14 +1305,22 @@ export class EffectPackagingService {
       for (let attempt = 0; ; attempt++) {
         try {
           await this.finalOutput.upsertFromPackaging(projectId, run.workflowRunId, run.templateId, {
-            publish: false, onlyVariantIds: [item.variantId], packagingRunId: runId, attemptToken: token,
+            publish: false,
+            onlyVariantIds: [item.variantId],
+            packagingRunId: runId,
+            attemptToken: token,
           });
           break;
         } catch (error) {
-          if (!(error instanceof ConflictException) || ![
-            '草稿已变化，请刷新后重试', '混剪草稿已在其他页面更新，请刷新后重试',
-          ].includes(error.message)) throw error;
-          if (attempt >= 7) throw new ServiceUnavailableException('其他成片正在提交，稍后继续保存本条包装');
+          if (
+            !(error instanceof ConflictException) ||
+            !['草稿已变化，请刷新后重试', '混剪草稿已在其他页面更新，请刷新后重试'].includes(
+              error.message,
+            )
+          )
+            throw error;
+          if (attempt >= 7)
+            throw new ServiceUnavailableException('其他成片正在提交，稍后继续保存本条包装');
         }
       }
     }

@@ -7,25 +7,44 @@ import type { EffectPackagingService } from './effect-packaging.service';
 
 describe('smart-fill completion coordination', () => {
   function appendHarness(packageNewVariants = true) {
-    const run = { workflowRunId: 'run', templateId: 't', status: 'COMPLETED', operation: 'APPEND',
-      outputVariantIds: ['new-film'], packageNewVariants };
-    const mix = { aiRun: vi.fn().mockResolvedValue(run), ensureAppendConfirmed: vi.fn(), recordAppendContinuation: vi.fn() };
+    const run = {
+      workflowRunId: 'run',
+      templateId: 't',
+      status: 'COMPLETED',
+      operation: 'APPEND',
+      outputVariantIds: ['new-film'],
+      packageNewVariants,
+    };
+    const mix = {
+      aiRun: vi.fn().mockResolvedValue(run),
+      ensureAppendConfirmed: vi.fn(),
+      recordAppendContinuation: vi.fn(),
+    };
     const output = { upsertFromSmartFill: vi.fn(), upsertFromPackaging: vi.fn() };
     const packaging = { createIncremental: vi.fn().mockResolvedValue({ status: 'QUEUED' }) };
-    const service = new EffectTemplateMixCompletionService(mix as unknown as EffectTemplateMixService,
-      output as unknown as EffectFinalOutputService, packaging as unknown as EffectPackagingService);
+    const service = new EffectTemplateMixCompletionService(
+      mix as unknown as EffectTemplateMixService,
+      output as unknown as EffectFinalOutputService,
+      packaging as unknown as EffectPackagingService,
+    );
     return { mix, output, packaging, service };
   }
-  it.each(['APPEND_CONTINUATION_PENDING', 'APPEND_CONTINUATION_RETRY_1', 'APPEND_CONTINUATION_RETRY_2', null, 'APPEND_CONTINUATION_FAILED'])(
-    'terminal delivery only resumes durable pending continuation: %s', async (errorCode) => {
-      const { mix, service } = appendHarness();
-      Object.assign(mix, { claimAiRun: vi.fn().mockResolvedValue({ terminal: true }) });
-      mix.aiRun.mockResolvedValue({ ...(await mix.aiRun()), errorCode } as never);
-      const resume = vi.spyOn(service, 'resumeAppend').mockResolvedValue({} as never);
-      await service.claim('p', 'fill');
-      expect(resume).toHaveBeenCalledTimes(errorCode && errorCode !== 'APPEND_CONTINUATION_FAILED' ? 1 : 0);
-    },
-  );
+  it.each([
+    'APPEND_CONTINUATION_PENDING',
+    'APPEND_CONTINUATION_RETRY_1',
+    'APPEND_CONTINUATION_RETRY_2',
+    null,
+    'APPEND_CONTINUATION_FAILED',
+  ])('terminal delivery only resumes durable pending continuation: %s', async (errorCode) => {
+    const { mix, service } = appendHarness();
+    Object.assign(mix, { claimAiRun: vi.fn().mockResolvedValue({ terminal: true }) });
+    mix.aiRun.mockResolvedValue({ ...(await mix.aiRun()), errorCode } as never);
+    const resume = vi.spyOn(service, 'resumeAppend').mockResolvedValue({} as never);
+    await service.claim('p', 'fill');
+    expect(resume).toHaveBeenCalledTimes(
+      errorCode && errorCode !== 'APPEND_CONTINUATION_FAILED' ? 1 : 0,
+    );
+  });
   it('does not automatically resume an edit/source conflict', async () => {
     const { mix, packaging, service } = appendHarness();
     packaging.createIncremental.mockRejectedValueOnce(new ConflictException('来源冲突'));
@@ -54,17 +73,24 @@ describe('smart-fill completion coordination', () => {
     expect(mix.recordAppendContinuation).toHaveBeenCalledWith('p', 'fill', true, true);
     packaging.createIncremental.mockResolvedValue({ status: 'COMPLETED' });
     await service.resumeAppend('p', 'fill');
-    expect(output.upsertFromPackaging).toHaveBeenCalledWith('p', 'run', 't', { publish: false, onlyVariantIds: ['new-film'] });
+    expect(output.upsertFromPackaging).toHaveBeenCalledWith('p', 'run', 't', {
+      publish: false,
+      onlyVariantIds: ['new-film'],
+    });
   });
   it('creates pending output only after the filled timeline is confirmed', async () => {
     const order: string[] = [];
-    const mix = { completeAiRun: vi.fn().mockImplementation(async () => {
-      order.push('confirmed');
-      return { workflowRunId: 'run', templateId: 'template', status: 'COMPLETED' };
-    }) };
-    const output = { upsertFromSmartFill: vi.fn().mockImplementation(async () => {
-      order.push('pending');
-    }) };
+    const mix = {
+      completeAiRun: vi.fn().mockImplementation(async () => {
+        order.push('confirmed');
+        return { workflowRunId: 'run', templateId: 'template', status: 'COMPLETED' };
+      }),
+    };
+    const output = {
+      upsertFromSmartFill: vi.fn().mockImplementation(async () => {
+        order.push('pending');
+      }),
+    };
     const service = new EffectTemplateMixCompletionService(
       mix as unknown as EffectTemplateMixService,
       output as unknown as EffectFinalOutputService,
@@ -79,7 +105,9 @@ describe('smart-fill completion coordination', () => {
   it('does not create pending output when fill validation fails', async () => {
     const output = { upsertFromSmartFill: vi.fn() };
     const service = new EffectTemplateMixCompletionService(
-      { completeAiRun: vi.fn().mockRejectedValue(new Error('旧任务')) } as unknown as EffectTemplateMixService,
+      {
+        completeAiRun: vi.fn().mockRejectedValue(new Error('旧任务')),
+      } as unknown as EffectTemplateMixService,
       output as unknown as EffectFinalOutputService,
     );
     await expect(service.complete('project', 'fill', 'token', [])).rejects.toThrow('旧任务');

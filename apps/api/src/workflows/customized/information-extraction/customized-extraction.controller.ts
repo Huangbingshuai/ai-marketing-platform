@@ -9,8 +9,8 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
-import { CustomizedExtractionService } from './customized-extraction.service';
-import {
+import type { CustomizedExtractionService } from './customized-extraction.service';
+import type {
   ConfirmCustomizedExtractionDto,
   ExtractionScopeDto,
   StartCustomizedExtractionDto,

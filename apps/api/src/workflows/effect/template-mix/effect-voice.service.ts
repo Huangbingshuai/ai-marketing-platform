@@ -71,9 +71,7 @@ export class EffectVoiceService {
     const attempted = await this.repo.db.effectVoiceCatalogSampleAttempt.findMany({
       select: { profileId: true, version: true, status: true, errorCode: true },
     });
-    const attemptByKey = new Map(
-      attempted.map((row) => [`${row.profileId}:${row.version}`, row]),
-    );
+    const attemptByKey = new Map(attempted.map((row) => [`${row.profileId}:${row.version}`, row]));
     return selections.map(({ id, name, version, speaker, resourceId }) => ({
       id,
       name,
@@ -114,7 +112,8 @@ export class EffectVoiceService {
         where: { profileId_version: { profileId, version } },
         select: { status: true },
       });
-      if (existing) return { claimed: false, sampleAvailable: false, attemptStatus: existing.status };
+      if (existing)
+        return { claimed: false, sampleAvailable: false, attemptStatus: existing.status };
       throw new ConflictException('试听样本登记失败');
     }
   }
@@ -191,7 +190,8 @@ export class EffectVoiceService {
       const persisted = await this.repo.db.effectVoiceCatalogSample.findUniqueOrThrow({
         where: { profileId_version: { profileId, version } },
       });
-      if (persisted.storageKey !== stored.key) await this.storage.delete(stored.key).catch(() => undefined);
+      if (persisted.storageKey !== stored.key)
+        await this.storage.delete(stored.key).catch(() => undefined);
       return result;
     } catch (error) {
       await this.storage.delete(stored.key).catch(() => undefined);

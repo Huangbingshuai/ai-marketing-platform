@@ -55,14 +55,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "scriptId",
-        "ideaId",
-        "approach",
-        "mustPreserve",
-        "essentialFactIds",
-        "reason"
-      ],
+      "required": ["scriptId", "ideaId", "approach", "mustPreserve", "essentialFactIds", "reason"],
       "title": "BrandCommitment",
       "type": "object"
     },
@@ -100,10 +93,7 @@
           "type": "integer"
         },
         "verdict": {
-          "enum": [
-            "ADVANCE",
-            "REJECT"
-          ],
+          "enum": ["ADVANCE", "REJECT"],
           "title": "Verdict",
           "type": "string"
         },
@@ -130,11 +120,7 @@
   "additionalProperties": false,
   "properties": {
     "status": {
-      "enum": [
-        "READY",
-        "REWORK",
-        "NEEDS_INFORMATION"
-      ],
+      "enum": ["READY", "REWORK", "NEEDS_INFORMATION"],
       "title": "Status",
       "type": "string"
     },
@@ -172,13 +158,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "status",
-    "reason",
-    "missing",
-    "evaluations",
-    "commitments"
-  ],
+  "required": ["status", "reason", "missing", "evaluations", "commitments"],
   "title": "LeanBrandSelection",
   "type": "object"
 }

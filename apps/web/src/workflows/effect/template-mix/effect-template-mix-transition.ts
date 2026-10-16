@@ -13,7 +13,11 @@ const clamp = (value: number): number => Math.max(0, Math.min(1, value));
 export const effectTemplateMixTransitionPlaybackKeyframes = (
   transition: EffectTemplateMixTransition,
 ): { outgoing: Keyframe[]; incoming: Keyframe[]; overlay: Keyframe[] } => {
-  const frames = { outgoing: [] as Keyframe[], incoming: [] as Keyframe[], overlay: [] as Keyframe[] };
+  const frames = {
+    outgoing: [] as Keyframe[],
+    incoming: [] as Keyframe[],
+    overlay: [] as Keyframe[],
+  };
   for (let index = 0; index <= 60; index += 1) {
     const offset = index / 60;
     const presentation = effectTemplateMixTransitionPresentation(transition, offset);
@@ -29,9 +33,10 @@ export const effectTemplateMixTransitionPlaybackKeyframes = (
  * intentionally throttled while playing, so the incoming layer must animate
  * on the browser compositor instead of following the low-frequency playhead.
  */
-export const effectTemplateMixDissolvePlaybackKeyframes = (
-  rawProgress: number,
-): Keyframe[] => [{ opacity: String(clamp(rawProgress)) }, { opacity: '1' }];
+export const effectTemplateMixDissolvePlaybackKeyframes = (rawProgress: number): Keyframe[] => [
+  { opacity: String(clamp(rawProgress)) },
+  { opacity: '1' },
+];
 
 /** The flash is compositor-driven during playback because Vue's playhead is throttled. */
 export const effectTemplateMixFlashPlaybackKeyframes = (): Keyframe[] =>
@@ -188,8 +193,7 @@ export const effectTemplateMixTransitionPresentation = (
         },
         overlay: {
           opacity: String((1 - progress) * 0.28),
-          background:
-            'repeating-linear-gradient(90deg, #0b1724 0 2px, transparent 2px 14px)',
+          background: 'repeating-linear-gradient(90deg, #0b1724 0 2px, transparent 2px 14px)',
         },
       };
     case '菱形展开': {

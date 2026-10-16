@@ -91,7 +91,9 @@ function fixture(realInstall = false) {
     templateCreationReady: ref(true),
     draftRace: new MixDraftRaceGuard(),
     committedVersions: reactive({}),
-    fillResultHandoffs: ref([]), retainFillResult: vi.fn(), mixFillResultReady: vi.fn(() => false),
+    fillResultHandoffs: ref([]),
+    retainFillResult: vi.fn(),
+    mixFillResultReady: vi.fn(() => false),
     normalizeVariantVideoLanes: vi.fn(),
     clearDetachedTransitions: vi.fn(() => false),
     normalizeVariantAudioLanes: vi.fn(),
@@ -152,24 +154,29 @@ function fixture(realInstall = false) {
 }
 
 describe('instant template configuration navigation', () => {
-  it.each(['dirty', 'saving', 'saved'])('enters the installed empty template synchronously while save state is %s', async (saveState) => {
-    const { context: c, state, action } = fixture();
-    c.saveState.value = saveState;
-    state.pendingSave = new Promise<boolean>(() => {});
-    c.flushPendingEdits.mockImplementation(() => new Promise(() => {}));
-    c.enterEditor.mockImplementation(() => { c.view.value = 'EDITOR'; });
-    const draft = c.catalog.value;
-    const task = action('a', 'EDITOR');
-    // Inspect before awaiting: neither a save nor a network round trip gates the view.
-    expect(c.view.value).toBe('EDITOR');
-    expect(c.catalog.value).toBe(draft);
-    expect(c.saveState.value).toBe(saveState);
-    expect(c.flushPendingEdits).not.toHaveBeenCalled();
-    expect(c.load).not.toHaveBeenCalled();
-    expect(c.installWorkspaceData).not.toHaveBeenCalled();
-    expect(c.templateNavigationPending.value).toBe(false);
-    await expect(task).resolves.toBe(true);
-  });
+  it.each(['dirty', 'saving', 'saved'])(
+    'enters the installed empty template synchronously while save state is %s',
+    async (saveState) => {
+      const { context: c, state, action } = fixture();
+      c.saveState.value = saveState;
+      state.pendingSave = new Promise<boolean>(() => {});
+      c.flushPendingEdits.mockImplementation(() => new Promise(() => {}));
+      c.enterEditor.mockImplementation(() => {
+        c.view.value = 'EDITOR';
+      });
+      const draft = c.catalog.value;
+      const task = action('a', 'EDITOR');
+      // Inspect before awaiting: neither a save nor a network round trip gates the view.
+      expect(c.view.value).toBe('EDITOR');
+      expect(c.catalog.value).toBe(draft);
+      expect(c.saveState.value).toBe(saveState);
+      expect(c.flushPendingEdits).not.toHaveBeenCalled();
+      expect(c.load).not.toHaveBeenCalled();
+      expect(c.installWorkspaceData).not.toHaveBeenCalled();
+      expect(c.templateNavigationPending.value).toBe(false);
+      await expect(task).resolves.toBe(true);
+    },
+  );
   it('does not lose edits or block the same draft entrance when a save has failed', async () => {
     const { context: c, action } = fixture();
     c.saveState.value = 'dirty';
@@ -183,7 +190,9 @@ describe('instant template configuration navigation', () => {
   });
   it('installs a valid destination owner snapshot and enters its editor before any await', async () => {
     const { context: c, state, action } = fixture(true);
-    c.enterEditor.mockImplementation(() => { c.view.value = 'EDITOR'; });
+    c.enterEditor.mockImplementation(() => {
+      c.view.value = 'EDITOR';
+    });
     const task = action('b', 'EDITOR');
     expect(c.view.value).toBe('EDITOR');
     expect(c.activeTemplateId.value).toBe('b');
@@ -203,7 +212,9 @@ describe('instant template configuration navigation', () => {
     await other.action('b', 'EDITOR', 'SOURCE_UPDATE');
     expect(other.context.installWorkspaceData).not.toHaveBeenCalled();
     expect(other.context.enterEditor).not.toHaveBeenCalled();
-    expect(other.context.rememberWorkbench).toHaveBeenCalledWith(expect.objectContaining({ action: 'SOURCE_UPDATE' }));
+    expect(other.context.rememberWorkbench).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'SOURCE_UPDATE' }),
+    );
   });
   it('uses the real installer to immediately switch inherited multi-template owner snapshots', async () => {
     const { context: c, state, action } = fixture(true);
@@ -320,43 +331,61 @@ describe('instant template configuration navigation', () => {
     await expect(action('b', 'CONFIG')).resolves.toBe(false);
     expect(c.selectedTemplateWorkflowRunId.value).toBe('run-a');
   });
-  it.each(['提交更新', '读取已受理任务', '追加成片', '追加包装'])('allows same-owner editor entry during %s without releasing the edit lock', async () => {
-    const { context: c, state, action } = fixture();
-    c.mutating.value = true;
-    c.projectEditLocked.value = true;
-    state.pendingSave = new Promise<boolean>(() => {});
-    c.flushPendingEdits.mockImplementation(() => new Promise(() => {}));
-    c.enterEditor.mockImplementation(() => { c.view.value = 'EDITOR'; });
-    const draft = c.catalog.value;
-    const task = action('a', 'EDITOR');
-    expect(c.view.value).toBe('EDITOR');
-    expect(c.projectEditLocked.value).toBe(true);
-    expect(c.mutating.value).toBe(true);
-    expect(c.catalog.value).toBe(draft);
-    expect(c.draftRevision.value).toBe(4);
-    expect(c.flushPendingEdits).not.toHaveBeenCalled();
-    expect(c.scheduleSave).not.toHaveBeenCalled();
-    expect(c.load).not.toHaveBeenCalled();
-    expect(c.stopPolling).not.toHaveBeenCalled();
-    await expect(task).resolves.toBe(true);
-  });
-  it.each(['switching', 'wrong-scope', 'wrong-owner', 'source-update'])('does not bypass mutation protection for %s', async (scenario) => {
-    const { context: c, action } = fixture();
-    c.mutating.value = true;
-    if (scenario === 'switching') c.runSwitching.value = true;
-    if (scenario === 'wrong-scope') c.installedWorkspaceScope.value = 'p:run-b';
-    if (scenario === 'wrong-owner') c.templateDirectory.value.workflowRunIds.a = 'run-b';
-    await expect(action('a', 'EDITOR', scenario === 'source-update' ? 'SOURCE_UPDATE' : undefined)).resolves.toBe(false);
-    expect(c.enterEditor).not.toHaveBeenCalled();
-    expect(c.installWorkspaceData).not.toHaveBeenCalled();
-    expect(c.selectedTemplateWorkflowRunId.value).toBe('run-a');
-  });
+  it.each(['提交更新', '读取已受理任务', '追加成片', '追加包装'])(
+    'allows same-owner editor entry during %s without releasing the edit lock',
+    async () => {
+      const { context: c, state, action } = fixture();
+      c.mutating.value = true;
+      c.projectEditLocked.value = true;
+      state.pendingSave = new Promise<boolean>(() => {});
+      c.flushPendingEdits.mockImplementation(() => new Promise(() => {}));
+      c.enterEditor.mockImplementation(() => {
+        c.view.value = 'EDITOR';
+      });
+      const draft = c.catalog.value;
+      const task = action('a', 'EDITOR');
+      expect(c.view.value).toBe('EDITOR');
+      expect(c.projectEditLocked.value).toBe(true);
+      expect(c.mutating.value).toBe(true);
+      expect(c.catalog.value).toBe(draft);
+      expect(c.draftRevision.value).toBe(4);
+      expect(c.flushPendingEdits).not.toHaveBeenCalled();
+      expect(c.scheduleSave).not.toHaveBeenCalled();
+      expect(c.load).not.toHaveBeenCalled();
+      expect(c.stopPolling).not.toHaveBeenCalled();
+      await expect(task).resolves.toBe(true);
+    },
+  );
+  it.each(['switching', 'wrong-scope', 'wrong-owner', 'source-update'])(
+    'does not bypass mutation protection for %s',
+    async (scenario) => {
+      const { context: c, action } = fixture();
+      c.mutating.value = true;
+      if (scenario === 'switching') c.runSwitching.value = true;
+      if (scenario === 'wrong-scope') c.installedWorkspaceScope.value = 'p:run-b';
+      if (scenario === 'wrong-owner') c.templateDirectory.value.workflowRunIds.a = 'run-b';
+      await expect(
+        action('a', 'EDITOR', scenario === 'source-update' ? 'SOURCE_UPDATE' : undefined),
+      ).resolves.toBe(false);
+      expect(c.enterEditor).not.toHaveBeenCalled();
+      expect(c.installWorkspaceData).not.toHaveBeenCalled();
+      expect(c.selectedTemplateWorkflowRunId.value).toBe('run-a');
+    },
+  );
   it('keeps the actual entrance button enabled during mutation but disabled for an uninstalled workspace', () => {
-    const button = page.match(/<button\s+class="button primary"\s+:disabled="([^"]+)"\s+@click="openTemplateWorkspace\(activeTemplateId, 'EDITOR'\)"/);
+    const button = page.match(
+      /<button\s+class="button primary"\s+:disabled="([^"]+)"\s+@click="openTemplateWorkspace\(activeTemplateId, 'EDITOR'\)"/,
+    );
     expect(button).not.toBeNull();
     const disabled = new Function('state', `with(state) { return ${button![1]}; }`);
-    const state = { workspace: { template: { name: '测试1' } }, mutating: true, runSwitching: false,
-      pageState: 'READY', installedWorkspaceScope: 'p:run-a', currentWorkspaceScope: 'p:run-a' };
+    const state = {
+      workspace: { template: { name: '测试1' } },
+      mutating: true,
+      runSwitching: false,
+      pageState: 'READY',
+      installedWorkspaceScope: 'p:run-a',
+      currentWorkspaceScope: 'p:run-a',
+    };
     expect(disabled(state)).toBe(false);
     expect(disabled({ ...state, runSwitching: true })).toBe(true);
     expect(disabled({ ...state, installedWorkspaceScope: 'p:run-b' })).toBe(true);

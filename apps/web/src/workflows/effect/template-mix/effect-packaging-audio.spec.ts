@@ -25,7 +25,7 @@ describe('packaging audio playback wiring', () => {
     expect(pageSource).toContain('@playback-changed="onPlaybackAudioChanged"');
     expect(packagingSource).toContain('() => props.playing');
     expect(packagingSource).toContain('sampleClock.dispose()');
-    expect(packagingSource).toContain('emit(\'playbackFailed\')');
+    expect(packagingSource).toContain("emit('playbackFailed')");
   });
   it('keeps a single frame barrier and visibly settles failed playback', () => {
     expect(packagingSource).not.toContain('void startPlaybackAudio(');
@@ -36,7 +36,7 @@ describe('packaging audio playback wiring', () => {
     expect(pageSource).toContain('if (failedVideo?.error)');
     expect(pageSource).toContain('failedVideo.load()');
     expect(pageSource).toContain('正在加载视频和音频，可点击暂停取消');
-    expect(pageSource).toContain('previewPlaybackError ? \'alert\' : \'status\'');
+    expect(pageSource).toContain("previewPlaybackError ? 'alert' : 'status'");
   });
   it('reads output time every frame for captions without advancing the full editor tree each frame', () => {
     expect(pageSource).toContain('packagingPanel.value?.playbackAudioTime()');
@@ -53,10 +53,14 @@ describe('packaging audio playback wiring', () => {
     expect(pageSource).toContain(
       'selectedPackaging.value?.checkpoint.captionFontSize ?? stageCaptionFontSize.value',
     );
-    expect(pageSource).toContain('fontSize: `${packagingCaptionFontPixels(captionFontSize.value, stageCaptionCanvasHeight.value)}px`');
+    expect(pageSource).toContain(
+      'fontSize: `${packagingCaptionFontPixels(captionFontSize.value, stageCaptionCanvasHeight.value)}px`',
+    );
     expect(pageSource).toContain('stageCaptionCanvasHeight.value = entry.contentRect.height');
     expect(pageSource).toContain('stageCaptionResizeObserver?.disconnect()');
-    expect(pageSource).not.toContain('stageCaptionCanvasHeight.value = element.getBoundingClientRect().height');
+    expect(pageSource).not.toContain(
+      'stageCaptionCanvasHeight.value = element.getBoundingClientRect().height',
+    );
     expect(pageSource).toContain('checkpoint.captionFontSize = next');
     expect(pageSource).toContain('changeCaptionFontSize(-1)');
     expect(pageSource).toContain('changeCaptionFontSize(1)');

@@ -16,8 +16,14 @@ const props = withDefaults(
 
 const frameCount = computed(() => Math.max(3, Math.min(8, Math.round(props.duration * 2))));
 const frameTime = (index: number): number => {
-  const safeStart = Math.max(0, Math.min(props.trimStart, Math.max(0, props.sourceDuration - 0.04)));
-  const safeDuration = Math.max(0, Math.min(props.duration, props.sourceDuration - safeStart - 0.04));
+  const safeStart = Math.max(
+    0,
+    Math.min(props.trimStart, Math.max(0, props.sourceDuration - 0.04)),
+  );
+  const safeDuration = Math.max(
+    0,
+    Math.min(props.duration, props.sourceDuration - safeStart - 0.04),
+  );
   const progress = frameCount.value <= 1 ? 0 : index / (frameCount.value - 1);
   return Math.max(0, Math.min(props.sourceDuration - 0.04, safeStart + safeDuration * progress));
 };

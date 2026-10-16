@@ -13,7 +13,10 @@ function harness() {
   };
   const tx = {
     $queryRaw: vi.fn(),
-    workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'current', editIdMap: {} }), update: vi.fn() },
+    workflowRun: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'current', editIdMap: {} }),
+      update: vi.fn(),
+    },
     workingArtifact: { findFirst: vi.fn().mockResolvedValue({ id: 'source' }) },
     effectSegmentRenderBatch: {
       findFirst: vi
@@ -63,9 +66,19 @@ describe('render additions reuse the existing task/outbox transaction', () => {
     const { tx, old, run } = harness();
     const before = structuredClone(old);
     expect(await run()).toEqual({ kind: 'UPDATED' });
-    expect(tx.workflowRun.update).toHaveBeenCalledWith({ where: { id: 'current' },
-      data: { editIdMap: { renderProgress: { batchId: 'batch', taskIds: ['new-task'],
-        synchronizedTaskIds: [], removedTaskIds: [] } } } });
+    expect(tx.workflowRun.update).toHaveBeenCalledWith({
+      where: { id: 'current' },
+      data: {
+        editIdMap: {
+          renderProgress: {
+            batchId: 'batch',
+            taskIds: ['new-task'],
+            synchronizedTaskIds: [],
+            removedTaskIds: [],
+          },
+        },
+      },
+    });
     expect(old).toEqual(before);
     expect(tx.effectSegmentRenderTask.update).not.toHaveBeenCalled();
     expect(tx.effectSegmentRenderTask.createMany.mock.calls[0]![0].data).toMatchObject([

@@ -195,9 +195,12 @@ describe('slot-bound narration layout', () => {
       if (condition === 'MISSING_PROMPT') rows.splice(1, 1);
       if (condition === 'UNAVAILABLE_PROMPT') rows[1]!.availability = 'SOURCE_REMOVED';
       if (condition === 'NO_ADOPTION') rows[0]!.payload = { promptId: 'p' };
-      if (condition === 'BAD_HASH') rows[0]!.payload = {
-        promptId: 'p', promptText: '未确认正文', adoptedPrompt: { promptContentHash: 'invalid' },
-      };
+      if (condition === 'BAD_HASH')
+        rows[0]!.payload = {
+          promptId: 'p',
+          promptText: '未确认正文',
+          adoptedPrompt: { promptContentHash: 'invalid' },
+        };
       expect(() => packagingSnapshot(variant(), materials, rows)).toThrow(/包装来源/);
     },
   );
@@ -221,8 +224,16 @@ describe('slot-bound narration layout', () => {
     (condition) => {
       const rows = adoptedSources();
       rows[1]!.freshness = 'STALE';
-      rows[2]!.dependencies = [{ sourceType: 'WORKING_ARTIFACT', sourceArtifactId: 'import',
-        sourceNodeId: 'SOURCE_IMPORT', sourceKey: 'source-package:p', sourceRevision: 1, sourceHash: null }];
+      rows[2]!.dependencies = [
+        {
+          sourceType: 'WORKING_ARTIFACT',
+          sourceArtifactId: 'import',
+          sourceNodeId: 'SOURCE_IMPORT',
+          sourceKey: 'source-package:p',
+          sourceRevision: 1,
+          sourceHash: null,
+        },
+      ];
       if (condition !== 'MISSING') {
         const source = artifact('import', 'source-package:p', {});
         if (condition === 'STALE') source.freshness = 'STALE';
@@ -451,16 +462,30 @@ describe('slot-bound narration layout', () => {
   it('accepts the worker recovery checkpoints before its first paid request and during waits', () => {
     const frozen = { ...snapshot(), operation: 'BATCH_PACKAGE' as const };
     const startedAt = '2026-10-11T06:00:00+00:00';
-    expect(() => validatePackagingCheckpoint(frozen, {
-      recovery: { startedAt, attempts: {} },
-    })).not.toThrow();
-    expect(() => validatePackagingCheckpoint(frozen, {
-      automaticRetries: 5,
-      recovery: { startedAt, attempts: { VOICE: 5, MUSIC: 2 }, stage: 'VOICE',
-        waitingUntil: '2026-10-11T06:00:30+00:00' },
-      voiceRecovery: { ['a'.repeat(64)]: { startedAt, attempts: 8, pending: false,
-        waitingUntil: '2026-10-11T06:00:30Z' } },
-    })).not.toThrow();
+    expect(() =>
+      validatePackagingCheckpoint(frozen, {
+        recovery: { startedAt, attempts: {} },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validatePackagingCheckpoint(frozen, {
+        automaticRetries: 5,
+        recovery: {
+          startedAt,
+          attempts: { VOICE: 5, MUSIC: 2 },
+          stage: 'VOICE',
+          waitingUntil: '2026-10-11T06:00:30+00:00',
+        },
+        voiceRecovery: {
+          ['a'.repeat(64)]: {
+            startedAt,
+            attempts: 8,
+            pending: false,
+            waitingUntil: '2026-10-11T06:00:30Z',
+          },
+        },
+      }),
+    ).not.toThrow();
   });
   it.each([
     { recovery: { startedAt: 'invalid', attempts: {} } },
@@ -469,7 +494,11 @@ describe('slot-bound narration layout', () => {
     { recovery: { startedAt: '2026-10-11T06:00:00Z', attempts: {}, injected: true } },
     { voiceRecovery: { invalid: { startedAt: '2026-10-11T06:00:00Z', attempts: 1 } } },
     { voiceRecovery: { ['a'.repeat(64)]: { startedAt: '2026-10-11T06:00:00Z', attempts: 21 } } },
-    { voiceRecovery: { ['a'.repeat(64)]: { startedAt: '2026-10-11T06:00:00Z', attempts: 1, pending: 'yes' } } },
+    {
+      voiceRecovery: {
+        ['a'.repeat(64)]: { startedAt: '2026-10-11T06:00:00Z', attempts: 1, pending: 'yes' },
+      },
+    },
   ])('rejects malformed durable recovery state %j', (cp) => {
     expect(() => validatePackagingCheckpoint(snapshot(), cp as PackagingCheckpoint)).toThrow();
   });

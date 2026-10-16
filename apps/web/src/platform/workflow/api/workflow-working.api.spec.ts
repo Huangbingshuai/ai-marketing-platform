@@ -29,10 +29,14 @@ describe('workflow working API', () => {
     await publishEffectNodeEdit('project/one', 'run/one', 'PROMPT_GENERATION');
 
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
-    expect(urls[0]).toContain('/projects/project%2Fone/workflow-runs/effect/branches/run%2Fone/nodes/PROMPT_GENERATION/edit');
+    expect(urls[0]).toContain(
+      '/projects/project%2Fone/workflow-runs/effect/branches/run%2Fone/nodes/PROMPT_GENERATION/edit',
+    );
     expect(urls[1]).toBe(`${urls[0]}/cancel`);
     expect(urls[2]).toBe(`${urls[0]}/publish`);
-    expect(fetchMock.mock.calls.every(([, init]) => (init as RequestInit).method === 'POST')).toBe(true);
+    expect(fetchMock.mock.calls.every(([, init]) => (init as RequestInit).method === 'POST')).toBe(
+      true,
+    );
   });
   it('loads and activates effect branches through project-scoped routes', async () => {
     const fetchMock = vi.fn().mockImplementation(
@@ -60,12 +64,15 @@ describe('workflow working API', () => {
   });
   it('retries a transient gateway failure before showing the latest branch tree', async () => {
     const branchTree = { projectId: 'project-a', activeWorkflowRunId: null, branches: [] };
-    const fetchMock = vi.fn()
+    const fetchMock = vi
+      .fn()
       .mockResolvedValueOnce(new Response('', { status: 502 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: branchTree }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }));
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true, data: branchTree }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await getEffectWorkflowBranchTree('project-a');

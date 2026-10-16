@@ -77,20 +77,32 @@ describe('project workspace artifact aggregation', () => {
   });
 
   it('counts confirmed final videos separately from stale or unavailable outputs', () => {
-    const completed = artifact('final-video:template:variant-1', {}, {
-      nodeId: 'FINAL_OUTPUT',
-      type: 'FINAL_VIDEO',
-    });
-    const stale = artifact('final-video:template:variant-2', {}, {
-      nodeId: 'FINAL_OUTPUT',
-      type: 'FINAL_VIDEO',
-      freshness: 'STALE',
-    });
-    const unavailable = artifact('final-video:template:variant-3', {}, {
-      nodeId: 'FINAL_OUTPUT',
-      type: 'FINAL_VIDEO',
-      availability: 'SOURCE_REMOVED',
-    });
+    const completed = artifact(
+      'final-video:template:variant-1',
+      {},
+      {
+        nodeId: 'FINAL_OUTPUT',
+        type: 'FINAL_VIDEO',
+      },
+    );
+    const stale = artifact(
+      'final-video:template:variant-2',
+      {},
+      {
+        nodeId: 'FINAL_OUTPUT',
+        type: 'FINAL_VIDEO',
+        freshness: 'STALE',
+      },
+    );
+    const unavailable = artifact(
+      'final-video:template:variant-3',
+      {},
+      {
+        nodeId: 'FINAL_OUTPUT',
+        type: 'FINAL_VIDEO',
+        availability: 'SOURCE_REMOVED',
+      },
+    );
 
     expect(isFinalVideoArtifact(completed)).toBe(true);
     expect(finalVideoArtifactCounts([completed, stale, unavailable])).toEqual({

@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import page from './EffectTemplateMixNodePage.vue?raw';
-import api from './api/effect-template-mix.api.ts?raw';
-import parent from '../source-import/EffectImportNodePage.vue?raw';
-import output from '../final-output/EffectFinalOutputNodePage.vue?raw';
+import rawPage from './EffectTemplateMixNodePage.vue?raw';
+import rawApi from './api/effect-template-mix.api.ts?raw';
+import rawParent from '../source-import/EffectImportNodePage.vue?raw';
+import rawOutput from '../final-output/EffectFinalOutputNodePage.vue?raw';
+
+const page = rawPage.replace(/\r\n/g, '\n');
+const api = rawApi.replace(/\r\n/g, '\n');
+const parent = rawParent.replace(/\r\n/g, '\n');
+const output = rawOutput.replace(/\r\n/g, '\n');
 
 describe('permanent template deletion interaction', () => {
   const action = page.split('const deleteTemplate =')[1]!.split('const submitTemplateOnEnter')[0]!;
@@ -28,7 +33,9 @@ describe('permanent template deletion interaction', () => {
     expect(action).not.toContain('await load()');
     const accepted = action.split('const receipt: EffectTemplateDeleted =')[1]!;
     expect(accepted).not.toContain('await loadEffectTemplateMixWorkspace');
-    expect(action).toContain('const latest = await loadEffectTemplateMixWorkspace(projectId, targetRunId)');
+    expect(action).toContain(
+      'const latest = await loadEffectTemplateMixWorkspace(projectId, targetRunId)',
+    );
     expect(action).not.toContain('while (');
   });
   it('does not lock other template selection or show a parent branch-publication curtain', () => {

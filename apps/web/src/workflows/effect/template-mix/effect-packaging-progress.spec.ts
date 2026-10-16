@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { PackagingItem, PackagingRun } from '@ai-marketing/contracts';
-import { currentPackagingRun, packagingActionText, packagingItemStageState, packagingProgress, packagingStageSamples, packagingStageState, packagingTerminalResult } from './effect-packaging-progress';
+import {
+  currentPackagingRun,
+  packagingActionText,
+  packagingItemStageState,
+  packagingProgress,
+  packagingStageSamples,
+  packagingStageState,
+  packagingTerminalResult,
+} from './effect-packaging-progress';
 import { PACKAGING_STAGES } from '@ai-marketing/contracts';
 import component from './EffectTemplateMixPackaging.vue?raw';
 import page from './EffectTemplateMixNodePage.vue?raw';
@@ -10,8 +18,11 @@ const item = (stage: PackagingItem['stage'], status: PackagingItem['status']) =>
 const run = (items: PackagingItem[]) => ({ items }) as PackagingRun;
 describe('packaging workflow progress', () => {
   it('reports the 27/44 partial result as ended rather than stuck at 78 percent', () => {
-    const partial = { status: 'PARTIAL', counts: {completed: 27, total: 44, failed: 17},
-      execution: {progressPercent: 78, queued: 0, running: 0} } as PackagingRun;
+    const partial = {
+      status: 'PARTIAL',
+      counts: { completed: 27, total: 44, failed: 17 },
+      execution: { progressPercent: 78, queued: 0, running: 0 },
+    } as PackagingRun;
     const result = packagingTerminalResult(partial)!;
     expect(result.summary).toBe('智能成片包装 · 已结束（部分失败）');
     expect(result.detail).toContain('成功 27 / 44 条 · 失败 17 条');
@@ -20,10 +31,13 @@ describe('packaging workflow progress', () => {
   });
   it('keeps running progress and all terminal statuses distinct', () => {
     for (const status of ['QUEUED', 'RUNNING'] as const)
-      expect(packagingTerminalResult({status} as PackagingRun)).toBeNull();
+      expect(packagingTerminalResult({ status } as PackagingRun)).toBeNull();
     expect(packagingTerminalResult()).toBeNull();
     for (const status of ['COMPLETED', 'FAILED', 'CANCELLED'] as const) {
-      const result = packagingTerminalResult({status, counts:{completed:0,total:2,failed:2}} as PackagingRun)!;
+      const result = packagingTerminalResult({
+        status,
+        counts: { completed: 0, total: 2, failed: 2 },
+      } as PackagingRun)!;
       expect(result.summary).toContain('已结束');
     }
   });
@@ -64,22 +78,49 @@ describe('packaging workflow progress', () => {
     expect(packagingProgress(run(items))).toBe(100);
     expect(packagingStageState(items, 'READY')).toMatchObject({ completed: 100, tone: 'success' });
     for (const stage of PACKAGING_STAGES)
-      expect(packagingStageState(items, stage)).toMatchObject({ completed: 100, failed: 0, running: 0, label: '已完成' });
+      expect(packagingStageState(items, stage)).toMatchObject({
+        completed: 100,
+        failed: 0,
+        running: 0,
+        label: '已完成',
+      });
   });
   it('shows parallel execution and failure counts without declaring the whole stage failed', () => {
-    const items = [item('SCRIPT', 'FAILED'), item('SCRIPT', 'RUNNING'), item('VOICE', 'RUNNING'), item('VISION', 'RUNNING')];
+    const items = [
+      item('SCRIPT', 'FAILED'),
+      item('SCRIPT', 'RUNNING'),
+      item('VOICE', 'RUNNING'),
+      item('VISION', 'RUNNING'),
+    ];
     expect(packagingStageState(items, 'SCRIPT')).toMatchObject({
-      completed: 1, running: 1, failed: 1, waiting: 1, tone: 'running', label: '执行中 · 1 条失败',
+      completed: 1,
+      running: 1,
+      failed: 1,
+      waiting: 1,
+      tone: 'running',
+      label: '执行中 · 1 条失败',
     });
-    expect(packagingStageState(items, 'VOICE')).toMatchObject({ completed: 0, running: 1, blocked: 1, waiting: 2 });
+    expect(packagingStageState(items, 'VOICE')).toMatchObject({
+      completed: 0,
+      running: 1,
+      blocked: 1,
+      waiting: 2,
+    });
     expect(packagingItemStageState(items[0]!, 'VOICE')).toBe('blocked');
   });
   it('clears old failures when persisted retry results complete', () => {
     const items = [item('VISION', 'FAILED'), item('SCRIPT', 'FAILED'), item('MUSIC', 'RUNNING')];
     expect(packagingStageState(items, 'VISION').failed).toBe(1);
-    for (const value of items) { value.status = 'COMPLETED'; value.stage = 'READY'; }
+    for (const value of items) {
+      value.status = 'COMPLETED';
+      value.stage = 'READY';
+    }
     for (const stage of PACKAGING_STAGES)
-      expect(packagingStageState(items, stage)).toMatchObject({ failed: 0, completed: 3, tone: 'success' });
+      expect(packagingStageState(items, stage)).toMatchObject({
+        failed: 0,
+        completed: 3,
+        tone: 'success',
+      });
   });
   it('keeps a completed package complete regardless of later picture edits', () => {
     const value = item('READY', 'COMPLETED');
@@ -130,7 +171,9 @@ describe('packaging workflow progress', () => {
     expect(component).toContain(
       'failures: [failures: { variantId: string; name: string; message: string }[]];',
     );
-    expect(component).toContain("watch(failures, (value) => emit('failures', value), { immediate: true });");
+    expect(component).toContain(
+      "watch(failures, (value) => emit('failures', value), { immediate: true });",
+    );
     // The node has to say it out loud; a silent film is otherwise indistinguishable from a broken one.
     expect(page).toContain('@failures="packagingFailures = $event"');
     expect(page.includes('data-testid="packaging-failure-banner"')).toBe(false);
@@ -150,16 +193,36 @@ describe('packaging workflow progress', () => {
     const actual = {
       name: '成片 01',
       status: 'COMPLETED',
-      sourceVisualTimeline: { ...source, offsets: { 'slot-1': 1.25 }, timelineStarts: { 'slot-1': 2 } },
-      sourceClips: [{
-        slotLabel: '产品展示', materialName: 'R-06 · 腊肠煎制', sourceOffset: 1.25,
-        timelineStart: 2, duration: 8, transition: '叠化', transitionDuration: 0.5,
-        originalAudioDetached: true,
-      }],
+      sourceVisualTimeline: {
+        ...source,
+        offsets: { 'slot-1': 1.25 },
+        timelineStarts: { 'slot-1': 2 },
+      },
+      sourceClips: [
+        {
+          slotLabel: '产品展示',
+          materialName: 'R-06 · 腊肠煎制',
+          sourceOffset: 1.25,
+          timelineStart: 2,
+          duration: 8,
+          transition: '叠化',
+          transitionDuration: 0.5,
+          originalAudioDetached: true,
+        },
+      ],
       sourceFacts: [{ id: 'fact-1', text: '广式腊肠采用传统风干工艺' }],
       checkpoint: {
         vision: [{ slotId: 'slot-1', start: 0, end: 8, description: '木勺将食材放入盘中' }],
-        script: [{ id: 'line-1', slotId: 'slot-1', text: '把美味轻松端上桌。', start: 0, end: 3, factIds: ['fact-1'] }],
+        script: [
+          {
+            id: 'line-1',
+            slotId: 'slot-1',
+            text: '把美味轻松端上桌。',
+            start: 0,
+            end: 3,
+            factIds: ['fact-1'],
+          },
+        ],
         voices: { 'line-1': { fileObjectId: 'private-id', duration: 2.4, start: 0, volume: 1 } },
         musicBrief: '轻快温暖的纯音乐',
         music: { fileObjectId: 'private-id', duration: 8, start: 0, volume: 0.2 },
@@ -167,7 +230,9 @@ describe('packaging workflow progress', () => {
       },
     } as unknown as PackagingItem;
     expect(packagingStageSamples([actual], 'VISION')).toEqual({
-      inputSamples: ['成片 01 · 分析产品展示 · R-06 · 腊肠煎制 · 原片 1.3–9.3 秒 · 成片 2.0–10.0 秒中的实际画面动作'],
+      inputSamples: [
+        '成片 01 · 分析产品展示 · R-06 · 腊肠煎制 · 原片 1.3–9.3 秒 · 成片 2.0–10.0 秒中的实际画面动作',
+      ],
       outputSamples: ['成片 01 · 产品展示：木勺将食材放入盘中'],
       audioPreviews: [],
     });
@@ -195,14 +260,31 @@ describe('packaging workflow progress', () => {
     expect(packagingStageSamples([actual], 'READY').outputSamples[0]).toContain(
       '口播：「把美味轻松端上桌。」 · 字幕：「把美味轻松端上桌。」 · 含纯音乐',
     );
-    expect(JSON.stringify(packagingStageSamples([actual], 'VOICE').outputSamples)).not.toContain('private-id');
+    expect(JSON.stringify(packagingStageSamples([actual], 'VOICE').outputSamples)).not.toContain(
+      'private-id',
+    );
   });
   it('caps examples without filtering them by source timeline changes', () => {
-    const slots = Array.from({ length: 7 }, (_, index) => ({ id: `slot-${index}`, label: `镜头 ${index}`, duration: 2 }));
+    const slots = Array.from({ length: 7 }, (_, index) => ({
+      id: `slot-${index}`,
+      label: `镜头 ${index}`,
+      duration: 2,
+    }));
     const current = {
-      name: '成片样例', status: 'RUNNING',
-      sourceVisualTimeline: { slots, bindings: Object.fromEntries(slots.map((slot) => [slot.id, slot.id])) },
-      checkpoint: { vision: slots.map((slot) => ({ slotId: slot.id, start: 0, end: 2, description: '画面内容' })) },
+      name: '成片样例',
+      status: 'RUNNING',
+      sourceVisualTimeline: {
+        slots,
+        bindings: Object.fromEntries(slots.map((slot) => [slot.id, slot.id])),
+      },
+      checkpoint: {
+        vision: slots.map((slot) => ({
+          slotId: slot.id,
+          start: 0,
+          end: 2,
+          description: '画面内容',
+        })),
+      },
     } as unknown as PackagingItem;
     const samples = packagingStageSamples([current, current], 'VISION');
     expect(samples.inputSamples).toHaveLength(4);

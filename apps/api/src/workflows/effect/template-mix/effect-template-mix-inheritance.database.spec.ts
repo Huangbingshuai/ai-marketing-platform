@@ -84,11 +84,19 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             const trims: string[] = [];
             for (let index = 0; index < 25; index++) {
               const createdAt = new Date(new Date('2026-10-04T01:00:00Z').getTime() + index * 1000);
-              const trim = await tx.effectTemplateMixAiRun.create({ data: {
-                ...common, idempotencyKey: randomUUID(), createdAt, completedAt: createdAt,
-                inputSnapshot: { trimOnly: true, materials: [{ id: 'old', promptId: 'original' }] },
-                selectionResult: [{ materialId: 'old' }],
-              } });
+              const trim = await tx.effectTemplateMixAiRun.create({
+                data: {
+                  ...common,
+                  idempotencyKey: randomUUID(),
+                  createdAt,
+                  completedAt: createdAt,
+                  inputSnapshot: {
+                    trimOnly: true,
+                    materials: [{ id: 'old', promptId: 'original' }],
+                  },
+                  selectionResult: [{ materialId: 'old' }],
+                },
+              });
               trims.unshift(trim.id);
             }
             const repository = new EffectTemplateMixAiRepository(tx as unknown as PrismaService);
@@ -106,8 +114,13 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
             expect(pendingAddedMaterials(templateId, materials, oldHistory)).toEqual(['new']);
             expect(pendingAddedMaterials(templateId, materials, newHistory)).toEqual([]);
             expect(pendingAddedMaterials(templateId, materials, [append, baseline])).toEqual([]);
-            const nextMaterials = [...materials, { id: 'next', sourcePromptId: 'next', available: true }];
-            expect(pendingAddedMaterials(templateId, nextMaterials, localHistory)).toEqual(['next']);
+            const nextMaterials = [
+              ...materials,
+              { id: 'next', sourcePromptId: 'next', available: true },
+            ];
+            expect(pendingAddedMaterials(templateId, nextMaterials, localHistory)).toEqual([
+              'next',
+            ]);
             expect(pendingAddedMaterials(templateId, nextMaterials, newHistory)).toEqual(['next']);
             expect(await repository.inheritedMixAiRuns(randomUUID(), oldChild)).toEqual([]);
             throw rollback;

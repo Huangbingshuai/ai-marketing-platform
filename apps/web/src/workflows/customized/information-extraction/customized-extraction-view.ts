@@ -1,7 +1,12 @@
-import type { Asset, CustomizedImportMaterial } from '@ai-marketing/contracts';
+import type {
+  Asset,
+  CustomizedBrief,
+  CustomizedBriefIssue,
+  CustomizedImportMaterial,
+} from '@ai-marketing/contracts';
 
 /** UI presentation only. No API/result persistence is implied by this model. */
-export type CustomizedExtractionFields = import('@ai-marketing/contracts').CustomizedBrief;
+export type CustomizedExtractionFields = CustomizedBrief;
 /** A spread of a reactive card can retain a nested array proxy. Snapshot the array explicitly. */
 export const snapshotCustomizedFields = (
   fields: CustomizedExtractionFields,
@@ -19,7 +24,7 @@ export type CustomizedExtractionSource = {
   asset: Asset | null;
   error?: string;
 };
-export type CustomizedExtractionIssue = import('@ai-marketing/contracts').CustomizedBriefIssue;
+export type CustomizedExtractionIssue = CustomizedBriefIssue;
 export type CustomizedExtractionView = {
   status: 'EMPTY' | 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PARTIAL' | 'STALE';
   fields: CustomizedExtractionFields;

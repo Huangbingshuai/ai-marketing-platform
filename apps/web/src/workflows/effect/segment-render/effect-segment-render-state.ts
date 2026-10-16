@@ -141,18 +141,25 @@ export const effectSegmentRenderAdditionalPurposes = (
 
 /** Card text only; never rewrite the Prompt used for rendering or source inspection. */
 export const effectSegmentRenderCardTitle = (
-  task: Pick<EffectSegmentRenderTask, 'creativeCore' | 'independentImport' | 'promptText' | 'promptCode' | 'renderCode'>,
+  task: Pick<
+    EffectSegmentRenderTask,
+    'creativeCore' | 'independentImport' | 'promptText' | 'promptCode' | 'renderCode'
+  >,
   confirmedCreativeCore?: string,
 ): string => {
   const creativeCore =
     (!task.independentImport && confirmedCreativeCore?.trim()) || task.creativeCore?.trim();
   if (creativeCore) return creativeCore;
-  return task.promptText
-    .trim()
-    .replace(/^【视频概览】\s*[:：]?\s*/u, '')
-    .replace(/^目标\s*[:：]\s*/u, '')
-    .replace(/\s+/gu, ' ')
-    .trim() || task.promptCode || task.renderCode;
+  return (
+    task.promptText
+      .trim()
+      .replace(/^【视频概览】\s*[:：]?\s*/u, '')
+      .replace(/^目标\s*[:：]\s*/u, '')
+      .replace(/\s+/gu, ' ')
+      .trim() ||
+    task.promptCode ||
+    task.renderCode
+  );
 };
 
 export type EffectSegmentRenderPromptDetails = {
@@ -217,7 +224,10 @@ export const effectSegmentRenderWorkspaceWithBatch = (
 ): EffectSegmentRenderWorkspace => ({
   ...current,
   productId: batch.productId,
-  promptArtifactRevision: batch.latestPromptRevision === undefined ? current.promptArtifactRevision ?? null : batch.latestPromptRevision,
+  promptArtifactRevision:
+    batch.latestPromptRevision === undefined
+      ? (current.promptArtifactRevision ?? null)
+      : batch.latestPromptRevision,
   promptCount: batch.latestPromptCount ?? current.promptCount,
   sourcePromptArtifactId: batch.sourcePrompt.artifactId,
   sourcePromptRevision: batch.sourcePrompt.revision,

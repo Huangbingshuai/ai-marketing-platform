@@ -44,7 +44,13 @@ export class VoiceCatalogSampleQueryDto extends EffectTemplateMixWorkspaceQueryD
   @IsString() @Matches(/^[a-zA-Z0-9_.:-]{1,100}$/) version!: string;
 }
 export class VoiceCatalogSampleFailureDto extends VoiceCatalogSampleVersionDto {
-  @IsIn(['PROVIDER_REJECTED', 'UNAUTHORIZED', 'SUBMISSION_UNKNOWN', 'INVALID_AUDIO', 'UPLOAD_FAILED'])
+  @IsIn([
+    'PROVIDER_REJECTED',
+    'UNAUTHORIZED',
+    'SUBMISSION_UNKNOWN',
+    'INVALID_AUDIO',
+    'UPLOAD_FAILED',
+  ])
   code!: string;
 }
 const uuid = new ParseUUIDPipe({ version: '4' });
@@ -164,7 +170,10 @@ export class EffectVoiceCatalogSampleWorkerController {
     return this.service.catalogSampleTargets();
   }
   @Post(':voiceProfileId/claim')
-  claim(@Param('voiceProfileId') voiceProfileId: string, @Query() query: VoiceCatalogSampleVersionDto) {
+  claim(
+    @Param('voiceProfileId') voiceProfileId: string,
+    @Query() query: VoiceCatalogSampleVersionDto,
+  ) {
     return this.service.claimCatalogSample(voiceProfileId, query.version);
   }
   @Post(':voiceProfileId/fail')

@@ -152,8 +152,14 @@ window.fetch = async (input, init) => {
     projects = projects.filter((project) => project.id !== id);
     data = { ...workspace(), draftRevision: 2 };
   } else if (path.endsWith('/empty-variants')) {
-    projects.push({ ...structuredClone(variant), id: `manual-${projects.length}`, name: '新建成片',
-      bindings: {}, bindingRevisions: {}, conflictSlotIds: slots.map((slot) => slot.id) });
+    projects.push({
+      ...structuredClone(variant),
+      id: `manual-${projects.length}`,
+      name: '新建成片',
+      bindings: {},
+      bindingRevisions: {},
+      conflictSlotIds: slots.map((slot) => slot.id),
+    });
     data = { ...workspace(), draftRevision: 2 };
   } else if (path.includes('/template-mix?')) data = workspace();
   else if (path.includes('/draft')) data = { ...workspace(), draftRevision: 2 };

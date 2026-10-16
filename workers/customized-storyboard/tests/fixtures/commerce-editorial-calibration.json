@@ -6,14 +6,9 @@
     "brief": {
       "productName": "柔润乳霜",
       "productDescription": "乳霜质地的日常护肤产品",
-      "sellingPoints": [
-        "乳霜质地",
-        "不添加香精"
-      ],
+      "sellingPoints": ["乳霜质地", "不添加香精"],
       "targetAudience": "喜欢无香配方的日常护肤使用者",
-      "avoidedElements": [
-        "不得声称即时消除细纹"
-      ]
+      "avoidedElements": ["不得声称即时消除细纹"]
     },
     "input": {
       "schemaVersion": 1,
@@ -35,14 +30,9 @@
       "brief": {
         "productName": "柔润乳霜",
         "productDescription": "乳霜质地的日常护肤产品",
-        "sellingPoints": [
-          "乳霜质地",
-          "不添加香精"
-        ],
+        "sellingPoints": ["乳霜质地", "不添加香精"],
         "targetAudience": "喜欢无香配方的日常护肤使用者",
-        "avoidedElements": [
-          "不得声称即时消除细纹"
-        ]
+        "avoidedElements": ["不得声称即时消除细纹"]
       },
       "settings": {
         "videoType": "ECOMMERCE",
@@ -53,9 +43,7 @@
         "instructions": "unused",
         "structure": ""
       },
-      "scriptIds": [
-        "calibration"
-      ],
+      "scriptIds": ["calibration"],
       "existingConcepts": [],
       "models": {
         "creative": "doubao-seed-2-1-pro-260915",
@@ -92,14 +80,9 @@
     "brief": {
       "productName": "时位预约",
       "productDescription": "供小型工作室手工登记预约的工具",
-      "sellingPoints": [
-        "允许设置时段容量并显示剩余名额",
-        "名额已满时系统禁止在该时段追加预约"
-      ],
+      "sellingPoints": ["允许设置时段容量并显示剩余名额", "名额已满时系统禁止在该时段追加预约"],
       "targetAudience": "需要回答预约余位的小型工作室负责人",
-      "avoidedElements": [
-        "不声称可自动读取聊天记录或对接外部平台"
-      ]
+      "avoidedElements": ["不声称可自动读取聊天记录或对接外部平台"]
     },
     "input": {
       "schemaVersion": 1,
@@ -121,14 +104,9 @@
       "brief": {
         "productName": "时位预约",
         "productDescription": "供小型工作室手工登记预约的工具",
-        "sellingPoints": [
-          "允许设置时段容量并显示剩余名额",
-          "名额已满时系统禁止在该时段追加预约"
-        ],
+        "sellingPoints": ["允许设置时段容量并显示剩余名额", "名额已满时系统禁止在该时段追加预约"],
         "targetAudience": "需要回答预约余位的小型工作室负责人",
-        "avoidedElements": [
-          "不声称可自动读取聊天记录或对接外部平台"
-        ]
+        "avoidedElements": ["不声称可自动读取聊天记录或对接外部平台"]
       },
       "settings": {
         "videoType": "ECOMMERCE",
@@ -139,9 +117,7 @@
         "instructions": "unused",
         "structure": ""
       },
-      "scriptIds": [
-        "calibration"
-      ],
+      "scriptIds": ["calibration"],
       "existingConcepts": [],
       "models": {
         "creative": "doubao-seed-2-1-pro-260915",

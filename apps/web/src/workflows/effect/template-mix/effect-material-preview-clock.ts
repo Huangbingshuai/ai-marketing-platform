@@ -6,7 +6,8 @@ export class MaterialPreviewClock {
   private generation = 0;
 
   constructor(
-    private readonly requestFrame: (callback: FrameRequestCallback) => number = (callback) => requestAnimationFrame(callback),
+    private readonly requestFrame: (callback: FrameRequestCallback) => number = (callback) =>
+      requestAnimationFrame(callback),
     private readonly cancelFrame: (id: number) => void = (id) => cancelAnimationFrame(id),
   ) {}
 

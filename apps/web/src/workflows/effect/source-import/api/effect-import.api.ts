@@ -76,17 +76,16 @@ const waitForWorkspaceRetry = (delayMs: number, signal?: AbortSignal): Promise<v
     return Promise.reject(new DOMException('工作区加载已取消', 'AbortError'));
   }
   return new Promise<void>((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
     const onAbort = (): void => {
       if (timer !== undefined) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       reject(new DOMException('工作区加载已取消', 'AbortError'));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
-    timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, delayMs);
   });
 };
 

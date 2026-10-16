@@ -68,9 +68,11 @@ describe('read-only directory of each template current workflow', () => {
     expect(page).toContain("templateDirectoryStatus.value === 'READY'");
     expect(page).toContain("directoryStatus === 'READY'");
     expect(page).toContain('正在读取当前模板版本');
-    expect(page).toContain("if (!canInstallCurrentEarly) {");
+    expect(page).toContain('if (!canInstallCurrentEarly) {');
     const background = page.split('.then((completeDirectory) => {')[1]!.split('.catch(')[0]!;
-    expect(background).toContain('templateDirectory.value = withoutDeletedMixCatalog(freshDirectory(completeDirectory), deletedTemplateIds());');
+    expect(background).toContain(
+      'templateDirectory.value = withoutDeletedMixCatalog(freshDirectory(completeDirectory), deletedTemplateIds());',
+    );
     expect(background).toContain("templateDirectoryStatus.value = 'READY';");
     expect(background).toContain('requestController === controller');
     expect(background).toContain('installedWorkspaceScope.value ===');

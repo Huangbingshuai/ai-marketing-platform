@@ -2049,7 +2049,8 @@ export class EffectTemplateMixService {
       this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
       this.aiRuns!.sourceArtifacts(projectId, workflowRunId),
       this.mixAiHistory(projectId, workflowRunId, templateId),
-      this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId, templateId) ?? Promise.resolve([]),
+      this.aiRuns?.inheritedMixAiRuns?.(projectId, workflowRunId, templateId) ??
+        Promise.resolve([]),
     ]);
     if (nodeState.revision !== expectedRevision)
       throw new ApiHttpException(
@@ -2325,7 +2326,8 @@ export class EffectTemplateMixService {
       sourcePromptId: source.promptId,
       promptText: source.prompt,
       ...(source.adoptedSource?.replacesMaterialIds
-        ? { replacesMaterialIds: source.adoptedSource.replacesMaterialIds } : {}),
+        ? { replacesMaterialIds: source.adoptedSource.replacesMaterialIds }
+        : {}),
     }));
     const currentSources = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
     for (const previous of classificationRuns) {
@@ -2372,9 +2374,14 @@ export class EffectTemplateMixService {
             const original = frozen.materials.find((source) => source.id === item.materialId)!;
             const candidate = retainedRoleMaterials(original, roleMaterials)[0];
             if (!candidate || present.has(candidate.id)) continue;
-            priorItems.push({ materialId: candidate.id, role, matchScore: item.matchScore,
+            priorItems.push({
+              materialId: candidate.id,
+              role,
+              matchScore: item.matchScore,
               ...(rows.find((row) => row.materialId === original.id)?.source === 'MANUAL'
-                ? { source: 'MANUAL' as const } : {}) });
+                ? { source: 'MANUAL' as const }
+                : {}),
+            });
             present.add(candidate.id);
           }
         }
@@ -2409,7 +2416,8 @@ export class EffectTemplateMixService {
           pool.map((item) => ({ materialId: item.materialId, role, matchScore: item.matchScore })),
         );
       for (const row of reusableRows)
-        if (!priorClassifications.has(row.materialId)) priorClassifications.set(row.materialId, row);
+        if (!priorClassifications.has(row.materialId))
+          priorClassifications.set(row.materialId, row);
       if (!appendNewMaterials) break;
     }
     // AI inputs contain only live heads. Keep scoped historical identities solely to carry
@@ -2950,12 +2958,31 @@ export class EffectTemplateMixService {
     const stored = await this.aiRuns!.find(projectId, runId);
     if (!stored) this.notFound('局部更新任务不存在');
     const snapshot = stored!.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
-    if (!snapshot.incremental || snapshot.sourceOperation?.protocol !== 'FROZEN_RENDER_V1' || !snapshot.workspaceHash)
-      throw new ApiHttpException('此历史任务不能安全续跑，请重新确认局部更新', HttpStatus.CONFLICT, 'CONFLICT');
+    if (
+      !snapshot.incremental ||
+      snapshot.sourceOperation?.protocol !== 'FROZEN_RENDER_V1' ||
+      !snapshot.workspaceHash
+    )
+      throw new ApiHttpException(
+        '此历史任务不能安全续跑，请重新确认局部更新',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
     if (stored!.status === 'CANCELLED')
-      throw new ApiHttpException('已取消任务不会自动恢复，请重新确认局部更新', HttpStatus.CONFLICT, 'CONFLICT');
-    if (stored!.status === 'FAILED' && !(await this.aiRuns!.frozenFilesAvailable(projectId, snapshot.materials)))
-      throw new ApiHttpException('冻结素材文件不可用，不能恢复此任务', HttpStatus.CONFLICT, 'CONFLICT');
+      throw new ApiHttpException(
+        '已取消任务不会自动恢复，请重新确认局部更新',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
+    if (
+      stored!.status === 'FAILED' &&
+      !(await this.aiRuns!.frozenFilesAvailable(projectId, snapshot.materials))
+    )
+      throw new ApiHttpException(
+        '冻结素材文件不可用，不能恢复此任务',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
     const result = await this.aiRuns!.retryAppend(projectId, runId);
     if (result.kind === 'NOT_FOUND') this.notFound('局部更新任务不存在');
     if (!('run' in result)) {
@@ -2967,7 +2994,11 @@ export class EffectTemplateMixService {
         CANCELLED: '已取消任务不会自动恢复',
         UNSUPPORTED: '此历史任务不能安全续跑，请重新确认局部更新',
       };
-      throw new ApiHttpException(messages[result.kind as keyof typeof messages] ?? '局部更新任务不存在', HttpStatus.CONFLICT, 'CONFLICT');
+      throw new ApiHttpException(
+        messages[result.kind as keyof typeof messages] ?? '局部更新任务不存在',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
     }
     return toAiRun(result.run);
   }
@@ -3005,7 +3036,12 @@ export class EffectTemplateMixService {
     );
   }
 
-  async recordAppendContinuation(projectId: string, runId: string, failed: boolean, retryable = false): Promise<void> {
+  async recordAppendContinuation(
+    projectId: string,
+    runId: string,
+    failed: boolean,
+    retryable = false,
+  ): Promise<void> {
     await this.aiRuns!.recordAppendContinuation(projectId, runId, failed, retryable);
   }
 
@@ -3414,8 +3450,10 @@ export class EffectTemplateMixService {
         source.nodeId === 'SEGMENT_RENDER' &&
         source.artifactKey.startsWith('render-clip:') &&
         (currentBatchClipKeys === null || currentBatchClipKeys.has(source.artifactKey)) &&
-        (!(snapshot.durationFilteredMaterials ||
-          (snapshot.durationFilteredImports && object(source.payload)?.origin === 'EXTERNAL_IMPORT')) ||
+        (!(
+          snapshot.durationFilteredMaterials ||
+          (snapshot.durationFilteredImports && object(source.payload)?.origin === 'EXTERNAL_IMPORT')
+        ) ||
           effectTemplateMixMaterialFitsTemplate(
             Number(object(source.payload)?.durationSeconds),
             snapshot.template.slots,
@@ -4261,7 +4299,7 @@ export class EffectTemplateMixService {
     workflowRunId: string,
     artifacts: WorkingArtifact[],
     aiRunRecords: EffectTemplateMixAiRunRecord[] = [],
-    classificationSources: EffectTemplateMixClassificationSource[] = [],
+    _classificationSources: EffectTemplateMixClassificationSource[] = [],
     lockedTemplateIds: string[] = [],
     packagingLockedIds: string[] = [],
     sourceLockedTemplateIds: string[] = [],
@@ -4339,7 +4377,10 @@ export class EffectTemplateMixService {
         run.workflowRunId === workflowRunId &&
         Boolean(snapshot.incremental);
       const checkpointAppend = liveAppend || failedAppend;
-      if ((run.status !== 'COMPLETED' && !checkpointAppend) || !Array.isArray(run.classificationResult))
+      if (
+        (run.status !== 'COMPLETED' && !checkpointAppend) ||
+        !Array.isArray(run.classificationResult)
+      )
         continue;
       const entry = workspaceDraft.templates.find(({ id }) => id === run.templateId);
       const classifications = run.classificationResult as EffectTemplateMixAiClassification[];
@@ -4374,17 +4415,19 @@ export class EffectTemplateMixService {
               const frozen = snapshot.materials.find(
                 (material) => material.id === item.materialId,
               )!;
-              const candidates = checkpointAppend ? activeMaterials.filter(
-                (material) =>
-                  material.promptText === frozen.prompt &&
-                  (!checkpointAppend ||
-                    (material.fileObjectId === frozen.fileObjectId &&
-                      material.artifactRevision === frozen.artifactRevision &&
-                      artifacts.find((artifact) => artifact.id === material.artifactId)
-                        ?.contentHash === frozen.contentHash)) &&
-                  (material.fileObjectId === frozen.fileObjectId ||
-                    (material.sourcePromptId && material.sourcePromptId === frozen.promptId)),
-              ) : retainedRoleMaterials(frozen, activeMaterials);
+              const candidates = checkpointAppend
+                ? activeMaterials.filter(
+                    (material) =>
+                      material.promptText === frozen.prompt &&
+                      (!checkpointAppend ||
+                        (material.fileObjectId === frozen.fileObjectId &&
+                          material.artifactRevision === frozen.artifactRevision &&
+                          artifacts.find((artifact) => artifact.id === material.artifactId)
+                            ?.contentHash === frozen.contentHash)) &&
+                      (material.fileObjectId === frozen.fileObjectId ||
+                        (material.sourcePromptId && material.sourcePromptId === frozen.promptId)),
+                  )
+                : retainedRoleMaterials(frozen, activeMaterials);
               if (new Set(candidates.map((material) => material.fileObjectId)).size !== 1)
                 return [];
               return [

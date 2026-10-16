@@ -1093,8 +1093,8 @@ onBeforeUnmount(() => {
         />
       </section>
       <CustomizedInfoExtractionNodePage
-        ref="extractionWorkspace"
         v-else-if="activeStep === 1"
+        ref="extractionWorkspace"
         :key="`${projectId}:${workflowRunId}`"
         :project-id="projectId"
         :workflow-run-id="workflowRunId"

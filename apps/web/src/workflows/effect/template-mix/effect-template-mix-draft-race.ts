@@ -24,10 +24,20 @@ export class MixWorkspaceRevisionFence {
 export class MixDraftRaceGuard {
   private epoch = 0;
   private writes = 0;
-  changed(): void { this.epoch += 1; }
-  beginWrite(): void { this.writes += 1; this.changed(); }
-  endWrite(): void { this.writes -= 1; this.changed(); }
-  readToken(): number { return this.epoch; }
+  changed(): void {
+    this.epoch += 1;
+  }
+  beginWrite(): void {
+    this.writes += 1;
+    this.changed();
+  }
+  endWrite(): void {
+    this.writes -= 1;
+    this.changed();
+  }
+  readToken(): number {
+    return this.epoch;
+  }
   canInstall(token: number, dirty: boolean): boolean {
     return !dirty && this.writes === 0 && token === this.epoch;
   }
@@ -43,16 +53,24 @@ export const saveLatestMixDraft = async (
   return true;
 };
 
-export const stableJson = (value: unknown): string => JSON.stringify(value, (_key, entry: unknown) => {
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-  return Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)));
-});
+export const stableJson = (value: unknown): string =>
+  JSON.stringify(value, (_key, entry: unknown) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    return Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)));
+  });
 
 const editableEntry = (entry: DraftTemplate | undefined): string => {
   if (!entry) return 'absent';
   // These are computed by the server, not user edits. Lock validation still runs on every PUT.
-  const { aiFillLocked: _fill, packagingLocked: _package, packagingSourceLocked: _source,
-    filledTemplateHash: _hash, needsAiFill: _needs, createdAt: _created, ...editable } = entry;
+  const {
+    aiFillLocked: _fill,
+    packagingLocked: _package,
+    packagingSourceLocked: _source,
+    filledTemplateHash: _hash,
+    needsAiFill: _needs,
+    createdAt: _created,
+    ...editable
+  } = entry;
   return stableJson(editable);
 };
 
@@ -60,8 +78,13 @@ const editableEntry = (entry: DraftTemplate | undefined): string => {
 export const sameEditableMixTemplate = (
   current: DraftTemplate | undefined,
   incoming: DraftTemplate | undefined,
-): boolean => Boolean(current && incoming && current.id === incoming.id &&
-  editableEntry(current) === editableEntry(incoming));
+): boolean =>
+  Boolean(
+    current &&
+    incoming &&
+    current.id === incoming.id &&
+    editableEntry(current) === editableEntry(incoming),
+  );
 
 /** Only merge independent templates. Concurrent edits of the same template are never overwritten. */
 export const rebaseMixDraft = (
@@ -83,8 +106,10 @@ export const rebaseMixDraft = (
     if (selected) templates.push(selected);
   }
   return {
-    ...remote, templates,
+    ...remote,
+    templates,
     activeTemplateId: templates.some(({ id }) => id === local.activeTemplateId)
-      ? local.activeTemplateId : remote.activeTemplateId,
+      ? local.activeTemplateId
+      : remote.activeTemplateId,
   };
 };

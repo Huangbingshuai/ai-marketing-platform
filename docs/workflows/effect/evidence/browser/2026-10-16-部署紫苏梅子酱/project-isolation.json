@@ -1,39 +1,245 @@
-{"collectedAt" : "2026-10-16T02:39:44.54099+00:00", "oldOutput" : {"id":"1798c261-fb7e-4510-84df-69786222dddf","status":"COMPLETED","completedAt":"2026-10-15T15:30:08.289"}, "oldItems" : [{"id":"0f053478-11a8-49c0-9d07-c5355075ddba","status":"COMPLETED","fileObjectId":"05380512-968f-4c91-9460-7b9bbb34ec22","assetId":"8e11ff06-398c-4283-9d15-d50ad60f0c8d"},
- {"id":"ca52c713-1ecd-463a-9a12-438ef1757a26","status":"COMPLETED","fileObjectId":"8860cae5-f3b5-4347-a996-39d60f20f2ed","assetId":"52b6463e-e1cb-4326-a37f-23b2665e3018"},
- {"id":"0c593120-2319-4444-b91b-13f1960f1a5d","status":"COMPLETED","fileObjectId":"360880f3-b963-4342-8601-67720be03f3a","assetId":"b0ad7998-a89d-4ffd-8dd7-6d7527c1e737"},
- {"id":"93c75be0-5bef-488b-92bd-6d5449ba3d29","status":"COMPLETED","fileObjectId":"e50bbc1d-46a1-4259-8ade-d68f56cdc4be","assetId":"76fd0ef8-9994-45fb-80dd-93eb866effa5"},
- {"id":"42ef9d3b-5301-4297-87d5-aaceabe5cc27","status":"COMPLETED","fileObjectId":"70c4e76e-23d4-47b7-8f74-b066dcc47f71","assetId":"126f301d-0fa5-4a18-944e-65fc52abef87"},
- {"id":"2798071b-405a-4803-a204-9a83ad7f3b65","status":"COMPLETED","fileObjectId":"ceed86c3-05fb-4646-bc13-f9ef47052e37","assetId":"61c29ff5-13e7-4518-bfd8-ee067a3f2233"},
- {"id":"694eab4c-fe6e-41a9-b81f-05c7f38f5513","status":"COMPLETED","fileObjectId":"841b2a55-7d47-41f4-a246-475113a05712","assetId":"35faa8e9-dd07-464c-94cd-88052d4117bf"},
- {"id":"85e76d12-1ef5-4b38-a3e0-f3a5396499a1","status":"COMPLETED","fileObjectId":"50aaa27c-3935-432d-a567-52d9e1ff9acd","assetId":"15b4e225-bb67-4695-9108-b52022bae3c7"},
- {"id":"b896618e-9cd6-43ce-a6e3-8c3fda4bd664","status":"COMPLETED","fileObjectId":"79e98547-c922-461a-b914-ea3610900940","assetId":"65b60073-3f59-492d-b01a-b74b6696e1b9"},
- {"id":"5200f254-a536-49ce-a9da-c7686bde20c3","status":"COMPLETED","fileObjectId":"801de696-cd68-400f-9b34-d211629d0168","assetId":"2f39ff50-3079-40c8-babc-47d68b6a8d4d"},
- {"id":"66332d6f-2c94-4635-bfd3-f4adfec9c9cf","status":"COMPLETED","fileObjectId":"c5865e4c-bc24-4ab2-b813-f9020ef8a6d5","assetId":"b9ed6cab-8e85-4861-9198-60135127eb9f"},
- {"id":"7e087d5d-d93b-417a-a3bf-28b22d4cc7e9","status":"COMPLETED","fileObjectId":"2454f26d-b2f6-43fa-969e-8fc6f6ee1aca","assetId":"5a5d2041-04a1-4fba-aa14-d39dd22a96a3"},
- {"id":"88437fac-70a8-46d5-b562-b9fb331429d7","status":"COMPLETED","fileObjectId":"0eac9521-86fa-4124-bcb5-0d319179d3d9","assetId":"71991a58-6b2a-4229-b810-2f38682ce784"},
- {"id":"56d7c31c-8a92-4fd2-a8c1-a31f58861d21","status":"COMPLETED","fileObjectId":"7a1f5bac-6416-4c4a-be81-f9d4c952aec7","assetId":"6c46137f-bbc1-4564-baac-58d65a9cfb51"},
- {"id":"127c331e-e102-4f74-97c1-bbd8824edece","status":"COMPLETED","fileObjectId":"b5c9dde9-7f00-41b6-b252-dd94bce4bed4","assetId":"f7493d96-e81d-413c-a2c0-1029f9a95973"},
- {"id":"83297a86-dcc3-4b0f-a74b-b765bb031077","status":"COMPLETED","fileObjectId":"bc43be72-29c0-4ba2-9d38-9f5ae69257c6","assetId":"efe8983f-2972-4397-bc7a-b1228eff6f59"},
- {"id":"63b791d5-ec3b-427c-bd78-56c18d9c2e10","status":"COMPLETED","fileObjectId":"22ed4eac-1482-4c8c-9c0d-72e0431378a4","assetId":"18af8d65-ba06-4522-af69-2148ef54aa2a"},
- {"id":"ac684ef7-ac70-494d-93b9-7bdcf693d6fe","status":"COMPLETED","fileObjectId":"d28d8631-99ce-4818-9d73-a0b3b412779a","assetId":"f01c1a1e-0c8f-47a0-bd56-64bad6c014d9"},
- {"id":"47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a","status":"COMPLETED","fileObjectId":"2655a59f-6060-4405-98e8-dcf920ace8de","assetId":"3ebd10ad-7b4c-4b0a-a933-3baa7b7019cf"},
- {"id":"ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc","status":"COMPLETED","fileObjectId":"5dd299fd-8f6c-48ff-9a1b-debcdf7b2972","assetId":"32013a1c-55d8-4d64-8646-aa22b44c80a1"},
- {"id":"8469fdf4-cae3-4133-9b8f-142feb35339a","status":"COMPLETED","fileObjectId":"445d3619-f5cf-4c74-a468-82388e99f739","assetId":"925cc108-b1b6-425f-88fe-ba07f4d2345e"},
- {"id":"cae76dfc-674e-45a1-b7bf-ba65607951cc","status":"COMPLETED","fileObjectId":"76ca414e-6fd4-4c3f-83ee-be57c80814bb","assetId":"0604b7c5-c877-499a-8a99-3a0c62d5a6cd"},
- {"id":"4467f3cc-309a-4d6d-9037-229b6e1ef843","status":"COMPLETED","fileObjectId":"453394cd-9998-4356-9601-7b791dca385f","assetId":"2d32a6a6-52a4-4d02-b7ef-225b288f7ec3"},
- {"id":"efa5f6a8-a7f5-4dcb-bd15-22043078ea8e","status":"COMPLETED","fileObjectId":"a25a02ec-28fd-4c41-8ae7-47071f178bd5","assetId":"c5b8a67d-172c-4d89-b495-a37f152c2c0c"},
- {"id":"fbe65081-a388-42ba-a53d-ea1a1a4d76bc","status":"COMPLETED","fileObjectId":"fed966be-eb52-4577-a4c7-638870cbc164","assetId":"b4514051-6535-43d2-8db4-17bdc3251e9f"},
- {"id":"d1577741-d372-483d-aeae-1cb431a9d638","status":"COMPLETED","fileObjectId":"3f78aa33-18d9-484c-8d17-a47a6c945e15","assetId":"b2752251-8be0-45bc-a2b8-0fccd2350668"},
- {"id":"e6de825a-a71d-498e-a591-3cb762a25aae","status":"COMPLETED","fileObjectId":"b9027105-2135-45b0-934a-8298b147d64f","assetId":"4dae2bd6-ce2f-4f8b-9f40-1936525c4238"},
- {"id":"fcef182d-b25d-4e9d-a785-05a223a5c8fb","status":"COMPLETED","fileObjectId":"72368fa4-ae45-42a9-94e0-e40ed6f55a81","assetId":"d12870cc-0697-49c9-a327-2a98c614d146"},
- {"id":"d5d57c5f-5815-4e52-81e1-a9932031d59f","status":"COMPLETED","fileObjectId":"7592946f-e0c9-4d5c-85d1-828905eae826","assetId":"773f6eb8-271c-4383-9da2-2f3d768aa911"},
- {"id":"d5d650e9-b281-41b9-88fa-8ee7c1166c2c","status":"COMPLETED","fileObjectId":"59fd8ecf-c127-464d-9a97-7fb3c8986a83","assetId":"400998ff-c06d-4b27-842d-86922e79a6ae"},
- {"id":"ee07f65a-27a2-4244-85c7-61b4dfab3c1f","status":"COMPLETED","fileObjectId":"21737f26-3009-462a-a7c5-f4f704c5d278","assetId":"aef0b1dd-3671-4972-a175-b5017a62ca16"},
- {"id":"e03c12ef-ffcf-4cea-9074-65c01e8a33e3","status":"COMPLETED","fileObjectId":"f6b890dd-de22-4fa6-8437-b2dc2032f590","assetId":"21d51f05-a583-410d-8f37-659ad3118dc1"},
- {"id":"db6c8415-5d38-4913-b3e9-01d0b367a0a0","status":"COMPLETED","fileObjectId":"d8cac9fe-21f4-479a-8e68-3ba6e5068d5a","assetId":"0befd693-b8a0-4b61-96ee-1ff583294a1f"},
- {"id":"f08b5fb3-b8bb-4f5d-976d-03514d2b8c25","status":"COMPLETED","fileObjectId":"52155a40-c4fe-401d-8adc-1a12fc6de2d6","assetId":"51738d0f-84cd-40b8-b986-89e2017c556d"},
- {"id":"e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3","status":"COMPLETED","fileObjectId":"64d4e254-6930-46fc-aadb-c0b56f61e9c6","assetId":"987c539f-a5cc-4554-a6e8-35ba5d42f41e"},
- {"id":"50d16af2-f028-465c-8562-8c13aa437238","status":"COMPLETED","fileObjectId":"ffb70ab7-d1ea-4fba-900d-fb73d158a74e","assetId":"2ab8d39b-c33a-4801-bac5-a5a1f619032f"},
- {"id":"d9e5a0ae-9fbb-460f-b249-638801370246","status":"COMPLETED","fileObjectId":"de040e03-82f7-49dc-9ee4-e718edb30d20","assetId":"7e50979a-61aa-4ad6-b1e0-665f79cda854"},
- {"id":"7f9fab3d-bdc9-4573-8fb5-d4479f8d40b6","status":"COMPLETED","fileObjectId":"72486143-4675-4aa3-a4fe-31049fcad96e","assetId":"2bff5ef0-45d6-438d-91e2-cbe42d5aa7e5"},
- {"id":"ebf2fffe-5aaf-4ae0-9ac8-8116246cc089","status":"COMPLETED","fileObjectId":"e1cd491a-1310-4c28-b6ce-0ba3c895e667","assetId":"7c6e33cd-727a-477e-812d-09e55b3da805"}], "realRenderProviderTasks" : 30}
+{
+  "collectedAt": "2026-10-16T02:39:44.54099+00:00",
+  "oldOutput": {
+    "id": "1798c261-fb7e-4510-84df-69786222dddf",
+    "status": "COMPLETED",
+    "completedAt": "2026-10-15T15:30:08.289"
+  },
+  "oldItems": [
+    {
+      "id": "0f053478-11a8-49c0-9d07-c5355075ddba",
+      "status": "COMPLETED",
+      "fileObjectId": "05380512-968f-4c91-9460-7b9bbb34ec22",
+      "assetId": "8e11ff06-398c-4283-9d15-d50ad60f0c8d"
+    },
+    {
+      "id": "ca52c713-1ecd-463a-9a12-438ef1757a26",
+      "status": "COMPLETED",
+      "fileObjectId": "8860cae5-f3b5-4347-a996-39d60f20f2ed",
+      "assetId": "52b6463e-e1cb-4326-a37f-23b2665e3018"
+    },
+    {
+      "id": "0c593120-2319-4444-b91b-13f1960f1a5d",
+      "status": "COMPLETED",
+      "fileObjectId": "360880f3-b963-4342-8601-67720be03f3a",
+      "assetId": "b0ad7998-a89d-4ffd-8dd7-6d7527c1e737"
+    },
+    {
+      "id": "93c75be0-5bef-488b-92bd-6d5449ba3d29",
+      "status": "COMPLETED",
+      "fileObjectId": "e50bbc1d-46a1-4259-8ade-d68f56cdc4be",
+      "assetId": "76fd0ef8-9994-45fb-80dd-93eb866effa5"
+    },
+    {
+      "id": "42ef9d3b-5301-4297-87d5-aaceabe5cc27",
+      "status": "COMPLETED",
+      "fileObjectId": "70c4e76e-23d4-47b7-8f74-b066dcc47f71",
+      "assetId": "126f301d-0fa5-4a18-944e-65fc52abef87"
+    },
+    {
+      "id": "2798071b-405a-4803-a204-9a83ad7f3b65",
+      "status": "COMPLETED",
+      "fileObjectId": "ceed86c3-05fb-4646-bc13-f9ef47052e37",
+      "assetId": "61c29ff5-13e7-4518-bfd8-ee067a3f2233"
+    },
+    {
+      "id": "694eab4c-fe6e-41a9-b81f-05c7f38f5513",
+      "status": "COMPLETED",
+      "fileObjectId": "841b2a55-7d47-41f4-a246-475113a05712",
+      "assetId": "35faa8e9-dd07-464c-94cd-88052d4117bf"
+    },
+    {
+      "id": "85e76d12-1ef5-4b38-a3e0-f3a5396499a1",
+      "status": "COMPLETED",
+      "fileObjectId": "50aaa27c-3935-432d-a567-52d9e1ff9acd",
+      "assetId": "15b4e225-bb67-4695-9108-b52022bae3c7"
+    },
+    {
+      "id": "b896618e-9cd6-43ce-a6e3-8c3fda4bd664",
+      "status": "COMPLETED",
+      "fileObjectId": "79e98547-c922-461a-b914-ea3610900940",
+      "assetId": "65b60073-3f59-492d-b01a-b74b6696e1b9"
+    },
+    {
+      "id": "5200f254-a536-49ce-a9da-c7686bde20c3",
+      "status": "COMPLETED",
+      "fileObjectId": "801de696-cd68-400f-9b34-d211629d0168",
+      "assetId": "2f39ff50-3079-40c8-babc-47d68b6a8d4d"
+    },
+    {
+      "id": "66332d6f-2c94-4635-bfd3-f4adfec9c9cf",
+      "status": "COMPLETED",
+      "fileObjectId": "c5865e4c-bc24-4ab2-b813-f9020ef8a6d5",
+      "assetId": "b9ed6cab-8e85-4861-9198-60135127eb9f"
+    },
+    {
+      "id": "7e087d5d-d93b-417a-a3bf-28b22d4cc7e9",
+      "status": "COMPLETED",
+      "fileObjectId": "2454f26d-b2f6-43fa-969e-8fc6f6ee1aca",
+      "assetId": "5a5d2041-04a1-4fba-aa14-d39dd22a96a3"
+    },
+    {
+      "id": "88437fac-70a8-46d5-b562-b9fb331429d7",
+      "status": "COMPLETED",
+      "fileObjectId": "0eac9521-86fa-4124-bcb5-0d319179d3d9",
+      "assetId": "71991a58-6b2a-4229-b810-2f38682ce784"
+    },
+    {
+      "id": "56d7c31c-8a92-4fd2-a8c1-a31f58861d21",
+      "status": "COMPLETED",
+      "fileObjectId": "7a1f5bac-6416-4c4a-be81-f9d4c952aec7",
+      "assetId": "6c46137f-bbc1-4564-baac-58d65a9cfb51"
+    },
+    {
+      "id": "127c331e-e102-4f74-97c1-bbd8824edece",
+      "status": "COMPLETED",
+      "fileObjectId": "b5c9dde9-7f00-41b6-b252-dd94bce4bed4",
+      "assetId": "f7493d96-e81d-413c-a2c0-1029f9a95973"
+    },
+    {
+      "id": "83297a86-dcc3-4b0f-a74b-b765bb031077",
+      "status": "COMPLETED",
+      "fileObjectId": "bc43be72-29c0-4ba2-9d38-9f5ae69257c6",
+      "assetId": "efe8983f-2972-4397-bc7a-b1228eff6f59"
+    },
+    {
+      "id": "63b791d5-ec3b-427c-bd78-56c18d9c2e10",
+      "status": "COMPLETED",
+      "fileObjectId": "22ed4eac-1482-4c8c-9c0d-72e0431378a4",
+      "assetId": "18af8d65-ba06-4522-af69-2148ef54aa2a"
+    },
+    {
+      "id": "ac684ef7-ac70-494d-93b9-7bdcf693d6fe",
+      "status": "COMPLETED",
+      "fileObjectId": "d28d8631-99ce-4818-9d73-a0b3b412779a",
+      "assetId": "f01c1a1e-0c8f-47a0-bd56-64bad6c014d9"
+    },
+    {
+      "id": "47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a",
+      "status": "COMPLETED",
+      "fileObjectId": "2655a59f-6060-4405-98e8-dcf920ace8de",
+      "assetId": "3ebd10ad-7b4c-4b0a-a933-3baa7b7019cf"
+    },
+    {
+      "id": "ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc",
+      "status": "COMPLETED",
+      "fileObjectId": "5dd299fd-8f6c-48ff-9a1b-debcdf7b2972",
+      "assetId": "32013a1c-55d8-4d64-8646-aa22b44c80a1"
+    },
+    {
+      "id": "8469fdf4-cae3-4133-9b8f-142feb35339a",
+      "status": "COMPLETED",
+      "fileObjectId": "445d3619-f5cf-4c74-a468-82388e99f739",
+      "assetId": "925cc108-b1b6-425f-88fe-ba07f4d2345e"
+    },
+    {
+      "id": "cae76dfc-674e-45a1-b7bf-ba65607951cc",
+      "status": "COMPLETED",
+      "fileObjectId": "76ca414e-6fd4-4c3f-83ee-be57c80814bb",
+      "assetId": "0604b7c5-c877-499a-8a99-3a0c62d5a6cd"
+    },
+    {
+      "id": "4467f3cc-309a-4d6d-9037-229b6e1ef843",
+      "status": "COMPLETED",
+      "fileObjectId": "453394cd-9998-4356-9601-7b791dca385f",
+      "assetId": "2d32a6a6-52a4-4d02-b7ef-225b288f7ec3"
+    },
+    {
+      "id": "efa5f6a8-a7f5-4dcb-bd15-22043078ea8e",
+      "status": "COMPLETED",
+      "fileObjectId": "a25a02ec-28fd-4c41-8ae7-47071f178bd5",
+      "assetId": "c5b8a67d-172c-4d89-b495-a37f152c2c0c"
+    },
+    {
+      "id": "fbe65081-a388-42ba-a53d-ea1a1a4d76bc",
+      "status": "COMPLETED",
+      "fileObjectId": "fed966be-eb52-4577-a4c7-638870cbc164",
+      "assetId": "b4514051-6535-43d2-8db4-17bdc3251e9f"
+    },
+    {
+      "id": "d1577741-d372-483d-aeae-1cb431a9d638",
+      "status": "COMPLETED",
+      "fileObjectId": "3f78aa33-18d9-484c-8d17-a47a6c945e15",
+      "assetId": "b2752251-8be0-45bc-a2b8-0fccd2350668"
+    },
+    {
+      "id": "e6de825a-a71d-498e-a591-3cb762a25aae",
+      "status": "COMPLETED",
+      "fileObjectId": "b9027105-2135-45b0-934a-8298b147d64f",
+      "assetId": "4dae2bd6-ce2f-4f8b-9f40-1936525c4238"
+    },
+    {
+      "id": "fcef182d-b25d-4e9d-a785-05a223a5c8fb",
+      "status": "COMPLETED",
+      "fileObjectId": "72368fa4-ae45-42a9-94e0-e40ed6f55a81",
+      "assetId": "d12870cc-0697-49c9-a327-2a98c614d146"
+    },
+    {
+      "id": "d5d57c5f-5815-4e52-81e1-a9932031d59f",
+      "status": "COMPLETED",
+      "fileObjectId": "7592946f-e0c9-4d5c-85d1-828905eae826",
+      "assetId": "773f6eb8-271c-4383-9da2-2f3d768aa911"
+    },
+    {
+      "id": "d5d650e9-b281-41b9-88fa-8ee7c1166c2c",
+      "status": "COMPLETED",
+      "fileObjectId": "59fd8ecf-c127-464d-9a97-7fb3c8986a83",
+      "assetId": "400998ff-c06d-4b27-842d-86922e79a6ae"
+    },
+    {
+      "id": "ee07f65a-27a2-4244-85c7-61b4dfab3c1f",
+      "status": "COMPLETED",
+      "fileObjectId": "21737f26-3009-462a-a7c5-f4f704c5d278",
+      "assetId": "aef0b1dd-3671-4972-a175-b5017a62ca16"
+    },
+    {
+      "id": "e03c12ef-ffcf-4cea-9074-65c01e8a33e3",
+      "status": "COMPLETED",
+      "fileObjectId": "f6b890dd-de22-4fa6-8437-b2dc2032f590",
+      "assetId": "21d51f05-a583-410d-8f37-659ad3118dc1"
+    },
+    {
+      "id": "db6c8415-5d38-4913-b3e9-01d0b367a0a0",
+      "status": "COMPLETED",
+      "fileObjectId": "d8cac9fe-21f4-479a-8e68-3ba6e5068d5a",
+      "assetId": "0befd693-b8a0-4b61-96ee-1ff583294a1f"
+    },
+    {
+      "id": "f08b5fb3-b8bb-4f5d-976d-03514d2b8c25",
+      "status": "COMPLETED",
+      "fileObjectId": "52155a40-c4fe-401d-8adc-1a12fc6de2d6",
+      "assetId": "51738d0f-84cd-40b8-b986-89e2017c556d"
+    },
+    {
+      "id": "e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3",
+      "status": "COMPLETED",
+      "fileObjectId": "64d4e254-6930-46fc-aadb-c0b56f61e9c6",
+      "assetId": "987c539f-a5cc-4554-a6e8-35ba5d42f41e"
+    },
+    {
+      "id": "50d16af2-f028-465c-8562-8c13aa437238",
+      "status": "COMPLETED",
+      "fileObjectId": "ffb70ab7-d1ea-4fba-900d-fb73d158a74e",
+      "assetId": "2ab8d39b-c33a-4801-bac5-a5a1f619032f"
+    },
+    {
+      "id": "d9e5a0ae-9fbb-460f-b249-638801370246",
+      "status": "COMPLETED",
+      "fileObjectId": "de040e03-82f7-49dc-9ee4-e718edb30d20",
+      "assetId": "7e50979a-61aa-4ad6-b1e0-665f79cda854"
+    },
+    {
+      "id": "7f9fab3d-bdc9-4573-8fb5-d4479f8d40b6",
+      "status": "COMPLETED",
+      "fileObjectId": "72486143-4675-4aa3-a4fe-31049fcad96e",
+      "assetId": "2bff5ef0-45d6-438d-91e2-cbe42d5aa7e5"
+    },
+    {
+      "id": "ebf2fffe-5aaf-4ae0-9ac8-8116246cc089",
+      "status": "COMPLETED",
+      "fileObjectId": "e1cd491a-1310-4c28-b6ce-0ba3c895e667",
+      "assetId": "7c6e33cd-727a-477e-812d-09e55b3da805"
+    }
+  ],
+  "realRenderProviderTasks": 30
+}

@@ -19,7 +19,8 @@ afterEach(() => {
 
 describe('HttpExceptionFilter', () => {
   it.each(['headersSent', 'writableEnded', 'destroyed'] as const)(
-    'does not write a second response after a stream is %s', (state) => {
+    'does not write a second response after a stream is %s',
+    (state) => {
       const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       const { host, response } = hostFor();
       Object.assign(response, { [state]: true });

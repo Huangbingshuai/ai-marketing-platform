@@ -293,8 +293,16 @@ onBeforeUnmount(() => {
             'is-playing': selectedAssetId === asset.id && playing,
             'is-unsupported': !isMp3Asset(asset),
           }"
-          :draggable="Boolean(isMp3Asset(asset) && asset.workflowFileObjectId && durations[asset.id])"
-          :title="isMp3Asset(asset) ? (asset.workflowFileObjectId ? '拖动到下方音频轨道' : '请重新导入后添加到时间轴') : '音乐库仅支持 MP3 文件'"
+          :draggable="
+            Boolean(isMp3Asset(asset) && asset.workflowFileObjectId && durations[asset.id])
+          "
+          :title="
+            isMp3Asset(asset)
+              ? asset.workflowFileObjectId
+                ? '拖动到下方音频轨道'
+                : '请重新导入后添加到时间轴'
+              : '音乐库仅支持 MP3 文件'
+          "
           @click="void toggleAsset(asset)"
           @dragstart="startMusicDrag($event, asset)"
         >
@@ -307,8 +315,16 @@ onBeforeUnmount(() => {
             /></span>
           </span>
           <span class="music-card-copy">
-            <strong :title="displayMusicName(asset.name)">{{ displayMusicName(asset.name) }}</strong>
-            <em>{{ !isMp3Asset(asset) ? '不支持的格式' : durations[asset.id] ? formatTime(durations[asset.id]!) : '读取时长…' }}</em>
+            <strong :title="displayMusicName(asset.name)">{{
+              displayMusicName(asset.name)
+            }}</strong>
+            <em>{{
+              !isMp3Asset(asset)
+                ? '不支持的格式'
+                : durations[asset.id]
+                  ? formatTime(durations[asset.id]!)
+                  : '读取时长…'
+            }}</em>
           </span>
           <audio
             v-if="isMp3Asset(asset)"

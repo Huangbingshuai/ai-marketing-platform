@@ -15,10 +15,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "assetId",
-        "description"
-      ],
+      "required": ["assetId", "description"],
       "title": "Binding",
       "type": "object"
     },
@@ -109,9 +106,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "shots"
-  ],
+  "required": ["shots"],
   "title": "ShotList",
   "type": "object"
 }

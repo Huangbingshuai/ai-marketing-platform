@@ -23,11 +23,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "shotId",
-    "content",
-    "assetIds"
-  ],
+  "required": ["shotId", "content", "assetIds"],
   "title": "Prompt",
   "type": "object"
 }

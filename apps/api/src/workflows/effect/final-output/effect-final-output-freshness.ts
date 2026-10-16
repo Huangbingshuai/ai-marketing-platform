@@ -72,8 +72,12 @@ export function finalOutputConfirmedProjectIds(
   const prefix = `timeline-project:${templateId}:`;
   const ids = new Set<string>();
   for (const artifact of artifacts) {
-    if (artifact.nodeId === 'TEMPLATE_MIX' && artifact.availability === 'AVAILABLE' &&
-      artifact.artifactKey?.startsWith(prefix)) ids.add(artifact.artifactKey.slice(prefix.length));
+    if (
+      artifact.nodeId === 'TEMPLATE_MIX' &&
+      artifact.availability === 'AVAILABLE' &&
+      artifact.artifactKey?.startsWith(prefix)
+    )
+      ids.add(artifact.artifactKey.slice(prefix.length));
   }
   return ids;
 }
@@ -116,7 +120,12 @@ export function finalOutputSavedBatchStale(
   confirmedVariantIds: ReadonlySet<string> = new Set(),
 ): boolean {
   if (!variants) return false;
-  const membership = finalOutputSavedProjectChanges(variants, run.items, confirmedVariantIds, packaging);
+  const membership = finalOutputSavedProjectChanges(
+    variants,
+    run.items,
+    confirmedVariantIds,
+    packaging,
+  );
   if (membership.added.length || membership.removedItemIds.length) return true;
   if (['QUEUED', 'RUNNING'].includes(run.status)) return false;
   return run.items.some((item) => {

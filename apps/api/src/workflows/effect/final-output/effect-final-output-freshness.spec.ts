@@ -165,8 +165,15 @@ describe('saved engineering and final output freshness', () => {
     const empty = { ...variant(), id: 'new', slots: [], bindings: {}, preservedTimelineEnd: 10 };
     expect(finalOutputSavedBatchStale(output, [v, empty])).toBe(false);
     expect(finalOutputSavedBatchStale(output, [v, { ...variant(), id: 'new' }])).toBe(false);
-    expect(finalOutputSavedBatchStale(output, [v, { ...variant(), id: 'new' }],
-      new Map(), new Set(), new Set(['new']))).toBe(true);
+    expect(
+      finalOutputSavedBatchStale(
+        output,
+        [v, { ...variant(), id: 'new' }],
+        new Map(),
+        new Set(),
+        new Set(['new']),
+      ),
+    ).toBe(true);
     expect(finalOutputSavedBatchStale(output, [])).toBe(true);
     expect(finalOutputSavedBatchStale(output, null)).toBe(false);
     expect(finalOutputSavedBatchStale({ ...output, items: [] }, [])).toBe(false);
@@ -174,24 +181,44 @@ describe('saved engineering and final output freshness', () => {
   });
 
   it('requires an available confirmed timeline of the selected template for additions, not deletions', () => {
-    const v = variant(), added = { ...variant(), id: 'new' };
+    const v = variant(),
+      added = { ...variant(), id: 'new' };
     const artifacts = [
       { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:t:new', availability: 'AVAILABLE' },
-      { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:other:sibling', availability: 'AVAILABLE' },
-      { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-project:t:missing', availability: 'MISSING' },
-      { nodeId: 'FINAL_OUTPUT', artifactKey: 'timeline-project:t:wrong-node', availability: 'AVAILABLE' },
-      { nodeId: 'TEMPLATE_MIX', artifactKey: 'timeline-package:t:package-only', availability: 'AVAILABLE' },
+      {
+        nodeId: 'TEMPLATE_MIX',
+        artifactKey: 'timeline-project:other:sibling',
+        availability: 'AVAILABLE',
+      },
+      {
+        nodeId: 'TEMPLATE_MIX',
+        artifactKey: 'timeline-project:t:missing',
+        availability: 'MISSING',
+      },
+      {
+        nodeId: 'FINAL_OUTPUT',
+        artifactKey: 'timeline-project:t:wrong-node',
+        availability: 'AVAILABLE',
+      },
+      {
+        nodeId: 'TEMPLATE_MIX',
+        artifactKey: 'timeline-package:t:package-only',
+        availability: 'AVAILABLE',
+      },
     ];
     const ids = finalOutputConfirmedProjectIds('t', artifacts);
     expect(ids).toEqual(new Set(['new']));
     expect(finalOutputSavedProjectChanges([v, added], batch(v).items, new Set())).toEqual({
-      added: [], removedItemIds: [],
+      added: [],
+      removedItemIds: [],
     });
     expect(finalOutputSavedProjectChanges([v, added], batch(v).items, ids)).toEqual({
-      added: [added], removedItemIds: [],
+      added: [added],
+      removedItemIds: [],
     });
     expect(finalOutputSavedProjectChanges([added], batch(v).items, ids)).toEqual({
-      added: [added], removedItemIds: ['film'],
+      added: [added],
+      removedItemIds: ['film'],
     });
     expect(artifacts).toHaveLength(5);
   });
@@ -363,7 +390,9 @@ describe('branch tree final-output saved-draft projection', () => {
     const extra = { ...variant(), id: 'unsubmitted' };
     edited.nodeStates[0]!.state.templates[0]!.workspace.variants.push(extra);
     rows[2]!.workingArtifacts.push(artifact('timeline-project:t:unsubmitted', 'sibling'));
-    rows[3]!.workingArtifacts.push(artifact('timeline-project:other:unsubmitted', 'other-template'));
+    rows[3]!.workingArtifacts.push(
+      artifact('timeline-project:other:unsubmitted', 'other-template'),
+    );
     expect((await status())[0]).toEqual(['edited', 'CONFIRMED', 'CONFIRMED']);
     edited.workingArtifacts.push(artifact('timeline-project:t:unsubmitted', 'edited'));
     expect((await status())[0]).toEqual(['edited', 'STALE', 'STALE']);

@@ -40,7 +40,8 @@ describe('smart-fill completion routing', () => {
       completion as unknown as EffectTemplateMixCompletionService,
     );
     await controller.complete('project', 'token', {
-      projectId: 'project', trims: [],
+      projectId: 'project',
+      trims: [],
     } as EffectTemplateMixWorkerCompleteDto);
     expect(completion.complete).toHaveBeenCalledWith('project', 'project', 'token', []);
   });

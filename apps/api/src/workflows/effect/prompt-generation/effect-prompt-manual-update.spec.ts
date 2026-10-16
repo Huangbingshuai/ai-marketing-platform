@@ -50,8 +50,9 @@ const fixture = () => {
     createdAt: '2026-10-10T00:00:00.000Z',
     updatedAt: '2026-10-10T00:00:00.000Z',
   }));
-  const draft = recomputePromptQuality(originalItems, DEFAULT_EFFECT_PROMPT_SETTINGS,
-    { semanticEvaluation: batchEvaluation });
+  const draft = recomputePromptQuality(originalItems, DEFAULT_EFFECT_PROMPT_SETTINGS, {
+    semanticEvaluation: batchEvaluation,
+  });
   let row = {
     id: 'result',
     projectId: 'project',
@@ -110,11 +111,13 @@ const fixture = () => {
   );
   const pending = () =>
     snapshots.map((snapshot) => renderPromptUpdateKind(snapshot, row.draftResult));
-  const remove = (id: string) => repository.mutateResult('project', 'result', row.revision,
-    { kind: 'DELETE', itemId: id });
-  const add = () => repository.mutateResult('project', 'result', row.revision, {
-    kind: 'ADD', item: { ...originalItems[0]!, id: 'manual', code: 'P003', origin: 'MANUAL' },
-  });
+  const remove = (id: string) =>
+    repository.mutateResult('project', 'result', row.revision, { kind: 'DELETE', itemId: id });
+  const add = () =>
+    repository.mutateResult('project', 'result', row.revision, {
+      kind: 'ADD',
+      item: { ...originalItems[0]!, id: 'manual', code: 'P003', origin: 'MANUAL' },
+    });
   return { save, add, remove, update, pending, row: () => row };
 };
 
@@ -151,9 +154,15 @@ describe('manual Prompt saves and consumed render baselines', () => {
 
   it('uses the original batch even if an old deletion recalculated a different verified score', () => {
     const f = fixture();
-    f.row().draftResult.metrics.semanticEvaluation = { ...batchEvaluation, duplicateRate: 0,
-      duplicateCount: 0, duplicateGroupCount: 0 };
-    expect(parseEffectPromptStoredDraft(f.row())?.metrics.semanticEvaluation).toEqual(batchEvaluation);
+    f.row().draftResult.metrics.semanticEvaluation = {
+      ...batchEvaluation,
+      duplicateRate: 0,
+      duplicateCount: 0,
+      duplicateGroupCount: 0,
+    };
+    expect(parseEffectPromptStoredDraft(f.row())?.metrics.semanticEvaluation).toEqual(
+      batchEvaluation,
+    );
   });
 
   it('does not invent an assessment for a batch without a verified generated snapshot', () => {
@@ -162,10 +171,13 @@ describe('manual Prompt saves and consumed render baselines', () => {
     f.row().draftResult.metrics.semanticEvaluation = pending;
     f.row().generatedResult.metrics.semanticEvaluation = pending;
     expect(parseEffectPromptStoredDraft(f.row())?.metrics.semanticEvaluation).toEqual(pending);
-    expect(parseEffectPromptStoredDraft({ draftResult: f.row().draftResult })?.metrics.semanticEvaluation)
-      .toEqual(pending);
-    expect(parseEffectPromptStoredDraft({ draftResult: null, generatedResult: f.row().generatedResult }))
-      .toBeNull();
+    expect(
+      parseEffectPromptStoredDraft({ draftResult: f.row().draftResult })?.metrics
+        .semanticEvaluation,
+    ).toEqual(pending);
+    expect(
+      parseEffectPromptStoredDraft({ draftResult: null, generatedResult: f.row().generatedResult }),
+    ).toBeNull();
   });
 
   it('does not mark unchanged text as edited or change its revision, timestamps and AI scores', async () => {

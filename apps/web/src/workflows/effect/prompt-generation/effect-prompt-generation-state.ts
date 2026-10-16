@@ -12,7 +12,9 @@ export const isPromptWorkspaceScopeReady = (
   status: EffectPromptPageStatus,
   loaded: { projectId: string; workflowRunId: string } | null,
   current: { projectId: string; workflowRunId: string },
-): boolean => status === 'ready' && loaded?.projectId === current.projectId &&
+): boolean =>
+  status === 'ready' &&
+  loaded?.projectId === current.projectId &&
   loaded.workflowRunId === current.workflowRunId;
 
 export const EFFECT_PROMPT_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const;
@@ -22,10 +24,11 @@ export const resolvePromptTransitionValue = <T>(
   current: T | null,
   transition: { projectId: string; workflowRunId: string; value: T | null } | null,
   scope: { projectId: string; workflowRunId: string },
-): T | null => current ?? (
-  transition?.projectId === scope.projectId && transition.workflowRunId === scope.workflowRunId
-    ? transition.value : null
-);
+): T | null =>
+  current ??
+  (transition?.projectId === scope.projectId && transition.workflowRunId === scope.workflowRunId
+    ? transition.value
+    : null);
 
 export const changePromptPrimaryPurpose = (
   previous: EffectPromptFragmentType,

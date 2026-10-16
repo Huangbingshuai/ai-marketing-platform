@@ -11,17 +11,25 @@ const input = {
 };
 
 describe('compact mix autosave DTO', () => {
-  it.each([undefined, false, true])('accepts optional boolean %s through the HTTP whitelist', async (value) => {
-    const dto = plainToInstance(SaveEffectTemplateMixDraftDto, {
-      ...input, ...(value === undefined ? {} : { compactResponse: value }),
-    });
-    expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
-    expect(dto.compactResponse).toBe(value);
-  });
+  it.each([undefined, false, true])(
+    'accepts optional boolean %s through the HTTP whitelist',
+    async (value) => {
+      const dto = plainToInstance(SaveEffectTemplateMixDraftDto, {
+        ...input,
+        ...(value === undefined ? {} : { compactResponse: value }),
+      });
+      expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
+      expect(dto.compactResponse).toBe(value);
+    },
+  );
 
   it.each(['true', 1, {}])('rejects non-boolean compactResponse %s', async (value) => {
-    const dto = plainToInstance(SaveEffectTemplateMixDraftDto, { ...input, compactResponse: value });
-    expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true }))
-      .toEqual(expect.arrayContaining([expect.objectContaining({ property: 'compactResponse' })]));
+    const dto = plainToInstance(SaveEffectTemplateMixDraftDto, {
+      ...input,
+      compactResponse: value,
+    });
+    expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ property: 'compactResponse' })]),
+    );
   });
 });

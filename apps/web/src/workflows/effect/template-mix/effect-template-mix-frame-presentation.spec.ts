@@ -120,7 +120,9 @@ describe('montage first frame presentation', () => {
     expect(latest).toHaveBeenCalledOnce();
   });
   it('does not restart the paint gate for repeated readiness reports of the same frame', () => {
-    const gate = new TimelineFramePresentation(), player = video(), publish = vi.fn();
+    const gate = new TimelineFramePresentation(),
+      player = video(),
+      publish = vi.fn();
     gate.present(player, 1.25, 1 / 30, publish);
     tick();
     gate.present(player, 1.25, 1 / 30, publish);
@@ -130,7 +132,10 @@ describe('montage first frame presentation', () => {
     expect(frames.size).toBe(0);
   });
   it('retains the paint deadline but refreshes the callback for a duplicate target', () => {
-    const gate = new TimelineFramePresentation(), player = video(), old = vi.fn(), latest = vi.fn();
+    const gate = new TimelineFramePresentation(),
+      player = video(),
+      old = vi.fn(),
+      latest = vi.fn();
     gate.present(player, 1.25, 1 / 30, old);
     tick();
     gate.present(player, 1.25, 1 / 30, latest);
@@ -170,9 +175,11 @@ describe('montage first frame presentation', () => {
     expect(page).not.toContain('captureDisplayedFrame()');
   });
   it('keeps an already decoded source visible during scrubbing while fencing stale seek callbacks', () => {
-    const sourceIdentity = page.split('const previewSourceIdentity = computed(() =>')[1]!
+    const sourceIdentity = page
+      .split('const previewSourceIdentity = computed(() =>')[1]!
       .split(']));')[0]!;
-    const seekIdentity = page.split('const previewMediaIdentity = computed(() =>')[1]!
+    const seekIdentity = page
+      .split('const previewMediaIdentity = computed(() =>')[1]!
       .split(']));')[0]!;
     expect(sourceIdentity).not.toContain('playbackSeekVersion.value');
     expect(sourceIdentity).toContain('currentWorkspaceScope.value');

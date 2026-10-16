@@ -7,8 +7,12 @@ type PendingPackagingNavigation = {
 
 const key = (projectId: string, sourceWorkflowRunId: string, templateId: string) =>
   `effect-packaging-navigation:${projectId}:${sourceWorkflowRunId}:${templateId}`;
-const openedKey = (projectId: string, sourceWorkflowRunId: string, templateId: string, workflowRunId: string) =>
-  `effect-packaging-opened:${projectId}:${sourceWorkflowRunId}:${templateId}:${workflowRunId}`;
+const openedKey = (
+  projectId: string,
+  sourceWorkflowRunId: string,
+  templateId: string,
+  workflowRunId: string,
+) => `effect-packaging-opened:${projectId}:${sourceWorkflowRunId}:${templateId}:${workflowRunId}`;
 const openedInMemory = new Set<string>();
 
 export const rememberPackagingNavigation = (
@@ -45,11 +49,16 @@ export const pendingPackagingNavigation = (
       typeof parsed.variantId === 'string' &&
       typeof parsed.createdAt === 'number' &&
       Date.now() - parsed.createdAt < 24 * 60 * 60 * 1000
-    ) return parsed as PendingPackagingNavigation;
+    )
+      return parsed as PendingPackagingNavigation;
   } catch {
     // A corrupted or inaccessible marker must never redirect another workbench.
   }
-  try { sessionStorage.removeItem(storageKey); } catch { /* Storage may be disabled. */ }
+  try {
+    sessionStorage.removeItem(storageKey);
+  } catch {
+    /* Storage may be disabled. */
+  }
   return null;
 };
 
@@ -61,7 +70,9 @@ export const forgetPackagingNavigation = (
 ): void => {
   const pending = pendingPackagingNavigation(projectId, sourceWorkflowRunId, templateId);
   if (pending?.runId !== runId) return;
-  try { sessionStorage.removeItem(key(projectId, sourceWorkflowRunId, templateId)); } catch {
+  try {
+    sessionStorage.removeItem(key(projectId, sourceWorkflowRunId, templateId));
+  } catch {
     // Storage may be disabled.
   }
 };
@@ -74,7 +85,11 @@ export const hasOpenedPackagingBranch = (
 ): boolean => {
   const storageKey = openedKey(projectId, sourceWorkflowRunId, templateId, workflowRunId);
   if (openedInMemory.has(storageKey)) return true;
-  try { return localStorage.getItem(storageKey) === '1'; } catch { return false; }
+  try {
+    return localStorage.getItem(storageKey) === '1';
+  } catch {
+    return false;
+  }
 };
 
 export const markPackagingBranchOpened = (
@@ -85,5 +100,9 @@ export const markPackagingBranchOpened = (
 ): void => {
   const storageKey = openedKey(projectId, sourceWorkflowRunId, templateId, workflowRunId);
   openedInMemory.add(storageKey);
-  try { localStorage.setItem(storageKey, '1'); } catch { /* Storage may be disabled. */ }
+  try {
+    localStorage.setItem(storageKey, '1');
+  } catch {
+    /* Storage may be disabled. */
+  }
 };

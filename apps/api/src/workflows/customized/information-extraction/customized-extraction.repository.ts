@@ -10,10 +10,8 @@ import {
   type SaveCustomizedExtractionRequest,
   type StartCustomizedExtractionRequest,
 } from '@ai-marketing/contracts';
-import {
-  Prisma,
-  type CustomizedExtractionTask as TaskRecord,
-} from '../../../generated/prisma/client';
+import type { Prisma } from '../../../generated/prisma/client';
+import { type CustomizedExtractionTask as TaskRecord } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { ApiHttpException } from '../../../common/api-http-exception';
 import {

@@ -63,9 +63,7 @@ export class JobOutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         }
       }
     } catch (error) {
-      this.logger.error(
-        `Outbox 投递轮询失败：${error instanceof Error ? error.name : 'UNKNOWN'}`,
-      );
+      this.logger.error(`Outbox 投递轮询失败：${error instanceof Error ? error.name : 'UNKNOWN'}`);
     } finally {
       this.active = false;
     }

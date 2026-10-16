@@ -117,9 +117,11 @@ export function retainMixTemplateCatalogSources(
   let result = incoming;
   // Completed local updates can advance a workspace while the directory's reads
   // are still pending, without a material-source polling epoch having changed.
-  const newerWorkspaceIds = Object.keys(refreshed.workspaces).filter((runId) =>
-    (refreshed.workspaces[runId]?.draftRevision ?? 0) >
-    (incoming.workspaces[runId]?.draftRevision ?? 0));
+  const newerWorkspaceIds = Object.keys(refreshed.workspaces).filter(
+    (runId) =>
+      (refreshed.workspaces[runId]?.draftRevision ?? 0) >
+      (incoming.workspaces[runId]?.draftRevision ?? 0),
+  );
   for (const runId of new Set([...refreshedRunIds, ...newerWorkspaceIds])) {
     const workspace = refreshed.workspaces[runId];
     const previous = incoming.workspaces[runId];

@@ -198,7 +198,10 @@ describe('EffectPromptRepository', () => {
   });
 
   it('can advance the visible stage during a retry with previously higher progress', async () => {
-    const updateMany = vi.fn().mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    const updateMany = vi
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
     const transaction = {
       effectPromptRun: { updateMany },
       effectPromptStageOutput: {
@@ -1706,7 +1709,9 @@ describe('EffectPromptRepository', () => {
               },
             };
 
-      await expect(repository.mutateResult(projectId, existing.id, 1, mutation)).resolves.toMatchObject({
+      await expect(
+        repository.mutateResult(projectId, existing.id, 1, mutation),
+      ).resolves.toMatchObject({
         kind: 'UPDATED',
       });
       expect(resultUpdate.mock.calls[0]?.[0].data.draftResult.metrics.semanticEvaluation).toEqual(

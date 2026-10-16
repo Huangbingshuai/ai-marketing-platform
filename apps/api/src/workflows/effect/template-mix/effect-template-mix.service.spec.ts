@@ -95,10 +95,20 @@ const source = {
 describe('saved video spatial transforms', () => {
   it('uses the published generation ratio despite copied batches and changing next-batch settings', async () => {
     const { service, working } = harness();
-    const owner = { ...source, workflowRunId: 'render-owner', artifactKey: 'render-batch:owner-product',
-      metadata: { branchSourceOwner: true }, payload: { clips: [{ ratio: '4:3' }] } } as WorkingArtifact;
-    const copied = { ...owner, workflowRunId: 'mix-run', artifactKey: 'render-batch:copy-product',
-      metadata: { branchSourceOwner: false }, payload: { clips: [{ ratio: '16:9' }] } } as WorkingArtifact;
+    const owner = {
+      ...source,
+      workflowRunId: 'render-owner',
+      artifactKey: 'render-batch:owner-product',
+      metadata: { branchSourceOwner: true },
+      payload: { clips: [{ ratio: '4:3' }] },
+    } as WorkingArtifact;
+    const copied = {
+      ...owner,
+      workflowRunId: 'mix-run',
+      artifactKey: 'render-batch:copy-product',
+      metadata: { branchSourceOwner: false },
+      payload: { clips: [{ ratio: '16:9' }] },
+    } as WorkingArtifact;
     working.listArtifacts.mockResolvedValue({ items: [source, copied, owner], total: 3 });
     let nextRatio = '9:16';
     working.getNodeStateOrNull.mockImplementation(async (_p, _run, node) => {
@@ -108,10 +118,16 @@ describe('saved video spatial transforms', () => {
     for (const ratio of ['9:16', '1:1', 'adaptive']) {
       nextRatio = ratio;
       expect((await service.workspace('project', 'mix-run')).renderAspectRatio).toBe('4:3');
-      expect((await service.outputSourceWorkspace('project', 'mix-run')).renderAspectRatio).toBe('4:3');
+      expect((await service.outputSourceWorkspace('project', 'mix-run')).renderAspectRatio).toBe(
+        '4:3',
+      );
       expect((await service.materialSources('project', 'mix-run')).renderAspectRatio).toBe('4:3');
     }
-    expect(working.getNodeStateOrNull.mock.calls.some(call => String(call[2]).startsWith('SEGMENT_RENDER_SETTINGS'))).toBe(false);
+    expect(
+      working.getNodeStateOrNull.mock.calls.some((call) =>
+        String(call[2]).startsWith('SEGMENT_RENDER_SETTINGS'),
+      ),
+    ).toBe(false);
     expect(working.putNodeState).not.toHaveBeenCalled();
     // A newly adopted generation, unlike a settings edit, does change the default.
     owner.payload = { clips: [{ ratio: '9:16' }] };
@@ -130,79 +146,152 @@ describe('saved video spatial transforms', () => {
     [[{ ratio: '9:16', origin: 'EXTERNAL_IMPORT' }], 'adaptive'],
   ])('resolves only committed generation snapshots %j', async (clips, expected) => {
     const { service, working } = harness();
-    const batch = { ...source, workflowRunId: 'render-owner', artifactKey: 'render-batch:product',
-      metadata: { branchSourceOwner: true }, payload: { clips } } as WorkingArtifact;
-    const prompt = { ...source, nodeId: 'PROMPT_GENERATION', workflowRunId: 'render-owner',
-      artifactKey: 'prompt-batch:product', payload: { renderProfile: { ratio: '9:16' } } } as WorkingArtifact;
+    const batch = {
+      ...source,
+      workflowRunId: 'render-owner',
+      artifactKey: 'render-batch:product',
+      metadata: { branchSourceOwner: true },
+      payload: { clips },
+    } as WorkingArtifact;
+    const prompt = {
+      ...source,
+      nodeId: 'PROMPT_GENERATION',
+      workflowRunId: 'render-owner',
+      artifactKey: 'prompt-batch:product',
+      payload: { renderProfile: { ratio: '9:16' } },
+    } as WorkingArtifact;
     working.listArtifacts.mockResolvedValue({ items: [source, batch, prompt], total: 3 });
-    working.getNodeStateOrNull.mockImplementation(async (_p, _r, node) => node === 'TEMPLATE_MIX'
-      ? { revision: 7, state: draft() } as never : null as never);
+    working.getNodeStateOrNull.mockImplementation(async (_p, _r, node) =>
+      node === 'TEMPLATE_MIX' ? ({ revision: 7, state: draft() } as never) : (null as never),
+    );
     expect((await service.workspace('project', 'mix-run')).renderAspectRatio).toBe(expected);
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
   it('saves valid transforms through the existing revision-controlled draft', async () => {
     const { service, working } = harness();
     const value = draft();
-    value.templates[0]!.workspace.variants[0]!.videoTransforms = { [slotId]: { x: .2, y: -.1, scaleX: .7, scaleY: 1.2, rotation: 35, uniform: false } };
+    value.templates[0]!.workspace.variants[0]!.videoTransforms = {
+      [slotId]: { x: 0.2, y: -0.1, scaleX: 0.7, scaleY: 1.2, rotation: 35, uniform: false },
+    };
     await service.saveDraft('project', 'run', 7, value, true);
-    expect(working.putNodeState.mock.calls[0]![3].state.templates[0].workspace.variants[0].videoTransforms)
-      .toEqual(value.templates[0]!.workspace.variants[0]!.videoTransforms);
+    expect(
+      working.putNodeState.mock.calls[0]![3].state.templates[0].workspace.variants[0]
+        .videoTransforms,
+    ).toEqual(value.templates[0]!.workspace.variants[0]!.videoTransforms);
   });
-  it.each([Infinity, NaN, 3])('rejects invalid spatial offset %s before persistence', async x => {
+  it.each([Infinity, NaN, 3])('rejects invalid spatial offset %s before persistence', async (x) => {
     const { service, working } = harness();
     const value = draft();
-    value.templates[0]!.workspace.variants[0]!.videoTransforms = { [slotId]: { x, y: 0, scaleX: 1, scaleY: 1, rotation: 0, uniform: true } };
+    value.templates[0]!.workspace.variants[0]!.videoTransforms = {
+      [slotId]: { x, y: 0, scaleX: 1, scaleY: 1, rotation: 0, uniform: true },
+    };
     await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow();
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
   it('allows user canvas overrides independently of the render default', async () => {
-    const { service, working } = harness(); const value = draft();
+    const { service, working } = harness();
+    const value = draft();
     value.templates[0]!.workspace.variants[0]!.canvasRatio = '1:1';
     await service.saveDraft('project', 'run', 7, value, true);
     expect(working.putNodeState).toHaveBeenCalledOnce();
   });
   it('reads the committed adaptive generation ratio and accepts a manual canvas', async () => {
-    const { service, working } = harness(); const value = draft();
-    working.listArtifacts.mockResolvedValue({ items: [source, { ...source, artifactKey: 'render-batch:product', payload: { clips: [{ ratio: 'adaptive' }] } }], total: 2 });
-    working.getNodeStateOrNull.mockImplementation(async (_p, _r, node) => ({ revision: 7, state: node === 'SEGMENT_RENDER_SETTINGS:product' ? { ratio: 'adaptive' } : draft() }) as never);
+    const { service, working } = harness();
+    const value = draft();
+    working.listArtifacts.mockResolvedValue({
+      items: [
+        source,
+        {
+          ...source,
+          artifactKey: 'render-batch:product',
+          payload: { clips: [{ ratio: 'adaptive' }] },
+        },
+      ],
+      total: 2,
+    });
+    working.getNodeStateOrNull.mockImplementation(
+      async (_p, _r, node) =>
+        ({
+          revision: 7,
+          state: node === 'SEGMENT_RENDER_SETTINGS:product' ? { ratio: 'adaptive' } : draft(),
+        }) as never,
+    );
     value.templates[0]!.workspace.variants[0]!.canvasRatio = '2.35:1';
     await service.saveDraft('project', 'run', 7, value, true);
     expect((await service.workspace('project', 'run')).renderAspectRatio).toBe('adaptive');
-    expect(working.getNodeStateOrNull).not.toHaveBeenCalledWith('project', 'run', 'SEGMENT_RENDER_SETTINGS:product');
+    expect(working.getNodeStateOrNull).not.toHaveBeenCalledWith(
+      'project',
+      'run',
+      'SEGMENT_RENDER_SETTINGS:product',
+    );
     expect(working.putNodeState).toHaveBeenCalledOnce();
   });
 });
 describe('inherited render replacements in a selected mix branch', () => {
   it.each([
-    ['HOOK', 'HOOK'], ['PRODUCT_DISPLAY', 'PRODUCT_DISPLAY'], ['EFFECT', 'EFFECT'],
-    ['CTA', 'END_CONVERSION'], ['END_CONVERSION', 'END_CONVERSION'],
-    ['PAIN', 'HOOK'], ['SELLING_POINT_EXPLANATION', 'EFFECT'], ['OUTRO', 'END_CONVERSION'],
-  ])('keeps confirmed %s clips visible as %s without making a first fill stale', async (raw, expected) => {
-    const { service, working } = harness();
-    const clip = { ...source, payload: { ...(source.payload as object),
-      primaryPurpose: raw, compatiblePurposes: [raw, 'CTA', 'OUTRO', 'unknown'],
-    } };
-    working.listArtifacts.mockResolvedValue({ items: [clip], total: 1 });
-    const workspace = await service.workspace('project', 'run');
-    expect(workspace.materials).toHaveLength(1);
-    expect(workspace.materials[0]).toMatchObject({ id: sourceId, artifactRevision: 2,
-      fileObjectId: 'file-1', purpose: expected, available: true, activeSource: true });
-    expect(workspace.materials[0]!.compatiblePurposes).toEqual([...new Set([expected, 'END_CONVERSION'])]);
-    expect(effectTemplateMixSourceChanges(workspace.draft.templates[0]!.workspace.variants[0]!, workspace.materials))
-      .toEqual([]);
-    const sources = await service.materialSources('project', 'run');
-    expect(sources.materials).toHaveLength(1);
-    expect(sources.pendingProjectCount).toBe(0);
-    expect(working.putNodeState).not.toHaveBeenCalled();
-    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
-  });
+    ['HOOK', 'HOOK'],
+    ['PRODUCT_DISPLAY', 'PRODUCT_DISPLAY'],
+    ['EFFECT', 'EFFECT'],
+    ['CTA', 'END_CONVERSION'],
+    ['END_CONVERSION', 'END_CONVERSION'],
+    ['PAIN', 'HOOK'],
+    ['SELLING_POINT_EXPLANATION', 'EFFECT'],
+    ['OUTRO', 'END_CONVERSION'],
+  ])(
+    'keeps confirmed %s clips visible as %s without making a first fill stale',
+    async (raw, expected) => {
+      const { service, working } = harness();
+      const clip = {
+        ...source,
+        payload: {
+          ...(source.payload as object),
+          primaryPurpose: raw,
+          compatiblePurposes: [raw, 'CTA', 'OUTRO', 'unknown'],
+        },
+      };
+      working.listArtifacts.mockResolvedValue({ items: [clip], total: 1 });
+      const workspace = await service.workspace('project', 'run');
+      expect(workspace.materials).toHaveLength(1);
+      expect(workspace.materials[0]).toMatchObject({
+        id: sourceId,
+        artifactRevision: 2,
+        fileObjectId: 'file-1',
+        purpose: expected,
+        available: true,
+        activeSource: true,
+      });
+      expect(workspace.materials[0]!.compatiblePurposes).toEqual([
+        ...new Set([expected, 'END_CONVERSION']),
+      ]);
+      expect(
+        effectTemplateMixSourceChanges(
+          workspace.draft.templates[0]!.workspace.variants[0]!,
+          workspace.materials,
+        ),
+      ).toEqual([]);
+      const sources = await service.materialSources('project', 'run');
+      expect(sources.materials).toHaveLength(1);
+      expect(sources.pendingProjectCount).toBe(0);
+      expect(working.putNodeState).not.toHaveBeenCalled();
+      expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps an unchanged bound CTA clone current without rebinding it to the ancestor', async () => {
     const { service, working } = harness();
-    const payload = { ...(source.payload as object), primaryPurpose: 'CTA', promptId: 'prompt-cta' };
+    const payload = {
+      ...(source.payload as object),
+      primaryPurpose: 'CTA',
+      promptId: 'prompt-cta',
+    };
     const bound = { ...source, workflowRunId: 'run', payload };
-    const ancestor = { ...bound, id: 'ancestor', workflowRunId: 'parent', artifactKey: 'render-clip:parent-task',
-      metadata: { branchSourceOwner: true } };
+    const ancestor = {
+      ...bound,
+      id: 'ancestor',
+      workflowRunId: 'parent',
+      artifactKey: 'render-clip:parent-task',
+      metadata: { branchSourceOwner: true },
+    };
     working.listArtifacts.mockResolvedValue({ items: [ancestor, bound], total: 2 });
     const result = await service.materialSources('project', 'run');
     expect(result.materials).toHaveLength(1);
@@ -211,40 +300,71 @@ describe('inherited render replacements in a selected mix branch', () => {
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
 
-  it.each(['replacement', 'removed', 'unavailable'])('still reports a real CTA source %s', async (change) => {
-    const { service, working } = harness();
-    const clip = { ...source, workflowRunId: 'run', payload: { ...(source.payload as object),
-      primaryPurpose: 'CTA', promptId: 'prompt-cta' } };
-    working.listArtifacts.mockResolvedValue({ items: [clip], total: 1 });
-    const initial = await service.workspace('project', 'run');
-    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: initial.draft });
-    if (change === 'replacement') {
-      working.listArtifacts.mockResolvedValue({ items: [{ ...clip, revision: 3,
-        payload: { ...clip.payload, fileObjectId: 'new-file', contentHash: 'new-sha' } }], total: 1 });
-    } else if (change === 'removed') {
-      const batch = { ...source, id: 'pool', workflowRunId: 'run', artifactKey: 'render-batch:product',
-        payload: { clips: [], removedSources: [{ taskId: 'task-1', promptId: 'prompt-cta' }] } };
-      working.listArtifacts.mockResolvedValue({ items: [clip, batch], total: 2 });
-    } else {
-      working.listArtifacts.mockResolvedValue({ items: [{ ...clip, availability: 'MISSING' }], total: 1 });
-    }
-    const result = await service.materialSources('project', 'run');
-    const changes = effectTemplateMixSourceChanges(initial.draft.templates[0]!.workspace.variants[0]!, result.materials);
-    expect(result.pendingProjectCount).toBe(1);
-    expect(changes).toHaveLength(1);
-    if (change === 'removed') expect(changes[0]!.kind).toBe('REMOVED');
-    else if (change === 'replacement') expect(changes[0]!.material?.fileObjectId).toBe('new-file');
-    else expect(changes[0]!.blockedReason).toBeTruthy();
-    expect(working.putNodeState).not.toHaveBeenCalled();
-  });
+  it.each(['replacement', 'removed', 'unavailable'])(
+    'still reports a real CTA source %s',
+    async (change) => {
+      const { service, working } = harness();
+      const clip = {
+        ...source,
+        workflowRunId: 'run',
+        payload: { ...(source.payload as object), primaryPurpose: 'CTA', promptId: 'prompt-cta' },
+      };
+      working.listArtifacts.mockResolvedValue({ items: [clip], total: 1 });
+      const initial = await service.workspace('project', 'run');
+      working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: initial.draft });
+      if (change === 'replacement') {
+        working.listArtifacts.mockResolvedValue({
+          items: [
+            {
+              ...clip,
+              revision: 3,
+              payload: { ...clip.payload, fileObjectId: 'new-file', contentHash: 'new-sha' },
+            },
+          ],
+          total: 1,
+        });
+      } else if (change === 'removed') {
+        const batch = {
+          ...source,
+          id: 'pool',
+          workflowRunId: 'run',
+          artifactKey: 'render-batch:product',
+          payload: { clips: [], removedSources: [{ taskId: 'task-1', promptId: 'prompt-cta' }] },
+        };
+        working.listArtifacts.mockResolvedValue({ items: [clip, batch], total: 2 });
+      } else {
+        working.listArtifacts.mockResolvedValue({
+          items: [{ ...clip, availability: 'MISSING' }],
+          total: 1,
+        });
+      }
+      const result = await service.materialSources('project', 'run');
+      const changes = effectTemplateMixSourceChanges(
+        initial.draft.templates[0]!.workspace.variants[0]!,
+        result.materials,
+      );
+      expect(result.pendingProjectCount).toBe(1);
+      expect(changes).toHaveLength(1);
+      if (change === 'removed') expect(changes[0]!.kind).toBe('REMOVED');
+      else if (change === 'replacement')
+        expect(changes[0]!.material?.fileObjectId).toBe('new-file');
+      else expect(changes[0]!.blockedReason).toBeTruthy();
+      expect(working.putNodeState).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not guess a purpose or mark unknown source metadata as a deletion', async () => {
     const { service, working } = harness();
-    working.listArtifacts.mockResolvedValue({ items: [{ ...source,
-      payload: { ...(source.payload as object), primaryPurpose: 'unknown' } }], total: 1 });
+    working.listArtifacts.mockResolvedValue({
+      items: [{ ...source, payload: { ...(source.payload as object), primaryPurpose: 'unknown' } }],
+      total: 1,
+    });
     const result = await service.outputSourceWorkspace('project', 'run');
     expect(result.materials).toEqual([]);
-    const changes = effectTemplateMixSourceChanges(result.draft.templates[0]!.workspace.variants[0]!, result.materials);
+    const changes = effectTemplateMixSourceChanges(
+      result.draft.templates[0]!.workspace.variants[0]!,
+      result.materials,
+    );
     expect(changes[0]!.kind).not.toBe('REMOVED');
     expect(changes[0]!.blockedReason).toBeTruthy();
     expect(working.putNodeState).not.toHaveBeenCalled();
@@ -262,11 +382,18 @@ describe('inherited render replacements in a selected mix branch', () => {
     value.templates.push(stale, empty);
     working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: value });
     const result = await service.materialSources('project', 'run');
-    expect(result.pendingProjectCounts).toEqual({ [templateId]: 0, 'stale-template': 1, 'empty-template': 0 });
+    expect(result.pendingProjectCounts).toEqual({
+      [templateId]: 0,
+      'stale-template': 1,
+      'empty-template': 0,
+    });
     expect(result.pendingProjectCount).toBe(1);
     stale.workspace.variants[0]!.bindingRevisions[slotId] = 2;
-    expect((await service.materialSources('project', 'run')).pendingProjectCounts)
-      .toEqual({ [templateId]: 0, 'stale-template': 0, 'empty-template': 0 });
+    expect((await service.materialSources('project', 'run')).pendingProjectCounts).toEqual({
+      [templateId]: 0,
+      'stale-template': 0,
+      'empty-template': 0,
+    });
     expect(working.getNodeStateOrNull).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
     expect(working.putNodeState).not.toHaveBeenCalled();
   });
@@ -394,46 +521,108 @@ describe('EffectTemplateMixService', () => {
     const h = harness();
     const previous = draft();
     const owner = previous.templates[0]!.workspace.variants[0]!;
-    owner.bindingSources = { [slotId]: {
-      id: sourceId, artifactId: sourceId, artifactKey: source.artifactKey,
-      artifactRevision: 2, artifactContentHash: 'business-old', fileObjectId: 'file-1',
-      contentHash: 'sha', contentUrl: '/old', code: 'R-001', name: '旧素材', duration: 4,
-      ratio: '9:16', resolution: '720p', purpose: 'HOOK', compatiblePurposes: [], available: true,
-    } };
+    owner.bindingSources = {
+      [slotId]: {
+        id: sourceId,
+        artifactId: sourceId,
+        artifactKey: source.artifactKey,
+        artifactRevision: 2,
+        artifactContentHash: 'business-old',
+        fileObjectId: 'file-1',
+        contentHash: 'sha',
+        contentUrl: '/old',
+        code: 'R-001',
+        name: '旧素材',
+        duration: 4,
+        ratio: '9:16',
+        resolution: '720p',
+        purpose: 'HOOK',
+        compatiblePurposes: [],
+        available: true,
+      },
+    };
     h.working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
-    h.working.listArtifacts.mockResolvedValue({ items: [{ ...source, revision: 3,
-      payload: { ...(source.payload as object), fileObjectId: 'latest-file' } }], total: 1 });
+    h.working.listArtifacts.mockResolvedValue({
+      items: [
+        {
+          ...source,
+          revision: 3,
+          payload: { ...(source.payload as object), fileObjectId: 'latest-file' },
+        },
+      ],
+      total: 1,
+    });
     const value = structuredClone(previous);
     const copied = { ...structuredClone(owner), id: 'copied-film', name: '复制成片' };
     copied.bindingSources![slotId]!.contentHash = 'client-forged-hash';
     value.templates[0]!.workspace.variants.push(copied);
     await h.service.saveDraft('project', 'run', 7, value, true);
-    expect(h.working.putNodeState.mock.calls[0]![3].state.templates[0].workspace.variants[1].bindingSources[slotId])
-      .toMatchObject({ artifactRevision: 2, fileObjectId: 'file-1', contentHash: 'sha' });
+    expect(
+      h.working.putNodeState.mock.calls[0]![3].state.templates[0].workspace.variants[1]
+        .bindingSources[slotId],
+    ).toMatchObject({ artifactRevision: 2, fileObjectId: 'file-1', contentHash: 'sha' });
     expect(owner.bindingSources[slotId]!.contentHash).toBe('sha');
   });
   it('recovers a legacy adopted file from its successful task snapshot without using the new live revision', async () => {
     const h = harness();
     const saved = draft();
     h.working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: saved });
-    h.working.listArtifacts.mockResolvedValue({ items: [{ ...source, revision: 3,
-      payload: { ...(source.payload as object), fileObjectId: 'new-file', contentHash: 'new-sha' } }], total: 1 });
+    h.working.listArtifacts.mockResolvedValue({
+      items: [
+        {
+          ...source,
+          revision: 3,
+          payload: {
+            ...(source.payload as object),
+            fileObjectId: 'new-file',
+            contentHash: 'new-sha',
+          },
+        },
+      ],
+      total: 1,
+    });
     const repository = {
       sourceArtifacts: vi.fn().mockResolvedValue([]),
-      listRecent: vi.fn().mockResolvedValue([{ templateId, status: 'COMPLETED',
-        createdAt: new Date('2026-10-07T00:00:00Z'), updatedAt: new Date('2026-10-07T00:00:00Z'), inputSnapshot: {
-        materials: [{ id: sourceId, artifactId: sourceId, artifactKey: source.artifactKey,
-          artifactRevision: 2, contentHash: 'old-business-hash', fileObjectId: 'file-1',
-          promptId: 'p1', prompt: '原画面描述', code: 'R-001', name: '原片段', duration: 4 }],
-      } }]),
+      listRecent: vi.fn().mockResolvedValue([
+        {
+          templateId,
+          status: 'COMPLETED',
+          createdAt: new Date('2026-10-07T00:00:00Z'),
+          updatedAt: new Date('2026-10-07T00:00:00Z'),
+          inputSnapshot: {
+            materials: [
+              {
+                id: sourceId,
+                artifactId: sourceId,
+                artifactKey: source.artifactKey,
+                artifactRevision: 2,
+                contentHash: 'old-business-hash',
+                fileObjectId: 'file-1',
+                promptId: 'p1',
+                prompt: '原画面描述',
+                code: 'R-001',
+                name: '原片段',
+                duration: 4,
+              },
+            ],
+          },
+        },
+      ]),
       mediaFingerprints: vi.fn().mockResolvedValue([{ id: 'file-1', sha256: 'sha' }]),
     };
-    const service = new EffectTemplateMixService(h.working as unknown as WorkflowWorkingService,
-      repository as unknown as EffectTemplateMixAiRepository);
+    const service = new EffectTemplateMixService(
+      h.working as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
     const result = await service.workspace('project', 'run');
-    expect(result.draft.templates[0]!.workspace.variants[0]!.bindingSources?.[slotId]).toMatchObject({
-      artifactRevision: 2, fileObjectId: 'file-1', contentHash: 'sha',
-      artifactContentHash: 'old-business-hash', promptText: '原画面描述',
+    expect(
+      result.draft.templates[0]!.workspace.variants[0]!.bindingSources?.[slotId],
+    ).toMatchObject({
+      artifactRevision: 2,
+      fileObjectId: 'file-1',
+      contentHash: 'sha',
+      artifactContentHash: 'old-business-hash',
+      promptText: '原画面描述',
       contentUrl: '/api/projects/project/file-objects/file-1/content',
     });
     expect(saved.templates[0]!.workspace.variants[0]!.bindingSources).toBeUndefined();
@@ -441,74 +630,127 @@ describe('EffectTemplateMixService', () => {
   });
   it('hides a saved deletion including bound copies without resurrecting a same-file different source', async () => {
     const h = harness();
-    const original = { ...source, metadata: { branchSourceOwner: true },
-      payload: { ...(source.payload as object), promptId: 'deleted-prompt' } };
-    const live = { ...source, id: 'live', artifactKey: 'render-clip:live',
-      metadata: { branchSourceOwner: true }, payload: { ...(source.payload as object), promptId: 'live-prompt' } };
-    const pool = { ...source, id: 'pool', artifactKey: 'render-batch:p', metadata: { branchSourceOwner: true },
-      payload: { clips: [{ taskId: 'live', promptId: 'live-prompt' }],
-        removedSources: [{ taskId: 'task-1', promptId: 'deleted-prompt' }] } };
+    const original = {
+      ...source,
+      metadata: { branchSourceOwner: true },
+      payload: { ...(source.payload as object), promptId: 'deleted-prompt' },
+    };
+    const live = {
+      ...source,
+      id: 'live',
+      artifactKey: 'render-clip:live',
+      metadata: { branchSourceOwner: true },
+      payload: { ...(source.payload as object), promptId: 'live-prompt' },
+    };
+    const pool = {
+      ...source,
+      id: 'pool',
+      artifactKey: 'render-batch:p',
+      metadata: { branchSourceOwner: true },
+      payload: {
+        clips: [{ taskId: 'live', promptId: 'live-prompt' }],
+        removedSources: [{ taskId: 'task-1', promptId: 'deleted-prompt' }],
+      },
+    };
     h.working.listArtifacts.mockResolvedValue({ items: [original, live, pool], total: 3 });
     const result = await h.service.workspace('project', 'run');
-    expect(result.materials.find((row) => row.id === source.id)).toMatchObject({ activeSource: false, sourceRemoved: true });
-    expect(result.materials.filter((row) => row.activeSource && row.available).map((row) => row.id)).toEqual(['live']);
-    expect(effectTemplateMixSourceChanges(result.draft.templates[0]!.workspace.variants[0]!, result.materials))
-      .toEqual([{ slotId, kind: 'REMOVED' }]);
+    expect(result.materials.find((row) => row.id === source.id)).toMatchObject({
+      activeSource: false,
+      sourceRemoved: true,
+    });
+    expect(
+      result.materials.filter((row) => row.activeSource && row.available).map((row) => row.id),
+    ).toEqual(['live']);
+    expect(
+      effectTemplateMixSourceChanges(
+        result.draft.templates[0]!.workspace.variants[0]!,
+        result.materials,
+      ),
+    ).toEqual([{ slotId, kind: 'REMOVED' }]);
   });
   const obsoleteSources = (sameFile = false) => {
-    const current = { ...source, metadata: { branchSourceOwner: true },
-      payload: { ...(source.payload as object), promptId: 'shared-prompt', version: 2 } };
-    const old = { ...source, id: 'old-copy', revision: 1, artifactKey: 'render-clip:old-copy',
+    const current = {
+      ...source,
+      metadata: { branchSourceOwner: true },
+      payload: { ...(source.payload as object), promptId: 'shared-prompt', version: 2 },
+    };
+    const old = {
+      ...source,
+      id: 'old-copy',
+      revision: 1,
+      artifactKey: 'render-clip:old-copy',
       metadata: { branchSourceOwner: false },
-      payload: { ...(source.payload as object), promptId: 'shared-prompt', version: 1,
-        fileObjectId: sameFile ? 'file-1' : 'old-file' } };
-    const batch = { ...source, id: 'current-batch', artifactKey: 'render-batch:current',
-      metadata: { branchSourceOwner: true }, payload: { clips: [{ taskId: 'task-1' }] } };
+      payload: {
+        ...(source.payload as object),
+        promptId: 'shared-prompt',
+        version: 1,
+        fileObjectId: sameFile ? 'file-1' : 'old-file',
+      },
+    };
+    const batch = {
+      ...source,
+      id: 'current-batch',
+      artifactKey: 'render-batch:current',
+      metadata: { branchSourceOwner: true },
+      payload: { clips: [{ taskId: 'task-1' }] },
+    };
     return [current, old, batch] as WorkingArtifact[];
   };
 
   it('rejects a draft switching an updated slot back to another branch CURRENT old file', async () => {
     const { service, working } = harness();
     working.listArtifacts.mockResolvedValue({ items: obsoleteSources(), total: 3 });
-    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    const value = draft(),
+      variant = value.templates[0]!.workspace.variants[0]!;
     variant.bindings[slotId] = 'old-copy';
     variant.bindingRevisions[slotId] = 1;
-    await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow('不能使用其他分支的旧素材覆盖');
+    await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow(
+      '不能使用其他分支的旧素材覆盖',
+    );
     expect(working.putNodeState).not.toHaveBeenCalled();
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
   });
 
   it('rejects confirming an obsolete CURRENT copy even when its local revision matches', async () => {
     const { service, working } = harness();
-    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    const value = draft(),
+      variant = value.templates[0]!.workspace.variants[0]!;
     variant.bindings[slotId] = 'old-copy';
     variant.bindingRevisions[slotId] = 1;
     working.getNodeState.mockResolvedValue({ revision: 7, state: value });
     working.listArtifacts.mockResolvedValue({ items: obsoleteSources(), total: 3 });
-    await expect(service.validate('project', 'run', 7, templateId)).rejects.toThrow('不能使用其他分支的旧素材覆盖');
+    await expect(service.validate('project', 'run', 7, templateId)).rejects.toThrow(
+      '不能使用其他分支的旧素材覆盖',
+    );
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
   });
 
   it('allows an unchanged stale binding to autosave other fields without confirming it', async () => {
     const { service, working } = harness();
-    const previous = draft(), variant = previous.templates[0]!.workspace.variants[0]!;
+    const previous = draft(),
+      variant = previous.templates[0]!.workspace.variants[0]!;
     variant.bindings[slotId] = 'old-copy';
     variant.bindingRevisions[slotId] = 1;
     working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
     working.listArtifacts.mockResolvedValue({ items: obsoleteSources(), total: 3 });
     const value = structuredClone(previous);
     value.templates[0]!.workspace.variants[0]!.originalVolume = 0.5;
-    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({ draftRevision: 8 });
+    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({
+      draftRevision: 8,
+    });
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
   });
 
   it('accepts a reminted binding to the exact same current video file', async () => {
     const { service, working } = harness();
     working.listArtifacts.mockResolvedValue({ items: obsoleteSources(true), total: 3 });
-    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    const value = draft(),
+      variant = value.templates[0]!.workspace.variants[0]!;
     variant.bindings[slotId] = 'old-copy';
     variant.bindingRevisions[slotId] = 1;
-    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({ draftRevision: 8 });
+    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({
+      draftRevision: 8,
+    });
     working.getNodeState.mockResolvedValue({ revision: 7, state: value });
     await expect(service.validate('project', 'run', 7, templateId)).resolves.toBeDefined();
   });
@@ -520,10 +762,13 @@ describe('EffectTemplateMixService', () => {
     items[1]!.payload = { ...(items[1]!.payload as object), promptId: 'another-prompt' };
     (items[2]!.payload as { clips: unknown[] }).clips.push({ taskId: 'old-copy' });
     working.listArtifacts.mockResolvedValue({ items, total: 3 });
-    const value = draft(), variant = value.templates[0]!.workspace.variants[0]!;
+    const value = draft(),
+      variant = value.templates[0]!.workspace.variants[0]!;
     variant.bindings[slotId] = 'old-copy';
     variant.bindingRevisions[slotId] = 1;
-    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({ draftRevision: 8 });
+    await expect(service.saveDraft('project', 'run', 7, value, true)).resolves.toEqual({
+      draftRevision: 8,
+    });
   });
 
   it('keeps the frozen Prompt slot maximum when an independent import is longer', async () => {
@@ -686,8 +931,12 @@ describe('EffectTemplateMixService', () => {
     const { service, working } = harness();
     const result = await service.outputSourceWorkspace('project', 'run');
     expect(result.draft).toMatchObject(draft());
-    expect(result.draft.templates[0]!.workspace.variants[0]!.bindingSources?.[slotId]).toMatchObject({
-      fileObjectId: 'file-1', artifactRevision: 2, contentUrl: '/api/projects/project/file-objects/file-1/content',
+    expect(
+      result.draft.templates[0]!.workspace.variants[0]!.bindingSources?.[slotId],
+    ).toMatchObject({
+      fileObjectId: 'file-1',
+      artifactRevision: 2,
+      contentUrl: '/api/projects/project/file-objects/file-1/content',
     });
     expect(result.materials).toEqual(
       expect.arrayContaining([
@@ -756,41 +1005,44 @@ describe('EffectTemplateMixService', () => {
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('isolates configuration saves from another template fill (editLocked=%s)', async (editLocked) => {
-    const { working } = harness();
-    const previous = draft();
-    previous.templates[0]!.workspace.variants = [];
-    previous.templates.push({
-      ...structuredClone(previous.templates[0]!),
-      id: '9c2504a0-b21a-4a7d-b486-14495c73bdf4',
-    });
-    previous.templates[1]!.workspace.template.name = '另一模板';
-    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
-    const service = new EffectTemplateMixService(
-      working as unknown as WorkflowWorkingService,
-      {
-        lockedTemplateIds: vi.fn().mockResolvedValue([templateId]),
-        packagedTemplateIds: vi.fn().mockResolvedValue([]),
-        listRecent: vi.fn().mockResolvedValue([]),
-      } as unknown as EffectTemplateMixAiRepository,
-    );
-    const edited = structuredClone(previous);
-    edited.templates[editLocked ? 0 : 1]!.workspace.template.name += '修改';
-    edited.activeTemplateId = edited.templates[1]!.id;
-    const saving = service.saveDraft('project', 'run', 7, edited, true);
-    if (editLocked) {
-      await expect(saving).rejects.toThrow('智能填充正在运行，此模板暂时不能修改');
-      expect(working.putNodeState).not.toHaveBeenCalled();
-    } else {
-      await expect(saving).resolves.toEqual({ draftRevision: 8 });
-      const saved = working.putNodeState.mock.calls[0]![3].state as EffectTemplateMixDraft;
-      expect(saved.templates[0]!.aiFillLocked).toBe(true);
-      expect(saved.templates[1]!.aiFillLocked).toBe(false);
-      expect(saved.templates[0]!.workspace).toEqual(previous.templates[0]!.workspace);
-      expect(saved.templates[1]!.workspace.template.name).toBe('另一模板修改');
-      expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
-    }
-  });
+  it.each([false, true])(
+    'isolates configuration saves from another template fill (editLocked=%s)',
+    async (editLocked) => {
+      const { working } = harness();
+      const previous = draft();
+      previous.templates[0]!.workspace.variants = [];
+      previous.templates.push({
+        ...structuredClone(previous.templates[0]!),
+        id: '9c2504a0-b21a-4a7d-b486-14495c73bdf4',
+      });
+      previous.templates[1]!.workspace.template.name = '另一模板';
+      working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: previous });
+      const service = new EffectTemplateMixService(
+        working as unknown as WorkflowWorkingService,
+        {
+          lockedTemplateIds: vi.fn().mockResolvedValue([templateId]),
+          packagedTemplateIds: vi.fn().mockResolvedValue([]),
+          listRecent: vi.fn().mockResolvedValue([]),
+        } as unknown as EffectTemplateMixAiRepository,
+      );
+      const edited = structuredClone(previous);
+      edited.templates[editLocked ? 0 : 1]!.workspace.template.name += '修改';
+      edited.activeTemplateId = edited.templates[1]!.id;
+      const saving = service.saveDraft('project', 'run', 7, edited, true);
+      if (editLocked) {
+        await expect(saving).rejects.toThrow('智能填充正在运行，此模板暂时不能修改');
+        expect(working.putNodeState).not.toHaveBeenCalled();
+      } else {
+        await expect(saving).resolves.toEqual({ draftRevision: 8 });
+        const saved = working.putNodeState.mock.calls[0]![3].state as EffectTemplateMixDraft;
+        expect(saved.templates[0]!.aiFillLocked).toBe(true);
+        expect(saved.templates[1]!.aiFillLocked).toBe(false);
+        expect(saved.templates[0]!.workspace).toEqual(previous.templates[0]!.workspace);
+        expect(saved.templates[1]!.workspace.template.name).toBe('另一模板修改');
+        expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it('freezes manual roles for smart-fill and enforces them in role pools', async () => {
     const { working } = harness();
@@ -1202,24 +1454,30 @@ describe('EffectTemplateMixService', () => {
     });
   });
 
-  it.each([1 / 30, 2, 3.5])('persists a %s-second timeline trim without changing template duration', async duration => {
-    const { service, working } = harness();
-    const value = draft();
-    value.templates[0]!.workspace.variants[0]!.slots[0]!.duration = duration;
-    await service.saveDraft('project', 'run', 7, value, true);
-    const saved = working.putNodeState.mock.calls[0]![3].state;
-    expect(saved.templates[0].workspace.template.slots[0].duration).toBe(4);
-    expect(saved.templates[0].workspace.variants[0].slots[0].duration).toBe(duration);
-    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
-  });
+  it.each([1 / 30, 2, 3.5])(
+    'persists a %s-second timeline trim without changing template duration',
+    async (duration) => {
+      const { service, working } = harness();
+      const value = draft();
+      value.templates[0]!.workspace.variants[0]!.slots[0]!.duration = duration;
+      await service.saveDraft('project', 'run', 7, value, true);
+      const saved = working.putNodeState.mock.calls[0]![3].state;
+      expect(saved.templates[0].workspace.template.slots[0].duration).toBe(4);
+      expect(saved.templates[0].workspace.variants[0].slots[0].duration).toBe(duration);
+      expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+    },
+  );
 
-  it.each([0, -1, NaN, Infinity])('rejects invalid timeline trim duration %s before saving', async duration => {
-    const { service, working } = harness();
-    const value = draft();
-    value.templates[0]!.workspace.variants[0]!.slots[0]!.duration = duration;
-    await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow();
-    expect(working.putNodeState).not.toHaveBeenCalled();
-  });
+  it.each([0, -1, NaN, Infinity])(
+    'rejects invalid timeline trim duration %s before saving',
+    async (duration) => {
+      const { service, working } = harness();
+      const value = draft();
+      value.templates[0]!.workspace.variants[0]!.slots[0]!.duration = duration;
+      await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow();
+      expect(working.putNodeState).not.toHaveBeenCalled();
+    },
+  );
 
   it('saves and validates split pieces of one source only for manually edited output', async () => {
     const { service, working } = harness();
@@ -1231,12 +1489,20 @@ describe('EffectTemplateMixService', () => {
     variant.bindingRevisions['split-right'] = 2;
     variant.offsets['split-right'] = 1.5;
     await service.saveDraft('project', 'run', 7, value, true);
-    working.getNodeState.mockResolvedValue({ revision: 8, state: working.putNodeState.mock.calls[0]![3].state });
-    expect((await service.prepareValidation('project', 'run', 8, templateId, { manualOutput: true })).variants).toHaveLength(1);
+    working.getNodeState.mockResolvedValue({
+      revision: 8,
+      state: working.putNodeState.mock.calls[0]![3].state,
+    });
+    expect(
+      (await service.prepareValidation('project', 'run', 8, templateId, { manualOutput: true }))
+        .variants,
+    ).toHaveLength(1);
     await expect(service.prepareValidation('project', 'run', 8, templateId)).rejects.toThrow();
     variant.offsets['split-right'] = 2;
     working.getNodeState.mockResolvedValue({ revision: 9, state: value });
-    await expect(service.prepareValidation('project', 'run', 9, templateId, { manualOutput: true })).rejects.toThrow('时长不足');
+    await expect(
+      service.prepareValidation('project', 'run', 9, templateId, { manualOutput: true }),
+    ).rejects.toThrow('时长不足');
     expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
   });
 
@@ -1440,19 +1706,32 @@ describe('EffectTemplateMixService', () => {
   });
 
   it.each(['valid', 'hash', 'revision', 'missing', 'unproven'] as const)(
-    'uses the creation-time adopted-source policy for a single package commit: %s', async (change) => {
+    'uses the creation-time adopted-source policy for a single package commit: %s',
+    async (change) => {
       const { service, working } = harness();
-      const adopted = { ...source, freshness: 'STALE',
+      const adopted = {
+        ...source,
+        freshness: 'STALE',
         revision: change === 'revision' ? 3 : 2,
         availability: change === 'missing' ? 'MISSING' : 'AVAILABLE',
         metadata: change === 'unproven' ? {} : { promptSourcePending: true },
-        payload: { ...(source.payload as object), promptText: '合法冻结正文',
-          adoptedPrompt: { promptContentHash: change === 'hash' ? 'invalid' :
-            createHash('sha256').update('合法冻结正文').digest('hex') } },
+        payload: {
+          ...(source.payload as object),
+          promptText: '合法冻结正文',
+          adoptedPrompt: {
+            promptContentHash:
+              change === 'hash'
+                ? 'invalid'
+                : createHash('sha256').update('合法冻结正文').digest('hex'),
+          },
+        },
       } as WorkingArtifact;
       working.listArtifacts.mockResolvedValue({ items: [adopted], total: 1 });
-      const result = service.prepareValidation('project', 'run', 7, templateId,
-        { partial: true, manualOutput: true, variantIds: [variantId] });
+      const result = service.prepareValidation('project', 'run', 7, templateId, {
+        partial: true,
+        manualOutput: true,
+        variantIds: [variantId],
+      });
       if (change === 'valid') {
         expect((await result).variants.map((row) => row.id)).toEqual([variantId]);
       } else {
@@ -1478,7 +1757,9 @@ describe('EffectTemplateMixService', () => {
     variant.slots.unshift(marker);
     variant.conflictSlotIds = [marker.id];
     working.getNodeState.mockResolvedValue({ revision: 7, state });
-    const result = await service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true });
+    const result = await service.prepareValidation('project', 'run', 7, templateId, {
+      manualOutput: true,
+    });
     expect(result.variants.map((item) => item.id)).toEqual([variantId]);
   });
   it('validates a caption-only manual output but not an empty sign-only project', async () => {
@@ -1488,10 +1769,14 @@ describe('EffectTemplateMixService', () => {
     variant.bindings = {};
     variant.captions = [{ id: 'c', text: '标题', start: 0, end: 3 }];
     working.getNodeState.mockResolvedValue({ revision: 7, state });
-    expect((await service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true })).variants).toHaveLength(1);
+    expect(
+      (await service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true }))
+        .variants,
+    ).toHaveLength(1);
     variant.captions = [];
-    await expect(service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true }))
-      .rejects.toThrow('没有实际轨道内容');
+    await expect(
+      service.prepareValidation('project', 'run', 7, templateId, { manualOutput: true }),
+    ).rejects.toThrow('没有实际轨道内容');
   });
 
   it('rejects repeated source clips inside one timeline', async () => {
@@ -2260,7 +2545,9 @@ describe('EffectTemplateMixService', () => {
     };
     const importState = structuredClone(state);
     const shortGenerated = {
-      ...clips[0]!, id: 'short-generated', artifactKey: 'render-clip:short-generated',
+      ...clips[0]!,
+      id: 'short-generated',
+      artifactKey: 'render-clip:short-generated',
       payload: { ...clips[0]!.payload, durationSeconds: 4, fileObjectId: 'short-generated-file' },
     };
     importState.templates[0]!.workspace.template.slots.forEach((slot) => {
@@ -2282,7 +2569,11 @@ describe('EffectTemplateMixService', () => {
     expect(
       importSnapshot.materials.some((material: { id: string }) => material.id === 'short-import'),
     ).toBe(false);
-    expect(importSnapshot.materials.some((material: { id: string }) => material.id === 'short-generated')).toBe(false);
+    expect(
+      importSnapshot.materials.some(
+        (material: { id: string }) => material.id === 'short-generated',
+      ),
+    ).toBe(false);
     expect(
       importSnapshot.materials.find(
         (material: { id: string }) => material.id === 'imported-picture',
@@ -2545,30 +2836,62 @@ describe('EffectTemplateMixService', () => {
     // Even pure additions (including new clips edited before their first fill) trigger a full
     // classification for a new batch. Existing manual roles, selections and trims cannot leak in.
     Object.assign(promptArtifact, { freshness: 'CURRENT', availability: 'AVAILABLE' });
-    const baseline = { status: 'COMPLETED', templateId, inputSnapshot: snapshot,
-      classificationResult: snapshot.materials.map((clip: { id: string }) => ({ materialId: clip.id, scores, reasons: {} })) };
+    const baseline = {
+      status: 'COMPLETED',
+      templateId,
+      inputSnapshot: snapshot,
+      classificationResult: snapshot.materials.map((clip: { id: string }) => ({
+        materialId: clip.id,
+        scores,
+        reasons: {},
+      })),
+    };
     listRecent.mockResolvedValue([baseline]);
-    const newClip = { ...clips[0]!, id: 'new-material', artifactKey: 'render-clip:new', revision: 9,
-      payload: { ...clips[0]!.payload, promptId: 'new-prompt', renderCode: 'VNEW', fileObjectId: 'new-file', durationSeconds: 6 } };
+    const newClip = {
+      ...clips[0]!,
+      id: 'new-material',
+      artifactKey: 'render-clip:new',
+      revision: 9,
+      payload: {
+        ...clips[0]!.payload,
+        promptId: 'new-prompt',
+        renderCode: 'VNEW',
+        fileObjectId: 'new-file',
+        durationSeconds: 6,
+      },
+    };
     promptArtifact.payload.items.push({ id: 'new-prompt', content: '新增后又编辑的画面' });
-    Object.assign(state.templates[0]!, { materialRoleOverrides: { 'material-0': 'HOOK', 'new-material': 'PRODUCT' } });
+    Object.assign(state.templates[0]!, {
+      materialRoleOverrides: { 'material-0': 'HOOK', 'new-material': 'PRODUCT' },
+    });
     aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, ...clips, newClip]);
     await service.createAiRun('project', 'run', templateId, 8, 'pure-add-refill');
     const additions = create.mock.calls[3]![0];
     expect(additions.initialClassifications).toBeUndefined();
     expect(additions.initialSelections).toBeUndefined();
     expect(additions.initialTrims).toBeUndefined();
-    expect(additions.snapshot).toMatchObject({ replaceExistingVariants: true, requireAllMaterials: true });
+    expect(additions.snapshot).toMatchObject({
+      replaceExistingVariants: true,
+      requireAllMaterials: true,
+    });
     expect(additions.snapshot.materials).toHaveLength(7);
     expect(additions.snapshot.materialRoleAssignments).toEqual({});
     expect(additions.snapshot.manualMaterialRoles).toEqual({});
     expect(additions.snapshot.incremental).toBeUndefined();
 
     // Locally adopting a source into the timeline must not turn the next full fill into a reuse.
-    const changedOld = { ...clips[0]!, revision: 4,
-      payload: { ...clips[0]!.payload, fileObjectId: 'edited-old-file' } };
+    const changedOld = {
+      ...clips[0]!,
+      revision: 4,
+      payload: { ...clips[0]!.payload, fileObjectId: 'edited-old-file' },
+    };
     state.templates[0]!.workspace.variants[0]!.bindingRevisions['slot-0'] = 4;
-    aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, changedOld, ...clips.slice(1), newClip]);
+    aiRepository.sourceArtifacts.mockResolvedValue([
+      promptArtifact,
+      changedOld,
+      ...clips.slice(1),
+      newClip,
+    ]);
     await service.createAiRun('project', 'run', templateId, 8, 'mixed-refill');
     const mixed = create.mock.calls[4]![0];
     expect(mixed.initialClassifications).toBeUndefined();
@@ -2577,22 +2900,35 @@ describe('EffectTemplateMixService', () => {
 
     Object.assign(state.templates[0]!, { materialRoleOverrides: {} });
 
-    aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, ...clips.slice(1), newClip,
-      { ...newClip, id: 'second-added', artifactKey: 'render-clip:second-added',
-        payload: { ...newClip.payload, fileObjectId: 'second-added-file' } }]);
+    aiRepository.sourceArtifacts.mockResolvedValue([
+      promptArtifact,
+      ...clips.slice(1),
+      newClip,
+      {
+        ...newClip,
+        id: 'second-added',
+        artifactKey: 'render-clip:second-added',
+        payload: { ...newClip.payload, fileObjectId: 'second-added-file' },
+      },
+    ]);
     await service.createAiRun('project', 'run', templateId, 8, 'deleted-and-added-refill');
     const deletion = create.mock.calls[5]![0];
     expect(deletion.initialClassifications).toBeUndefined();
     expect(deletion.snapshot.materialRoleAssignments).toEqual({});
-    expect(deletion.snapshot.materials.some((m: { fileObjectId: string }) => m.fileObjectId === 'file-0')).toBe(false);
+    expect(
+      deletion.snapshot.materials.some(
+        (m: { fileObjectId: string }) => m.fileObjectId === 'file-0',
+      ),
+    ).toBe(false);
 
     aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, changedOld, ...clips.slice(1)]);
     await service.createAiRun('project', 'run', templateId, 8, 'edited-only-refill');
     expect(create.mock.calls[6]![0].initialClassifications).toBeUndefined();
     expect(create.mock.calls[6]![0].snapshot.materials).toHaveLength(6);
     aiRepository.sourceArtifacts.mockResolvedValue([promptArtifact, ...clips.slice(1)]);
-    await expect(service.createAiRun('project', 'run', templateId, 8, 'deleted-only-refill'))
-      .rejects.toThrow('不足以再生成一条完整成片');
+    await expect(
+      service.createAiRun('project', 'run', templateId, 8, 'deleted-only-refill'),
+    ).rejects.toThrow('不足以再生成一条完整成片');
     expect(create).toHaveBeenCalledTimes(7);
   });
 
@@ -2700,15 +3036,30 @@ describe('EffectTemplateMixService', () => {
     expect(working.publishEffectNodeEdit).toHaveBeenCalledWith('project', 'run', 'TEMPLATE_MIX');
     // New snapshots compare only duration-eligible current files. A short generated source
     // outside the frozen pool must not make completion falsely report an upstream edit.
-    const shortClip = { ...source, id: 'short-ai', artifactKey: 'render-clip:short-ai',
-      payload: { ...source.payload as Record<string, unknown>, durationSeconds: 3, fileObjectId: 'short-file' } };
+    const shortClip = {
+      ...source,
+      id: 'short-ai',
+      artifactKey: 'render-clip:short-ai',
+      payload: {
+        ...(source.payload as Record<string, unknown>),
+        durationSeconds: 3,
+        fileObjectId: 'short-file',
+      },
+    };
     Object.assign(snapshot, { durationFilteredMaterials: true });
     aiRuns.sourceArtifacts.mockResolvedValue([source, shortClip]);
     await expect(service.completeAiRun('project', 'ai-run', 'token', trims)).resolves.toBeDefined();
-    Object.assign(snapshot, { durationFilteredMaterials: undefined, durationFilteredImports: true });
-    await expect(service.completeAiRun('project', 'ai-run', 'token', trims)).rejects.toThrow('视频片段已变化');
-    aiRuns.sourceArtifacts.mockResolvedValue([source, { ...shortClip,
-      payload: { ...shortClip.payload, origin: 'EXTERNAL_IMPORT' } }]);
+    Object.assign(snapshot, {
+      durationFilteredMaterials: undefined,
+      durationFilteredImports: true,
+    });
+    await expect(service.completeAiRun('project', 'ai-run', 'token', trims)).rejects.toThrow(
+      '视频片段已变化',
+    );
+    aiRuns.sourceArtifacts.mockResolvedValue([
+      source,
+      { ...shortClip, payload: { ...shortClip.payload, origin: 'EXTERNAL_IMPORT' } },
+    ]);
     await expect(service.completeAiRun('project', 'ai-run', 'token', trims)).resolves.toBeDefined();
   });
 
@@ -3102,9 +3453,9 @@ describe('EffectTemplateMixService', () => {
     expect(result.materials[0]?.fileObjectId).toBe('new-file');
     expect(result.materials[0]).not.toHaveProperty('trimStartSeconds');
     currentPrompt.payload.items[0]!.content = '已修改的另一创意';
-    expect((await service.materialSources('project', 'run')).classificationPools?.[0]?.items).toEqual([
-      { materialId: 'replacement', role: 'HOOK', matchScore: 0.9 },
-    ]);
+    expect(
+      (await service.materialSources('project', 'run')).classificationPools?.[0]?.items,
+    ).toEqual([{ materialId: 'replacement', role: 'HOOK', matchScore: 0.9 }]);
   });
 
   it('drops an inherited fill whose clips are not the ones this Run holds', async () => {

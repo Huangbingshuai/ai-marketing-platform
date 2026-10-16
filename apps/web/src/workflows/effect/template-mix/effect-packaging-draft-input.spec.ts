@@ -57,21 +57,26 @@ function harness() {
 }
 
 describe('packaging draft preparation', () => {
-  it.each(['BATCH_PACKAGE', 'SINGLE_PACKAGE'])('keeps %s on the selected template Run, not the global page Run', async () => {
-    const h = harness();
-    // The page can browse an older template tip while another branch stays globally active.
-    const pageProps = { projectId: 'p', workflowRunId: 'global-run' };
-    const panel = page.match(/<EffectTemplateMixPackaging\b[\s\S]*?\/>/)![0];
-    const expression = panel.match(/:workflow-run-id="([^"]+)"/)![1]!;
-    const panelRunId = new Function('props', 'workflowRunId', `return ${expression};`)(
-      h.props, pageProps.workflowRunId,
-    );
-    const revision = await h.prepare();
-    expect(h.loadEffectTemplateMixWorkspace).toHaveBeenCalledWith('p', h.props.workflowRunId);
-    expect({ workflowRunId: panelRunId, expectedRevision: revision }).toEqual({
-      workflowRunId: h.props.workflowRunId, expectedRevision: 33,
-    });
-  });
+  it.each(['BATCH_PACKAGE', 'SINGLE_PACKAGE'])(
+    'keeps %s on the selected template Run, not the global page Run',
+    async () => {
+      const h = harness();
+      // The page can browse an older template tip while another branch stays globally active.
+      const pageProps = { projectId: 'p', workflowRunId: 'global-run' };
+      const panel = page.match(/<EffectTemplateMixPackaging\b[\s\S]*?\/>/)![0];
+      const expression = panel.match(/:workflow-run-id="([^"]+)"/)![1]!;
+      const panelRunId = new Function('props', 'workflowRunId', `return ${expression};`)(
+        h.props,
+        pageProps.workflowRunId,
+      );
+      const revision = await h.prepare();
+      expect(h.loadEffectTemplateMixWorkspace).toHaveBeenCalledWith('p', h.props.workflowRunId);
+      expect({ workflowRunId: panelRunId, expectedRevision: revision }).toEqual({
+        workflowRunId: h.props.workflowRunId,
+        expectedRevision: 33,
+      });
+    },
+  );
   it('adopts the current revision without blocking on unrelated draft counters or navigation', async () => {
     const h = harness();
     h.remote.workspace.editVersion += 1;

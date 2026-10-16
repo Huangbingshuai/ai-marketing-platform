@@ -56,17 +56,34 @@ describe('effect prompt generation API', () => {
     expect(url).not.toContain('origin=');
   });
 
-  it.each(['AI', 'MANUAL'] as const)('sends the persisted %s source with pagination and purpose', async (origin) => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok()));
-    vi.stubGlobal('fetch', fetchMock);
-    await getEffectPromptResult('project-1', 'workflow-1', 'product-1', 2, 5, '厨房',
-      'EFFECT', 'PRIMARY_OR_COMPATIBLE', undefined, origin);
-    const url = new URL(String(fetchMock.mock.calls[0]![0]), 'http://localhost');
-    expect(Object.fromEntries(url.searchParams)).toMatchObject({
-      origin, page: '2', pageSize: '5', query: '厨房', purpose: 'EFFECT',
-      purposeMatch: 'PRIMARY_OR_COMPATIBLE',
-    });
-  });
+  it.each(['AI', 'MANUAL'] as const)(
+    'sends the persisted %s source with pagination and purpose',
+    async (origin) => {
+      const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok()));
+      vi.stubGlobal('fetch', fetchMock);
+      await getEffectPromptResult(
+        'project-1',
+        'workflow-1',
+        'product-1',
+        2,
+        5,
+        '厨房',
+        'EFFECT',
+        'PRIMARY_OR_COMPATIBLE',
+        undefined,
+        origin,
+      );
+      const url = new URL(String(fetchMock.mock.calls[0]![0]), 'http://localhost');
+      expect(Object.fromEntries(url.searchParams)).toMatchObject({
+        origin,
+        page: '2',
+        pageSize: '5',
+        query: '厨房',
+        purpose: 'EFFECT',
+        purposeMatch: 'PRIMARY_OR_COMPATIBLE',
+      });
+    },
+  );
 
   it('uses result CAS for edit, delete and validation mutations', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok()));

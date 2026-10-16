@@ -18,10 +18,7 @@ import {
   effectMixHistoryTemplateId,
   type EffectBranchNavigation,
 } from '../shared/effect-branch-navigation';
-import {
-  mixTemplateCatalogFromWorkspace,
-  mixTemplateCatalogTargetRun,
-} from './effect-template-mix-template-catalog';
+import { mixTemplateCatalogFromWorkspace } from './effect-template-mix-template-catalog';
 import { MixDraftRaceGuard } from './effect-template-mix-draft-race';
 
 const compile = (source: string, context: Record<string, unknown>, result: string) =>
@@ -50,7 +47,16 @@ function scopeHarness(editing = false) {
   const state = scope.run(() =>
     compile(
       source,
-      { pageProps, templateDirectory, templateDirectoryStatus: ref('READY'), ref, computed, reactive, toRefs, watch },
+      {
+        pageProps,
+        templateDirectory,
+        templateDirectoryStatus: ref('READY'),
+        ref,
+        computed,
+        reactive,
+        toRefs,
+        watch,
+      },
       '{ props, selectedTemplateWorkflowRunId }',
     ),
   ) as {
@@ -153,45 +159,68 @@ function loadHarness() {
 }
 
 describe('mix templates survive upstream isolation editing', () => {
-  it.each([false, true])('publishes the read-only directory after installation advances the draft epoch (editing=%s)', async (editing) => {
-    const h = loadHarness();
-    const guard = new MixDraftRaceGuard();
-    h.context.draftRace.readToken = () => guard.readToken();
-    h.context.draftRace.canInstall.mockImplementation((...args: unknown[]) =>
-      guard.canInstall(args[0] as number, args[1] as boolean));
-    h.context.mixTemplateCatalogTargetRun.mockReturnValue('published');
-    h.context.loadEffectTemplateMixWorkspace.mockResolvedValue({
-      data: { draft: { templates: [], activeTemplateId: '' }, aiRuns: [] },
-    } as never);
-    h.context.installWorkspaceData.mockImplementation(() => { guard.changed(); return true; });
-    let release!: (value: { entries: string[] }) => void;
-    h.context.readMixTemplateCatalog.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    await h.execute();
-    expect(h.context.installWorkspaceData).toHaveBeenCalledTimes(1);
-    expect(h.context.templateDirectoryStatus.value).toBe('LOADING');
-    if (editing) { guard.changed(); h.context.saveState.value = 'dirty'; }
-    release({ entries: ['a', 'b', 'c'] });
-    await vi.waitFor(() => expect(h.context.templateDirectoryStatus.value).toBe('READY'));
-    expect(h.context.templateDirectory.value.entries).toEqual(['a', 'b', 'c']);
-    expect(h.context.installWorkspaceData).toHaveBeenCalledTimes(1);
-    expect(h.context.saveState.value).toBe(editing ? 'dirty' : 'saved');
-  });
-  it.each(['project', 'run', 'cancelled', 'hidden'] as const)('ignores a late background directory after %s changes', async (change) => {
-    const h = loadHarness();
-    h.context.mixTemplateCatalogTargetRun.mockReturnValue('published');
-    let release!: (value: { entries: string[] }) => void;
-    h.context.readMixTemplateCatalog.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    await h.execute();
-    if (change === 'project') h.context.props.projectId = 'other';
-    if (change === 'run') h.context.props.workflowRunId = 'history';
-    if (change === 'cancelled') h.state.controller!.abort();
-    if (change === 'hidden') h.state.workbenchActive = false;
-    release({ entries: ['late'] });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(h.context.templateDirectoryStatus.value).toBe('LOADING');
-    expect(h.context.templateDirectory.value.entries).toEqual(['old']);
-    expect(h.context.installWorkspaceData).toHaveBeenCalledTimes(1);
-  });
+  it.each([false, true])(
+    'publishes the read-only directory after installation advances the draft epoch (editing=%s)',
+    async (editing) => {
+      const h = loadHarness();
+      const guard = new MixDraftRaceGuard();
+      h.context.draftRace.readToken = () => guard.readToken();
+      h.context.draftRace.canInstall.mockImplementation((...args: unknown[]) =>
+        guard.canInstall(args[0] as number, args[1] as boolean),
+      );
+      h.context.mixTemplateCatalogTargetRun.mockReturnValue('published');
+      h.context.loadEffectTemplateMixWorkspace.mockResolvedValue({
+        data: { draft: { templates: [], activeTemplateId: '' }, aiRuns: [] },
+      } as never);
+      h.context.installWorkspaceData.mockImplementation(() => {
+        guard.changed();
+        return true;
+      });
+      let release!: (value: { entries: string[] }) => void;
+      h.context.readMixTemplateCatalog.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      await h.execute();
+      expect(h.context.installWorkspaceData).toHaveBeenCalledTimes(1);
+      expect(h.context.templateDirectoryStatus.value).toBe('LOADING');
+      if (editing) {
+        guard.changed();
+        h.context.saveState.value = 'dirty';
+      }
+      release({ entries: ['a', 'b', 'c'] });
+      await vi.waitFor(() => expect(h.context.templateDirectoryStatus.value).toBe('READY'));
+      expect(h.context.templateDirectory.value.entries).toEqual(['a', 'b', 'c']);
+      expect(h.context.installWorkspaceData).toHaveBeenCalledTimes(1);
+      expect(h.context.saveState.value).toBe(editing ? 'dirty' : 'saved');
+    },
+  );
+  it.each(['project', 'run', 'cancelled', 'hidden'] as const)(
+    'ignores a late background directory after %s changes',
+    async (change) => {
+      const h = loadHarness();
+      h.context.mixTemplateCatalogTargetRun.mockReturnValue('published');
+      let release!: (value: { entries: string[] }) => void;
+      h.context.readMixTemplateCatalog.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      await h.execute();
+      if (change === 'project') h.context.props.projectId = 'other';
+      if (change === 'run') h.context.props.workflowRunId = 'history';
+      if (change === 'cancelled') h.state.controller!.abort();
+      if (change === 'hidden') h.state.workbenchActive = false;
+      release({ entries: ['late'] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(h.context.templateDirectoryStatus.value).toBe('LOADING');
+      expect(h.context.templateDirectory.value.entries).toEqual(['old']);
+      expect(h.context.installWorkspaceData).toHaveBeenCalledTimes(1);
+    },
+  );
   it('allows retry after a background directory failure without reusing the failed request', async () => {
     const h = loadHarness();
     h.context.mixTemplateCatalogTargetRun.mockReturnValue('published');
@@ -327,7 +356,9 @@ describe('mix templates survive upstream isolation editing', () => {
     expect(h.context.pageState.value).toBe('READY');
     expect(h.context.templateDirectoryStatus.value).toBe('LOADING');
     finishDirectory({ entries: ['a', 'b', 'c'] });
-    await vi.waitFor(() => expect(h.context.templateDirectory.value.entries).toEqual(['a', 'b', 'c']));
+    await vi.waitFor(() =>
+      expect(h.context.templateDirectory.value.entries).toEqual(['a', 'b', 'c']),
+    );
   });
   it('resolves the pending card’s template before a stale draft active-template selection', async () => {
     const h = loadHarness();
@@ -355,7 +386,9 @@ describe('mix templates survive upstream isolation editing', () => {
     expect(h.context.templateDirectory.value.entries).toEqual(['old']);
     expect(h.context.pageState.value).toBe('READY');
     expect(h.context.showNotice).toHaveBeenCalledWith(
-      '后台同步暂未完成，当前工作台和编辑已保留，将继续读取任务进度', 'warning');
+      '后台同步暂未完成，当前工作台和编辑已保留，将继续读取任务进度',
+      'warning',
+    );
   });
   it('reroutes a normal open editor to the current directory without installing its cached snapshot', async () => {
     const h = loadHarness();

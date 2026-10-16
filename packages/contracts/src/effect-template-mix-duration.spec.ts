@@ -24,7 +24,9 @@ describe('template slot duration from frozen render requests', () => {
     const sixSecondSlots = Array.from({ length: 6 }, () => ({ duration: 6 }));
     expect(effectTemplateMixMaterialFitsTemplate(5.041667, sixSecondSlots)).toBe(false);
     expect(effectTemplateMixMaterialFitsTemplate(6, sixSecondSlots)).toBe(true);
-    expect(effectTemplateMixMaterialFitsTemplate(5, [{ duration: 4 }, ...sixSecondSlots])).toBe(true);
+    expect(effectTemplateMixMaterialFitsTemplate(5, [{ duration: 4 }, ...sixSecondSlots])).toBe(
+      true,
+    );
     expect(effectTemplateMixMaterialFitsSlot(4, 4)).toBe(true);
     expect(effectTemplateMixMaterialFitsSlot(4, 5)).toBe(false);
     expect(effectTemplateMixMaterialFitsSlot(NaN, 4)).toBe(false);

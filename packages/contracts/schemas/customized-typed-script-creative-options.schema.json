@@ -64,9 +64,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "options"
-  ],
+  "required": ["options"],
   "title": "CreativeSlate",
   "type": "object"
 }

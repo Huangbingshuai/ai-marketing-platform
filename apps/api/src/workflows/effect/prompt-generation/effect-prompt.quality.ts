@@ -1224,7 +1224,8 @@ export const parseEffectPromptStoredDraft = (result: {
 }): EffectPromptBatchResult | null => {
   const draft = parseEffectPromptBatchResult(result.draftResult);
   if (!draft) return null;
-  const evaluation = parseEffectPromptBatchResult(result.generatedResult)?.metrics.semanticEvaluation;
+  const evaluation = parseEffectPromptBatchResult(result.generatedResult)?.metrics
+    .semanticEvaluation;
   if (evaluation?.status !== 'VERIFIED') return draft;
   return { ...draft, metrics: { ...draft.metrics, semanticEvaluation: evaluation } };
 };

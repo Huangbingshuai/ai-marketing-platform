@@ -4,19 +4,12 @@
       "additionalProperties": false,
       "properties": {
         "severity": {
-          "enum": [
-            "ERROR",
-            "WARNING"
-          ],
+          "enum": ["ERROR", "WARNING"],
           "title": "Severity",
           "type": "string"
         },
         "category": {
-          "enum": [
-            "FACT",
-            "STORY",
-            "STRUCTURE"
-          ],
+          "enum": ["FACT", "STORY", "STRUCTURE"],
           "title": "Category",
           "type": "string"
         },
@@ -110,21 +103,12 @@
           "type": "string"
         },
         "defectScope": {
-          "enum": [
-            "NONE",
-            "LOCAL_PREFERENCE",
-            "STRUCTURAL"
-          ],
+          "enum": ["NONE", "LOCAL_PREFERENCE", "STRUCTURAL"],
           "title": "Defectscope",
           "type": "string"
         },
         "assessment": {
-          "enum": [
-            "DEMONSTRATED",
-            "CONTRADICTED",
-            "NOT_DEMONSTRATED",
-            "NOT_APPLICABLE"
-          ],
+          "enum": ["DEMONSTRATED", "CONTRADICTED", "NOT_DEMONSTRATED", "NOT_APPLICABLE"],
           "title": "Assessment",
           "type": "string"
         }
@@ -145,12 +129,7 @@
   "additionalProperties": false,
   "properties": {
     "routeId": {
-      "enum": [
-        "ECOMMERCE",
-        "LOCAL_STORE",
-        "BRAND_AD",
-        "DRAMA"
-      ],
+      "enum": ["ECOMMERCE", "LOCAL_STORE", "BRAND_AD", "DRAMA"],
       "title": "Routeid",
       "type": "string"
     },
@@ -177,12 +156,7 @@
       "type": "string"
     }
   },
-  "required": [
-    "routeId",
-    "qualityChecks",
-    "findings",
-    "summary"
-  ],
+  "required": ["routeId", "qualityChecks", "findings", "summary"],
   "title": "EditorialReview",
   "type": "object"
 }

@@ -158,9 +158,7 @@ describe('audio clip spans', () => {
       },
     } as unknown as PackagingItem;
     const variant = {
-      detachedAudios: [
-        { id: 'd1', fileObjectId: 'f1', start: 2, duration: 5 },
-      ],
+      detachedAudios: [{ id: 'd1', fileObjectId: 'f1', start: 2, duration: 5 }],
     } as unknown as Parameters<typeof timelineAudioClipRefs>[0];
 
     const refs = timelineAudioClipRefs(variant, packaging, [], 'project-1');

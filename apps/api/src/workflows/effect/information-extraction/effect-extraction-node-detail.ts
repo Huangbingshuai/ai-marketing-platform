@@ -12,13 +12,7 @@ import type { EffectExtractionInputSnapshot } from './effect-extraction.types';
 
 type DetailBranchRecord = {
   branch:
-    | 'DOCUMENT'
-    | 'IMAGE'
-    | 'COMMERCE'
-    | 'FORM'
-    | 'FUSION'
-    | 'SEMANTIC_REFINEMENT'
-    | 'NORMALIZATION';
+    'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'SEMANTIC_REFINEMENT' | 'NORMALIZATION';
   status: EffectExtractionNodeStatus;
   structuredOutput?: unknown;
   updatedAt: Date;

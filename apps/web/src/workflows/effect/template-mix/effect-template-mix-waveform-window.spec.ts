@@ -49,7 +49,9 @@ describe('waveform timeline alignment', () => {
   it('retains video source peaks when packaging has silenced original sound', () => {
     expect(timelineSource).not.toContain(':gain="variant.originalVolume ?? 1"');
     expect(timelineSource).toContain("'is-muted': trackMuted('VIDEO'),");
-    expect(timelineSource).not.toContain("trackMuted('VIDEO') || (variant.originalVolume ?? 1) <= 0");
+    expect(timelineSource).not.toContain(
+      "trackMuted('VIDEO') || (variant.originalVolume ?? 1) <= 0",
+    );
     expect(timelineSource).toContain(':gain="audioGain(audio)"');
   });
 });

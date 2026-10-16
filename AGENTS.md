@@ -31,13 +31,13 @@
 
 这是内部 AI 营销视频生产平台。所有业务查询、草稿、任务、回调和资产必须按 `projectId + workflowType + workflowRunId` 隔离；节点不可随意增删、合并或改义。
 
-| 工作流              | 固定节点                                                                          | 业务指南                                                             |
-| ------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| 效果类              | 资料导入 → AI 信息提炼 → Prompt 生成 → 视频渲染 → 模板混剪 → 成片输出             | [effect](docs/workflows/effect/agent-guide.md)                       |
-| 定制类              | 资料导入 → 信息提炼 → 脚本创作 → 资产准备 → 视频制作 → 素材交付 | [customized](docs/workflows/customized/agent-guide.md)               |
-| 裂变 · 爆款复刻     | 上传素材 → 深度拆解 → 元素映射 → 成片生成                                         | [clone](docs/workflows/fission/clone/agent-guide.md)                 |
-| 裂变 · 数字人口播   | 选择形象 → 口播文案 → 唇形驱动 → 背景配置 → 渲染输出                              | [avatar](docs/workflows/fission/avatar/agent-guide.md)               |
-| 裂变 · 局部元素替换 | 选择成片 → 替换粒度 → 解析与替换 → 生成提示词 → 渲染输出                          | [local-replace](docs/workflows/fission/local-replace/agent-guide.md) |
+| 工作流              | 固定节点                                                              | 业务指南                                                             |
+| ------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 效果类              | 资料导入 → AI 信息提炼 → Prompt 生成 → 视频渲染 → 模板混剪 → 成片输出 | [effect](docs/workflows/effect/agent-guide.md)                       |
+| 定制类              | 资料导入 → 信息提炼 → 脚本创作 → 资产准备 → 视频制作 → 素材交付       | [customized](docs/workflows/customized/agent-guide.md)               |
+| 裂变 · 爆款复刻     | 上传素材 → 深度拆解 → 元素映射 → 成片生成                             | [clone](docs/workflows/fission/clone/agent-guide.md)                 |
+| 裂变 · 数字人口播   | 选择形象 → 口播文案 → 唇形驱动 → 背景配置 → 渲染输出                  | [avatar](docs/workflows/fission/avatar/agent-guide.md)               |
+| 裂变 · 局部元素替换 | 选择成片 → 替换粒度 → 解析与替换 → 生成提示词 → 渲染输出              | [local-replace](docs/workflows/fission/local-replace/agent-guide.md) |
 
 不同工作流的指南定义各自真实实现边界，不能因页面存在就宣称完整任务链路已实现。
 

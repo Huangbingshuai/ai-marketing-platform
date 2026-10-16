@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue';
-import type {
-  CustomizedExtractionWorkspace,
-  CustomizedExtractionTask,
-  ExtractionNodeDetail,
-} from '@ai-marketing/contracts';
+import type { CustomizedExtractionWorkspace, ExtractionNodeDetail } from '@ai-marketing/contracts';
 import { CUSTOMIZED_EXTRACTION_NODES } from '@ai-marketing/contracts';
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { pollAsyncTask } from '../../../platform/workflow/poll-async-task';

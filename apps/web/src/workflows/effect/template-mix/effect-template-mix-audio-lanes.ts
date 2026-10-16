@@ -80,7 +80,9 @@ export function timelineAudioClipRefs(
   const refs: AudioClipRef[] = [];
   // A clip that predates the span being recorded simply gets a zero-length one: it then collides
   // with nothing and keeps its default row, which is how it was drawn before.
-  const span = (audio: { start?: number; duration?: number } | null | undefined): {
+  const span = (
+    audio: { start?: number; duration?: number } | null | undefined,
+  ): {
     start: number;
     duration: number;
   } => ({
@@ -217,10 +219,7 @@ export function audioRowCount(
  * on purpose: repackaging swaps every voice line id, and this runs before the packaging checkpoint
  * has loaded, so deleting unseen keys would wipe the rows of every 口播 clip.
  */
-export function compactAudioLanes(
-  lanes: Record<string, number>,
-  refs: AudioClipRef[],
-): void {
+export function compactAudioLanes(lanes: Record<string, number>, refs: AudioClipRef[]): void {
   const resolved = resolvedAudioLanes(refs, lanes);
   const used = [...new Set(resolved.values())].sort((left, right) => left - right);
   const compacted = new Map(used.map((lane, index) => [lane, index]));

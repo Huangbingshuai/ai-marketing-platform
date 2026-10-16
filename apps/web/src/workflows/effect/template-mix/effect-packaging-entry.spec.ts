@@ -65,7 +65,9 @@ describe('packaging workbench entry', () => {
     expect(reason.value).toBeNull();
   });
   it('disables the batch button and guards submission while preserving workflow details', () => {
-    const button = page.split('class="project-actions"')[1]!.split('@click="openPackaging(\'ACTION\')"')[0]!;
+    const button = page
+      .split('class="project-actions"')[1]!
+      .split('@click="openPackaging(\'ACTION\')"')[0]!;
     expect(button.split(':disabled="')[1]!.split('"')[0]).toContain('localUpdateBusy');
     const panelOpen = vi.fn();
     const context = {
@@ -82,10 +84,12 @@ describe('packaging workbench entry', () => {
     expect(panelOpen).not.toHaveBeenCalled();
     open('WORKFLOW');
     expect(panelOpen).toHaveBeenCalledWith('WORKFLOW');
-    expect(page.split('const preparePackaging = ')[1]!.split('const startAiFill')[0])
-      .toContain('if (packagingActionBlockReason.value)');
-    expect(page.split('<EffectSinglePackagingControl')[1]!.split('/>')[0])
-      .toContain('Boolean(packagingActionBlockReason)');
+    expect(page.split('const preparePackaging = ')[1]!.split('const startAiFill')[0]).toContain(
+      'if (packagingActionBlockReason.value)',
+    );
+    expect(page.split('<EffectSinglePackagingControl')[1]!.split('/>')[0]).toContain(
+      'Boolean(packagingActionBlockReason)',
+    );
   });
   it('accepts a click while the initial history request is still pending', async () => {
     const h = actionHarness();

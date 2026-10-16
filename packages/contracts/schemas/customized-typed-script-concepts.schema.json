@@ -202,10 +202,7 @@
       "additionalProperties": false,
       "properties": {
         "status": {
-          "enum": [
-            "READY",
-            "NEEDS_INFORMATION"
-          ],
+          "enum": ["READY", "NEEDS_INFORMATION"],
           "title": "Status",
           "type": "string"
         },
@@ -225,11 +222,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "status",
-        "reason",
-        "missing"
-      ],
+      "required": ["status", "reason", "missing"],
       "title": "Readiness",
       "type": "object"
     },
@@ -345,10 +338,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "readiness",
-    "concepts"
-  ],
+  "required": ["readiness", "concepts"],
   "title": "TypedConcepts",
   "type": "object"
 }

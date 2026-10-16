@@ -70,7 +70,13 @@ export class EffectTemplateMixWorkerController {
     @Headers('x-attempt-token') attemptToken: string,
     @Body() body: EffectTemplateMixWorkerClassificationDto,
   ) {
-    return this.service.classifyAiRun(body.projectId, runId, attemptToken, body.classifications, body.incrementalPlan);
+    return this.service.classifyAiRun(
+      body.projectId,
+      runId,
+      attemptToken,
+      body.classifications,
+      body.incrementalPlan,
+    );
   }
 
   @Put('runs/:runId/classifications/checkpoint')

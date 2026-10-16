@@ -27,11 +27,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "scriptId",
-        "ideaId",
-        "mustPreserve"
-      ],
+      "required": ["scriptId", "ideaId", "mustPreserve"],
       "title": "DramaChoice",
       "type": "object"
     },
@@ -45,10 +41,7 @@
           "type": "string"
         },
         "verdict": {
-          "enum": [
-            "ADVANCE",
-            "REJECT"
-          ],
+          "enum": ["ADVANCE", "REJECT"],
           "title": "Verdict",
           "type": "string"
         },
@@ -59,11 +52,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "ideaId",
-        "verdict",
-        "reason"
-      ],
+      "required": ["ideaId", "verdict", "reason"],
       "title": "DramaEvaluation",
       "type": "object"
     }
@@ -71,11 +60,7 @@
   "additionalProperties": false,
   "properties": {
     "status": {
-      "enum": [
-        "READY",
-        "REWORK",
-        "NEEDS_INFORMATION"
-      ],
+      "enum": ["READY", "REWORK", "NEEDS_INFORMATION"],
       "title": "Status",
       "type": "string"
     },
@@ -112,13 +97,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "status",
-    "reason",
-    "missing",
-    "evaluations",
-    "choices"
-  ],
+  "required": ["status", "reason", "missing", "evaluations", "choices"],
   "title": "DramaSelection",
   "type": "object"
 }

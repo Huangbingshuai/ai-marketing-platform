@@ -18,13 +18,17 @@ describe('effect prompt generation current layout', () => {
   });
   it('filters by persisted source independently of purposes and manual editing', () => {
     expect(pageSource).toContain('aria-label="按来源筛选 Prompt"');
-    expect(pageSource).toContain('{{ option.label }} <small>{{ originCount(option.value) }}</small>');
+    expect(pageSource).toContain(
+      '{{ option.label }} <small>{{ originCount(option.value) }}</small>',
+    );
     expect(pageSource).toContain('resultData.value?.sourceCounts');
     expect(pageSource).toContain("{ value: 'AI', label: 'AI 生成' }");
     expect(pageSource).toContain("{ value: 'MANUAL', label: '外部导入' }");
     expect(pageSource).toContain('originFilter.value || undefined');
     expect(pageSource).toContain('watch([purposeFilter, includeCompatiblePurposes, originFilter]');
-    expect(pageSource).toContain('keyword.value.trim() || purposeFilter.value || originFilter.value');
+    expect(pageSource).toContain(
+      'keyword.value.trim() || purposeFilter.value || originFilter.value',
+    );
   });
   it('places batch generation before the workflow viewer without changing their actions', () => {
     const start = pageSource.indexOf('<div class="effect-prompt-heading__actions">');
@@ -239,9 +243,14 @@ describe('effect prompt generation current layout', () => {
   });
 
   it('uses the scoped project name for exports without a format-count suffix', () => {
-    const exportSource = pageSource.slice(pageSource.indexOf('const exportBatch ='), pageSource.indexOf('const validatePromptBatch ='));
+    const exportSource = pageSource.slice(
+      pageSource.indexOf('const exportBatch ='),
+      pageSource.indexOf('const validatePromptBatch ='),
+    );
     expect(exportSource).toContain('projectContext.currentProject.value?.id === projectId');
-    expect(exportSource).toContain('projectContext.projects.value.find((project) => project.id === projectId)?.name');
+    expect(exportSource).toContain(
+      'projectContext.projects.value.find((project) => project.id === projectId)?.name',
+    );
     expect(exportSource).toContain('projectName,');
     expect(exportSource).not.toContain('product.name');
     expect(pageSource).not.toContain('双格式');

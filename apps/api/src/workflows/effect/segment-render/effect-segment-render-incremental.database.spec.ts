@@ -26,9 +26,14 @@ it.skipIf(process.env.EFFECT_INCREMENTAL_DATABASE_TEST !== '1')(
           async (tx) => {
             await tx.project.create({ data: { id: projectId, name: '回滚专用增量测试' } });
             const run = await tx.workflowRun.create({
-              data: { projectId, workflow: 'EFFECT', workflowSpace: 'EFFECT',
-                editSessionNodeId: 'SEGMENT_RENDER', editSessionPurpose: 'MANUAL',
-                editIdMap: { renderBatchRevisions: { baseline: 1 } } },
+              data: {
+                projectId,
+                workflow: 'EFFECT',
+                workflowSpace: 'EFFECT',
+                editSessionNodeId: 'SEGMENT_RENDER',
+                editSessionPurpose: 'MANUAL',
+                editIdMap: { renderBatchRevisions: { baseline: 1 } },
+              },
             });
             const workspace = await tx.effectImportWorkspace.create({
               data: { projectId, workflowRunId: run.id },
@@ -138,47 +143,94 @@ it.skipIf(process.env.EFFECT_INCREMENTAL_DATABASE_TEST !== '1')(
                 },
               ],
             };
-            const metadataTask = await tx.effectSegmentRenderTask.create({ data: {
-              projectId, workflowRunId: run.id, productId: product.id, batchId: batch.id,
-              promptId: randomUUID(), promptCode: 'P003', renderCode: 'R-003',
-              sourceFingerprint: 'c'.repeat(64), requestSnapshot: {}, generationRequestSnapshot: {},
-              status: 'COMPLETED', progress: 100, outputStorageKey: 'fixture/metadata.mp4',
-            } });
-            const removedTask = await tx.effectSegmentRenderTask.create({ data: {
-              projectId, workflowRunId: run.id, productId: product.id, batchId: batch.id,
-              promptId: randomUUID(), promptCode: 'P004', renderCode: 'R-004',
-              sourceFingerprint: 'd'.repeat(64), requestSnapshot: {}, generationRequestSnapshot: {},
-              status: 'COMPLETED', progress: 100, outputStorageKey: 'fixture/deleted.mp4',
-            } });
-            const freeInput = { sourcePrompt: input.sourcePrompt, sourcePackage: snapshot.sourcePackage,
+            const metadataTask = await tx.effectSegmentRenderTask.create({
+              data: {
+                projectId,
+                workflowRunId: run.id,
+                productId: product.id,
+                batchId: batch.id,
+                promptId: randomUUID(),
+                promptCode: 'P003',
+                renderCode: 'R-003',
+                sourceFingerprint: 'c'.repeat(64),
+                requestSnapshot: {},
+                generationRequestSnapshot: {},
+                status: 'COMPLETED',
+                progress: 100,
+                outputStorageKey: 'fixture/metadata.mp4',
+              },
+            });
+            const removedTask = await tx.effectSegmentRenderTask.create({
+              data: {
+                projectId,
+                workflowRunId: run.id,
+                productId: product.id,
+                batchId: batch.id,
+                promptId: randomUUID(),
+                promptCode: 'P004',
+                renderCode: 'R-004',
+                sourceFingerprint: 'd'.repeat(64),
+                requestSnapshot: {},
+                generationRequestSnapshot: {},
+                status: 'COMPLETED',
+                progress: 100,
+                outputStorageKey: 'fixture/deleted.mp4',
+              },
+            });
+            const freeInput = {
+              sourcePrompt: input.sourcePrompt,
+              sourcePackage: snapshot.sourcePackage,
               autoCommitPromptRefresh: true,
-              refreshContext: { schemaVersion: 1 as const, confirmationSignature: 'free-update', sourcePrompt: input.sourcePrompt },
-              taskSnapshots: {}, metadataSnapshots: { [metadataTask.id]: {
-                ...snapshot, promptId: metadataTask.promptId, creativeCore: '更新创意信息',
-              } }, removedTaskIds: [removedTask.id] };
-            expect(await repo.regenerateTasks(projectId, batch.id, [], 1, 'free-refresh', freeInput))
-              .toEqual({ kind: 'UPDATED' });
+              refreshContext: {
+                schemaVersion: 1 as const,
+                confirmationSignature: 'free-update',
+                sourcePrompt: input.sourcePrompt,
+              },
+              taskSnapshots: {},
+              metadataSnapshots: {
+                [metadataTask.id]: {
+                  ...snapshot,
+                  promptId: metadataTask.promptId,
+                  creativeCore: '更新创意信息',
+                },
+              },
+              removedTaskIds: [removedTask.id],
+            };
+            expect(
+              await repo.regenerateTasks(projectId, batch.id, [], 1, 'free-refresh', freeInput),
+            ).toEqual({ kind: 'UPDATED' });
             expect(await tx.jobOutbox.count({ where: { projectId } })).toBe(0);
-            expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).editIdMap)
-              .toMatchObject({ autoCommitPromptRefresh: batch.id, frozenPromptRefresh: true,
-                renderProgress: { batchId: batch.id, taskIds: [] },
-                renderBatchRevisions: { baseline: 1 } });
-            const metadataAfter = await tx.effectSegmentRenderTask.findUniqueOrThrow({ where: { id: metadataTask.id } });
+            expect(
+              (await tx.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).editIdMap,
+            ).toMatchObject({
+              autoCommitPromptRefresh: batch.id,
+              frozenPromptRefresh: true,
+              renderProgress: { batchId: batch.id, taskIds: [] },
+              renderBatchRevisions: { baseline: 1 },
+            });
+            const metadataAfter = await tx.effectSegmentRenderTask.findUniqueOrThrow({
+              where: { id: metadataTask.id },
+            });
             expect(metadataAfter.renderVersion).toBe(metadataTask.renderVersion);
             expect(metadataAfter.outputStorageKey).toBe(metadataTask.outputStorageKey);
-            expect(await tx.effectSegmentRenderTask.findUniqueOrThrow({ where: { id: removedTask.id } }))
-              .toMatchObject({ errorCode: 'MATERIAL_DELETED', outputStorageKey: null });
-            expect(await tx.effectSegmentRenderBatch.findUniqueOrThrow({ where: { id: batch.id } }))
-              .toMatchObject({ status: 'COMPLETED', revision: 2, activeKey: null });
+            expect(
+              await tx.effectSegmentRenderTask.findUniqueOrThrow({ where: { id: removedTask.id } }),
+            ).toMatchObject({ errorCode: 'MATERIAL_DELETED', outputStorageKey: null });
+            expect(
+              await tx.effectSegmentRenderBatch.findUniqueOrThrow({ where: { id: batch.id } }),
+            ).toMatchObject({ status: 'COMPLETED', revision: 2, activeKey: null });
             expect(
               (await repo.regenerateTasks(projectId, batch.id, [], 2, 'incremental', input)).kind,
             ).toBe('UPDATED');
             expect(
               (await repo.regenerateTasks(projectId, batch.id, [], 2, 'incremental', input)).kind,
             ).toBe('REPLAYED');
-            expect((await tx.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).editIdMap)
-              .toMatchObject({ renderProgress: { batchId: batch.id, taskIds: [newTaskId] },
-                renderBatchRevisions: { baseline: 1 } });
+            expect(
+              (await tx.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).editIdMap,
+            ).toMatchObject({
+              renderProgress: { batchId: batch.id, taskIds: [newTaskId] },
+              renderBatchRevisions: { baseline: 1 },
+            });
             expect(await tx.effectSegmentRenderTask.findUnique({ where: { id: old.id } })).toEqual(
               old,
             );

@@ -22,10 +22,7 @@
           "type": "string"
         },
         "situationBasis": {
-          "enum": [
-            "BRIEF",
-            "CREATIVE_HYPOTHESIS"
-          ],
+          "enum": ["BRIEF", "CREATIVE_HYPOTHESIS"],
           "title": "Situationbasis",
           "type": "string"
         },
@@ -111,12 +108,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "setup",
-        "action",
-        "observableResult",
-        "claimBoundary"
-      ],
+      "required": ["setup", "action", "observableResult", "claimBoundary"],
       "title": "Demonstration",
       "type": "object"
     },
@@ -124,10 +116,7 @@
       "additionalProperties": false,
       "properties": {
         "status": {
-          "enum": [
-            "READY",
-            "NEEDS_INFORMATION"
-          ],
+          "enum": ["READY", "NEEDS_INFORMATION"],
           "title": "Status",
           "type": "string"
         },
@@ -147,11 +136,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "status",
-        "reason",
-        "missing"
-      ],
+      "required": ["status", "reason", "missing"],
       "title": "Readiness",
       "type": "object"
     }
@@ -170,10 +155,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "readiness",
-    "opportunities"
-  ],
+  "required": ["readiness", "opportunities"],
   "title": "CommerceDevelopment",
   "type": "object"
 }

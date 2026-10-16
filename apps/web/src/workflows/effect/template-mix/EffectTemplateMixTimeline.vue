@@ -668,6 +668,8 @@ const materialForSlot = (slotId: string): EffectTemplateMixMaterial | null => {
   return materialId ? (materialById.value.get(materialId) ?? null) : null;
 };
 type TimelineInterval = { end: number; id: string; start: number };
+// Retained for source-level layout regression coverage.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const assignIntervalLanes = (items: TimelineInterval[]): Map<string, number> => {
   const laneEnds: number[] = [];
   const lanes = new Map<string, number>();
@@ -1021,6 +1023,8 @@ const dropTimeFromClientX = (clientX: number, snap = true): number => {
 };
 
 // Keep one baseline caption lane visible, then give every additional lane its own row/header.
+// Retained for source-level layout regression coverage.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const hasCaptionTrack = computed(() => true);
 const trackHeight = (track: VisibleTrack): number =>
   track === 'VIDEO'
@@ -2075,21 +2079,6 @@ const onVideoClipDoubleClick = (event: MouseEvent, slotId: string): void => {
   event.stopPropagation();
   setSelection([slotId]);
   emit('separateAudio', slotId);
-};
-
-const beginTrim = (event: PointerEvent, slotId: string): void => {
-  if (props.readOnly || event.button !== 0 || trackLocked.VIDEO) return;
-  event.preventDefault();
-  event.stopPropagation();
-  setSelection([slotId]);
-  const originalOffset = props.variant?.offsets[slotId] ?? 0;
-  trimDrag.value = {
-    currentOffset: originalOffset,
-    originalOffset,
-    slotId,
-    startClientX: event.clientX,
-  };
-  addWindowPointerListeners();
 };
 
 const beginEdgeTrim = (event: PointerEvent, slotId: string, side: 'LEFT' | 'RIGHT'): void => {

@@ -56,25 +56,35 @@ describe('shared extraction task polling', () => {
   });
   it('retries opt-in interruptions without inventing task updates and resets the backoff after success', async () => {
     vi.useFakeTimers();
-    const load = vi.fn().mockRejectedValueOnce(new TypeError('offline'))
-      .mockResolvedValueOnce('RUNNING').mockRejectedValueOnce(new TypeError('offline'))
+    const load = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce('RUNNING')
+      .mockRejectedValueOnce(new TypeError('offline'))
       .mockResolvedValueOnce('COMPLETED');
-    const delays = vi.fn((_error: unknown, _failures: number) => 2000), onUpdate = vi.fn();
-    const result = pollAsyncTask(load, v => v === 'COMPLETED', {
-      intervalMs: 1600, retryDelayMs: delays, onUpdate,
+    const delays = vi.fn((_error: unknown, _failures: number) => 2000),
+      onUpdate = vi.fn();
+    const result = pollAsyncTask(load, (v) => v === 'COMPLETED', {
+      intervalMs: 1600,
+      retryDelayMs: delays,
+      onUpdate,
     });
     await vi.advanceTimersByTimeAsync(2000);
     expect(onUpdate.mock.calls).toEqual([['RUNNING']]);
     await vi.advanceTimersByTimeAsync(3600);
     expect(await result).toBe('COMPLETED');
-    expect(delays.mock.calls.map(call => call[1])).toEqual([1, 1]);
+    expect(delays.mock.calls.map((call) => call[1])).toEqual([1, 1]);
     expect(onUpdate.mock.calls).toEqual([['RUNNING'], ['COMPLETED']]);
   });
   it('cancels a retry wait without issuing another read', async () => {
     vi.useFakeTimers();
-    const controller = new AbortController(), load = vi.fn().mockRejectedValue(new TypeError('offline'));
-    const query = pollAsyncTask(load, () => false, {signal:controller.signal,retryDelayMs:()=>30000});
-    const rejected = expect(query).rejects.toMatchObject({name:'AbortError'});
+    const controller = new AbortController(),
+      load = vi.fn().mockRejectedValue(new TypeError('offline'));
+    const query = pollAsyncTask(load, () => false, {
+      signal: controller.signal,
+      retryDelayMs: () => 30000,
+    });
+    const rejected = expect(query).rejects.toMatchObject({ name: 'AbortError' });
     await vi.advanceTimersByTimeAsync(0);
     controller.abort();
     await rejected;

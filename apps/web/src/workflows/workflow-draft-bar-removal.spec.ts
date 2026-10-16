@@ -8,10 +8,13 @@ const pages = import.meta.glob<string>('./**/*.vue', {
 });
 
 describe('workflow pages without the redundant draft status panel', () => {
-  it.each(Object.entries(pages))('%s does not mount or import the removed panel', (_path, source) => {
-    expect(source).not.toContain('WorkflowNodeDraftBar');
-    expect(source).not.toContain('workflow-node-draft-bar');
-  });
+  it.each(Object.entries(pages))(
+    '%s does not mount or import the removed panel',
+    (_path, source) => {
+      expect(source).not.toContain('WorkflowNodeDraftBar');
+      expect(source).not.toContain('workflow-node-draft-bar');
+    },
+  );
 
   it('keeps shared navigation and task progress exports', () => {
     const source = uiExports;

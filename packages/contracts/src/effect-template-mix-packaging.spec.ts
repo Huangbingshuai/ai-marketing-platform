@@ -33,7 +33,8 @@ describe('caption canvas sizing', () => {
     expect(packagingCaptionFontPixels(16, Number.NaN)).toBe(16);
   });
   it.each([180, 360, 480, 720, 960, 1080, 1280, 1440, 2160, 3840])(
-    'preserves relative subtitle height on a %ipx canvas', (height) => {
+    'preserves relative subtitle height on a %ipx canvas',
+    (height) => {
       expect(packagingCaptionFontPixels(undefined, height) / height).toBeCloseTo(16 / 360);
       expect(packagingCaptionFontPixels(24, height) / height).toBeCloseTo(24 / 360);
       expect(packagingCaptionFontPixels(1, height) / height).toBeCloseTo(8 / 360);
@@ -48,17 +49,36 @@ describe('caption canvas sizing', () => {
 
 describe('fresh packaging picture-only projection', () => {
   it('removes every non-video track without mutating the baseline or collapsing gaps and tails', () => {
-    const variant = { id: 'v', slots: [{ id: 's', duration: 6 }], bindings: { s: 'asset' },
-      clipStarts: { s: 6 }, captions: [{ start: 18, end: 22, text: 'original' }],
-      voice: { start: 0, duration: 10 }, bgm: { start: 0, duration: 30 },
-      detachedAudios: [{ start: 26, duration: 6 }], audioLanes: { a: 1 }, originalVolume: 1,
-      intentionallyEmptySlotIds: ['empty'], preservedTimelineEnd: 28,
+    const variant = {
+      id: 'v',
+      slots: [{ id: 's', duration: 6 }],
+      bindings: { s: 'asset' },
+      clipStarts: { s: 6 },
+      captions: [{ start: 18, end: 22, text: 'original' }],
+      voice: { start: 0, duration: 10 },
+      bgm: { start: 0, duration: 30 },
+      detachedAudios: [{ start: 26, duration: 6 }],
+      audioLanes: { a: 1 },
+      originalVolume: 1,
+      intentionallyEmptySlotIds: ['empty'],
+      preservedTimelineEnd: 28,
     } as unknown as EffectTemplateMixVariant;
     const baseline = structuredClone(variant);
-    const clean = packagingPictureOnlyVariant(variant, { music: { start: 0, duration: 36 } } as PackagingCheckpoint);
+    const clean = packagingPictureOnlyVariant(variant, {
+      music: { start: 0, duration: 36 },
+    } as PackagingCheckpoint);
     expect(variant).toEqual(baseline);
-    expect(clean).toMatchObject({ preservedTimelineEnd: 36, captions: [], voice: null, bgm: null,
-      detachedAudios: [], audioLanes: {}, originalVolume: 0, intentionallyEmptySlotIds: ['empty'], bindings: { s: 'asset' } });
+    expect(clean).toMatchObject({
+      preservedTimelineEnd: 36,
+      captions: [],
+      voice: null,
+      bgm: null,
+      detachedAudios: [],
+      audioLanes: {},
+      originalVolume: 0,
+      intentionallyEmptySlotIds: ['empty'],
+      bindings: { s: 'asset' },
+    });
     expect(clean.slots).toEqual(baseline.slots);
   });
 });
@@ -246,13 +266,21 @@ describe('packaging content duration', () => {
   it('counts only actual placed audio or captions for a new film', () => {
     const empty = { ...variant(), bindings: {}, preservedTimelineEnd: 40 };
     expect(effectTemplateMixPlacedContentDuration(empty)).toBe(0);
-    expect(effectTemplateMixPlacedContentDuration({ ...empty,
-      captions: [{ id: 'c', text: '字幕', start: 1, end: 3 }] })).toBe(3);
+    expect(
+      effectTemplateMixPlacedContentDuration({
+        ...empty,
+        captions: [{ id: 'c', text: '字幕', start: 1, end: 3 }],
+      }),
+    ).toBe(3);
     const voice = { fileObjectId: 'f', name: '音频', start: 2, duration: 5, offset: 0, volume: 1 };
     expect(effectTemplateMixPlacedContentDuration({ ...empty, voice })).toBe(7);
     expect(effectTemplateMixContentDuration({ ...variant(), bindings: {}, voice })).toBe(7);
     expect(effectTemplateMixPlacedContentDuration({ ...empty, bgm: voice })).toBe(7);
-    expect(effectTemplateMixPlacedContentDuration({ ...empty,
-      captions: [{ id: 'c', text: ' ', start: 1, end: 3 }] })).toBe(0);
+    expect(
+      effectTemplateMixPlacedContentDuration({
+        ...empty,
+        captions: [{ id: 'c', text: ' ', start: 1, end: 3 }],
+      }),
+    ).toBe(0);
   });
 });

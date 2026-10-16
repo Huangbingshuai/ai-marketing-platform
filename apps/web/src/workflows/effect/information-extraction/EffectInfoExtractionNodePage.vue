@@ -18,26 +18,12 @@ import type {
   EffectImportProduct,
 } from '@ai-marketing/contracts';
 import {
-  EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
   EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
-import {
-  AlertCircle,
-  ArrowLeft,
-  CheckCircle2,
-  FileText,
-  Link2,
-  LoaderCircle,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Sparkles,
-  Workflow,
-  X,
-} from '@lucide/vue';
+import { AlertCircle, ArrowLeft, FileText, Plus, RefreshCw, Sparkles, X } from '@lucide/vue';
 import {
   computed,
   nextTick,
@@ -201,8 +187,6 @@ const graphExecution = (nodeId: EffectExtractionNodeId): EffectExtractionNodeExe
     warnings: [],
     errorMessage: null,
   };
-const graphNodeDefinition = (nodeId: EffectExtractionNodeId) =>
-  EFFECT_EXTRACTION_GRAPH_NODES.find((node) => node.id === nodeId)!;
 const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '汇总本次提炼使用的图片、文档、视频和电商链接',
@@ -404,9 +388,6 @@ const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeD
     sources: [],
   };
 };
-const parallelGraphNodeIds: EffectExtractionNodeId[] = EFFECT_EXTRACTION_GRAPH_EDGES.filter(
-  ({ from }) => from === 'LOAD_AND_SNAPSHOT',
-).map(({ to }) => to);
 type ProductBaseField = keyof Pick<
   EffectExtractionResult,
   'productCategory' | 'productName' | 'coreSpecification' | 'priceRange' | 'visualFeatures'

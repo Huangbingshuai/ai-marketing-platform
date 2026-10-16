@@ -4,17 +4,21 @@ import type {
   EffectTemplateMixDetachedAudio,
   EffectTemplateMixVariant,
   EffectTemplateMixMaterial,
+  EffectTemplateMixFrozenSourceContext,
 } from './effect-template-mix';
+import type { EffectVideoTransform } from './effect-template-mix-transform';
 
 /** captionFontSize uses logical pixels on a 360px-high canvas, not output pixels. */
 export const PACKAGING_CAPTION_REFERENCE_HEIGHT = 360;
 
 export function packagingCaptionFontPixels(size: number | undefined, canvasHeight: number): number {
-  const logicalSize = typeof size === 'number' && Number.isFinite(size)
-    ? Math.max(8, Math.min(48, size)) : 16;
-  const height = Number.isFinite(canvasHeight) && canvasHeight > 0
-    ? canvasHeight : PACKAGING_CAPTION_REFERENCE_HEIGHT;
-  return logicalSize * height / PACKAGING_CAPTION_REFERENCE_HEIGHT;
+  const logicalSize =
+    typeof size === 'number' && Number.isFinite(size) ? Math.max(8, Math.min(48, size)) : 16;
+  const height =
+    Number.isFinite(canvasHeight) && canvasHeight > 0
+      ? canvasHeight
+      : PACKAGING_CAPTION_REFERENCE_HEIGHT;
+  return (logicalSize * height) / PACKAGING_CAPTION_REFERENCE_HEIGHT;
 }
 
 export const PACKAGING_STAGES = [
@@ -42,7 +46,7 @@ export type PackagingComponent = 'ALL' | 'VOICE' | 'MUSIC' | 'CAPTIONS';
 export type PackagingOperation = 'BATCH_PACKAGE' | 'SINGLE_PACKAGE' | 'APPEND_PACKAGE';
 export type PackagingFact = { id: string; text: string; artifactId: string; revision: number };
 export type PackagingClip = {
-  transform?: import('./effect-template-mix-transform').EffectVideoTransform;
+  transform?: EffectVideoTransform;
   slotId: string;
   materialId: string;
   /** Frozen user-facing source label; optional on historical snapshots. */
@@ -223,7 +227,10 @@ export type PackagingCheckpoint = {
     waitingUntil?: string;
     stage?: string;
   };
-  voiceRecovery?: Record<string, { startedAt: string; attempts: number; waitingUntil?: string; pending?: boolean }>;
+  voiceRecovery?: Record<
+    string,
+    { startedAt: string; attempts: number; waitingUntil?: string; pending?: boolean }
+  >;
   narrationLayoutVersion?: 'SLOT_V1';
   voiceFitAttempts?: Record<string, 1>;
   /** One automatic fresh-script recovery per frozen slot after measured TTS still overruns. */
@@ -282,7 +289,7 @@ export type PackagingSnapshot = {
   /** Immutable rollback/conflict baseline; confirmed content remains unchanged until success. */
   baselineVariant?: EffectTemplateMixVariant;
   /** Only server-created local APPEND packaging may keep consuming a frozen render pool. */
-  sourceOperation?: import('./effect-template-mix').EffectTemplateMixFrozenSourceContext;
+  sourceOperation?: EffectTemplateMixFrozenSourceContext;
   /** Server-authorized current-branch append; never supplied by the browser. */
   incrementalFillRunId?: string;
   /** Optional only for pre-library tasks. New jobs freeze the server-selected profile. */
@@ -392,7 +399,10 @@ export type CreatePackagingRequest = {
 };
 
 /** Fresh packaging replaces every non-picture track, including independently authored tracks. */
-export function packagingPictureOnlyVariant(variant: EffectTemplateMixVariant, checkpoint?: PackagingCheckpoint): EffectTemplateMixVariant {
+export function packagingPictureOnlyVariant(
+  variant: EffectTemplateMixVariant,
+  checkpoint?: PackagingCheckpoint,
+): EffectTemplateMixVariant {
   const copy = JSON.parse(JSON.stringify(variant)) as EffectTemplateMixVariant;
   copy.preservedTimelineEnd = effectTemplateMixContentDuration(variant, checkpoint);
   copy.captions = [];
@@ -439,9 +449,7 @@ export function packagingSlotBoundaryError(variant: EffectTemplateMixVariant): s
     rows.some(
       ({ slot }) =>
         !Number.isFinite(slot.duration) ||
-        (slot.overlay === true
-          ? slot.duration < 0.001
-          : slot.duration < 4 || slot.duration > 15),
+        (slot.overlay === true ? slot.duration < 0.001 : slot.duration < 4 || slot.duration > 15),
     )
   )
     return '槽位时长必须为 4–15 秒';
@@ -520,10 +528,15 @@ export function packagingVisualTimeline(variant: EffectTemplateMixVariant) {
     offsets: keep(variant.offsets),
     timelineStarts,
     ...(variant.intentionallyEmptySlotIds?.length
-      ? { intentionallyEmptySlotIds: variant.intentionallyEmptySlotIds.filter((id) => narrated.has(id)) }
+      ? {
+          intentionallyEmptySlotIds: variant.intentionallyEmptySlotIds.filter((id) =>
+            narrated.has(id),
+          ),
+        }
       : {}),
     ...(variant.preservedTimelineEnd !== undefined
-      ? { preservedTimelineEnd: variant.preservedTimelineEnd } : {}),
+      ? { preservedTimelineEnd: variant.preservedTimelineEnd }
+      : {}),
     // Missing lane and explicit lane 0 render identically. Editor normalization
     // must not invalidate already-paid packaging or confirmed visual sources.
     videoLanes: Object.fromEntries(
@@ -580,7 +593,7 @@ export function packagingOverlayTimeline(variant: EffectTemplateMixVariant) {
 }
 export function packagingVisualVariant(variant: EffectTemplateMixVariant) {
   // Intentionally omit these fields from the independently versioned visual copy.
-  /* eslint-disable @typescript-eslint/no-unused-vars */
+
   const {
     captions: _captions,
     subtitleStyle: _style,
@@ -592,7 +605,7 @@ export function packagingVisualVariant(variant: EffectTemplateMixVariant) {
     audioLanes: _audioLanes,
     ...visual
   } = variant;
-  /* eslint-enable @typescript-eslint/no-unused-vars */
+
   return visual;
 }
 export function packagingTimelineClips(variant: EffectTemplateMixVariant) {
@@ -601,7 +614,12 @@ export function packagingTimelineClips(variant: EffectTemplateMixVariant) {
     const start = variant.timelineStarts?.[slot.id] ?? cursor;
     const end = start + slot.duration;
     // An unbound template marker is not a clip and cannot push real media to the right.
-    if (!variant.bindings || variant.bindings[slot.id] || variant.intentionallyEmptySlotIds?.includes(slot.id)) cursor = end;
+    if (
+      !variant.bindings ||
+      variant.bindings[slot.id] ||
+      variant.intentionallyEmptySlotIds?.includes(slot.id)
+    )
+      cursor = end;
     return { slot, start, end, lane: variant.videoLanes?.[slot.id] ?? 0 };
   });
 }
@@ -615,7 +633,10 @@ export function packagingTimelineDuration(variant: EffectTemplateMixVariant): nu
     0,
     variant.preservedTimelineEnd ?? 0,
     ...packagingTimelineClips(variant)
-      .filter((row) => variant.bindings[row.slot.id] || variant.intentionallyEmptySlotIds?.includes(row.slot.id))
+      .filter(
+        (row) =>
+          variant.bindings[row.slot.id] || variant.intentionallyEmptySlotIds?.includes(row.slot.id),
+      )
       .map((row) => row.end),
   );
 }
@@ -659,9 +680,14 @@ export function effectTemplateMixPlacedContentDuration(
   for (const row of packagingTimelineClips(variant))
     if (variant.bindings[row.slot.id]) add(row.start, row.slot.duration);
   for (const audio of variant.detachedAudios ?? []) add(audio.start, audio.duration);
-  for (const voice of checkpoint ? Object.values(checkpoint.voices ?? {}) : variant.voice ? [variant.voice] : [])
+  for (const voice of checkpoint
+    ? Object.values(checkpoint.voices ?? {})
+    : variant.voice
+      ? [variant.voice]
+      : [])
     add(voice.start, voice.duration);
-  for (const voice of Object.values(checkpoint?.captionVoices ?? {})) add(voice.start, voice.duration);
+  for (const voice of Object.values(checkpoint?.captionVoices ?? {}))
+    add(voice.start, voice.duration);
   const music = checkpoint ? checkpoint.music : variant.bgm;
   if (music) add(music.start, music.duration);
   for (const caption of checkpoint?.captions ?? variant.captions ?? [])

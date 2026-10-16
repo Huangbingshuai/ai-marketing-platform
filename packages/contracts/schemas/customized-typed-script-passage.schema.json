@@ -21,11 +21,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "id",
-        "content",
-        "durationSeconds"
-      ],
+      "required": ["id", "content", "durationSeconds"],
       "title": "Beat",
       "type": "object"
     }
@@ -36,9 +32,7 @@
       "$ref": "#/$defs/Beat"
     }
   },
-  "required": [
-    "beat"
-  ],
+  "required": ["beat"],
   "title": "Passage",
   "type": "object"
 }

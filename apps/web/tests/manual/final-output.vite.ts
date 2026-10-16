@@ -77,7 +77,10 @@ export default defineConfig({
               req.on('data', (chunk: Buffer) => (body += chunk.toString()));
               req.on('end', () => {
                 try {
-                  outputSettings.set(mode!, JSON.parse(body) as { resolution: string; frameRate: number });
+                  outputSettings.set(
+                    mode!,
+                    JSON.parse(body) as { resolution: string; frameRate: number },
+                  );
                 } catch {
                   outputSettings.set(mode!, { resolution: '720p', frameRate: 30 });
                 }
@@ -99,22 +102,27 @@ export default defineConfig({
               isCancelled && mode === 'running' && i >= 20
                 ? 'CANCELLED'
                 : mode === 'pending'
-                ? 'PENDING_RENDER'
-                : mode === 'running'
-                ? i < 20
-                  ? 'COMPLETED'
-                  : i < 24
-                    ? 'RUNNING'
-                    : 'QUEUED'
-                : mode === 'failed' && i === 99
-                  ? 'FAILED'
-                  : 'COMPLETED';
+                  ? 'PENDING_RENDER'
+                  : mode === 'running'
+                    ? i < 20
+                      ? 'COMPLETED'
+                      : i < 24
+                        ? 'RUNNING'
+                        : 'QUEUED'
+                    : mode === 'failed' && i === 99
+                      ? 'FAILED'
+                      : 'COMPLETED';
             const common = {
               id: `i${i}`,
               variantId: `v${i}`,
               name: `成片 ${String(i + 1).padStart(3, '0')} · ${demoNames[i % demoNames.length]}`,
               status,
-              errorMessage: status === 'FAILED' ? '测试失败：可恢复，不重做成功项' : status === 'CANCELLED' ? '测试已取消' : null,
+              errorMessage:
+                status === 'FAILED'
+                  ? '测试失败：可恢复，不重做成功项'
+                  : status === 'CANCELLED'
+                    ? '测试已取消'
+                    : null,
             };
             if (output)
               return {
@@ -155,7 +163,15 @@ export default defineConfig({
             createdAt: new Date(0).toISOString(),
             startedAt: new Date(0).toISOString(),
             completedAt: null,
-            status: isCancelled ? 'CANCELLED' : mode === 'pending' ? 'PENDING_RENDER' : mode === 'running' ? 'RUNNING' : mode === 'failed' ? 'PARTIAL' : 'COMPLETED',
+            status: isCancelled
+              ? 'CANCELLED'
+              : mode === 'pending'
+                ? 'PENDING_RENDER'
+                : mode === 'running'
+                  ? 'RUNNING'
+                  : mode === 'failed'
+                    ? 'PARTIAL'
+                    : 'COMPLETED',
             items,
             counts: {
               total: 100,

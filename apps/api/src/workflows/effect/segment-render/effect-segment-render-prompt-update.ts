@@ -26,15 +26,18 @@ export const confirmedPromptBaseline = (
   promptId: string,
 ): EffectSegmentRenderPromptBaseline | null => {
   const item = batch.items.find(({ id }) => id === promptId);
-  return item ? {
-    promptContentHash: createHash('sha256').update(item.content.trim()).digest('hex'),
-    sharedPromptHash: batch.sharedPrompt?.contentHash ?? batch.renderProfile.sharedConstraints.contentHash,
-    targetDurationSeconds: item.targetDurationSeconds,
-    primaryPurpose: item.primaryPurpose,
-    compatiblePurposes: [...item.compatiblePurposes],
-    creativeCore: item.creativeCore,
-    dimensions: { ...item.dimensions },
-  } : null;
+  return item
+    ? {
+        promptContentHash: createHash('sha256').update(item.content.trim()).digest('hex'),
+        sharedPromptHash:
+          batch.sharedPrompt?.contentHash ?? batch.renderProfile.sharedConstraints.contentHash,
+        targetDurationSeconds: item.targetDurationSeconds,
+        primaryPurpose: item.primaryPurpose,
+        compatiblePurposes: [...item.compatiblePurposes],
+        creativeCore: item.creativeCore,
+        dimensions: { ...item.dimensions },
+      }
+    : null;
 };
 
 export const renderPromptUpdateKind = (
@@ -43,5 +46,8 @@ export const renderPromptUpdateKind = (
 ): EffectSegmentRenderUpdateKind | undefined => {
   if (snapshot.importedMaterial || !batch) return undefined;
   const baseline = snapshot.adoptedPrompt ?? renderPromptBaseline(snapshot);
-  return effectSegmentRenderPromptDifference(baseline, confirmedPromptBaseline(batch, snapshot.promptId));
+  return effectSegmentRenderPromptDifference(
+    baseline,
+    confirmedPromptBaseline(batch, snapshot.promptId),
+  );
 };

@@ -18,24 +18,17 @@
     },
     "brief": {
       "productName": "充电器",
-      "sellingPoints": [
-        "资料中的真实特点"
-      ]
+      "sellingPoints": ["资料中的真实特点"]
     },
     "settings": {
       "videoType": "DRAMA",
       "targetDurationSeconds": 30,
       "variantCount": 1,
       "structureMode": "CUSTOM",
-      "structureSections": [
-        "吸引注意",
-        "价值兑现"
-      ],
+      "structureSections": ["吸引注意", "价值兑现"],
       "instructions": "unused"
     },
-    "scriptIds": [
-      "s0"
-    ],
+    "scriptIds": ["s0"],
     "existingConcepts": [],
     "models": {
       "creative": "controlled",
@@ -67,10 +60,7 @@
       {
         "scriptId": "s0",
         "ideaId": "I0",
-        "mustPreserve": [
-          "先出现具体伏笔",
-          "人物选择带来不同结果"
-        ]
+        "mustPreserve": ["先出现具体伏笔", "人物选择带来不同结果"]
       }
     ],
     "development": {
@@ -83,10 +73,7 @@
         {
           "id": "I0",
           "name": "人物选择0",
-          "devices": [
-            "对话试探",
-            "信息反转"
-          ],
+          "devices": ["对话试探", "信息反转"],
           "plan": {
             "videoType": "DRAMA",
             "desire": "具体人物行动0",
@@ -102,18 +89,13 @@
           "informationDesign": "观众先看到标记，人物稍后发现",
           "dialogueIntent": "试探对方有没有改变决定",
           "emotionalMovement": "由防备到发现被默默理解",
-          "factIds": [
-            "F01"
-          ],
+          "factIds": ["F01"],
           "weakness": "避免对白提前说破"
         },
         {
           "id": "I1",
           "name": "人物选择1",
-          "devices": [
-            "对话试探",
-            "信息反转"
-          ],
+          "devices": ["对话试探", "信息反转"],
           "plan": {
             "videoType": "DRAMA",
             "desire": "具体人物行动1",
@@ -129,18 +111,13 @@
           "informationDesign": "观众先看到标记，人物稍后发现",
           "dialogueIntent": "试探对方有没有改变决定",
           "emotionalMovement": "由防备到发现被默默理解",
-          "factIds": [
-            "F01"
-          ],
+          "factIds": ["F01"],
           "weakness": "避免对白提前说破"
         },
         {
           "id": "I2",
           "name": "人物选择2",
-          "devices": [
-            "对话试探",
-            "信息反转"
-          ],
+          "devices": ["对话试探", "信息反转"],
           "plan": {
             "videoType": "DRAMA",
             "desire": "具体人物行动2",
@@ -156,9 +133,7 @@
           "informationDesign": "观众先看到标记，人物稍后发现",
           "dialogueIntent": "试探对方有没有改变决定",
           "emotionalMovement": "由防备到发现被默默理解",
-          "factIds": [
-            "F01"
-          ],
+          "factIds": ["F01"],
           "weakness": "避免对白提前说破"
         }
       ]

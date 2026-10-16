@@ -155,9 +155,9 @@ export class EffectCacheRevisionService {
           ? Prisma.sql`AND t.workflow::text = ${workflow} AND t."workflowSpace"::text = ${space}`
           : table === 'assets' || table === 'asset_versions'
             ? Prisma.empty
-          : table === 'customized_extraction_steps'
-            ? Prisma.sql`AND t."taskId" IN (SELECT id FROM customized_extraction_tasks WHERE "projectId" = ${scope.projectId}::uuid)`
-            : Prisma.sql`AND t."workflowRunId" IN (SELECT r.id FROM workflow_runs r
+            : table === 'customized_extraction_steps'
+              ? Prisma.sql`AND t."taskId" IN (SELECT id FROM customized_extraction_tasks WHERE "projectId" = ${scope.projectId}::uuid)`
+              : Prisma.sql`AND t."workflowRunId" IN (SELECT r.id FROM workflow_runs r
               WHERE r."projectId" = ${scope.projectId}::uuid
                 AND r.workflow::text = ${workflow} AND r."workflowSpace"::text = ${space})`
         : Prisma.empty;

@@ -84,9 +84,7 @@ describe('LocalStorageAdapter', () => {
       sizeBytes: 6,
       contentType: 'audio/wav',
     });
-    expect(stored.key).toMatch(
-      /^shared\/effect-voices\/vivi\/seed-tts-2.0-1\/[0-9a-f-]{36}\.wav$/,
-    );
+    expect(stored.key).toMatch(/^shared\/effect-voices\/vivi\/seed-tts-2.0-1\/[0-9a-f-]{36}\.wav$/);
     const opened = await adapter.open(stored.key);
     await expect(readAll(opened.stream)).resolves.toBe('sample');
     await expect(

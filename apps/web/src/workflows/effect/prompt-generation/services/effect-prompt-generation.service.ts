@@ -409,7 +409,7 @@ export const downloadEffectPromptBatch = async (
 ): Promise<{ blob: Blob; fileName: string }> => {
   const exported = (await exportEffectPromptResult(projectId, resultId, signal)).data;
   const name = projectName.trim() || '项目';
-  const safeProjectName = name.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, '_');
+  const safeProjectName = name.replace(/[\\/:*?"<>|\p{Cc}]/gu, '_');
   const baseName = `${safeProjectName}_提示词_${exported.result.items.length}条`;
   // Lazy-load the existing workspace ZIP library only for an explicit export.
   // One archive avoids browsers silently blocking the second automatic download.

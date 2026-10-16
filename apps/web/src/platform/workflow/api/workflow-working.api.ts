@@ -1,5 +1,6 @@
 import type {
   ActivateEffectWorkflowBranchData,
+  ActivateEffectWorkflowBranchRequest,
   ActivateWorkflowNodeData,
   CreateEffectWorkflowBranchData,
   ApiResponse,
@@ -162,11 +163,16 @@ export const activateEffectWorkflowBranch = (
   projectId: string,
   workflowRunId: string,
   signal?: AbortSignal,
-  selection?: import('@ai-marketing/contracts').ActivateEffectWorkflowBranchRequest,
+  selection?: ActivateEffectWorkflowBranchRequest,
 ): Promise<ApiResponse<ActivateEffectWorkflowBranchData>> =>
   requestJson(
     `${projectPath(projectId)}/workflow-runs/effect/branches/${encodeURIComponent(workflowRunId)}/activate`,
-    { method: 'POST', operation: '切换效果类版本分支', signal, ...(selection ? { body: selection } : {}) },
+    {
+      method: 'POST',
+      operation: '切换效果类版本分支',
+      signal,
+      ...(selection ? { body: selection } : {}),
+    },
   );
 
 export const createEffectWorkflowBranch = (
@@ -193,7 +199,9 @@ export const beginEffectWorkflowNodeEdit = (
   signal?: AbortSignal,
 ): Promise<ApiResponse<EffectWorkflowEditSessionData>> =>
   requestJson(effectEditPath(projectId, workflowRunId, nodeId), {
-    method: 'POST', operation: '进入效果类节点编辑', signal,
+    method: 'POST',
+    operation: '进入效果类节点编辑',
+    signal,
   });
 
 export const cancelEffectWorkflowNodeEdit = (
@@ -203,7 +211,9 @@ export const cancelEffectWorkflowNodeEdit = (
   signal?: AbortSignal,
 ): Promise<ApiResponse<EffectWorkflowEditExitData>> =>
   requestJson(`${effectEditPath(projectId, workflowRunId, nodeId)}/cancel`, {
-    method: 'POST', operation: '取消效果类节点编辑', signal,
+    method: 'POST',
+    operation: '取消效果类节点编辑',
+    signal,
   });
 
 export const publishEffectWorkflowNodeEdit = (
@@ -213,7 +223,9 @@ export const publishEffectWorkflowNodeEdit = (
   signal?: AbortSignal,
 ): Promise<ApiResponse<EffectWorkflowEditPublishData>> =>
   requestJson(`${effectEditPath(projectId, workflowRunId, nodeId)}/publish`, {
-    method: 'POST', operation: '保存效果类节点版本', signal,
+    method: 'POST',
+    operation: '保存效果类节点版本',
+    signal,
   });
 
 export const beginEffectNodeEdit = beginEffectWorkflowNodeEdit;

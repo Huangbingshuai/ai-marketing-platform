@@ -42,6 +42,8 @@ const text = (value: unknown, limit = 4000): string =>
           /\b(?:Bearer\s+\S+|(?:token|api[_-]?key|secret|password)\s*[:=]\s*\S+)/gi,
           '[凭据已省略]',
         )
+        // Preserve line breaks in parsed document excerpts while removing other controls.
+        // eslint-disable-next-line no-control-regex
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
         .trim()
         .slice(0, limit)

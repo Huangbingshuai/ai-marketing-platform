@@ -4,7 +4,7 @@ import { emptyCustomizedBrief, type CustomizedBriefCandidate } from '@ai-marketi
 import type { ProjectService } from '../../../platform/project/project.service';
 import type { EffectReadCacheService } from '../../../platform/cache/effect-read-cache.service';
 import type { StoragePort } from '../../../platform/file/storage.port';
-import { CustomizedExtractionRepository } from './customized-extraction.repository';
+import type { CustomizedExtractionRepository } from './customized-extraction.repository';
 import { CustomizedExtractionService } from './customized-extraction.service';
 
 const setup = () => {

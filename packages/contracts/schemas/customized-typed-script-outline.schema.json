@@ -26,12 +26,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "title",
-        "development",
-        "continuity"
-      ],
+      "required": ["id", "title", "development", "continuity"],
       "title": "Part",
       "type": "object"
     }
@@ -74,14 +69,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "title",
-    "opening",
-    "development",
-    "ending",
-    "dialoguePlan",
-    "parts"
-  ],
+  "required": ["title", "opening", "development", "ending", "dialoguePlan", "parts"],
   "title": "Outline",
   "type": "object"
 }

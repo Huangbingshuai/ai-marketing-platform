@@ -8,7 +8,8 @@ const json = (value: unknown): Prisma.InputJsonValue =>
 
 /** A nullable Json column takes `DbNull`, never a plain `null`. */
 const nullableJson = (
-  value: unknown, ids: Record<string, string>,
+  value: unknown,
+  ids: Record<string, string>,
 ): Prisma.InputJsonValue | typeof Prisma.DbNull =>
   value === null || value === undefined
     ? Prisma.DbNull
@@ -61,44 +62,75 @@ export type ClonedPackagingRun = Prisma.EffectPackagingRunGetPayload<{
  * exactly that.
  */
 export async function clonePackagingRunsInTransaction(
-  tx: Tx, projectId: string, parentRunId: string, childRunId: string,
-  ids: Record<string, string>, options: PackagingCloneOptions = {},
+  tx: Tx,
+  projectId: string,
+  parentRunId: string,
+  childRunId: string,
+  ids: Record<string, string>,
+  options: PackagingCloneOptions = {},
 ): Promise<ClonedPackagingRun[]> {
   const runs = await tx.effectPackagingRun.findMany({
     where: {
-      projectId, workflowRunId: parentRunId, items: { some: { status: 'COMPLETED' } },
+      projectId,
+      workflowRunId: parentRunId,
+      items: { some: { status: 'COMPLETED' } },
       ...(options.templateIds ? { templateId: { in: [...options.templateIds] } } : {}),
     },
     include: { items: { include: { files: true } } },
   });
   const cloned = runs.filter((run) =>
-    run.items.some((item) => item.status === 'COMPLETED' && (!options.variantIds || options.variantIds.has(item.variantId))));
+    run.items.some(
+      (item) =>
+        item.status === 'COMPLETED' &&
+        (!options.variantIds || options.variantIds.has(item.variantId)),
+    ),
+  );
   if (!cloned.length) return runs;
   const snapshotIds = options.snapshotIds ?? ids;
   const prefix = options.keyPrefix ?? 'manual';
   const runRows: Prisma.EffectPackagingRunCreateManyInput[] = cloned.map((source) => {
     const id = randomUUID();
     ids[source.id] = id;
-    return { id, projectId, workflowRunId: childRunId, templateId: source.templateId,
+    return {
+      id,
+      projectId,
+      workflowRunId: childRunId,
+      templateId: source.templateId,
       idempotencyKey: `${prefix}:${childRunId}:package:${source.id}`,
-      requestHash: source.requestHash, status: 'COMPLETED',
-      completedAt: source.completedAt, startedAt: source.startedAt, createdAt: source.createdAt };
+      requestHash: source.requestHash,
+      status: 'COMPLETED',
+      completedAt: source.completedAt,
+      startedAt: source.startedAt,
+      createdAt: source.createdAt,
+    };
   });
   const itemRows: Prisma.EffectPackagingItemCreateManyInput[] = [];
   const fileRows: Prisma.EffectPackagingFileCreateManyInput[] = [];
   for (const source of cloned) {
-    for (const item of source.items.filter((entry) => entry.status === 'COMPLETED' &&
-      (!options.variantIds || options.variantIds.has(entry.variantId)))) {
+    for (const item of source.items.filter(
+      (entry) =>
+        entry.status === 'COMPLETED' &&
+        (!options.variantIds || options.variantIds.has(entry.variantId)),
+    )) {
       const id = randomUUID();
-      itemRows.push({ id, projectId, runId: ids[source.id]!, variantId: item.variantId,
-        name: item.name, shardIndex: item.shardIndex,
+      itemRows.push({
+        id,
+        projectId,
+        runId: ids[source.id]!,
+        variantId: item.variantId,
+        name: item.name,
+        shardIndex: item.shardIndex,
         sourceTimelineHash: item.sourceTimelineHash,
-        snapshot: json(remapIds(item.snapshot, snapshotIds)), status: 'COMPLETED',
-        stage: item.stage, checkpoint: json(remapIds(item.checkpoint, snapshotIds)),
-        startedAt: item.startedAt, completedAt: item.completedAt });
+        snapshot: json(remapIds(item.snapshot, snapshotIds)),
+        status: 'COMPLETED',
+        stage: item.stage,
+        checkpoint: json(remapIds(item.checkpoint, snapshotIds)),
+        startedAt: item.startedAt,
+        completedAt: item.completedAt,
+      });
       ids[item.id] = id;
-      for (const file of item.files) fileRows.push({ projectId, itemId: id,
-        fileObjectId: file.fileObjectId, role: file.role });
+      for (const file of item.files)
+        fileRows.push({ projectId, itemId: id, fileObjectId: file.fileObjectId, role: file.role });
     }
   }
   await tx.effectPackagingRun.createMany({ data: runRows });
@@ -132,7 +164,10 @@ export const isInheritedFillKey = (idempotencyKey: string): boolean =>
  * grow a second copy of all of it on every fork.
  */
 export async function cloneMixAiRunsInTransaction(
-  tx: Tx, projectId: string, sourceRunId: string, childRunId: string,
+  tx: Tx,
+  projectId: string,
+  sourceRunId: string,
+  childRunId: string,
   ids: Record<string, string>,
 ): Promise<void> {
   const runs = await tx.effectTemplateMixAiRun.findMany({
@@ -142,10 +177,14 @@ export async function cloneMixAiRunsInTransaction(
   });
   if (!runs.length) return;
   const rows: Prisma.EffectTemplateMixAiRunCreateManyInput[] = runs.map((source) => ({
-    projectId, workflowRunId: childRunId, templateId: source.templateId,
-    targetVariantId: source.targetVariantId, outputVariantId: source.outputVariantId,
+    projectId,
+    workflowRunId: childRunId,
+    templateId: source.templateId,
+    targetVariantId: source.targetVariantId,
+    outputVariantId: source.outputVariantId,
     idempotencyKey: inheritedFillKey(childRunId, source.id),
-    requestHash: source.requestHash, inputHash: source.inputHash,
+    requestHash: source.requestHash,
+    inputHash: source.inputHash,
     inputSnapshot: json(remapIds(source.inputSnapshot, ids)),
     classificationResult: nullableJson(source.classificationResult, ids),
     selectionResult: nullableJson(source.selectionResult, ids),
@@ -153,15 +192,20 @@ export async function cloneMixAiRunsInTransaction(
     trimResult: nullableJson(source.trimResult, ids),
     expectedDraftRevision: source.expectedDraftRevision,
     templateEditVersion: source.templateEditVersion,
-    status: 'COMPLETED', stage: source.stage, progress: 100,
-    completedAt: source.completedAt, createdAt: source.createdAt,
+    status: 'COMPLETED',
+    stage: source.stage,
+    progress: 100,
+    completedAt: source.completedAt,
+    createdAt: source.createdAt,
   }));
   await tx.effectTemplateMixAiRun.createMany({ data: rows });
 }
 
 /** Second pass: re-point cloned packaging snapshots at cloned artifacts and files. */
 export async function remapClonedPackagingRunsInTransaction(
-  tx: Tx, projectId: string, runs: readonly ClonedPackagingRun[],
+  tx: Tx,
+  projectId: string,
+  runs: readonly ClonedPackagingRun[],
   ids: Record<string, string>,
 ): Promise<void> {
   for (const run of runs) {
@@ -170,10 +214,13 @@ export async function remapClonedPackagingRunsInTransaction(
     for (const item of run.items) {
       const copyItemId = ids[item.id];
       if (!copyItemId) continue;
-      await tx.effectPackagingItem.update({ where: { id: copyItemId }, data: {
-        snapshot: json(remapIds(item.snapshot, ids)),
-        checkpoint: json(remapIds(item.checkpoint, ids)),
-      } });
+      await tx.effectPackagingItem.update({
+        where: { id: copyItemId },
+        data: {
+          snapshot: json(remapIds(item.snapshot, ids)),
+          checkpoint: json(remapIds(item.checkpoint, ids)),
+        },
+      });
     }
   }
 }

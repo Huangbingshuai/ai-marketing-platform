@@ -59,7 +59,8 @@ import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard
 import { SourceTrimsDto } from './dto/effect-source-trims.dto';
 
 export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
-  @IsOptional() @IsIn(['BATCH_PACKAGE', 'SINGLE_PACKAGE']) operation?: 'BATCH_PACKAGE' | 'SINGLE_PACKAGE';
+  @IsOptional() @IsIn(['BATCH_PACKAGE', 'SINGLE_PACKAGE']) operation?:
+    'BATCH_PACKAGE' | 'SINGLE_PACKAGE';
   @IsString() @MinLength(1) @MaxLength(500) idempotencyKey!: string;
   @IsOptional() @IsUUID('4') variantId?: string;
   @IsOptional() @IsIn(['ALL', 'VOICE', 'MUSIC', 'CAPTIONS']) component?: PackagingComponent;
@@ -219,8 +220,12 @@ export class EffectPackagingController {
 export class EffectPackagingWorkerController {
   constructor(@Inject(EffectPackagingService) readonly service: EffectPackagingService) {}
   @Put(':runId/items/:itemId/trims')
-  trims(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
-    @Headers('x-attempt-token') token: string, @Body() body: SourceTrimsDto) {
+  trims(
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Headers('x-attempt-token') token: string,
+    @Body() body: SourceTrimsDto,
+  ) {
     return this.service.sourceTrims(body.projectId, runId, token, itemId, body.trims);
   }
   @Post(':runId/claim')

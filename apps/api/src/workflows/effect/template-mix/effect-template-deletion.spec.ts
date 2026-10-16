@@ -8,7 +8,7 @@ import {
   templateDeletionRuns,
 } from '../../../platform/workflow/effect-template-deletion';
 import { EffectTemplateDeletionCache } from './effect-template-deletion-cache.service';
-import { EffectTemplateDeletionRepository } from './effect-template-deletion.repository';
+import type { EffectTemplateDeletionRepository } from './effect-template-deletion.repository';
 import { EffectTemplateDeletionService } from './effect-template-deletion.service';
 
 describe('template deletion boundaries', () => {

@@ -185,14 +185,7 @@
       "event": "template_created_and_slots_verified",
       "at": "2026-10-15T12:56:21.869Z",
       "name": "广式腊肠·24秒测试",
-      "slotDurations": [
-        4,
-        4,
-        4,
-        4,
-        4,
-        4
-      ]
+      "slotDurations": [4, 4, 4, 4, 4, 4]
     },
     {
       "node": "template-mix",
@@ -247,10 +240,7 @@
       "event": "parent_template_edit_and_restore_passed",
       "at": "2026-10-15T13:52:03.219Z",
       "disabled": false,
-      "httpStatuses": [
-        200,
-        200
-      ],
+      "httpStatuses": [200, 200],
       "writes": [
         {
           "at": "2026-10-15T13:51:59.793Z",
@@ -2718,10 +2708,7 @@
       {
         "kind": "updated-and-added-files-playback-download",
         "at": "2026-10-15T15:31:11.092Z",
-        "films": [
-          "01",
-          "37"
-        ],
+        "films": ["01", "37"],
         "film37": {
           "duration": 24,
           "currentTime": 0.932377,

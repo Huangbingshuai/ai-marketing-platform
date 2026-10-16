@@ -19,17 +19,21 @@ describe('scoped timeline history', () => {
     const store = createScopedTimelineHistory<string>();
     store.switchScope('project/run-a/template/film', { undo: [], redo: [] });
     const runB = store.switchScope('project/run-b/template/film', {
-      undo: ['old branch'], redo: [],
+      undo: ['old branch'],
+      redo: [],
     });
     expect(runB).toEqual({
-      undo: [], redo: [],
+      undo: [],
+      redo: [],
     });
     const otherTemplate = store.switchScope('project/run-a/other-template/film', runB);
     expect(otherTemplate).toEqual({
-      undo: [], redo: [],
+      undo: [],
+      redo: [],
     });
     expect(store.switchScope('project/run-a/template/film', otherTemplate)).toEqual({
-      undo: ['old branch'], redo: [],
+      undo: ['old branch'],
+      redo: [],
     });
   });
 });

@@ -100,8 +100,10 @@ export class EffectFinalOutputController {
     return this.service.list(projectId, query.workflowRunId);
   }
   @Get('final-output/export-progress')
-  exportProgress(@Param('projectId', uuid) projectId: string,
-    @Query() query: FinalOutputExportProgressQueryDto) {
+  exportProgress(
+    @Param('projectId', uuid) projectId: string,
+    @Query() query: FinalOutputExportProgressQueryDto,
+  ) {
     return this.service.exportProgress(projectId, query.sourceWorkflowRunId, query.templateId);
   }
   @Get('final-output/:runId')
@@ -130,7 +132,10 @@ export class EffectFinalOutputController {
     return this.service.localUpdate(projectId, runId, body);
   }
   @Post('final-output/source-update')
-  sourceUpdate(@Param('projectId', uuid) projectId: string, @Body() body: SourceUpdateFinalOutputDto) {
+  sourceUpdate(
+    @Param('projectId', uuid) projectId: string,
+    @Body() body: SourceUpdateFinalOutputDto,
+  ) {
     return this.service.updateSourceProjects(projectId, body);
   }
   @Post('final-output/:runId/items/:itemId/render')
@@ -157,22 +162,53 @@ export class EffectFinalOutputController {
 export class EffectFinalOutputWorkerController {
   constructor(@Inject(EffectFinalOutputService) readonly service: EffectFinalOutputService) {}
   @Put(':runId/items/:itemId/trims')
-  trims(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
-    @Headers('x-attempt-token') token: string, @Body() body: SourceTrimsDto) {
+  trims(
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Headers('x-attempt-token') token: string,
+    @Body() body: SourceTrimsDto,
+  ) {
     return this.service.refreshTrims(body.projectId, runId, token, itemId, body.trims);
   }
   @Put(':runId/items/:itemId/checkpoint')
-  checkpoint(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
-    @Headers('x-attempt-token') token: string, @Body() body: SourceCheckpointDto) {
-    return this.service.refreshCheckpoint(body.projectId, runId, token, itemId, body.stage, body.checkpoint);
+  checkpoint(
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Headers('x-attempt-token') token: string,
+    @Body() body: SourceCheckpointDto,
+  ) {
+    return this.service.refreshCheckpoint(
+      body.projectId,
+      runId,
+      token,
+      itemId,
+      body.stage,
+      body.checkpoint,
+    );
   }
   @Post(':runId/items/:itemId/audio/:role')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024, files: 1 } }),
-    UploadTemporaryFileCleanupInterceptor)
-  audio(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
-    @Param('role') role: string, @Headers('x-attempt-token') token: string,
-    @Body() body: SourceAudioDto, @UploadedFile() file?: { path: string; size: number }) {
-    return this.service.refreshAudio(body.projectId, runId, token, itemId, role, file, body.segmentFrames, body.speechRanges);
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024, files: 1 } }),
+    UploadTemporaryFileCleanupInterceptor,
+  )
+  audio(
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Param('role') role: string,
+    @Headers('x-attempt-token') token: string,
+    @Body() body: SourceAudioDto,
+    @UploadedFile() file?: { path: string; size: number },
+  ) {
+    return this.service.refreshAudio(
+      body.projectId,
+      runId,
+      token,
+      itemId,
+      role,
+      file,
+      body.segmentFrames,
+      body.speechRanges,
+    );
   }
   @Post(':runId/claim')
   claim(@Param('runId', uuid) runId: string, @Body() body: EffectTemplateMixWorkerProjectDto) {
@@ -195,8 +231,12 @@ export class EffectFinalOutputWorkerController {
     return this.service.finish(body.projectId, runId, token);
   }
   @Post(':runId/items/:itemId/complete-source-refresh')
-  completeProjectRefresh(@Param('runId', uuid) runId: string, @Param('itemId', uuid) itemId: string,
-    @Headers('x-attempt-token') token: string, @Body() body: EffectTemplateMixWorkerProjectDto) {
+  completeProjectRefresh(
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Headers('x-attempt-token') token: string,
+    @Body() body: EffectTemplateMixWorkerProjectDto,
+  ) {
     return this.service.completeProjectRefresh(body.projectId, runId, token, itemId);
   }
   @Put(':runId/items/:itemId/progress')

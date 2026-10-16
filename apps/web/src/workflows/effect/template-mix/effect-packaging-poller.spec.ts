@@ -6,30 +6,57 @@ import component from './EffectTemplateMixPackaging.vue?raw';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 function setup(read: (signal: AbortSignal) => Promise<string>) {
-  const onData = vi.fn(), onError = vi.fn(), onLoading = vi.fn();
+  const onData = vi.fn(),
+    onError = vi.fn(),
+    onLoading = vi.fn();
   const poller = createPackagingPoller({ read, onData, onError, onLoading, interval: () => 4000 });
   return { ...poller, onData, onError, onLoading };
 }
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => {
+  vi.useRealTimers();
+});
 describe('packaging progress polling', () => {
   it('keeps progress-read failures silent while retaining results and automatically reconnecting', async () => {
     vi.useFakeTimers();
-    const readUnavailable = ref(false), requestError = ref(''), previewError = ref('');
+    const readUnavailable = ref(false),
+      requestError = ref(''),
+      previewError = ref('');
     const source = component.split('onError() {')[1]!.split('onLoading(value)')[0]!;
-    const errorHandler = new Function('readUnavailable',
-      transpileModule(`return () => {${source.slice(0, source.lastIndexOf('},'))}}`, {}).outputText);
+    const errorHandler = new Function(
+      'readUnavailable',
+      transpileModule(`return () => {${source.slice(0, source.lastIndexOf('},'))}}`, {}).outputText,
+    );
     const onError = errorHandler(readUnavailable);
-    const displayedError = new Function('computed', 'requestError', 'previewError', 'readUnavailable',
-      `return ${component.split('const error = ')[1]!.split(';')[0]!};`);
+    const displayedError = new Function(
+      'computed',
+      'requestError',
+      'previewError',
+      'readUnavailable',
+      `return ${component.split('const error = ')[1]!.split(';')[0]!};`,
+    );
     const error = displayedError(computed, requestError, previewError, readUnavailable);
     const results = ref('last valid progress');
-    const onData = vi.fn((data: string) => { results.value = data; readUnavailable.value = false; });
-    const read = vi.fn().mockReturnValueOnce(new Promise(() => {})).mockResolvedValue('fresh progress');
-    const poller = createPackagingPoller({ read, onData, onError, onLoading: vi.fn(), interval: () => 4000 });
+    const onData = vi.fn((data: string) => {
+      results.value = data;
+      readUnavailable.value = false;
+    });
+    const read = vi
+      .fn()
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValue('fresh progress');
+    const poller = createPackagingPoller({
+      read,
+      onData,
+      onError,
+      onLoading: vi.fn(),
+      interval: () => 4000,
+    });
     const request = poller.refresh();
     await vi.advanceTimersByTimeAsync(15_000);
     await request;
@@ -52,10 +79,12 @@ describe('packaging progress polling', () => {
   });
   it('does not allow an old response to overwrite a newer read', async () => {
     vi.useFakeTimers();
-    const old = deferred<string>(), fresh = deferred<string>();
+    const old = deferred<string>(),
+      fresh = deferred<string>();
     const read = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
     const poller = setup(read);
-    const first = poller.refresh(), second = poller.refresh();
+    const first = poller.refresh(),
+      second = poller.refresh();
     fresh.resolve('100 completed');
     await second;
     old.resolve('55 completed');
@@ -67,7 +96,10 @@ describe('packaging progress polling', () => {
   });
   it('times out a hung read and resumes polling rather than freezing forever', async () => {
     vi.useFakeTimers();
-    const read = vi.fn().mockReturnValueOnce(new Promise(() => {})).mockResolvedValue('reconnected');
+    const read = vi
+      .fn()
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValue('reconnected');
     const poller = setup(read);
     const first = poller.refresh();
     await vi.advanceTimersByTimeAsync(15_000);
@@ -92,7 +124,8 @@ describe('packaging progress polling', () => {
   });
   it('backs off repeated failures and resets the delay after a successful read', async () => {
     vi.useFakeTimers();
-    const read = vi.fn()
+    const read = vi
+      .fn()
       .mockRejectedValueOnce(new TypeError('NetworkError when attempting to fetch resource.'))
       .mockRejectedValueOnce(new TypeError('NetworkError when attempting to fetch resource.'))
       .mockResolvedValueOnce('reconnected')

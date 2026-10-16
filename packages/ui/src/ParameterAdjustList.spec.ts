@@ -80,9 +80,9 @@ describe('ParameterAdjustList', () => {
     expect(componentSource).toContain('class="parameter-adjust-mark"');
     expect(componentSource).toContain('class="parameter-adjust-track"');
     // Placed by percentage of the range, with a zero-width span so the tick can be centred on it.
-    expect(componentSource).toContain(
-      'const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record<string, string> => {',
-    );
+    expect(componentSource).toContain('const markStyle = (');
+    expect(componentSource).toContain('item: ParameterAdjustItem,');
+    expect(componentSource).toContain('mark: ParameterAdjustMark,');
     expect(componentSource).toContain(
       'const ratio = span > 0 ? (mark.value - item.min) / span : 0;',
     );

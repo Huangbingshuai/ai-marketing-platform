@@ -33,16 +33,16 @@
 
 已执行并通过：
 
-| 验证 | 结果 |
-| --- | --- |
-| Prompt Worker pytest，排除 ark_integration | 371 passed，1 deselected |
-| Contracts | 26 passed |
-| API Prompt 相关测试 | 104 passed |
-| Web Prompt 相关测试 | 46 passed |
-| Worker mypy | 25 个源文件通过 |
-| Worker Ruff src/tests、本次 TS/Vue 专项 ESLint | 通过 |
-| 工作区类型检查、Contracts/API/Web 生产构建 | 通过 |
-| git diff --check | 通过 |
+| 验证                                           | 结果                     |
+| ---------------------------------------------- | ------------------------ |
+| Prompt Worker pytest，排除 ark_integration     | 371 passed，1 deselected |
+| Contracts                                      | 26 passed                |
+| API Prompt 相关测试                            | 104 passed               |
+| Web Prompt 相关测试                            | 46 passed                |
+| Worker mypy                                    | 25 个源文件通过          |
+| Worker Ruff src/tests、本次 TS/Vue 专项 ESLint | 通过                     |
+| 工作区类型检查、Contracts/API/Web 生产构建     | 通过                     |
+| git diff --check                               | 通过                     |
 
 浏览器在正式本地页面只读检查：紫苏梅子酱历史批次可打开，详情输入显示产品基础及统一卖点（8 项预览、其余 20 项提示）；原阶段输出仍使用真实历史计数，不伪造新批次统计。390px 窄屏弹窗无横向溢出，ESC 关闭并将焦点恢复到“查看工作流”；刷新后重新进入 Prompt 可读取历史批次。首次会话有 favicon 404，刷新后控制台无错误。未点击重新生成、完成校验或视频渲染。
 

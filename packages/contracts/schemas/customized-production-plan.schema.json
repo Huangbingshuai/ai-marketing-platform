@@ -15,10 +15,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "content",
-        "durationSeconds"
-      ],
+      "required": ["content", "durationSeconds"],
       "title": "Segment",
       "type": "object"
     }
@@ -40,9 +37,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "summary"
-  ],
+  "required": ["summary"],
   "title": "Plan",
   "type": "object"
 }

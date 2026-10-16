@@ -43,7 +43,12 @@ const envelope = (offset: number): number => {
   return Math.max(0, Math.min(1, rise, fall));
 };
 const visibleBars = computed(() => {
-  const peaks = waveformWindowPeaks(waveform.value, props.trimStart, props.duration, props.barCount);
+  const peaks = waveformWindowPeaks(
+    waveform.value,
+    props.trimStart,
+    props.duration,
+    props.barCount,
+  );
   const count = peaks.length;
   return peaks.map((peak, index) => {
     // Read at the bar's midpoint, which is where a ramp drawn across the bar looks centred.
@@ -52,9 +57,13 @@ const visibleBars = computed(() => {
 });
 const status = computed(() => waveform.value?.status ?? 'LOADING');
 
-watch([source, visible], ([nextSource, isVisible]) => {
-  if (isVisible) requestEffectTemplateMixWaveform(nextSource);
-}, { immediate: true });
+watch(
+  [source, visible],
+  ([nextSource, isVisible]) => {
+    if (isVisible) requestEffectTemplateMixWaveform(nextSource);
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -127,7 +136,7 @@ watch([source, visible], ([nextSource, isVisible]) => {
 .clip-waveform.is-tone-detached {
   --wave-border: #c99650;
   --wave-border-solid: #a76c20;
-  --wave-bg: #f8efdE;
+  --wave-bg: #f8efde;
   --wave-bg-solid: #79501f;
   --wave-line: #c99650;
   --wave-line-solid: #f0bd69;

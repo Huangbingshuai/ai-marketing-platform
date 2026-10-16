@@ -63,7 +63,10 @@ const fixture = (taskPatch: Record<string, unknown> = {}) => {
   };
   const transaction = {
     $queryRaw: vi.fn().mockResolvedValue([]),
-    workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run', editIdMap: {} }), update: vi.fn() },
+    workflowRun: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'run', editIdMap: {} }),
+      update: vi.fn(),
+    },
     effectSegmentRenderOperationReceipt: {
       findUnique: vi.fn().mockResolvedValue(null),
       create: vi.fn(),
@@ -106,9 +109,19 @@ describe('segment render provider result recovery', () => {
       where: { projectId: 'project', batchId: 'batch', id: { in: ['task'] } },
     });
     expect(transaction.jobOutbox.upsert).toHaveBeenCalledOnce();
-    expect(transaction.workflowRun.update).toHaveBeenCalledWith({ where: { id: 'run' },
-      data: { editIdMap: { renderProgress: { batchId: 'batch', taskIds: ['task'],
-        synchronizedTaskIds: [], removedTaskIds: [] } } } });
+    expect(transaction.workflowRun.update).toHaveBeenCalledWith({
+      where: { id: 'run' },
+      data: {
+        editIdMap: {
+          renderProgress: {
+            batchId: 'batch',
+            taskIds: ['task'],
+            synchronizedTaskIds: [],
+            removedTaskIds: [],
+          },
+        },
+      },
+    });
     expect(transaction.jobOutbox.upsert.mock.calls[0]![0].update.payload).toMatchObject({
       projectId: 'project',
       runId: 'task',

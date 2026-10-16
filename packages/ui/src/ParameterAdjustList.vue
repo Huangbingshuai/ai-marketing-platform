@@ -104,8 +104,7 @@ const onBlur = (item: ParameterAdjustItem): void => {
   delete drafts.value[item.key];
 };
 const onFocus = (item: ParameterAdjustItem, event: FocusEvent): void => {
-  if (item.floorLabel && valueOf(item) <= item.min)
-    (event.target as HTMLInputElement).select();
+  if (item.floorLabel && valueOf(item) <= item.min) (event.target as HTMLInputElement).select();
 };
 const onSlider = (item: ParameterAdjustItem, event: Event): void => {
   delete drafts.value[item.key];
@@ -118,7 +117,10 @@ const sliderStyle = (item: ParameterAdjustItem): Record<string, string> => {
   return { '--parameter-value-position': `${Math.min(1, Math.max(0, ratio)) * 100}%` };
 };
 /** A mark's place along the track, as a percentage of the range. */
-const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record<string, string> => {
+const markStyle = (
+  item: ParameterAdjustItem,
+  mark: ParameterAdjustMark,
+): Record<string, string> => {
   const span = item.max - item.min;
   const ratio = span > 0 ? (mark.value - item.min) / span : 0;
   return { left: `${Math.min(1, Math.max(0, ratio)) * 100}%` };
@@ -263,9 +265,7 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
 .parameter-adjust-slider::-webkit-slider-thumb {
   width: var(--parameter-thumb-width, 10px);
   height: var(--parameter-thumb-height, 14px);
-  margin-top: calc(
-    (var(--parameter-track-height, 3px) - var(--parameter-thumb-height, 14px)) / 2
-  );
+  margin-top: calc((var(--parameter-track-height, 3px) - var(--parameter-thumb-height, 14px)) / 2);
   border: var(--parameter-thumb-border, 1px solid currentColor);
   border-radius: var(--parameter-thumb-radius, 4px);
   appearance: none;
@@ -301,9 +301,7 @@ const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record
 }
 .parameter-adjust-mark {
   position: absolute;
-  top: calc(
-    (var(--parameter-slider-height, 18px) - var(--parameter-mark-size, 9px)) / 2
-  );
+  top: calc((var(--parameter-slider-height, 18px) - var(--parameter-mark-size, 9px)) / 2);
   height: var(--parameter-mark-size, 9px);
   width: 0;
   /* A reference, not a control: it must never swallow a click meant for the slider under it. */

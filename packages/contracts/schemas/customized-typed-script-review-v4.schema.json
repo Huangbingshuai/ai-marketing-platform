@@ -47,23 +47,12 @@
           "type": "string"
         },
         "verdict": {
-          "enum": [
-            "PASS",
-            "FAIL",
-            "NOT_APPLICABLE"
-          ],
+          "enum": ["PASS", "FAIL", "NOT_APPLICABLE"],
           "title": "Verdict",
           "type": "string"
         }
       },
-      "required": [
-        "criterion",
-        "beatIds",
-        "evidence",
-        "reason",
-        "suggestion",
-        "verdict"
-      ],
+      "required": ["criterion", "beatIds", "evidence", "reason", "suggestion", "verdict"],
       "title": "QualityCheck",
       "type": "object"
     },
@@ -71,19 +60,12 @@
       "additionalProperties": false,
       "properties": {
         "severity": {
-          "enum": [
-            "ERROR",
-            "WARNING"
-          ],
+          "enum": ["ERROR", "WARNING"],
           "title": "Severity",
           "type": "string"
         },
         "category": {
-          "enum": [
-            "FACT",
-            "STORY",
-            "STRUCTURE"
-          ],
+          "enum": ["FACT", "STORY", "STRUCTURE"],
           "title": "Category",
           "type": "string"
         },
@@ -151,12 +133,7 @@
       "type": "array"
     },
     "routeId": {
-      "enum": [
-        "ECOMMERCE",
-        "LOCAL_STORE",
-        "BRAND_AD",
-        "DRAMA"
-      ],
+      "enum": ["ECOMMERCE", "LOCAL_STORE", "BRAND_AD", "DRAMA"],
       "title": "Routeid",
       "type": "string"
     },
@@ -170,12 +147,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "summary",
-    "findings",
-    "routeId",
-    "qualityChecks"
-  ],
+  "required": ["summary", "findings", "routeId", "qualityChecks"],
   "title": "TypedReviewV4",
   "type": "object"
 }

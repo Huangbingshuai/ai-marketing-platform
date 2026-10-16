@@ -23,7 +23,9 @@ describe('template mix compositor playback clock', () => {
     expect(start).toContain('Promise.all([frameReady, audioPrepared, heldAudio])');
     expect(start).toContain('cancelAnimationFrame(pendingSeekSyncFrame)');
     expect(start).toContain('if (!ready || !currentStart()) return');
-    expect(start).toContain('if (!playing.value || !requiredPlayers().includes(video)) video.pause()');
+    expect(start).toContain(
+      'if (!playing.value || !requiredPlayers().includes(video)) video.pause()',
+    );
   });
   it('retries late decoded handoffs every frame without republishing the editor playhead', () => {
     const retry = pageSource
@@ -37,7 +39,8 @@ describe('template mix compositor playback clock', () => {
     expect(pageSource).toContain('...upcoming.map(({ id }) => id)');
   });
   it('holds all transports when the native decoder buffers instead of letting captions skip ahead', () => {
-    const waiting = pageSource.split('const onTimelinePlayerWaiting =')[1]!
+    const waiting = pageSource
+      .split('const onTimelinePlayerWaiting =')[1]!
       .split('const onTimelinePlayerReady =')[0]!;
     expect(pageSource).toContain('@waiting="onTimelinePlayerWaiting(slot.id, $event)"');
     expect(waiting).toContain('currentPlaybackClockSeconds()');
@@ -50,14 +53,18 @@ describe('template mix compositor playback clock', () => {
     expect(pageSource).not.toContain('if (video.paused) holdTimelinePlayback(slot.id, video)');
     expect(pageSource).toContain('startPreparedTimelineVideo(slot.id, video)');
     expect(pageSource).toContain('preparedVideoHandoff.stalled(activeVideo)');
-    expect(pageSource).toContain('if (!playbackStarting) playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame)');
+    expect(pageSource).toContain(
+      'if (!playbackStarting) playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame)',
+    );
   });
   it('advances all transition animations on the shared clock between UI ticks', () => {
     expect(pageSource).toContain('animate(outgoing, frames.outgoing)');
     expect(pageSource).toContain('animate(incoming, frames.incoming)');
     expect(pageSource).toContain('animate(overlay, frames.overlay)');
     expect(pageSource).toContain('animation.pause()');
-    expect(pageSource).toContain('animation.currentTime = Math.max(0, next - transition.start) * 1000');
+    expect(pageSource).toContain(
+      'animation.currentTime = Math.max(0, next - transition.start) * 1000',
+    );
     expect(pageSource).not.toContain("transition.transition !== '叠化'");
   });
   it('warms the next clip without reloads and reuses positioned frames at natural boundaries', () => {

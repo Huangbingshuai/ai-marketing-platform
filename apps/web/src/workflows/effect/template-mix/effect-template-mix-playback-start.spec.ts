@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { NativePlaybackProgress, previewStartupReady, waitForNativePlayback, waitForPlaybackFrame } from './effect-template-mix-playback-start';
+import {
+  NativePlaybackProgress,
+  previewStartupReady,
+  waitForNativePlayback,
+  waitForPlaybackFrame,
+} from './effect-template-mix-playback-start';
 
 describe('decoded frame startup barrier', () => {
   it('requires successful audio startup only when the timeline actually has audio', () => {
@@ -16,21 +21,30 @@ describe('decoded frame startup barrier', () => {
       const assertion = expect(result).rejects.toThrow('播放启动超时');
       await vi.advanceTimersByTimeAsync(100);
       await assertion;
-    } finally { vi.useRealTimers(); }
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('cancels a pending native start without waiting for the decoder', async () => {
     vi.useFakeTimers();
     try {
       let current = true;
       let release!: () => void;
-      const result = waitForNativePlayback(new Promise<void>(resolve => { release = resolve; }), () => current);
+      const result = waitForNativePlayback(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+        () => current,
+      );
       current = false;
       await vi.advanceTimersByTimeAsync(50);
       expect(await result).toBe(false);
       release();
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
-    } finally { vi.useRealTimers(); }
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('detects a silent native stall once, but not normal playback or an intentional pause', () => {
     const progress = new NativePlaybackProgress();

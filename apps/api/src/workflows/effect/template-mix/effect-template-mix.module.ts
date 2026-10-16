@@ -25,7 +25,10 @@ import {
   EffectVoiceWorkerController,
 } from './effect-voice.controller';
 import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
-import { EffectFinalOutputController, EffectFinalOutputWorkerController } from '../final-output/effect-final-output.controller';
+import {
+  EffectFinalOutputController,
+  EffectFinalOutputWorkerController,
+} from '../final-output/effect-final-output.controller';
 import {
   EffectPackagingCaptionVoiceController,
   EffectPackagingController,
