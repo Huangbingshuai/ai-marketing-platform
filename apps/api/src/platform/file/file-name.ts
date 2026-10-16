@@ -1,4 +1,7 @@
 export const normalizeMultipartFileName = (value: string): string => {
+  // Multipart mojibake consists of single-byte Latin-1 code points. Already
+  // decoded names must never be truncated back to bytes (e.g. 弧 becomes ').
+  if ([...value].some((character) => (character.codePointAt(0) ?? 0) > 255)) return value;
   const encodedBytes = Buffer.from(value, 'latin1');
   const decoded = encodedBytes.toString('utf8');
 
