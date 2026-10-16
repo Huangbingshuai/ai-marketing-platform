@@ -208,14 +208,14 @@ async def test_material_execution_keeps_focused_audit_without_post_score_repair_
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-async def test_material_preflight_counts_model_screened_audit_as_optional() -> None:
+async def test_material_preflight_reserves_diagnosis_and_targeted_rewrite_capacity() -> None:
     pipeline, runtime, _ = await ready(50, 3)
     budget = pipeline._preflight_run(runtime)
     assert budget["plannedInitialCandidateCount"] == 50
     generation_calls = (50 + budget["plannedCreativeShardSize"] - 1) // budget["plannedCreativeShardSize"]
     evaluation_calls = (50 + budget["plannedEvaluationShardSize"] - 1) // budget["plannedEvaluationShardSize"]
-    assert budget["plannedMinimumAiCallCount"] >= 2 * generation_calls + evaluation_calls + 3
-    assert budget["plannedMinimumAiCallCount"] < 2 * generation_calls + evaluation_calls * 2 + 3
+    assert budget["plannedMinimumAiCallCount"] >= 3 * generation_calls + evaluation_calls + 3
+    assert budget["plannedMinimumAiCallCount"] < 3 * generation_calls + evaluation_calls * 2 + 3
 
 
 @pytest.mark.asyncio

@@ -23,10 +23,11 @@ from .creative_directions import (
     creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
-from .execution_correction import ExecutionCorrectionBatch, ExecutionCorrectionItem
+from .execution_correction import ExecutionCorrectionBatch, ExecutionCorrectionItem, execution_review_input
 from .product_images import PreparedProductImage
 from .supplement_recovery import direction_summary, route_summary
 from .models import (
+    ExecutionReview, ExecutionReviewBatch, ExecutionBeatReview,
     MaterialBrief,
     MaterialPlanResponse,
     MAX_PROMPT_DURATION_SECONDS,
@@ -97,6 +98,7 @@ CREATIVE_BASE_PROMPT = "creative_base.system.prompt.txt"
 CREATIVE_TASK_PROMPT = "creative_task.user.prompt.txt"
 EXECUTION_REPAIR_PROMPT = "execution_repair.system.prompt.txt"
 EXECUTION_CORRECTION_PROMPT = "execution_correction.system.prompt.txt"
+EXECUTION_DIAGNOSIS_PROMPT = "execution_diagnosis.system.prompt.txt"
 EXECUTION_AUDIT_PROMPT = "execution_audit.system.prompt.txt"
 EVALUATION_BASE_PROMPT = "evaluation_base.system.prompt.txt"
 EVALUATION_TASK_PROMPT = "evaluation_task.user.prompt.txt"
@@ -267,10 +269,17 @@ def _visual_style_baseline_section(style_instruction: str) -> str:
 
 
 class AiProvider(Protocol):
+    async def diagnose_creative_execution(
+        self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionReviewBatch]: ...
+
     async def correct_creative_execution(
         self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy,
+        reviews: Mapping[str, ExecutionReview] | None = None,
     ) -> AiCallResult[ExecutionCorrectionBatch]: ...
 
     async def plan_materials(
@@ -415,10 +424,23 @@ class AiProvider(Protocol):
 
 
 class MockAiProvider:
+    async def diagnose_creative_execution(
+        self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionReviewBatch]:
+        return _mock_result(ExecutionReviewBatch(items=[
+            ExecutionReview(slot_id=item.slot_id, beats=[
+                ExecutionBeatReview(sequence=index, information_status="NEW", evidence="Mock 协议样例")
+                for index in range(1, (len(item.shot_plan.beats) if item.shot_plan else 1) + 1)
+            ]) for item in candidates
+        ]), NodeId.COHERENT_CREATIVE_GENERATION.value, EXECUTION_DIAGNOSIS_PROMPT)
+
     async def correct_creative_execution(
         self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy,
+        reviews: Mapping[str, ExecutionReview] | None = None,
     ) -> AiCallResult[ExecutionCorrectionBatch]:
         return _mock_result(
             ExecutionCorrectionBatch(items=[
@@ -878,10 +900,39 @@ class MockAiProvider:
 
 
 class ArkResponsesProvider:
+    async def diagnose_creative_execution(
+        self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionReviewBatch]:
+        by_id = {task.slot_id: task for task in tasks}
+        schema = ExecutionReviewBatch.model_json_schema(by_alias=True)
+        schema["properties"]["items"].update(minItems=len(candidates), maxItems=len(candidates))
+        schema["$defs"]["ExecutionReview"]["properties"]["slotId"]["enum"] = [
+            item.slot_id for item in candidates
+        ]
+        payload = {
+            "items": [{"task": _creative_task_brief(
+                by_id[item.slot_id], assignment=_creative_fact_assignment(by_id[item.slot_id], application),
+                application=application, fact_visual_strategy=fact_visual_strategy,
+            ), "original": execution_review_input(item)} for item in candidates],
+            "sharedPrompt": shared_prompt.compiled_content,
+        }
+        return await self._structured(
+            json.dumps(payload, ensure_ascii=False), ExecutionReviewBatch,
+            schema_name="effect_prompt_execution_diagnosis",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=EXECUTION_DIAGNOSIS_PROMPT, model=self._candidate_model,
+            max_output_tokens=self._candidate_max_output_tokens,
+            request_timeout=self._candidate_timeout,
+            instructions=load_prompt(EXECUTION_DIAGNOSIS_PROMPT), response_schema=schema,
+        )
+
     async def correct_creative_execution(
         self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy,
+        reviews: Mapping[str, ExecutionReview] | None = None,
     ) -> AiCallResult[ExecutionCorrectionBatch]:
         by_id = {task.slot_id: task for task in tasks}
         schema = ExecutionCorrectionBatch.model_json_schema(by_alias=True)
@@ -897,8 +948,9 @@ class ArkResponsesProvider:
                     assignment=_creative_fact_assignment(by_id[item.slot_id], application),
                     application=application, fact_visual_strategy=fact_visual_strategy,
                 ),
-                "original": item.model_dump(mode="json", by_alias=True,
-                                            exclude={"content", "generated_at"}),
+                "original": execution_review_input(item),
+                "diagnosis": (reviews[item.slot_id].model_dump(mode="json", by_alias=True)
+                              if reviews is not None else None),
             } for item in candidates],
             "sharedPrompt": shared_prompt.compiled_content,
         }

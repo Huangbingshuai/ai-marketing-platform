@@ -1398,6 +1398,45 @@ class CreativeCandidateDraftBatch(ApiModel):
     items: list[CreativeCandidateDraft] = Field(min_length=1, max_length=5)
 
 
+class ExecutionBeatReview(ApiModel):
+    sequence: int = Field(ge=1, le=6)
+    information_status: Literal["NEW", "REPEAT", "HOLD"]
+    evidence: str = Field(min_length=1, max_length=140)
+
+
+class ExecutionIssue(ApiModel):
+    issue_id: str = Field(min_length=1, max_length=24)
+    code: Literal["INFORMATION_REPEAT", "INFORMATION_SPARSE", "GRIP_SUPPORT",
+                  "TOOL_CONTINUITY", "CAMERA_VIEW", "MATERIAL_TIME"]
+    sequences: list[int] = Field(min_length=1, max_length=7)
+    diagnosis: str = Field(min_length=1, max_length=240)
+
+
+class ExecutionReview(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    beats: list[ExecutionBeatReview] = Field(min_length=1, max_length=6)
+    issues: list[ExecutionIssue] = Field(default_factory=list, max_length=8)
+
+
+class ExecutionReviewBatch(ApiModel):
+    items: list[ExecutionReview] = Field(min_length=1, max_length=5)
+
+
+class ExecutionIssueResolution(ApiModel):
+    issue_id: str = Field(min_length=1, max_length=24)
+    revised_sequences: list[int] = Field(min_length=1, max_length=7)
+    change_summary: str = Field(min_length=1, max_length=180)
+
+
+class ExecutionCorrectionCheckpoint(ApiModel):
+    source_hash: str
+    template_hash: str
+    review: ExecutionReview
+    status: Literal["DIAGNOSED", "APPLIED"]
+    output_hash: str | None = None
+    resolutions: list[ExecutionIssueResolution] = Field(default_factory=list)
+
+
 class CreativeCandidate(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
@@ -1408,6 +1447,9 @@ class CreativeCandidate(ApiModel):
     content: str = Field(min_length=20, max_length=12_000)
     shot_plan: MaterialShotPlan | None = None
     generated_at: datetime | None = None
+    execution_correction: ExecutionCorrectionCheckpoint | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="before")
     @classmethod

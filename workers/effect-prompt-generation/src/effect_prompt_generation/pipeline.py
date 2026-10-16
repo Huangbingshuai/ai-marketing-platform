@@ -9,7 +9,7 @@ import re
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Callable, Literal
@@ -17,7 +17,10 @@ from typing import Any, Callable, Literal
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .execution_correction import apply_execution_corrections
+from .execution_correction import (
+    apply_execution_corrections, candidate_execution_hash, validate_execution_reviews,
+)
+from .prompt_loader import load_prompt_hash
 from .scheduling import AiConcurrencyLimiter
 from .insight_mapping import (
     insight_coverage,
@@ -36,6 +39,7 @@ from .embeddings import (
     build_creative_vector_index,
 )
 from .models import (
+    ExecutionCorrectionCheckpoint,
     MaterialBatchPlan,
     MaterialBrief,
     MaterialPlanRound,
@@ -637,7 +641,7 @@ class PromptGenerationPipeline:
         # execution audits are optional and model-screened, like repair/review
         # calls; supplements/recovery share the same run counter.
         strategy_calls = len(fact_visual_strategy_batches(map_insight(snapshot.insight_artifact.result)))
-        correction_calls = generation_calls if snapshot.operation == "BATCH_GENERATE" else 0
+        correction_calls = generation_calls * 2 if snapshot.operation == "BATCH_GENERATE" else 0
         minimum_calls = generation_calls + correction_calls + evaluation_calls + math.ceil(generated_target / 20) + strategy_calls
         if minimum_calls > self.max_ai_calls_per_run:
             raise PipelineError(
@@ -3312,20 +3316,82 @@ class PromptGenerationPipeline:
 
     async def _correct_execution(
         self, context: RuntimeContext, candidates: list[CreativeCandidate],
+        *, persist: Callable[[list[CreativeCandidate]], Awaitable[None]] | None = None,
     ) -> list[CreativeCandidate]:
         if not candidates:
             return []
         cache = self._cache(context)
-        self._reserve_ai_call(context)
+        template_hash = hashlib.sha256((
+            load_prompt_hash("execution_diagnosis.system.prompt.txt")
+            + load_prompt_hash("execution_correction.system.prompt.txt")
+        ).encode()).hexdigest()
         try:
+            pending = []
+            for item in candidates:
+                checkpoint = item.execution_correction
+                current_hash = candidate_execution_hash(item)
+                valid = (checkpoint is not None and checkpoint.template_hash == template_hash
+                         and checkpoint.review.slot_id == item.slot_id
+                         and current_hash == (checkpoint.output_hash if checkpoint.status == "APPLIED"
+                                              else checkpoint.source_hash))
+                if not valid:
+                    pending.append(item)
+            if pending:
+                self._reserve_ai_call(context)
+                async with self._ai_semaphore:
+                    diagnosis = await self.provider.diagnose_creative_execution(
+                        pending, tasks=[cache.creative_tasks[item.slot_id] for item in pending],
+                        application=self._require_application(context),
+                        shared_prompt=self._required_shared_prompt(context),
+                        fact_visual_strategy=self._required_fact_visual_strategy(context),
+                    )
+                reviews = validate_execution_reviews(pending, diagnosis.value)
+                replacements = {}
+                for item in pending:
+                    source_hash = candidate_execution_hash(item)
+                    review = reviews[item.slot_id]
+                    replacements[item.slot_id] = item.model_copy(update={
+                        "execution_correction": ExecutionCorrectionCheckpoint(
+                            source_hash=source_hash, template_hash=template_hash, review=review,
+                            status="DIAGNOSED" if review.issues else "APPLIED",
+                            output_hash=None if review.issues else source_hash,
+                        ),
+                    })
+                candidates = [replacements.get(item.slot_id, item) for item in candidates]
+                if persist:
+                    await persist(candidates)
+            diagnosed = [item for item in candidates if item.execution_correction is not None
+                         and item.execution_correction.status == "DIAGNOSED"]
+            if not diagnosed:
+                return candidates
+            reviews = {item.slot_id: item.execution_correction.review for item in diagnosed
+                       if item.execution_correction is not None}
+            self._reserve_ai_call(context)
             async with self._ai_semaphore:
                 call = await self.provider.correct_creative_execution(
-                    candidates, tasks=[cache.creative_tasks[item.slot_id] for item in candidates],
+                    diagnosed, tasks=[cache.creative_tasks[item.slot_id] for item in diagnosed],
                     application=self._require_application(context),
                     shared_prompt=self._required_shared_prompt(context),
                     fact_visual_strategy=self._required_fact_visual_strategy(context),
+                    reviews=reviews,
                 )
-            return apply_execution_corrections(candidates, call.value, cache.creative_target_durations)
+            corrected = apply_execution_corrections(
+                diagnosed, call.value, cache.creative_target_durations, reviews,
+            )
+            responses = {row.slot_id: row for row in call.value.items}
+            replacements = {}
+            for item in corrected:
+                assert item.execution_correction is not None
+                replacements[item.slot_id] = item.model_copy(update={
+                    "execution_correction": item.execution_correction.model_copy(update={
+                        "status": "APPLIED", "output_hash": candidate_execution_hash(item),
+                        "resolutions": responses[item.slot_id].resolutions,
+                    }),
+                })
+            candidates = [replacements.get(item.slot_id, item) for item in candidates]
+            if persist:
+                await persist(candidates)
+            return candidates
         except (ProviderError, ValueError) as exc:
             splittable = isinstance(exc, ValueError) or (
                 isinstance(exc, ProviderError) and exc.error_type in {
@@ -3335,8 +3401,8 @@ class PromptGenerationPipeline:
             )
             if splittable and len(candidates) > 1:
                 midpoint = math.ceil(len(candidates) / 2)
-                first = await self._correct_execution(context, candidates[:midpoint])
-                return first + await self._correct_execution(context, candidates[midpoint:])
+                first = await self._correct_execution(context, candidates[:midpoint], persist=persist)
+                return first + await self._correct_execution(context, candidates[midpoint:], persist=persist)
             if isinstance(exc, ProviderError):
                 raise
             # Do not let generation's invalid-row recovery silently skip a
@@ -3390,7 +3456,16 @@ class PromptGenerationPipeline:
             missing = [item for item in record.creative_items
                        if item.slot_id not in cache.creative_evaluations]
             if missing and "已完成独立画面执行修正" not in record.warnings:
-                corrected = await self._correct_execution(context, missing)
+                async def persist_restored(items: list[CreativeCandidate]) -> None:
+                    nonlocal record
+                    replacements = {item.slot_id: item for item in items}
+                    record = record.model_copy(update={
+                        "creative_items": [replacements.get(item.slot_id, item)
+                                           for item in record.creative_items],
+                    })
+                    await self.api.put_shard(context, record)
+
+                corrected = await self._correct_execution(context, missing, persist=persist_restored)
                 replacements = {item.slot_id: item for item in corrected}
                 record = record.model_copy(update={
                     "creative_items": [replacements.get(item.slot_id, item) for item in record.creative_items],
@@ -3559,7 +3634,7 @@ class PromptGenerationPipeline:
                                if task.slot_id in available_drafts]
             if snapshot.operation == "BATCH_GENERATE":
                 correction_started = True
-                generated_items = await self._correct_execution(context, generated_items)
+                generated_items = await self._correct_execution(context, generated_items, persist=persist_drafts)
                 running = running.model_copy(update={
                     "warnings": [*running.warnings, "已完成独立画面执行修正"],
                 })

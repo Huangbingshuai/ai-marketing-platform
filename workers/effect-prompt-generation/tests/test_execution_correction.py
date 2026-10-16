@@ -107,12 +107,12 @@ async def test_correction_failure_restores_raw_draft_without_regeneration() -> N
             self.generated += 1
             return await super().generate_creatives(*args, **kwargs)
 
-        async def correct_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
+        async def diagnose_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
             if self.fail:
                 raise ProviderError(
                     "timeout", retryable=True, error_type=ProviderErrorType.TIMEOUT
                 )
-            return await super().correct_creative_execution(*args, **kwargs)
+            return await super().diagnose_creative_execution(*args, **kwargs)
 
     provider = Failing()
     pipeline, runtime, _ = await ready(provider=provider)
@@ -148,11 +148,11 @@ async def test_graph_scores_fast_shard_before_slow_generation_finishes() -> None
             events.extend(("generated", item.slot_id) for item in call.value.items)
             return call
 
-        async def correct_creative_execution(
+        async def diagnose_creative_execution(
             self, candidates: Any, **kwargs: Any
         ) -> Any:
             events.extend(("corrected", item.slot_id) for item in candidates)
-            return await super().correct_creative_execution(candidates, **kwargs)
+            return await super().diagnose_creative_execution(candidates, **kwargs)
 
         async def evaluate_creatives(self, candidates: Any, **kwargs: Any) -> Any:
             for item in candidates:
