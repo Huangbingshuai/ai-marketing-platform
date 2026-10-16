@@ -452,15 +452,42 @@ export function buildEffectBranchLayout(
   // Configuration highlights every template's latest path; the editor highlights its template.
   // Older sibling versions stay visible without inheriting either path's red highlight.
   const nodeCreatedTime = (node: BranchTreeNode): number => {
+    // Upstream artifacts are cloned into forks with their original creation time.
+    // The owning Run determines when that new branch was created.
+    const runCreatedAt = Date.parse(byId.get(node.workflowRunId)?.createdAt ?? '');
+    if (node.stageIndex < 4 && Number.isFinite(runCreatedAt)) return runCreatedAt;
     const createdAt = Date.parse(node.createdAt ?? '');
     if (Number.isFinite(createdAt)) return createdAt;
-    const runCreatedAt = Date.parse(byId.get(node.workflowRunId)?.createdAt ?? '');
     return Number.isFinite(runCreatedAt) ? runCreatedAt : 0;
+  };
+  const runDepth = (runId: string): number => {
+    let branch = byId.get(runId);
+    const seen = new Set<string>();
+    while (branch?.parentWorkflowRunId && !seen.has(branch.workflowRunId)) {
+      seen.add(branch.workflowRunId);
+      branch = byId.get(branch.parentWorkflowRunId);
+    }
+    return seen.size;
   };
   // A new template can live in an old Run. Order the actual drawing siblings by their
   // own creation time, not by the DFS order of the Runs that happen to contain them.
   const chronologicalNodes = (left: BranchTreeNode, right: BranchTreeNode) =>
-    nodeCreatedTime(left) - nodeCreatedTime(right) || left.key.localeCompare(right.key);
+    nodeCreatedTime(left) - nodeCreatedTime(right) ||
+    runDepth(left.workflowRunId) - runDepth(right.workflowRunId) ||
+    left.key.localeCompare(right.key);
+  // Display versions count actual sibling branches under their direct upstream head.
+  // In-place edits retain their business revision without consuming a display number.
+  const upstreamSiblings = new Map<string, BranchTreeNode[]>();
+  for (const node of nodes) {
+    if (node.stageIndex >= 4) continue;
+    const scope = `${parentByKey.get(node.key) ?? 'root'}:${node.stageKey}`;
+    upstreamSiblings.set(scope, [...(upstreamSiblings.get(scope) ?? []), node]);
+  }
+  for (const siblings of upstreamSiblings.values()) {
+    siblings.sort(chronologicalNodes).forEach((node, index) => {
+      node.displayLabel = `版本${String(index + 1).padStart(2, '0')}`;
+    });
+  }
   return placeWorkflowBranchNodes(
     nodes,
     parentByKey,

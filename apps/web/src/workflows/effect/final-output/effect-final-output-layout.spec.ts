@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import pageSource from './EffectFinalOutputNodePage.vue?raw';
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
+import { computed, ref } from 'vue';
+import { executeVueDeclarations } from '../template-mix/__tests__/vue-source';
 
 describe('effect final output re-render layout', () => {
   it('uses yellow for current-branch updates and keeps whole exports blue', () => {
@@ -14,7 +16,9 @@ describe('effect final output re-render layout', () => {
     expect(pageSource.match(/\$emit\('back', selectedTemplateId\)/gu)).toHaveLength(3);
     const previewSource = pageSource.match(/const openTimelinePreview = [\s\S]*?\n\};/)?.[0];
     expect(previewSource).not.toContain('switchToSelectedBranch');
-    expect(previewSource).toContain("emit('preview', { workflowRunId: run.value.workflowRunId, templateId: run.value.templateId, variantId })");
+    expect(previewSource).toContain(
+      "emit('preview', { workflowRunId: run.value.workflowRunId, templateId: run.value.templateId, variantId })",
+    );
     expect(pageSource).not.toContain('related-template-branches');
   });
 
@@ -37,9 +41,11 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain(
       '<RefreshCw v-else-if="run.status !== \'PENDING_RENDER\'" :size="15" />',
     );
-    expect(pageSource).toContain('<LoaderCircle v-if="exportStarting || exportActive || exportPublishing" class="spin" :size="15" />');
+    expect(pageSource).toContain(
+      '<LoaderCircle v-if="exportStarting || exportActive || exportPublishing" class="spin" :size="15" />',
+    );
     expect(pageSource).toContain('正在创建任务…');
-    expect(pageSource).toContain('重新导出中 ${backgroundExport?.counts.completed}/${backgroundExport?.counts.total}');
+    expect(pageSource).toContain('${currentExport.counts.completed}/${currentExport.counts.total}');
     const settings = pageSource.match(/<section class="render-settings"[\s\S]*?<\/section>/)?.[0];
     expect(settings).toContain('@click="startRender"');
     expect(settings).not.toContain('canSwitchToExport');
@@ -93,7 +99,9 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).toContain('v-if="canLocalUpdate"');
     expect(pageSource).toContain('/final-output/${target.id}/local-update`');
     expect(pageSource).toContain('确认局部更新');
-    expect(pageSource).toContain('body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}),');
+    expect(pageSource).toContain(
+      'body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}),',
+    );
     expect(pageSource).toContain('expectedDraftRevision');
     expect(pageSource).toContain('class="secondary-button local-update-button"');
     expect(pageSource).toContain('局部更新（{{ run.counts.stale }}）');
@@ -104,7 +112,9 @@ describe('effect final output re-render layout', () => {
 
   it('uses the current packaging state without crowding the film name or explaining old files', () => {
     expect(pageSource).toContain('v-if="outputPackagingLabel(item)"');
-    expect(pageSource).toContain('{{ outputFileDescription(item, run.status) }}');
+    expect(pageSource).toContain(
+      "outputFileDescription(item, run.status === 'PENDING_RENDER' && currentExport ? currentExport.status : run.status)",
+    );
     expect(pageSource).not.toContain('工程已包装');
     expect(pageSource).not.toContain('仅画面文件');
     expect(pageSource).toMatch(/\.output-card__title \{[^}]*flex-wrap: wrap/s);
@@ -143,7 +153,9 @@ describe('effect final output re-render layout', () => {
   });
 
   it('does not resurrect a deleted template from output history or a stale branch tip', () => {
-    const templatesBlock = pageSource.match(/const templates = computed\(\(\) => \{[\s\S]*?\n\}\);/)?.[0];
+    const templatesBlock = pageSource.match(
+      /const templates = computed\(\(\) => \{[\s\S]*?\n\}\);/,
+    )?.[0];
     expect(templatesBlock).toBeDefined();
     expect(templatesBlock).toContain('latestByTemplate.get(entry.id)');
     expect(templatesBlock).toContain('workspaceTemplates.map');
@@ -154,15 +166,21 @@ describe('effect final output re-render layout', () => {
 
   it('exports the selected template without a global branch-switch action', () => {
     expect(pageSource).not.toContain('切换至该模板分支');
-    const start = pageSource.match(/async function startRender\(\)[\s\S]*?async function viewExportBranch/)?.[0];
+    const start = pageSource.match(
+      /async function startRender\(\)[\s\S]*?async function viewExportBranch/,
+    )?.[0];
     expect(start).not.toContain('activateEffectWorkflowBranch');
     expect(start).toContain('exportStarting.value || exportActive.value');
     expect(start).not.toContain('active.value) return');
   });
 
   it('reconciles missed pending-draft updates on entry without starting a render', () => {
-    expect(pageSource).toContain("window.addEventListener('effect-final-output-sync', savedOutputSource)");
-    expect(pageSource).toContain("window.removeEventListener('effect-final-output-sync', savedOutputSource)");
+    expect(pageSource).toContain(
+      "window.addEventListener('effect-final-output-sync', savedOutputSource)",
+    );
+    expect(pageSource).toContain(
+      "window.removeEventListener('effect-final-output-sync', savedOutputSource)",
+    );
     expect(pageSource).toContain('async function reconcilePending()');
     expect(pageSource).toContain('expectedDraftRevision: source.draftRevision');
     expect(pageSource).toContain('workflowRunId: sourceRunId, templateId: entry.id');
@@ -183,15 +201,33 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).not.toContain('outputWorkflowRunId.value = response.data.workflowRunId;');
     expect(pageSource).toContain('backgroundExportSourceRunId: selected.workflowRunId');
     expect(pageSource).toContain('if (outputRun.backgroundExportSourceRunId) continue;');
-    expect(pageSource).toContain("import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';");
+    expect(pageSource).toContain(
+      "import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';",
+    );
     expect(pageSource.match(/<WorkflowRunProgress/gu)).toHaveLength(2);
     expect(pageSource).toContain('v-if="exportProgressVisible"');
     expect(pageSource).toContain('v-if="localProgressVisible"');
     expect(pageSource).toContain(':summary="exportProgressSummary"');
     expect(pageSource).toContain(':summary="localProgressSummary"');
-    expect(pageSource).toContain("backgroundExport.value.status !== 'COMPLETED'");
-    expect(pageSource).toContain("['QUEUED', 'RUNNING', 'FAILED', 'PARTIAL', 'CANCELLED'].includes(run.value.status)");
-    expect(pageSource).toContain('局部更新进行中；可以同时重新导出全部成片');
+    const state = {
+      computed,
+      exportStarting: ref(false),
+      currentExport: ref<{ status: string } | undefined>({ status: 'RUNNING' }),
+    };
+    const progress = executeVueDeclarations(
+      pageSource,
+      ['exportProgressVisible'],
+      state,
+    ).exportProgressVisible;
+    expect(progress.value).toBe(true);
+    state.currentExport.value = { status: 'COMPLETED' };
+    expect(progress.value).toBe(false);
+    state.exportStarting.value = true;
+    expect(progress.value).toBe(true);
+    expect(pageSource).toContain(
+      "['QUEUED', 'RUNNING', 'FAILED', 'PARTIAL', 'CANCELLED'].includes(run.value.status)",
+    );
+    expect(pageSource).toContain('正在重新导出全部成片，原有成片仍可用');
     expect(pageSource).toContain('pendingExportNavigation.add(response.data.id)');
     expect(pageSource).not.toContain('新分支整批导出');
     expect(pageSource).not.toContain('background-export-panel');
@@ -205,7 +241,9 @@ describe('effect final output re-render layout', () => {
     expect(local).toContain('run.value?.id !== target.id');
     expect(pageSource).toContain('workflowRunId=${encodeURIComponent(outputWorkflowRunId.value)}');
     expect(pageSource).toContain('pendingExportNavigation.has(entry.id)');
-    expect(pageSource).toContain('(!entry.backgroundExportSourceRunId || entry.backgroundExportPublished)');
+    expect(pageSource).toContain(
+      '(!entry.backgroundExportSourceRunId || entry.backgroundExportPublished)',
+    );
     expect(pageSource).toContain("emit('workflowRunChange', {");
     expect(pageSource).not.toContain('if (response.data.workflowRunId !== props.workflowRunId) {');
   });
@@ -215,7 +253,9 @@ describe('effect final output re-render layout', () => {
     expect(parentSource).toContain('refreshActiveRunInPlace(projectId, { showCurtain: false })');
     expect(pageSource).toContain('outputWorkflowRunId.value === props.workflowRunId');
     expect(pageSource).toContain('void refreshMixWorkspace();');
-    expect(pageSource).not.toContain(':key="`output:${currentProjectId}:${workspace?.workflowRunId ?? \'\'}`"');
+    expect(pageSource).not.toContain(
+      ':key="`output:${currentProjectId}:${workspace?.workflowRunId ?? \'\'}`"',
+    );
   });
 
   it('delegates template-scope validation to the server and freezes selected batch and specs', () => {
@@ -223,6 +263,5 @@ describe('effect final output re-render layout', () => {
     expect(pageSource).not.toContain('切换并继续导出');
     expect(pageSource).toContain('body: settings,');
     expect(pageSource).toContain('run.value?.id === selected.id');
-
   });
 });

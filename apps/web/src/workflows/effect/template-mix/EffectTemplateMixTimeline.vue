@@ -119,6 +119,8 @@ const emit = defineEmits<{
   assignMaterial: [materialId: string, slotId: string];
   /** A library clip released on a track border: the row to create and where in time it starts. */
   insertMaterialTrack: [materialId: string, lane: number, start: number];
+  /** A library clip released in free space uses the existing video row. */
+  placeMaterialTrack: [materialId: string, lane: number, start: number];
   /** `insertRow` is set when the track was let go on a row border: open a row there for it. */
   addMusicAsset: [
     music: MusicAssetDrop & { row: number; start: number; insertRow?: number | undefined },
@@ -195,6 +197,8 @@ const emit = defineEmits<{
       fileObjectId: string;
       name: string;
       sourceAssetId?: string;
+      audioKind?: 'VOICE' | 'MUSIC' | 'DETACHED';
+      loopSource?: boolean;
       sourceDuration: number;
       duration: number;
       start: number;
@@ -423,6 +427,8 @@ type TimelineClipboard =
         fileObjectId: string;
         name: string;
         sourceAssetId?: string;
+        audioKind?: 'VOICE' | 'MUSIC' | 'DETACHED';
+        loopSource?: boolean;
         sourceDuration: number;
         duration: number;
         offset: number;
@@ -1277,10 +1283,17 @@ const seekFromClientX = (clientX: number): void => {
   emit('seek', Math.max(0, Math.min(timelineDuration.value, snapTime(raw))));
 };
 
+const videoLaneAtClientY = (clientY: number): number | null => {
+  const bounds = videoTrack.value?.getBoundingClientRect();
+  if (!bounds || !Number.isFinite(clientY) || clientY < bounds.top || clientY > bounds.bottom) return null;
+  const row = Math.max(0, Math.min(videoLaneCount.value - 1, Math.floor((clientY - bounds.top - 3) / 70)));
+  return occupiedVideoLaneValues.value[row] ?? 0;
+};
 const slotIdFromDragEvent = (event: DragEvent): string => {
   const target =
     event.target instanceof Element ? event.target.closest<HTMLElement>('[data-slot-id]') : null;
   if (target?.dataset.slotId) return target.dataset.slotId;
+  const lane = videoLaneAtClientY(event.clientY);
   const element = viewport.value;
   const dropSlots = props.variant
     ? packagingTimelineClips(props.variant)
@@ -1288,6 +1301,7 @@ const slotIdFromDragEvent = (event: DragEvent): string => {
           ({ slot }) => props.variant!.bindings[slot.id] ||
             props.variant!.intentionallyEmptySlotIds?.includes(slot.id),
         )
+        .filter(({ slot }) => lane === null || Math.max(0, Math.round(props.variant!.videoLanes?.[slot.id] ?? 0)) === lane)
         .map(({ slot, start, end }) => ({ id: slot.id, start, end }))
     : [];
   if (!element || !dropSlots.length) return '';
@@ -1295,7 +1309,6 @@ const slotIdFromDragEvent = (event: DragEvent): string => {
   const time = (event.clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value;
   return (
     dropSlots.find(({ start, end }) => time >= start && time < end)?.id ??
-    dropSlots.at(-1)?.id ??
     ''
   );
 };
@@ -1359,7 +1372,12 @@ const onMaterialDrop = (event: DragEvent): void => {
     emit('insertMaterialTrack', materialId, target.lane, dropTimeFromClientX(event.clientX, false));
     return;
   }
-  if (!slotId) return;
+  if (!slotId) {
+    const lane = videoLaneAtClientY(event.clientY);
+    if (lane === null) return;
+    emit('placeMaterialTrack', materialId, lane, dropTimeFromClientX(event.clientX, false));
+    return;
+  }
   setSelection([slotId]);
   emit('assignMaterial', materialId, slotId);
 };
@@ -1821,6 +1839,8 @@ const copyAudioClip = (audioId: string): void => {
     fileObjectId: string;
     name: string;
     sourceAssetId?: string;
+    audioKind?: 'VOICE' | 'MUSIC' | 'DETACHED';
+    loopSource?: boolean;
     sourceDuration: number;
     duration: number;
     offset: number;
@@ -1830,6 +1850,8 @@ const copyAudioClip = (audioId: string): void => {
         fileObjectId: detached.fileObjectId,
         name: detached.name,
         ...(detached.sourceAssetId ? { sourceAssetId: detached.sourceAssetId } : {}),
+        ...(detached.audioKind ? { audioKind: detached.audioKind } : {}),
+        ...(detached.loopSource !== undefined ? { loopSource: detached.loopSource } : {}),
         sourceDuration: detached.sourceDuration ?? detached.offset + detached.duration,
         duration: detached.duration,
         offset: detached.offset,
@@ -1842,6 +1864,8 @@ const copyAudioClip = (audioId: string): void => {
     source = {
       fileObjectId: packagedMusic.fileObjectId,
       name: '配乐',
+      audioKind: 'MUSIC',
+      loopSource: true,
       sourceDuration: offset + packagedMusic.duration,
       duration: packagedMusic.duration,
       offset,
@@ -1854,6 +1878,8 @@ const copyAudioClip = (audioId: string): void => {
     source = {
       fileObjectId: audio.fileObjectId,
       name: '配乐',
+      audioKind: 'MUSIC',
+      loopSource: true,
       sourceDuration: offset + audio.duration,
       duration: audio.duration,
       offset,
@@ -1866,6 +1892,7 @@ const copyAudioClip = (audioId: string): void => {
     source = {
       fileObjectId: audio.fileObjectId,
       name: '口播',
+      audioKind: 'VOICE',
       sourceDuration: offset + audio.duration,
       duration: audio.duration,
       offset,
@@ -1880,6 +1907,7 @@ const copyAudioClip = (audioId: string): void => {
       source = {
         fileObjectId: audio.fileObjectId,
         name: '口播',
+        audioKind: 'VOICE',
         sourceDuration: offset + audio.duration,
         duration: audio.duration,
         offset,
@@ -1895,6 +1923,7 @@ const copyAudioClip = (audioId: string): void => {
       source = {
         fileObjectId: audio.fileObjectId,
         name: '字幕口播',
+        audioKind: 'VOICE',
         sourceDuration: offset + audio.duration,
         duration: audio.duration,
         offset,
@@ -2189,6 +2218,11 @@ const audioEdgeHandleDisabled = (event: PointerEvent): boolean => {
 /** A clip is fenced by the row it currently sits on, because locking is a property of the row. */
 const audioRowLocked = (clipId: string): boolean =>
   trackIsLocked(audioRowKey(audioRowOf(clipId)));
+const isMaterialLocked = (kind: 'VIDEO' | 'AUDIO' | 'CAPTION', id: string): boolean => {
+  if (kind === 'VIDEO') return trackIsLocked('VIDEO');
+  if (kind === 'CAPTION') return trackIsLocked(captionTrackKey(captionLaneById.value.get(id) ?? 0));
+  return audioRowLocked(id);
+};
 
 const onAudioPointerDown = (event: PointerEvent, audio: TimelineAudio): void => {
   if (event.button !== 0 || audioRowLocked(audio.id)) return;
@@ -2368,6 +2402,7 @@ watch(pixelsPerSecond, () => {
   } else setPlaybackNeedle();
 });
 defineExpose({
+  isMaterialLocked,
   clearSelection,
   scrollToAudioRow,
   scrollToCaption,

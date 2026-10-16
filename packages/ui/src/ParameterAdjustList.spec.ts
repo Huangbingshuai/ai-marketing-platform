@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import componentSource from './ParameterAdjustList.vue?raw';
+import componentSourceRaw from './ParameterAdjustList.vue?raw';
 import indexSource from './index.ts?raw';
+
+const componentSource = componentSourceRaw.replace(/\r\n/g, '\n');
 
 describe('ParameterAdjustList', () => {
   it('renders one row per configured item with label, slider and field', () => {
@@ -81,8 +83,12 @@ describe('ParameterAdjustList', () => {
     expect(componentSource).toContain(
       'const markStyle = (item: ParameterAdjustItem, mark: ParameterAdjustMark): Record<string, string> => {',
     );
-    expect(componentSource).toContain('const ratio = span > 0 ? (mark.value - item.min) / span : 0;');
-    expect(componentSource).toContain('return { left: `${Math.min(1, Math.max(0, ratio)) * 100}%` };');
+    expect(componentSource).toContain(
+      'const ratio = span > 0 ? (mark.value - item.min) / span : 0;',
+    );
+    expect(componentSource).toContain(
+      'return { left: `${Math.min(1, Math.max(0, ratio)) * 100}%` };',
+    );
     // A mark is a reading aid, so it must not intercept a click aimed at the slider beneath it.
     expect(componentSource).toContain('pointer-events: none;');
   });

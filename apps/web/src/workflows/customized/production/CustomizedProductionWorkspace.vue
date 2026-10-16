@@ -36,8 +36,9 @@ import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
 import ProductionShotRenderPanel from './ProductionShotRenderPanel.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
 import ProductionAssetPreparation from './ProductionAssetPreparation.vue';
+import { productionWorkflowTask } from './production-workflow-selection';
 const props = defineProps<{ projectId: string; workflowRunId: string; mode: 'ASSETS' | 'SHOTS' }>();
-const emit = defineEmits<{ back: []; next: []; saved: [] }>();
+const emit = defineEmits<{ back: []; next: []; saved: []; published: [runId: string] }>();
 const workspace = ref<ProductionWorkspace | null>(null),
   document = ref<ProductionDocument>({ assets: [], shots: [] });
 const promptText = ref(''),
@@ -107,7 +108,6 @@ async function generateImages(settings: CustomizedImageSettings) {
     );
     if (active !== controller || !workspace.value) return;
     workspace.value.tasks = [task, ...workspace.value.tasks];
-    graphTaskId.value = task.id;
     imageDialogOpen.value = false;
     schedule();
   } catch (e) {
@@ -158,13 +158,13 @@ const prompt = computed(() =>
 );
 const graphTasks = computed(() =>
   tasks.value.filter((t) =>
-    props.mode === 'ASSETS'
-      ? ['ASSETS', 'IMAGE'].includes(t.operation)
-      : ['SHOTS', 'PROMPT'].includes(t.operation),
+    props.mode === 'ASSETS' ? t.operation === 'ASSETS' : ['SHOTS', 'PROMPT'].includes(t.operation),
   ),
 );
-const graphTask = computed(
-  () => graphTasks.value.find((t) => t.id === graphTaskId.value) ?? graphTasks.value[0],
+const graphTask = computed(() =>
+  props.mode === 'ASSETS'
+    ? productionWorkflowTask(tasks.value, 'ASSETS', graphTaskId.value)
+    : (graphTasks.value.find((t) => t.id === graphTaskId.value) ?? graphTasks.value[0]),
 );
 const graphStages = computed(() =>
   productionStages(
@@ -288,6 +288,14 @@ async function refreshTask() {
       // A prompt commits independently of the shot draft. Refresh the shared
       // canvas as soon as the task settles, including when local edits remain.
       emit('saved');
+      if (
+        result.status === 'COMPLETED' &&
+        result.publishedWorkflowRunId &&
+        result.publishedWorkflowRunId !== props.workflowRunId
+      ) {
+        emit('published', result.publishedWorkflowRunId);
+        return;
+      }
       if (!dirty.value && !promptDirty.value) await load();
       else notice.value = '任务已结束，保存当前修改后可重新加载结果';
     }
@@ -429,7 +437,12 @@ async function generate(operation: ProductionOperation, shotId?: string, targetA
               ? '重新整理选定资产？'
               : '重新整理资产目录？'
             : '重新生成分镜？',
-        description: '新结果完成后保存为可编辑草稿，现有已确认内容保留到你再次保存。',
+        description:
+          operation === 'ASSETS'
+            ? targetAssetId
+              ? '通过审校后更新当前资产，其他资产保持不变。'
+              : '通过审校后自动保存为新的资产分支，当前版本保留。'
+            : '新结果完成后保存为可编辑草稿，现有已确认内容保留到你再次保存。',
         confirmLabel: '开始生成',
       }))
     )
@@ -661,11 +674,15 @@ defineExpose({ flushPendingEdits });
             !workspace?.sourceReady ||
             (mode === 'SHOTS' && !workspace?.assetsConfirmed)
           "
-          :running="!!running"
+          :running="running?.operation === mode"
           :reextract="mode === 'ASSETS' ? !!document.assets.length : !!document.shots.length"
           :label="mode === 'ASSETS' ? 'AI 整理资产' : 'AI 生成分镜'"
           @extract="generate(mode)"
-          @details="graphOpen = true"
+          @details="
+            graphTaskId = '';
+            graphNode = 'SNAPSHOT';
+            graphOpen = true;
+          "
         />
       </div>
     </header>
@@ -703,7 +720,7 @@ defineExpose({ flushPendingEdits });
               : '正在生成当前镜头提示词'
       "
       :terminal="false"
-      action-label="查看工作流"
+      :action-label="running.operation === 'IMAGE' ? '' : '查看工作流'"
       @show-details="
         graphTaskId = running.id;
         graphOpen = true;

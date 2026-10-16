@@ -272,7 +272,9 @@ export class EffectPackagingRepository {
         await lockMixNodeForSourceUpdate(tx, input.projectId, input.sourceWorkflowRunId);
         const held = await activePackagingItems(tx, input.projectId, input.sourceWorkflowRunId);
         if (held.some((item) => item.run.templateId === input.templateId &&
-            input.snapshots.some((snapshot) => snapshot.variant.id === item.variantId)))
+            (input.snapshots.some((snapshot) => snapshot.variant.id === item.variantId) ||
+              (item.run.workflowRunId === input.workflowRunId &&
+                !(item.snapshot as unknown as PackagingSnapshot | null)?.operation))))
           throw new ConflictException('当前成片已有包装任务运行中');
         if (input.sourceWorkflowRunId !== input.workflowRunId) {
           const source = await tx.workflowNodeState.findUnique({ where: { projectId_workflowRunId_nodeId: {
@@ -328,6 +330,8 @@ export class EffectPackagingRepository {
         })
       )
         throw new ConflictException('智能填充正在运行，暂不能开始智能成片包装');
+      // The non-unique active lookup index permits disjoint modern jobs. This
+      // check runs under the advisory/node locks; legacy jobs keep the wider fence.
       const overlapping = await tx.effectPackagingRun.count({
           where: {
             projectId: input.projectId,

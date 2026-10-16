@@ -90,6 +90,7 @@ import { ownsPlayerSpace } from './effect-player-space-shortcut';
 import { NativePlaybackProgress, previewStartupReady, waitForNativePlayback, waitForPlaybackFrame } from './effect-template-mix-playback-start';
 import { MaterialPreviewClock } from './effect-material-preview-clock';
 import { playerMediaAspect, playerMediaIdentity } from './effect-player-media-aspect';
+import { attachPlayerPixelGrid } from './effect-player-pixel-grid';
 import EffectVideoTransformToolbar from './EffectVideoTransformToolbar.vue';
 import EffectCanvasRatioMenu from './EffectCanvasRatioMenu.vue';
 import { scaleVideoTransform, videoTransformGuides, videoWheelDelta, videoPositionOverview } from './effect-video-transform-gesture';
@@ -567,6 +568,7 @@ const stageElement = ref<HTMLElement | null>(null);
 const stageCaptionFontSize = ref(16);
 const stageCaptionCanvasHeight = ref(PACKAGING_CAPTION_REFERENCE_HEIGHT);
 let stageCaptionResizeObserver: ResizeObserver | null = null;
+let detachPlayerPixelGrid: (() => void) | undefined;
 const playerMenu = ref<'DISPLAY' | null>(null);
 const previewZoom = ref(100);
 const playerFullscreen = ref(false);
@@ -815,7 +817,8 @@ const sourceUpdateLockedVariantIds = computed(
         : sourceUpdateStarting.value
           ? sourceUpdatePendingVariantIds.value
           : (sourceUpdateRun.value?.items
-              .filter((item) => sourceUpdateItemIds.value.includes(item.id))
+              .filter((item) => sourceUpdateItemIds.value.includes(item.id) &&
+                ['QUEUED', 'RUNNING'].includes(item.status))
               .map((item) => item.variantId) ?? []),
     ),
 );
@@ -1203,7 +1206,9 @@ async function resumeSourceUpdate() {
     );
     if (run) {
       sourceUpdateItemIds.value = run.items
-        .filter((item) => ['QUEUED', 'RUNNING'].includes(item.status))
+        .filter((item) => run.sourceOperationVariantIds
+          ? run.sourceOperationVariantIds.includes(item.variantId)
+          : ['QUEUED', 'RUNNING'].includes(item.status))
         .map((item) => item.id);
       sourceUpdateRun.value = run;
       if (!['QUEUED', 'RUNNING'].includes(run.status)) {
@@ -1662,7 +1667,9 @@ const slotVideoContentStyle = (id: string) => {
 };
 const slotVideoFrameStyle = (id: string) => {
   const t = videoTransform(id), g = slotVideoGeometry(id, t);
-  const mediaFit = slotMeasuredAspect(id) ? 'fill' : 'contain';
+  const mediaFit = slotMeasuredAspect(id)
+    ? (t.scaleX === t.scaleY ? 'cover' : 'fill')
+    : 'contain';
   // Avoid compositor seams from percentage centering of an otherwise full-canvas image.
   if (t.x === 0 && t.y === 0 && t.rotation === 0 && g.width === 1 && g.height === 1) {
     return { left: '0', top: '0', width: '100%', height: '100%', transform: 'none', '--video-fit': mediaFit,
@@ -2715,10 +2722,9 @@ const load = async (): Promise<void> => {
         targetRunId === workflowRunId);
     const directorySourceEpoch = workspaceSourceEpoch;
     const freshDirectory = (incoming: MixTemplateCatalog): MixTemplateCatalog =>
-      directorySourceEpoch === sourceProjectionEpoch ? incoming
-        : retainMixTemplateCatalogSources(incoming, templateDirectory.value,
-            Object.keys(templateDirectory.value.workspaces).filter((id) =>
-              (sourceProjectionEpochs.get(`${projectId}:${id}`) ?? 0) > directorySourceEpoch));
+      retainMixTemplateCatalogSources(incoming, templateDirectory.value,
+        Object.keys(templateDirectory.value.workspaces ?? {}).filter((id) =>
+          (sourceProjectionEpochs.get(`${projectId}:${id}`) ?? 0) > directorySourceEpoch));
     const directoryRequest = readMixWorkspaceWithDeadline(
       (signal) => readMixTemplateCatalog(
         tree.data,
@@ -3743,6 +3749,7 @@ const addMusicAssetToTimeline = (music: {
 };
 /** The timeline owns its own selection, so clearing it from out here needs its own handle. */
 const timelineRef = ref<{
+  isMaterialLocked: (kind: 'VIDEO' | 'AUDIO' | 'CAPTION', id: string) => boolean;
   clearSelection: () => void;
   /** The clip's own length, so the jump reveals all of it rather than just its head. */
   scrollToLane: (lane: number, time: number, duration?: number) => void;
@@ -5141,8 +5148,9 @@ const pasteTimelineVideoMaterials = (items: TimelineVideoPaste[]): void => {
       !slot ||
       !material?.available ||
       material.activeSource === false ||
-      item.duration < 4 ||
-      item.duration > 15 ||
+      !Number.isFinite(item.duration) ||
+      item.duration < 0.001 ||
+      !Number.isFinite(item.offset) ||
       item.offset < 0 ||
       item.offset + item.duration > material.duration
       || (item.transform !== undefined && !effectVideoTransformValid(item.transform))
@@ -5223,6 +5231,8 @@ const pasteTimelineAudioMaterial = (audio: {
   fileObjectId: string;
   name: string;
   sourceAssetId?: string;
+  audioKind?: 'VOICE' | 'MUSIC' | 'DETACHED';
+  loopSource?: boolean;
   sourceDuration: number;
   duration: number;
   start: number;
@@ -5251,7 +5261,11 @@ const pasteTimelineAudioMaterial = (audio: {
   rememberTimelineEdit();
   const pasted: EffectTemplateMixDetachedAudio = {
     id: crypto.randomUUID(),
-    ...(audio.sourceAssetId ? { sourceAssetId: audio.sourceAssetId } : {}),
+    ...(audio.sourceAssetId
+      ? { sourceAssetId: audio.sourceAssetId }
+      : { sourceType: 'FILE' as const }),
+    ...(audio.audioKind ? { audioKind: audio.audioKind } : {}),
+    ...(audio.loopSource !== undefined ? { loopSource: audio.loopSource } : {}),
     fileObjectId: audio.fileObjectId,
     name: audio.name,
     sourceDuration: audio.sourceDuration,
@@ -5318,7 +5332,7 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
 const removeMaterialFromSlot = (slotId: string): void => {
   const variant = selectedVariant.value;
   const slot = variant?.slots.find(({ id }) => id === slotId);
-  if (!variant || !slot || !variant.bindings[slot.id]) return;
+  if (!variant || !slot || !variant.bindings[slot.id] || projectEditLocked.value || videoTrackLocked.value) return;
   rememberTimelineEdit();
   clearDetachedAudioForSlots(variant, [slot.id]);
   delete variant.bindings[slot.id];
@@ -6035,6 +6049,12 @@ const EFFECT_TEMPLATE_MIX_PURPOSE_ROLES: Record<EffectTemplateMixPurpose, Effect
  * clips behind it, and nothing already placed is pushed along.
  */
 const insertMaterialTrack = (materialId: string, lane: number, start: number): void => {
+  addMaterialTrack(materialId, lane, start, true);
+};
+const placeMaterialTrack = (materialId: string, lane: number, start: number): void => {
+  addMaterialTrack(materialId, lane, start, false);
+};
+const addMaterialTrack = (materialId: string, lane: number, start: number, insertRow: boolean): void => {
   const variant = selectedVariant.value;
   const material = workspace.value?.materials.find(({ id }) => id === materialId);
   if (!variant || !material) return;
@@ -6081,7 +6101,7 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
   };
   const insertLane = Math.max(0, Math.round(lane));
   variant.videoLanes ??= {};
-  for (const candidate of variant.slots) {
+  for (const candidate of insertRow ? variant.slots : []) {
     if (!materialForSlot(candidate.id, variant)) continue;
     const current = Math.max(0, Math.round(variant.videoLanes[candidate.id] ?? 0));
     if (current >= insertLane) variant.videoLanes[candidate.id] = current + 1;
@@ -6096,7 +6116,7 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
   variant.bindingMetadata ??= {};
   variant.bindingMetadata[slot.id] = {
     source: 'MANUAL',
-    classificationReason: '拖入新轨道',
+    classificationReason: insertRow ? '拖入新轨道' : '拖入视频轨道空白处',
   };
   variant.manualSlotIds.push(slot.id);
   normalizeVariantVideoLanes(variant);
@@ -6104,7 +6124,7 @@ const insertMaterialTrack = (materialId: string, lane: number, start: number): v
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
   resetTimelinePlayerState();
   bump();
-  showNotice(`${material.code} 已作为叠加画面放入新轨道`);
+  showNotice(`${material.code} 已放入${insertRow ? '新' : '当前'}视频轨道`);
   const compactedLane = variant.videoLanes[slot.id] ?? insertLane;
   void nextTick().then(() => timelineRef.value?.scrollToLane(compactedLane, insertAt, duration));
 };
@@ -6523,6 +6543,15 @@ const deleteSelectedAudioClips = (clipIds: string[]): void => {
 };
 const deleteSelectedTimelineItem = (): void => {
   const selectedCaptions = [...selectedCaptionIds.value];
+  const locked = selectedCaptions.length
+    ? selectedCaptions.some((id) => timelineRef.value?.isMaterialLocked('CAPTION', id))
+    : selectedAudioClipIds.value.length
+      ? selectedAudioClipIds.value.some((id) => timelineRef.value?.isMaterialLocked('AUDIO', id))
+      : videoTrackLocked.value;
+  if (locked) {
+    showNotice('轨道已锁定，请先解锁再删除素材', 'warning');
+    return;
+  }
   if (selectedCaptions.length) {
     if (selectedPackaging.value) {
       // Only an unfinished packaging is read-only; completed tracks stay user-editable.
@@ -6756,6 +6785,9 @@ const handlePackagingResults = async (items: PackagingItem[]): Promise<void> => 
   if (!completed?.workflowRunId) return;
   const projectId = props.projectId, sourceRunId = props.workflowRunId, templateId = activeTemplateId.value;
   const targetRunId = completed.workflowRunId;
+  // Repackaging runs on a child. Keep the confirmed parent editable until the whole child
+  // is published; partial item receipts must not navigate into its still-frozen films.
+  if (targetRunId !== sourceRunId && activeEntry.value?.packagingLocked) return;
   installingPackagingResults = true;
   try {
     if (targetRunId === sourceRunId) {
@@ -8138,6 +8170,8 @@ watch(activeClassificationPool, (pool, previous) => {
   if (pool && !previous) materialRoleFilter.value = preferredMaterialRole.value;
 });
 watch(stageElement, (element) => {
+  detachPlayerPixelGrid?.();
+  detachPlayerPixelGrid = element ? attachPlayerPixelGrid(element) : undefined;
   stageCaptionResizeObserver?.disconnect();
   stageCaptionResizeObserver = null;
   if (!element) return;
@@ -8234,6 +8268,25 @@ const refreshMaterialSources = async (): Promise<void> => {
   const directory = templateDirectory.value;
   sourcePollController = request;
   try {
+    // Source rows cannot reveal that a template's current owner changed. Without
+    // this check an already-open page can keep displaying the old branch forever.
+    const pinnedHistory = explicitWorkspaceTarget?.projectId === projectId &&
+      explicitWorkspaceTarget.workflowRunId === workflowRunId;
+    const running = aiRuns.value.some(run => run.templateId === activeTemplateId.value &&
+      (run.status === 'QUEUED' || run.status === 'RUNNING' || hasPendingMixContinuation(run))) ||
+      activeEntry.value?.aiFillLocked || activeEntry.value?.packagingLocked;
+    if (!pinnedHistory && !running && saveState.value === 'saved' && !pendingSave) {
+      const tree = await getEffectWorkflowBranchTree(projectId, request.signal);
+      if (!workbenchActive || request.signal.aborted || projectId !== props.projectId ||
+        workflowRunId !== props.workflowRunId || directory !== templateDirectory.value ||
+        !draftRace.canInstall(readToken, saveState.value !== 'saved' || Boolean(pendingSave))) return;
+      const owner = mixTemplateCatalogTargetRun(tree.data, workflowRunId,
+        activeTemplateId.value, templateContextWorkflowRunId.value);
+      if (owner && owner !== workflowRunId) {
+        await load();
+        return;
+      }
+    }
     // Every row has its own adopted baseline. Refresh all current owners, not just the
     // writable Run; otherwise an unselected template stays on the first upstream edit.
     const owners = [...new Set([workflowRunId, ...Object.values(directory.workflowRunIds)])];
@@ -8322,15 +8375,9 @@ onActivated(() => {
         return;
       }
       if (!(await flushPendingEdits())) return;
-      // KeepAlive retained the authoritative workspace for this exact scope. Show it immediately
-      // and refresh sources in the background; refreshMaterialSources performs a full reload only
-      // when the server reports a different draft revision.
-      if (
-        pageState.value === 'READY' &&
-        installedWorkspaceScope.value === currentWorkspaceScope.value
-      )
-        void refreshMaterialSources();
-      else await load();
+      // A retained draft is not proof that the directory still selects this Run.
+      // Keep it visible while reloading the latest draft and current template paths.
+      await load();
       for (const item of fillResultHandoffs.value) {
         if (item.projectId === props.projectId && item.run.workflowRunId === props.workflowRunId)
           void finishAiRun(item.run);
@@ -8399,6 +8446,7 @@ onBeforeUnmount(() => {
   materialGridResizeObserver?.disconnect();
   if (materialGridResizeFrame !== undefined) cancelAnimationFrame(materialGridResizeFrame);
   stageCaptionResizeObserver?.disconnect();
+  detachPlayerPixelGrid?.();
   window.removeEventListener('resize', updateWorkbenchMode);
   controller?.abort();
   clearTimeout(saveTimer);
@@ -9795,6 +9843,7 @@ defineExpose({
           @move-clips="moveTimelineClips"
           @assign-material="assignDroppedMaterial"
           @insert-material-track="insertMaterialTrack"
+          @place-material-track="placeMaterialTrack"
           @replace-audio-with-music="replaceAudioWithMusic"
           @split-caption-track="splitCaptionTrack"
           @split-material="splitTimelineMaterial"

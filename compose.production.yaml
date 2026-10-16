@@ -1,0 +1,507 @@
+name: richi-marketing
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ai_marketing
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U postgres -d ai_marketing
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 512m
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 192m
+    restart: unless-stopped
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - -q
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 384m
+    environment:
+      RABBITMQ_DEFAULT_USER: marketing
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?required}
+    restart: unless-stopped
+  docling-model-init:
+    image: richi-marketing-effect-extraction-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers
+      dockerfile: effect-extraction/Dockerfile
+    command:
+      - /app/effect-extraction/.venv/bin/effect-extraction-download-models
+    user: root
+    environment:
+      DOCLING_ARTIFACTS_PATH: /models
+      HF_HUB_OFFLINE: ${DOCLING_INIT_OFFLINE:-0}
+    volumes:
+      - docling-models:/models
+    restart: 'no'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 2g
+  customized-extraction-worker:
+    image: richi-marketing-customized-extraction-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers
+      dockerfile: customized-extraction/Dockerfile
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      CUSTOMIZED_EXTRACTION_WORKER_TOKEN: ${CUSTOMIZED_EXTRACTION_WORKER_TOKEN:?required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      CUSTOMIZED_EXTRACTION_QUEUE: customized.extraction.requested
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_DOCUMENT_MODEL: ${ARK_DOCUMENT_MODEL:-doubao-seed-2-1-pro-260628}
+      CUSTOMIZED_EXTRACTION_MODEL_TIMEOUT_SECONDS: ${CUSTOMIZED_EXTRACTION_MODEL_TIMEOUT_SECONDS:-300}
+      CUSTOMIZED_EXTRACTION_MAX_ATTEMPTS: ${CUSTOMIZED_EXTRACTION_MAX_ATTEMPTS:-2}
+      CUSTOMIZED_EXTRACTION_MAX_OUTPUT_TOKENS: ${CUSTOMIZED_EXTRACTION_MAX_OUTPUT_TOKENS:-16384}
+      CUSTOMIZED_EXTRACTION_RETRY_MAX_OUTPUT_TOKENS: ${CUSTOMIZED_EXTRACTION_RETRY_MAX_OUTPUT_TOKENS:-32768}
+      CUSTOMIZED_EXTRACTION_REASONING_EFFORT: ${CUSTOMIZED_EXTRACTION_REASONING_EFFORT:-medium}
+      CUSTOMIZED_EXTRACTION_AUDIT_REASONING_EFFORT: ${CUSTOMIZED_EXTRACTION_AUDIT_REASONING_EFFORT:-low}
+      CUSTOMIZED_EXTRACTION_DOCUMENT_REASONING_EFFORT: ${CUSTOMIZED_EXTRACTION_DOCUMENT_REASONING_EFFORT:-low}
+      DOCUMENT_MAX_CONCURRENCY: '1'
+      DOCUMENT_CHUNK_TEXT_CHARS: ${DOCUMENT_CHUNK_TEXT_CHARS:-12000}
+      DOCLING_ARTIFACTS_PATH: /models
+      DOCLING_DEVICE: cpu
+      OMP_NUM_THREADS: '1'
+    volumes:
+      - docling-models:/models:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      docling-model-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 2g
+  effect-extraction-worker:
+    image: richi-marketing-effect-extraction-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers
+      dockerfile: effect-extraction/Dockerfile
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      EFFECT_EXTRACTION_WORKER_TOKEN: ${EFFECT_EXTRACTION_WORKER_TOKEN:?required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      EFFECT_EXTRACTION_QUEUE: effect.extraction.requested
+      EXTRACTION_AI_PROVIDER: ${EXTRACTION_AI_PROVIDER:-ark}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      ARK_MODEL: ${ARK_MODEL:-doubao-seed-2-1-turbo-260628}
+      ARK_DOCUMENT_MODEL: ${ARK_DOCUMENT_MODEL:-doubao-seed-2-1-pro-260628}
+      ARK_DOCUMENT_TIMEOUT_SECONDS: ${ARK_DOCUMENT_TIMEOUT_SECONDS:-180}
+      ARK_DOCUMENT_MAX_ATTEMPTS: ${ARK_DOCUMENT_MAX_ATTEMPTS:-1}
+      ARK_DOCUMENT_MAX_OUTPUT_TOKENS: ${ARK_DOCUMENT_MAX_OUTPUT_TOKENS:-8192}
+      ARK_DOCUMENT_REASONING_EFFORT: ${ARK_DOCUMENT_REASONING_EFFORT:-minimal}
+      DOCUMENT_CHUNK_TEXT_CHARS: ${DOCUMENT_CHUNK_TEXT_CHARS:-12000}
+      DOCUMENT_MAX_CONCURRENCY: '1'
+      ARK_IMAGE_MODEL: ${ARK_IMAGE_MODEL:-}
+      ARK_IMAGE_DETAIL: ${ARK_IMAGE_DETAIL:-low}
+      ARK_IMAGE_REASONING_EFFORT: ${ARK_IMAGE_REASONING_EFFORT:-minimal}
+      ARK_IMAGE_ADAPTIVE_HIGH_DETAIL: ${ARK_IMAGE_ADAPTIVE_HIGH_DETAIL:-true}
+      ARK_IMAGE_TIMEOUT_SECONDS: ${ARK_IMAGE_TIMEOUT_SECONDS:-90}
+      ARK_IMAGE_MAX_ATTEMPTS: ${ARK_IMAGE_MAX_ATTEMPTS:-2}
+      ARK_IMAGE_MAX_OUTPUT_TOKENS: ${ARK_IMAGE_MAX_OUTPUT_TOKENS:-4096}
+      ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS: ${ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS:-6144}
+      IMAGE_MAX_DIMENSION: ${IMAGE_MAX_DIMENSION:-1280}
+      IMAGE_MAX_CONCURRENCY: '1'
+      ARK_COMMERCE_MODEL: ${ARK_COMMERCE_MODEL:-}
+      ARK_SEMANTIC_MODEL: ${ARK_SEMANTIC_MODEL:-doubao-seed-2-1-pro-260628}
+      ARK_SEMANTIC_TIMEOUT_SECONDS: ${ARK_SEMANTIC_TIMEOUT_SECONDS:-30}
+      ARK_SEMANTIC_MAX_ATTEMPTS: ${ARK_SEMANTIC_MAX_ATTEMPTS:-1}
+      ARK_SEMANTIC_MAX_OUTPUT_TOKENS: ${ARK_SEMANTIC_MAX_OUTPUT_TOKENS:-3072}
+      ARK_SEMANTIC_REASONING_EFFORT: ${ARK_SEMANTIC_REASONING_EFFORT:-minimal}
+      ARK_SEMANTIC_USER_REVIEW_REASONING_EFFORT: ${ARK_SEMANTIC_USER_REVIEW_REASONING_EFFORT:-minimal}
+      ARK_NORMALIZATION_MODEL: ${ARK_NORMALIZATION_MODEL:-}
+      COMMERCE_RENDERER_MAX_CONCURRENCY: '1'
+      COMMERCE_RENDERER_TIMEOUT_SECONDS: ${COMMERCE_RENDERER_TIMEOUT_SECONDS:-25}
+      COMMERCE_RENDERER_MAX_DOM_BYTES: ${COMMERCE_RENDERER_MAX_DOM_BYTES:-2097152}
+      COMMERCE_RENDERER_SETTLE_MILLISECONDS: ${COMMERCE_RENDERER_SETTLE_MILLISECONDS:-750}
+      DOCLING_ARTIFACTS_PATH: /models
+      DOCLING_DEVICE: cpu
+      OMP_NUM_THREADS: '1'
+    volumes:
+      - docling-models:/models:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      docling-model-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    init: true
+    shm_size: 1gb
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 2g
+  effect-prompt-generation-worker:
+    image: richi-marketing-effect-prompt-generation-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers/effect-prompt-generation
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      EFFECT_PROMPT_WORKER_TOKEN: ${EFFECT_PROMPT_WORKER_TOKEN:?required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      EFFECT_PROMPT_QUEUE: effect.prompt-generation.requested
+      PROMPT_AI_PROVIDER: ${PROMPT_AI_PROVIDER:-ark}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      ARK_MODEL: ${ARK_MODEL:-doubao-seed-2-1-turbo-260628}
+      ARK_PROMPT_MODEL: ${ARK_PROMPT_MODEL:-}
+      ARK_PROMPT_STRATEGY_MODEL: ${ARK_PROMPT_STRATEGY_MODEL:-}
+      ARK_PROMPT_VISUAL_STRATEGY_MODEL: ${ARK_PROMPT_VISUAL_STRATEGY_MODEL:-}
+      ARK_PROMPT_VISUAL_STRATEGY_IMAGE_DETAIL: ${ARK_PROMPT_VISUAL_STRATEGY_IMAGE_DETAIL:-high}
+      PROMPT_VISUAL_REFERENCE_MAX_INPUT_BYTES: ${PROMPT_VISUAL_REFERENCE_MAX_INPUT_BYTES:-20971520}
+      PROMPT_VISUAL_REFERENCE_MAX_DIMENSION: ${PROMPT_VISUAL_REFERENCE_MAX_DIMENSION:-1280}
+      PROMPT_VISUAL_REFERENCE_MAX_OUTPUT_BYTES: ${PROMPT_VISUAL_REFERENCE_MAX_OUTPUT_BYTES:-4194304}
+      ARK_PROMPT_FRAGMENT_STRATEGY_MODEL: ${ARK_PROMPT_FRAGMENT_STRATEGY_MODEL:-}
+      ARK_PROMPT_BLUEPRINT_MODEL: ${ARK_PROMPT_BLUEPRINT_MODEL:-}
+      ARK_PROMPT_CANDIDATE_MODEL: ${ARK_PROMPT_CANDIDATE_MODEL:-}
+      ARK_PROMPT_EVALUATION_MODEL: ${ARK_PROMPT_EVALUATION_MODEL:-}
+      PROMPT_SIMILARITY_MODE: ${PROMPT_SIMILARITY_MODE:-vector}
+      ARK_PROMPT_EMBEDDING_MODEL: ${ARK_PROMPT_EMBEDDING_MODEL:-doubao-embedding-vision-251215}
+      ARK_PROMPT_EMBEDDING_API_MODE: ${ARK_PROMPT_EMBEDDING_API_MODE:-multimodal}
+      ARK_PROMPT_EMBEDDING_TIMEOUT_SECONDS: ${ARK_PROMPT_EMBEDDING_TIMEOUT_SECONDS:-30}
+      ARK_PROMPT_EMBEDDING_MAX_ATTEMPTS: ${ARK_PROMPT_EMBEDDING_MAX_ATTEMPTS:-3}
+      PROMPT_EMBEDDING_BATCH_SIZE: ${PROMPT_EMBEDDING_BATCH_SIZE:-64}
+      PROMPT_EMBEDDING_MAX_CONCURRENCY: '1'
+      ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS: ${ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS:-8192}
+      ARK_PROMPT_FRAGMENT_STRATEGY_MAX_OUTPUT_TOKENS: ${ARK_PROMPT_FRAGMENT_STRATEGY_MAX_OUTPUT_TOKENS:-3072}
+      ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS: ${ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS:-8192}
+      ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS: ${ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS:-8192}
+      PROMPT_EVALUATION_INPUT_TOKEN_BUDGET: ${PROMPT_EVALUATION_INPUT_TOKEN_BUDGET:-12000}
+      ARK_PROMPT_REASONING_EFFORT: ${ARK_PROMPT_REASONING_EFFORT:-minimal}
+      PROMPT_MAX_CONCURRENCY: '1'
+      PROMPT_SHARD_SIZE: ${PROMPT_SHARD_SIZE:-8}
+      PROMPT_MAX_AI_CALLS_PER_RUN: ${PROMPT_MAX_AI_CALLS_PER_RUN:-256}
+      INTERNAL_API_TIMEOUT_SECONDS: ${INTERNAL_API_TIMEOUT_SECONDS:-60}
+      ARK_TIMEOUT_SECONDS: ${ARK_TIMEOUT_SECONDS:-120}
+      ARK_PROMPT_STRATEGY_TIMEOUT_SECONDS: ${ARK_PROMPT_STRATEGY_TIMEOUT_SECONDS:-180}
+      ARK_PROMPT_DIRECTION_REVIEW_TIMEOUT_SECONDS: ${ARK_PROMPT_DIRECTION_REVIEW_TIMEOUT_SECONDS:-180}
+      PROMPT_DIRECTION_REVIEW_BATCH_SIZE: ${PROMPT_DIRECTION_REVIEW_BATCH_SIZE:-6}
+      PROMPT_DIRECTION_REVIEW_INPUT_BUDGET: ${PROMPT_DIRECTION_REVIEW_INPUT_BUDGET:-12000}
+      ARK_PROMPT_FRAGMENT_STRATEGY_TIMEOUT_SECONDS: ${ARK_PROMPT_FRAGMENT_STRATEGY_TIMEOUT_SECONDS:-120}
+      ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS: ${ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS:-120}
+      ARK_PROMPT_PROVIDER_MAX_ATTEMPTS: ${ARK_PROMPT_PROVIDER_MAX_ATTEMPTS:-3}
+      OMP_NUM_THREADS: '1'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 384m
+  customized-storyboard-worker:
+    image: richi-marketing-customized-storyboard-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers
+      dockerfile: customized-storyboard/Dockerfile
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      CUSTOMIZED_STORYBOARD_WORKER_TOKEN: ${CUSTOMIZED_STORYBOARD_WORKER_TOKEN:?required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      CUSTOMIZED_STORYBOARD_QUEUE: customized.storyboard.requested
+      CUSTOMIZED_STORYBOARD_CONCURRENCY: '1'
+      CUSTOMIZED_STORYBOARD_TIMEOUT_SECONDS: ${CUSTOMIZED_STORYBOARD_TIMEOUT_SECONDS:-300}
+      CUSTOMIZED_STORYBOARD_MAX_ATTEMPTS: ${CUSTOMIZED_STORYBOARD_MAX_ATTEMPTS:-2}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      OMP_NUM_THREADS: '1'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 384m
+  customized-assets-worker:
+    image: richi-marketing-customized-assets-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers
+      dockerfile: customized-assets/Dockerfile
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      CUSTOMIZED_ASSETS_WORKER_TOKEN: ${CUSTOMIZED_ASSETS_WORKER_TOKEN:?required}
+      CUSTOMIZED_ASSETS_CONCURRENCY: '1'
+      CUSTOMIZED_ASSETS_TIMEOUT_SECONDS: ${CUSTOMIZED_ASSETS_TIMEOUT_SECONDS:-300}
+      CUSTOMIZED_ASSETS_MAX_ATTEMPTS: ${CUSTOMIZED_ASSETS_MAX_ATTEMPTS:-2}
+      CUSTOMIZED_ASSET_IMAGE_TIMEOUT_SECONDS: ${CUSTOMIZED_ASSET_IMAGE_TIMEOUT_SECONDS:-180}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      OMP_NUM_THREADS: '1'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 384m
+  customized-production-worker:
+    image: richi-marketing-customized-production-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers
+      dockerfile: customized-production/Dockerfile
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      CUSTOMIZED_PRODUCTION_WORKER_TOKEN: ${CUSTOMIZED_PRODUCTION_WORKER_TOKEN:?required}
+      CUSTOMIZED_PRODUCTION_CONCURRENCY: '1'
+      CUSTOMIZED_PRODUCTION_TIMEOUT_SECONDS: ${CUSTOMIZED_PRODUCTION_TIMEOUT_SECONDS:-300}
+      CUSTOMIZED_PRODUCTION_MAX_ATTEMPTS: ${CUSTOMIZED_PRODUCTION_MAX_ATTEMPTS:-2}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      OMP_NUM_THREADS: '1'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 384m
+  effect-segment-render-worker:
+    image: richi-marketing-effect-segment-render-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers/effect-segment-render
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      EFFECT_SEGMENT_RENDER_WORKER_TOKEN: ${EFFECT_SEGMENT_RENDER_WORKER_TOKEN:?required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      EFFECT_SEGMENT_RENDER_QUEUE: effect.segment-render.requested
+      SEGMENT_RENDER_PROVIDER: ${SEGMENT_RENDER_PROVIDER:-ark}
+      SEEDANCE_BASE_URL: ${SEEDANCE_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-${ARK_API_KEY:-}}
+      SEEDANCE_TIMEOUT_SECONDS: ${SEEDANCE_TIMEOUT_SECONDS:-900}
+      SEEDANCE_POLL_INTERVAL_SECONDS: ${SEEDANCE_POLL_INTERVAL_SECONDS:-8}
+      SEGMENT_RENDER_MAX_INFLIGHT: '4'
+      SEGMENT_RENDER_CREATE_QPS: '1'
+      SEGMENT_RENDER_DOWNLOAD_CONCURRENCY: '1'
+      SEGMENT_RENDER_REFERENCE_CACHE_BYTES: ${SEGMENT_RENDER_REFERENCE_CACHE_BYTES:-134217728}
+      INTERNAL_API_TIMEOUT_SECONDS: ${INTERNAL_API_TIMEOUT_SECONDS:-60}
+      OMP_NUM_THREADS: '1'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 384m
+  effect-template-mix-worker:
+    image: richi-marketing-effect-template-mix-worker:${RELEASE_TAG:-current}
+    build:
+      context: ./workers/effect-template-mix
+    environment:
+      INTERNAL_API_BASE_URL: http://api:3000/api
+      EFFECT_TEMPLATE_MIX_WORKER_TOKEN: ${EFFECT_TEMPLATE_MIX_WORKER_TOKEN:?required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?required}
+      EFFECT_TEMPLATE_MIX_QUEUE: effect.template-mix.requested
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      ARK_MODEL: ${ARK_MODEL:-doubao-seed-2-1-turbo-260628}
+      ARK_TEMPLATE_MIX_MODEL: ${ARK_TEMPLATE_MIX_MODEL:-}
+      ARK_VIDEO_IMPORT_MODEL: ${ARK_VIDEO_IMPORT_MODEL:-doubao-seed-2-1-pro-260628}
+      ARK_TIMEOUT_SECONDS: ${ARK_TIMEOUT_SECONDS:-120}
+      ARK_TEMPLATE_MIX_MAX_OUTPUT_TOKENS: ${ARK_TEMPLATE_MIX_MAX_OUTPUT_TOKENS:-8192}
+      ARK_TEMPLATE_MIX_REASONING_EFFORT: ${ARK_TEMPLATE_MIX_REASONING_EFFORT:-minimal}
+      TEMPLATE_MIX_CLASSIFICATION_BATCH_SIZE: ${TEMPLATE_MIX_CLASSIFICATION_BATCH_SIZE:-10}
+      TEMPLATE_MIX_CLASSIFICATION_INPUT_TOKEN_BUDGET: ${TEMPLATE_MIX_CLASSIFICATION_INPUT_TOKEN_BUDGET:-16000}
+      TEMPLATE_MIX_AI_MAX_CONCURRENCY: ${TEMPLATE_MIX_AI_MAX_CONCURRENCY:-4}
+      TEMPLATE_MIX_API_RECOVERY_MAX_ATTEMPTS: ${TEMPLATE_MIX_API_RECOVERY_MAX_ATTEMPTS:-20}
+      TEMPLATE_MIX_API_RECOVERY_TIMEOUT_SECONDS: ${TEMPLATE_MIX_API_RECOVERY_TIMEOUT_SECONDS:-600}
+      TEMPLATE_MIX_API_RECOVERY_MAX_DELAY_SECONDS: ${TEMPLATE_MIX_API_RECOVERY_MAX_DELAY_SECONDS:-30}
+      TEMPLATE_MIX_PACKAGING_ITEM_CONCURRENCY: ${TEMPLATE_MIX_PACKAGING_ITEM_CONCURRENCY:-2}
+      TEMPLATE_MIX_PACKAGING_MODEL_CONCURRENCY: ${TEMPLATE_MIX_PACKAGING_MODEL_CONCURRENCY:-2}
+      TEMPLATE_MIX_PACKAGING_MODEL_TIMEOUT_SECONDS: ${TEMPLATE_MIX_PACKAGING_MODEL_TIMEOUT_SECONDS:-300}
+      TEMPLATE_MIX_PACKAGING_MODEL_MAX_OUTPUT_TOKENS: ${TEMPLATE_MIX_PACKAGING_MODEL_MAX_OUTPUT_TOKENS:-16384}
+      TEMPLATE_MIX_PACKAGING_TTS_CONCURRENCY: '1'
+      TEMPLATE_MIX_PACKAGING_TTS_CONNECTION_MAX_ATTEMPTS: ${TEMPLATE_MIX_PACKAGING_TTS_CONNECTION_MAX_ATTEMPTS:-8}
+      TEMPLATE_MIX_PACKAGING_TTS_CONNECTION_TIMEOUT_SECONDS: ${TEMPLATE_MIX_PACKAGING_TTS_CONNECTION_TIMEOUT_SECONDS:-600}
+      TEMPLATE_MIX_PACKAGING_TTS_CONNECTION_MAX_DELAY_SECONDS: ${TEMPLATE_MIX_PACKAGING_TTS_CONNECTION_MAX_DELAY_SECONDS:-30}
+      TEMPLATE_MIX_PACKAGING_ITEM_TIMEOUT_SECONDS: ${TEMPLATE_MIX_PACKAGING_ITEM_TIMEOUT_SECONDS:-2400}
+      TEMPLATE_MIX_PACKAGING_STEP_RETRY_ATTEMPTS: ${TEMPLATE_MIX_PACKAGING_STEP_RETRY_ATTEMPTS:-2}
+      FINAL_OUTPUT_MAX_CONCURRENCY: '1'
+      VOLC_TTS_API_KEY: ${VOLC_TTS_API_KEY:-}
+      VOLC_TTS_SPEAKER: ${VOLC_TTS_SPEAKER:-}
+      VOLC_TTS_RESOURCE_ID: ${VOLC_TTS_RESOURCE_ID:-seed-tts-2.0}
+      VOLC_MUSIC_ACCESS_KEY: ${VOLC_MUSIC_ACCESS_KEY:-}
+      VOLC_MUSIC_SECRET_KEY: ${VOLC_MUSIC_SECRET_KEY:-}
+      VOLC_MUSIC_ACTION: ${VOLC_MUSIC_ACTION:-GenBGMForTime}
+      INTERNAL_API_TIMEOUT_SECONDS: ${INTERNAL_API_TIMEOUT_SECONDS:-90}
+      OMP_NUM_THREADS: '1'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    cpus: '1.0'
+    mem_limit: 1536m
+  api:
+    image: richi-marketing-api:${RELEASE_TAG:-current}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.api
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    env_file:
+      - .env.production
+    environment:
+      API_PORT: '3000'
+      APP_ENV: production
+      NODE_ENV: production
+      AUTH_TRUST_PROXY_HOPS: '1'
+    volumes:
+      - api-files:/app/storage
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    mem_limit: 768m
+    cpus: '1.0'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  web:
+    image: nginx:alpine
+    ports:
+      - ${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-18080}:80
+    volumes:
+      - ./apps/web/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 96m
+    cpus: '0.5'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+volumes:
+  postgres-data: null
+  redis-data: null
+  rabbitmq-data: null
+  docling-models: null
+  api-files: null

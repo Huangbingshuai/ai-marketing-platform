@@ -7,6 +7,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { validateEnvironment } from './config/environment';
 import { PrismaModule } from './database/prisma.module';
+import { AuthModule } from './platform/auth/auth.module';
 import { RedisCacheModule } from './platform/cache/redis-cache.module';
 import { HealthModule } from './platform/health/health.module';
 import { AssetModule } from './platform/asset/asset.module';
@@ -28,6 +29,7 @@ import { CustomizedSourceImportModule } from './workflows/customized/source-impo
       validate: validateEnvironment,
     }),
     PrismaModule,
+    AuthModule,
     RedisCacheModule,
     HealthModule,
     ProjectModule,

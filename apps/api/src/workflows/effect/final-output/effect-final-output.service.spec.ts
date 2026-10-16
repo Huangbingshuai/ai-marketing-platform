@@ -548,6 +548,14 @@ describe('atomic workbench source update preparation', () => {
     expect(h.queue).not.toHaveBeenCalled();
     expect(h.db.effectFinalOutputRun.create).not.toHaveBeenCalled();
   });
+  it('persists the complete affected source scope for refresh after individual films finish', async () => {
+    const h = preparation();
+    h.db.effectFinalOutputItem.findMany.mockImplementation(async () => h.outputRun.items);
+    await h.service.updateSourceProjects('p', body);
+    expect(h.outputRun.items[0]).toMatchObject({ snapshot: {
+      sourceOperation: { affectedVariantIds: ['v0'] },
+    } });
+  });
   it.each([null, 'QUEUED', 'RUNNING'])('does not overlap an unfinished frozen APPEND continuation (%s)', async (status) => {
     const h = preparation();
     Object.assign(h.outputRun, { status: 'PENDING_RENDER', items: [{ id: 'old', variantId: 'v0',
@@ -669,6 +677,25 @@ describe('atomic workbench source update preparation', () => {
   });
 });
 
+describe('frozen source progress projection', () => {
+  it.each([undefined, [], ['v0', 'v1']])('keeps the complete target list after a target succeeds: %j', async (affectedVariantIds) => {
+    const h = harness(3);
+    await h.service.upsertFromPackaging('p', 'w', 't');
+    for (const entry of h.outputRun.items) {
+      const item = entry as { snapshot: FinalOutputSnapshot; status: string; progress: number };
+      item.snapshot.sourceOperation = { protocol: 'FROZEN_RENDER_V1', id: 'operation',
+        templateHash: 'template', materials: [], promptArtifacts: [], addedMaterialIds: [],
+        packageNewVariants: false, facts: [], ...(affectedVariantIds ? { affectedVariantIds } : {}) };
+    }
+    const before = await h.service.get('p', 'out');
+    const first = h.outputRun.items[0] as { status: string; progress: number };
+    Object.assign(first, { status: 'COMPLETED', progress: 100 });
+    const after = await h.service.get('p', 'out');
+    expect(after.sourceOperationVariantIds).toEqual(affectedVariantIds);
+    expect(after.sourceOperationVariantIds).toEqual(before.sourceOperationVariantIds);
+  });
+});
+
 describe('smart-fill pending output', () => {
   const confirmedVisual = (variantId: string) => ({
     id: `timeline-project:t:${variantId}`,
@@ -724,6 +751,20 @@ describe('smart-fill pending output', () => {
     await service.upsertFromSmartFill('p', 'w', 't', ['v1'], true);
     expect(db.effectFinalOutputItem.create).toHaveBeenCalledOnce();
   });
+
+  it.each(['TEMPLATE_MIX', 'SOURCE_IMPORT', 'FINAL_OUTPUT'])(
+    'keeps navigation at %s when background packaging synchronizes an output entry', async (nodeId) => {
+      const h = harness();
+      let persistedNodeId = nodeId;
+      h.db.workflowRun.updateMany.mockImplementation(async ({ data }) => {
+        if (data.currentNodeId) persistedNodeId = data.currentNodeId;
+        return { count: 1 };
+      });
+      await h.service.upsertFromPackaging('p', 'w', 't', { publish: false, onlyVariantIds: ['v0'] });
+      expect(persistedNodeId).toBe(nodeId);
+      expect(h.working.commitValidatedArtifactsInTransaction).toHaveBeenCalled();
+    },
+  );
 
   it('upgrades only the added output entry and commits only its timeline/package', async () => {
     const { service, db, pending, working } = harness(2);
@@ -1222,6 +1263,21 @@ describe('atomic full packaging completion', () => {
     }, select: { id: true, editSessionNodeId: true } });
     expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+
+  it('forks the first complete export even when all initial pending films carry append markers', async () => {
+    const h = harness();
+    await h.service.upsertFromPackaging('p', 'w', 't');
+    h.outputRun.items.forEach((item) => {
+      (item as { snapshot: FinalOutputSnapshot }).snapshot.appendOnly = true;
+    });
+    const child = forkExportHarness(h);
+    await h.service.start('p', 'out', { resolution: '480p', frameRate: 24 });
+    expect(h.working.beginEffectNodeEdit).toHaveBeenCalledWith('p', 'w', 'FINAL_OUTPUT', 'BATCH',
+      expect.objectContaining({ always: true, keepParentActive: true, templateId: 't' }));
+    expect(child.status).toBe('QUEUED');
+    expect(h.outputRun.status).toBe('PENDING_RENDER');
+    expect(h.outputRun.items.every((item) => (item as { status: string }).status === 'PENDING_RENDER')).toBe(true);
   });
   it('looks up the selected batch within the project before any export mutation', async () => {
     const { service, db, working } = harness();
@@ -2018,6 +2074,9 @@ describe('saved mix drafts re-sync only the unexported output queue', () => {
   it('lists the nearest confirmed output batch for each template on the current branch path', async () => {
     const { service, db, mix, working, run } = await localUpdateHarness(false);
     run.status = 'PENDING_RENDER';
+    for (const item of run.items as Array<{ fileObjectId: string | null; assetId: string | null }>) {
+      item.fileObjectId = null; item.assetId = null;
+    }
     const older = { ...run, id: 'older-output', workflowRunId: 'parent', templateId: 'other-template' };
     run.workflowRunId = 'child';
     db.workflowRun.findMany.mockResolvedValue([
@@ -2516,6 +2575,37 @@ describe('local update', () => {
     await expect(service.localUpdate('p', 'out', { itemIds: [], syncProjects: true }))
       .rejects.toThrow('正在渲染');
     expect(db.effectFinalOutputItem.create).toHaveBeenCalledOnce();
+  });
+  it('updates delivered films and reuses appended pending rows together without creating a branch', async () => {
+    const { service, db, working, run, items, variant } = await membershipUpdateHarness();
+    const original = items[0] as unknown as { snapshot: FinalOutputSnapshot };
+    const pending = { ...structuredClone(items[0]!), id: 'appended-item', variantId: 'new-project',
+      status: 'PENDING_RENDER', fileObjectId: null, assetId: null };
+    const pendingSnapshot = (pending as unknown as { snapshot: FinalOutputSnapshot }).snapshot;
+    pendingSnapshot.resolution = '720p'; pendingSnapshot.frameRate = 30;
+    items.unshift(pending);
+    db.effectFinalOutputItem.update.mockImplementation(async ({ where, data }) => {
+      const item = items.find((item) => item.id === where.id)!;
+      return Object.assign(item, data);
+    });
+    run.status = 'PENDING_RENDER';
+    variant.offsets.s = 1;
+    const before = await service.get('p', 'out');
+    expect(before.counts.stale).toBe(2);
+    expect(before.projectChanges?.added.map((item) => item.variantId)).toEqual(['new-project']);
+    expect(before.resolution).toBe('1080p');
+    expect(before.frameRate).toBe(25);
+    expect((await service.listPath('p', 'w'))[0]?.counts.stale).toBe(2);
+
+    await service.localUpdate('p', 'out', { itemIds: ['item-0'], syncProjects: true });
+    expect(items).toHaveLength(2);
+    expect(items.every((item) => item.status === 'QUEUED')).toBe(true);
+    expect(pending).toMatchObject({ id: 'appended-item', snapshot: { resolution: '1080p', frameRate: 25 } });
+    expect(original.snapshot.projectRefreshOnly).not.toBe(true);
+    expect(items.find((item) => item.id === 'item-0')?.fileObjectId).toBe('old-file-0');
+    expect(db.effectFinalOutputItem.create).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    expect(working.beginEffectNodeEdit).not.toHaveBeenCalled();
   });
   it('synchronizes additions and deletions together, without queueing the deleted project', async () => {
     const { service, db, workspace, items } = await membershipUpdateHarness();

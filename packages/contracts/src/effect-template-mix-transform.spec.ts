@@ -4,16 +4,51 @@ import {
   effectCanvasAspect,
   effectVideoGeometry,
   effectVideoCanvasFit,
+  EFFECT_VIDEO_MATCHING_ASPECT_TOLERANCE,
   effectVideoTransformValid,
   effectVideoTransformSnapshot,
   effectResolvedCanvasRatio,
   EFFECT_CANVAS_RATIOS,
 } from './effect-template-mix-transform';
 describe('canvas and video transform contract', () => {
+  const canvasRatios = [...EFFECT_CANVAS_RATIOS.map(({ value }) => value), '7:5', '1:4', '4:1'];
+  it.each(canvasRatios)(
+    'covers codec rounding on either edge of a %s canvas without stretching',
+    (ratio) => {
+      const canvas = effectCanvasAspect(ratio)!;
+      for (const factor of [1, 1.002, 1.02, 1.024, 1 / 1.002, 1 / 1.02, 1 / 1.024]) {
+        const source = canvas * factor;
+        const fit = effectVideoCanvasFit(source, canvas);
+        const geometry = effectVideoGeometry(source, canvas, identity);
+        expect(geometry).toEqual({ width: 1, height: 1, boxWidth: 1, boxHeight: 1 });
+        expect(Math.min(fit.mediaWidth, fit.mediaHeight)).toBe(1);
+        expect((fit.mediaWidth / fit.mediaHeight) * canvas).toBeCloseTo(source, 12);
+        const transformed = effectVideoGeometry(source, canvas, {
+          ...identity,
+          x: 0.1,
+          y: -0.1,
+          scaleX: 0.8,
+          scaleY: 0.5,
+        });
+        expect(transformed.width).toBe(0.8);
+        expect(transformed.height).toBe(0.5);
+      }
+      for (const factor of [1.026, 1 / 1.026]) {
+        const source = canvas * factor;
+        const fit = effectVideoCanvasFit(source, canvas);
+        const geometry = effectVideoGeometry(source, canvas, identity);
+        expect(fit).toEqual({ aspect: source, mediaWidth: 1, mediaHeight: 1 });
+        expect((geometry.width / geometry.height) * canvas).toBeCloseTo(source, 12);
+      }
+    },
+  );
   it.each([
     [752, 560, 4 / 3],
     [560, 752, 3 / 4],
     [854, 480, 16 / 9],
+    [496, 864, 9 / 16],
+    [864, 496, 16 / 9],
+    [480, 864, 9 / 16],
   ])('fills near-matching %s × %s without a black rim or stretching', (w, h, canvas) => {
     const fit = effectVideoCanvasFit(w / h, canvas);
     expect(fit.aspect).toBe(canvas);
@@ -27,15 +62,22 @@ describe('canvas and video transform contract', () => {
     });
   });
   it('keeps genuinely different ratios contained and bounds the symmetric tolerance', () => {
-    for (const aspect of [9 / 16, 16 / 9, 1, (4 / 3) * 1.011, 4 / 3 / 1.011]) {
+    const boundary = 1 + EFFECT_VIDEO_MATCHING_ASPECT_TOLERANCE;
+    for (const aspect of [
+      9 / 16,
+      16 / 9,
+      1,
+      (4 / 3) * (boundary + 0.001),
+      4 / 3 / (boundary + 0.001),
+    ]) {
       expect(effectVideoCanvasFit(aspect, 4 / 3)).toEqual({
         aspect,
         mediaWidth: 1,
         mediaHeight: 1,
       });
     }
-    expect(effectVideoCanvasFit(1.01, 1).aspect).toBe(1);
-    expect(effectVideoCanvasFit(1 / 1.01, 1).aspect).toBe(1);
+    expect(effectVideoCanvasFit(boundary, 1).aspect).toBe(1);
+    expect(effectVideoCanvasFit(1 / boundary, 1).aspect).toBe(1);
   });
   it('applies explicit nonuniform user transforms after the small baseline crop', () => {
     expect(

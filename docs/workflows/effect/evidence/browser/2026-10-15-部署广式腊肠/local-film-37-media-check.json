@@ -1,0 +1,34 @@
+{
+  "programs": [],
+  "stream_groups": [],
+  "streams": [
+    {
+      "index": 0,
+      "codec_name": "h264",
+      "codec_type": "video",
+      "width": 480,
+      "height": 854,
+      "r_frame_rate": "24/1",
+      "nb_frames": "576"
+    },
+    {
+      "index": 1,
+      "codec_name": "aac",
+      "codec_type": "audio",
+      "sample_rate": "48000",
+      "channels": 2,
+      "r_frame_rate": "0/0",
+      "nb_frames": "1126"
+    }
+  ],
+  "format": {
+    "duration": "24.000000",
+    "size": "5213767"
+  },
+  "audioDetection": {
+    "meanVolumeDb": -13.1,
+    "maxVolumeDb": 0.0,
+    "method": "ffmpeg volumedetect",
+    "manualFullListening": false
+  }
+}

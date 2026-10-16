@@ -13,6 +13,8 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import type { Prisma, CustomizedStoryboardTask } from '../../../generated/prisma/client';
 import { StoryboardRepository } from './storyboard.repository';
 
+const jsonFixture = (value: unknown) => value as Prisma.InputJsonValue;
+
 const script = (id: string): CustomizedStoryboardScript => ({
   id,
   name: '归家的一杯',
@@ -115,6 +117,13 @@ it.skipIf(process.env.CUSTOMIZED_STORYBOARD_DATABASE_TEST !== '1')(
         where: { id: a.id },
       });
       const legacyInput = { ...(historical.inputSnapshot as unknown as StoryboardInput) };
+      // New commands create one; explicitly construct a historical three-script batch.
+      expect(legacyInput.scriptIds).toHaveLength(1);
+      const prototype = await db.customizedStoryboardScript.findUniqueOrThrow({ where: { id: legacyInput.scriptIds[0]! } });
+      const siblings = [randomUUID(), randomUUID()];
+      await db.customizedStoryboardScript.createMany({ data: siblings.map((id) => ({ id, projectId, sourceRunId: prototype.sourceRunId, taskId: prototype.taskId, origin: prototype.origin, status: prototype.status, sourceSnapshot: jsonFixture(prototype.sourceSnapshot), draft: jsonFixture(prototype.draft) })) });
+      legacyInput.scriptIds.push(...siblings);
+      legacyInput.settings = { ...legacyInput.settings, variantCount: 3 };
       delete legacyInput.graphVersion;
       delete legacyInput.routeId;
       delete legacyInput.strategyVersions;

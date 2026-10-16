@@ -8,6 +8,7 @@ const hostFor = () => {
     getHeader: vi.fn().mockReturnValue(undefined),
     status: vi.fn().mockReturnThis(),
     json: vi.fn(),
+    destroy: vi.fn(),
   };
   return { host: { switchToHttp: () => ({ getResponse: () => response }) }, response };
 };
@@ -17,6 +18,18 @@ afterEach(() => {
 });
 
 describe('HttpExceptionFilter', () => {
+  it.each(['headersSent', 'writableEnded', 'destroyed'] as const)(
+    'does not write a second response after a stream is %s', (state) => {
+      const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const { host, response } = hostFor();
+      Object.assign(response, { [state]: true });
+      new HttpExceptionFilter().catch(new Error('stream closed'), host as never);
+      expect(response.status).not.toHaveBeenCalled();
+      expect(response.json).not.toHaveBeenCalled();
+      expect(logged).not.toHaveBeenCalled();
+      expect(response.destroy).toHaveBeenCalledTimes(state === 'headersSent' ? 1 : 0);
+    },
+  );
   it('classifies parser overflow without logging the submitted content', () => {
     const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     const { host, response } = hostFor();

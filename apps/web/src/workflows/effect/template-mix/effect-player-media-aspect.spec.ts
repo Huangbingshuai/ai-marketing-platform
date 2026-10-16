@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { effectVideoGeometry, EFFECT_VIDEO_TRANSFORM_DEFAULT } from '@ai-marketing/contracts';
+import {
+  effectVideoCanvasFit,
+  effectVideoGeometry,
+  EFFECT_VIDEO_TRANSFORM_DEFAULT,
+} from '@ai-marketing/contracts';
 import { playerMediaAspect, playerMediaIdentity } from './effect-player-media-aspect';
 
 describe('physical player media aspect', () => {
@@ -12,9 +16,22 @@ describe('physical player media aspect', () => {
     const aspect = playerMediaAspect(width, height)!;
     for (const canvas of [9 / 16, 16 / 9, 4 / 3, 1, 2.35]) {
       const geometry = effectVideoGeometry(aspect, canvas, EFFECT_VIDEO_TRANSFORM_DEFAULT);
-      expect((geometry.width / geometry.height) * canvas).toBeCloseTo(aspect, 12);
+      const fit = effectVideoCanvasFit(aspect, canvas);
+      expect(
+        ((geometry.width * fit.mediaWidth) / (geometry.height * fit.mediaHeight)) * canvas,
+      ).toBeCloseTo(aspect, 12);
       expect(Math.max(geometry.width, geometry.height)).toBe(1);
     }
+  });
+  it('fills a codec-rounded 9:16 source without stretching its picture', () => {
+    const aspect = playerMediaAspect(496, 864)!;
+    const geometry = effectVideoGeometry(aspect, 9 / 16, EFFECT_VIDEO_TRANSFORM_DEFAULT);
+    const fit = effectVideoCanvasFit(aspect, 9 / 16);
+    expect(geometry.width).toBe(1);
+    expect(geometry.height).toBe(1);
+    expect(fit.mediaWidth).toBeGreaterThan(1);
+    expect(fit.mediaHeight).toBe(1);
+    expect(((fit.mediaWidth / fit.mediaHeight) * 9) / 16).toBeCloseTo(aspect, 12);
   });
   it('uses a portrait file even if the generation request was landscape', () => {
     const geometry = effectVideoGeometry(

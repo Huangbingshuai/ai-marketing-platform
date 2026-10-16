@@ -1202,6 +1202,44 @@ describe('EffectTemplateMixService', () => {
     });
   });
 
+  it.each([1 / 30, 2, 3.5])('persists a %s-second timeline trim without changing template duration', async duration => {
+    const { service, working } = harness();
+    const value = draft();
+    value.templates[0]!.workspace.variants[0]!.slots[0]!.duration = duration;
+    await service.saveDraft('project', 'run', 7, value, true);
+    const saved = working.putNodeState.mock.calls[0]![3].state;
+    expect(saved.templates[0].workspace.template.slots[0].duration).toBe(4);
+    expect(saved.templates[0].workspace.variants[0].slots[0].duration).toBe(duration);
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, NaN, Infinity])('rejects invalid timeline trim duration %s before saving', async duration => {
+    const { service, working } = harness();
+    const value = draft();
+    value.templates[0]!.workspace.variants[0]!.slots[0]!.duration = duration;
+    await expect(service.saveDraft('project', 'run', 7, value, true)).rejects.toThrow();
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
+  it('saves and validates split pieces of one source only for manually edited output', async () => {
+    const { service, working } = harness();
+    const value = draft();
+    const variant = value.templates[0]!.workspace.variants[0]!;
+    variant.slots[0]!.duration = 1.5;
+    variant.slots.push({ ...variant.slots[0]!, id: 'split-right', duration: 2.5 });
+    variant.bindings['split-right'] = sourceId;
+    variant.bindingRevisions['split-right'] = 2;
+    variant.offsets['split-right'] = 1.5;
+    await service.saveDraft('project', 'run', 7, value, true);
+    working.getNodeState.mockResolvedValue({ revision: 8, state: working.putNodeState.mock.calls[0]![3].state });
+    expect((await service.prepareValidation('project', 'run', 8, templateId, { manualOutput: true })).variants).toHaveLength(1);
+    await expect(service.prepareValidation('project', 'run', 8, templateId)).rejects.toThrow();
+    variant.offsets['split-right'] = 2;
+    working.getNodeState.mockResolvedValue({ revision: 9, state: value });
+    await expect(service.prepareValidation('project', 'run', 9, templateId, { manualOutput: true })).rejects.toThrow('时长不足');
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+  });
+
   it('allows the first 4-second draft without a previous node state', async () => {
     const { service, working } = harness();
     working.getNodeStateOrNull.mockResolvedValue(null);

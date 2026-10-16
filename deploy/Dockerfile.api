@@ -1,0 +1,16 @@
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE}
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+WORKDIR /app
+RUN npm install -g pnpm@10.33.0
+COPY . .
+RUN pnpm install --frozen-lockfile \
+    && pnpm --filter @ai-marketing/contracts build \
+    && pnpm --filter @ai-marketing/api build \
+    && pnpm store prune
+ENV NODE_ENV=production
+RUN mkdir -p /app/storage && chown node:node /app/storage
+USER node
+WORKDIR /app/apps/api
+CMD ["node", "dist/main.js"]

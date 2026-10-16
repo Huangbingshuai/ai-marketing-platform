@@ -1130,6 +1130,7 @@ onBeforeUnmount(() => {
         @back="selectStep(activeStep - 1)"
         @next="selectStep(activeStep + 1)"
         @saved="loadBranchTree()"
+        @published="load()"
       />
       <section v-else class="import-workspace-card next-node">
         <header class="node-heading">

@@ -567,7 +567,7 @@ export class WorkflowWorkingRepository {
         effectPackagingRuns: {
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           select: { id: true, templateId: true, status: true, idempotencyKey: true, completedAt: true,
-            items: { orderBy: { id: 'desc' }, select: { variantId: true, status: true, checkpoint: true } } },
+            items: { orderBy: { id: 'desc' }, select: { variantId: true, status: true, completedAt: true, checkpoint: true } } },
         },
         effectFinalOutputRuns: {
           select: { id: true, templateId: true, status: true,

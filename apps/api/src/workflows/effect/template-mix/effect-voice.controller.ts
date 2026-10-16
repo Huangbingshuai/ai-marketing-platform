@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import {
   Body,
   Controller,
@@ -106,6 +107,7 @@ export class EffectVoiceController {
 }
 
 @Controller('internal/workers/effect-template-mix/voice-previews')
+@AuthAccess('independent')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectVoiceWorkerController {
   constructor(@Inject(EffectVoiceService) readonly service: EffectVoiceService) {}
@@ -153,6 +155,7 @@ export class EffectVoiceWorkerController {
 }
 
 @Controller('internal/workers/effect-template-mix/voice-catalog-samples')
+@AuthAccess('independent')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectVoiceCatalogSampleWorkerController {
   constructor(@Inject(EffectVoiceService) readonly service: EffectVoiceService) {}

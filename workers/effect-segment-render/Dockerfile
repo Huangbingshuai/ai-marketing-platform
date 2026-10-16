@@ -12,8 +12,8 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
     && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
 CMD ["/app/.venv/bin/effect-segment-render-worker"]

@@ -1,0 +1,131 @@
+{
+  "date": "2026-10-16",
+  "integrity": {
+    "revision": 137,
+    "all39VariantsExact": true,
+    "film01Exact": true,
+    "changedVariantIds": [],
+    "other38FilesUnchanged": true,
+    "counts": {
+      "total": 39,
+      "queued": 0,
+      "running": 0,
+      "completed": 39,
+      "failed": 0,
+      "stale": 0
+    },
+    "file": "5d3b4ac9-c227-4b6f-b7b4-449e3a69d254",
+    "firstTransform": {
+      "0e2b550a-1e03-4a52-824e-3b82ad525437": {
+        "x": 0,
+        "y": 0,
+        "scaleX": 1.0674768224627544,
+        "scaleY": 1.0674768224627544,
+        "uniform": true,
+        "rotation": 0
+      },
+      "10bdeb6d-21c3-445c-b9a9-a8139956c7c2": {
+        "x": 0,
+        "y": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "uniform": true,
+        "rotation": 0
+      }
+    },
+    "secondDuration": 4,
+    "slotCount": 7
+  },
+  "refresh": {
+    "count": 39,
+    "x": "0",
+    "slider": "28"
+  },
+  "widths": [
+    {
+      "width": 1920,
+      "count": 39,
+      "x": "0"
+    },
+    {
+      "width": 1440,
+      "count": 39,
+      "x": "0"
+    },
+    {
+      "width": 900,
+      "count": 39,
+      "x": "0"
+    }
+  ],
+  "navigation": [
+    {
+      "node": "片段渲染",
+      "current": "4\n片段渲染\n当前"
+    },
+    {
+      "node": "素材 Prompt",
+      "current": "3\n素材 Prompt\n当前"
+    },
+    {
+      "node": "模板混剪",
+      "current": "5\n模板混剪\n当前"
+    },
+    {
+      "template": "局部更新回归临时模板",
+      "count": 0
+    },
+    {
+      "template": "广式腊肠·24秒测试",
+      "count": 39
+    }
+  ],
+  "lateResponse": {
+    "injectedRevision": 136,
+    "acceptedRevision": 137,
+    "interceptCount": 2,
+    "delivery": "fulfilled",
+    "x": "0",
+    "films": 39
+  },
+  "cleanup": {
+    "status": 201,
+    "revision": 138,
+    "remaining": [
+      {
+        "id": "942c4caa-e8b8-4aac-b165-ac69b453272b",
+        "name": "广式腊肠·24秒测试",
+        "count": 39
+      }
+    ]
+  },
+  "localBuild": {
+    "bundle": "index-DdmQMtB6.js",
+    "films": 39,
+    "x": "0",
+    "afterReload": 39,
+    "xAfterReload": "0"
+  },
+  "playback": {
+    "position": 1.33333333333333,
+    "duration": 28
+  },
+  "restoreConfirmation": {
+    "status": 201,
+    "postedRevision": 137,
+    "actualRevision": 137
+  },
+  "final": {
+    "revision": 138,
+    "templates": 1,
+    "counts": {
+      "total": 39,
+      "queued": 0,
+      "running": 0,
+      "completed": 39,
+      "failed": 0,
+      "stale": 0
+    },
+    "file": "5d3b4ac9-c227-4b6f-b7b4-449e3a69d254"
+  }
+}

@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
 import {
@@ -31,6 +32,7 @@ import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard
 import { EffectTemplateMixCompletionService } from './effect-template-mix-completion.service';
 
 @Controller('internal/workers/effect-template-mix')
+@AuthAccess('independent')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectTemplateMixWorkerController {
   constructor(

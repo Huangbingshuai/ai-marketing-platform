@@ -105,6 +105,8 @@ export type EffectTemplateMixFrozenSourceContext = {
   materials: EffectTemplateMixMaterial[];
   promptArtifacts: EffectTemplateMixAiSnapshot['promptArtifacts'];
   addedMaterialIds: string[];
+  /** Full source-repair target set; retained after successful per-film checkpoints. */
+  affectedVariantIds?: string[];
   packageNewVariants: boolean;
   facts: import('./effect-template-mix-packaging').PackagingFact[];
 };

@@ -1,0 +1,650 @@
+[
+  {
+    "ratio": "16:9",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "16:9",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:3",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2.35:1",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "2:1",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1.85:1",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:16",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "3:4",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "9:19.5",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:1",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "7:5",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "1:4",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 1440,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 1920,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 390,
+    "direction": 0,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 1440,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 1920,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 390,
+    "direction": 1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 1440,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 1920,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  },
+  {
+    "ratio": "4:1",
+    "viewport": 390,
+    "direction": -1,
+    "blackBoundaryPixels": 0
+  }
+]

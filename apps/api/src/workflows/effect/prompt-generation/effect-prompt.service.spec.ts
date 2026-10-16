@@ -174,10 +174,19 @@ const currentInputSnapshot = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptService settings contract', () => {
-  it('refuses to change confirmed Prompt settings before entering an isolated edit branch', async () => {
-    const repository = { workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }) };
+  it('saves next-batch settings without requiring an isolated item edit', async () => {
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      products: vi.fn().mockResolvedValue([{ id: 'product-a' }]),
+    };
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
-    const workingRepository = { saveNodeState: vi.fn() };
+    const workingRepository = {
+      saveNodeState: vi.fn().mockResolvedValue({
+        record: { revision: 2, savedAt: new Date('2026-10-16T00:00:00.000Z') },
+        conflict: false,
+        unchanged: false,
+      }),
+    };
     const workingService = {
       assertEffectNodeWritable: vi.fn().mockRejectedValue(new Error('EDIT_REQUIRED')),
     };
@@ -189,16 +198,16 @@ describe('EffectPromptService settings contract', () => {
       workingService as never,
     );
 
-    await expect(
-      service.saveSettings(
-        'project-a',
-        'product-a',
-        'workflow-a',
-        1,
-        DEFAULT_EFFECT_PROMPT_SETTINGS,
-      ),
-    ).rejects.toThrow('EDIT_REQUIRED');
-    expect(workingRepository.saveNodeState).not.toHaveBeenCalled();
+    const result = await service.saveSettings(
+      'project-a',
+      'product-a',
+      'workflow-a',
+      1,
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
+    );
+    expect(result.settingsRevision).toBe(2);
+    expect(workingRepository.saveNodeState).toHaveBeenCalledOnce();
+    expect(workingService.assertEffectNodeWritable).not.toHaveBeenCalled();
   });
   it('does not mark a completed result stale when a legacy settings state normalizes to the run settings', async () => {
     const insightSnapshot = {
@@ -1671,21 +1680,15 @@ describe('EffectPromptService settings contract', () => {
         availability: 'AVAILABLE',
       }),
       settingsNode: vi.fn().mockResolvedValue({ executionInputHash: 'settings-stale' }),
+      commitValidatedResult: vi.fn().mockResolvedValue({ kind: 'DEPENDENCY_CONFLICT' }),
     };
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
     const service = new EffectPromptService(repository as never, projects as never, {} as never);
 
-    const output = await service.validateResult('project-a', 'result-a', 1);
-
-    expect(output.valid).toBe(false);
-    expect(output.issues).toEqual([expect.objectContaining({ code: 'STALE_RESULT' })]);
-    expect(output.issues).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: 'EXECUTION_GATE' }),
-        expect.objectContaining({ code: 'DIMENSION_DISTANCE' }),
-      ]),
+    await expect(service.validateResult('project-a', 'result-a', 1)).rejects.toThrow(
+      '上游信息卡或 Prompt 设置已经变化，请重新生成',
     );
-    expect(output.warnings).toEqual([]);
+    expect(repository.commitValidatedResult).toHaveBeenCalledOnce();
   });
 
   it('allows the user to commit an exact safe batch with non-blocking coverage advice', async () => {
@@ -1868,6 +1871,7 @@ describe('EffectPromptService settings contract', () => {
         availability: 'AVAILABLE',
       }),
       settingsNode: vi.fn().mockResolvedValue({ executionInputHash: 'settings-stale' }),
+      commitValidatedResult: vi.fn().mockResolvedValue({ kind: 'DEPENDENCY_CONFLICT' }),
     };
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
     const service = new EffectPromptService(repository as never, projects as never, {} as never);

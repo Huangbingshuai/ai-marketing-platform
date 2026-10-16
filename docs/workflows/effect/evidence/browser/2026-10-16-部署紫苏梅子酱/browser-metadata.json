@@ -1,0 +1,1570 @@
+{
+  "startedAt": "2026-10-16T01:02:35.764Z",
+  "projectId": "4b9538c6-4d6a-4158-a87f-4edcfbe3cd36",
+  "events": [
+    {
+      "kind": "project-created",
+      "at": "2026-10-16T01:03:01.567Z",
+      "status": 201,
+      "projectId": "4b9538c6-4d6a-4158-a87f-4edcfbe3cd36"
+    },
+    {
+      "kind": "source-upload-started",
+      "at": "2026-10-16T01:03:32.174Z"
+    },
+    {
+      "kind": "source-upload-completed",
+      "at": "2026-10-16T01:03:34.048Z",
+      "count": 4
+    },
+    {
+      "kind": "extraction-start-clicked",
+      "at": "2026-10-16T01:04:18.385Z"
+    },
+    {
+      "kind": "extraction-completed-visible",
+      "at": "2026-10-16T01:05:37.038Z",
+      "facts": 40,
+      "images": 3,
+      "imageCandidates": 19,
+      "imageAdditions": 0
+    },
+    {
+      "kind": "extraction-version-saved",
+      "at": "2026-10-16T01:05:37.292Z"
+    },
+    {
+      "kind": "prompt-start-clicked",
+      "at": "2026-10-16T01:05:53.711Z",
+      "count": 30,
+      "duration": 10
+    },
+    {
+      "kind": "prompt-refresh-recovered",
+      "at": "2026-10-16T01:06:39.505Z"
+    },
+    {
+      "kind": "prompt-completed",
+      "at": "2026-10-16T01:24:05.132Z",
+      "count": 30,
+      "duration": 10
+    },
+    {
+      "kind": "render-batch-started",
+      "at": "2026-10-16T01:25:36.215Z",
+      "status": 202,
+      "batchId": "6fb72ff7-4588-4a02-ac36-4677eea3d6fb"
+    },
+    {
+      "kind": "render-refresh-recovered",
+      "at": "2026-10-16T01:27:45.874Z",
+      "batchId": "6fb72ff7-4588-4a02-ac36-4677eea3d6fb"
+    },
+    {
+      "kind": "render-playback-sample",
+      "at": "2026-10-16T01:28:26.321Z",
+      "code": "R-015",
+      "duration": 10.08,
+      "currentTime": 1.196526,
+      "paused": false,
+      "readyState": 4,
+      "width": 496,
+      "height": 864,
+      "error": null
+    },
+    {
+      "kind": "render-playback-sample",
+      "at": "2026-10-16T01:34:53.357Z",
+      "code": "R-020",
+      "duration": 10.08,
+      "currentTime": 0.989214,
+      "width": 496,
+      "height": 864,
+      "error": null
+    },
+    {
+      "kind": "render-completed-visible",
+      "at": "2026-10-16T01:41:12.324Z",
+      "count": 30
+    },
+    {
+      "kind": "mix-workbench-entered",
+      "at": "2026-10-16T01:42:54.374Z",
+      "materials": 30,
+      "engineCount": 0,
+      "templateSeconds": 24,
+      "slotSeconds": 4
+    },
+    {
+      "kind": "mix-fill-started",
+      "at": "2026-10-16T01:43:39.994Z",
+      "templateId": "0632f0b9-2003-4e67-998e-c826f5c451a8",
+      "mixRunId": "3b7c1d3b-7eb3-49e8-b855-9361c29c1cda",
+      "materials": 30,
+      "templateSeconds": 24
+    },
+    {
+      "kind": "mix-refresh-recovered",
+      "at": "2026-10-16T01:45:09.662Z",
+      "mixRunId": "3b7c1d3b-7eb3-49e8-b855-9361c29c1cda"
+    },
+    {
+      "kind": "mix-running-navigation-and-locks",
+      "at": "2026-10-16T01:45:46.177Z",
+      "entryEnabled": true,
+      "configurationFieldsDisabled": true,
+      "fillDisabled": true
+    },
+    {
+      "kind": "mix-fill-completed-visible",
+      "at": "2026-10-16T01:54:14.745Z",
+      "filmCount": 33
+    },
+    {
+      "kind": "first-packaging-started",
+      "at": "2026-10-16T01:56:09.853Z",
+      "filmCount": 33,
+      "workflowRunId": "f08ec1ce-2f21-4036-9de6-f43fea4d5814",
+      "disabledFilms": 33
+    },
+    {
+      "kind": "first-packaging-progress-unlocks-completed",
+      "at": "2026-10-16T01:58:04.308Z",
+      "completedEditable": 4,
+      "total": 33,
+      "currentNode": "TEMPLATE_MIX"
+    },
+    {
+      "kind": "first-packaging-refresh-recovered",
+      "at": "2026-10-16T02:00:48.171Z",
+      "returnedViaConfiguration": true,
+      "total": 33,
+      "disabled": 0
+    },
+    {
+      "kind": "first-packaging-background-discovery-restored",
+      "at": "2026-10-16T02:01:20.829Z",
+      "total": 33,
+      "disabled": 20
+    },
+    {
+      "kind": "packaging-original-task-retry",
+      "status": 201,
+      "accepted": true,
+      "at": "2026-10-16T02:12:52.742Z",
+      "failedCount": 3
+    }
+  ],
+  "mutations": [
+    {
+      "at": "2026-10-16T01:03:01.527Z",
+      "method": "POST",
+      "path": "/api/projects/a0bad7e0-e6b7-4eab-bde7-4cd70e85c532/workflow-runs/2d7d795c-d194-4911-bd46-d625c608ad73/pause",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:01.558Z",
+      "method": "POST",
+      "path": "/api/projects",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:01.695Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/SOURCE_IMPORT/activate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:01.792Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/drafts/SINGLE/products",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:32.248Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/drafts/SINGLE/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/upload-sessions",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:32.780Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/upload-sessions/d3a8b432-ea3f-475b-a8de-8a762679ab07/items/638e9581-02fc-4fb7-8182-6441dd23611d/content",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:03:33.151Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/upload-sessions/d3a8b432-ea3f-475b-a8de-8a762679ab07/items/1eda7667-532e-4d1e-b6ea-23310ccaf84e/content",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:03:33.346Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/upload-sessions/d3a8b432-ea3f-475b-a8de-8a762679ab07/items/5db9d797-5901-4857-be0a-0e6a4c0ff54d/content",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:03:33.530Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/upload-sessions/d3a8b432-ea3f-475b-a8de-8a762679ab07/items/cf1d773f-eaa2-4aa5-a87b-f7e13d5614f5/content",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:03:33.569Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/upload-sessions/d3a8b432-ea3f-475b-a8de-8a762679ab07/complete",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:35.241Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/SOURCE_IMPORT/state",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:03:35.297Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/drafts/SINGLE/validate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:35.321Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/effect/branches/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/SOURCE_IMPORT/edit/publish",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:45.427Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/source-import/drafts/SINGLE/advance",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:03:45.488Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/INFORMATION_EXTRACTION/activate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:04:19.469Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/information-extraction/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/runs",
+      "status": 202
+    },
+    {
+      "at": "2026-10-16T01:05:37.262Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/information-extraction/results/f438b3b0-209e-4ed3-9632-1b8e26177eeb/validate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:05:37.297Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/effect/branches/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/INFORMATION_EXTRACTION/edit/publish",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:05:37.664Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/PROMPT_GENERATION/activate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:05:53.631Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/prompt-generation/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/settings",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:05:53.664Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/prompt-generation/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/settings",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:05:53.809Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/prompt-generation/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/runs",
+      "status": 202
+    },
+    {
+      "at": "2026-10-16T01:24:05.355Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/SEGMENT_RENDER/activate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:25:11.237Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/segment-render/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/settings",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:25:16.499Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/segment-render/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/settings",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:25:36.169Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/segment-render/products/32e880b0-d1de-471a-bfe0-2be41d2f0f5b/batches",
+      "status": 202
+    },
+    {
+      "at": "2026-10-16T01:32:10.136Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/TEMPLATE_MIX/activate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:33:28.348Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/SEGMENT_RENDER/activate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:41:14.632Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflow-runs/bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7/nodes/TEMPLATE_MIX/activate",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:42:01.722Z",
+      "method": "PUT",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/template-mix/draft",
+      "status": 200
+    },
+    {
+      "at": "2026-10-16T01:42:01.755Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/final-output/sync",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:42:56.770Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/template-mix/templates/0632f0b9-2003-4e67-998e-c826f5c451a8/ai-fill-runs",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T01:55:03.632Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/template-mix/templates/0632f0b9-2003-4e67-998e-c826f5c451a8/packaging-runs",
+      "status": 201
+    },
+    {
+      "at": "2026-10-16T02:12:52.742Z",
+      "method": "POST",
+      "path": "/api/projects/4b9538c6-4d6a-4158-a87f-4edcfbe3cd36/workflows/effect/template-mix/packaging-runs/f581c63b-7873-4921-ae31-c2889a8ec18f/retry",
+      "status": 201
+    }
+  ],
+  "httpErrors": [],
+  "workflowRunId": "bc3fe8e1-6bfe-448d-a7bf-89ab0cd9ace7",
+  "productId": "32e880b0-d1de-471a-bfe0-2be41d2f0f5b",
+  "promptRunId": "3a0f4d7f-a4a9-4486-a977-75def2fd0816",
+  "renderBatchId": "6fb72ff7-4588-4a02-ac36-4677eea3d6fb",
+  "templateId": "0632f0b9-2003-4e67-998e-c826f5c451a8",
+  "mixRunId": "3b7c1d3b-7eb3-49e8-b855-9361c29c1cda",
+  "mixWorkflowRunId": "f08ec1ce-2f21-4036-9de6-f43fea4d5814",
+  "packagingRunId": "f581c63b-7873-4921-ae31-c2889a8ec18f",
+  "pendingOutputRunId": "d7b1b476-8da5-4cc2-9d59-1915968f7d8f",
+  "packagingRecoveryBaseline": {
+    "status": "PARTIAL",
+    "items": [
+      {
+        "id": "42930e9d-9a2f-4a5a-aa1a-87642123154c",
+        "variantId": "7da11af4-9e47-462b-8b6b-884ce2492238",
+        "name": "紫苏梅子酱·测试模板 · 2",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "7e6bf484-3208-4f86-8f4e-c67dea07bd74"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "f322cb1a-403a-45c2-a12c-7044ab24c809"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "54875780-ed5f-46b3-ad5f-e260acb5b4c4"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "adb96854-a940-48ed-ab16-43edbe0131ff"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "5466f265-d5ab-41f6-bb53-551b4187a929"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "66b9b732-854d-4475-9fbf-bff74e4d95cf"
+          }
+        ],
+        "musicId": "c7a90bc3-9ebe-466d-86f2-b0ca351a4b88",
+        "missingSlots": []
+      },
+      {
+        "id": "91616036-60f9-4557-a8b7-05be4dd650f6",
+        "variantId": "a5d0bd8e-3565-4901-b4f2-1b859d9e70fa",
+        "name": "紫苏梅子酱·测试模板 · 3",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "a15a2b87-6ff6-4f22-ab9b-39ca72da63d1"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "53f9f3bb-994f-40ac-b809-b1c24c763d76"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "17a2237c-a098-4c5c-a32c-88d411b18a8c"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "2ac9543f-3bc7-4a83-9010-42c296a8d084"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "8fe6774b-954e-4474-90e2-6c02eb3869b0"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "dacab6fb-687d-4ccb-98ca-4fd1599fda7d"
+          }
+        ],
+        "musicId": "e9f20a37-9f3a-47b7-a736-e305324ae913",
+        "missingSlots": []
+      },
+      {
+        "id": "c6dd0727-8b2c-4b85-8b51-e66895f7561e",
+        "variantId": "3b7c1d3b-7eb3-49e8-b855-9361c29c1cda",
+        "name": "紫苏梅子酱·测试模板 · 1",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "09dc5b8c-a960-48ba-af35-51880f7d0d90"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "a97762d7-5672-4ed6-a90c-1418ea42eea6"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "2dd6a9e9-02a8-4fee-bc4a-35d5c772830c"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "39af8b40-8da2-4655-8b64-1cc362cfdf01"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "8a3632a6-05ba-476c-86ea-4087cd61f038"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "faf43f86-289f-4fb8-880a-57b1a0a34021"
+          }
+        ],
+        "musicId": "39a17bcd-c9ff-4fd8-a9dc-799fb07be775",
+        "missingSlots": []
+      },
+      {
+        "id": "eb314a8b-11f2-44d3-9747-940da9d5a602",
+        "variantId": "299d1373-94c8-4745-b04f-9b409478ce9f",
+        "name": "紫苏梅子酱·测试模板 · 4",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "29263098-d58b-4bca-839b-09c6fdda9501"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "ad38302d-b6e9-40d8-831f-f1a0e0c356a0"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "79b50df4-b099-4470-8b94-4a98a8442b38"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "322c8d58-1d35-4908-8b19-987a31110fdd"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "eac15974-1c8c-4c3a-818f-850b6fce5d7f"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "307945c1-3548-4be5-9d29-b27283d2e2c0"
+          }
+        ],
+        "musicId": "bee8db5d-29fb-4d85-bc3e-d0c584ab7515",
+        "missingSlots": []
+      },
+      {
+        "id": "9b7b4253-bec3-4ea0-befe-cb334060fc79",
+        "variantId": "e2854f92-6bfe-48da-9f57-40f852c8b676",
+        "name": "紫苏梅子酱·测试模板 · 8",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "cbbb18be-6562-4fd5-b5b9-15d54bc92a4a"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "be9575f7-0159-45ec-a38a-fadcf1207ad2"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "26ca1ac0-1c6f-4fe3-9bb8-a56c9cfb7b0d"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "52137823-6c8c-4b26-b1a9-716fb5185c19"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "3212fd71-fbdd-4c51-a34e-1c1cd8b62bc6"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "cbd7a55c-c085-4bd9-883f-043caded523b"
+          }
+        ],
+        "musicId": "ce7bfac3-35ab-447d-8d73-00a929116c70",
+        "missingSlots": []
+      },
+      {
+        "id": "ca04f7cd-e46e-424e-bec2-847b87309162",
+        "variantId": "da6b62a1-826c-457e-a517-bc01c32d59b2",
+        "name": "紫苏梅子酱·测试模板 · 5",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "c633030e-5577-405a-b2fc-882cd017b716"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "dea593da-1fb8-49fc-b0ee-8fb1efb722e1"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "6c26083b-94d3-4c46-a242-1d318efc5040"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "9335fd63-cba6-4d3c-b3c0-95aca172e426"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "520c1336-f77d-4973-b4a0-e7d5daf600b8"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "76f077d8-dd8c-45e3-abaf-38b376a41aee"
+          }
+        ],
+        "musicId": "a6c41e0e-d659-46e0-a27a-5553eabf87d3",
+        "missingSlots": []
+      },
+      {
+        "id": "e0576dae-0ae1-4272-8356-3c51e1ca47a4",
+        "variantId": "202616fe-cad0-4220-91cb-b7bb2917090f",
+        "name": "紫苏梅子酱·测试模板 · 6",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "74668acc-0e50-4bfd-b4ab-56100ec4975c"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "81c0d5ef-fbb0-4f3f-a02e-e76df2dbbc57"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "908c889b-2b98-4486-8f67-0ecd61b5f98c"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "df5dc100-239f-42a4-b8ff-a2880b35784c"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "4669bf39-c691-44f0-b29a-b6efc11e9fda"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "521335c8-4a47-4ea8-ad03-e6c5e0a40836"
+          }
+        ],
+        "musicId": "2de7a227-9c7d-466a-ade7-28ec6671f34e",
+        "missingSlots": []
+      },
+      {
+        "id": "f001e302-b561-421c-9b92-a05ba1d391b3",
+        "variantId": "d681c493-f35d-41b5-85bf-7823e744a7f6",
+        "name": "紫苏梅子酱·测试模板 · 7",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "210829df-e060-4978-b035-754b3072530d"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "ce28cad6-708d-4e33-98e2-a255d67ff78f"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "59d2b766-9a72-439f-ac15-52db5a93c515"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "4519d6dd-8209-46c8-8dad-d3cd0c4ba723"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "0ee1dbbc-7a41-4d8a-bfaa-3ea364597776"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "a15c6d95-b116-4f03-9ca7-15b731ac0adc"
+          }
+        ],
+        "musicId": "5c03053c-a0dc-4248-b7ff-de3b11107bf2",
+        "missingSlots": []
+      },
+      {
+        "id": "26f6d453-6720-42b3-b310-a4f9780609bd",
+        "variantId": "74a72e2b-7dd0-4b89-bd0e-de000cde2866",
+        "name": "紫苏梅子酱·测试模板 · 11",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "47443c93-8330-4111-b242-cb8fbe5efb73"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "ac3dfb3f-fc2d-449f-93a9-59d5f51f963e"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "a503603c-48f1-4782-be0b-b8dc8f316994"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "bb28ebe1-e1b2-44cb-83cd-fad048d7c312"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "738bf63b-aeec-4142-899d-79fd86ef475f"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "e6045e3f-0249-4ad6-b573-5af396d3fe4d"
+          }
+        ],
+        "musicId": "34383db5-8d8e-4aa1-8522-4f40c8cf059f",
+        "missingSlots": []
+      },
+      {
+        "id": "af33444e-0a61-477f-a6f8-5c6e89c243d3",
+        "variantId": "80b837ce-4e6b-4ebc-8988-b1a9076e35c4",
+        "name": "紫苏梅子酱·测试模板 · 9",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "4eede011-b3e7-46f8-bead-0ef6800c01ee"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "26a0cc24-717a-4608-936d-96b3a13eb2b0"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "489a56e4-9fdf-4da9-9a1a-a48d8e7ef605"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "0c6f85ee-ebcb-4fe1-ba57-ee760dc2a4f5"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "4ffff334-9593-4eea-b340-56b801ca7bd1"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "bd2d35d8-4517-422f-b750-9da5e812c893"
+          }
+        ],
+        "musicId": "0eac5dbc-991f-4cf2-9b2a-e3a1b8c63b29",
+        "missingSlots": []
+      },
+      {
+        "id": "d7c0d2c9-1398-471d-bc57-f05782042009",
+        "variantId": "f71f2b87-5d81-43fb-8dbf-a9408ebe1fde",
+        "name": "紫苏梅子酱·测试模板 · 12",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "e58ede43-7ad2-42ba-b51c-08b82994938e"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "36efce7e-6237-440b-a382-8bbe1a24581d"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "f052ca6e-4573-4891-bf50-8e706a8e08db"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "56e8da59-6559-49fa-b65b-f4c692c48d86"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "e0df7c2b-4cd2-4575-b228-6e84dfdaa2eb"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "d41a60e4-627a-4ea5-a294-cf5a01b32f2a"
+          }
+        ],
+        "musicId": "f3b94bdd-d120-4da5-b9eb-71abadb6b546",
+        "missingSlots": []
+      },
+      {
+        "id": "fdeb72e4-ba1d-42fa-a6ba-903a3cf111c0",
+        "variantId": "33961008-1461-4b95-ab08-00ca39856861",
+        "name": "紫苏梅子酱·测试模板 · 10",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "ee2af8b3-ab0a-40a8-879c-2c4360af3acf"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "594f6b76-bcb1-4b5a-a9b1-183437290227"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "4c1dddf9-dd57-47e4-ab4e-6e8a284bfccd"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "13fe138e-18f7-4bf4-b6be-2f2228e28778"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "7aa23072-0827-4fb0-abc5-e9fe25086541"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "24ed6d3c-6459-4c7f-8b04-b002572e4fa0"
+          }
+        ],
+        "musicId": "56636a8c-2219-4842-ab2b-5f6bbb89eb56",
+        "missingSlots": []
+      },
+      {
+        "id": "29aa238f-5a58-4cca-ac8a-df576ee11920",
+        "variantId": "7db38bf7-3199-473e-843f-d344391cbf4b",
+        "name": "紫苏梅子酱·测试模板 · 14",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "221a6ec3-b282-473b-9f7f-520b736eedab"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "61873033-556a-43a1-b9c1-c970cbc3daf8"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "218627be-4bf9-4e09-85a2-d2858177d42c"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "c3888cde-0c2b-47d7-8497-155b5a292938"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "5c2bc549-c613-44c1-96d3-1bf786b73fb5"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "d1fdf859-f677-4de5-849d-84b500b1a173"
+          }
+        ],
+        "musicId": "a341244b-7f1f-421b-ac1b-a7ae78dfa8f7",
+        "missingSlots": []
+      },
+      {
+        "id": "36faceae-9351-43c2-9d86-c80039498edb",
+        "variantId": "2a5eccbd-bd91-4e4d-80d2-7509f2b3564e",
+        "name": "紫苏梅子酱·测试模板 · 13",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "6081b773-d2e2-4fcf-b614-cffef67c7c26"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "e2c7a597-3823-418d-84c7-c51740cd6ba6"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "99b08f3c-4076-464c-b8e1-7e8e0c2aad58"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "c2fe6355-04ac-449d-9264-d359816d44c9"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "430afba7-857a-433a-888e-50979cf3a469"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "bbeca67f-8fc7-4615-86d0-7a8347034a3a"
+          }
+        ],
+        "musicId": "b2486426-0982-457d-a1a3-96cfc8f9c9c0",
+        "missingSlots": []
+      },
+      {
+        "id": "4d0c5de8-ca90-4291-bdeb-d99968479767",
+        "variantId": "409d6b0f-bb8e-428b-a3cc-38a9012c2b79",
+        "name": "紫苏梅子酱·测试模板 · 16",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "37580abd-1f9c-4eb8-8497-4af5a88f2c46"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "640e1f7d-55ba-4f5c-96cc-093abe3115e8"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "5f605a16-aad0-4f5b-a336-4c5b0736c58c"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "62b6cda8-6ed1-45a8-9550-8ad01cb95539"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "4ea4cde4-f976-4ea0-92fa-c1d4afcad68f"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "6ae30c30-c489-4647-bb11-5180ba1fa36a"
+          }
+        ],
+        "musicId": "9795b61f-baa0-4ba3-b69c-d414cce38c7c",
+        "missingSlots": []
+      },
+      {
+        "id": "faa8b324-02f7-4a64-b773-c2dc0ba3d77b",
+        "variantId": "a83bc761-0009-4dd0-9fce-42eaae5fdbb1",
+        "name": "紫苏梅子酱·测试模板 · 15",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "b8b09a2a-770d-4690-a32f-cd51b6a2aa12"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "5507d146-5b45-4085-b308-d84bf883d0f6"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "b6deef77-3582-4099-a904-386f308c3112"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "1583936b-8e71-43a1-a83c-f6c1f8e248ef"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "a60e3707-bdec-467f-bd67-ba81cbcf4230"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "13b16b39-5acb-4cd7-96d6-42ccf312b851"
+          }
+        ],
+        "musicId": "ad65b103-bab6-4918-be12-f82fcec8bb0e",
+        "missingSlots": []
+      },
+      {
+        "id": "2eff1cb7-a61b-4c67-8043-6021b7ad9f8b",
+        "variantId": "b512dc0a-03f5-4b53-a593-79eac24440c1",
+        "name": "紫苏梅子酱·测试模板 · 19",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "25654051-de31-48b5-af88-d8c220f9fb2f"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "e6064727-ecbc-457c-a19a-a14c68db4ef9"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "35449639-30f8-461f-85e4-4ac767d3669f"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "6e96d78f-0dcb-41f2-ab48-b62625cba14c"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "cf640056-3714-489a-a1dd-135bb370e8fe"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "f57093ab-aede-4c9c-8190-809e294f2d5b"
+          }
+        ],
+        "musicId": "cd4f2a89-a2f1-419e-92e1-6248a188c1ee",
+        "missingSlots": []
+      },
+      {
+        "id": "40ca4265-3096-4c3d-b921-a3d30c868adb",
+        "variantId": "47a04477-624f-4b3f-8e4b-ea4ae7e4c420",
+        "name": "紫苏梅子酱·测试模板 · 20",
+        "status": "FAILED",
+        "stage": "VOICE",
+        "error": "真实配音缩句一次后仍超出可用时间，请重做本条口播",
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "394c36b9-b1ba-46b3-b46a-574a803af8e5"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "11405ce2-185e-4476-a75d-50f11307dd46"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "e3e08601-75c3-4545-97f9-1155d743cd12"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "c5c72a60-5daf-41cb-8c74-b76137775539"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "97d10eb4-cc91-4341-844d-81e3afade9d6"
+          }
+        ],
+        "musicId": "d209f059-8744-46ba-b7ae-ea3043c2c17c",
+        "missingSlots": [
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "slotId": "2452fc35-c940-47ba-aa3e-1919ceeea541"
+          }
+        ]
+      },
+      {
+        "id": "d6e8d24c-ec3b-4e11-b88f-f3aa91e08cd9",
+        "variantId": "98974b32-5bd2-4530-9e14-8249dfdcfbac",
+        "name": "紫苏梅子酱·测试模板 · 18",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "21952d31-da24-4921-bae8-e7f36399e27d"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "47173da5-00d6-4c27-9a25-9dd575e484b2"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "c5c6c303-a493-4ca0-bdd1-da09a1be122a"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "253c9754-0153-4326-a193-9a25316b272a"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "100fc88d-855d-4f53-a9a1-64055057dc05"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "fbb9ad28-bb9b-456e-b431-e1ed1759b379"
+          }
+        ],
+        "musicId": "3bfe3809-378d-4d20-b507-ebef23521f4a",
+        "missingSlots": []
+      },
+      {
+        "id": "e5e54049-ef90-4e85-be34-d91b9e87f2c6",
+        "variantId": "96d1c00b-77b2-4b53-864b-391175452d6f",
+        "name": "紫苏梅子酱·测试模板 · 17",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "10ceda8c-b205-4429-90d6-7c0ef59a026c"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "0e144e01-108a-453a-83f0-b2fb14679f5f"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "ba64a4b9-cce6-4503-ac3c-6cbacf7e559c"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "a8b22ed4-c229-44db-8554-28cf3d1a16a9"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "808bf829-4725-4457-a885-ad5383d870d2"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "2bd5b21e-15fd-4a8c-9da0-635b7eff50d8"
+          }
+        ],
+        "musicId": "3caa4a4b-c0af-487d-bcee-f5780fbf9778",
+        "missingSlots": []
+      },
+      {
+        "id": "61c61b00-8005-432c-a4d0-4c95ad2a67bc",
+        "variantId": "54da2536-5be9-4590-9d3f-e13b63b90a26",
+        "name": "紫苏梅子酱·测试模板 · 21",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "b26c426f-6be3-4cbf-bf80-1f42cccdafa6"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "ad12a7b3-2454-47cc-b290-ab723b115600"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "d36d81f3-9a50-414e-9744-3be174dde5c5"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "1ae72190-d31d-49b7-893e-9acf0b8e2216"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "3068e7c4-c6f6-4125-85be-b31573d26980"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "bc3ff0a6-e841-491d-b7ad-88f2d86ee59a"
+          }
+        ],
+        "musicId": "60456b41-4939-4f74-a6d2-883676b46437",
+        "missingSlots": []
+      },
+      {
+        "id": "71dcae42-292d-430a-a514-def09c709efe",
+        "variantId": "b8938f36-48eb-4982-84c8-a8f68a7ef970",
+        "name": "紫苏梅子酱·测试模板 · 22",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "8fa05747-52a5-4b5e-bbfe-f32e14c32619"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "feec4ea1-a77b-4dbb-aed5-b504d05084e2"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "56a18cb5-0d52-4dfc-a2f6-85e3bddda068"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "e9192244-70c1-46ab-9190-3d3b6003662c"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "051aae8a-e21b-4915-bb69-747cd5340ca3"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "59eb58c5-262b-48f1-9d05-1bbc99ae5c73"
+          }
+        ],
+        "musicId": "5b6ed3c8-1cdd-4180-a43f-01ab3ab4c478",
+        "missingSlots": []
+      },
+      {
+        "id": "9c06b2e6-3e48-471c-9ed6-6b8b1eaba1c8",
+        "variantId": "2880df2d-e2c8-4221-a6fc-0d41dee2dceb",
+        "name": "紫苏梅子酱·测试模板 · 23",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "6408ef1d-f64a-4442-923a-feb1541b03ab"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "3dbb4839-45c9-4a5f-b763-40819eed1c20"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "7b59c832-7ccf-4369-8382-5e31331b6421"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "9d3b8b6b-53fd-49a4-8250-fc5257377294"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "7c722659-4daf-4a0f-8a8d-a5d822789189"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "74a75363-a215-4d56-ad5a-961f0e2cc8b8"
+          }
+        ],
+        "musicId": "197ad3b7-70b5-4d57-9cad-fe6a68e74cf3",
+        "missingSlots": []
+      },
+      {
+        "id": "9c709dcc-9cd8-41dd-95d9-7c43600562e4",
+        "variantId": "ad77161e-7270-497d-bd7f-75a79c644309",
+        "name": "紫苏梅子酱·测试模板 · 24",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "285795ce-82b6-48b5-9bfc-6d60c3c69074"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "441b9a60-7d0b-4449-93d6-f0ead112686b"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "a9943bac-5b17-40be-819c-cfe5641d890a"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "da9bb0f9-6feb-4ba9-a6b4-19df41e51e88"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "8d9ee8ed-ff1c-4a23-851b-61551d5a2af1"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "0e43b1f1-32f1-458c-9202-754b6ce93440"
+          }
+        ],
+        "musicId": "2c1caecb-c948-4ce3-9708-a040bdf4e0c3",
+        "missingSlots": []
+      },
+      {
+        "id": "178f5dc4-4dc3-44be-86df-adb4d4799417",
+        "variantId": "dc1354d7-6906-439f-97f2-e1568d2fb5e4",
+        "name": "紫苏梅子酱·测试模板 · 26",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "dfc801ca-3ee0-4c11-b37f-08062149e3fe"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "dfea8b40-56b5-4e7a-8a24-d83d11f03ac5"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "f8240a9f-741b-45be-ac62-215bf1cc0c51"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "9883ac63-53ef-480a-ba37-d814b3f62c96"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "3b814df0-1192-4c45-9703-3e74cf3c9f52"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "bc100e4c-d50b-4f04-b21f-cbe325d3d77a"
+          }
+        ],
+        "musicId": "fad032db-ad64-44ae-8b38-37d39a1cf27e",
+        "missingSlots": []
+      },
+      {
+        "id": "4241d5ff-0151-42ff-97d2-c98403956e7b",
+        "variantId": "0d282bed-e4d3-451f-a627-5d0031f7bd5a",
+        "name": "紫苏梅子酱·测试模板 · 28",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "c1008d40-7ad9-4b50-8c1f-ed06972d001a"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "eb56391a-a63e-409c-83a0-b4bc4968cb95"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "044dbb81-54b8-4baf-9a5d-099d70d66a67"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "5ccec83d-c524-41ef-b06e-f4d795da65a6"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "e0be5a99-4f01-4c98-b1cb-54fef9dac015"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "86517713-b5e0-4020-a4c9-2528d88c9fc8"
+          }
+        ],
+        "musicId": "4d111e30-2765-4f42-9453-14868df7cfb2",
+        "missingSlots": []
+      },
+      {
+        "id": "8e1a8b80-0ee9-44c8-9508-f1750c68f8e2",
+        "variantId": "1beddb15-0a20-4c82-b1f8-65f3692d0218",
+        "name": "紫苏梅子酱·测试模板 · 27",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "c9d14436-8bee-4730-9964-439a89a828cd"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "1884507a-2baf-4b0b-b638-f0d33f883a10"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "677b8e58-a886-4d05-884d-57cc20a60227"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "1f774d96-dd5b-4a81-9690-59ce2fe40e73"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "046865d6-fc7e-4ed6-82d6-31436d43154a"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "b235544a-4d7a-41e1-8d2c-ef1cdbba4b3e"
+          }
+        ],
+        "musicId": "969ce719-6bc9-4026-9a95-7a0d290a37a9",
+        "missingSlots": []
+      },
+      {
+        "id": "b0f748da-7fd5-453c-a489-010628eb94f2",
+        "variantId": "b7d26b8e-92a6-46a7-a074-06ec1129a4ff",
+        "name": "紫苏梅子酱·测试模板 · 25",
+        "status": "FAILED",
+        "stage": "VOICE",
+        "error": "真实配音缩句一次后仍超出可用时间，请重做本条口播",
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "e82aad3f-02f2-441c-833f-528d8402301a"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "7062c2c2-c353-436a-850a-03e110f67f34"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "39b9727d-49c3-4243-96a8-3963ef485647"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "5c59fc04-bac8-43c5-a885-6e3a76034ed7"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "91760fc3-e183-4509-825c-24663b0c29c1"
+          }
+        ],
+        "musicId": "1d8e39dd-fd06-4282-8d0c-0bf99b03e064",
+        "missingSlots": [
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "slotId": "62ec4f0d-6f8f-4aa7-a30d-2478d585d003"
+          }
+        ]
+      },
+      {
+        "id": "69f4ae8c-9e46-4b4b-bbab-b8df46ad9252",
+        "variantId": "d33dc3bd-d1fb-436d-838a-c4389de8d8a9",
+        "name": "紫苏梅子酱·测试模板 · 31",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "86b606a8-86a2-41f4-9ad7-dc3d1e120896"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "e5c1af78-ba2c-49b5-85a3-ccb3e751e475"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "5bc3452a-303b-4010-b0b5-203aed69dbcb"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "878f7434-6aff-44a3-a594-082deb0f5374"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "51ac9ac1-3fcc-47e0-86ac-a078854cb8b4"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "5784a834-191f-4dca-bb9d-3bc8205cb1bb"
+          }
+        ],
+        "musicId": "5bcb0ed4-c0f3-47ac-ac88-a0341a0837c0",
+        "missingSlots": []
+      },
+      {
+        "id": "9e2de52a-0ea0-4451-a944-49aab72ab0fc",
+        "variantId": "da0dafdb-8bcb-4f33-a8ef-2a19b36b2ac7",
+        "name": "紫苏梅子酱·测试模板 · 30",
+        "status": "FAILED",
+        "stage": "VOICE",
+        "error": "真实配音缩句一次后仍超出可用时间，请重做本条口播",
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "ea0d9f43-6d6c-4d5a-8bf9-7e0d201dfcdc"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "b621b395-0f0f-4011-a146-946a7ee31d2a"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "8ad2861d-87bc-43bb-984d-b891c61d8613"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "d3a39190-8d82-42f7-82cc-356825e6e5ec"
+          }
+        ],
+        "musicId": "ba4c5381-9dbc-4fa6-a700-2152e3ceb233",
+        "missingSlots": [
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "slotId": "62ec4f0d-6f8f-4aa7-a30d-2478d585d003"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "slotId": "b669147d-8364-4ba5-93ed-806bbde3dd06"
+          }
+        ]
+      },
+      {
+        "id": "e3bd3f8d-0e83-411f-a509-84d518047b73",
+        "variantId": "96317fb6-13d3-45a0-9208-d23d0139007b",
+        "name": "紫苏梅子酱·测试模板 · 32",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "1d9de5d0-070e-4570-855c-d9b82639259c"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "39d9b9c4-85e6-4cf5-b7ec-7d4bcc773957"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "0cb22e76-af97-43c3-a6bb-ce8a9bc3d5f4"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "1a1f9868-7253-445f-923a-a71913772af9"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "53f65c30-a724-4c14-9dad-5a900b0a5a6c"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "43ff4be3-36d3-4fe0-9356-3b2e1be0a89d"
+          }
+        ],
+        "musicId": "acd53367-aba1-43ce-a0ab-9b069b162f63",
+        "missingSlots": []
+      },
+      {
+        "id": "ee26ad48-32e4-4a90-8780-a34d1fdaa053",
+        "variantId": "4bf9d687-b8e0-42d6-b192-5396e7281ac4",
+        "name": "紫苏梅子酱·测试模板 · 29",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "e4e138c8-6451-42db-8b41-c261abdbe6d0"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "b61d6701-3ee2-4e68-ac19-d408d5199dc3"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "7e2f3c0f-8ec1-4b13-8ab3-82afa6b1433c"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "57a5bd19-2a0a-4815-9586-6b55b3a4348f"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "967c9ec4-f16c-412d-a7f7-8a841f594a89"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "f305d663-ccee-4e7a-9ecc-192752c88ffd"
+          }
+        ],
+        "musicId": "8de9d801-3145-4f60-a3c3-04a4fdc36896",
+        "missingSlots": []
+      },
+      {
+        "id": "1d831a33-592c-40c8-a8f2-9e6887c52558",
+        "variantId": "ee1aee39-6902-49ce-9a2e-59578b45bccd",
+        "name": "紫苏梅子酱·测试模板 · 33",
+        "status": "COMPLETED",
+        "stage": "READY",
+        "error": null,
+        "voices": [
+          {
+            "lineId": "slot-14727d63f692e9683b47b15e",
+            "fileObjectId": "179ae736-c735-469a-a62e-2cb0ba19742f"
+          },
+          {
+            "lineId": "slot-225d9c837ebe64515d543d7f",
+            "fileObjectId": "6a7d7bd8-cf5d-4829-95c6-70ae2eadb859"
+          },
+          {
+            "lineId": "slot-55756db1a903ef017894f642",
+            "fileObjectId": "6891e897-9f4b-42fc-b90b-adad1214b5c3"
+          },
+          {
+            "lineId": "slot-6528baee5824f48c640bc794",
+            "fileObjectId": "ba95963e-cb56-40e9-8420-f1c3f046b9cf"
+          },
+          {
+            "lineId": "slot-99732bb96cc3bca28af6bdc3",
+            "fileObjectId": "60928730-335c-4349-a827-f6d1f41c0136"
+          },
+          {
+            "lineId": "slot-bca273ec5c50f1424d002716",
+            "fileObjectId": "0816c99d-2671-48c4-807e-40e92bc6464d"
+          }
+        ],
+        "musicId": "34f8c208-c5ff-4e7f-90eb-0e481cf4f698",
+        "missingSlots": []
+      }
+    ]
+  }
+}

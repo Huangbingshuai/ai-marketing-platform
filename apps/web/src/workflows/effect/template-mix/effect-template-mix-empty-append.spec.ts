@@ -30,6 +30,7 @@ describe('partial local append workbench', () => {
     const fromEvent = execute(source, 'slotIdFromDragEvent', {
       props: { variant: v },
       packagingTimelineClips,
+      videoLaneAtClientY: () => null,
       Element: class {},
       viewport: { value: { getBoundingClientRect: () => ({ left: 0 }), scrollLeft: 0 } },
       pixelsPerSecond: { value: 10 },

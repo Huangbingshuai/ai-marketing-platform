@@ -82,7 +82,7 @@ describe('atomic batch artifact confirmation', () => {
     expect(projection).toHaveBeenCalledTimes(2);
   });
 
-  it('does not reuse source projections for single writes or render-source batches', async () => {
+  it('reads fresh source projections for single writes and once within each render-source batch', async () => {
     const { repository, projection, artifacts, source } = harness();
     source.revision = 3; // Force shared-source fallback for these writes.
     projection.mockResolvedValue([
@@ -92,7 +92,7 @@ describe('atomic batch artifact confirmation', () => {
     await repository.upsertArtifact('p', 'r', 'TEMPLATE_MIX', 'two', input);
     expect(projection).toHaveBeenCalledTimes(2);
     await repository.commitValidatedArtifacts('p', 'r', 'SEGMENT_RENDER', artifacts);
-    expect(projection).toHaveBeenCalledTimes(26);
+    expect(projection).toHaveBeenCalledTimes(3);
   });
 
   it('still rejects copied old media even if confirmed film content was unchanged', async () => {

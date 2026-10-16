@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 /* eslint-disable @typescript-eslint/consistent-type-imports -- Nest injection and DTO validation require runtime decorator metadata. */
 import { timingSafeEqual } from 'node:crypto';
 import {
@@ -42,6 +43,7 @@ export class StoryboardWorkerGuard implements CanActivate {
   }
 }
 @Controller('internal/workers/customized-storyboard')
+@AuthAccess('independent')
 @UseGuards(StoryboardWorkerGuard)
 export class StoryboardWorkerController {
   constructor(private readonly repository: StoryboardRepository) {}

@@ -1,0 +1,489 @@
+{
+  "date": "2026-10-16",
+  "origin": "https://marketing.richbest.cn",
+  "checks": [
+    {
+      "name": "字幕新增编辑分割撤销重做",
+      "split": 2,
+      "undo": 1,
+      "redo": 2,
+      "saved": [
+        {
+          "start": 0,
+          "end": 1.5,
+          "text": "轨道播放测试"
+        },
+        {
+          "start": 1.5,
+          "end": 3,
+          "text": "轨道播放测试"
+        }
+      ]
+    },
+    {
+      "name": "音频分割和音量保存",
+      "split": 2,
+      "saved": [
+        {
+          "start": 0,
+          "duration": 1.2,
+          "offset": 0,
+          "kind": "VOICE",
+          "type": "FILE"
+        },
+        {
+          "start": 1.2,
+          "duration": 1.1705833333333333,
+          "offset": 1.2,
+          "kind": "VOICE",
+          "type": "FILE"
+        }
+      ],
+      "volumes": [0.22387211385683395, 2]
+    },
+    {
+      "name": "素材搜索分类",
+      "empty": 0,
+      "matched": 1,
+      "roleCount": 8,
+      "cards": [
+        {
+          "title": "",
+          "aria": null,
+          "text": " 查看 Prompt "
+        },
+        {
+          "title": "设置素材用途，智能填充将保留此归槽",
+          "aria": null,
+          "text": " 更换槽位 "
+        }
+      ]
+    },
+    {
+      "name": "素材预览",
+      "dialog": 0,
+      "active": [
+        {
+          "time": 1.523259,
+          "ready": 4,
+          "error": null
+        }
+      ],
+      "buttons": []
+    },
+    {
+      "name": "音乐库读取",
+      "count": 0,
+      "text": "音乐\n仅支持 MP3\n导入音乐\n全部\n推荐音乐\n\n暂无音乐，点击“导入音乐”添加"
+    },
+    {
+      "name": "音乐导入试听",
+      "invalid": "音乐库仅支持导入 MP3 文件",
+      "created": true,
+      "count": 1,
+      "audio": [
+        {
+          "ready": 4,
+          "paused": true,
+          "time": 0,
+          "error": null
+        },
+        {
+          "ready": 4,
+          "paused": false,
+          "time": 1.114236,
+          "error": null
+        }
+      ],
+      "draggable": "true"
+    },
+    {
+      "name": "音乐搜索拖入轨道",
+      "empty": 0,
+      "audioCount": 3,
+      "saved": [
+        {
+          "kind": "VOICE",
+          "type": "FILE",
+          "asset": false,
+          "start": 0,
+          "duration": 1.2
+        },
+        {
+          "kind": "VOICE",
+          "type": "FILE",
+          "asset": false,
+          "start": 1.2,
+          "duration": 1.1705833333333333
+        },
+        {
+          "asset": true,
+          "start": 4.111010009099181,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "name": "转场搜索与应用",
+      "empty": 0,
+      "transition": [
+        {
+          "id": "4963492d-89b5-417f-ba6f-ff429ae72ba6",
+          "duration": 1.3,
+          "transition": "硬切"
+        },
+        {
+          "id": "7941daf1-ce4c-4559-ba73-7d8ec9c898b9",
+          "duration": 4,
+          "transition": "硬切"
+        },
+        {
+          "id": "a9764ec7-b2b2-4646-949f-70ff2f2d94d7",
+          "duration": 1.9000000000000001,
+          "transition": "叠化"
+        }
+      ],
+      "junctions": 0
+    },
+    {
+      "name": "播放器与轨道可见性",
+      "blackout": 1,
+      "hiddenCaptions": 0,
+      "playing": "1.2",
+      "videos": [
+        {
+          "time": 1.043074,
+          "paused": false,
+          "ready": 4,
+          "error": null
+        }
+      ],
+      "paused": "1.33333333333333",
+      "stable": "1.33333333333333",
+      "fullscreen": true
+    },
+    {
+      "name": "音色目录",
+      "buttons": [
+        {
+          "aria": "已选择 vivi",
+          "cls": "voice-card selected"
+        },
+        {
+          "aria": "选择 知性灿灿",
+          "cls": "voice-card"
+        },
+        {
+          "aria": "选择 可爱女生",
+          "cls": "voice-card"
+        },
+        {
+          "aria": "选择 调皮公主",
+          "cls": "voice-card"
+        }
+      ],
+      "profileCount": 0,
+      "alerts": []
+    },
+    {
+      "name": "原39条之一整片播放与音色缓存试听",
+      "audition": [],
+      "checkpoints": [
+        {
+          "playhead": "4",
+          "time": "00:00:04:01",
+          "visible": [
+            {
+              "time": 0,
+              "ready": 4,
+              "paused": false,
+              "error": null
+            }
+          ],
+          "sound": "声音监控：检测到声音"
+        },
+        {
+          "playhead": "8",
+          "time": "00:00:08:04",
+          "visible": [
+            {
+              "time": 0.144139,
+              "ready": 4,
+              "paused": false,
+              "error": null
+            }
+          ],
+          "sound": "声音监控：检测到声音"
+        },
+        {
+          "playhead": "12",
+          "time": "00:00:12:08",
+          "visible": [
+            {
+              "time": 0.176099,
+              "ready": 4,
+              "paused": false,
+              "error": null
+            }
+          ],
+          "sound": "声音监控：检测到声音"
+        },
+        {
+          "playhead": "16.2666666666667",
+          "time": "00:00:16:12",
+          "visible": [
+            {
+              "time": 0.336608,
+              "ready": 4,
+              "paused": false,
+              "error": null
+            }
+          ],
+          "sound": "声音监控：检测到声音"
+        },
+        {
+          "playhead": "20.3",
+          "time": "00:00:20:16",
+          "visible": [
+            {
+              "time": 0.535068,
+              "ready": 4,
+              "paused": false,
+              "error": null
+            }
+          ],
+          "sound": "声音监控：检测到声音"
+        },
+        {
+          "playhead": "24",
+          "time": "00:00:24:00",
+          "visible": [
+            {
+              "time": 3.985446,
+              "ready": 4,
+              "paused": true,
+              "error": null
+            }
+          ],
+          "sound": "声音监控：当前无声音"
+        }
+      ]
+    },
+    {
+      "name": "配乐跨成片复制和末尾重新播放",
+      "restarted": "0",
+      "music": [
+        {
+          "type": "FILE",
+          "loop": true,
+          "duration": 24
+        }
+      ]
+    },
+    {
+      "name": "线上轨道锁定与删除撤销",
+      "tests": [
+        {
+          "kind": "VIDEO",
+          "before": 3,
+          "after": 3
+        },
+        {
+          "kind": "AUDIO",
+          "before": 3,
+          "after": 3
+        },
+        {
+          "kind": "CAPTION",
+          "before": 2,
+          "after": 2
+        }
+      ],
+      "deleted": 1,
+      "restored": 2
+    },
+    {
+      "name": "静音时间轴缩放面板调整",
+      "muted": 3,
+      "videoMuted": true,
+      "fit": "91",
+      "zoom": "103",
+      "restore": "91",
+      "before": "480",
+      "after": "525"
+    },
+    {
+      "name": "短视频复制确认复现",
+      "rejected": 1,
+      "target": "00:00:04:00\nR-002\n卖点讲解"
+    },
+    {
+      "name": "三个宽度布局",
+      "layouts": [
+        {
+          "viewport": 1920,
+          "documentWidth": 1920,
+          "stage": {
+            "x": 961.8125,
+            "y": 107,
+            "width": 210.375,
+            "height": 374,
+            "top": 107,
+            "right": 1172.1875,
+            "bottom": 481,
+            "left": 961.8125
+          },
+          "timeline": {
+            "x": 59,
+            "y": 636,
+            "width": 1802,
+            "height": 261,
+            "top": 636,
+            "right": 1861,
+            "bottom": 897,
+            "left": 59
+          }
+        },
+        {
+          "viewport": 1440,
+          "documentWidth": 1440,
+          "stage": {
+            "x": 721.8125,
+            "y": 107,
+            "width": 210.375,
+            "height": 374,
+            "top": 107,
+            "right": 932.1875,
+            "bottom": 481,
+            "left": 721.8125
+          },
+          "timeline": {
+            "x": 59,
+            "y": 636,
+            "width": 1322,
+            "height": 261,
+            "top": 636,
+            "right": 1381,
+            "bottom": 897,
+            "left": 59
+          }
+        },
+        {
+          "viewport": 390,
+          "documentWidth": 390,
+          "stage": {
+            "x": 123.5625,
+            "y": 591,
+            "width": 142.875,
+            "height": 254,
+            "top": 591,
+            "right": 266.4375,
+            "bottom": 845,
+            "left": 123.5625
+          },
+          "timeline": {
+            "x": 35,
+            "y": 1361,
+            "width": 320,
+            "height": 261,
+            "top": 1361,
+            "right": 355,
+            "bottom": 1622,
+            "left": 35
+          }
+        }
+      ]
+    },
+    {
+      "name": "字幕删除视频隔离复查",
+      "before": 2,
+      "selected": 1,
+      "after": 2,
+      "restored": 2,
+      "captionAfter": 1,
+      "captionRestored": 2
+    },
+    {
+      "name": "短视频复制线上修复回归",
+      "script": "/assets/index-C58GsOBG.js",
+      "saved": [
+        {
+          "duration": 1.9000000000000001,
+          "offset": 1.3
+        }
+      ],
+      "target": "00:00:01:27\nR-001\n卖点讲解"
+    },
+    {
+      "name": "工作副本核对",
+      "baselineCount": 222,
+      "currentCount": 79,
+      "changed": [],
+      "baselineKeys": [
+        ["id", "key", "revision", "hash"],
+        ["id", "key", "revision", "hash"]
+      ]
+    },
+    {
+      "name": "画面变换与预览缩放",
+      "transforms": [
+        {
+          "scaleX": 0.75,
+          "scaleY": 0.75,
+          "rotation": 15
+        }
+      ],
+      "before": "100",
+      "after": "105"
+    },
+    {
+      "name": "清理临时对象",
+      "count1": 40,
+      "count2": 40,
+      "archived": 201,
+      "temporaryRemaining": 0
+    },
+    {
+      "name": "清理后原工程与产物完整性",
+      "count": 39,
+      "semanticChanges": [],
+      "templateUnchanged": true,
+      "artifactCount": 222,
+      "artifactChanged": [],
+      "outputs": [
+        {
+          "id": "1798c261-fb7e-4510-84df-69786222dddf",
+          "status": "COMPLETED",
+          "items": 39,
+          "stale": 0
+        }
+      ]
+    },
+    {
+      "name": "最终线上界面",
+      "projectCards": 39,
+      "bundle": "/assets/index-C58GsOBG.js"
+    },
+    {
+      "name": "测试音乐清理确认",
+      "getStatus": 404,
+      "remainingMusic": 0,
+      "paidWrites": 0
+    }
+  ],
+  "final": {
+    "count": 39,
+    "semanticChanges": [],
+    "templateUnchanged": true,
+    "artifactCount": 222,
+    "artifactChanged": [],
+    "outputs": [
+      {
+        "id": "1798c261-fb7e-4510-84df-69786222dddf",
+        "status": "COMPLETED",
+        "items": 39,
+        "stale": 0
+      }
+    ]
+  }
+}

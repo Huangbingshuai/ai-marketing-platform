@@ -194,3 +194,12 @@ it('renders model-written IDs, source paths and field names as readable business
     expect(value).not.toContain(hidden);
   expect(output.audit.summary).toBe('插脚位置缺少资料依据，需要修正。');
 });
+
+it('explains automatically confirmed catalogs without asking for another confirmation', () => {
+  const saved = JSON.stringify(
+    detail('SAVE', 'SUCCEEDED', { ...output, publishedWorkflowRunId: 'private-run-id' }),
+  );
+  expect(saved).toContain('资产目录已确认并保存');
+  expect(saved).not.toContain('可编辑草稿');
+  expect(saved).not.toContain('private-run-id');
+});

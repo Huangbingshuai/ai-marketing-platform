@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
 
@@ -34,6 +35,7 @@ import { EffectPromptService } from './effect-prompt.service';
 import { EffectPromptWorkerGuard } from './effect-prompt-worker.guard';
 
 @Controller('internal/workers/effect-prompt-generation')
+@AuthAccess('independent')
 @UseGuards(EffectPromptWorkerGuard)
 export class EffectPromptWorkerController {
   constructor(private readonly service: EffectPromptService) {}

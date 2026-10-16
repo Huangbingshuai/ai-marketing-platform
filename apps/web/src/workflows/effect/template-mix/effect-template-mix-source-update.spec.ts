@@ -407,7 +407,8 @@ describe('source update project locks', () => {
       workspaceTaskLocked: ref(false), selectedVariant: ref({ id: 'v2' }),
       packagingPreviewReadOnly: ref(false),
       variantPackagingLocked: () => false, packagingResults: ref([]),
-      sourceUpdateRun: ref({ items: [{ id: 'i1', variantId: 'v1' }, { id: 'i2', variantId: 'v2' }] }),
+      sourceUpdateRun: ref({ items: [{ id: 'i1', variantId: 'v1', status: 'COMPLETED' },
+        { id: 'i2', variantId: 'v2', status: 'RUNNING' }] }),
     };
     const source = page.split('const sourceUpdateLockedVariantIds =')[1]!
       .split('/**')[0]!;
@@ -440,6 +441,15 @@ describe('source update project locks', () => {
     context.sourceUpdateRun.value.items = [];
     expect(locks.variantEditLocked('v2')).toBe(true);
     expect(locks.variantEditLocked('v1')).toBe(false);
+  });
+  it('unlocks completed targets while retaining them in the full progress scope', () => {
+    const { context, locks } = setup();
+    context.sourceUpdateItemIds.value = ['i1', 'i2'];
+    expect(locks.variantEditLocked('v1')).toBe(false);
+    expect(locks.variantEditLocked('v2')).toBe(true);
+    context.sourceUpdateRun.value.items[1]!.status = 'COMPLETED';
+    expect(locks.variantEditLocked('v2')).toBe(false);
+    expect(locks.projectEditLocked.value).toBe(false);
   });
   it('keeps a live packaging result read-only without using the edit lock as a playback guard', () => {
     const { context, locks } = setup();

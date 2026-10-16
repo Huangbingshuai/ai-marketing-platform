@@ -616,7 +616,8 @@ export class EffectSourceImportRepository {
             workspace: {
               workflowRun: {
                 projectId,
-                activeKey: 'ACTIVE',
+                // Material IDs identify their exact draft. A retained historical Run is still
+                // readable after another branch becomes active; only writes require activation.
                 workflow: 'EFFECT',
                 workflowSpace: 'EFFECT',
               },

@@ -121,8 +121,8 @@ asyncio.run(run())`;
       expect(response.status).toBe(200);
       const workspace = ((await response.json()) as { data: StoryboardWorkspace }).data;
       expect(workspace.task?.status).toBe('COMPLETED');
-      expect(workspace.scripts).toHaveLength(3);
-      expect(new Set(workspace.scripts.map((s) => s.workflowRunId)).size).toBe(3);
+      expect(workspace.scripts).toHaveLength(1);
+      expect(new Set(workspace.scripts.map((s) => s.workflowRunId)).size).toBe(1);
       const detail = await fetch(
         `${api}/tasks/${task.id}/nodes/${route}_STORY?page=0&scriptId=${workspace.scripts[0]!.id}`,
       );

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiClientError, isNetworkError, requestJson, requestRaw } from './http-client';
 import { readRequestGeneration } from './read-request-generation';
+import { advanceAuthGeneration } from './auth-events';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -9,6 +10,60 @@ afterEach(() => {
 });
 
 describe('HTTP client', () => {
+  it('ignores a late unauthorized response after a new login has completed', async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+    let finish!: (response: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    );
+    const pending = requestJson('/projects');
+    advanceAuthGeneration();
+    finish(new Response(JSON.stringify({ code: 'AUTH_REQUIRED' }), { status: 401 }));
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+    expect(dispatchEvent).not.toHaveBeenCalled();
+  });
+  it.each(['json', 'raw'] as const)(
+    'includes session cookies and notifies the UI about expired auth on %s requests',
+    async (kind) => {
+      const dispatchEvent = vi.fn();
+      vi.stubGlobal('window', { dispatchEvent });
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ code: 'AUTH_REQUIRED', message: '登录已过期' }), {
+          status: 401,
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(
+        kind === 'json' ? requestJson('/projects') : requestRaw('/file'),
+      ).rejects.toMatchObject({ status: 401, code: 'AUTH_REQUIRED' });
+      expect(fetchMock.mock.calls[0]![1]).toMatchObject({ credentials: 'include' });
+      expect(dispatchEvent).toHaveBeenCalledOnce();
+      expect(dispatchEvent.mock.calls[0]![0].type).toBe('richi:auth-required');
+    },
+  );
+  it('does not expire an existing session because of a wrong login password', async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ code: 'AUTH_INVALID_CREDENTIALS' }), { status: 401 }),
+        ),
+    );
+    await expect(requestJson('/auth/login', { method: 'POST' })).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(dispatchEvent).not.toHaveBeenCalled();
+  });
   it.each(['json', 'raw'] as const)(
     'invalidates prefetches around an actual %s write',
     async (kind) => {

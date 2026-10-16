@@ -81,4 +81,5 @@ export * from './customized-brand-creation';
 
 export * from './customized-commerce-creation';
 export * from './customized-drama-creation';
+export * from './auth';
 export { defaultCustomizedAssetImagePrompt } from './customized-asset-image-prompt';

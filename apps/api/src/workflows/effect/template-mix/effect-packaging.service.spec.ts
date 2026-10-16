@@ -642,6 +642,26 @@ describe('packaging service output boundary', () => {
     expect(service.workerItem).not.toHaveBeenCalled();
     expect(repo.checkpoint).toHaveBeenCalledWith('p', 'run', 'attempt', 'item', 'VOICE', {}, '生成失败');
   });
+  it.each(['草稿已变化，请刷新后重试', '混剪草稿已在其他页面更新，请刷新后重试',
+    '包装执行期间成片已被修改'])('only rebuilds the saved READY plan for a mechanical draft race: %s', async (message) => {
+    const { service, repo, finalOutput } = harness();
+    const item = { ...completedItem(), status: 'RUNNING' };
+    const snapshot = { ...item.snapshot, operation: 'APPEND_PACKAGE' } as PackagingSnapshot;
+    repo.getItem.mockResolvedValue(item);
+    vi.spyOn(service, 'workerItem').mockResolvedValue({ item, snapshot,
+      run: { workflowRunId: 'w', templateId: 't' } } as never);
+    repo.db.effectPackagingFile.findMany.mockResolvedValue([{ fileObjectId: 'voice' }, { fileObjectId: 'music' }]);
+    finalOutput.upsertFromPackaging.mockRejectedValueOnce(new ConflictException(message)).mockResolvedValue(undefined);
+    const request = service.checkpoint('p', 'run', 'attempt', 'item', 'READY', {});
+    if (message === '包装执行期间成片已被修改') {
+      await expect(request).rejects.toThrow(message);
+      expect(finalOutput.upsertFromPackaging).toHaveBeenCalledOnce();
+    } else {
+      await expect(request).resolves.toEqual({ accepted: true });
+      expect(finalOutput.upsertFromPackaging).toHaveBeenCalledTimes(2);
+    }
+    expect(repo.checkpoint).toHaveBeenCalledOnce();
+  });
   it('rejects changed word timestamps after the audio has been atomically uploaded', async () => {
     const { service, repo } = harness();
     const item = completedItem();

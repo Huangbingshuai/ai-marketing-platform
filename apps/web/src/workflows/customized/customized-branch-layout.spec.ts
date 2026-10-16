@@ -55,6 +55,28 @@ describe('customized adapter for the shared effect branch tree', () => {
     expect(customizedBranchStages.map((stage) => stage.nodeId)).toEqual(CUSTOMIZED_WORKFLOW_NODES);
     expect(buildCustomizedBranchLayout(tree([branch('a', null, null, [])])).nodes).toEqual([]);
   });
+  it('shows one aggregate asset band, sibling extraction versions and stable local numbering', () => {
+    const data = tree([
+      branch('root', null, null, [0, 1]),
+      branch('script', 'root', 'STORYBOARD', [0, 1, 2]),
+      branch('assets-a', 'script', 'SHOT_PROMPT', [0, 1, 2, 3], true),
+      branch('assets-b', 'script', 'SHOT_PROMPT', [0, 1, 2, 3]),
+    ]);
+    data.branches[2]!.nodes[3]!.revision = 10;
+    data.branches[2]!.nodes[3]!.artifactCount = 8;
+    data.branches[3]!.nodes[3]!.revision = 20;
+    const layout = buildCustomizedBranchLayout(data);
+    expect(customizedBranchStages).toHaveLength(6);
+    expect(
+      layout.nodes.filter((n) => n.nodeId === 'SHOT_PROMPT').map((n) => [n.stageKey, n.revision]),
+    ).toEqual([
+      ['SHOT_PROMPT', 1],
+      ['SHOT_PROMPT', 2],
+    ]);
+    expect(layout.edges.map((e) => e.key)).toContain('script:STORYBOARD:-->assets-a:SHOT_PROMPT:-');
+    expect(layout.edges.map((e) => e.key)).toContain('script:STORYBOARD:-->assets-b:SHOT_PROMPT:-');
+    expect(layout.nodes.filter((n) => n.nodeId === 'SHOT_PROMPT')[0]!.artifactCount).toBe(8);
+  });
   it('includes all sibling scripts under the active brief, with only the viewed script marked current', () => {
     const data = tree([
       branch('root', null, null, [0, 1]),

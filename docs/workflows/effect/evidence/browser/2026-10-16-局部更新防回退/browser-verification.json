@@ -1,0 +1,64 @@
+{
+  "testedAt": "2026-10-16T06:40:56.957Z",
+  "bundle": "/assets/index-BvMq6VS-.js",
+  "faultInjection": {
+    "staleRevision": 130,
+    "readCount": 2,
+    "rounds": [
+      {
+        "round": 1,
+        "films": 39,
+        "second": "00:00:04:00\nR-025\n痛点唤醒\n低匹配",
+        "end": "28"
+      },
+      {
+        "round": 2,
+        "films": 39,
+        "second": "00:00:04:00\nR-025\n痛点唤醒\n低匹配",
+        "end": "28"
+      }
+    ],
+    "unexpectedDraftWrites": []
+  },
+  "nodeReturns": [
+    {
+      "node": "信息提炼",
+      "films": 39,
+      "second": "00:00:04:00\nR-025\n痛点唤醒\n低匹配"
+    },
+    {
+      "node": "片段渲染",
+      "films": 39,
+      "second": "00:00:04:00\nR-025\n痛点唤醒\n低匹配"
+    },
+    {
+      "node": "成片输出",
+      "films": 39,
+      "second": "00:00:04:00\nR-025\n痛点唤醒\n低匹配"
+    }
+  ],
+  "sizes": [
+    {
+      "width": 1920,
+      "films": 39,
+      "noDocumentOverflow": true
+    },
+    {
+      "width": 1440,
+      "films": 39,
+      "noDocumentOverflow": true
+    },
+    {
+      "width": 900,
+      "films": 39,
+      "noDocumentOverflow": true
+    }
+  ],
+  "server": {
+    "beforeRevision": 131,
+    "afterRevision": 131,
+    "draftUnchanged": true,
+    "historicalBranchFilms": 34
+  },
+  "returnAfterTemplateSwitch": 39
+}

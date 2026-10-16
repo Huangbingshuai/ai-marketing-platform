@@ -1,0 +1,2066 @@
+[
+  {
+    "timestamp": "2026-10-15T14:14:42.747112897Z",
+    "event": "final_output_stage",
+    "stage": "claim",
+    "durationMs": 66,
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf"
+  },
+  {
+    "timestamp": "2026-10-15T14:14:45.049889472Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0c593120-2319-4444-b91b-13f1960f1a5d",
+    "stage": "download",
+    "durationMs": 2289,
+    "sourceCount": 13,
+    "downloadBytes": 14763789,
+    "retryCount": 0,
+    "cacheHits": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:14:45.951066302Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0c593120-2319-4444-b91b-13f1960f1a5d",
+    "stage": "probe",
+    "durationMs": 901,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:15:05.657396247Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0c593120-2319-4444-b91b-13f1960f1a5d",
+    "stage": "encode",
+    "durationMs": 19688
+  },
+  {
+    "timestamp": "2026-10-15T14:15:05.771396691Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0c593120-2319-4444-b91b-13f1960f1a5d",
+    "stage": "output_probe",
+    "durationMs": 114
+  },
+  {
+    "timestamp": "2026-10-15T14:15:07.351222175Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0c593120-2319-4444-b91b-13f1960f1a5d",
+    "stage": "upload",
+    "durationMs": 1565,
+    "uploadBytes": 6222108,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:15:07.352099390Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0c593120-2319-4444-b91b-13f1960f1a5d",
+    "stage": "item",
+    "durationMs": 24604
+  },
+  {
+    "timestamp": "2026-10-15T14:15:08.346116544Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0f053478-11a8-49c0-9d07-c5355075ddba",
+    "stage": "download",
+    "durationMs": 984,
+    "sourceCount": 13,
+    "downloadBytes": 12054269,
+    "retryCount": 0,
+    "cacheHits": 1
+  },
+  {
+    "timestamp": "2026-10-15T14:15:09.173559821Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0f053478-11a8-49c0-9d07-c5355075ddba",
+    "stage": "probe",
+    "durationMs": 827,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:15:26.443374817Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0f053478-11a8-49c0-9d07-c5355075ddba",
+    "stage": "encode",
+    "durationMs": 17253
+  },
+  {
+    "timestamp": "2026-10-15T14:15:26.517594304Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0f053478-11a8-49c0-9d07-c5355075ddba",
+    "stage": "output_probe",
+    "durationMs": 74
+  },
+  {
+    "timestamp": "2026-10-15T14:15:26.518293845Z",
+    "event": "final_output_item_failed",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0f053478-11a8-49c0-9d07-c5355075ddba",
+    "exceptionType": "PackagingError"
+  },
+  {
+    "timestamp": "2026-10-15T14:15:26.526806879Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "0f053478-11a8-49c0-9d07-c5355075ddba",
+    "stage": "item",
+    "durationMs": 19175
+  },
+  {
+    "timestamp": "2026-10-15T14:15:27.333801181Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "127c331e-e102-4f74-97c1-bbd8824edece",
+    "stage": "download",
+    "durationMs": 796,
+    "sourceCount": 13,
+    "downloadBytes": 9660480,
+    "retryCount": 0,
+    "cacheHits": 3
+  },
+  {
+    "timestamp": "2026-10-15T14:15:28.060001750Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "127c331e-e102-4f74-97c1-bbd8824edece",
+    "stage": "probe",
+    "durationMs": 726,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:15:46.055271114Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "127c331e-e102-4f74-97c1-bbd8824edece",
+    "stage": "encode",
+    "durationMs": 17969
+  },
+  {
+    "timestamp": "2026-10-15T14:15:46.144766230Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "127c331e-e102-4f74-97c1-bbd8824edece",
+    "stage": "output_probe",
+    "durationMs": 89
+  },
+  {
+    "timestamp": "2026-10-15T14:15:46.722204981Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "127c331e-e102-4f74-97c1-bbd8824edece",
+    "stage": "upload",
+    "durationMs": 566,
+    "uploadBytes": 4912095,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:15:46.722883302Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "127c331e-e102-4f74-97c1-bbd8824edece",
+    "stage": "item",
+    "durationMs": 20196
+  },
+  {
+    "timestamp": "2026-10-15T14:15:47.404991692Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "2798071b-405a-4803-a204-9a83ad7f3b65",
+    "stage": "download",
+    "durationMs": 674,
+    "sourceCount": 13,
+    "downloadBytes": 11481106,
+    "retryCount": 0,
+    "cacheHits": 2
+  },
+  {
+    "timestamp": "2026-10-15T14:15:48.148978582Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "2798071b-405a-4803-a204-9a83ad7f3b65",
+    "stage": "probe",
+    "durationMs": 744,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:16:05.945564821Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "2798071b-405a-4803-a204-9a83ad7f3b65",
+    "stage": "encode",
+    "durationMs": 17719
+  },
+  {
+    "timestamp": "2026-10-15T14:16:06.003477407Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "2798071b-405a-4803-a204-9a83ad7f3b65",
+    "stage": "output_probe",
+    "durationMs": 58
+  },
+  {
+    "timestamp": "2026-10-15T14:16:06.647881320Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "2798071b-405a-4803-a204-9a83ad7f3b65",
+    "stage": "upload",
+    "durationMs": 633,
+    "uploadBytes": 5199036,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:16:06.648576523Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "2798071b-405a-4803-a204-9a83ad7f3b65",
+    "stage": "item",
+    "durationMs": 19926
+  },
+  {
+    "timestamp": "2026-10-15T14:16:07.339123687Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "42ef9d3b-5301-4297-87d5-aaceabe5cc27",
+    "stage": "download",
+    "durationMs": 681,
+    "sourceCount": 13,
+    "downloadBytes": 9563096,
+    "retryCount": 0,
+    "cacheHits": 2
+  },
+  {
+    "timestamp": "2026-10-15T14:16:08.155745380Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "42ef9d3b-5301-4297-87d5-aaceabe5cc27",
+    "stage": "probe",
+    "durationMs": 816,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:16:26.136266731Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "42ef9d3b-5301-4297-87d5-aaceabe5cc27",
+    "stage": "encode",
+    "durationMs": 17093
+  },
+  {
+    "timestamp": "2026-10-15T14:16:26.190142194Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "42ef9d3b-5301-4297-87d5-aaceabe5cc27",
+    "stage": "output_probe",
+    "durationMs": 54
+  },
+  {
+    "timestamp": "2026-10-15T14:16:26.190751649Z",
+    "event": "final_output_item_failed",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "42ef9d3b-5301-4297-87d5-aaceabe5cc27",
+    "exceptionType": "PackagingError"
+  },
+  {
+    "timestamp": "2026-10-15T14:16:26.199384238Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "42ef9d3b-5301-4297-87d5-aaceabe5cc27",
+    "stage": "item",
+    "durationMs": 19551
+  },
+  {
+    "timestamp": "2026-10-15T14:16:27.122536037Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a",
+    "stage": "download",
+    "durationMs": 913,
+    "sourceCount": 13,
+    "downloadBytes": 6406414,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:16:27.669718720Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a",
+    "stage": "probe",
+    "durationMs": 547,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:16:45.846735431Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a",
+    "stage": "encode",
+    "durationMs": 18114
+  },
+  {
+    "timestamp": "2026-10-15T14:16:45.926740062Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a",
+    "stage": "output_probe",
+    "durationMs": 80
+  },
+  {
+    "timestamp": "2026-10-15T14:16:46.725731378Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a",
+    "stage": "upload",
+    "durationMs": 786,
+    "uploadBytes": 4988905,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:16:46.726408472Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "47b8aaa9-b44d-470f-98b3-e9f9e9db3f7a",
+    "stage": "item",
+    "durationMs": 20527
+  },
+  {
+    "timestamp": "2026-10-15T14:16:47.363410448Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "5200f254-a536-49ce-a9da-c7686bde20c3",
+    "stage": "download",
+    "durationMs": 629,
+    "sourceCount": 13,
+    "downloadBytes": 7129134,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:16:47.862143204Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "5200f254-a536-49ce-a9da-c7686bde20c3",
+    "stage": "probe",
+    "durationMs": 499,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:17:05.761885172Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "5200f254-a536-49ce-a9da-c7686bde20c3",
+    "stage": "encode",
+    "durationMs": 17844
+  },
+  {
+    "timestamp": "2026-10-15T14:17:05.860558735Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "5200f254-a536-49ce-a9da-c7686bde20c3",
+    "stage": "output_probe",
+    "durationMs": 99
+  },
+  {
+    "timestamp": "2026-10-15T14:17:06.419295629Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "5200f254-a536-49ce-a9da-c7686bde20c3",
+    "stage": "upload",
+    "durationMs": 545,
+    "uploadBytes": 5187490,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:17:06.420014071Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "5200f254-a536-49ce-a9da-c7686bde20c3",
+    "stage": "item",
+    "durationMs": 19693
+  },
+  {
+    "timestamp": "2026-10-15T14:17:07.136279130Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "56d7c31c-8a92-4fd2-a8c1-a31f58861d21",
+    "stage": "download",
+    "durationMs": 707,
+    "sourceCount": 13,
+    "downloadBytes": 6839210,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:17:07.733117340Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "56d7c31c-8a92-4fd2-a8c1-a31f58861d21",
+    "stage": "probe",
+    "durationMs": 597,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:17:26.858412181Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "56d7c31c-8a92-4fd2-a8c1-a31f58861d21",
+    "stage": "encode",
+    "durationMs": 19107
+  },
+  {
+    "timestamp": "2026-10-15T14:17:26.964241215Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "56d7c31c-8a92-4fd2-a8c1-a31f58861d21",
+    "stage": "output_probe",
+    "durationMs": 106
+  },
+  {
+    "timestamp": "2026-10-15T14:17:27.529821443Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "56d7c31c-8a92-4fd2-a8c1-a31f58861d21",
+    "stage": "upload",
+    "durationMs": 549,
+    "uploadBytes": 5688079,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:17:27.530574462Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "56d7c31c-8a92-4fd2-a8c1-a31f58861d21",
+    "stage": "item",
+    "durationMs": 21110
+  },
+  {
+    "timestamp": "2026-10-15T14:17:28.017733343Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "63b791d5-ec3b-427c-bd78-56c18d9c2e10",
+    "stage": "download",
+    "durationMs": 475,
+    "sourceCount": 13,
+    "downloadBytes": 5453548,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:17:28.548904252Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "63b791d5-ec3b-427c-bd78-56c18d9c2e10",
+    "stage": "probe",
+    "durationMs": 530,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:17:48.665218331Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "63b791d5-ec3b-427c-bd78-56c18d9c2e10",
+    "stage": "encode",
+    "durationMs": 18496
+  },
+  {
+    "timestamp": "2026-10-15T14:17:48.752275484Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "63b791d5-ec3b-427c-bd78-56c18d9c2e10",
+    "stage": "output_probe",
+    "durationMs": 87
+  },
+  {
+    "timestamp": "2026-10-15T14:17:49.350219240Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "63b791d5-ec3b-427c-bd78-56c18d9c2e10",
+    "stage": "upload",
+    "durationMs": 516,
+    "uploadBytes": 5280572,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:17:49.350991084Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "63b791d5-ec3b-427c-bd78-56c18d9c2e10",
+    "stage": "item",
+    "durationMs": 21820
+  },
+  {
+    "timestamp": "2026-10-15T14:17:50.038110883Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "66332d6f-2c94-4635-bfd3-f4adfec9c9cf",
+    "stage": "download",
+    "durationMs": 678,
+    "sourceCount": 13,
+    "downloadBytes": 6539689,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:17:50.630691839Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "66332d6f-2c94-4635-bfd3-f4adfec9c9cf",
+    "stage": "probe",
+    "durationMs": 592,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:18:08.835858211Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "66332d6f-2c94-4635-bfd3-f4adfec9c9cf",
+    "stage": "encode",
+    "durationMs": 18143
+  },
+  {
+    "timestamp": "2026-10-15T14:18:08.895355704Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "66332d6f-2c94-4635-bfd3-f4adfec9c9cf",
+    "stage": "output_probe",
+    "durationMs": 59
+  },
+  {
+    "timestamp": "2026-10-15T14:18:09.498999178Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "66332d6f-2c94-4635-bfd3-f4adfec9c9cf",
+    "stage": "upload",
+    "durationMs": 587,
+    "uploadBytes": 5165889,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:18:09.499674282Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "66332d6f-2c94-4635-bfd3-f4adfec9c9cf",
+    "stage": "item",
+    "durationMs": 20149
+  },
+  {
+    "timestamp": "2026-10-15T14:18:10.178788342Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "694eab4c-fe6e-41a9-b81f-05c7f38f5513",
+    "stage": "download",
+    "durationMs": 669,
+    "sourceCount": 13,
+    "downloadBytes": 7008612,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:18:10.738438254Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "694eab4c-fe6e-41a9-b81f-05c7f38f5513",
+    "stage": "probe",
+    "durationMs": 559,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:18:29.445576483Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "694eab4c-fe6e-41a9-b81f-05c7f38f5513",
+    "stage": "encode",
+    "durationMs": 18020
+  },
+  {
+    "timestamp": "2026-10-15T14:18:29.520667166Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "694eab4c-fe6e-41a9-b81f-05c7f38f5513",
+    "stage": "output_probe",
+    "durationMs": 75
+  },
+  {
+    "timestamp": "2026-10-15T14:18:30.152352388Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "694eab4c-fe6e-41a9-b81f-05c7f38f5513",
+    "stage": "upload",
+    "durationMs": 616,
+    "uploadBytes": 5068657,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:18:30.153057774Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "694eab4c-fe6e-41a9-b81f-05c7f38f5513",
+    "stage": "item",
+    "durationMs": 20653
+  },
+  {
+    "timestamp": "2026-10-15T14:18:30.682136547Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "7e087d5d-d93b-417a-a3bf-28b22d4cc7e9",
+    "stage": "download",
+    "durationMs": 519,
+    "sourceCount": 13,
+    "downloadBytes": 5313518,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:18:31.148441690Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "7e087d5d-d93b-417a-a3bf-28b22d4cc7e9",
+    "stage": "probe",
+    "durationMs": 466,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:18:50.258895926Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "7e087d5d-d93b-417a-a3bf-28b22d4cc7e9",
+    "stage": "encode",
+    "durationMs": 19015
+  },
+  {
+    "timestamp": "2026-10-15T14:18:50.427532418Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "7e087d5d-d93b-417a-a3bf-28b22d4cc7e9",
+    "stage": "output_probe",
+    "durationMs": 171
+  },
+  {
+    "timestamp": "2026-10-15T14:18:52.770275900Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "7e087d5d-d93b-417a-a3bf-28b22d4cc7e9",
+    "stage": "upload",
+    "durationMs": 2079,
+    "uploadBytes": 5473269,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:18:52.771021319Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "7e087d5d-d93b-417a-a3bf-28b22d4cc7e9",
+    "stage": "item",
+    "durationMs": 22618
+  },
+  {
+    "timestamp": "2026-10-15T14:18:53.626786711Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "83297a86-dcc3-4b0f-a74b-b765bb031077",
+    "stage": "download",
+    "durationMs": 805,
+    "sourceCount": 13,
+    "downloadBytes": 6416978,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:18:54.935906943Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "83297a86-dcc3-4b0f-a74b-b765bb031077",
+    "stage": "probe",
+    "durationMs": 1312,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:19:26.428107820Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "83297a86-dcc3-4b0f-a74b-b765bb031077",
+    "stage": "encode",
+    "durationMs": 31109
+  },
+  {
+    "timestamp": "2026-10-15T14:19:26.486108059Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "83297a86-dcc3-4b0f-a74b-b765bb031077",
+    "stage": "output_probe",
+    "durationMs": 60
+  },
+  {
+    "timestamp": "2026-10-15T14:19:27.921304490Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "83297a86-dcc3-4b0f-a74b-b765bb031077",
+    "stage": "upload",
+    "durationMs": 1422,
+    "uploadBytes": 4356442,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:19:27.922004599Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "83297a86-dcc3-4b0f-a74b-b765bb031077",
+    "stage": "item",
+    "durationMs": 35151
+  },
+  {
+    "timestamp": "2026-10-15T14:19:28.766764109Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "8469fdf4-cae3-4133-9b8f-142feb35339a",
+    "stage": "download",
+    "durationMs": 835,
+    "sourceCount": 13,
+    "downloadBytes": 5201164,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:19:29.250149477Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "8469fdf4-cae3-4133-9b8f-142feb35339a",
+    "stage": "probe",
+    "durationMs": 483,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:19:48.261771073Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "8469fdf4-cae3-4133-9b8f-142feb35339a",
+    "stage": "encode",
+    "durationMs": 18986
+  },
+  {
+    "timestamp": "2026-10-15T14:19:48.362962427Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "8469fdf4-cae3-4133-9b8f-142feb35339a",
+    "stage": "output_probe",
+    "durationMs": 101
+  },
+  {
+    "timestamp": "2026-10-15T14:19:49.030394054Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "8469fdf4-cae3-4133-9b8f-142feb35339a",
+    "stage": "upload",
+    "durationMs": 658,
+    "uploadBytes": 5259549,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:19:49.031177167Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "8469fdf4-cae3-4133-9b8f-142feb35339a",
+    "stage": "item",
+    "durationMs": 21109
+  },
+  {
+    "timestamp": "2026-10-15T14:19:50.025365704Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "85e76d12-1ef5-4b38-a3e0-f3a5396499a1",
+    "stage": "download",
+    "durationMs": 985,
+    "sourceCount": 13,
+    "downloadBytes": 6687920,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:19:50.631455838Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "85e76d12-1ef5-4b38-a3e0-f3a5396499a1",
+    "stage": "probe",
+    "durationMs": 606,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:20:08.744574508Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "85e76d12-1ef5-4b38-a3e0-f3a5396499a1",
+    "stage": "encode",
+    "durationMs": 18092
+  },
+  {
+    "timestamp": "2026-10-15T14:20:08.799628691Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "85e76d12-1ef5-4b38-a3e0-f3a5396499a1",
+    "stage": "output_probe",
+    "durationMs": 55
+  },
+  {
+    "timestamp": "2026-10-15T14:20:10.032722414Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "85e76d12-1ef5-4b38-a3e0-f3a5396499a1",
+    "stage": "upload",
+    "durationMs": 1201,
+    "uploadBytes": 5054435,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:20:10.033449444Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "85e76d12-1ef5-4b38-a3e0-f3a5396499a1",
+    "stage": "item",
+    "durationMs": 21002
+  },
+  {
+    "timestamp": "2026-10-15T14:20:10.855744993Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "88437fac-70a8-46d5-b562-b9fb331429d7",
+    "stage": "download",
+    "durationMs": 808,
+    "sourceCount": 13,
+    "downloadBytes": 6609135,
+    "retryCount": 0,
+    "cacheHits": 5
+  },
+  {
+    "timestamp": "2026-10-15T14:20:11.428948320Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "88437fac-70a8-46d5-b562-b9fb331429d7",
+    "stage": "probe",
+    "durationMs": 579,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:20:30.956903051Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "88437fac-70a8-46d5-b562-b9fb331429d7",
+    "stage": "encode",
+    "durationMs": 19114
+  },
+  {
+    "timestamp": "2026-10-15T14:20:31.060277565Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "88437fac-70a8-46d5-b562-b9fb331429d7",
+    "stage": "output_probe",
+    "durationMs": 103
+  },
+  {
+    "timestamp": "2026-10-15T14:20:31.747947320Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "88437fac-70a8-46d5-b562-b9fb331429d7",
+    "stage": "upload",
+    "durationMs": 676,
+    "uploadBytes": 5219418,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:20:31.748810036Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "88437fac-70a8-46d5-b562-b9fb331429d7",
+    "stage": "item",
+    "durationMs": 21715
+  },
+  {
+    "timestamp": "2026-10-15T14:20:32.482949123Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "93c75be0-5bef-488b-92bd-6d5449ba3d29",
+    "stage": "download",
+    "durationMs": 725,
+    "sourceCount": 13,
+    "downloadBytes": 5381136,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:20:32.939139815Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "93c75be0-5bef-488b-92bd-6d5449ba3d29",
+    "stage": "probe",
+    "durationMs": 456,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:20:51.551579602Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "93c75be0-5bef-488b-92bd-6d5449ba3d29",
+    "stage": "encode",
+    "durationMs": 18594
+  },
+  {
+    "timestamp": "2026-10-15T14:20:51.638680042Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "93c75be0-5bef-488b-92bd-6d5449ba3d29",
+    "stage": "output_probe",
+    "durationMs": 87
+  },
+  {
+    "timestamp": "2026-10-15T14:20:52.272583886Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "93c75be0-5bef-488b-92bd-6d5449ba3d29",
+    "stage": "upload",
+    "durationMs": 622,
+    "uploadBytes": 4922553,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:20:52.273553372Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "93c75be0-5bef-488b-92bd-6d5449ba3d29",
+    "stage": "item",
+    "durationMs": 20525
+  },
+  {
+    "timestamp": "2026-10-15T14:20:52.914437302Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ac684ef7-ac70-494d-93b9-7bdcf693d6fe",
+    "stage": "download",
+    "durationMs": 631,
+    "sourceCount": 13,
+    "downloadBytes": 5317218,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:20:53.436212588Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ac684ef7-ac70-494d-93b9-7bdcf693d6fe",
+    "stage": "probe",
+    "durationMs": 521,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:21:11.554321964Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ac684ef7-ac70-494d-93b9-7bdcf693d6fe",
+    "stage": "encode",
+    "durationMs": 18098
+  },
+  {
+    "timestamp": "2026-10-15T14:21:11.622899621Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ac684ef7-ac70-494d-93b9-7bdcf693d6fe",
+    "stage": "output_probe",
+    "durationMs": 68
+  },
+  {
+    "timestamp": "2026-10-15T14:21:12.501884237Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ac684ef7-ac70-494d-93b9-7bdcf693d6fe",
+    "stage": "upload",
+    "durationMs": 863,
+    "uploadBytes": 4996258,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:21:12.502580590Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ac684ef7-ac70-494d-93b9-7bdcf693d6fe",
+    "stage": "item",
+    "durationMs": 20229
+  },
+  {
+    "timestamp": "2026-10-15T14:21:13.166161701Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "b896618e-9cd6-43ce-a6e3-8c3fda4bd664",
+    "stage": "download",
+    "durationMs": 652,
+    "sourceCount": 13,
+    "downloadBytes": 5467708,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:21:13.645487590Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "b896618e-9cd6-43ce-a6e3-8c3fda4bd664",
+    "stage": "probe",
+    "durationMs": 479,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:21:31.055558084Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "b896618e-9cd6-43ce-a6e3-8c3fda4bd664",
+    "stage": "encode",
+    "durationMs": 17129
+  },
+  {
+    "timestamp": "2026-10-15T14:21:31.159017608Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "b896618e-9cd6-43ce-a6e3-8c3fda4bd664",
+    "stage": "output_probe",
+    "durationMs": 103
+  },
+  {
+    "timestamp": "2026-10-15T14:21:31.848382084Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "b896618e-9cd6-43ce-a6e3-8c3fda4bd664",
+    "stage": "upload",
+    "durationMs": 679,
+    "uploadBytes": 4472184,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:21:31.849034317Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "b896618e-9cd6-43ce-a6e3-8c3fda4bd664",
+    "stage": "item",
+    "durationMs": 19346
+  },
+  {
+    "timestamp": "2026-10-15T14:21:33.178065298Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca52c713-1ecd-463a-9a12-438ef1757a26",
+    "stage": "download",
+    "durationMs": 1319,
+    "sourceCount": 13,
+    "downloadBytes": 5608378,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:21:33.659629708Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca52c713-1ecd-463a-9a12-438ef1757a26",
+    "stage": "probe",
+    "durationMs": 481,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:21:52.952642609Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca52c713-1ecd-463a-9a12-438ef1757a26",
+    "stage": "encode",
+    "durationMs": 18097
+  },
+  {
+    "timestamp": "2026-10-15T14:21:53.048936795Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca52c713-1ecd-463a-9a12-438ef1757a26",
+    "stage": "output_probe",
+    "durationMs": 96
+  },
+  {
+    "timestamp": "2026-10-15T14:21:53.696254956Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca52c713-1ecd-463a-9a12-438ef1757a26",
+    "stage": "upload",
+    "durationMs": 635,
+    "uploadBytes": 4953315,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:21:53.696981342Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca52c713-1ecd-463a-9a12-438ef1757a26",
+    "stage": "item",
+    "durationMs": 21848
+  },
+  {
+    "timestamp": "2026-10-15T14:21:55.944543454Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc",
+    "stage": "download",
+    "durationMs": 2236,
+    "sourceCount": 13,
+    "downloadBytes": 5656674,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:21:56.446621624Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc",
+    "stage": "probe",
+    "durationMs": 502,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:22:19.933946568Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc",
+    "stage": "encode",
+    "durationMs": 23464
+  },
+  {
+    "timestamp": "2026-10-15T14:22:20.236768860Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc",
+    "stage": "output_probe",
+    "durationMs": 298
+  },
+  {
+    "timestamp": "2026-10-15T14:22:20.964012696Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc",
+    "stage": "upload",
+    "durationMs": 646,
+    "uploadBytes": 5842729,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:22:20.964948875Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ca6d2a67-a426-4feb-aacd-4cc7f6e0e7fc",
+    "stage": "item",
+    "durationMs": 27268
+  },
+  {
+    "timestamp": "2026-10-15T14:22:21.586697142Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "cae76dfc-674e-45a1-b7bf-ba65607951cc",
+    "stage": "download",
+    "durationMs": 612,
+    "sourceCount": 13,
+    "downloadBytes": 5608204,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:22:22.052182482Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "cae76dfc-674e-45a1-b7bf-ba65607951cc",
+    "stage": "probe",
+    "durationMs": 465,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:22:40.340462863Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "cae76dfc-674e-45a1-b7bf-ba65607951cc",
+    "stage": "encode",
+    "durationMs": 18271
+  },
+  {
+    "timestamp": "2026-10-15T14:22:40.400254191Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "cae76dfc-674e-45a1-b7bf-ba65607951cc",
+    "stage": "output_probe",
+    "durationMs": 60
+  },
+  {
+    "timestamp": "2026-10-15T14:22:40.401047462Z",
+    "event": "final_output_item_failed",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "cae76dfc-674e-45a1-b7bf-ba65607951cc",
+    "exceptionType": "PackagingError"
+  },
+  {
+    "timestamp": "2026-10-15T14:22:40.407965383Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "cae76dfc-674e-45a1-b7bf-ba65607951cc",
+    "stage": "item",
+    "durationMs": 19443
+  },
+  {
+    "timestamp": "2026-10-15T14:22:41.119970083Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d1577741-d372-483d-aeae-1cb431a9d638",
+    "stage": "download",
+    "durationMs": 704,
+    "sourceCount": 13,
+    "downloadBytes": 5649762,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:22:41.638760404Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d1577741-d372-483d-aeae-1cb431a9d638",
+    "stage": "probe",
+    "durationMs": 519,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:23:00.548380717Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d1577741-d372-483d-aeae-1cb431a9d638",
+    "stage": "encode",
+    "durationMs": 18893
+  },
+  {
+    "timestamp": "2026-10-15T14:23:00.626063194Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d1577741-d372-483d-aeae-1cb431a9d638",
+    "stage": "output_probe",
+    "durationMs": 78
+  },
+  {
+    "timestamp": "2026-10-15T14:23:01.311863391Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d1577741-d372-483d-aeae-1cb431a9d638",
+    "stage": "upload",
+    "durationMs": 672,
+    "uploadBytes": 5399779,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:23:01.312754195Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d1577741-d372-483d-aeae-1cb431a9d638",
+    "stage": "item",
+    "durationMs": 20905
+  },
+  {
+    "timestamp": "2026-10-15T14:23:02.901180045Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d57c5f-5815-4e52-81e1-a9932031d59f",
+    "stage": "download",
+    "durationMs": 1576,
+    "sourceCount": 13,
+    "downloadBytes": 5258298,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:23:03.359552642Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d57c5f-5815-4e52-81e1-a9932031d59f",
+    "stage": "probe",
+    "durationMs": 458,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:23:22.123725836Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d57c5f-5815-4e52-81e1-a9932031d59f",
+    "stage": "encode",
+    "durationMs": 18743
+  },
+  {
+    "timestamp": "2026-10-15T14:23:22.178657436Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d57c5f-5815-4e52-81e1-a9932031d59f",
+    "stage": "output_probe",
+    "durationMs": 55
+  },
+  {
+    "timestamp": "2026-10-15T14:23:23.093165378Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d57c5f-5815-4e52-81e1-a9932031d59f",
+    "stage": "upload",
+    "durationMs": 903,
+    "uploadBytes": 5330953,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:23:23.093940869Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d57c5f-5815-4e52-81e1-a9932031d59f",
+    "stage": "item",
+    "durationMs": 21781
+  },
+  {
+    "timestamp": "2026-10-15T14:23:23.810033604Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d650e9-b281-41b9-88fa-8ee7c1166c2c",
+    "stage": "download",
+    "durationMs": 703,
+    "sourceCount": 13,
+    "downloadBytes": 5609458,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:23:24.333730588Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d650e9-b281-41b9-88fa-8ee7c1166c2c",
+    "stage": "probe",
+    "durationMs": 526,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:23:41.918814323Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d650e9-b281-41b9-88fa-8ee7c1166c2c",
+    "stage": "encode",
+    "durationMs": 17565
+  },
+  {
+    "timestamp": "2026-10-15T14:23:41.987382436Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d650e9-b281-41b9-88fa-8ee7c1166c2c",
+    "stage": "output_probe",
+    "durationMs": 69
+  },
+  {
+    "timestamp": "2026-10-15T14:23:42.667791208Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d650e9-b281-41b9-88fa-8ee7c1166c2c",
+    "stage": "upload",
+    "durationMs": 667,
+    "uploadBytes": 4653052,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:23:42.668449452Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "d5d650e9-b281-41b9-88fa-8ee7c1166c2c",
+    "stage": "item",
+    "durationMs": 19574
+  },
+  {
+    "timestamp": "2026-10-15T14:23:43.290536210Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "db6c8415-5d38-4913-b3e9-01d0b367a0a0",
+    "stage": "download",
+    "durationMs": 614,
+    "sourceCount": 13,
+    "downloadBytes": 5380814,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:23:43.746720367Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "db6c8415-5d38-4913-b3e9-01d0b367a0a0",
+    "stage": "probe",
+    "durationMs": 456,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:24:01.048009620Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "db6c8415-5d38-4913-b3e9-01d0b367a0a0",
+    "stage": "encode",
+    "durationMs": 17281
+  },
+  {
+    "timestamp": "2026-10-15T14:24:01.103483232Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "db6c8415-5d38-4913-b3e9-01d0b367a0a0",
+    "stage": "output_probe",
+    "durationMs": 55
+  },
+  {
+    "timestamp": "2026-10-15T14:24:01.104206115Z",
+    "event": "final_output_item_failed",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "db6c8415-5d38-4913-b3e9-01d0b367a0a0",
+    "exceptionType": "PackagingError"
+  },
+  {
+    "timestamp": "2026-10-15T14:24:01.110028529Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "db6c8415-5d38-4913-b3e9-01d0b367a0a0",
+    "stage": "item",
+    "durationMs": 18441
+  },
+  {
+    "timestamp": "2026-10-15T14:24:01.840405814Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e03c12ef-ffcf-4cea-9074-65c01e8a33e3",
+    "stage": "download",
+    "durationMs": 723,
+    "sourceCount": 13,
+    "downloadBytes": 5634588,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:24:02.342508762Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e03c12ef-ffcf-4cea-9074-65c01e8a33e3",
+    "stage": "probe",
+    "durationMs": 502,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:24:20.952551393Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e03c12ef-ffcf-4cea-9074-65c01e8a33e3",
+    "stage": "encode",
+    "durationMs": 18589
+  },
+  {
+    "timestamp": "2026-10-15T14:24:21.028594739Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e03c12ef-ffcf-4cea-9074-65c01e8a33e3",
+    "stage": "output_probe",
+    "durationMs": 76
+  },
+  {
+    "timestamp": "2026-10-15T14:24:21.688097475Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e03c12ef-ffcf-4cea-9074-65c01e8a33e3",
+    "stage": "upload",
+    "durationMs": 646,
+    "uploadBytes": 5547085,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:24:21.689118458Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e03c12ef-ffcf-4cea-9074-65c01e8a33e3",
+    "stage": "item",
+    "durationMs": 20579
+  },
+  {
+    "timestamp": "2026-10-15T14:24:22.806179340Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3",
+    "stage": "download",
+    "durationMs": 1107,
+    "sourceCount": 13,
+    "downloadBytes": 5466204,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:24:23.249019343Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3",
+    "stage": "probe",
+    "durationMs": 443,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:24:41.662835301Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3",
+    "stage": "encode",
+    "durationMs": 18398
+  },
+  {
+    "timestamp": "2026-10-15T14:24:41.742275753Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3",
+    "stage": "output_probe",
+    "durationMs": 79
+  },
+  {
+    "timestamp": "2026-10-15T14:24:41.743048668Z",
+    "event": "final_output_item_failed",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3",
+    "exceptionType": "PackagingError"
+  },
+  {
+    "timestamp": "2026-10-15T14:24:42.046655255Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e2d5f4b2-526e-48c2-a7f3-e2a508fc13f3",
+    "stage": "item",
+    "durationMs": 20354
+  },
+  {
+    "timestamp": "2026-10-15T14:24:42.942647734Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e6de825a-a71d-498e-a591-3cb762a25aae",
+    "stage": "download",
+    "durationMs": 705,
+    "sourceCount": 13,
+    "downloadBytes": 5306320,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:24:43.452656340Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e6de825a-a71d-498e-a591-3cb762a25aae",
+    "stage": "probe",
+    "durationMs": 510,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:25:00.062456238Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e6de825a-a71d-498e-a591-3cb762a25aae",
+    "stage": "encode",
+    "durationMs": 16587
+  },
+  {
+    "timestamp": "2026-10-15T14:25:00.166320218Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e6de825a-a71d-498e-a591-3cb762a25aae",
+    "stage": "output_probe",
+    "durationMs": 104
+  },
+  {
+    "timestamp": "2026-10-15T14:25:00.828176890Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e6de825a-a71d-498e-a591-3cb762a25aae",
+    "stage": "upload",
+    "durationMs": 646,
+    "uploadBytes": 4611949,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:25:00.828884695Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "e6de825a-a71d-498e-a591-3cb762a25aae",
+    "stage": "item",
+    "durationMs": 18786
+  },
+  {
+    "timestamp": "2026-10-15T14:25:01.964390928Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ebf2fffe-5aaf-4ae0-9ac8-8116246cc089",
+    "stage": "download",
+    "durationMs": 1126,
+    "sourceCount": 13,
+    "downloadBytes": 5522750,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:25:02.451758627Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ebf2fffe-5aaf-4ae0-9ac8-8116246cc089",
+    "stage": "probe",
+    "durationMs": 487,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:25:19.547239211Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ebf2fffe-5aaf-4ae0-9ac8-8116246cc089",
+    "stage": "encode",
+    "durationMs": 17075
+  },
+  {
+    "timestamp": "2026-10-15T14:25:19.618542825Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ebf2fffe-5aaf-4ae0-9ac8-8116246cc089",
+    "stage": "output_probe",
+    "durationMs": 71
+  },
+  {
+    "timestamp": "2026-10-15T14:25:20.764553613Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ebf2fffe-5aaf-4ae0-9ac8-8116246cc089",
+    "stage": "upload",
+    "durationMs": 1135,
+    "uploadBytes": 4963541,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:25:20.765269736Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ebf2fffe-5aaf-4ae0-9ac8-8116246cc089",
+    "stage": "item",
+    "durationMs": 19936
+  },
+  {
+    "timestamp": "2026-10-15T14:25:21.359270562Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ee07f65a-27a2-4244-85c7-61b4dfab3c1f",
+    "stage": "download",
+    "durationMs": 585,
+    "sourceCount": 13,
+    "downloadBytes": 5372386,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:25:21.851456701Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ee07f65a-27a2-4244-85c7-61b4dfab3c1f",
+    "stage": "probe",
+    "durationMs": 492,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:25:38.666815827Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ee07f65a-27a2-4244-85c7-61b4dfab3c1f",
+    "stage": "encode",
+    "durationMs": 16796
+  },
+  {
+    "timestamp": "2026-10-15T14:25:38.763939743Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ee07f65a-27a2-4244-85c7-61b4dfab3c1f",
+    "stage": "output_probe",
+    "durationMs": 97
+  },
+  {
+    "timestamp": "2026-10-15T14:25:39.292659528Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ee07f65a-27a2-4244-85c7-61b4dfab3c1f",
+    "stage": "upload",
+    "durationMs": 515,
+    "uploadBytes": 4478129,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:25:39.293345906Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "ee07f65a-27a2-4244-85c7-61b4dfab3c1f",
+    "stage": "item",
+    "durationMs": 18528
+  },
+  {
+    "timestamp": "2026-10-15T14:25:39.936721313Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "f08b5fb3-b8bb-4f5d-976d-03514d2b8c25",
+    "stage": "download",
+    "durationMs": 635,
+    "sourceCount": 13,
+    "downloadBytes": 5277392,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:25:40.446528308Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "f08b5fb3-b8bb-4f5d-976d-03514d2b8c25",
+    "stage": "probe",
+    "durationMs": 510,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:25:59.256535783Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "f08b5fb3-b8bb-4f5d-976d-03514d2b8c25",
+    "stage": "encode",
+    "durationMs": 18789
+  },
+  {
+    "timestamp": "2026-10-15T14:25:59.350825319Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "f08b5fb3-b8bb-4f5d-976d-03514d2b8c25",
+    "stage": "output_probe",
+    "durationMs": 94
+  },
+  {
+    "timestamp": "2026-10-15T14:26:02.601274895Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "f08b5fb3-b8bb-4f5d-976d-03514d2b8c25",
+    "stage": "upload",
+    "durationMs": 3241,
+    "uploadBytes": 5466164,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:26:02.602367844Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "f08b5fb3-b8bb-4f5d-976d-03514d2b8c25",
+    "stage": "item",
+    "durationMs": 23309
+  },
+  {
+    "timestamp": "2026-10-15T14:26:03.342222630Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fbe65081-a388-42ba-a53d-ea1a1a4d76bc",
+    "stage": "download",
+    "durationMs": 725,
+    "sourceCount": 13,
+    "downloadBytes": 5635178,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:26:03.851732583Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fbe65081-a388-42ba-a53d-ea1a1a4d76bc",
+    "stage": "probe",
+    "durationMs": 509,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:26:22.237183466Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fbe65081-a388-42ba-a53d-ea1a1a4d76bc",
+    "stage": "encode",
+    "durationMs": 18367
+  },
+  {
+    "timestamp": "2026-10-15T14:26:22.292285845Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fbe65081-a388-42ba-a53d-ea1a1a4d76bc",
+    "stage": "output_probe",
+    "durationMs": 55
+  },
+  {
+    "timestamp": "2026-10-15T14:26:22.293481299Z",
+    "event": "final_output_item_failed",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fbe65081-a388-42ba-a53d-ea1a1a4d76bc",
+    "exceptionType": "PackagingError"
+  },
+  {
+    "timestamp": "2026-10-15T14:26:22.304263474Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fbe65081-a388-42ba-a53d-ea1a1a4d76bc",
+    "stage": "item",
+    "durationMs": 19702
+  },
+  {
+    "timestamp": "2026-10-15T14:26:22.883404126Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fcef182d-b25d-4e9d-a785-05a223a5c8fb",
+    "stage": "download",
+    "durationMs": 569,
+    "sourceCount": 13,
+    "downloadBytes": 5457686,
+    "retryCount": 0,
+    "cacheHits": 6
+  },
+  {
+    "timestamp": "2026-10-15T14:26:23.358602059Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fcef182d-b25d-4e9d-a785-05a223a5c8fb",
+    "stage": "probe",
+    "durationMs": 475,
+    "sourceCount": 13
+  },
+  {
+    "timestamp": "2026-10-15T14:26:41.653867032Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fcef182d-b25d-4e9d-a785-05a223a5c8fb",
+    "stage": "encode",
+    "durationMs": 18277
+  },
+  {
+    "timestamp": "2026-10-15T14:26:41.717292782Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fcef182d-b25d-4e9d-a785-05a223a5c8fb",
+    "stage": "output_probe",
+    "durationMs": 64
+  },
+  {
+    "timestamp": "2026-10-15T14:26:42.238534740Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fcef182d-b25d-4e9d-a785-05a223a5c8fb",
+    "stage": "upload",
+    "durationMs": 510,
+    "uploadBytes": 5430682,
+    "retryCount": 0
+  },
+  {
+    "timestamp": "2026-10-15T14:26:42.239320524Z",
+    "event": "final_output_stage",
+    "projectId": "a0bad7e0-e6b7-4eab-bde7-4cd70e85c532",
+    "runId": "1798c261-fb7e-4510-84df-69786222dddf",
+    "itemId": "fcef182d-b25d-4e9d-a785-05a223a5c8fb",
+    "stage": "item",
+    "durationMs": 19935
+  }
+]

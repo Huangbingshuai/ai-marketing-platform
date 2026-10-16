@@ -94,6 +94,22 @@ export function buildCustomizedBranchLayout(
         break;
       }
     }
+  // One aggregate asset branch per successful full extraction. Picture iterations
+  // and object edits advance business revisions without taking another number.
+  const groups = new Map<string, CustomizedBranchDisplayNode[]>();
+  for (const node of nodes.filter((n) => n.nodeId === 'SHOT_PROMPT')) {
+    const key = parents.get(node.key) ?? node.workflowRunId;
+    groups.set(key, [...(groups.get(key) ?? []), node]);
+  }
+  for (const group of groups.values())
+    group
+      .sort(
+        (a, b) =>
+          (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.key.localeCompare(b.key),
+      )
+      .forEach((node, index) => {
+        node.revision = index + 1;
+      });
   return placeWorkflowBranchNodes(
     nodes,
     parents,

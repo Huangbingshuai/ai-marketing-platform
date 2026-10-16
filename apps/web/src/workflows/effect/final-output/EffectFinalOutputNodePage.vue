@@ -171,7 +171,9 @@ const staleItems = computed(() => run.value?.items.filter((item) => item.stale) 
 const pendingProjects = computed(() => run.value?.projectChanges?.added ?? []);
 const removedItemIds = computed(() => new Set(run.value?.projectChanges?.removedItemIds ?? []));
 const canLocalUpdate = computed(() => Boolean(run.value?.projectChanges &&
-  ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(run.value.status) && run.value.counts.stale));
+  (['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(run.value.status) ||
+    (run.value.status === 'PENDING_RENDER' && run.value.items.some((item) => item.fileObjectId && item.assetId))) &&
+  run.value.counts.stale));
 const pageCount = computed(() => Math.max(1, Math.ceil((run.value?.items.length ?? 0) / pageSize.value)));
 const visibleItems = computed(() => {
   const source = run.value;
@@ -319,7 +321,7 @@ async function refreshExportProgress() {
         exportStarting.value || exportActive.value || exportPublishing.value ? 2500 : 15000);
   }
 }
-async function refresh() {
+async function refresh(): Promise<boolean> {
   const current = ++generation;
   controller?.abort();
   controller = new AbortController();
@@ -329,7 +331,7 @@ async function refresh() {
       `${base.value}?workflowRunId=${encodeURIComponent(outputWorkflowRunId.value)}`,
       { operation: '读取成片输出', signal: controller.signal },
     );
-    if (current !== generation) return;
+    if (current !== generation) return false;
     runs.value = result.data.filter((entry) => !deletedTemplateIds().has(entry.templateId));
     // The POST may still be waiting for its response (or the following refresh) after the
     // server has created the child. The read path is authoritative for its progress.
@@ -372,9 +374,11 @@ async function refresh() {
       entry.status === 'COMPLETED' &&
       (!entry.backgroundExportSourceRunId || entry.backgroundExportPublished));
     if (completedExport) await viewExportBranch(completedExport);
+    return current === generation;
   } catch (reason) {
     if (current === generation && !(reason instanceof DOMException && reason.name === 'AbortError'))
       error.value = reason instanceof Error ? reason.message : '读取输出失败';
+    return false;
   } finally {
     if (current === generation) {
       loading.value = false;
@@ -706,30 +710,36 @@ async function rerenderItem(item: FinalOutputRun['items'][number]) {
 async function localUpdate(itemIds: string[], syncProjects = false) {
   if (!run.value || !canLocalUpdate.value || busy.value ||
       (!itemIds.length && !syncProjects)) return;
-  const target = run.value;
+  const targetId = run.value.id;
   const projectId = props.projectId;
   const workflowRunId = props.workflowRunId;
-  const selected = run.value.items.filter((item) => itemIds.includes(item.id) && item.stale);
-  if (selected.length !== new Set(itemIds).size) {
-    error.value = '成片状态已变化，请刷新后重试';
-    return;
-  }
-  const removed = target.projectChanges?.removedItemIds ?? [];
-  const removeCount = syncProjects ? removed.length : selected.filter((item) => removed.includes(item.id)).length;
-  const addCount = syncProjects ? target.projectChanges?.added.length ?? 0 : 0;
-  const renderCount = selected.filter((item) => !removed.includes(item.id)).length + addCount;
-  const expectedDraftRevision = target.projectChanges?.draftRevision;
-  const confirmed = await requestActionConfirmation({
-    eyebrow: '局部更新成片',
-    title: `局部更新成片（新增 ${addCount} 条，修改 ${renderCount - addCount} 条，删除 ${removeCount} 条）？`,
-    description: `将读取当前混剪工程，在当前分支移除已删除工程的成片，并渲染新增或选中的变更工程，其他成片和历史分支不变。素材变更时仅重做受影响槽位的选区、口播和字幕。${renderCount ? '此操作会产生生成或渲染费用。' : '仅删除，不启动渲染任务。'}`,
-    confirmLabel: '确认局部更新',
-    tone: 'warning',
-  });
-  if (!confirmed || !mounted || props.projectId !== projectId ||
-    props.workflowRunId !== workflowRunId || run.value?.id !== target.id) return;
   busy.value = true;
   try {
+    // KeepAlive can still show the previous saved draft when the user returns from
+    // refinement. Confirm only after the server has supplied the latest revision.
+    if (!(await refresh())) return;
+    if (!mounted || props.projectId !== projectId || props.workflowRunId !== workflowRunId ||
+      run.value?.id !== targetId || error.value || !canLocalUpdate.value) return;
+    const target = run.value;
+    const selected = run.value.items.filter((item) => itemIds.includes(item.id) && item.stale);
+    if (selected.length !== new Set(itemIds).size) {
+      error.value = '成片状态已变化，请刷新后重试';
+      return;
+    }
+    const removed = target.projectChanges?.removedItemIds ?? [];
+    const removeCount = syncProjects ? removed.length : selected.filter((item) => removed.includes(item.id)).length;
+    const addCount = syncProjects ? target.projectChanges?.added.length ?? 0 : 0;
+    const renderCount = selected.filter((item) => !removed.includes(item.id)).length + addCount;
+    const expectedDraftRevision = target.projectChanges?.draftRevision;
+    const confirmed = await requestActionConfirmation({
+      eyebrow: '局部更新成片',
+      title: `局部更新成片（新增 ${addCount} 条，修改 ${renderCount - addCount} 条，删除 ${removeCount} 条）？`,
+      description: `将读取当前混剪工程，在当前分支移除已删除工程的成片，并渲染新增或选中的变更工程，其他成片和历史分支不变。素材变更时仅重做受影响槽位的选区、口播和字幕。${renderCount ? '此操作会产生生成或渲染费用。' : '仅删除，不启动渲染任务。'}`,
+      confirmLabel: '确认局部更新',
+      tone: 'warning',
+    });
+    if (!confirmed || !mounted || props.projectId !== projectId ||
+      props.workflowRunId !== workflowRunId || run.value?.id !== target.id) return;
     await requestJson(`/projects/${projectId}/workflows/effect/final-output/${target.id}/local-update`, {
       method: 'POST', operation: '局部更新成片', body: { itemIds, ...(syncProjects ? { syncProjects: true } : {}),
         ...(expectedDraftRevision !== undefined ? { expectedDraftRevision } : {}) },
@@ -937,7 +947,7 @@ onBeforeUnmount(() => {
             <h3>成片输出设置</h3>
             <p v-if="run.status === 'PENDING_RENDER'">设置仅作用于左侧选中的模板；导出后将渲染 {{ run.counts.total }} 条成片</p>
             <p v-else-if="exportActive || exportPublishing">正在重新导出全部成片，原有成片仍可用</p>
-            <p v-else-if="active">局部更新进行中；可以同时重新导出全部成片</p>
+            <p v-else-if="active">成片任务正在进行，可在下方查看进度</p>
             <p v-else>可调整分辨率与帧率；按当前模板工作流版本的工程重新导出全部成片</p>
           </div>
         </div>

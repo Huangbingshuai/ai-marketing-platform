@@ -84,7 +84,7 @@ describe('effect canvas update projection', () => {
   it('shows a non-color update warning without exposing artifact counts or changing navigation', () => {
     expect(canvas).toContain('needs-update');
     expect(canvas).toMatch(/<AlertCircle\s+v-if="staleCount\(index\) > 0"/);
-    expect(canvas).toContain("? '待更新' : nodes.value[index]?.status");
+    expect(canvas).toMatch(/staleCount\(index\) > 0\s*\? '待更新'/);
     expect(canvas).not.toContain('待更新 · ${staleCount(index)}');
     expect(canvas).not.toContain('有 ${staleCount(index)} 项内容');
     expect(canvas).toContain("emit('select', index)");

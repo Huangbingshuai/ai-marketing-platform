@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import type { ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -175,6 +176,7 @@ export class EffectSegmentImportController {
 }
 
 @Controller('internal/workers/effect-template-mix/video-imports')
+@AuthAccess('independent')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectSegmentImportWorkerController {
   constructor(

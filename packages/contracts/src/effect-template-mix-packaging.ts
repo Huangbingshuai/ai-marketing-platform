@@ -437,7 +437,11 @@ export function packagingSlotBoundaryError(variant: EffectTemplateMixVariant): s
     .sort((a, b) => a.start - b.start);
   if (
     rows.some(
-      ({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 4 || slot.duration > 15,
+      ({ slot }) =>
+        !Number.isFinite(slot.duration) ||
+        (slot.overlay === true
+          ? slot.duration < 0.001
+          : slot.duration < 4 || slot.duration > 15),
     )
   )
     return '槽位时长必须为 4–15 秒';

@@ -10,20 +10,21 @@ ENV PYTHONUNBUFFERED=1 \
     DOCLING_ARTIFACTS_PATH=/models \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y libgl1 libglib2.0-0 \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 install --no-install-recommends -y libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/effect-extraction
 COPY shared/ai-runtime /app/shared/ai-runtime
 COPY shared/extraction-runtime /app/shared/extraction-runtime
 COPY effect-extraction/pyproject.toml effect-extraction/uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 RUN /app/effect-extraction/.venv/bin/playwright install --with-deps chromium \
     && useradd --create-home --uid 10001 extraction \
     && chmod -R a+rX /ms-playwright
 COPY effect-extraction/src ./src
-RUN uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
 USER extraction
 

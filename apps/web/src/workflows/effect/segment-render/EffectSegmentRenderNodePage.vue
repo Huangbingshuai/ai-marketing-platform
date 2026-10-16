@@ -71,7 +71,6 @@ import {
   effectSegmentRenderTaskContentUrl,
   exportEffectSegmentRenderMaterials,
   getEffectSegmentRenderTaskContent,
-  getEffectSegmentRenderBatch,
   getEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
   refreshEffectSegmentRenderBatch,
@@ -147,7 +146,6 @@ const includeCompatiblePurposes = ref(false);
 const page = ref(1);
 const pageSize = ref<number>(EFFECT_SEGMENT_RENDER_PAGE_SIZE);
 const operation = ref<Operation>(null);
-const validated = ref(false);
 const editRequestPending = ref(false);
 const runSynchronizing = ref(false);
 let runSynchronization: Promise<void> | null = null;
@@ -789,7 +787,6 @@ const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
       ? '视频片段已完成并保存到素材池'
       : nextWorkspace.autoCommitPending ? '视频片段已完成，正在校验保存'
       : '视频片段已完成，请保存修改');
-  validated.value = nextWorkspace.commitStatus === 'COMMITTED' && !nextWorkspace.stale;
   if (nextWorkspace.committedWorkflowRunId && nextWorkspace.committedWorkflowRunId !== props.workflowRunId)
     void synchronizeWorkflowRun(nextWorkspace.committedWorkflowRunId);
   else if (
@@ -913,7 +910,6 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
     fragmentFilter.value = 'ALL';
     includeCompatiblePurposes.value = false;
   }
-  validated.value = false;
   if (showLoading) {
     creativeCoreByPromptId.value = {};
     promptDetailsByPromptId.value = {};
@@ -1217,14 +1213,14 @@ const startBatch = async (forceFull = false): Promise<void> => {
             ? {
                 eyebrow: current.stale ? '按最新 Prompt 重新渲染' : '重新渲染全部片段',
                 title: `重新生成全部 ${promptCount.value} 个视频素材片段？`,
-                description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${frozenDefaults.ratio}；${frozenDefaults.resolution}。${overrideDescription}确认后会严格按当前已确认 Prompt 创建新批次、提交 ${promptCount.value} 个视频生成任务并再次产生费用。人工导入的视频不会重新生成，也不会带入新分支。全部成功且校验通过后自动保存为新版本；原版本保持可回溯。`,
+                description: `${product.name.trim() ? `${product.name.trim()}；` : ''}${currentCapabilityLabel.value}；${frozenDefaults.ratio}；${frozenDefaults.resolution}。${overrideDescription}确认后会严格按当前已确认 Prompt 创建新批次、提交 ${promptCount.value} 个视频生成任务并再次产生费用。人工导入的视频不会重新生成，也不会带入新分支。全部成功且校验通过后自动保存为新版本；原版本保持可回溯。`,
                 confirmLabel: `重新提交 ${promptCount.value} 个任务`,
                 tone: 'warning',
               }
             : {
                 eyebrow: '创建视频渲染批次',
                 title: `开始生成 ${promptCount.value} 个视频素材片段？`,
-                description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${frozenDefaults.ratio}；${frozenDefaults.resolution}。${overrideDescription}确认后会提交 ${promptCount.value} 个视频生成任务并产生费用。`,
+                description: `${product.name.trim() ? `${product.name.trim()}；` : ''}${currentCapabilityLabel.value}；${frozenDefaults.ratio}；${frozenDefaults.resolution}。${overrideDescription}确认后会提交 ${promptCount.value} 个视频生成任务并产生费用。`,
                 confirmLabel: `提交 ${promptCount.value} 个任务`,
                 tone: 'warning',
               },
@@ -1235,7 +1231,6 @@ const startBatch = async (forceFull = false): Promise<void> => {
     creatingTaskCount.value = selectiveRefresh ? updateCount : promptCount.value;
     creatingLocalUpdate.value = Boolean(selectiveRefresh);
     operation.value = 'batch';
-    validated.value = false;
     if (selectiveRefresh) {
       const response = await refreshEffectSegmentRenderBatch(
         props.projectId,
@@ -1378,7 +1373,6 @@ const retryTask = async (taskId: string): Promise<void> => {
   creatingTaskCount.value = 1;
   creatingLocalUpdate.value = taskNeedsUpdate;
   operation.value = 'retry';
-  validated.value = false;
   try {
     const response = taskNeedsUpdate ? await refreshEffectSegmentRenderBatch(
       props.projectId, current.batchId,
@@ -1611,7 +1605,6 @@ const submitRepair = async (): Promise<void> => {
   )
     return;
   operation.value = 'repair';
-  validated.value = false;
   try {
     const response = await startEffectSegmentRenderRepair(
       props.projectId,
@@ -1670,7 +1663,6 @@ const decideRepair = async (
   )
     return;
   operation.value = 'repair';
-  validated.value = false;
   try {
     const response = await decideEffectSegmentRenderRepair(
       props.projectId,
@@ -2551,7 +2543,7 @@ onBeforeUnmount(() => {
       <WorkflowNodeFooter
         back-label="上一步：素材 Prompt"
         :show-validate="false"
-        :next-disabled="!validated || operation !== null"
+        :next-disabled="operation !== null || editTransitioning"
         next-label="下一步：模板混剪"
         @back="emit('back')"
         @next="emit('next')"

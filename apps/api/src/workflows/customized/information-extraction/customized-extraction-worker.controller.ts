@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import { timingSafeEqual } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
@@ -25,7 +26,10 @@ import { ConfigService } from '@nestjs/config';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { RawResponse } from '../../../common/raw-response.decorator';
 import { UploadTemporaryFileCleanupInterceptor } from '../../../platform/file/upload-temporary-file-cleanup.interceptor';
+// Nest constructor injection and DTO validation require runtime classes.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { CustomizedExtractionService } from './customized-extraction.service';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
   WorkerArtifactDto,
   WorkerCompleteDto,
@@ -52,6 +56,7 @@ export class CustomizedExtractionWorkerGuard implements CanActivate {
   }
 }
 @Controller('internal/workers/customized-extraction')
+@AuthAccess('independent')
 @UseGuards(CustomizedExtractionWorkerGuard)
 export class CustomizedExtractionWorkerController {
   constructor(private readonly service: CustomizedExtractionService) {}

@@ -57,6 +57,15 @@ function fixture() {
     );
   const tx = {
     $queryRaw: vi.fn(),
+    customizedExtractionTask: {
+      count: vi.fn().mockResolvedValue(0),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    customizedExtractionResult: { findUnique: vi.fn().mockResolvedValue(null) },
+    customizedExtractionArtifact: { findMany: vi.fn().mockResolvedValue([]) },
+    storageCleanupTask: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    jobOutbox: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    workingArtifactDependency: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
     workflowRun: {
       findFirst: vi.fn(
         ({ where }) => Object.values(runs).find((row) => matches(row, where)) ?? null,
@@ -82,11 +91,44 @@ function fixture() {
       findUnique: vi.fn(
         ({ where }) => states[where.projectId_workflowRunId_nodeId.workflowRunId] ?? null,
       ),
-      create: vi.fn(({ data }) => (states[data.workflowRunId] = structuredClone(data))),
+      findMany: vi.fn(({ where }) =>
+        states[where.workflowRunId]
+          ? [
+              {
+                nodeId: 'SOURCE_IMPORT',
+                projectId: 'p',
+                workflowRunId: where.workflowRunId,
+                ...states[where.workflowRunId],
+              },
+            ]
+          : [],
+      ),
+      create: vi.fn(
+        ({ data }) => (states[data.workflowRunId] = structuredClone({ revision: 1, ...data })),
+      ),
     },
     workingArtifact: {
       findFirst: vi.fn(({ where }) => artifacts[where.workflowRunId] ?? null),
-      create: vi.fn(({ data }) => (artifacts[data.workflowRunId] = structuredClone(data))),
+      findMany: vi.fn(({ where }) =>
+        artifacts[where.workflowRunId]
+          ? [
+              {
+                id: `artifact-${where.workflowRunId}`,
+                artifactKey: CUSTOMIZED_SOURCE_ARTIFACT_KEY,
+                dependencies: [],
+                files: [],
+                ...artifacts[where.workflowRunId],
+              },
+            ]
+          : [],
+      ),
+      create: vi.fn(
+        ({ data }) =>
+          (artifacts[data.workflowRunId] = structuredClone({
+            id: `artifact-${data.workflowRunId}`,
+            ...data,
+          })),
+      ),
     },
     assetVersion: {
       findMany: vi.fn(async ({ where }) => {

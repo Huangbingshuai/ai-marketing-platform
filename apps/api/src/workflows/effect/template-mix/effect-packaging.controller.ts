@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import {
   Body,
   Controller,
@@ -53,6 +54,8 @@ import {
 } from './dto/effect-template-mix.dto';
 import { EffectPackagingService } from './effect-packaging.service';
 import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard';
+// Nest validation requires the runtime DTO class.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { SourceTrimsDto } from './dto/effect-source-trims.dto';
 
 export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
@@ -211,6 +214,7 @@ export class EffectPackagingController {
 }
 
 @Controller('internal/workers/effect-template-mix/packaging-runs')
+@AuthAccess('independent')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectPackagingWorkerController {
   constructor(@Inject(EffectPackagingService) readonly service: EffectPackagingService) {}
@@ -303,6 +307,7 @@ export class EffectPackagingWorkerController {
  * whether the write is legal.
  */
 @Controller('internal/workers/effect-template-mix/caption-voices')
+@AuthAccess('independent')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectPackagingCaptionVoiceController {
   constructor(@Inject(EffectPackagingService) readonly service: EffectPackagingService) {}

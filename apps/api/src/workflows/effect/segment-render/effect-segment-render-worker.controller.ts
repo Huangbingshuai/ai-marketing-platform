@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import type { ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 
@@ -36,6 +37,7 @@ import type { UploadedSegmentRenderFile } from './effect-segment-render.types';
 import { EffectSegmentRenderWorkerGuard } from './effect-segment-render-worker.guard';
 
 @Controller('internal/workers/effect-segment-render')
+@AuthAccess('independent')
 @UseGuards(EffectSegmentRenderWorkerGuard)
 export class EffectSegmentRenderWorkerController {
   constructor(private readonly service: EffectSegmentRenderService) {}

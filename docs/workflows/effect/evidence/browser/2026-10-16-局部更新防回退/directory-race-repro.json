@@ -1,0 +1,17 @@
+{
+  "beforeFix": {
+    "revision": 1,
+    "films": 34,
+    "pending": 1
+  },
+  "afterFix": {
+    "revision": 2,
+    "films": 39,
+    "pending": 0
+  },
+  "secondUpdate": {
+    "revision": 3,
+    "films": 40,
+    "pending": 0
+  }
+}

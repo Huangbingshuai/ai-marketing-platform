@@ -1,3 +1,4 @@
+import { createAssetBranch } from './production-asset-branch';
 import {
   assertWorkerOperation,
   productionQueue,
@@ -63,6 +64,9 @@ export const presentProductionTask = (t: CustomizedProductionTask): ProductionTa
     shotId: t.shotId,
     status: t.status as ProductionTask['status'],
     errorMessage: t.errorMessage,
+    ...(typeof saved?.publishedWorkflowRunId === 'string'
+      ? { publishedWorkflowRunId: saved.publishedWorkflowRunId }
+      : {}),
     ...(t.status === 'FAILED' && t.operation === 'ASSETS' && Array.isArray(saved?.revised)
       ? {
           reviewDraftState: saved.manualDraftAdoptedRevision
@@ -180,11 +184,29 @@ export class ProductionRepository {
       data?.sourceRevision === script.revision && isProductionDocument(data.document)
         ? data.document
         : confirmedDocument;
+    const creationTaskId = run.branchCreationKey?.startsWith('assets:')
+      ? run.branchCreationKey.slice('assets:'.length)
+      : null;
+    const taskScope = {
+      projectId: p,
+      OR: [
+        { workflowRunId: r },
+        ...(creationTaskId ? [{ id: creationTaskId, operation: 'ASSETS' }] : []),
+      ],
+    };
     const tasks = await tx.customizedProductionTask.findMany({
-      where: { projectId: p, workflowRunId: r },
-      orderBy: { createdAt: 'desc' },
+      where: taskScope,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 30,
     });
+    // Image iteration must not hide the extraction behind the sole workflow entry.
+    if (!tasks.some((t) => t.operation === 'ASSETS')) {
+      const head = await tx.customizedProductionTask.findFirst({
+        where: { ...taskScope, operation: 'ASSETS' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      if (head) tasks.push(head);
+    }
     const brandMaterials = normalizeCustomizedImportDraft(
       artifacts.find((a) => a.artifactKey === 'customized-source-package')?.payload,
     ).materials.filter((m) => m.category === 'VISUAL_REFERENCE');
@@ -298,6 +320,42 @@ export class ProductionRepository {
       },
     ]);
   }
+  private async commitAssets(tx: Tx, p: string, r: string, value: ProductionDocument) {
+    const artifacts = await this.artifacts(tx, p, r);
+    const run = await this.scope(tx, p, r);
+    const story = artifacts.find((a) => a.artifactKey === `customized-script:${run.forkScriptId}`)!;
+    const brief = artifacts.find((a) => a.artifactKey === 'customized-brief');
+    const dependencies = brief ? [story, brief] : [story];
+    if (!value.assets.some((a) => a.kind === 'PRODUCT')) invalid('请保留独立的产品资产定义');
+    for (const a of value.assets)
+      await this.commit(
+        tx,
+        p,
+        r,
+        'SHOT_PROMPT',
+        `customized-object:${a.id}`,
+        a.name,
+        a,
+        dependencies,
+      );
+    // Removed objects invalidate only their actual dependent shots/prompts.
+    for (const a of artifacts.filter(
+      (a) =>
+        a.artifactKey.startsWith('customized-object:') &&
+        !value.assets.some((v) => `customized-object:${v.id}` === a.artifactKey),
+    ))
+      await this.commit(tx, p, r, 'SHOT_PROMPT', a.artifactKey, a.name, { removed: true }, [story]);
+    await this.commit(
+      tx,
+      p,
+      r,
+      'SHOT_PROMPT',
+      'customized-asset-catalog',
+      '资产目录',
+      { assets: value.assets },
+      dependencies,
+    );
+  }
   async save(
     p: string,
     r: string,
@@ -355,40 +413,7 @@ export class ProductionRepository {
           const artifacts = await this.artifacts(tx, p, r),
             story = artifacts.find((a) => a.id === w.source.artifactId)!;
           if (section === 'ASSETS') {
-            const brief = artifacts.find((a) => a.artifactKey === 'customized-brief');
-            const dependencies = brief ? [story, brief] : [story];
-            if (!value.assets.some((a) => a.kind === 'PRODUCT'))
-              invalid('请保留独立的产品资产定义');
-            for (const a of value.assets)
-              await this.commit(
-                tx,
-                p,
-                r,
-                'SHOT_PROMPT',
-                `customized-object:${a.id}`,
-                a.name,
-                a,
-                dependencies,
-              );
-            // Removed objects invalidate only their actual dependent shots/prompts.
-            for (const a of artifacts.filter(
-              (a) =>
-                a.artifactKey.startsWith('customized-object:') &&
-                !value.assets.some((v) => `customized-object:${v.id}` === a.artifactKey),
-            ))
-              await this.commit(tx, p, r, 'SHOT_PROMPT', a.artifactKey, a.name, { removed: true }, [
-                story,
-              ]);
-            await this.commit(
-              tx,
-              p,
-              r,
-              'SHOT_PROMPT',
-              'customized-asset-catalog',
-              '资产目录',
-              { assets: value.assets },
-              dependencies,
-            );
+            await this.commitAssets(tx, p, r, value);
           } else {
             if (
               !w.assetsConfirmed ||
@@ -1137,14 +1162,41 @@ export class ProductionRepository {
                   })),
                 }
               : value;
+          let destination = t.workflowRunId;
+          if (input.operation === 'ASSETS' && !input.targetAssetId) {
+            const catalog = (await this.artifacts(tx, p, destination)).find(
+              (a) => a.artifactKey === 'customized-asset-catalog',
+            );
+            if (
+              !catalog ||
+              workflowStateHash(catalog.payload) !== workflowStateHash({ assets: preserved.assets })
+            )
+              destination = await createAssetBranch(tx, p, t.workflowRunId, t.id);
+          }
+          const branchDocument =
+            destination === t.workflowRunId ? preserved : { assets: preserved.assets, shots: [] };
           await this.writeDraft(
             tx,
             p,
-            t.workflowRunId,
-            preserved,
+            destination,
+            branchDocument,
             input.sources[0]!.revision,
-            input.draftRevision,
+            destination === t.workflowRunId ? input.draftRevision : 0,
           );
+          if (input.operation === 'ASSETS') {
+            await this.commitAssets(tx, p, destination, branchDocument);
+            const saved = t.output as Record<string, unknown> | null;
+            await tx.customizedProductionTask.update({
+              where: { id },
+              data: {
+                output: json({
+                  ...(saved ?? {}),
+                  final: output,
+                  publishedWorkflowRunId: destination,
+                }),
+              },
+            });
+          }
         }
         await tx.customizedProductionTask.update({
           where: { id },
@@ -1154,7 +1206,14 @@ export class ProductionRepository {
             steps: json(
               steps.map((s) =>
                 s.id === 'SAVE'
-                  ? { ...s, status: 'SUCCEEDED', content: '内容已保存，可在当前工作台查看和编辑' }
+                  ? {
+                      ...s,
+                      status: 'SUCCEEDED',
+                      content:
+                        input.operation === 'ASSETS'
+                          ? '资产目录已确认并保存，可继续准备图片或进入视频制作'
+                          : '内容已保存，可在当前工作台查看和编辑',
+                    }
                   : s,
               ),
             ),

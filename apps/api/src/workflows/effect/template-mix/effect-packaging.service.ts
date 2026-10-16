@@ -1108,7 +1108,9 @@ export class EffectPackagingService {
           });
           break;
         } catch (error) {
-          if (!(error instanceof ConflictException) || error.message !== '草稿已变化，请刷新后重试') throw error;
+          if (!(error instanceof ConflictException) || ![
+            '草稿已变化，请刷新后重试', '混剪草稿已在其他页面更新，请刷新后重试',
+          ].includes(error.message)) throw error;
           if (attempt >= 7) throw new ServiceUnavailableException('其他成片正在提交，稍后继续保存本条包装');
         }
       }

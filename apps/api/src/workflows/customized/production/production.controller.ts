@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import { workerNodeForPath, type ProductionWorkerNode } from './production-worker-policy';
 import { timingSafeEqual } from 'node:crypto';
 import {
@@ -285,6 +286,7 @@ export class ProductionWorkerGuard implements CanActivate {
   }
 }
 @Controller(['internal/workers/customized-production', 'internal/workers/customized-assets'])
+@AuthAccess('independent')
 @UseGuards(ProductionWorkerGuard)
 export class ProductionWorkerController {
   constructor(

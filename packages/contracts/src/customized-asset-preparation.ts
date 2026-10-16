@@ -60,7 +60,7 @@ export const ASSET_STAGES = [
   { id: 'IMAGE_PLAN', label: '图片制作需求', description: '整理可按需制作的参考图清单' },
   { id: 'REVIEW', label: '资产核对', description: '查看具体问题、资料依据和处理建议' },
   { id: 'REPAIR', label: '问题修正与复核', description: '查看修改前后内容和复核结论' },
-  { id: 'SAVE', label: '保存资产草稿', description: '查看整理结果与后续使用安排' },
+  { id: 'SAVE', label: '保存资产结果', description: '查看整理结果、保存状态与后续使用安排' },
 ] as const;
 const object = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v);

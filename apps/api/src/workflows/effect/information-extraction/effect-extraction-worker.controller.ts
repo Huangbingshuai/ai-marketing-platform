@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
 
@@ -42,6 +43,7 @@ import {
 import { EffectExtractionWorkerGuard } from './effect-extraction-worker.guard';
 
 @Controller('internal/workers/effect-extraction')
+@AuthAccess('independent')
 @UseGuards(EffectExtractionWorkerGuard)
 export class EffectExtractionWorkerController {
   constructor(private readonly service: EffectExtractionService) {}

@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import type { ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 
@@ -9,6 +10,7 @@ import { SegmentRenderProviderVideoQueryDto } from './dto/effect-segment-render.
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { EffectSegmentRenderService } from './effect-segment-render.service';
 
+@AuthAccess('independent')
 @Controller('provider-inputs/effect-segment-render')
 export class EffectSegmentRenderProviderInputController {
   constructor(private readonly service: EffectSegmentRenderService) {}

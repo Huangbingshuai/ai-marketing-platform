@@ -20,7 +20,7 @@ describe('video transform integration', () => {
     expect(page).toContain('playerMediaAspect(video.videoWidth, video.videoHeight)');
     expect(page).toContain("video.getAttribute('src') !== material.contentUrl");
     expect(page).toContain('slotSourceAspect(id), stageAspectRatio.value, t');
-    expect(page).toContain("const mediaFit = slotMeasuredAspect(id) ? 'fill' : 'contain'");
+    expect(page).toContain("t.scaleX === t.scaleY ? 'cover' : 'fill'");
     expect(page).toContain('object-fit:var(--video-fit, contain)');
     expect(page).toContain('object-fit: var(--video-fit, contain)');
     expect(page).not.toContain('effectCanvasAspect(materialForSlot(');

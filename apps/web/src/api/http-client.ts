@@ -1,4 +1,5 @@
 import { trackApiWrite } from './read-request-generation';
+import { authGeneration, notifyAuthRequired } from './auth-events';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
@@ -94,6 +95,7 @@ export const requestJson = async <T>(
     keepalive,
   }: JsonRequestOptions = {},
 ): Promise<T> => {
+  const requestGeneration = authGeneration();
   const headers: Record<string, string> = { Accept: 'application/json', ...customHeaders };
   const isFormData = body instanceof FormData;
   if (body !== undefined && !isFormData && !headers['Content-Type']) {
@@ -102,6 +104,7 @@ export const requestJson = async <T>(
 
   const response = await trackApiWrite(method, () =>
     fetchJsonResponse(apiUrl(path), {
+      credentials: 'include',
       method,
       headers,
       ...(signal ? { signal } : {}),
@@ -113,6 +116,7 @@ export const requestJson = async <T>(
   if (!response.ok) {
     const fallback = `${operation}失败（HTTP ${response.status}）`;
     const payload = await responsePayload(response);
+    notifyAuthRequired(payload.code, requestGeneration);
     const message =
       typeof payload.message === 'string' && payload.message ? payload.message : fallback;
     throw new ApiClientError(message, response.status, payload);
@@ -132,6 +136,7 @@ export const requestRaw = async (
     keepalive,
   }: JsonRequestOptions = {},
 ): Promise<Response> => {
+  const requestGeneration = authGeneration();
   const headers: Record<string, string> = { ...customHeaders };
   const isFormData = body instanceof FormData;
   if (body !== undefined && !isFormData && !headers['Content-Type']) {
@@ -139,6 +144,7 @@ export const requestRaw = async (
   }
   const response = await trackApiWrite(method, () =>
     fetch(apiUrl(path), {
+      credentials: 'include',
       method,
       headers,
       ...(signal ? { signal } : {}),
@@ -149,6 +155,7 @@ export const requestRaw = async (
   if (!response.ok) {
     const fallback = `${operation}失败（HTTP ${response.status}）`;
     const payload = await responsePayload(response);
+    notifyAuthRequired(payload.code, requestGeneration);
     const message =
       typeof payload.message === 'string' && payload.message ? payload.message : fallback;
     throw new ApiClientError(message, response.status, payload);

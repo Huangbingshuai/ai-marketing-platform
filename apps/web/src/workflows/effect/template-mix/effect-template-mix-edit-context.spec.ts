@@ -77,6 +77,7 @@ function loadHarness() {
   const context = {
     sourceProjectionEpoch: 0,
     sourceProjectionEpochs: new Map(),
+    retainMixTemplateCatalogSources: (incoming: unknown) => incoming,
     packagingTaskWorkspaceScope: '',
     withoutDeletedMixTemplates: <T>(draft: T) => draft,
     withoutDeletedMixCatalog: <T>(directory: T) => directory,

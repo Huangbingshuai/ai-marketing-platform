@@ -64,7 +64,6 @@ import {
   cloneExtractionProductState,
   cloneExtractionResult,
   EFFECT_EXTRACTION_STATUS_META,
-  isExtractionReadyForNext,
   isExtractionRunning,
   requestPendingExtractionRun,
   takePendingExtractionRun,
@@ -166,13 +165,6 @@ const currentStatusMeta = computed(() =>
   currentState.value
     ? EFFECT_EXTRACTION_STATUS_META[currentState.value.status]
     : EFFECT_EXTRACTION_STATUS_META.NOT_GENERATED,
-);
-const readyForNext = computed(
-  () =>
-    Object.values(productStates.value).length > 0 &&
-    Object.values(productStates.value).every(
-      (state) => isExtractionReadyForNext(state) && state.commitStatus === 'COMMITTED',
-    ),
 );
 const currentRunning = computed(() => isExtractionRunning(currentState.value));
 const editing = computed(() =>
@@ -1693,7 +1685,7 @@ onBeforeUnmount(() => {
       <WorkflowNodeFooter
         back-label="上一步：资料导入"
         :show-validate="false"
-        :next-disabled="!readyForNext"
+        :next-disabled="validating || editBusy"
         next-label="下一步：素材 Prompt"
         @back="emit('back')"
         @next="emit('next')"

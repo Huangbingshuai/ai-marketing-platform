@@ -52,4 +52,19 @@ describe('slot packaging boundaries', () => {
     v.timelineStarts = { '1': 2 };
     expect(packagingSlotBoundaryError(v)).toBeNull();
   });
+  it.each([1 / 30, 2, 20])(
+    'accepts a trimmed or extended %s-second overlay without a narration line',
+    (duration) => {
+      const v = variant([4, duration]);
+      v.slots[1]!.overlay = true;
+      expect(packagingSlotBoundaryError(v)).toBeNull();
+      v.slots[1]!.overlay = false;
+      expect(packagingSlotBoundaryError(v)).toContain('4–15');
+    },
+  );
+  it.each([0, -1, NaN, Infinity])('rejects an invalid overlay duration %s', (duration) => {
+    const v = variant([duration]);
+    v.slots[0]!.overlay = true;
+    expect(packagingSlotBoundaryError(v)).not.toBeNull();
+  });
 });

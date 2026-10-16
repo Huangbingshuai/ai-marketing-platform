@@ -82,6 +82,54 @@ describe('packaging lightweight read scope', () => {
   });
 });
 describe('packaging lease and durable task repository', () => {
+  it.each([false, true])('serializes modern creation and rejects only overlapping targets, overlap=%s', async (overlap) => {
+    const { db, repo } = harness();
+    db.effectPackagingRun.count.mockResolvedValue(overlap ? 1 : 0);
+    const task = repo.create({ projectId: 'p', workflowRunId: 'w', templateId: 't',
+      idempotencyKey: 'single', requestHash: 'hash', expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
+      snapshots: [{ operation: 'SINGLE_PACKAGE', variant: { id: 'selected' } } as PackagingSnapshot],
+    });
+    if (overlap) {
+      await expect(task).rejects.toThrow('已有包装任务');
+      expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
+      expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+    } else {
+      await expect(task).resolves.toBe('run');
+      expect(db.effectPackagingRun.create).toHaveBeenCalledOnce();
+    }
+    expect(db.$executeRaw).toHaveBeenCalled();
+    expect(db.effectPackagingRun.count).toHaveBeenCalledWith({ where: {
+      projectId: 'p', workflowRunId: 'w', templateId: 't', status: { in: ['QUEUED', 'RUNNING'] },
+      items: { some: { variantId: { in: ['selected'] }, status: { in: ['QUEUED', 'RUNNING'] } } },
+    } });
+    expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(db.effectPackagingRun.count.mock.invocationCallOrder[0]!);
+  });
+  it('retains the whole-template concurrency barrier for legacy packaging tasks', async () => {
+    const { db, repo } = harness();
+    db.effectPackagingRun.count.mockResolvedValue(1);
+    await expect(repo.create({ projectId: 'p', workflowRunId: 'w', templateId: 't',
+      idempotencyKey: 'legacy', requestHash: 'hash', expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
+      snapshots: [{ variant: { id: 'selected' } } as PackagingSnapshot],
+    })).rejects.toThrow('已有包装任务');
+    expect(db.effectPackagingRun.count).toHaveBeenCalledWith({ where: {
+      projectId: 'p', workflowRunId: 'w', templateId: 't', status: { in: ['QUEUED', 'RUNNING'] },
+    } });
+    expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
+  });
+  it('does not admit a disjoint modern task beside an active legacy task in the same Run', async () => {
+    const { db, repo } = harness();
+    db.effectPackagingItem.findMany.mockResolvedValue([{ variantId: 'other', snapshot: {},
+      run: { templateId: 't', workflowRunId: 'w' } }] as never);
+    await expect(repo.create({ projectId: 'p', workflowRunId: 'w', sourceWorkflowRunId: 'w', templateId: 't',
+      idempotencyKey: 'modern-after-legacy', requestHash: 'hash', expectedDraftRevision: 1,
+      expectedTemplateHash: templateConfigurationHash(testTemplate), checkpoints: [{}],
+      snapshots: [{ operation: 'SINGLE_PACKAGE', variant: { id: 'selected' } } as PackagingSnapshot],
+    })).rejects.toThrow('已有包装任务');
+    expect(db.effectPackagingRun.create).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
   it.each(['none', 'source', 'target'] as const)('keeps independent source and target fences (%s changed)', async (changed) => {
     const { db, repo } = harness();
     db.workflowNodeState.findUnique

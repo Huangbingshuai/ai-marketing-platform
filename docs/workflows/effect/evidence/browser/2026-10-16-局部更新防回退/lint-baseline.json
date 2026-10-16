@@ -1,0 +1,20 @@
+[
+  {
+    "file": "apps/web/src/workflows/effect/template-mix/EffectTemplateMixNodePage.vue",
+    "beforeErrors": 14,
+    "afterErrors": 14,
+    "unchangedErrors": true
+  },
+  {
+    "file": "apps/web/src/workflows/effect/template-mix/effect-template-mix-source-catalog.spec.ts",
+    "beforeErrors": 6,
+    "afterErrors": 6,
+    "unchangedErrors": true
+  },
+  {
+    "file": "apps/web/src/workflows/effect/template-mix/effect-template-mix-edit-context.spec.ts",
+    "beforeErrors": 1,
+    "afterErrors": 1,
+    "unchangedErrors": true
+  }
+]

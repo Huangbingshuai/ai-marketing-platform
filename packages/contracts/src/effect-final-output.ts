@@ -132,6 +132,8 @@ export type FinalOutputRun = {
   id: string;
   sourceOperationId?: string;
   sourceOperationHasAdditions?: boolean;
+  /** Frozen repair scope, including already completed films; absent for legacy tasks. */
+  sourceOperationVariantIds?: string[];
   sourceOperationAppendStarted?: boolean;
   workflowRunId: string;
   /** Independent full export; keep the source branch's films and local-update controls visible. */

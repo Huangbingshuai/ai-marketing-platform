@@ -1,0 +1,26 @@
+{
+  "verifiedAt": "2026-10-16T02:33:39Z",
+  "activeJobsBeforeUpdate": 0,
+  "apiImage": "sha256:05ea3e667a136948f1df65fa38ac045d209ed4cf622797b0eed12326c1b82a66",
+  "baseImage": "sha256:6f04d82914adf29b2afabe461c575fb14c757cb3325c3e7366163ee23ee4b569",
+  "apiHealth": "healthy",
+  "backup": "backups/20261016-pre-plum-fixes.sql.gz",
+  "migration": "20261016022000_packaging_active_target_scope",
+  "activeIndex": "effect_packaging_runs_active_lookup_idx",
+  "localAndContainerSha256": {
+    "dist/common/http-exception.filter.js": "694d2002305156ab3b5e79e513a982101299f913552ebbe4973c8a0dad12e9f6",
+    "dist/workflows/effect/template-mix/effect-packaging.repository.js": "138f5637c5ee547578bfe9b602786b733077dc2d819e2e2d0d6ff386ac287f06c"
+  },
+  "checks": {
+    "relatedVitestPassed": 303,
+    "relatedVitestFailed": 0,
+    "apiTypecheck": "passed",
+    "apiBuild": "passed",
+    "changedTypescriptEslint": "passed",
+    "gitDiffCheck": "passed"
+  },
+  "untested": [
+    "No additional paid HTTP concurrency demonstration after migration",
+    "No complete workspace test/lint run for this API-only fix"
+  ]
+}

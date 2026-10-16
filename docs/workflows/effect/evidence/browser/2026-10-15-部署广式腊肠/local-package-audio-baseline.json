@@ -1,0 +1,994 @@
+[
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:02c8d62b-fc04-4a8b-900f-2eaf8713bab5",
+    "revision": 1,
+    "confirmedAt": "2026-10-15T13:58:15.45",
+    "musicFileObjectId": "c367489a-e661-457d-af3b-973d2bb9e10e",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "c83e0280-0c25-4df5-98a0-b413f23f961f"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "ac919df7-03b0-4132-b367-dd2e7dacdce8"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "f25fc20f-e6ad-4ecf-b4f6-414c81409793"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "2a57a91d-4541-4008-8a88-8a66bafa98f3"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "dbf00365-f442-4200-93e8-194ed324681e"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "8297bdb0-2916-4f88-a2d7-1948a8ff7de8"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:1791ac54-3d11-4c12-a6f9-12c8d84c990a",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T14:03:31.055",
+    "musicFileObjectId": "3442a6ef-b6d9-404e-96ca-b45066ec39c9",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "e1c5f11f-a1b0-4edb-b079-2194953640e3"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "7b351212-9333-469a-9b28-a1515596b280"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "a9ee585a-1ec1-4117-997f-64b1f7509c3f"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "d8dac2c3-c12d-42b2-bc69-b79bc4084a32"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "94fd6d4e-9ac5-42e8-8321-0aa4c7b0f5b0"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "2a197ff2-2e77-423f-8e90-30cda309c9c5"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:2152229a-dcfa-4d45-bcc4-3fbff2c9fa2c",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:59:29.725",
+    "musicFileObjectId": "675ed2c9-fbe0-4acc-b67a-37bff1d09e7d",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "089b238d-e0ef-4b7b-915d-1786236c06fc"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "9d12b308-610c-4ca4-b16e-91c71f51cfee"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "d021a538-80d4-48f1-94a4-ccae52c4bdd1"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "08ad772a-dfed-4d40-b098-7edcfcb98c61"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "ad1c2bb2-1ce5-4711-9cf9-8abd61c374d2"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "5fe3cac8-6abc-4ed5-9777-413e9a8ab6de"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:26ed001d-3dae-4246-859a-cac8114f1b11",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:54:16.603",
+    "musicFileObjectId": "cd73ec3b-346c-4904-b4ee-42f6d3bacd48",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "f57b5d67-12d9-427a-a6c4-a3b64d73000c"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "ee3b5120-e959-4732-a6ee-d1f57e256833"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "0d9cf508-f79a-4b00-bbb9-41f69edd1707"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "b061585a-7ce6-4db4-acad-e3252d517f22"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "7198f25f-5c3b-4db3-8a7e-913be7e2e40b"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "0c48f8da-0b4a-46bf-a2db-902449d9b2e9"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:2b609044-bfae-47b6-ad9e-7aec4c22231e",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:53:43.025",
+    "musicFileObjectId": "f0745fcd-84fa-4751-b06b-6137f64a6986",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "dea2932a-df62-4b1b-aa41-a0e23e39b4f4"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "a5bc61ae-6417-483e-b458-9cf21901c00d"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "8141c9bf-c5e9-4d78-82c4-ef9121deabf8"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "9444e1c4-3796-4da5-8078-b9757587ebf6"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "f5509602-5f51-460a-9eb7-d28e41dbf7db"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "e40f363a-2a77-410c-ac36-a2dcaa85bdfd"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:3b6862c8-7822-42b3-9fd4-f8a286d0bb6a",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:53:06.15",
+    "musicFileObjectId": "df8bb713-4b9f-4ca1-b5bb-efecf5980c9e",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "78c0df88-9443-47a8-8f37-f3c1100f8e61"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "e5b3351f-6a42-4fbb-a2a5-fe9b5d3b6165"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "cc68c74d-554c-409d-9342-2a43dc2db78d"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "197fe638-e13f-4ef2-9a50-5010577f30fd"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "b41ca519-0322-4538-adc8-a19c37919ccb"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "86ad23fa-d886-4a84-8822-20454977fa58"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:44e20f82-5bc4-4b2a-ad23-e3d053bc07ec",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:55:01.071",
+    "musicFileObjectId": "c1121268-8234-4f59-9341-ecc1b6a3e61d",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "4c8e5663-1031-4a2f-9bdf-da5dc903c634"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "2edc5bea-ca79-4846-975a-fe1e1cd973ed"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "9638b465-4afb-4881-9cb1-8a7f8c8cce3d"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "e0d187a6-186f-439c-8696-74f7c52cd90f"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "730bfe35-13b5-4988-adec-b9e7ff9c1894"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "60f8d6d7-0b74-4126-bd32-af2cdd393854"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:45a2e8ca-2451-4b8e-997d-e885ded46e30",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:51:11.14",
+    "musicFileObjectId": "8342dc59-ed2f-43eb-9ccf-d6215b463513",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "d2cb2316-f1a8-47ae-8f1a-6581bf286cdb"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "820f2658-9419-4cf1-aad5-e4aa87214012"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "1ea95332-1e94-44b9-a49a-d8ad6aa37f58"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "68ab4354-7803-4f68-b2ca-c1d3604a2297"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "f5717e61-280d-4768-a3c9-45491af8ca0a"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "9766df63-7296-4a47-9ffc-7facc8bd57cf"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:4ac99c29-601f-4e59-925d-70ff82b04402",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:51:05.329",
+    "musicFileObjectId": "d71bd237-85d3-49c1-8041-2a85a645c317",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "1f2c3435-91da-4d4a-b837-b8010570edb0"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "0e75ac12-0af3-4d24-b6f0-1ceb466caffc"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "b40ceb74-10ae-4ad8-a406-7f605be8072f"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "be05ae2f-b723-4924-9dfb-f10b1895d35c"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "7077257b-d0ed-48d0-9ddf-32d6eaef879a"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "c91dc085-fc85-4bf4-9758-1c32a1e2e651"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:531e5e18-f410-4ec6-8176-47fc50f53b61",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:57:32.385",
+    "musicFileObjectId": "bdbfd507-dd23-4f55-9a7a-028bec47b2b3",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "2eea2585-1924-49b6-b342-255fcdedaa94"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "8916943c-c6c0-435a-bc10-c6123c3f1332"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "91755c43-7917-4867-9534-75a7d29b2c5c"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "0f63e33d-1bb2-48f6-a6f3-db25c9072713"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "745c8987-0ea3-4040-810b-3fd61fb6324b"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "dc8595ae-eb31-4f83-83af-f74bc474f6cd"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:61602191-16b0-49c2-ae8a-91967f0f9b4f",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:53:08.077",
+    "musicFileObjectId": "67cb627e-b471-4009-812f-3ee5d91f7127",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "323bd572-af44-4ec0-bd55-437d1798e83c"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "9872ded7-3a90-4be3-90ee-e48336e6ef45"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "1f52e230-0b00-4c29-9870-30c3a74df547"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "6f16cbfe-5d2d-4e6f-8cc2-3d2d787d2e83"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "5e3c9030-05e0-42b2-81f8-790a8b2eec43"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "eee76027-f104-45e9-8028-58a1e0f58ca2"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:64b81dca-4196-47b3-8205-20bbc437fdaa",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T14:01:24.768",
+    "musicFileObjectId": "ddd6d4a4-bf4f-4da5-b663-1d61066a4cdf",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "f35ea5f7-c066-4b0f-9c0f-8d13e7172613"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "e09ee8ec-962b-4f79-8444-7e3853890c6d"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "604b3c8a-505b-49d7-9a7c-9246ccccf28e"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "300ca794-8620-4131-86d3-eaa344863276"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "8678a9db-7bb2-41f9-a483-f9ac59f7ce1f"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "2c3b5bc1-8efb-4d22-bc21-eb7770759a66"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:66cceb81-f262-4188-8078-dc04db2f8f6d",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T14:00:44.233",
+    "musicFileObjectId": "4a36378c-0cc6-44cd-bf4b-4745b2e47ebd",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "e172e76f-f0e2-4f2d-9bec-95ae9302c8ad"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "aa389e6a-d1ad-4b82-888d-efab5f34a1ef"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "df5b7057-997a-40a4-b311-15911970470a"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "c09b09de-3747-40cb-93e6-a27e4a25812a"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "7485a61d-5ae8-49cb-902c-247ad0f4718b"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "08208e30-f7b1-4535-9203-8a5da2941f5c"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:676c7c87-10c9-4e39-ba0a-1e452d4e4291",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:58:52.73",
+    "musicFileObjectId": "0ff9cc4b-1a7d-4e31-b10c-dc97e8082277",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "ffb81e53-9c92-4661-91bb-983881c29ffa"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "c4e5558b-927f-4c61-bcd4-727d8e9f4b0d"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "898e6fd9-9fbe-42a3-8728-18535957af6f"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "a30a0a84-f875-4eb9-a5a5-dc944aee739b"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "3dafaea8-a6ab-4766-8666-f79a440f9d40"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "58df120d-79ca-44ba-b5c0-8bb339fd4c51"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:76e8467e-d6d4-428c-8528-e0413788b4da",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T14:00:56.847",
+    "musicFileObjectId": "b80e1f3b-de62-4d8f-b1fc-e8118fbf362b",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "6ba984e9-703c-4a5d-88e6-adaf79854eea"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "03895802-b398-4c7c-877d-1ce61ffcfcd6"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "36a90766-ae55-4f7d-aee7-cf5702edcaaf"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "737362ea-3387-4c01-a16d-48d0df15d0dc"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "479b933a-8ed1-42ba-aabc-cbee331b6812"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "0940fa24-a118-4f29-aede-fb151a955fe6"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:9911dd58-c846-4f76-b592-d1f75cfa9c71",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:56:07.461",
+    "musicFileObjectId": "2bef8d14-25e1-468a-8a58-2ddcd0e0a564",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "3307537e-5f8e-426e-9a9e-bf8a16db5054"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "43d05c0e-b956-4f67-990e-47afcb2d0f2d"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "3b1e7591-65f6-430e-8f10-58104ff09b89"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "e98c244f-daab-4c87-94bb-0c63167bc522"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "c33e471a-0b94-4eb4-8922-f3392bad3c92"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "f157918f-eec5-4333-9f11-929b093ea88d"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:9adee4d1-0855-421a-a7cd-717a0d79f00c",
+    "revision": 1,
+    "confirmedAt": "2026-10-15T14:00:23.371",
+    "musicFileObjectId": "db57729e-1ef2-4fd5-91ae-37d2b59bebad",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "93f23152-9b4f-48a6-a7a6-7be9b0b0ed5e"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "28467a3a-0b24-47e9-8c3f-3d13610398f7"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "d43f57cb-8f9a-4351-8d55-4c0e59da4eb1"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "64e5872a-4295-4f4d-9631-f976aeefff1b"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "0cdd4fd4-3d72-4ce2-968b-773fd2d9af48"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "3f7967ae-e1bc-4bfe-be28-4c3b761ec10c"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:9ee8d1f0-7aac-4a0b-9384-5e4bef27245a",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:54:52.725",
+    "musicFileObjectId": "43e93551-e50a-430b-b67d-7fb693ee9e39",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "be45b8b7-8161-4e51-b374-a2dc6b5bc51f"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "21934f5d-e40c-425f-841f-1bb804810c68"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "10dbf70b-2479-460f-a884-af49e953f332"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "cb000fe7-981a-46da-a72b-dcd86e31c709"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "f0c582d0-679c-40b9-b8dd-0ce79bdc9e27"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "e14b54e8-02dc-401d-9df6-d92562b65b07"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:abfd9ce4-cdcd-4a23-8a1f-413fac36548e",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:54:13.568",
+    "musicFileObjectId": "fafe0d9f-2ef5-4947-baea-d903e3bcb47f",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "1d5779d7-2a67-44c4-9db5-d8d2d77eee0a"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "714bcbdf-569c-4d3b-a0ec-7f71decdd032"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "2c693092-50d2-4267-b398-4bc6c1e0533d"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "489ce079-5deb-4569-a995-9363cb27d483"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "4a0ed4f1-84e2-4977-8055-d3ba1b1dcf3c"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "62ff7fca-a967-41dd-8629-ec9080bd5fb4"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:b39bcbe5-0ce2-40c4-af59-993be6feb298",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:56:45.322",
+    "musicFileObjectId": "b1fdedc9-610d-4785-a5fe-537d8396f8c2",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "2034d8f8-30f8-41ef-8865-f96feae56b0c"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "8a561d84-32e2-48dd-acae-d13e834c692b"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "72880428-3da9-4032-aec1-88510c04c207"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "a82ecc96-18a4-4f61-9317-ea6c9727a034"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "5f9e739f-b22e-4c07-9f4a-913f6bdf1496"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "a6e1ce7f-1d19-4486-a366-45ad81e8b3e4"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:bd8687f2-250f-46a6-9e4c-8b06d3d90d45",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:57:44.037",
+    "musicFileObjectId": "f393b98b-dd64-450a-9902-9d29ca0a422f",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "2338d97c-4ece-4259-bd5b-7c723cf030ad"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "67dbe5cf-8204-4b96-985c-eeb2c1997c77"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "9c1c8a41-fc99-4a01-9c00-324816cc3b6e"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "f5b6046d-63a8-4544-821f-84cb75054c3c"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "00762d16-f820-4f37-9608-c08325c0cf1b"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "8a1e913a-236c-465e-bff5-6af6cef4babd"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:cb801c28-64df-435a-ad2d-2cffe3d73a4d",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:51:44.459",
+    "musicFileObjectId": "cc03fa49-4cbf-43c2-afe2-d3d949700ba1",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "fd7c747f-e588-4fa2-a7d2-67669774a7aa"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "e38270b4-71fc-4907-9cef-e47219d62ebe"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "debfb512-8d69-4bba-8c6f-13939d54ea24"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "6bf47c9c-8fb2-43ee-ab29-4acbb393bb8c"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "3706f321-916f-4081-babc-06986e89b0b1"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "0baaa852-1c77-47cb-afdb-b08d44bb7f7d"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:d24508b6-655e-4833-bc06-0eea43f0409c",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T14:03:06.41",
+    "musicFileObjectId": "87e3e004-726b-4cca-9eea-88f5d8b263a6",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "e8ee907e-be00-45ce-b117-ce26383c65bb"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "7f905301-0b02-495b-b210-48759bc5cb37"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "da5f96c7-dfef-4c4f-bf9f-f966fb53cbb1"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "05250c78-1db4-48c6-9f6f-4fe0306855f4"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "6e8fc8bc-117f-4a4c-9e05-146085d71b83"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "2cc9d935-6b6d-4865-8ca9-ec98ad9762ed"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:d6b78688-331c-4b19-9a41-0c5902c6b68d",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:52:13.39",
+    "musicFileObjectId": "8d8d2848-6d36-48a1-a5ad-dbdcfbad7d39",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "a73a1ab6-8a1c-4927-a509-5954f8ba3cfb"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "e448ae17-844d-4405-83c4-659919d161a2"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "e835335b-e824-4125-b394-f5d317799761"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "eeb9056a-07e9-48c5-9ccd-d84f189ebf36"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "1d430f4f-fb00-4148-9755-04f319996e74"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "baa530f2-ed55-4372-8be8-f5c43e279059"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:db2ca888-14f2-4371-882c-70d1b17fc0c2",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:58:08.385",
+    "musicFileObjectId": "fe926f7b-aa4d-4377-8b33-f03b6ac5c7f7",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "e778a64c-74e5-4e4f-8c3f-7ab40688e10b"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "1552c831-7429-4e98-a817-c8791387e9f6"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "1b56c263-fb39-43de-a975-097efb901766"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "9431acde-9a95-4e94-8336-71168068f3fd"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "1c28a47e-0074-4962-ae43-33b621584439"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "c7e95ac3-d161-47ef-801e-a7ce2a2d1e2b"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:df3abbeb-0c7b-461a-b398-44cc0cc4f0d3",
+    "revision": 1,
+    "confirmedAt": "2026-10-15T14:01:41.423",
+    "musicFileObjectId": "fbb0653f-1e99-4b53-9395-e65bb78d5764",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "345c74b9-73fb-4ef0-afe5-a9beaf53f83a"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "b7515dad-fb2a-4a38-a652-530945124d9a"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "0cf99cea-27c2-4b19-957b-e2c2ed7ae7aa"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "1a4a61ab-bdc7-41c3-9512-bfeb459ee1bc"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "336ee7e1-f5d6-40c5-aac1-6f80588ed10f"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "6f7230f5-3d19-45e0-89de-37336c74c0a1"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:ea2fd791-fe20-40ba-9033-2e8042786107",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:52:21.591",
+    "musicFileObjectId": "944c2f0f-dd11-42f3-a39e-a9fcb009d365",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "7ea301e7-4570-4fc7-9943-b1df930cfdd4"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "1605ce56-efc7-454d-9ddc-fe2e3e7af398"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "c2b15376-ab8e-4611-ac73-f63651a077a9"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "e7680947-32b3-48e0-9c5b-0b2122226fff"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "c93700b9-72e4-46bf-b999-7bcf5359d9cf"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "e26cddcc-0935-4f32-b1c0-45db987871bc"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:ebb97fa9-e19c-45d6-a1f4-8df198a66704",
+    "revision": 1,
+    "confirmedAt": "2026-10-15T14:03:46.588",
+    "musicFileObjectId": "3f569313-da7a-4bef-8620-e546734c2b01",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "df06f4bb-4a54-43ac-833b-04958bc8c07b"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "87e3a601-6a3a-40c6-a965-28675d3096aa"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "2da9d502-7277-454d-9305-31c81ddcee93"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "85f9b7ae-ab86-4d98-a4dc-c2f2eaf9820e"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "6ad7f2ec-ecd5-43ee-bef8-17fcbb7f7db4"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "2ed9e3c4-e865-4623-a510-712a15f6e4f2"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:ebe0037c-0267-46ff-b33f-dc10bc6f4da8",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T14:00:11.02",
+    "musicFileObjectId": "28ee1e61-0801-4002-b95c-d3133b2530f6",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "6bbfdeaa-b6fa-46c8-9d5e-885182ec8430"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "b24c0684-f668-4ee7-866f-9fe31e18e079"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "1305902f-5cea-4be0-a55b-4f92971ec54c"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "88aa6342-35ca-4de4-861a-292855d20357"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "e4052dfe-fee6-4821-a456-c3fdc81b5723"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "1b83040d-a38b-4dd5-a9f2-4c329b8e8429"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:f46c9195-4e6b-4496-baba-e48f51af436b",
+    "revision": 2,
+    "confirmedAt": "2026-10-15T13:58:40.904",
+    "musicFileObjectId": "62a2a86b-f5c5-47bc-b63d-1d13db2f386c",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "9bd0b8ad-d457-4914-a2b9-af8b40f56881"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "2b3edb9e-7d41-4690-aa40-3da3842a7a2e"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "a51deb27-2985-423d-ba46-ebafc62c2a4a"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "1bb478d8-9259-4633-b9b1-e63996081ea6"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "ae35b629-f2b1-404e-8e74-a8d6581fe418"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "8a5743f8-68ff-4809-a153-c5fa822994a9"
+      }
+    ]
+  },
+  {
+    "artifactKey": "timeline-package:942c4caa-e8b8-4aac-b165-ac69b453272b:fd900e1a-bf7d-4d54-a12e-04ccfc5ff758",
+    "revision": 1,
+    "confirmedAt": "2026-10-15T13:56:38.992",
+    "musicFileObjectId": "0cb4fc1d-0dec-4345-99e8-ee88c4506555",
+    "voices": [
+      {
+        "lineId": "slot-2e3c63f6b006db38d62b7e05",
+        "fileObjectId": "42197d0c-339d-432e-b1be-e7c5a95e658c"
+      },
+      {
+        "lineId": "slot-34f07c13fc78bbac834cb79b",
+        "fileObjectId": "b175b31d-12d0-4dcb-9cad-f0582770b0ee"
+      },
+      {
+        "lineId": "slot-74f748254a1a456d7f2119e7",
+        "fileObjectId": "63f50e51-1dac-4ce6-af08-ea463f2090b5"
+      },
+      {
+        "lineId": "slot-786558c798cd4ff3a83a13c7",
+        "fileObjectId": "f983aa4f-6f42-4f90-acca-bd5ee94cbdff"
+      },
+      {
+        "lineId": "slot-b3799e0142d5bca62940e15c",
+        "fileObjectId": "6da5a853-28dd-4d1a-8509-b2f14b09b9d9"
+      },
+      {
+        "lineId": "slot-c288b0a61a1d16ab9098d5d5",
+        "fileObjectId": "11f4598d-b8f0-4f37-bb33-8c0a4e3876a2"
+      }
+    ]
+  }
+]

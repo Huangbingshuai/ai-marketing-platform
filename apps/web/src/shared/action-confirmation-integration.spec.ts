@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import appSource from '../app/App.vue?raw';
 import assetDrawerSource from '../platform/asset/AssetDrawer.vue?raw';
+import projectSource from '../platform/project/ProjectManagementPage.vue?raw';
 import extractionSource from '../workflows/effect/information-extraction/EffectInfoExtractionNodePage.vue?raw';
 import promptSource from '../workflows/effect/prompt-generation/EffectPromptGenerationNodePage.vue?raw';
 import segmentSource from '../workflows/effect/segment-render/EffectSegmentRenderNodePage.vue?raw';
@@ -25,21 +26,25 @@ describe('shared destructive action confirmation', () => {
       extractionSource,
       promptSource,
       segmentSource,
-      assetDrawerSource,
+      projectSource,
     ]) {
       expect(source).toContain('requestActionConfirmation');
       expect(source).not.toContain('window.confirm');
     }
     expect(promptSource).not.toContain('prompt-delete-dialog');
     expect(segmentSource).not.toContain('deleteDialogOpen');
+    expect(assetDrawerSource).toContain("emit('deleteProject', project)");
+    expect(projectSource).toContain('@delete-project="removeProject"');
+    expect(assetDrawerSource).not.toContain('requestActionConfirmation');
+    expect(assetDrawerSource).not.toContain('window.confirm');
   });
 
-  it('does not stack the shared confirmation over single-Prompt regeneration', () => {
-    const start = promptSource.indexOf('const openRegenerationDialog');
-    const end = promptSource.indexOf('const closeRegenerationDialog', start);
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-    expect(promptSource.slice(start, end)).not.toContain('requestActionConfirmation');
-    expect(promptSource).toContain('生成 3 个备选');
+  it('keeps the removed single-Prompt regeneration unavailable while retaining batch and edit actions', () => {
+    expect(promptSource).not.toContain('openRegenerationDialog');
+    expect(promptSource).not.toContain('生成 3 个备选');
+    expect(promptSource).not.toContain("kind: 'ITEM_REGENERATE'");
+    expect(promptSource).not.toContain('kind: "ITEM_REGENERATE"');
+    expect(promptSource).toContain('重新批量生成');
+    expect(promptSource).toContain('openEditor');
   });
 });

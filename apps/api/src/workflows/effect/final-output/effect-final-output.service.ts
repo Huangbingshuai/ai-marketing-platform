@@ -798,10 +798,8 @@ export class EffectFinalOutputService {
             },
           });
         }
-        await tx.workflowRun.updateMany({
-          where: { id: workflowRunId, projectId },
-          data: { currentNodeId: 'FINAL_OUTPUT' },
-        });
+        // Packaging synchronizes delivery inputs in the background. Only explicit navigation
+        // may change the restored node; completing a film must not move the user's workbench.
       },
       { timeout: 120_000 },
     );
@@ -1165,10 +1163,12 @@ export class EffectFinalOutputService {
     if (!run) throw new NotFoundException('成片输出任务不存在');
     if (run.status === 'QUEUED' || run.status === 'RUNNING')
       throw new ConflictException('该模板正在渲染，请等待本批完成后重试');
-    const projectRefreshOnly = mixProjectOnly || run.status === 'PENDING_RENDER' ||
+    const hasDeliveredFilms = run.items.some((item) => Boolean(item.fileObjectId && item.assetId));
+    const projectRefreshOnly = mixProjectOnly || (run.status === 'PENDING_RENDER' && !hasDeliveredFilms) ||
       (['PARTIAL', 'FAILED', 'CANCELLED'].includes(run.status) &&
         run.items.some((item) => (item.snapshot as unknown as FinalOutputSnapshot).projectRefreshOnly));
-    if (!projectRefreshOnly && run.status !== 'COMPLETED' && !(body.syncProjects &&
+    if (!projectRefreshOnly && run.status !== 'COMPLETED' &&
+      !(run.status === 'PENDING_RENDER' && hasDeliveredFilms) && !(body.syncProjects &&
       ['PARTIAL', 'FAILED', 'CANCELLED'].includes(run.status)) && !(recoveringSourceRefresh &&
       ['PARTIAL', 'FAILED', 'CANCELLED'].includes(run.status)))
       throw new ConflictException('请先等待成片批次完成或恢复失败项');
@@ -1295,8 +1295,16 @@ export class EffectFinalOutputService {
         originalVolume: variant.originalVolume ?? 1,
         resolution: settings.resolution, frameRate: settings.frameRate,
       };
-      const item = await tx.effectFinalOutputItem.create({ data: { projectId, runId: id,
-        variantId: variant.id, name: variant.name, status: 'QUEUED', snapshot: json(snapshot) } });
+      // Smart fill/packaging already materializes pending output rows. Reuse those rows
+      // when updating a delivered branch instead of creating duplicate variants.
+      const pendingItem = run.items.find((item) => item.variantId === variant.id &&
+        item.status === 'PENDING_RENDER' && !item.fileObjectId && !item.assetId);
+      const item = pendingItem
+        ? await tx.effectFinalOutputItem.update({ where: { id: pendingItem.id }, data: {
+          name: variant.name, status: 'QUEUED', snapshot: json(snapshot), progress: 0, errorMessage: null,
+        } })
+        : await tx.effectFinalOutputItem.create({ data: { projectId, runId: id,
+          variantId: variant.id, name: variant.name, status: 'QUEUED', snapshot: json(snapshot) } });
       await this.rewriteFilm(tx, run.templateId, item, variant, workspace, artifacts,
         'QUEUED', packaging.get(variant.id));
       const queued = await tx.effectFinalOutputItem.findUniqueOrThrow({ where: { id: item.id } });
@@ -1472,6 +1480,7 @@ export class EffectFinalOutputService {
             id: source.id, artifactKey: source.artifactKey, revision: source.revision, contentHash: source.contentHash ?? '',
           })),
         addedMaterialIds: [...addedIds],
+        affectedVariantIds: [...variantIds],
         facts: packagingFacts(frozenArtifacts as unknown as WorkingArtifact[]),
         packageNewVariants,
       };
@@ -1597,7 +1606,11 @@ export class EffectFinalOutputService {
     if (source.status === 'QUEUED' || source.status === 'RUNNING')
       throw new ConflictException('该模板已开始渲染，不能修改本批输出规格');
     const unexported = source.items.filter((item) => item.status !== 'COMPLETED');
-    if (source.status === 'PENDING_RENDER' && unexported.length && unexported.every((item) =>
+    // Initial sync also marks films as appended. Only a batch with an existing delivery
+    // can use the in-place append path; the first full export must freeze its own child.
+    const hasDeliveredFilms = source.items.some((item) =>
+      item.status === 'COMPLETED' && item.fileObjectId && item.assetId);
+    if (source.status === 'PENDING_RENDER' && hasDeliveredFilms && unexported.length && unexported.every((item) =>
       (item.snapshot as unknown as FinalOutputSnapshot).appendOnly)) {
       await this.startAppendedFilms(projectId, source.id, settings);
       return this.get(projectId, source.id);
@@ -1982,6 +1995,13 @@ export class EffectFinalOutputService {
     if (!variants || !hasOutputVersion(artifacts)) return undefined;
     const membership = finalOutputSavedProjectChanges(variants, run.items,
       finalOutputConfirmedProjectIds(run.templateId, artifacts), packaging);
+    if (run.items.some((item) => Boolean(item.fileObjectId && item.assetId))) {
+      // Unexported append rows are additions to the delivery, even though fill has
+      // already inserted their placeholders. Keep removal detection against all rows.
+      membership.added = finalOutputSavedProjectChanges(variants, run.items.filter((item) =>
+        item.status !== 'PENDING_RENDER' || Boolean(item.fileObjectId || item.assetId)),
+      finalOutputConfirmedProjectIds(run.templateId, artifacts), packaging).added;
+    }
     return {
       ...(typeof workspace?.draftRevision === 'number' ? { draftRevision: workspace.draftRevision } : {}),
       added: membership.added.map((variant) => {
@@ -2046,20 +2066,24 @@ export class EffectFinalOutputService {
         delivered.get(item.id)?.fileObjectId === item.fileObjectId &&
         delivered.get(item.id)?.assetId === item.assetId,
       );
+    const settingsSnapshot = (run.items.find((item) => Boolean(item.fileObjectId && item.assetId)) ??
+      run.items[0])?.snapshot as unknown as FinalOutputSnapshot | undefined;
     return {
       id: run.id,
       ...(() => {
         const operation = (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.sourceOperation;
         return operation ? { sourceOperationId: operation.id,
-          sourceOperationHasAdditions: operation.addedMaterialIds.length > 0 } : {};
+          sourceOperationHasAdditions: operation.addedMaterialIds.length > 0,
+          ...(Array.isArray(operation.affectedVariantIds)
+            ? { sourceOperationVariantIds: [...operation.affectedVariantIds] } : {}) } : {};
       })(),
       templateId: run.templateId,
       templateName: templateName || `模板 ${run.templateId.slice(0, 8)}`,
       validated,
       ...(projectChanges ? { projectChanges } : {}),
-      resolution: (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.resolution ??
+      resolution: settingsSnapshot?.resolution ??
         (payload?.resolution && FINAL_OUTPUT_RESOLUTIONS.includes(payload.resolution) ? payload.resolution : '720p'),
-      frameRate: (run.items[0]?.snapshot as unknown as FinalOutputSnapshot | undefined)?.frameRate ??
+      frameRate: settingsSnapshot?.frameRate ??
         (payload?.frameRate && ([24, 25, 30, 50, 60] as const).includes(payload.frameRate) ? payload.frameRate : 30),
       workflowRunId: run.workflowRunId,
       status: run.status as FinalOutputRun['status'],
@@ -2129,7 +2153,7 @@ export class EffectFinalOutputService {
   async list(projectId: string, workflowRunId: string) {
     const load = () => this.loadList(projectId, workflowRunId);
     return this.readCache ? this.readCache.read({ projectId, workflowRunId }, 'output', load,
-      'confirmed-output-membership-v1') : load();
+      'confirmed-output-membership-v2-pending-additions') : load();
   }
 
   private async loadList(projectId: string, workflowRunId: string) {
@@ -2314,8 +2338,7 @@ export class EffectFinalOutputService {
     const pendingNames = new Map(pendingWorkspace?.draft?.templates.map((entry) =>
       [entry.id, entry.workspace.template.name]) ?? []);
     const completed = visible.filter((row) => row.status !== 'PENDING_RENDER' ||
-      (row.items.some((item) => (item.snapshot as unknown as FinalOutputSnapshot).appendOnly) &&
-       row.items.some((item) => item.status === 'COMPLETED')));
+      row.items.some((item) => Boolean(item.fileObjectId && item.assetId)));
     const sourceIds = [...new Set(completed.map((row) => row.workflowRunId))];
     const contexts = new Map(await Promise.all(sourceIds.map(async (sourceId) => {
       const sourceRows = completed.filter((row) => row.workflowRunId === sourceId);

@@ -104,6 +104,26 @@ describe('effect mix version scopes', () => {
     expect(branches[3]?.templates[0]?.packagingRevisions).toEqual([1]);
   });
 
+  it('dates a repackage by its first successful local film rather than copied baseline artifacts', async () => {
+    const packaged = run('repackage', 'fill', 20, 'PACKAGING');
+    packaged.workingArtifacts.forEach((entry) => { entry.createdAt = at(2); });
+    Object.assign(packaged.effectPackagingRuns[0]!, { items: [
+      { variantId: 'failed', status: 'FAILED', completedAt: at(19) },
+      { variantId: 'first', status: 'COMPLETED', completedAt: at(21) },
+      { variantId: 'later', status: 'COMPLETED', completedAt: at(22) },
+    ], completedAt: at(25) });
+    packaged.effectPackagingRuns.push({ templateId: 'a', status: 'COMPLETED',
+      idempotencyKey: 'inherit:package:old', completedAt: at(1) });
+    const rows = [run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'), packaged];
+    const first = (await treeOf(rows))[2]!.templates[0]!;
+    expect(first.packagingCreatedAt).toBe(at(21).toISOString());
+    packaged.effectPackagingRuns.push({ templateId: 'a', status: 'COMPLETED',
+      idempotencyKey: 'append-new-films', completedAt: at(40) });
+    const after = (await treeOf(rows))[2]!.templates[0]!;
+    expect(after.packagingCreatedAt).toBe(first.packagingCreatedAt);
+    expect(after.packagingRevision).toBe(first.packagingRevision);
+  });
+
   it.each(['COMPLETED', 'PARTIAL', 'RUNNING', 'FAILED', 'CANCELED'])('retains a published fill head after first in-place packaging is %s', async (status) => {
     const fill = run('fill', 'root', 1, 'FILL');
     const before = await treeOf([run('root', null, 0, 'TEMPLATE'), fill]);
@@ -242,6 +262,20 @@ describe('effect mix version scopes', () => {
     expect((await treeOf(rows)).map(branch => branch.templates[0]?.deliveryRevision)).toEqual([1, 2]);
     root.workingArtifacts.at(-1)!.revision = 11;
     expect((await treeOf(rows)).map(branch => branch.templates[0]?.deliveryRevision)).toEqual([1, 2]);
+  });
+
+  it('shows a historical first in-place delivery without counting its inherited copies as exports', async () => {
+    const packaged = run('package', 'fill', 2, 'PACKAGING');
+    const delivery = artifact('final-delivery:a', 3);
+    packaged.workingArtifacts.push(delivery);
+    const copy = run('repackage', packaged.id, 4, 'PACKAGING');
+    copy.workingArtifacts.push({ ...delivery, metadata: { branchSource: { artifactId: 'old-delivery' } } } as typeof delivery);
+    const rows = [run('root', null, 0, 'TEMPLATE'), run('fill', 'root', 1, 'FILL'), packaged, copy,
+      run('export', packaged.id, 5, 'DELIVERY')];
+    const result = await treeOf(rows);
+    expect(result[2]!.templates[0]!.deliveryRevision).toBe(1);
+    expect(result[4]!.templates[0]!.deliveryRevision).toBe(2);
+    expect(result[2]!.templates[0]!.deliveryCreatedAt).toBe(at(3).toISOString());
   });
 
   it('keeps the first package at 01 after local updates and numbers subsequent branches without gaps', async () => {
@@ -407,6 +441,43 @@ describe('WorkflowWorkingService node activation', () => {
 });
 
 describe('WorkflowWorkingService effect branch tree', () => {
+  it.each([false, true])('dates a published upstream fork by publication, including when an old projection is cached (%s)', async (cached) => {
+    const originalAt = new Date('2026-10-15T12:37:00.000Z');
+    const publishedAt = new Date('2026-10-16T05:31:48.000Z');
+    const base = {
+      projectId: 'project-a', workflow: 'EFFECT', workflowSpace: 'EFFECT', status: 'ACTIVE',
+      forkTemplateId: null, branchLabel: null, currentNodeId: 'PROMPT_GENERATION',
+      updatedAt: publishedAt, nodeStates: [], effectTemplateMixAiRuns: [], effectPackagingRuns: [],
+    };
+    const artifact = (revision: number) => ({
+      nodeId: 'PROMPT_GENERATION', artifactKey: 'prompt-batch:product', name: 'Prompt',
+      revision, freshness: 'CURRENT', createdAt: originalAt,
+    });
+    const repository = { listEffectRunBranches: vi.fn().mockResolvedValue([
+      { ...base, id: 'root', parentWorkflowRunId: null, forkNodeId: null, activeKey: 'ACTIVE',
+        createdAt: originalAt, branchPublishedAt: originalAt, workingArtifacts: [artifact(1)] },
+      { ...base, id: 'fork', parentWorkflowRunId: 'root', forkNodeId: 'PROMPT_GENERATION', activeKey: null,
+        createdAt: new Date('2026-10-16T05:14:45.000Z'), branchPublishedAt: publishedAt,
+        workingArtifacts: [artifact(4)] },
+    ]) };
+    const oldProjection = { branches: [{ workflowRunId: 'fork', nodes: [{
+      nodeId: 'PROMPT_GENERATION', revision: 4, artifactCreatedAt: originalAt.toISOString(),
+    }] }] };
+    const cache = { read: vi.fn(async (_scope: unknown, _resource: unknown,
+      loader: () => Promise<unknown>, vary: unknown) =>
+      vary === 'fill-head-lineage-v6:confirmed-output-membership-v1' ? oldProjection : loader()) };
+    const service = new WorkflowWorkingService(repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never, {} as never,
+      cached ? cache as never : undefined);
+    const tree = await service.getEffectBranchTree('project-a');
+    expect(tree.branches.find(b => b.workflowRunId === 'fork')?.nodes
+      .find(n => n.nodeId === 'PROMPT_GENERATION'))
+      .toMatchObject({ revision: 4, artifactCreatedAt: publishedAt.toISOString() });
+    expect(tree.branches.find(b => b.workflowRunId === 'root')?.nodes
+      .find(n => n.nodeId === 'PROMPT_GENERATION')?.artifactCreatedAt)
+      .toBe(originalAt.toISOString());
+  });
+
   it.each(['old-sibling', 'new-fill'])(
     'keeps a new template and its results visible when the active catalog is %s', async (activeId) => {
       const at = (minute: number) => new Date(Date.UTC(2026, 9, 6, 5, minute));

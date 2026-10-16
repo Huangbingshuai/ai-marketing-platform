@@ -63,8 +63,13 @@ describe('canvas selection and stale warnings are independent', () => {
     expect(style('.effect-flow__node.current')).not.toContain('#f59e0b');
   });
 
-  it('retains warning text and accessible navigation without changing freshness data', () => {
-    expect(canvas).toContain("? '待更新' : nodes.value[index]?.status");
+  it('retains warning text and accessible navigation without changing freshness data', async () => {
+    const staleCounts = Object.freeze([0, 0, 1, 0, 0, 0]);
+    const html = await renderToString(createSSRApp(WorkflowCanvas, { activeStep: 2, staleCounts }));
+    expect(html).toMatch(/<small\b[^>]*>待更新<\/small>/u);
+    expect(html).toContain('aria-current="step"');
+    expect(html).toContain('素材 Prompt待更新，旧结果仍可查看');
+    expect(staleCounts).toEqual([0, 0, 1, 0, 0, 0]);
     expect(canvas).toContain('@click="emit(\'select\', index)"');
     expect(canvas).toMatch(/AlertCircle\s+v-if="staleCount\(index\) > 0"/);
   });

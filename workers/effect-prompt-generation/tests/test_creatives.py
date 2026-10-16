@@ -1595,7 +1595,7 @@ async def test_item_evaluate_preserves_user_authored_content_and_structure(durat
     assert api.result.items[0].content == target.content
     assert api.result.items[0].target_duration_seconds == duration
     assert api.result.items[0].creative_core == target.creative_core
-    assert api.result.items[0].dimensions == target.dimensions
+    assert api.result.items[0].dimensions.model_dump() == target.dimensions.model_dump()
     assert api.result.items[0].classification_status == "VERIFIED"
     assert api.result.items[0].review_issues == []
     assert Counter(item.phase.value for item in api.shards.values()) == {

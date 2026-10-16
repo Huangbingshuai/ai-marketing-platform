@@ -27,7 +27,7 @@ const emit = defineEmits<{ select: [step: number]; branches: [] }>();
 const effectNodes = [
   {
     label: EFFECT_NODE_LABELS.SOURCE_IMPORT,
-    status: '当前',
+    status: '就绪',
     title: EFFECT_NODE_LABELS.SOURCE_IMPORT,
     description: '汇集商品图片、文档与链接，统一视频生产规格',
   },
@@ -72,7 +72,11 @@ const currentNode = computed(
 const currentStepLabel = computed(() => String(props.activeStep + 1).padStart(2, '0'));
 const staleCount = (index: number) => props.staleCounts?.[index] ?? 0;
 const statusText = (index: number) =>
-  staleCount(index) > 0 ? '待更新' : nodes.value[index]?.status;
+  staleCount(index) > 0
+    ? '待更新'
+    : index === props.activeStep
+      ? '当前'
+      : nodes.value[index]?.status;
 
 const nodeState = (index: number): NodeState => {
   if (index === props.activeStep) return 'current';

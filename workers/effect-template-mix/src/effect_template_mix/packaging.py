@@ -592,8 +592,12 @@ async def shorten_voice_line(ark: ArkProvider, snapshot: dict[str, Any], cp: dic
     lines = [*cp['script']]
     lines[index] = line
     result = ScriptOutput.model_validate({'lines': lines, 'musicBrief': cp['musicBrief']})
-    if script_structure_issues(result, snapshot) or len(revised.text.strip()) >= len(original['text'].strip()):
+    if script_structure_issues(result, snapshot):
         raise PackagingError('配音缩句结构无效，已停止本条')
+    if len(revised.text.strip()) >= len(original['text'].strip()):
+        # A structurally valid but unshortened answer is still the measured overrun.
+        # Route it through the existing one-slot replan, retaining successful audio/music.
+        raise VoiceFitOverrun(original['slotId'], measured, available)
     return line
 
 
@@ -1011,6 +1015,53 @@ class PackagingHandler:
                 item_times['musicUploadSeconds'] = item_times.get('musicUploadSeconds', 0) + time.monotonic() - started
                 await save('CAPTIONS', {'music': {'fileObjectId': file_id, 'start': 0, 'duration': snapshot['duration'], 'volume': 1.0}, 'timings': timings})
 
+            async def replan_voice_slots(failed_ids: set[str], retry_context: list[dict[str, Any]]) -> None:
+                partial = {**snapshot, 'clips': [clip for clip in narrated_clips(snapshot)
+                    if clip['slotId'] in failed_ids]}
+                async with paid_request('_item', 'scriptSeconds'):
+                    replanned = await plan_script(self.ark, partial,
+                        cp['vision'], guard, voice_retry=retry_context,
+                        story_snapshot=snapshot, existing_script=cp['script'], music_identity=item['id'])
+                replacements = {line.slotId: line.model_dump() for line in replanned.lines}
+                for slot_id, line in replacements.items():
+                    line['id'] = 'slot-' + hashlib.sha256(slot_id.encode()).hexdigest()[:24]
+                revised_lines = [replacements.get(line['slotId'], line) for line in cp['script']]
+                checked = ScriptOutput.model_validate({'lines': [line for line in revised_lines
+                    if line['slotId'] in redo_slots] if redo_slots else revised_lines, 'musicBrief': cp['musicBrief']})
+                if script_structure_issues(checked, narration_snapshot):
+                    raise PackagingError('自动重策划口播未通过来源或结构校验，请手动重做问题槽位')
+                retry_counts = dict(cp.get('voiceSlotRetries') or {})
+                retry_counts.update({slot_id: 1 for slot_id in failed_ids})
+                voice_recovery = copy.deepcopy(cp.get('voiceRecovery', {}))
+                # These clauses belong to a fully received overrun, not an uncertain request.
+                # The newly planned paragraph may retain a short clause. Its lost PCM may be
+                # synthesized again under the bounded replan, while unrelated fences stay set.
+                for previous in retry_context:
+                    for clause in voice_text_parts(previous['previousText']):
+                        key = hashlib.sha256((previous['slotId'] + ':' + clause).encode()).hexdigest()
+                        if key in voice_recovery:
+                            voice_recovery[key]['pending'] = False
+                fit_attempts = {slot_id: count for slot_id, count in cp.get('voiceFitAttempts', {}).items()
+                    if slot_id not in failed_ids}
+                await save('VOICE', {'script': revised_lines, 'voiceFitAttempts': fit_attempts,
+                    'voiceSlotRetries': retry_counts, 'timings': timings,
+                    **({'voiceRecovery': voice_recovery} if snapshot.get('operation') else {})})
+                LOGGER.info('packaging voice slot recovery item=%s slots=%s', item['id'], len(failed_ids))
+
+            # A saved fit attempt is written only after the complete, timed PCM was received.
+            # If repair failed before its text was saved, that PCM is gone after restart. Use
+            # the existing one-slot replan budget instead of resubmitting its fenced old text.
+            resumed_lines = [line for line in cp['script'] if line['id'] not in voices
+                and cp.get('voiceFitAttempts', {}).get(line['slotId'])
+                and not cp.get('voiceSlotRetries', {}).get(line['slotId'])
+                and (not redo_slots or line['slotId'] in redo_slots)]
+            if resumed_lines:
+                await replan_voice_slots({line['slotId'] for line in resumed_lines}, [{
+                    'slotId': line['slotId'], 'previousText': line['text'],
+                    'availableSeconds': line['end'] - line['start'],
+                    'recoveryReason': '先前完整配音已确认超时，但缩句结果未保存；精确实测时长未保留，不估算比例。请只重策划本槽更简洁的自然口播。',
+                } for line in resumed_lines])
+
             # Music and the six independent voice clips are external waits. Persist every
             # successful sibling before surfacing an error, so recovery never repays for it.
             while True:
@@ -1030,29 +1081,10 @@ class PackagingHandler:
                 if any(retry_counts.get(error.slot_id, 0) >= 1 for error in overruns):
                     raise overruns[0]
                 failed_ids = {error.slot_id for error in overruns}
-                partial = {**snapshot, 'clips': [clip for clip in narrated_clips(snapshot)
-                    if clip['slotId'] in failed_ids]}
                 failed_lines = {line['slotId']: line for line in cp['script'] if line['slotId'] in failed_ids}
                 retry_context = [{'slotId': error.slot_id, 'previousText': failed_lines[error.slot_id]['text'],
                     'measuredSeconds': error.measured, 'availableSeconds': error.available} for error in overruns]
-                async with paid_request('_item', 'scriptSeconds'):
-                    replanned = await plan_script(self.ark, partial,
-                        cp['vision'], guard, voice_retry=retry_context,
-                        story_snapshot=snapshot, existing_script=cp['script'], music_identity=item['id'])
-                replacements = {line.slotId: line.model_dump() for line in replanned.lines}
-                for slot_id, line in replacements.items():
-                    line['id'] = 'slot-' + hashlib.sha256(slot_id.encode()).hexdigest()[:24]
-                revised_lines = [replacements.get(line['slotId'], line) for line in cp['script']]
-                checked = ScriptOutput.model_validate({'lines': [line for line in revised_lines
-                    if line['slotId'] in redo_slots] if redo_slots else revised_lines, 'musicBrief': cp['musicBrief']})
-                if script_structure_issues(checked, narration_snapshot):
-                    raise PackagingError('自动重策划口播未通过来源或结构校验，请手动重做问题槽位')
-                retry_counts.update({slot_id: 1 for slot_id in failed_ids})
-                fit_attempts = {slot_id: count for slot_id, count in cp.get('voiceFitAttempts', {}).items()
-                    if slot_id not in failed_ids}
-                await save('VOICE', {'script': revised_lines, 'voiceFitAttempts': fit_attempts,
-                    'voiceSlotRetries': retry_counts, 'timings': timings})
-                LOGGER.info('packaging voice slot recovery item=%s slots=%s', item['id'], len(failed_ids))
+                await replan_voice_slots(failed_ids, retry_context)
             caption_started = time.monotonic()
             cp['voices'] = voices
             if snapshot.get('redoCaptionsOnly') and any(not voice.get('speechRanges') for voice in voices.values()):

@@ -536,6 +536,26 @@ async def test_confirmed_six_slot_package_renders_complete_timeline(
     assert detached_tone > 100
 
 
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
+async def test_frame_tolerated_source_tail_does_not_accumulate_missing_frames(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(final_output, 'output_size', lambda *_: (160, 120))
+    source = tmp_path / 'audio-led.mp4'
+    # The generated supplier clip has a 4s picture track and a slightly longer audio/container.
+    await encode(['-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=24:d=4',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4.096', '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(source)], tmp_path)
+    snapshot = {'timeline': {'duration': 24, 'clips': [
+        {'fileObjectId': 'source', 'start': index * 4, 'duration': 4,
+         'offset': .042 if index % 2 == 0 else 0, 'lane': 0,
+         'transition': '硬切', 'transitionDuration': 0} for index in range(6)]},
+        'aspectRatio': '4:3', 'originalVolume': .15, 'resolution': '480p', 'frameRate': 24,
+        'packaging': {'voices': {}, 'captions': []}}
+    output = await render(snapshot, {'source': source}, tmp_path, AsyncMock())
+    video = final_output.video_stream(await probe(output))
+    assert float(video['duration']) == pytest.approx(24, abs=1 / 24)
+    assert int(video['nb_frames']) == 24 * 24
+
+
 async def test_completed_output_is_not_rendered_again() -> None:
     api = AsyncMock(spec=InternalApi)
     api.ROOT = 'internal/workers/effect-template-mix'

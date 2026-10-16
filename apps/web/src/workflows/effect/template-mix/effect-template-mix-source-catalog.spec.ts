@@ -200,12 +200,42 @@ describe('all current template paths track the latest net render difference', ()
       next,
     );
   });
+
+  it('retains two completed local updates against delayed directory reads without a source poll', () => {
+    const initial = directory();
+    const first = structuredClone(initial.workspaces['run-b']!);
+    first.draftRevision = 6;
+    first.draft.templates[0]!.workspace.variants.push(structuredClone(first.draft.templates[0]!.workspace.variants[0]!));
+    first.pendingAddedMaterialIds = { b: [] };
+    const acceptedFirst = mixTemplateCatalogWithSources(initial, 'run-b', first, first);
+    const firstResult = retainMixTemplateCatalogSources(directory(), acceptedFirst, []);
+    expect(firstResult.workspaces['run-b']!.draftRevision).toBe(6);
+    expect(firstResult.entries.find(e => e.id === 'b')!.workspace.variants).toHaveLength(2);
+    expect(firstResult.pendingAddedMaterialIds.b).toEqual([]);
+    const second = structuredClone(first);
+    second.draftRevision = 7;
+    second.draft.templates[0]!.workspace.variants.push(structuredClone(second.draft.templates[0]!.workspace.variants[0]!));
+    const acceptedSecond = mixTemplateCatalogWithSources(firstResult, 'run-b', second, second);
+    const secondResult = retainMixTemplateCatalogSources(firstResult, acceptedSecond, []);
+    expect(secondResult.workspaces['run-b']!.draftRevision).toBe(7);
+    expect(secondResult.entries.find(e => e.id === 'b')!.workspace.variants).toHaveLength(3);
+    expect(secondResult.workspaces['run-a']).toEqual(initial.workspaces['run-a']);
+    expect(secondResult.workflowRunIds).toEqual(firstResult.workflowRunIds);
+  });
 });
 
 function polling() {
   const initial = directory();
   const context = {
     workbenchActive: true,
+    explicitWorkspaceTarget: null as { projectId: string; workflowRunId: string } | null,
+    aiRuns: ref<{ templateId: string; status: string }[]>([]),
+    activeTemplateId: ref('a'),
+    activeEntry: ref({ aiFillLocked: false, packagingLocked: false }),
+    hasPendingMixContinuation: () => false,
+    getEffectWorkflowBranchTree: vi.fn(async () => ({ data: {} })),
+    mixTemplateCatalogTargetRun: vi.fn(() => 'run-a'),
+    templateContextWorkflowRunId: ref('run-a'),
     pageState: ref('READY'),
     sourcePollController: undefined as AbortController | undefined,
     mutating: ref(false),
@@ -249,6 +279,39 @@ function polling() {
 }
 
 describe('source polling orchestration without workbench remounts', () => {
+  it('reloads the current path even when the old branch draft revision did not change', async () => {
+    const { context: c, poll } = polling();
+    c.mixTemplateCatalogTargetRun.mockReturnValue('updated-path');
+    await poll();
+    expect(c.load).toHaveBeenCalledOnce();
+    expect(c.loadEffectTemplateMixSources).not.toHaveBeenCalled();
+  });
+
+  it.each(['history', 'running', 'dirty', 'saving'])(
+    'does not replace an explicitly scoped or busy workspace (%s)', async (mode) => {
+      const { context: c, poll } = polling();
+      c.mixTemplateCatalogTargetRun.mockReturnValue('updated-path');
+      if (mode === 'history') c.explicitWorkspaceTarget = { projectId: 'project', workflowRunId: 'run-a' };
+      if (mode === 'running') c.aiRuns.value = [{ templateId: 'a', status: 'RUNNING' }];
+      if (mode === 'dirty' || mode === 'saving') c.saveState.value = mode;
+      await poll();
+      expect(c.getEffectWorkflowBranchTree).not.toHaveBeenCalled();
+      expect(c.load).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a path read if the user edits while it is in flight', async () => {
+    const { context: c, poll } = polling();
+    c.getEffectWorkflowBranchTree.mockImplementation(async () => {
+      c.saveState.value = 'dirty';
+      c.draftRace.changed();
+      return { data: {} };
+    });
+    await poll();
+    expect(c.load).not.toHaveBeenCalled();
+    expect(c.loadEffectTemplateMixSources).not.toHaveBeenCalled();
+  });
+
   it('refreshes every distinct owner, including unselected templates, without full reloads', async () => {
     const { context: c, poll } = polling();
     await poll();

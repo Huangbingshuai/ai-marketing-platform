@@ -1,0 +1,102 @@
+{
+  "project": "广式腊肠",
+  "testedAt": "2026-10-16T06:15:04.489Z",
+  "apiImage": "sha256:368184e73f9b4b49ed8e9d33e9d8fbc0fe61c5fbe67abc08d5ab688644ac03f9",
+  "webBundle": "index-B3jJUoSc.js",
+  "viewports": [
+    {
+      "width": 1920,
+      "promptNodes": [
+        {
+          "label": "素材 Prompt，版本01，创建于 2026/10/15 20:37，已确认 · 1 项，当前工作流路径",
+          "x": 881.46875
+        },
+        {
+          "label": "素材 Prompt，版本02，创建于 2026/10/16 13:31，已确认 · 1 项",
+          "x": 1264.265625
+        }
+      ],
+      "noDocumentOverflow": true
+    },
+    {
+      "width": 1440,
+      "promptNodes": [
+        {
+          "label": "素材 Prompt，版本01，创建于 2026/10/15 20:37，已确认 · 1 项，当前工作流路径",
+          "x": 641.46875
+        },
+        {
+          "label": "素材 Prompt，版本02，创建于 2026/10/16 13:31，已确认 · 1 项",
+          "x": 1024.265625
+        }
+      ],
+      "noDocumentOverflow": true
+    },
+    {
+      "width": 900,
+      "promptNodes": [
+        {
+          "label": "素材 Prompt，版本01，创建于 2026/10/15 20:37，已确认 · 1 项，当前工作流路径",
+          "x": 376.2265625
+        },
+        {
+          "label": "素材 Prompt，版本02，创建于 2026/10/16 13:31，已确认 · 1 项",
+          "x": 735.8203125
+        }
+      ],
+      "noDocumentOverflow": true
+    }
+  ],
+  "restore": {
+    "draftRevisionBefore": 130,
+    "draftRevisionAfter": 131,
+    "secondSlotBefore": 1.7333333333333334,
+    "secondSlotAfter": 4,
+    "geometry": [
+      {
+        "start": 0,
+        "duration": 4,
+        "extra": false
+      },
+      {
+        "start": 4,
+        "duration": 4,
+        "extra": false
+      },
+      {
+        "start": 8,
+        "duration": 4,
+        "extra": false
+      },
+      {
+        "start": 12,
+        "duration": 4,
+        "extra": false
+      },
+      {
+        "start": 16,
+        "duration": 4,
+        "extra": false
+      },
+      {
+        "start": 20,
+        "duration": 4,
+        "extra": false
+      },
+      {
+        "start": 24,
+        "duration": 4,
+        "extra": true
+      }
+    ],
+    "otherVariantsUnchanged": true,
+    "otherTemplateUnchanged": true,
+    "audioCaptionTransformUnchanged": true,
+    "confirmedCommitsUnchanged": true
+  },
+  "tests": {
+    "web": 53,
+    "api": 62
+  },
+  "paidTasksCreated": 0
+}

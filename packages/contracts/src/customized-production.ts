@@ -106,6 +106,8 @@ export type ProductionTask = {
   shotId: string | null;
   imageSettings?: CustomizedImageSettings;
   reviewDraftState?: 'AVAILABLE' | 'ADOPTED';
+  /** Successful asset extraction publishes this aggregate asset branch. */
+  publishedWorkflowRunId?: string;
 };
 export type ProductionWorkspace = {
   brandImageReferences?: { assetId: string; version: number; name: string }[];

@@ -5,7 +5,7 @@ import type { PrismaService } from '../../../database/prisma.service';
 import { EffectSourceImportRepository } from './effect-source-import.repository';
 
 describe('EffectSourceImportRepository project isolation', () => {
-  it('reads only the requested file under the active Effect draft and product', async () => {
+  it('reads the exact current or historical Effect material while retaining project, mode and product isolation', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const repository = new EffectSourceImportRepository(
       { effectImportMaterial: { findFirst } } as unknown as PrismaService,
@@ -26,7 +26,6 @@ describe('EffectSourceImportRepository project isolation', () => {
             workspace: {
               workflowRun: {
                 projectId: 'project-a',
-                activeKey: 'ACTIVE',
                 workflow: 'EFFECT',
                 workflowSpace: 'EFFECT',
               },

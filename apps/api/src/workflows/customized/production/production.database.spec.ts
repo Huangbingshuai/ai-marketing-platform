@@ -554,6 +554,9 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
         assetIds: ['cup', 'room', 'constructor'],
       } as const;
       const imageSettings = { ...settings, assetIds: [...settings.assetIds] };
+      const imageBranchCount = await db.workflowRun.count({
+        where: { projectId: p, forkNodeId: 'SHOT_PROMPT' },
+      });
       const imageKey = randomUUID();
       const images = await repo.start(
         p,
@@ -644,6 +647,9 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
         revision = (
           await repo.save(p, r, generated.draftRevision, generated.document, 'ASSETS', true)
         ).revision;
+        expect(
+          await db.workflowRun.count({ where: { projectId: p, forkNodeId: 'SHOT_PROMPT' } }),
+        ).toBe(imageBranchCount);
         const cancelled = await repo.start(
           p,
           r,

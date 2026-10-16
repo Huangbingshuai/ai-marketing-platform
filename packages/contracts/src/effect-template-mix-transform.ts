@@ -47,8 +47,8 @@ export function effectVideoTransformValid(value: unknown): value is EffectVideoT
     typeof t.uniform === 'boolean'
   );
 }
-/** Mirrored by the FFmpeg worker: codec pixel rounding may differ from the nominal ratio. */
-export const EFFECT_VIDEO_MATCHING_ASPECT_TOLERANCE = 0.01;
+/** Mirrored by FFmpeg: 480p codec alignment can produce 496×864 for nominal 9:16. */
+export const EFFECT_VIDEO_MATCHING_ASPECT_TOLERANCE = 0.025;
 export function effectVideoCanvasFit(sourceRatio: number, canvasRatio: number) {
   const matching =
     Math.max(sourceRatio / canvasRatio, canvasRatio / sourceRatio) <=

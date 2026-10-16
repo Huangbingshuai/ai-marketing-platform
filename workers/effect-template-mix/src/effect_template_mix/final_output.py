@@ -135,7 +135,7 @@ def frame_tolerance(stream: dict[str, Any], output_frame_rate: int) -> float:
 
 def validate_video_interval(
     info: dict[str, Any], offset: float, length: float, output_frame_rate: int,
-) -> None:
+) -> float:
     stream = video_stream(info)
     duration = stream_duration(stream)
     try:
@@ -146,8 +146,13 @@ def validate_video_interval(
         raise PackagingError('无法确认源视频画面轨的真实时长，已停止导出')
     tolerance = frame_tolerance(stream, output_frame_rate)
     available_end = start + duration
-    if offset < start - tolerance or offset + length > available_end + tolerance:
+    if length > duration + 1e-6 or offset < start - tolerance or offset + length > available_end + tolerance:
         raise PackagingError('源视频画面轨时长不足，不能用尾帧冻结补足成片')
+    # A container can outlive its picture track by one audio packet. The tolerated
+    # boundary must still select a complete real picture window: otherwise every
+    # concat cut loses a frame and several individually tolerated cuts shorten a film.
+    # Clamp only within the already validated one-frame boundary; never pad a short source.
+    return min(max(offset, start), available_end - length)
 
 
 async def encode(args: list[str], cwd: Path) -> None:
@@ -177,7 +182,8 @@ def output_size(ratio: str, resolution: str = '720p') -> tuple[int, int]:
 def video_transform_filter(width: int, height: int, clip: dict[str, Any] | None,
                            info: dict[str, Any] | None) -> str:
     """Crop near-matching codec ratios before user transforms; contain genuinely different ratios."""
-    # Keep the symmetric 1% tolerance aligned with effectVideoCanvasFit in contracts.
+    # Keep the symmetric 2.5% codec-rounding tolerance aligned with effectVideoCanvasFit.
+    # Nominal 9:16 at 480p can be 496x864 (about 2.06% wider), not an exact 9:16 file.
     try:
         source = next(s for s in (info or {})['streams'] if s['codec_type'] == 'video')
         sw, sh = float(source['width']), float(source['height'])
@@ -189,7 +195,7 @@ def video_transform_filter(width: int, height: int, clip: dict[str, Any] | None,
             raise ValueError()
     except (ValueError, KeyError, ZeroDivisionError, StopIteration, TypeError):
         sw = sh = 0.0
-    matching = sw > 0 and sh > 0 and max((sw / sh) / (width / height), (width / height) / (sw / sh)) <= 1.01
+    matching = sw > 0 and sh > 0 and max((sw / sh) / (width / height), (width / height) / (sw / sh)) <= 1.025
     cover = max(width / sw, height / sh) if matching else 0.0
     cover_w = math.ceil(sw * cover / 2 - 1e-9) * 2 if matching else 0
     cover_h = math.ceil(sh * cover / 2 - 1e-9) * 2 if matching else 0
@@ -387,7 +393,7 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
             offset = float(clip['offset'] + start - clip['start'])
             # The guard the old post-encode segment check performed: the source picture track must
             # really cover the interval, so a short clip can never be padded out to full length.
-            validate_video_interval(info, offset, length, frame_rate)
+            offset = validate_video_interval(info, offset, length, frame_rate)
             inputs += ['-ss', str(offset), '-t', str(length), '-i', str(files[clip['fileObjectId']])]
             has_audio = not clip.get('originalAudioDetached', False) and any(
                 s['codec_type'] == 'audio' for s in info['streams'])

@@ -405,6 +405,7 @@ export class WorkflowWorkingService {
           { projectId, workflow: 'CUSTOMIZED' },
           'customized-tree',
           () => this.loadCustomizedBranchTree(projectId),
+          { assetBranch: 4 },
         )
       : this.loadCustomizedBranchTree(projectId);
   }
@@ -433,6 +434,19 @@ export class WorkflowWorkingService {
             const artifacts = run.workingArtifacts.filter(
               (item) => customizedWorkflowNodeId(item.nodeId) === nodeId,
             );
+            if (nodeId === 'SHOT_PROMPT') {
+              const catalog = artifacts.find((item) => item.artifactKey === 'customized-asset-catalog');
+              const payload = catalog?.payload as { assets?: unknown[] } | undefined;
+              const count = Array.isArray(payload?.assets) ? payload.assets.length : 0;
+              return {
+                nodeId,
+                status: !count ? 'PENDING' as const : catalog?.freshness === 'STALE' ? 'STALE' as const : 'CONFIRMED' as const,
+                artifactCount: count,
+                revision: count ? catalog!.revision : null,
+                artifactCreatedAt: count ? (run.forkNodeId === 'SHOT_PROMPT' && run.branchPublishedAt
+                  ? run.branchPublishedAt : catalog!.createdAt).toISOString() : null,
+              };
+            }
             return {
               nodeId,
               status: artifacts.some((item) => item.freshness === 'STALE')
@@ -561,7 +575,7 @@ export class WorkflowWorkingService {
   async getEffectBranchTree(projectId: string): Promise<EffectWorkflowBranchTreeData> {
     return this.readCache
       ? this.readCache.read({ projectId }, 'tree', () => this.loadEffectBranchTree(projectId),
-        'fill-head-lineage-v6:confirmed-output-membership-v1')
+        'fill-head-lineage-v6:confirmed-output-membership-v1:upstream-publication-time-v1')
       : this.loadEffectBranchTree(projectId);
   }
 
@@ -910,7 +924,11 @@ export class WorkflowWorkingService {
         const delivery = run.workingArtifacts.find(
           (artifact) => artifact.artifactKey === `final-delivery:${templateId}`,
         );
-        if (delivery && (!run.parentWorkflowRunId || run.forkNodeId === 'FINAL_OUTPUT'))
+        const inheritedDelivery = delivery?.metadata && typeof delivery.metadata === 'object' &&
+          !Array.isArray(delivery.metadata) && 'branchSource' in delivery.metadata;
+        // Historical first exports can live in their mix Run. Draw their actual confirmed
+        // delivery, while copied manifests continue to inherit the original head's ordinal.
+        if (delivery && (!run.parentWorkflowRunId || run.forkNodeId === 'FINAL_OUTPUT' || !inheritedDelivery))
           recordVersion('DELIVERY', run.id, templateId);
       }
     }
@@ -1182,7 +1200,18 @@ export class WorkflowWorkingService {
           template.deliveryRevisions =
             template.deliveryRevision === null ? [] : [template.deliveryRevision];
           template.fillCreatedAt = artifactCreatedAt(fills);
-          template.packagingCreatedAt = artifactCreatedAt(packages);
+          // A repackage carries older baseline artifacts. Its label belongs to the first
+          // successful local result, never to an inherited artifact's creation time.
+          const packageTimes = (run.effectPackagingRuns ?? [])
+            .filter((batch) => batch.templateId === template.templateId &&
+              publishedPackagingBatch(batch) && !batch.idempotencyKey.includes(':package:'))
+            .flatMap((batch) => {
+              const successes = (batch.items ?? []).filter((item) => item.status === 'COMPLETED' && item.completedAt)
+                .map((item) => item.completedAt!.getTime());
+              return successes.length ? successes : batch.completedAt ? [batch.completedAt.getTime()] : [];
+            });
+          template.packagingCreatedAt = packages.length && packageTimes.length
+            ? new Date(Math.min(...packageTimes)).toISOString() : artifactCreatedAt(packages);
           template.deliveryCreatedAt = artifactCreatedAt(deliveries);
           template.templateStatus = artifactStatus(
             visibleArtifacts.filter(
@@ -1310,7 +1339,12 @@ export class WorkflowWorkingService {
               artifactCount: count.current + count.stale,
               revisions: revisionsOf(revisionArtifacts),
               revision: sharedRevision(revisionArtifacts),
-              artifactCreatedAt: artifactCreatedAt(revisionArtifacts),
+              artifactCreatedAt:
+                run.parentWorkflowRunId && forkNodeId === nodeId &&
+                ['SOURCE_IMPORT', 'INFORMATION_EXTRACTION', 'PROMPT_GENERATION', 'SEGMENT_RENDER'].includes(nodeId) &&
+                run.branchPublishedAt
+                  ? run.branchPublishedAt.toISOString()
+                  : artifactCreatedAt(revisionArtifacts),
             };
           }),
         };

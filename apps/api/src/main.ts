@@ -14,6 +14,7 @@ async function bootstrap(): Promise<void> {
   });
   configureBodyParsers(app);
   const config = app.get(ConfigService);
+  app.set('trust proxy', config.getOrThrow<number>('AUTH_TRUST_PROXY_HOPS'));
   const origins = config
     .getOrThrow<string>('WEB_ORIGIN')
     .split(',')

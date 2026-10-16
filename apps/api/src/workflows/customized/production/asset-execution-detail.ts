@@ -383,8 +383,12 @@ export function assetExecutionDetail(
     return result(
       '已整理好的资产将如何使用',
       step.status === 'SUCCEEDED'
-        ? '结果已保存为可编辑草稿。核对并保存修改后，可在视频制作中为镜头选用这些资产。'
-        : '审校完成后保存资产草稿，已有图片和人工修改继续保留。',
+        ? saved.publishedWorkflowRunId
+          ? input.targetAssetId
+            ? '选定资产已更新并保存，其他资产保持不变。可继续准备图片或在视频制作中选用。'
+            : '资产目录已确认并保存。可继续准备图片，或进入视频制作为镜头选用这些资产。'
+          : '结果已保存为可编辑草稿。核对并保存修改后，可在视频制作中为镜头选用这些资产。'
+        : '通过审校与校验后保存资产结果，已有图片和人工修改继续保留。',
       final.map((a) =>
         section(a.name, [
           ['对象类型', kindNames[a.kind]],

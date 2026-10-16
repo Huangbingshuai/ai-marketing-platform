@@ -13,6 +13,33 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+describe('returning to a retained workbench', () => {
+  it('rereads current template paths even when the old Run and draft revision are unchanged', async () => {
+    let activate!: () => void;
+    const refreshed = deferred<void>();
+    const state = {
+      onActivated: (callback: () => void) => { activate = callback; },
+      workbenchActive: false, startSourcePolling: vi.fn(), resumeSourceUpdate: vi.fn(),
+      mixWorkbenchWasDeactivated: true, branchNavigationReloading: false,
+      loadedWorkspaceRunId: 'old-path', props: { projectId: 'p', workflowRunId: 'old-path' },
+      requestedWorkspaceScope: ref(null), currentWorkspaceScope: ref('p:old-path'),
+      flushPendingEdits: vi.fn(async () => true),
+      load: vi.fn(async () => {}), refreshMaterialSources: vi.fn(),
+      fillResultHandoffs: ref([]), deferredPackagingCompletion: null,
+      resumeDeferredFill: vi.fn(), applyPreviewTarget: vi.fn(),
+      applyBranchNavigation: vi.fn(async () => { refreshed.resolve(); }),
+    };
+    const source = page.slice(page.indexOf('onActivated(() => {'), page.indexOf('onDeactivated(() => {'));
+    execute(source, state);
+    activate();
+    await refreshed.promise;
+    expect(state.load).toHaveBeenCalledOnce();
+    expect(state.refreshMaterialSources).not.toHaveBeenCalled();
+    expect(state.branchNavigationReloading).toBe(false);
+  });
+});
+
 function saveHarness() {
   const state = {
     clearTimeout: vi.fn(), saveTimer: undefined, pendingSave: undefined as Promise<boolean> | undefined,

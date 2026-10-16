@@ -1893,13 +1893,10 @@ export class EffectTemplateMixService {
         const old = previous.templates.find((entry) => entry.id === id)?.workspace;
         return (
           !currentSlotsValid(workspace.template.slots, old?.template.slots) ||
-          workspace.variants.some(
-            (variant) =>
-              !currentSlotsValid(
-                variant.slots,
-                old?.variants.find((candidate) => candidate.id === variant.id)?.slots,
-              ),
-          )
+          // Template slots define AI fill/narration lengths. Timeline clips are independently
+          // editable: edge trims and splits may be shorter than a template slot. Source bounds
+          // and exact revisions are still checked when a manual timeline is confirmed.
+          workspace.variants.some((variant) => !slotsValid(variant.slots, 0.001))
         );
       })
     )
@@ -4535,7 +4532,7 @@ export class EffectTemplateMixService {
         source.freshness !== 'CURRENT' ||
         !Number.isInteger(variant.bindingRevisions[slot.id]) ||
         variant.bindingRevisions[slot.id] !== source.revision ||
-        used.has(renderFileKey(source)) ||
+        (!manualOutput && used.has(renderFileKey(source))) ||
         !Number.isFinite(offset) ||
         offset < 0 ||
         offset + slot.duration > clipDuration(source) + 0.001

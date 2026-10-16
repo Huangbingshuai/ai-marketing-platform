@@ -7,6 +7,10 @@ export type EnvironmentVariables = {
   APP_ENV: AppEnvironment;
   API_PORT: number;
   WEB_ORIGIN: string;
+  AUTH_USERNAME: string | undefined;
+  AUTH_PASSWORD_HASH: string | undefined;
+  AUTH_COOKIE_SECURE: boolean;
+  AUTH_TRUST_PROXY_HOPS: number;
   STORAGE_DRIVER: StorageDriver;
   LOCAL_STORAGE_ROOT: string | undefined;
   MAX_UPLOAD_BYTES: number;
@@ -147,6 +151,18 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
 
   return {
     APP_ENV: appEnvironment,
+    AUTH_USERNAME: optionalString(raw.AUTH_USERNAME),
+    AUTH_TRUST_PROXY_HOPS: parseNonnegativeInteger(
+      raw.AUTH_TRUST_PROXY_HOPS,
+      'AUTH_TRUST_PROXY_HOPS',
+      0,
+    ),
+    AUTH_PASSWORD_HASH: optionalString(raw.AUTH_PASSWORD_HASH),
+    AUTH_COOKIE_SECURE: parseBoolean(
+      raw.AUTH_COOKIE_SECURE,
+      'AUTH_COOKIE_SECURE',
+      appEnvironment === 'production',
+    ),
     API_PORT: parsePort(raw.API_PORT, 'API_PORT', 3000),
     WEB_ORIGIN: requiredString(raw.WEB_ORIGIN ?? 'http://localhost:5173', 'WEB_ORIGIN'),
     STORAGE_DRIVER: storageDriver,

@@ -52,6 +52,33 @@ const branch = (
 });
 
 describe('effect workflow branch tree layout', () => {
+  it.each([false, true])('numbers actual upstream siblings and puts a copied-time fork on the right (reversed: %s)', (reverse) => {
+    const root = branch('z-original', null, null, true);
+    const child = branch('a-new-prompt', root.workflowRunId, 'PROMPT_GENERATION');
+    child.createdAt = '2026-10-16T05:14:45.000Z';
+    child.nodes.find(n => n.nodeId === 'PROMPT_GENERATION')!.revision = 4;
+    const branches = reverse ? [child, root] : [root, child];
+    const layout = buildEffectBranchLayout(branches);
+    const original = layout.nodes.find(n => n.key === 'z-original:PROMPT_GENERATION:-')!;
+    const fork = layout.nodes.find(n => n.key === 'a-new-prompt:PROMPT_GENERATION:-')!;
+    expect(original.displayLabel).toBe('版本01');
+    expect(fork).toMatchObject({ displayLabel: '版本02', revision: 4 });
+    expect(fork.x).toBeGreaterThan(original.x);
+    child.nodes.find(n => n.nodeId === 'PROMPT_GENERATION')!.revision = 7;
+    expect(buildEffectBranchLayout(branches).nodes.find(n => n.key === fork.key))
+      .toMatchObject({ displayLabel: '版本02', revision: 7, x: fork.x });
+    expect(layout.nodes.find(n => n.key === 'a-new-prompt:SEGMENT_RENDER:-')?.displayLabel)
+      .toBe('版本01');
+  });
+
+  it('keeps the ancestor to the left when cloned timestamps and Run timestamps are identical', () => {
+    const root = branch('z-original', null, null);
+    const child = branch('a-new', root.workflowRunId, 'PROMPT_GENERATION');
+    const layout = buildEffectBranchLayout([child, root]);
+    expect(layout.nodes.find(n => n.key === 'a-new:PROMPT_GENERATION:-')!.x)
+      .toBeGreaterThan(layout.nodes.find(n => n.key === 'z-original:PROMPT_GENERATION:-')!.x);
+  });
+
   it.each(['FILL', 'TEMPLATE'] as const)('draws an owned fill before first in-place packaging in a %s Run', (forkMixStage) => {
     const root = branch('root', null, null);
     Object.assign(root.templates[0]!, { timelineVariantCount: 0, fillRevision: null,

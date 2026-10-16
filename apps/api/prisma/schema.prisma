@@ -8,6 +8,23 @@ datasource db {
   provider = "postgresql"
 }
 
+model AuthSession {
+  tokenHash             String   @id
+  username              String
+  credentialFingerprint String
+  expiresAt             DateTime
+
+  @@index([expiresAt])
+}
+
+model AuthLoginAttempt {
+  key       String   @id
+  count     Int
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+
 enum ProjectStatus {
   DRAFT
   ACTIVE

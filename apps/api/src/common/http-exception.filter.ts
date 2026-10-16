@@ -9,6 +9,10 @@ import {
 } from '@nestjs/common';
 
 type HttpResponse = {
+  headersSent?: boolean;
+  writableEnded?: boolean;
+  destroyed?: boolean;
+  destroy?(): void;
   getHeader(name: string): number | string | string[] | undefined;
   status(code: number): HttpResponse;
   json(body: ApiErrorResponse): void;
@@ -67,6 +71,13 @@ const isDeletedTemplateWrite = (exception: unknown): boolean =>
 export class HttpExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<HttpResponse>();
+    if (response.destroyed || response.writableEnded) return;
+    if (response.headersSent) {
+      // A stream owns this response already. Close an incomplete stream instead of
+      // attempting a second JSON response (which itself throws HEADERS_SENT).
+      response.destroy?.();
+      return;
+    }
     const status =
       exception instanceof HttpException
         ? exception.getStatus()

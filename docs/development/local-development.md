@@ -2,6 +2,8 @@
 
 ## 环境
 
+- 单账号登录配置、Cookie、反向代理和部署迁移见[运营测试登录与部署](operator-login.md)。启动 API 前必须配置账号密码哈希，不支持免登录回退。
+
 - 根目录 `.env.example` 只提供安全占位符。开发者复制为被 Git 忽略的 `.env` 后填写本机配置。
 - 不要把真实 Ark、Seedance、TOS 或内部 Worker Token 写进 Git、测试、截图、Prompt 或日志。
 
@@ -125,6 +127,10 @@ docker compose --profile effect-segment-render up -d effect-segment-render-worke
 
 代码目录为 `workers/effect-segment-render`，Python 包为 `effect_segment_render`，入口命令为 `effect-segment-render-worker`。从旧服务迁移时，须在没有活动渲染/返修任务时先停止原 `seedance-worker` 容器；新服务不会自动替换旧容器，不得同时运行两个消费者叠加供应商额度。队列、Token 及 `SEEDANCE_*` / `SEGMENT_RENDER_*` 配置保持不变。无付费验证和运行边界见[片段渲染 Worker](../../workers/effect-segment-render/README.md)。
 
+## 服务器部署
+
+独立生产 Compose、运营测试入口、备份及更新方式见[服务器部署说明](server-deployment.md)。本地开发继续使用本指南的开发服务和原有 Compose profile。
+
 ## 常规验证
 
 API 的 `dev` 脚本先运行 `apps/api/scripts/dev-api.mjs`。该入口按工作区持有进程互斥，重复启动会复用现有服务；Windows 进程退出时内核释放互斥。请经上述 pnpm 入口启动，不再直接运行 `nest start --watch`。迁移前直接启动的 Nest watcher 会被检查并提示 PID，入口不会自动终止它。停止开发入口会结束它启动的 Nest 与运行进程。
@@ -144,6 +150,8 @@ API 的 `pnpm dev:api` / `pnpm --filter @ai-marketing/api dev` 使用 `tsconfig.
 效果类 Prompt Worker 默认 `PROMPT_MAX_CONCURRENCY=4`，同一进程共享 AI 并发额度；遇到供应商 429 后降到最多 2 路，现有退避重试继续生效，进程重启恢复配置值。评分输出预算默认 `ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS=8192`，按输入和输出容量动态分组，不截断事实或正文。本地 `.env` 的显式配置优先于默认值；调整配置或 Worker 代码后，应在无进行中任务时重建并重启对应 Worker，不能只重启前端。独立画面修正使用现有候选模型，不更换评分模型。
 
 TypeScript：
+
+API 的 `test` 命令分别运行 `src` 与开发入口的 Vitest 测试、运维脚本的 Node 原生测试；两类运行器不可混用。`pnpm --filter @ai-marketing/api test:scripts` 可单独运行后者，不启动实际生成任务。
 
 ```powershell
 pnpm typecheck

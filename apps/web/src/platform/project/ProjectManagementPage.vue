@@ -24,6 +24,7 @@ import {
 } from 'vue';
 
 import AssetDrawer from '../asset/AssetDrawer.vue';
+import { authSession, logout } from '../auth/auth-state';
 import richiLogoColor from '../../assets/richi-logo-color.png';
 import EffectImportNodePage from '../../workflows/effect/source-import/EffectImportNodePage.vue';
 import CustomizedImportNodePage from '../../workflows/customized/source-import/CustomizedImportNodePage.vue';
@@ -66,6 +67,27 @@ const customizedNode = ref<{
 } | null>(null);
 const workflowSwitchBusy = ref(false);
 const exitBusy = ref(false);
+const logoutBusy = ref(false);
+const signOut = async (): Promise<void> => {
+  if (
+    logoutBusy.value ||
+    exitBusy.value ||
+    projectEntryBusy.value ||
+    workflowSwitchBusy.value ||
+    createBusy.value
+  )
+    return;
+  logoutBusy.value = true;
+  try {
+    const flushed = await activeNode.value?.flushPendingEdits();
+    if (flushed === false) throw new Error('草稿保存未完成，请稍后重试退出登录');
+    await logout();
+  } catch (error) {
+    showCreateToast(error instanceof Error ? error.message : '退出登录失败，请重试');
+  } finally {
+    logoutBusy.value = false;
+  }
+};
 const exitError = ref('');
 const projectEntryBusy = ref(false);
 const projectEntryError = ref('');
@@ -542,6 +564,16 @@ onBeforeUnmount(() => {
         >
           <Boxes :size="15" />项目与资产
         </button>
+        <button
+          class="account-exit"
+          type="button"
+          :disabled="logoutBusy || exitBusy || projectEntryBusy || workflowSwitchBusy || createBusy"
+          :aria-label="`${authSession?.username ?? ''}，退出登录`"
+          @click="signOut"
+        >
+          <span>{{ authSession?.username }}</span
+          ><LogOut :size="14" />{{ logoutBusy ? '正在退出…' : '退出登录' }}
+        </button>
       </div>
     </header>
     <div class="system-context">
@@ -783,6 +815,29 @@ nav .active:after {
   margin-left: auto;
   align-items: center;
   gap: 8px;
+}
+.account-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 8px 12px;
+  color: #7b899d;
+  border: 0;
+  border-left: 1px solid #e1e7ef;
+  background: transparent;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.account-exit span {
+  color: #44536a;
+  margin-right: 3px;
+}
+.account-exit:hover {
+  color: #2766ed;
+}
+.account-exit:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .create-entry,
 .exit-entry,

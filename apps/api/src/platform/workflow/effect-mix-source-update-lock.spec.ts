@@ -79,17 +79,16 @@ describe('local source-update edit locks', () => {
       $queryRaw: vi.fn(),
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'w' }), update: vi.fn() },
       workflowNodeState: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue({
-            id: 'node',
-            revision: 1,
-            contentHash: workflowStateHash(before),
-            state: before,
-            executionInputHash: 'same',
-          }),
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'node',
+          revision: 1,
+          contentHash: workflowStateHash(before),
+          state: before,
+          executionInputHash: 'same',
+        }),
         update: vi.fn().mockResolvedValue({ id: 'node', revision: 2 }),
       },
+      effectPackagingItem: { findMany: vi.fn().mockResolvedValue([]) },
       effectFinalOutputItem: {
         findMany: vi.fn().mockResolvedValue([{ snapshot: { sourceRefresh: update } }]),
       },

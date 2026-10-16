@@ -1,3 +1,4 @@
+import { AuthAccess } from '../../../platform/auth/auth-access.decorator';
 import {
   Body,
   Controller,
@@ -42,6 +43,8 @@ import {
 } from '../template-mix/dto/effect-template-mix.dto';
 import { EffectTemplateMixWorkerGuard } from '../template-mix/effect-template-mix-worker.guard';
 import { EffectFinalOutputService } from './effect-final-output.service';
+// Nest validation requires the runtime DTO class.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { SourceTrimsDto } from '../template-mix/dto/effect-source-trims.dto';
 
 export class SyncFinalOutputDto {
@@ -149,6 +152,7 @@ export class EffectFinalOutputController {
 }
 
 @Controller('internal/workers/effect-template-mix/final-output-runs')
+@AuthAccess('independent')
 @UseGuards(EffectTemplateMixWorkerGuard)
 export class EffectFinalOutputWorkerController {
   constructor(@Inject(EffectFinalOutputService) readonly service: EffectFinalOutputService) {}
