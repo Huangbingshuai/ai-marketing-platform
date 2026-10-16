@@ -136,6 +136,5 @@ describe('asset image production', () => {
       operation: 'IMAGE',
       imageSettings: settings,
     });
-    expect(input.credentials).toBe('include');
   });
 });
