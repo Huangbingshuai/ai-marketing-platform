@@ -1,0 +1,155 @@
+[
+    {
+        "model": "doubao-seedream-5-0-flash-260915",
+        "ratio": "1:1",
+        "result": {
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1": {
+                "assetId": "eeec0629-594c-4ab5-a470-dce3d6e1f93c",
+                "version": 1
+            }
+        },
+        "status": "COMPLETED",
+        "taskId": "bc979a52-18c1-4631-8286-a59541152628",
+        "seconds": 25.75,
+        "assetIds": [
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1"
+        ],
+        "references": [
+            {
+                "assetId": "0b0f42a7-9076-47b2-a692-446b26804482",
+                "version": 1
+            }
+        ],
+        "resolution": "2K"
+    },
+    {
+        "model": "doubao-seedream-5-0-pro-260628",
+        "ratio": "1:1",
+        "result": {
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1": {
+                "assetId": "f05bc444-3f34-4f3f-962a-c7291b95768d",
+                "version": 1
+            }
+        },
+        "status": "COMPLETED",
+        "taskId": "b794df85-5884-4925-b6f8-69275f0955d5",
+        "seconds": 94.49,
+        "assetIds": [
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1"
+        ],
+        "references": [
+            {
+                "assetId": "0b0f42a7-9076-47b2-a692-446b26804482",
+                "version": 1
+            }
+        ],
+        "resolution": "2K"
+    },
+    {
+        "model": "doubao-seedream-5-0-pro-260628",
+        "ratio": "1:1",
+        "result": {
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1": {
+                "assetId": "75b6edfa-4637-41d5-8eef-9ebda844accb",
+                "version": 1
+            }
+        },
+        "status": "COMPLETED",
+        "taskId": "e312b738-289f-4435-bc1a-b46cec14b731",
+        "seconds": 100.17,
+        "assetIds": [
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1"
+        ],
+        "references": [
+            {
+                "assetId": "0b0f42a7-9076-47b2-a692-446b26804482",
+                "version": 1
+            }
+        ],
+        "resolution": "2K"
+    },
+    {
+        "model": "doubao-seedream-5-0-flash-260915",
+        "ratio": "1:1",
+        "result": {
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1": {
+                "assetId": "1715c5e1-a32f-4bf4-90d2-ff9c60150b46",
+                "version": 1
+            }
+        },
+        "status": "COMPLETED",
+        "taskId": "cc222914-e42d-40e2-a628-6b0b03f20065",
+        "seconds": 19.84,
+        "assetIds": [
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1"
+        ],
+        "references": [
+            {
+                "assetId": "0b0f42a7-9076-47b2-a692-446b26804482",
+                "version": 1
+            }
+        ],
+        "resolution": "2K"
+    },
+    {
+        "model": "doubao-seedream-5-0-pro-260628",
+        "ratio": "1:1",
+        "result": {
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1": {
+                "assetId": "b5a2b970-b058-4d04-a4bd-f75ee22d48d6",
+                "version": 1
+            }
+        },
+        "status": "COMPLETED",
+        "taskId": "13e8af5e-7efb-4769-a151-4232fb59569d",
+        "seconds": 130.86,
+        "assetIds": [
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-1"
+        ],
+        "references": [
+            {
+                "assetId": "0b0f42a7-9076-47b2-a692-446b26804482",
+                "version": 1
+            }
+        ],
+        "resolution": "2K"
+    },
+    {
+        "model": "doubao-seedream-5-0-flash-260915",
+        "ratio": "3:2",
+        "result": {
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-2": {
+                "assetId": "5603240d-4258-4864-8db1-258056ac1224",
+                "version": 1
+            }
+        },
+        "status": "COMPLETED",
+        "taskId": "4132d2af-424f-4b4d-b7d7-225a5b51b09c",
+        "seconds": 20.13,
+        "assetIds": [
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-2"
+        ],
+        "references": [
+        ],
+        "resolution": "2K"
+    },
+    {
+        "model": "doubao-seedream-5-0-flash-260915",
+        "ratio": "3:2",
+        "result": {
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-2": {
+                "assetId": "537b5a94-ebf3-4367-8455-bc83247c6e62",
+                "version": 1
+            }
+        },
+        "status": "COMPLETED",
+        "taskId": "12668cc3-b4f8-4304-bc01-35a834284850",
+        "seconds": 22.87,
+        "assetIds": [
+            "asset-5c810be5-1355-4c54-8620-eada3a6fb53b-2"
+        ],
+        "references": [
+        ],
+        "resolution": "2K"
+    }
+]

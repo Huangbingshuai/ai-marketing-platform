@@ -1,0 +1,1 @@
+{"taskId": "02c2ee55-8e09-4dac-af18-7466649629ef", "stage": "ASSET_INVENTORY", "model": "doubao-seed-2-1-pro-260915", "promptVersion": "customized-assets-20261013-structured-v2", "inputTokens": 3178, "outputTokens": 2057, "totalTokens": 5235, "latencyMs": 45466, "attempts": 1, "reasoningTokens": 376}
