@@ -121,6 +121,65 @@ async def test_evidence_and_repair_scope_are_mechanically_checked() -> None:
         apply_repair(assets, {'patches':[{'assetId':assets[1]['id'], 'field':'description', 'text':'改他人', 'preparation':None}]},
             {'findings':[{'assetId':assets[0]['id'], 'field':'description', 'severity':'REQUIRED'}]}, claim['input'])
 
+class InvalidInventoryProvider(Provider):
+    def __init__(self, *, correction_fails: bool = False, invalid_parent: bool = False) -> None:
+        super().__init__()
+        self.correction_fails = correction_fails
+        self.invalid_parent = invalid_parent
+
+    async def generate(self, stage: str, model: str, schema: Any, context: dict[str, Any], instruction: str) -> Any:
+        if stage == 'ASSET_VALIDATE_INVENTORY':
+            self.calls.append(stage)
+            data = copy.deepcopy(context['candidate'])
+            if not self.correction_fails:
+                data['objects'][0]['sources'][0]['quote'] = 'G65，灰色外壳。'
+                if self.invalid_parent:
+                    assert set(context['validationErrors']) == {'asset evidence quote not found', 'invalid detail parent'}
+                    data['objects'][2].update(treatment='INDEPENDENT', parentKey=None)
+            return schema.model_validate(data)
+        result = await super().generate(stage, model, schema, context, instruction)
+        if stage == 'ASSET_INVENTORY':
+            data = result.model_dump()
+            data['objects'][0]['sources'][0]['quote'] = '不是原文的产品说明'
+            if self.invalid_parent:
+                data['objects'][2].update(treatment='SCENE_DETAIL', parentKey='0')
+            return schema.model_validate(data)
+        return result
+
+
+@pytest.mark.asyncio
+async def test_inventory_reference_is_corrected_once_before_defining_assets() -> None:
+    claim = fixture(); api = Api(claim); provider = InvalidInventoryProvider()
+    await run_assets(api, provider, claim)  # type: ignore[arg-type]
+    assert api.completed is not None
+    assert provider.calls.count('ASSET_INVENTORY') == 1
+    assert provider.calls.count('ASSET_VALIDATE_INVENTORY') == 1
+    assert claim['output']['inventoryValidationError'] == 'asset evidence quote not found'
+
+
+@pytest.mark.asyncio
+async def test_inventory_correction_receives_all_mechanical_errors_in_one_call() -> None:
+    claim = fixture(); api = Api(claim); provider = InvalidInventoryProvider(invalid_parent=True)
+    await run_assets(api, provider, claim)  # type: ignore[arg-type]
+    assert api.completed is not None
+    assert provider.calls.count('ASSET_VALIDATE_INVENTORY') == 1
+    assert len(claim['output']['inventoryValidationErrors']) == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_inventory_correction_keeps_candidates_and_never_repeats_paid_work() -> None:
+    claim = fixture(); api = Api(claim); provider = InvalidInventoryProvider(correction_fails=True)
+    with pytest.raises(ValueError, match='quote'):
+        await run_assets(api, provider, claim)  # type: ignore[arg-type]
+    assert claim['output']['inventoryRaw']
+    assert claim['output']['inventoryCorrectionAttempted']
+    assert api.completed is None
+    retry = InvalidInventoryProvider()
+    with pytest.raises(ValueError, match='quote'):
+        await run_assets(api, retry, claim)  # type: ignore[arg-type]
+    assert retry.calls == []
+
+
 class InvalidEvidenceProvider(Provider):
     def __init__(self, *, correction_fails: bool = False) -> None:
         super().__init__()

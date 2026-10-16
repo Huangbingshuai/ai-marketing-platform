@@ -35,41 +35,56 @@ def check_evidence(refs: list[dict[str, Any]], index: dict[tuple[str, str], str]
         if kind == 'PRODUCT' and ref['field'] in ('description', 'knownFacts', 'structure', 'material', 'markings') and ref['source'] != 'BRIEF':
             raise ValueError('product fact must cite brief')
 
+class InventoryValidationError(ValueError):
+    def __init__(self, reasons: list[str]) -> None:
+        self.reasons = list(dict.fromkeys(reasons))
+        super().__init__('; '.join(self.reasons))
+
+
 def align_inventory(raw: dict[str, Any], snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     candidates = Inventory.model_validate(raw).model_dump()['objects']
+    errors: list[str] = []
     existing = {a['id']: a for a in snapshot['document']['assets']}
     keys = [a['key'] for a in candidates]
     if len(set(keys)) != len(keys):
-        raise ValueError('duplicate inventory key')
+        errors.append('duplicate inventory key')
     ids: dict[str, str] = {}
     for i, a in enumerate(candidates):
         old = existing.get(a['existingId'])
         if a['existingId'] is not None and (old is None or old['kind'] != a['kind']):
-            raise ValueError('invalid existing identity')
+            errors.append('invalid existing identity')
         ids[a['key']] = a['existingId'] or f"asset-{snapshot['identitySeed']}-{i+1}"
     if len(set(ids.values())) != len(ids):
-        raise ValueError('inventory duplicated an identity')
+        errors.append('inventory duplicated an identity')
     target = snapshot.get('targetAssetId')
     if target and (len(candidates) != 1 or candidates[0]['existingId'] != target):
-        raise ValueError('single asset scope changed')
+        errors.append('single asset scope changed')
     if not target and not any(a['kind'] == 'PRODUCT' for a in candidates):
-        raise ValueError('missing product')
+        errors.append('missing product')
     index = evidence_index(snapshot)
     result = []
     for a in candidates:
-        check_evidence(a['sources'], index, a['kind'])
+        if not a['sources']:
+            errors.append('asset evidence required')
+        for ref in a['sources']:
+            try:
+                check_evidence([ref], index, a['kind'])
+            except ValueError as error:
+                errors.append(str(error))
         parent = ids.get(a['parentKey']) or (a['parentKey'] if a['parentKey'] in existing else None)
         if a['treatment'] == 'INDEPENDENT':
             if a['parentKey'] is not None:
-                raise ValueError('independent object has parent')
+                errors.append('independent object has parent')
         else:
             expected = 'SCENE' if a['treatment'] == 'SCENE_DETAIL' else 'CHARACTER'
             parent_object = next((v for v in candidates if ids[v['key']] == parent), existing.get(parent))
             if not parent or parent == ids[a['key']] or not parent_object or parent_object['kind'] != expected:
-                raise ValueError('invalid detail parent')
+                errors.append('invalid detail parent')
         if a['kind'] == 'PRODUCT' and a['treatment'] != 'INDEPENDENT':
-            raise ValueError('product must be independent')
+            errors.append('product must be independent')
         result.append({**a, 'id': ids[a['key']], 'parentId': parent})
+    if errors:
+        raise InventoryValidationError(errors)
     return result
 
 def protected_fields(a: dict[str, Any]) -> list[str]:
@@ -182,10 +197,35 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
         await checkpoint('SNAPSHOT', 'SUCCEEDED', '本次创作依据', snapshot['script']['name']+'\n'+snapshot['script'].get('story', {}).get('content', snapshot['script'].get('synopsis', '')))
     if steps['INVENTORY']['status'] != 'SUCCEEDED':
         await checkpoint('INVENTORY', 'RUNNING', '识别对象与原文', '正在对照完整脚本和信息卡识别必要对象')
-        inventory = await provider.generate('ASSET_INVENTORY', snapshot['models']['creative'], Inventory, context,
-            '先识别故事实际涉及的产品、人物、场景、道具，不写完整外观，不拆分镜。每项给出用途与原文引用，source/path来自sources，quote必须逐字复制连续原文，field标明支持的内容。产品始终独立；不要按数量删掉动作必需道具。普通陈设可标SCENE_DETAIL归属场景，服饰可标CHARACTER_DETAIL归属人物；INDEPENDENT的parentKey为null。相同身份复用已有id，不按近名猜测；新对象existingId为null，key为本次唯一代号。父对象使用key；单项整理允许父对象使用existingIdentities的id。若targetAssetId非空只整理该对象，必须保留id和kind。未知事实保持未知，不根据已有生成描述发明产品事实。')
-        stored['inventoryRaw'] = inventory.model_dump()
-        aligned = align_inventory(stored['inventoryRaw'], snapshot)
+        inventory_instruction = '先识别故事实际涉及的产品、人物、场景、道具，不写完整外观，不拆分镜。每项给出用途与原文引用，source/path来自sources，quote必须逐字复制连续原文，field标明支持的内容。产品始终独立；不要按数量删掉动作必需道具。SCENE_DETAIL的父对象必须是SCENE，CHARACTER_DETAIL的父对象必须是CHARACTER，不能归属产品或道具；INDEPENDENT的parentKey为null。包袋、线材等道具的附属细节可合入该道具定义，不建立违反父类型的子项。相同身份复用已有id，不按近名猜测；新对象existingId为null，key为本次唯一代号。父对象使用key；单项整理允许父对象使用existingIdentities的id。若targetAssetId非空只整理该对象，必须保留id和kind。未知事实保持未知，不根据已有生成描述发明产品事实。'
+        if 'inventoryRaw' not in stored:
+            inventory = await provider.generate('ASSET_INVENTORY', snapshot['models']['creative'], Inventory, context, inventory_instruction)
+            stored['inventoryRaw'] = inventory.model_dump()
+            await checkpoint('INVENTORY', 'RUNNING', '对象识别待核对', '已保留识别候选，正在核对对象身份、归属与原文引用。')
+        try:
+            aligned = align_inventory(stored['inventoryRaw'], snapshot)
+        except ValueError as error:
+            safe_errors = {'asset evidence required', 'asset evidence quote not found', 'product fact must cite brief',
+                'duplicate inventory key', 'invalid existing identity', 'inventory duplicated an identity',
+                'single asset scope changed', 'missing product', 'independent object has parent',
+                'invalid detail parent', 'product must be independent'}
+            reasons = error.reasons if isinstance(error, InventoryValidationError) else [str(error)]
+            reasons = [r if r in safe_errors else 'invalid inventory schema' for r in reasons]
+            reason = reasons[0]
+            logging.warning('Asset inventory validation reason=%s', reason)
+            if stored.get('inventoryCorrectionAttempted'):
+                await checkpoint('INVENTORY', 'FAILED', '对象识别需要核对', '对象身份、归属或原文引用未通过校验，候选内容已保留。')
+                raise
+            stored['inventoryCorrectionAttempted'] = True
+            stored['inventoryValidationError'] = reason
+            stored['inventoryValidationErrors'] = reasons
+            await checkpoint('INVENTORY', 'RUNNING', '核对对象与引用', '正在针对对象身份、归属或原文引用进行一次校正。')
+            corrected = await provider.generate('ASSET_VALIDATE_INVENTORY', snapshot['models']['creative'], Inventory,
+                {**context, 'candidate': stored['inventoryRaw'], 'validationError': reason, 'validationErrors': reasons},
+                inventory_instruction+'一次校正validationErrors全部机械问题，保留有效对象与原文，不删除动作必需对象来规避校验。产品已知事实只引用BRIEF；故事用途可引用SCRIPT并标usage。parentKey引用本批唯一key或合法已有身份，父对象类型必须符合treatment，不能猜测。')
+            stored['inventoryRaw'] = corrected.model_dump()
+            await checkpoint('INVENTORY', 'RUNNING', '对象识别校正结果', '已保留校正候选，正在重新校验。')
+            aligned = align_inventory(stored['inventoryRaw'], snapshot)
         stored['inventory'] = aligned
         await checkpoint('INVENTORY', 'SUCCEEDED', '对象与原文依据', '\n\n'.join(a['name']+'：'+a['usage']+'\n'+'\n'.join(r['quote'] for r in a['sources']) for a in aligned))
     inventory = stored['inventory']
@@ -203,6 +243,8 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
         'PRODUCT的details只用structure/material/markings；CHARACTER只用appearance/styling；SCENE只用layout/lighting；PROP只用appearance/material。'
         '公共外观与事实分开，产品事实只以BRIEF为准，结构位置未知时写待确认，允许创作的内容放designNotes；人物、场景可按故事合理设计。'
         '人物、场景和普通道具的未指定视觉细节允许给出一套明确且统一的设计方案，写入designNotes、details和图片要求；不能写成资料已确认事实，不要并列多套互斥选项。'
+        'knownFacts只记录该对象在原文中的事实，不把目标受众推导为人物的年龄职业，不把自定的安装位置或标识工艺写成已知事实；相关内容若合理只能作为明确的设计设定。'
+        '资产提供跨镜复用的共用形象，不制作逐镜画面。需要独立制图时默认一张同一对象的多视角设定图：人物为面部特写与全身正侧背面（只有局部出镜则按可见范围）；实体产品和道具展示一致的多个角度及已确认关键结构；场景展示同一空间的全貌与不同方向；软件按一致界面和必要状态，不套实体三视图。不是多套备选形象，不新增对象身份，不补造未知真实结构。必要的连接、收绕、搬移关系记录在用途或设计说明，不必复现所有剧情阶段、动作或相连设备；写明的状态不能与事实冲突。'
         '场景与配套道具不得反向确定未知产品事实：若插脚、接口、连接件、容器等制式或适配规格未提供，相关插座、线材或安装位置只写与已确认部分匹配，具体制式待确认，不擅自指定国别标准、孔型或兼容性。'
         '人物styling只写实际可见的服饰配饰；只有手部出镜时无需设计全身服装，不把动作节奏写成服装。'
         '每条关键事实引用sources中的准确path与连续quote，产品description/knownFacts/结构材质标识仅引用BRIEF。'
@@ -274,9 +316,11 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
         await checkpoint('IMAGE_PLAN', 'SUCCEEDED', '按需图片制作清单', '\n\n'.join(a['name']+'\n'+('\n'.join(i['name']+'：'+i['purpose']+'；'+i['requirements'] for i in a['preparation']['images']) or '暂不需要独立制作图片') for a in assets))
     audit_instruction = ('独立核对资产与完整脚本和BRIEF。检查必要对象遗漏、重复身份、产品事实及结构断言、分类特征、空间关系、未知信息、来源语义与图片需求。'
         '每个问题必须定位assetId和允许修改的字段，basis说明原文依据。必要修正标REQUIRED，一般优化标SUGGESTION。'
+        '逐对象对照顶层description、knownFacts、designNotes、imageRequirements与结构化preparation.details、images、questions；图片制作要求既有顶层摘要也有逐图清单，两处均是实际生成依据。问题若同时出现在顶层文本和preparation内，必须分别定位这两个允许修改的字段，不能只报告顶层并留下清单中的同一错误。'
         '缺少资料但已明确待确认不是必须返修；合理人物场景设计不是产品事实错误。不要要求凭空补产品细节。'
         '明确区分资料事实与美术设计：knownFacts只能写原文已明确的内容；非产品对象的designNotes、分类details及图片要求允许确定墙面颜色、人物造型、普通道具材质等美术方案，无需原文逐项规定。不得仅因原文未规定这些设计就标REQUIRED，也不要求所有设计均待确认；产品未知结构仍不能补造。'
         '同一实质问题若影响多个字段，本次一次列全需要修改的字段；复核不应将已经允许的场景设计重新判成产品事实错误。'
+        '资产公共参考图不是逐镜分镜图。仅检查已写明的对象结构与状态是否自洽，不以未复现每个剧情阶段、动作结果、全部相连设备或人物为REQUIRED；中性场景图、独立产品图均合法。逐镜动作与完整画面绑定留给视频制作节点。必要对象遗漏与已明确状态的实质矛盾仍须指出，同时核对knownFacts是否混入受众、安装位置、标识工艺等推导。'
         '跨对象设定若间接确定了未知产品结构、插脚/接口制式或兼容性，首次审校即为REQUIRED，不能只列优化建议后在复核升级。每个assetId+field只列一条，合并该字段内的全部问题。'
         '发现遗漏时定位最相关对象preparation字段并说明缺失对象；遗漏动作必需的独立对象仍属于必须修正的问题，不能用待确认说明掩盖。受保护字段存在冲突应指出，不允许自动重写。')
     if steps['REVIEW']['status'] != 'SUCCEEDED':

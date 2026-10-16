@@ -62,7 +62,7 @@ class Provider(StructuredResponsesMixin):
                 schema_name="customized_storyboard_" + stage.lower(),
                 stage=stage,
                 model=model,
-                prompt_version="customized-assets-20261013-structured-v2" if stage.startswith('ASSET_') else "customized-storyboard-20261012-sparse-repair",
+                prompt_version="customized-assets-20261016-reference-boundaries-v2" if stage.startswith('ASSET_') else "customized-storyboard-20261012-sparse-repair",
                 max_output_tokens=16384,
                 retry_max_output_tokens=32768,
                 request_timeout=self._timeout,
