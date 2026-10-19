@@ -3,6 +3,13 @@ FROM ${NODE_IMAGE}
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 WORKDIR /app
+RUN node -e 'const fs=require("node:fs"),tls=require("node:tls"),p="/etc/ssl/certs/ca-certificates.crt";if(!fs.existsSync(p)||fs.statSync(p).size===0){if(!tls.rootCertificates.length)throw Error("Trusted roots unavailable");fs.mkdirSync("/etc/ssl/certs",{recursive:true});fs.writeFileSync(p,tls.rootCertificates.join("\n")+"\n");}' \
+    && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY workers/shared/customized-production-runtime/scripts/check-production-runtime.sh /usr/local/bin/check-production-runtime
+RUN chmod 755 /usr/local/bin/check-production-runtime && check-production-runtime api
 RUN npm install -g pnpm@10.33.0
 COPY . .
 RUN pnpm install --frozen-lockfile \

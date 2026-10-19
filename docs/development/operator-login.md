@@ -37,4 +37,34 @@ Worker 接口继续验证各自 Token；供应商输入接口继续验证任务�
 
 ## 验证范围
 
+### 视频系统依赖与只读检查
+
+API在保存视频前通过ffprobe核对实际时长/尺寸；定制类视频Worker用ffmpeg解码封面，镜像同时保留ffprobe。`deploy/Dockerfile.api`及`workers/customized-production/Dockerfile`均安装Debian的ffmpeg包（包含ffprobe），并在构建中执行只读二进制探针。Python/Node依赖安装成功不能代替这些系统工具。
+
+API的node-slim基底若尚无系统CA，先用[Node 22内置可信根证书](https://nodejs.org/docs/latest-v22.x/api/tls.html#tlsrootcertificates)引导缺失/空的CA bundle，再通过HTTPS APT安装ca-certificates与ffmpeg；已有非空bundle不覆盖。这里使用Node自带的PEM根证书，不关闭TLS验证、APT签名检查或允许未认证软件包。
+
+仓库及运行容器使用同一份探针，不访问数据库、队列、媒体或模型，不执行生成；工具缺失或不可运行时返回非0：
+
+```sh
+# 检查当前执行环境；这里只检查，不安装、不重启服务
+sh deploy/check-production-runtime.sh api
+sh deploy/check-production-runtime.sh customized-production
+
+# 标准镜像构建完成后，检查实际已运行容器
+docker compose --env-file .env.production -f compose.production.yaml exec -T api /usr/local/bin/check-production-runtime api
+docker compose --env-file .env.production -f compose.production.yaml exec -T customized-production-worker /usr/local/bin/check-production-runtime customized-production
+```
+
+探针源码位于`workers/shared/customized-production-runtime/scripts/check-production-runtime.sh`；标准镜像内路径为`/usr/local/bin/check-production-runtime`。发布工具若复用旧依赖基底，必须先检查其系统二进制，缺失时重建包含系统包的层，再拷入源码并重新检查；不能只比较Python清单或Node锁文件。切换服务后还须检查实际新容器。不要为探针或升级中断正在执行的任务。
+
+若视频已在供应商生成成功，仅因缺工具而在本地文件处理阶段失败，先修复运行环境；保留原任务output中的providerTaskId和输入快照。现有`POST projects/:projectId/workflows/customized/production/tasks/:id/retry`会校验原来源/草稿后恢复同一任务，Worker在providerTaskId存在时继续查询/下载，不创建新的供应商任务。当前前端未提供通用恢复入口；由有权限的操作者明确发起恢复，不能以“重新生成视频”代替。来源或文件已失效时保留拒绝，不手工清除检查点绕过。
+
+只读失败诊断可在已有DATABASE_URL环境运行，不需要Worker/模型密钥；只允许显式UUID任务，参数化SELECT在只读事务中执行并ROLLBACK，仅输出脱敏白名单结构：
+
+```sh
+node apps/api/scripts/inspect-customized-production-failures.mjs --task TASK_UUID --task ANOTHER_TASK_UUID
+```
+
+脚本不输出提示词正文、系统指令、签名URL、凭据或未知原始错误文本；引文只输出长度和是否匹配当前正文。来源、草稿版本及其他活动任务的布尔检查仅作恢复前诊断，正式恢复仍以API事务校验为准。
+
 鉴权 HTTP 自动测试使用隔离的内存 Repository，覆盖真实 Nest 路由、全局 Guard、Cookie、校验器和异常封装；不等同于 PostgreSQL 迁移和服务器端到端部署验证。上线前须在目标环境执行迁移及上述登录检查。浏览器视觉和交互证据见 [2026-10-15 登录验证](evidence/browser/2026-10-15-login/README.md)。
