@@ -1,19 +1,18 @@
 import type { WorkflowRun, EffectWorkflowBranchNodeStatus } from './workflow-working';
 
-/** Six stages; shot rendering also owns visual asset preparation and binding. */
+/** Five stages; video production is the final node. */
 export const CUSTOMIZED_WORKFLOW_NODES = [
   'SOURCE_IMPORT',
   'INFORMATION_EXTRACTION',
   'STORYBOARD',
   'SHOT_PROMPT',
   'SHOT_RENDER',
-  'DELIVERY',
 ] as const;
 export type CustomizedWorkflowNodeId = (typeof CUSTOMIZED_WORKFLOW_NODES)[number];
 
 /** Read-only projection of historical navigation; never rewrites saved artifacts. */
 export const customizedWorkflowNodeId = (value: unknown): CustomizedWorkflowNodeId | null => {
-  if (value === 'VISUAL_ASSETS') return 'SHOT_RENDER';
+  if (value === 'VISUAL_ASSETS' || value === 'DELIVERY') return 'SHOT_RENDER';
   return CUSTOMIZED_WORKFLOW_NODES.find((node) => node === value) ?? null;
 };
 

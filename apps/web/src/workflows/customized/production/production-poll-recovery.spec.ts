@@ -1,6 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createRenderer, h, nextTick, ssrContextKey } from 'vue';
-import type { ProductionTask, ProductionWorkspace } from '@ai-marketing/contracts';
+import type {
+  ProductionDocument,
+  ProductionTask,
+  ProductionWorkspace,
+} from '@ai-marketing/contracts';
 import Workspace from './CustomizedProductionWorkspace.vue';
 import { productionApi } from './production.api';
 vi.mock('./production.api', () => ({
@@ -32,10 +36,176 @@ const settle = async () => {
     await nextTick();
   }
 };
+
+it.each(['ASSETS', 'SHOTS'] as const)(
+  '%s opens an untouched empty workspace without editing and restores only actual drafts',
+  async (mode) => {
+    vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    const content: ProductionDocument = {
+      assets: [
+        {
+          id: 'product',
+          kind: 'PRODUCT',
+          name: '充电器',
+          description: '',
+          knownFacts: '',
+          designNotes: '',
+          sourceText: '',
+        },
+      ],
+      shots: [
+        {
+          id: 'shot',
+          title: '产品亮相',
+          shotType: '近景',
+          cameraMovement: '固定',
+          durationSeconds: 5,
+          visual: '充电器置于桌面',
+          dialogue: '',
+          audio: '',
+          atmosphere: '',
+          bindings: [],
+        },
+      ],
+    };
+    for (const scenario of [
+      {
+        document: { assets: [], shots: [] },
+        confirmed: { assets: [], shots: [] },
+        confirmedFlag: false,
+        editing: false,
+      },
+      {
+        document: content,
+        confirmed: { assets: [], shots: [] },
+        confirmedFlag: false,
+        editing: true,
+      },
+      { document: content, confirmed: content, confirmedFlag: true, editing: false },
+      {
+        document: { assets: [], shots: [] },
+        confirmed: content,
+        confirmedFlag: true,
+        editing: true,
+      },
+    ]) {
+      vi.mocked(productionApi.workspace).mockResolvedValue({
+        script: {
+          id: 'script',
+          name: '充电器脚本',
+          synopsis: '',
+          structure: '',
+          productFocus: '',
+          shots: [],
+        },
+        source: { artifactId: 'script-artifact', revision: 1, fingerprint: 'confirmed' },
+        sourceReady: true,
+        document: scenario.document,
+        confirmedDocument: scenario.confirmed,
+        draftRevision: 1,
+        assetsConfirmed: scenario.confirmedFlag,
+        shotsConfirmed: scenario.confirmedFlag,
+        prompts: [],
+        tasks: [],
+      } as ProductionWorkspace);
+      let state: Record<string, unknown> = {};
+      const app = renderer.createApp(
+        {
+          ...Workspace,
+          render(this: { $: { setupState: Record<string, unknown> } }) {
+            state = this.$.setupState;
+            return h('div');
+          },
+        },
+        { projectId: 'project', workflowRunId: 'run', mode },
+      );
+      app.provide(ssrContextKey, { modules: new Set() });
+      app.mount(node());
+      try {
+        await settle();
+        expect(state.editing).toBe(scenario.editing);
+      } finally {
+        app.unmount();
+      }
+    }
+  },
+);
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+});
+
+it.each([
+  ['ASSETS', 'SHOTS'],
+  ['ASSETS', 'PROMPT'],
+  ['SHOTS', 'ASSETS'],
+  ['SHOTS', 'IMAGE'],
+] as const)('%s does not display or lock on a running %s task', async (mode, operation) => {
+  vi.useFakeTimers();
+  vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  const task: ProductionTask = {
+    id: 'other-node',
+    operation,
+    status: 'RUNNING',
+    progress: 25,
+    steps: [],
+    shotId: null,
+    errorMessage: null,
+  };
+  vi.mocked(productionApi.workspace).mockResolvedValue({
+    script: {
+      id: 'script',
+      name: '充电器脚本',
+      synopsis: '',
+      structure: '',
+      productFocus: '',
+      shots: [],
+    },
+    source: { artifactId: 'script-artifact', revision: 1, fingerprint: 'confirmed' },
+    sourceReady: true,
+    document: { assets: [], shots: [] },
+    confirmedDocument: { assets: [], shots: [] },
+    draftRevision: 1,
+    assetsConfirmed: true,
+    shotsConfirmed: true,
+    prompts: [],
+    tasks: [task],
+  } as ProductionWorkspace);
+  vi.mocked(productionApi.task).mockResolvedValue(task);
+  let state: Record<string, unknown> = {};
+  const app = renderer.createApp(
+    {
+      ...Workspace,
+      render(this: { $: { setupState: Record<string, unknown> } }) {
+        state = this.$.setupState;
+        return h('div');
+      },
+    },
+    { projectId: 'project', workflowRunId: 'run', mode },
+  );
+  app.provide(ssrContextKey, { modules: new Set() });
+  app.mount(node());
+  try {
+    await settle();
+    expect(state.running).toBeUndefined();
+    expect(state.busy).toBe(false);
+    expect(state.tasks).toEqual([]);
+    expect(state.graphTask).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1800);
+    await settle();
+    if (operation === 'IMAGE') {
+      // A video library image request refreshes silently, without video progress.
+      expect(productionApi.task).toHaveBeenCalledWith(
+        'project',
+        'other-node',
+        expect.any(AbortSignal),
+      );
+    } else expect(productionApi.task).not.toHaveBeenCalled();
+    expect(state.running).toBeUndefined();
+  } finally {
+    app.unmount();
+  }
 });
 
 it('recovers a failed progress read without failing the task or retaining a stale warning', async () => {

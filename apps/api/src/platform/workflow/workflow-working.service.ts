@@ -431,7 +431,7 @@ export class WorkflowWorkingService {
           { projectId, workflow: 'CUSTOMIZED' },
           'customized-tree',
           () => this.loadCustomizedBranchTree(projectId),
-          { assetBranch: 4 },
+          { assetBranch: 4, nodeLayout: 5 },
         )
       : this.loadCustomizedBranchTree(projectId);
   }
@@ -458,7 +458,8 @@ export class WorkflowWorkingService {
           isActive: run.id === visibleId,
           nodes: CUSTOMIZED_WORKFLOW_NODES.map((nodeId) => {
             const artifacts = run.workingArtifacts.filter(
-              (item) => customizedWorkflowNodeId(item.nodeId) === nodeId,
+              (item) =>
+                item.nodeId !== 'DELIVERY' && customizedWorkflowNodeId(item.nodeId) === nodeId,
             );
             if (nodeId === 'SHOT_PROMPT') {
               const catalog = artifacts.find(

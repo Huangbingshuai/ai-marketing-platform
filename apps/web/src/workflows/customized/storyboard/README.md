@@ -1,6 +1,6 @@
 # 定制类分镜创作前端
 
-第三节点通过 `CustomizedStoryboardWorkspace` 接入正式六节点画布及专用 `projects/:projectId/workflows/customized/storyboard` API。直接读取当前项目 / 定制类 Run 已确认的 `customized-brief`，以 `artifactId + revision + fingerprint` 固定创作来源。
+第三节点通过 `CustomizedStoryboardWorkspace` 接入正式五节点画布及专用 `projects/:projectId/workflows/customized/storyboard` API。直接读取当前项目 / 定制类 Run 已确认的 `customized-brief`，以 `artifactId + revision + fingerprint` 固定创作来源。
 
 `CustomizedStoryboardNodePage` 负责创作设置、方案目录、完整正文、创作说明、对比和导出；历史逐镜组件保留兼容代码，不在当前脚本页展开。共享画布、版本树仍由外层管理，按钮、信息字段、确认、加载、工作流弹窗、底部导航及标题按钮尺寸复用系统组件与样式。
 

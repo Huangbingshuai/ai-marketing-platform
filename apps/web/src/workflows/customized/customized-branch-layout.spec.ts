@@ -51,7 +51,7 @@ describe('customized adapter for the shared effect branch tree', () => {
     expect(scripts[0]!.x).not.toBe(scripts[1]!.x);
     expect(scripts[0]!.y).toBe(scripts[1]!.y);
   });
-  it('keeps six stage bands but draws no fake versions for an empty draft', () => {
+  it('keeps five stage bands but draws no fake versions for an empty draft', () => {
     expect(customizedBranchStages.map((stage) => stage.nodeId)).toEqual(CUSTOMIZED_WORKFLOW_NODES);
     expect(buildCustomizedBranchLayout(tree([branch('a', null, null, [])])).nodes).toEqual([]);
   });
@@ -66,7 +66,7 @@ describe('customized adapter for the shared effect branch tree', () => {
     data.branches[2]!.nodes[3]!.artifactCount = 8;
     data.branches[3]!.nodes[3]!.revision = 20;
     const layout = buildCustomizedBranchLayout(data);
-    expect(customizedBranchStages).toHaveLength(6);
+    expect(customizedBranchStages).toHaveLength(5);
     expect(
       layout.nodes.filter((n) => n.nodeId === 'SHOT_PROMPT').map((n) => [n.stageKey, n.revision]),
     ).toEqual([

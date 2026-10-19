@@ -20,14 +20,6 @@ async function call<T>(
   return (await requestJson<ApiResponse<T>>(base(p) + path, { method, body, signal })).data;
 }
 export const productionApi = {
-  reviewDraft: (p: string, id: string, expectedRevision: number, signal?: AbortSignal) =>
-    call<{ revision: number }>(
-      p,
-      `/tasks/${id}/review-draft`,
-      'POST',
-      { expectedRevision },
-      signal,
-    ),
   uploadImageReference: (p: string, r: string, file: File, signal?: AbortSignal) => {
     const form = new FormData();
     form.set('workflowRunId', r);
@@ -86,6 +78,4 @@ export const productionApi = {
     ),
   task: (p: string, id: string, signal?: AbortSignal) =>
     call<ProductionTask>(p, `/tasks/${id}`, 'GET', undefined, signal),
-  action: (p: string, id: string, cancel: boolean, signal?: AbortSignal) =>
-    call<ProductionTask>(p, `/tasks/${id}/${cancel ? 'cancel' : 'retry'}`, 'POST', {}, signal),
 };

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import {
   Clapperboard,
   Plus,
@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Sparkles,
   Save,
+  SlidersHorizontal,
 } from '@lucide/vue';
 import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
@@ -17,12 +18,10 @@ import {
   type ProductionDocument,
   type ProductionAsset,
   type ProductionOperation,
-  type ProductionTask,
   type CustomizedImageSettings,
 } from '@ai-marketing/contracts';
 import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
 import WorkflowNodeEditActions from '../../../platform/workflow/components/WorkflowNodeEditActions.vue';
-import WorkflowInformationCard from '../../../platform/workflow/components/WorkflowInformationCard.vue';
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
 import WorkflowExtractionActions from '../../../platform/workflow/components/WorkflowExtractionActions.vue';
@@ -34,9 +33,10 @@ import { productionApi } from './production.api';
 import ProductionAssetStudio from './ProductionAssetStudio.vue';
 import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
 import ProductionShotRenderPanel from './ProductionShotRenderPanel.vue';
+import ProductionShotDirectory from './ProductionShotDirectory.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
-import ProductionAssetPreparation from './ProductionAssetPreparation.vue';
-import { productionWorkflowTask } from './production-workflow-selection';
+import ProductionAssetVisual from './ProductionAssetVisual.vue';
+import { productionNodeTasks, productionWorkflowTask } from './production-workflow-selection';
 const props = defineProps<{ projectId: string; workflowRunId: string; mode: 'ASSETS' | 'SHOTS' }>();
 const emit = defineEmits<{ back: []; next: []; saved: []; published: [runId: string] }>();
 const workspace = ref<ProductionWorkspace | null>(null),
@@ -44,6 +44,7 @@ const workspace = ref<ProductionWorkspace | null>(null),
 const promptText = ref(''),
   promptBase = ref('');
 const editing = ref(false);
+const shotRenderPanel = ref<{ open: () => void } | null>(null);
 const loading = ref(true),
   busy = ref(false),
   error = ref(''),
@@ -56,7 +57,8 @@ const loading = ref(true),
   graphTaskId = ref('');
 const mergeSource = ref(''),
   mergeTarget = ref('');
-const inspectAsset = ref<ProductionAsset | null>(null);
+const assetPreview = ref<ProductionAsset | null>(null);
+const shotParamsOpen = ref(false);
 const imageAssets = ref<ProductionAsset[]>([]);
 const previousImageSettings = computed(
   () =>
@@ -72,17 +74,31 @@ const imageSubmitting = ref(false),
   imageError = ref('');
 let imageSubmission = 0;
 function prepareImages(assets: ProductionAsset[]) {
-  if (busy.value || running.value || imageSubmitting.value || !assets.length) return;
+  if (
+    busy.value ||
+    running.value ||
+    backgroundImage.value ||
+    imageSubmitting.value ||
+    !assets.length
+  )
+    return;
   imageError.value = '';
   imageAssets.value = assets;
   imageDialogOpen.value = true;
 }
 function prepareImage(asset: ProductionAsset) {
-  inspectAsset.value = null;
+  assetPreview.value = null;
   prepareImages([asset]);
 }
 async function generateImages(settings: CustomizedImageSettings) {
-  if (!workspace.value || busy.value || running.value || imageSubmitting.value) return;
+  if (
+    !workspace.value ||
+    busy.value ||
+    running.value ||
+    backgroundImage.value ||
+    imageSubmitting.value
+  )
+    return;
   const project = props.projectId,
     run = props.workflowRunId;
   const submission = ++imageSubmission;
@@ -148,13 +164,23 @@ const assetsPending = computed(
       JSON.stringify(workspace.value.confirmedDocument.assets),
 );
 const promptDirty = computed(() => promptText.value !== promptBase.value);
-const tasks = computed(() => workspace.value?.tasks ?? []);
+const tasks = computed(() => productionNodeTasks(workspace.value?.tasks ?? [], props.mode));
 const running = computed(() => tasks.value.find((t) => ['RUNNING', 'QUEUED'].includes(t.status)));
+// Images can also be requested from the video library. Refresh those results
+// silently without borrowing asset progress or locking the video workbench.
+const backgroundImage = computed(() =>
+  props.mode === 'SHOTS'
+    ? workspace.value?.tasks.find(
+        (t) => t.operation === 'IMAGE' && ['RUNNING', 'QUEUED'].includes(t.status),
+      )
+    : undefined,
+);
+const pollingTask = computed(() => running.value ?? backgroundImage.value);
 const shot = computed(
   () => document.value.shots.find((s) => s.id === selectedShotId.value) ?? document.value.shots[0],
 );
 const prompt = computed(() =>
-  workspace.value?.prompts.find((p) => p.value.shotId === shot.value?.id),
+  workspace.value?.prompts.find((p) => 'shotId' in p.value && p.value.shotId === shot.value?.id),
 );
 const graphTasks = computed(() =>
   tasks.value.filter((t) =>
@@ -221,13 +247,13 @@ const boundAssets = computed(
       .map((b) => ({ binding: b, asset: document.value.assets.find((a) => a.id === b.assetId)! }))
       .filter((b) => b.asset) ?? [],
 );
-async function load() {
+async function load(quiet = false) {
   clearTimeout(autosave);
   controller.abort();
   controller = new AbortController();
   const scope = controller;
   clearTimeout(poll);
-  loading.value = true;
+  if (!quiet) loading.value = true;
   error.value = '';
   pollingInterrupted.value = false;
   try {
@@ -240,11 +266,13 @@ async function load() {
     workspace.value = result;
     document.value = clone(result.document);
     baseline = JSON.stringify(document.value);
-    const section = props.mode === 'ASSETS' ? 'assets' : 'shots';
+    // Missing confirmed output alone does not imply an edit session.
+    // Restore editing only when the persisted draft differs from that output.
     editing.value =
-      !(props.mode === 'ASSETS' ? result.assetsConfirmed : result.shotsConfirmed) ||
-      JSON.stringify(result.document[section]) !==
-        JSON.stringify(result.confirmedDocument[section]);
+      JSON.stringify(props.mode === 'ASSETS' ? result.document.assets : result.document.shots) !==
+      JSON.stringify(
+        props.mode === 'ASSETS' ? result.confirmedDocument.assets : result.confirmedDocument.shots,
+      );
     if (!document.value.shots.some((s) => s.id === selectedShotId.value))
       selectedShotId.value = document.value.shots[0]?.id ?? '';
     schedule();
@@ -260,11 +288,11 @@ async function load() {
 }
 function schedule() {
   clearTimeout(poll);
-  if (!disposed && running.value) poll = setTimeout(() => void refreshTask(), 1800);
+  if (!disposed && pollingTask.value) poll = setTimeout(() => void refreshTask(), 1800);
 }
 async function refreshTask() {
   const scope = controller,
-    current = running.value;
+    current = pollingTask.value;
   if (!current) return;
   try {
     const result = await productionApi.task(props.projectId, current.id, scope.signal);
@@ -272,13 +300,19 @@ async function refreshTask() {
     pollingInterrupted.value = false;
     workspace.value.tasks = workspace.value.tasks.map((t) => (t.id === result.id ? result : t));
     if (['RUNNING', 'QUEUED'].includes(result.status)) {
-      if (result.operation === 'IMAGE' && !dirty.value) {
+      if (result.operation === 'IMAGE' && !dirty.value && !promptDirty.value && !editing.value) {
         const refreshed = await productionApi.workspace(
           props.projectId,
           props.workflowRunId,
           scope.signal,
         );
         if (scope !== controller) return;
+        // A silent image refresh must not replace edits begun during the request.
+        if (dirty.value || promptDirty.value || editing.value) {
+          if (workspace.value) workspace.value.tasks = refreshed.tasks;
+          schedule();
+          return;
+        }
         workspace.value = refreshed;
         document.value = clone(refreshed.document);
         baseline = JSON.stringify(document.value);
@@ -296,44 +330,14 @@ async function refreshTask() {
         emit('published', result.publishedWorkflowRunId);
         return;
       }
-      if (!dirty.value && !promptDirty.value) await load();
+      if (!dirty.value && !promptDirty.value && !editing.value) await load();
       else notice.value = '任务已结束，保存当前修改后可重新加载结果';
     }
   } catch (e) {
     if (scope === controller && !isAbortError(e)) {
-      pollingInterrupted.value = true;
+      pollingInterrupted.value = running.value?.id === current.id;
       poll = setTimeout(() => void refreshTask(), 5000);
     }
-  }
-}
-async function reviewFailedDraft(task: ProductionTask) {
-  if (!workspace.value || busy.value || running.value || dirty.value) return;
-  if (
-    !(await requestActionConfirmation({
-      title: '进入人工核对？',
-      description:
-        'AI复核未通过。将完整结果载入编辑草稿，请对照工作流问题逐项核对并修改，再保存确认。失败记录继续保留，此操作不调用模型。',
-      confirmLabel: '载入核对草稿',
-    }))
-  )
-    return;
-  busy.value = true;
-  const scope = controller;
-  try {
-    await productionApi.reviewDraft(
-      props.projectId,
-      task.id,
-      workspace.value.draftRevision,
-      scope.signal,
-    );
-    if (scope !== controller) return;
-    await load();
-    notice.value = '已载入人工核对草稿，请查看工作流问题、修改后保存确认';
-  } catch (e) {
-    if (scope === controller && !isAbortError(e))
-      error.value = e instanceof Error ? e.message : '草稿载入失败';
-  } finally {
-    if (scope === controller) busy.value = false;
   }
 }
 async function mergeAssets() {
@@ -409,7 +413,7 @@ async function save(confirm = true) {
     baseline = JSON.stringify(value);
     notice.value = confirm ? '修改已保存' : '草稿已保存';
     if (confirm) {
-      await load();
+      await load(true);
       emit('saved');
     }
     return true;
@@ -470,14 +474,6 @@ async function generate(operation: ProductionOperation, shotId?: string, targetA
       error.value = e instanceof Error ? e.message : '任务创建失败';
   } finally {
     if (scope === controller) busy.value = false;
-  }
-}
-async function taskAction(t: ProductionTask, cancel: boolean) {
-  try {
-    await productionApi.action(props.projectId, t.id, cancel, controller.signal);
-    await load();
-  } catch (e) {
-    if (!isAbortError(e)) error.value = e instanceof Error ? e.message : '操作未完成';
   }
 }
 function addAsset() {
@@ -549,6 +545,15 @@ function toggleBinding(a: ProductionAsset) {
   if (i < 0) shot.value.bindings.push({ assetId: a.id, description: '' });
   else shot.value.bindings.splice(i, 1);
 }
+function editShotBinding(asset: ProductionAsset) {
+  if (busy.value || running.value) return;
+  editing.value = true;
+  toggleBinding(asset);
+}
+function updateShotDuration(seconds: number) {
+  if (shot.value && editing.value && !busy.value && !running.value)
+    shot.value.durationSeconds = seconds;
+}
 async function savePrompt() {
   if (!shot.value || busy.value || running.value) return false;
   const content = promptText.value;
@@ -584,8 +589,14 @@ async function savePrompt() {
   }
 }
 async function selectShot(id: string) {
-  if (promptDirty.value && !(await savePrompt())) return;
+  if (promptDirty.value && !(await savePrompt())) return false;
   selectedShotId.value = id;
+  return true;
+}
+async function openShotProduction(id: string) {
+  if (busy.value || running.value || !(await selectShot(id))) return;
+  await nextTick();
+  shotRenderPanel.value?.open();
 }
 async function flushPendingEdits() {
   if (promptDirty.value && !(await savePrompt())) return false;
@@ -596,6 +607,13 @@ watch(
   () => {
     promptText.value = prompt.value?.value.content ?? '';
     promptBase.value = promptText.value;
+  },
+);
+watch(
+  () => shot.value?.id,
+  () => {
+    shotParamsOpen.value = false;
+    assetPreview.value = null;
   },
 );
 function beforeUnload(e: BeforeUnloadEvent) {
@@ -623,6 +641,8 @@ watch(
     imageSubmitting.value = false;
     imageDialogOpen.value = false;
     imageError.value = '';
+    assetPreview.value = null;
+    shotParamsOpen.value = false;
     void load();
   },
   { immediate: true },
@@ -667,7 +687,11 @@ defineExpose({ flushPendingEdits });
           @begin="editing = true"
           @cancel="cancelEdit"
           @save="save()"
-        /><WorkflowExtractionActions
+        />
+        <button v-if="mode === 'SHOTS' && editing" :disabled="busy || !!running" @click="addShot">
+          <Plus :size="15" />添加镜头
+        </button>
+        <WorkflowExtractionActions
           :disabled="
             busy ||
             !!running ||
@@ -707,6 +731,7 @@ defineExpose({ flushPendingEdits });
       title="创作依据已变化"
       message="请返回脚本创作确认当前故事，再继续制作。"
     />
+    <!-- 总时长沿用脚本创作及已有制作策略，不在视频制作重复设置。 -->
     <WorkflowRunProgress
       v-if="running"
       :progress="running.progress"
@@ -726,32 +751,6 @@ defineExpose({ flushPendingEdits });
         graphOpen = true;
       "
     />
-    <div v-if="running" class="task-note">
-      <span>你可以查看已有内容</span><button @click="taskAction(running, true)">取消任务</button>
-    </div>
-    <div
-      v-else-if="tasks[0] && ['FAILED', 'CANCELLED'].includes(tasks[0].status)"
-      class="task-note"
-    >
-      <span>{{
-        tasks[0].reviewDraftState === 'ADOPTED'
-          ? 'AI复核未通过，结果已转入人工核对；失败记录保留'
-          : tasks[0].errorMessage || '任务已取消，已保存的内容保留'
-      }}</span>
-      <button
-        v-if="tasks[0].reviewDraftState === 'AVAILABLE'"
-        :disabled="busy || dirty"
-        @click="reviewFailedDraft(tasks[0]!)"
-      >
-        人工核对草稿
-      </button>
-      <button
-        v-else-if="tasks[0].reviewDraftState !== 'ADOPTED'"
-        @click="taskAction(tasks[0]!, false)"
-      >
-        恢复任务
-      </button>
-    </div>
     <template v-if="workspace">
       <ProductionAssetStudio
         v-if="mode === 'ASSETS'"
@@ -769,167 +768,86 @@ defineExpose({ flushPendingEdits });
         @images="prepareImages"
       />
       <div v-else class="video-workspace">
-        <aside class="shot-directory">
-          <header>
-            <h3>镜头列表</h3>
-            <span
-              >{{ document.shots.length }} 镜 ·
-              {{ document.shots.reduce((n, s) => n + s.durationSeconds, 0) }} 秒</span
-            >
-          </header>
-          <button
-            v-for="(s, i) in document.shots"
-            :key="s.id"
-            class="shot-choice"
-            :class="{ selected: s.id === shot?.id }"
-            @click="selectShot(s.id)"
-          >
-            <span class="shot-number">{{ String(i + 1).padStart(2, '0') }}</span>
-            <div>
-              <strong>{{ s.title || '未命名镜头' }}</strong>
-              <p>{{ s.visual || '补充镜头画面' }}</p>
-              <small
-                >{{ s.durationSeconds }} 秒 · {{ s.bindings.length }} 个绑定 ·
-                {{
-                  workspace.prompts.find((p) => p.value.shotId === s.id)?.stale
-                    ? '提示词待更新'
-                    : workspace.prompts.some((p) => p.value.shotId === s.id)
-                      ? '提示词已保存'
-                      : '待创作提示词'
-                }}</small
-              >
-            </div></button
-          ><button class="add" :disabled="busy || !!running || !editing" @click="addShot">
-            <Plus :size="16" />添加镜头
-          </button>
-        </aside>
+        <ProductionShotDirectory
+          :shots="document.shots"
+          :assets="document.assets"
+          :selected-id="shot?.id ?? ''"
+          :locked="busy || !!running"
+          @select="selectShot"
+          @produce="openShotProduction"
+        />
         <main v-if="shot" class="shot-editor">
           <div class="shot-composition">
-            <WorkflowInformationCard
-              ><header class="editor-heading">
-                <h3>{{ shot.title || '当前镜头' }}</h3>
-                <div v-if="editing" class="actions">
-                  <button
-                    class="icon-button"
-                    :disabled="busy || !!running || !editing"
-                    aria-label="上移镜头"
-                    @click="moveShot(-1)"
-                  >
-                    <ArrowUp :size="15" /></button
-                  ><button
-                    class="icon-button"
-                    :disabled="busy || !!running || !editing"
-                    aria-label="下移镜头"
-                    @click="moveShot(1)"
-                  >
-                    <ArrowDown :size="15" /></button
-                  ><button
-                    class="icon-button"
-                    :disabled="busy || !!running || !editing"
-                    aria-label="删除镜头"
-                    @click="removeShot"
-                  >
-                    <Trash2 :size="15" />
-                  </button>
-                </div>
+            <section class="shot-description">
+              <header class="inspector-heading">
+                <h3>旧版片段描述</h3>
+                <button
+                  v-if="editing"
+                  class="compact-icon"
+                  :disabled="busy || !!running"
+                  aria-label="编辑镜头参数"
+                  title="编辑镜头参数"
+                  @click="shotParamsOpen = true"
+                >
+                  <SlidersHorizontal :size="14" />
+                </button>
               </header>
-              <p class="shot-metadata">
-                {{ shot.shotType }} · {{ shot.cameraMovement }} · {{ shot.durationSeconds }} 秒
-              </p>
               <WorkflowInformationField
                 v-model="shot.visual"
                 label="画面描述"
                 multiline
                 :readonly="busy || !!running || !editing"
-              /><WorkflowInformationField
+              />
+              <WorkflowInformationField
                 v-model="shot.atmosphere"
-                label="氛围与连续性"
+                label="氛围"
                 multiline
                 :readonly="busy || !!running || !editing"
               />
-              <details class="shot-details">
-                <summary>镜头参数与声音</summary>
-                <WorkflowInformationField
-                  v-model="shot.title"
-                  label="镜头名称"
-                  :readonly="busy || !!running || !editing"
-                />
-                <div class="shot-spec">
-                  <WorkflowInformationField
-                    v-model="shot.shotType"
-                    label="景别"
-                    :readonly="busy || !!running || !editing"
-                  /><WorkflowInformationField
-                    v-model="shot.cameraMovement"
-                    label="运镜"
-                    :readonly="busy || !!running || !editing"
-                  /><label
-                    >时长（秒）<input
-                      v-model.number="shot.durationSeconds"
-                      type="number"
-                      min="1"
-                      max="3600"
-                      :disabled="busy || !!running || !editing"
-                  /></label>
-                </div>
-                <div class="asset-facts">
-                  <WorkflowInformationField
-                    v-model="shot.dialogue"
-                    label="台词与旁白"
-                    multiline
-                    :readonly="busy || !!running || !editing"
-                  /><WorkflowInformationField
-                    v-model="shot.audio"
-                    label="声音"
-                    multiline
-                    :readonly="busy || !!running || !editing"
-                  />
-                </div>
-              </details>
-            </WorkflowInformationCard>
+            </section>
             <ProductionReferenceLibrary
               :project-id="projectId"
               :assets="document.assets"
               :shot="shot"
-              :editing="editing"
               :locked="busy || !!running"
-              @toggle="toggleBinding"
-              @edit="editing = true"
+              @toggle="editShotBinding"
               @prepare="prepareImage"
-              @details="inspectAsset = $event"
+              @preview="assetPreview = $event"
             />
           </div>
-          <WorkflowInformationCard
-            ><header class="editor-heading">
-              <h3>镜头提示词</h3>
-              <button
-                :disabled="busy || !!running || !workspace.shotsConfirmed"
-                @click="generate('PROMPT', shot.id)"
-              >
-                <RefreshCw v-if="prompt" :size="15" /><Sparkles v-else :size="15" />{{
-                  prompt ? '重新生成' : '生成提示词'
-                }}
-              </button>
+          <section class="prompt-section">
+            <header class="inspector-heading">
+              <h3>视频提示词</h3>
+              <span v-if="prompt?.stale || dirty" class="prompt-stale">待更新</span>
+              <div class="prompt-actions">
+                <button
+                  v-if="promptDirty"
+                  class="compact-icon"
+                  :disabled="busy || !!running || !promptText.trim()"
+                  aria-label="保存提示词"
+                  title="保存提示词"
+                  @click="savePrompt"
+                >
+                  <Save :size="14" />
+                </button>
+                <button
+                  class="compact-button"
+                  :disabled="busy || !!running || !workspace.shotsConfirmed"
+                  @click="generate('PROMPT', shot.id)"
+                >
+                  <RefreshCw v-if="prompt" :size="12" /><Sparkles v-else :size="12" />{{
+                    prompt ? '重新生成' : 'AI 生成'
+                  }}
+                </button>
+              </div>
             </header>
-            <p v-if="prompt?.stale || dirty" class="warning">
-              镜头或相关资产已修改，保存后可重新生成提示词。
-            </p>
-            <WorkflowInformationField
+            <textarea
               v-model="promptText"
-              label="视频提示词"
-              multiline
+              aria-label="视频提示词"
               :readonly="busy || !!running"
-              placeholder="保存分镜与绑定后，可生成或编写当前镜头的视频提示词。"
+              placeholder="输入视频提示词"
             />
-            <div class="actions">
-              <button
-                :disabled="busy || !!running || !promptText.trim() || !promptDirty"
-                @click="savePrompt"
-              >
-                <Save :size="15" />保存提示词
-              </button>
-            </div></WorkflowInformationCard
-          >
+          </section>
         </main>
         <main v-else class="empty">
           <Clapperboard :size="36" />
@@ -938,21 +856,24 @@ defineExpose({ flushPendingEdits });
         </main>
         <ProductionShotRenderPanel
           v-if="shot"
+          ref="shotRenderPanel"
           :project-id="projectId"
           :shot="shot"
           :index="document.shots.findIndex((s) => s.id === shot?.id) + 1"
           :assets="boundAssets.map((b) => b.asset)"
           :prompt="prompt?.value.content ?? ''"
-          :stale="!!prompt?.stale || dirty"
           :locked="busy || !!running"
-          @prepare="prepareImage"
+          :editing="editing"
+          @duration="updateShotDuration"
+          @preview="assetPreview = $event"
         />
       </div>
     </template>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <WorkflowNodeFooter
       :back-label="mode === 'ASSETS' ? '上一步：脚本创作' : '上一步：资产准备'"
-      :next-label="mode === 'ASSETS' ? '下一步：视频制作' : '下一步：素材交付'"
+      next-label="下一步：视频制作"
+      :show-next="mode === 'ASSETS'"
       :show-validate="false"
       :next-disabled="
         mode === 'ASSETS'
@@ -976,52 +897,86 @@ defineExpose({ flushPendingEdits });
       @close="imageDialogOpen = false"
     />
     <WorkflowInformationDialog
-      :open="!!inspectAsset"
-      :title="inspectAsset?.name || '素材定义'"
-      description="素材公共定义，不会因查看而改变当前镜头绑定"
-      @close="inspectAsset = null"
+      :open="!!assetPreview"
+      :title="assetPreview?.name || '参考图片'"
+      @close="assetPreview = null"
     >
-      <div v-if="inspectAsset" class="asset-inspection">
-        <ProductionAssetPreparation :asset="inspectAsset" readonly />
+      <ProductionAssetVisual
+        v-if="assetPreview"
+        class="asset-preview-full"
+        :asset="assetPreview"
+        :project-id="projectId"
+      />
+    </WorkflowInformationDialog>
+    <WorkflowInformationDialog
+      :open="shotParamsOpen && !!shot"
+      title="镜头参数"
+      @close="shotParamsOpen = false"
+    >
+      <div v-if="shot" class="shot-parameter-fields">
         <WorkflowInformationField
-          :model-value="inspectAsset.description"
-          label="公共形象与特征"
+          v-model="shot.title"
+          label="镜头名称"
+          :readonly="busy || !!running || !editing"
+        />
+        <div class="asset-facts">
+          <WorkflowInformationField
+            v-model="shot.shotType"
+            label="景别"
+            :readonly="busy || !!running || !editing"
+          />
+          <WorkflowInformationField
+            v-model="shot.cameraMovement"
+            label="运镜"
+            :readonly="busy || !!running || !editing"
+          />
+        </div>
+        <WorkflowInformationField
+          v-model="shot.dialogue"
+          label="台词与旁白"
           multiline
-          readonly
+          :readonly="busy || !!running || !editing"
         />
         <WorkflowInformationField
-          :model-value="inspectAsset.knownFacts"
-          label="已确认信息"
+          v-model="shot.audio"
+          label="声音"
           multiline
-          readonly
+          :readonly="busy || !!running || !editing"
         />
-        <WorkflowInformationField
-          :model-value="inspectAsset.designNotes"
-          label="设计与待确认内容"
-          multiline
-          readonly
-        />
-        <WorkflowInformationField
-          :model-value="inspectAsset.imageRequirements ?? ''"
-          label="图像制作要求"
-          multiline
-          readonly
-        />
-        <WorkflowInformationField
-          v-if="editing && shot?.bindings.some((b) => b.assetId === inspectAsset?.id)"
-          :model-value="
-            shot.bindings.find((b) => b.assetId === inspectAsset?.id)?.description ?? ''
-          "
-          label="本镜呈现要求"
-          multiline
-          @update:model-value="
-            (value) => {
-              const b = shot?.bindings.find((b) => b.assetId === inspectAsset?.id);
-              if (b) b.description = value;
-            }
-          "
-        />
-        <button @click="prepareImage(inspectAsset)">生成资产图片</button>
+        <details v-if="shot.bindings.length">
+          <summary>本镜素材呈现</summary>
+          <WorkflowInformationField
+            v-for="binding in shot.bindings"
+            :key="binding.assetId"
+            v-model="binding.description"
+            :label="document.assets.find((a) => a.id === binding.assetId)?.name || '素材'"
+            multiline
+            :readonly="busy || !!running || !editing"
+          />
+        </details>
+        <div class="actions">
+          <button
+            :disabled="busy || !!running || !editing"
+            aria-label="上移镜头"
+            @click="moveShot(-1)"
+          >
+            <ArrowUp :size="14" />上移
+          </button>
+          <button
+            :disabled="busy || !!running || !editing"
+            aria-label="下移镜头"
+            @click="moveShot(1)"
+          >
+            <ArrowDown :size="14" />下移
+          </button>
+          <button
+            :disabled="busy || !!running || !editing"
+            aria-label="删除镜头"
+            @click="removeShot"
+          >
+            <Trash2 :size="14" />删除
+          </button>
+        </div>
       </div>
     </WorkflowInformationDialog>
     <WorkflowInformationDialog
@@ -1135,8 +1090,7 @@ defineExpose({ flushPendingEdits });
 }
 .production-heading,
 .actions,
-.editor-heading,
-.task-note {
+.editor-heading {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1151,8 +1105,7 @@ defineExpose({ flushPendingEdits });
   margin: 8px 0;
 }
 .production-heading p,
-.eyebrow,
-.task-note {
+.eyebrow {
   font-size: 12px;
   color: #8190a7;
 }
@@ -1185,141 +1138,158 @@ defineExpose({ flushPendingEdits });
 }
 .video-workspace {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr) 270px;
-  gap: 16px;
+  grid-template-columns: 264px minmax(0, 1fr) 310px;
+  height: clamp(660px, calc(100dvh - 340px), 840px);
   margin-top: 24px;
-  align-items: start;
-}
-.shot-directory {
-  border: 1px solid #e1e8f4;
-  border-radius: 13px;
-  padding: 12px;
-  background: #f8faff;
-  max-height: 950px;
-  overflow: auto;
-}
-.shot-directory header {
-  padding: 4px 4px 18px;
-}
-.shot-directory h3,
-.editor-heading h3 {
-  font-size: 14px;
-  margin: 0;
-  color: #304663;
-}
-.shot-directory header span {
-  display: block;
-  font-size: 10px;
-  color: #91a0b5;
-  margin-top: 7px;
-}
-.shot-directory .shot-choice {
-  width: 100%;
-  text-align: left;
-  padding: 12px 9px;
-  align-items: flex-start;
-  justify-content: flex-start;
-  margin-bottom: 8px;
-  border-radius: 9px;
-}
-.shot-number {
-  font-size: 10px;
-  color: #9aa9bd;
-}
-.shot-choice strong {
-  font-size: 11px;
-  line-height: 1.6;
-}
-.shot-choice p {
-  font-size: 10px;
-  line-height: 1.7;
-  margin: 6px 0;
-  color: #8e9bb0;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  border: 1px solid #e1e7f1;
+  border-radius: 12px;
   overflow: hidden;
+  background: #fff;
 }
-.shot-choice small {
-  font-size: 9px;
-  color: #8b9eb9;
-  line-height: 1.7;
+.video-workspace :deep(.shot-task-directory) {
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
 }
-.selected {
-  border-color: #a9bff1 !important;
-  background: #f0f5ff !important;
-  color: #315fe6 !important;
+.video-workspace :deep(.shot-task-list) {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 .shot-editor {
-  display: grid;
-  gap: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 14px 16px 16px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid #e4e9f2;
+  scrollbar-width: thin;
 }
 .shot-composition {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(255px, 0.9fr);
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
-.shot-editor :deep(.workflow-information-card) {
+.shot-description {
+  display: grid;
+  gap: 10px;
   min-width: 0;
-  padding: 20px;
 }
-.shot-editor :deep(.information-field textarea) {
-  min-height: 110px;
+.inspector-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  min-height: 22px;
 }
-.shot-metadata {
-  margin: 0 0 20px;
-  color: #8796aa;
+.inspector-heading h3 {
+  margin: 0;
   font-size: 12px;
-  line-height: 1.6;
+  font-weight: 650;
+  color: #304663;
 }
-.shot-composition > .workflow-information-card {
-  display: grid;
-  gap: 18px;
-}
-.shot-editor > .workflow-information-card {
-  display: grid;
-  gap: 18px;
-}
-.shot-editor > .workflow-information-card :deep(textarea) {
-  min-height: 240px;
-  line-height: 1.9;
-  font-size: 12px;
-}
-.shot-details {
-  border-top: 1px solid #e8edf4;
-  padding-top: 14px;
-}
-.shot-details summary {
+.shot-description :deep(.information-field) {
   font-size: 11px;
-  color: #8395ad;
-  cursor: pointer;
-  margin-bottom: 18px;
+  font-weight: 400;
+  gap: 6px;
 }
-.shot-details[open] {
+.shot-description :deep(.information-field textarea) {
+  height: 166px;
+  min-height: 166px;
+  padding: 9px 10px;
+  font-size: 12px;
+  line-height: 1.8;
+  border-radius: 8px;
+  background: #fbfcfe;
+  resize: vertical;
+}
+.shot-description :deep(.information-field:last-child textarea) {
+  height: 78px;
+  min-height: 78px;
+}
+.prompt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 310px;
+  flex: 1;
+}
+.prompt-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #315fd8;
+  font-size: 13px;
+}
+.prompt-section h3::before {
+  content: '';
+  width: 3px;
+  height: 13px;
+  border-radius: 2px;
+  background: #315fd8;
+}
+.prompt-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.prompt-section textarea {
+  width: 100%;
+  flex: 1;
+  min-height: 275px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #fbfcfe;
+  color: #49617f;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.85;
+  outline: 0;
+}
+.prompt-section textarea:focus {
+  border-color: #94b0f0;
+}
+.production-page .compact-button {
+  min-height: 27px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  gap: 5px;
+}
+.production-page .compact-icon {
+  min-height: 25px;
+  padding: 0 6px;
+  border-radius: 6px;
+  margin-left: auto;
+}
+.prompt-stale {
+  font-size: 10px;
+  color: #b08b41;
+  margin-left: 3px;
+}
+.asset-preview-full {
+  width: 100%;
+  max-height: 70vh;
+}
+.shot-parameter-fields {
   display: grid;
   gap: 16px;
 }
-.shot-spec {
-  display: grid;
-  grid-template-columns: 1fr 1fr 70px;
-  gap: 10px;
+.shot-parameter-fields details {
+  font-size: 12px;
+  color: #788ca9;
 }
-.shot-spec label {
-  font-size: 11px;
-  color: #7c8fa9;
-  display: grid;
-  gap: 8px;
-}
-.shot-spec input {
-  width: 100%;
-  box-sizing: border-box;
-  height: 40px;
-  border: 1px solid #d7e1f2;
-  border-radius: 9px;
-  padding: 8px;
-  color: #34445b;
+.shot-parameter-fields details :deep(.information-field) {
+  margin-top: 12px;
 }
 .asset-facts {
   display: grid;
@@ -1358,13 +1328,6 @@ defineExpose({ flushPendingEdits });
   font-size: 12px;
   color: #77a18e;
 }
-.task-note {
-  padding: 12px 0;
-}
-.task-note button {
-  border: 0;
-  color: #6488c6;
-}
 .binding-picker {
   display: grid;
   gap: 12px;
@@ -1392,49 +1355,35 @@ defineExpose({ flushPendingEdits });
   font-size: 13px;
   color: #6b7f9d;
 }
-.asset-inspection {
-  display: grid;
-  gap: 18px;
-}
-.production-page :deep(.reference-library) {
-  align-self: stretch;
-}
-.production-page :deep(.reference-copy strong) {
-  max-width: 150px;
-}
 @media (min-width: 1700px) {
   .video-workspace {
-    grid-template-columns: 210px minmax(0, 1fr) 310px;
-    gap: 20px;
-  }
-  .shot-composition {
-    grid-template-columns: minmax(0, 1.1fr) minmax(300px, 1fr);
-  }
-  .shot-directory {
-    max-height: 1050px;
+    grid-template-columns: 264px minmax(0, 1fr) 340px;
   }
 }
 @media (max-width: 1350px) {
   .video-workspace {
-    grid-template-columns: 170px minmax(0, 1fr) 245px;
-    gap: 12px;
+    grid-template-columns: 240px minmax(0, 1fr) 280px;
   }
   .shot-composition {
     grid-template-columns: 1fr;
   }
-  .shot-editor :deep(.reference-grid) {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
-@media (max-width: 1000px) {
+@media (max-width: 1050px) {
   .video-workspace {
-    grid-template-columns: 170px minmax(0, 1fr);
+    grid-template-columns: 220px minmax(0, 1fr);
+    height: auto;
+    overflow: visible;
+  }
+  .shot-editor {
+    max-height: 790px;
+  }
+  .video-workspace :deep(.shot-task-directory) {
+    max-height: 790px;
   }
   .video-workspace :deep(.render-panel) {
     grid-column: 2;
-  }
-  .shot-composition {
-    grid-template-columns: 1fr;
+    min-height: 430px;
+    border-top: 1px solid #e4e9f2;
   }
 }
 @media (max-width: 760px) {
@@ -1443,12 +1392,25 @@ defineExpose({ flushPendingEdits });
   }
   .video-workspace {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: hidden;
   }
+  .video-workspace :deep(.shot-task-directory) {
+    max-height: 380px;
+  }
+  .shot-editor {
+    max-height: none;
+    border-left: 0;
+    border-top: 1px solid #e4e9f2;
+  }
+  .shot-composition {
+    grid-template-columns: 1fr;
+  }
+
   .video-workspace :deep(.render-panel) {
     grid-column: auto;
-  }
-  .shot-directory {
-    max-height: 250px;
+    min-height: 440px;
+    border-left: 0;
   }
   .shot-spec,
   .asset-facts {

@@ -54,17 +54,17 @@ describe('customized unified requirements source package', () => {
       expect(JSON.stringify(draft)).toBe(before);
     },
   );
-  it('defines six stages and projects legacy asset navigation into shot rendering', () => {
+  it('defines five stages and projects historical navigation into video production', () => {
     expect(CUSTOMIZED_WORKFLOW_NODES).toEqual([
       'SOURCE_IMPORT',
       'INFORMATION_EXTRACTION',
       'STORYBOARD',
       'SHOT_PROMPT',
       'SHOT_RENDER',
-      'DELIVERY',
     ]);
     for (const node of CUSTOMIZED_WORKFLOW_NODES) expect(customizedWorkflowNodeId(node)).toBe(node);
     expect(customizedWorkflowNodeId('VISUAL_ASSETS')).toBe('SHOT_RENDER');
+    expect(customizedWorkflowNodeId('DELIVERY')).toBe('SHOT_RENDER');
     for (const value of [null, undefined, '', 'UNKNOWN', 5])
       expect(customizedWorkflowNodeId(value)).toBeNull();
   });

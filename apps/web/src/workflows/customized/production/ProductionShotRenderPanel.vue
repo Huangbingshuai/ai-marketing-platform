@@ -1,312 +1,282 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { Video, Play, History, Image, ArrowUpRight } from '@lucide/vue';
+import { Video } from '@lucide/vue';
 import type { ProductionAsset, ProductionShot } from '@ai-marketing/contracts';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
-defineProps<{
+const props = defineProps<{
   projectId: string;
   shot: ProductionShot;
   assets: ProductionAsset[];
   prompt: string;
-  stale: boolean;
   locked: boolean;
+  editing: boolean;
   index: number;
 }>();
-defineEmits<{ prepare: [asset: ProductionAsset] }>();
-const renderOpen = ref(false),
-  ratio = ref('16:9'),
-  resolution = ref('1080P');
+const emit = defineEmits<{ preview: [asset: ProductionAsset]; duration: [seconds: number] }>();
+const renderOpen = ref(false);
+function updateDuration(event: Event) {
+  if (props.locked || !props.editing) return;
+  const value = Number((event.target as HTMLInputElement).value);
+  if (Number.isFinite(value) && value > 0 && value <= 3600) emit('duration', value);
+}
+defineExpose({
+  open: () => {
+    renderOpen.value = true;
+  },
+});
 </script>
 <template>
   <aside class="render-panel" aria-label="逐镜渲染">
     <section class="player-card">
       <header>
-        <div>
-          <Video :size="16" />
-          <h3>镜头 {{ String(index).padStart(2, '0') }}</h3>
+        <h3>分镜 {{ String(index).padStart(2, '0') }}</h3>
+        <span class="status"><i />待生成</span><small>{{ shot.durationSeconds }}s</small>
+      </header>
+      <div class="player-stage">
+        <Video :size="24" :stroke-width="1.4" /><strong>暂无视频</strong><span>生成后在此预览</span>
+        <button type="button" :disabled="locked" @click="renderOpen = true">生成视频</button>
+      </div>
+    </section>
+    <div class="inspector-body">
+      <section class="bound-section">
+        <header>
+          <h3>绑定参考图</h3>
+          <span class="count">{{ assets.length }}</span>
+        </header>
+        <div v-if="assets.length" class="reference-strip">
+          <button
+            v-for="asset in assets"
+            :key="asset.id"
+            type="button"
+            :disabled="!asset.image"
+            :title="asset.name"
+            :aria-label="`预览绑定图片${asset.name}`"
+            @click="$emit('preview', asset)"
+          >
+            <ProductionAssetVisual :asset="asset" :project-id="projectId" compact /><small>{{
+              asset.name
+            }}</small>
+          </button>
         </div>
-        <span>尚未渲染</span>
-      </header>
-      <div class="player-stage" :class="{ portrait: ratio === '9:16' }">
-        <div class="frame-mark top"></div>
-        <Play :size="29" :stroke-width="1.2" /><strong>当前镜头预览</strong>
-        <p>生成视频后在此预览</p>
-        <div class="frame-mark bottom"></div>
-        <span class="timecode">00:00 / {{ shot.durationSeconds }} 秒</span>
-      </div>
-      <div class="player-caption">
-        <strong>{{ shot.title }}</strong
-        ><span>{{ ratio }} · {{ resolution }}</span>
-      </div>
-    </section>
-    <section class="render-section">
-      <header>
-        <h3><Image :size="15" />本镜图片</h3>
-        <span>{{ assets.filter((a) => a.image).length }} / {{ assets.length }}</span>
-      </header>
-      <div class="reference-strip">
-        <button
-          v-for="a in assets"
-          :key="a.id"
-          :aria-label="`准备${a.name}图片`"
-          @click="$emit('prepare', a)"
-        >
-          <ProductionAssetVisual :asset="a" :project-id="projectId" compact /><span>{{
-            a.name
-          }}</span>
-        </button>
-        <p v-if="!assets.length" class="muted">尚未绑定素材</p>
-      </div>
-      <p v-if="assets.some((a) => !a.image)" class="muted">
-        部分图片待准备，可先完成分镜与提示词。
-      </p>
-    </section>
-    <section class="render-section">
-      <header>
-        <h3>输出设置</h3>
-        <span>渲染前设置</span>
-      </header>
-      <div class="render-fields">
-        <label
-          >画幅<select v-model="ratio" aria-label="视频画幅">
-            <option>16:9</option>
-            <option>9:16</option>
-            <option>1:1</option>
-          </select></label
-        ><label
-          >分辨率<select v-model="resolution" aria-label="视频分辨率">
-            <option>1080P</option>
-            <option>720P</option>
-          </select></label
+        <p v-else>未绑定参考图</p>
+      </section>
+    </div>
+    <footer>
+      <div class="duration">
+        <label for="shot-render-duration">分镜时长</label
+        ><span
+          ><input
+            id="shot-render-duration"
+            aria-label="分镜时长"
+            type="number"
+            min="0.1"
+            max="3600"
+            step="0.1"
+            :value="shot.durationSeconds"
+            :readonly="!editing"
+            :disabled="locked"
+            @change="updateDuration"
+          />s</span
         >
       </div>
-      <div class="render-duration">
-        <span>镜头时长</span><strong>{{ shot.durationSeconds }} 秒</strong>
-      </div>
-      <button class="render-button" :disabled="locked" @click="renderOpen = true">
-        <Video :size="16" />渲染当前镜头<ArrowUpRight :size="14" />
+      <button
+        class="generate-button"
+        type="button"
+        :disabled="locked"
+        :aria-label="`生成当前分镜视频`"
+        @click="renderOpen = true"
+      >
+        生成视频
       </button>
-      <p class="muted">
-        {{
-          stale
-            ? '提示词待更新，请先核对镜头修改。'
-            : !prompt
-              ? '先创作并保存本镜提示词。'
-              : '渲染服务待接通，点击查看制作内容。'
-        }}
-      </p>
-    </section>
-    <section class="render-section history">
-      <header>
-        <h3><History :size="15" />生成历史</h3>
-        <span>0</span>
-      </header>
-      <p class="muted">尚无视频记录。逐镜生成后可在这里预览与选择结果。</p>
-    </section>
+    </footer>
     <ProductionRenderDialog
       :open="renderOpen"
       type="VIDEO"
       :assets="assets"
       :shot="shot"
       :prompt="prompt"
-      :ratio="ratio"
-      :resolution="resolution"
       @close="renderOpen = false"
     />
   </aside>
 </template>
 <style scoped>
 .render-panel {
-  border: 1px solid #e3e9f2;
-  background: #fff;
-  border-radius: 14px;
-  overflow: hidden;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #e4e9f2;
+  background: #f8fafd;
   color: #405674;
 }
 header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-header > div,
-h3 {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  gap: 8px;
 }
 h3 {
-  font-size: 12px;
   margin: 0;
+  font-size: 12px;
   font-weight: 600;
 }
-header span {
-  font-size: 10px;
-  color: #93a0b4;
-}
 .player-card > header {
-  padding: 16px;
+  padding: 13px 12px;
+  border-bottom: 1px solid #e5eaf1;
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 10px;
+  color: #95a1b2;
+}
+.status i {
+  width: 5px;
+  height: 5px;
+  background: currentColor;
+  border-radius: 50%;
+}
+header > small {
+  color: #9aa5b6;
+  font-size: 10px;
 }
 .player-stage {
-  position: relative;
-  background: #edf1f6;
-  aspect-ratio: 16/10;
+  aspect-ratio: 16/9;
+  min-height: 160px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #a6b2c3;
-  min-height: 170px;
-  gap: 10px;
-}
-.player-stage.portrait {
-  aspect-ratio: 9/12;
+  gap: 5px;
+  padding: 16px;
+  background: #eef2f7;
+  color: #a0acbd;
+  border-bottom: 1px solid #e4e9f1;
 }
 .player-stage strong {
   font-size: 12px;
-  font-weight: 500;
-  color: #8495ae;
-}
-.player-stage p {
-  font-size: 10px;
-  margin: 0;
-  color: #a2aebe;
-}
-.timecode {
-  position: absolute;
-  bottom: 13px;
-  left: 16px;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  color: #94a3b7;
-}
-.frame-mark {
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  border: 1px solid #c9d3e1;
-}
-.frame-mark.top {
-  top: 20px;
-  left: 20px;
-  border-right: 0;
-  border-bottom: 0;
-}
-.frame-mark.bottom {
-  bottom: 20px;
-  right: 20px;
-  border-left: 0;
-  border-top: 0;
-}
-.player-caption {
-  display: grid;
-  gap: 7px;
-  padding: 15px 16px;
-}
-.player-caption strong {
-  font-size: 12px;
+  color: #8191a8;
   font-weight: 550;
-  line-height: 1.6;
+  margin-top: 3px;
 }
-.player-caption span {
+.player-stage > span {
   font-size: 10px;
-  color: #a0acbe;
 }
-.render-section {
-  padding: 18px 16px;
-  border-top: 1px solid #e9edf4;
+button {
+  font: inherit;
+  cursor: pointer;
+}
+.player-stage button {
+  margin-top: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: #315ff0;
+  color: #fff;
+  font-size: 11px;
+}
+.inspector-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 14px;
+}
+.count {
+  padding: 2px 6px;
+  background: #edf1f7;
+  border-radius: 6px;
+  color: #91a0b5;
+  font-size: 10px;
 }
 .reference-strip {
   display: flex;
-  gap: 9px;
-  overflow: auto;
-  margin-top: 14px;
-  padding-bottom: 4px;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 .reference-strip button {
-  background: transparent;
   padding: 0;
+  width: 58px;
   border: 0;
-  cursor: pointer;
-  width: 54px;
-  flex-shrink: 0;
+  background: transparent;
   text-align: left;
+  color: #8798b0;
 }
-.reference-strip button span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 9px;
-  color: #8a9aaf;
-  margin-top: 6px;
-}
-.muted {
-  color: #9aa7b9;
-  font-size: 10px;
-  line-height: 1.8;
-  margin: 12px 0 0;
-}
-.render-fields {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-top: 16px;
-}
-.render-fields label {
-  display: grid;
-  gap: 7px;
-  font-size: 10px;
-  color: #8b9ab1;
-}
-.render-fields select {
-  width: 100%;
-  min-width: 0;
-  padding: 8px;
-  border: 1px solid #e0e7f1;
-  background: #fbfcfe;
+.reference-strip :deep(.asset-visual) {
+  width: 58px;
+  height: 44px;
+  border: 1px solid #e2e7ef;
   border-radius: 7px;
-  color: #617894;
-  font: inherit;
+  box-sizing: border-box;
 }
-.render-duration {
+.reference-strip small {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 9px;
+}
+.bound-section p {
+  color: #9ba7b8;
+  font-size: 11px;
+  margin-top: 12px;
+}
+footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid #e2e8f2;
+  background: #f5f8fd;
+}
+.duration {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 16px 0;
+  padding: 8px 10px;
+  border: 1px solid #dce5f5;
+  border-radius: 8px;
+  background: #edf3ff;
   font-size: 11px;
-  color: #8999ad;
+  color: #6a80a3;
 }
-.render-duration strong {
-  font-size: 12px;
-  color: #647d9d;
-  font-weight: 550;
-}
-.render-button {
+.duration > span {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  gap: 5px;
+  font-size: 10px;
+}
+.duration input {
+  width: 53px;
+  padding: 3px 5px;
+  border: 1px solid #dae3f2;
+  border-radius: 5px;
+  background: #fff;
+  color: #49658b;
+  font: inherit;
+  text-align: right;
+}
+.generate-button {
   width: 100%;
-  min-height: 41px;
+  padding: 9px 12px;
   border: 0;
+  border-radius: 8px;
   background: #315ff0;
-  color: #fff;
-  border-radius: 9px;
+  color: white;
   font-size: 12px;
-  cursor: pointer;
+  font-weight: 550;
 }
-.render-button:disabled {
-  opacity: 0.45;
+button:disabled {
   cursor: default;
+  opacity: 0.5;
 }
-.history p {
-  margin-bottom: 3px;
-}
-button:focus-visible {
-  outline: 2px solid #315ff0;
-  outline-offset: 3px;
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #4a74e5;
+  outline-offset: 2px;
 }
 </style>

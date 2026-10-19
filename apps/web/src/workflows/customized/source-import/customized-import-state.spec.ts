@@ -35,14 +35,13 @@ describe('customized source draft boundaries', () => {
       ]);
     }
   });
-  it('uses six nodes with asset binding owned by shot rendering', () => {
+  it('uses five nodes ending at video production', () => {
     expect(customizedWorkflowNodes.map((item) => item.id)).toEqual([
       'SOURCE_IMPORT',
       'INFORMATION_EXTRACTION',
       'STORYBOARD',
       'SHOT_PROMPT',
       'SHOT_RENDER',
-      'DELIVERY',
     ]);
   });
   it('starts with an empty brief and restores all user supplied fields without examples', () => {
