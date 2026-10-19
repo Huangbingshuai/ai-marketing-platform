@@ -1,5 +1,25 @@
 import type { CustomizedStoryboardScript } from './customized-storyboard';
 import {
+  CUSTOMIZED_VIDEO_RENDER_STAGES,
+  type CustomizedVideoRenderSettings,
+  type CustomizedVideoRenderInput,
+  type CustomizedVideoResult,
+  type CustomizedVideoSettingsDraft,
+} from './customized-video-render';
+export * from './customized-video-render';
+import {
+  isVideoPlan,
+  validateVideoPlan,
+  videoShotProjection,
+  type ProductionVideoDocument,
+  type ProductionClipPrompt,
+  type VideoDurationPolicy,
+  type VideoSourceUnit,
+  type VideoCapability,
+  type VideoRequestLimits,
+} from './customized-video-plan';
+export * from './customized-video-plan';
+import {
   CUSTOMIZED_IMAGE_STAGES,
   type CustomizedImageSettings,
 } from './customized-image-generation';
@@ -42,8 +62,23 @@ export type ProductionShot = {
   bindings: { assetId: string; description: string }[];
 };
 export type ProductionPrompt = { shotId: string; content: string; assetIds: string[] };
-export type ProductionDocument = { assets: ProductionAsset[]; shots: ProductionShot[] };
-export type ProductionOperation = 'ASSETS' | 'SHOTS' | 'PROMPT' | 'IMAGE';
+export type LegacyProductionDocument = {
+  assets: ProductionAsset[];
+  shots: ProductionShot[];
+  schemaVersion?: never;
+};
+export type ProductionDocument = LegacyProductionDocument | ProductionVideoDocument;
+export type ProductionPromptValue = ProductionPrompt | ProductionClipPrompt;
+export const isVideoDocument = (v: ProductionDocument): v is ProductionVideoDocument =>
+  v.schemaVersion === 2;
+export const productionShots = (v: ProductionDocument): ProductionShot[] =>
+  isVideoDocument(v) ? v.videoPlan.shots.map((s) => videoShotProjection(v.videoPlan, s)) : v.shots;
+/** Replaces only public assets, preserving the one authoritative video plan. */
+export const withProductionAssets = (
+  v: ProductionDocument,
+  assets: ProductionAsset[],
+): ProductionDocument => ({ ...v, assets });
+export type ProductionOperation = 'ASSETS' | 'SHOTS' | 'PROMPT' | 'IMAGE' | 'RENDER';
 export type ProductionInput = {
   script: CustomizedStoryboardScript;
   brief: unknown;
@@ -57,6 +92,15 @@ export type ProductionInput = {
   targetAssetId?: string | null;
   identitySeed?: string;
   imageSettings?: CustomizedImageSettings;
+  videoRender?: CustomizedVideoRenderInput;
+  shotWorkflowVersion?: 2;
+  promptWorkflowVersion?: 2 | 3;
+  strategyVersion?: string;
+  durationPolicy?: VideoDurationPolicy;
+  sourceUnits?: VideoSourceUnit[];
+  renderCapability?: VideoCapability;
+  requestLimits?: VideoRequestLimits;
+  target?: { kind: 'CLIP'; id: string };
 };
 export const PRODUCTION_STAGES = [
   { id: 'SNAPSHOT', label: '创作依据', description: '读取本次选定的故事与已确认资料' },
@@ -66,9 +110,50 @@ export const PRODUCTION_STAGES = [
   { id: 'REPAIR', label: '定向修订', description: '针对具体问题修订并复核；无需修改时说明原因' },
   { id: 'SAVE', label: '保存结果', description: '保存通过校验的实际产物' },
 ] as const;
-export function productionStages(operation: ProductionOperation, assetWorkflowVersion?: number) {
+export function productionStages(
+  operation: ProductionOperation,
+  assetWorkflowVersion?: number,
+  shotWorkflowVersion?: number,
+  promptWorkflowVersion?: number,
+) {
   if (operation === 'IMAGE') return CUSTOMIZED_IMAGE_STAGES;
+  if (operation === 'RENDER') return CUSTOMIZED_VIDEO_RENDER_STAGES;
   if (operation === 'ASSETS' && assetWorkflowVersion === 2) return ASSET_STAGES;
+  if (operation === 'PROMPT' && (promptWorkflowVersion === 2 || promptWorkflowVersion === 3))
+    return [
+      {
+        id: 'SNAPSHOT',
+        label: '本镜创作依据',
+        description: '固定当前分镜、时长、氛围与已绑定素材',
+      },
+      {
+        id: 'PLAN',
+        label: '画面与素材安排',
+        description: '整理实际画面要求、素材用途和原稿声音时间窗',
+      },
+      {
+        id: 'GENERATE',
+        label: '视频提示词创作',
+        description: '按时间段组织画面、动作、声音和素材引用',
+      },
+      { id: 'REVIEW', label: '独立审校', description: '逐项核对分镜兑现、产品事实和素材引用' },
+      { id: 'REPAIR', label: '定向修订与复核', description: '确有问题才修改，无需修改时明确说明' },
+      { id: 'SAVE', label: '原位保存提示词', description: '保存到当前分镜，不新增版本分支' },
+    ];
+  if (shotWorkflowVersion === 2)
+    return PRODUCTION_STAGES.map((s) => ({
+      ...s,
+      label: (
+        {
+          SNAPSHOT: '创作依据',
+          PLAN: operation === 'PROMPT' ? '片段呈现安排' : '导演规划与容量核对',
+          GENERATE: operation === 'PROMPT' ? '片段提示词创作' : '分场创作与绑定',
+          REVIEW: '对照原文独立审校',
+          REPAIR: '问题修订与独立复核',
+          SAVE: operation === 'PROMPT' ? '保存片段提示词' : '保存待确认分镜',
+        } as Record<string, string>
+      )[s.id]!,
+    }));
   const names =
     operation === 'ASSETS'
       ? { PLAN: '实体与依据规划', GENERATE: '统一定义与制作要求' }
@@ -105,9 +190,21 @@ export type ProductionTask = {
   errorMessage: string | null;
   shotId: string | null;
   imageSettings?: CustomizedImageSettings;
+  renderSettings?: CustomizedVideoRenderSettings;
   reviewDraftState?: 'AVAILABLE' | 'ADOPTED';
   /** Successful asset extraction publishes this aggregate asset branch. */
   publishedWorkflowRunId?: string;
+  shotWorkflowVersion?: 2;
+  promptWorkflowVersion?: 2 | 3;
+  target?: { kind: 'CLIP'; id: string };
+  failureReason?:
+    | 'DURATION_CAPACITY_CONFLICT'
+    | 'SOURCE_CONSTRAINT_CONFLICT'
+    | 'REQUEST_LIMIT'
+    | 'ASSET_INPUT_GAP'
+    | 'REVIEW_UNRESOLVED'
+    | 'INVALID_CANDIDATE';
+  hasCandidate?: boolean;
 };
 export type ProductionWorkspace = {
   brandImageReferences?: { assetId: string; version: number; name: string }[];
@@ -119,8 +216,10 @@ export type ProductionWorkspace = {
   draftRevision: number;
   assetsConfirmed: boolean;
   shotsConfirmed: boolean;
-  prompts: { value: ProductionPrompt; stale: boolean; revision: number }[];
+  prompts: { value: ProductionPromptValue; stale: boolean; revision: number }[];
   tasks: ProductionTask[];
+  videos?: { value: CustomizedVideoResult; revision: number; stale: boolean }[];
+  videoSettings?: CustomizedVideoSettingsDraft[];
 };
 const obj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v);
@@ -156,6 +255,13 @@ export function isProductionDocument(v: unknown): v is ProductionDocument {
   )
     return false;
   const assets = v.assets;
+  if (v.schemaVersion === 2)
+    return (
+      !Object.hasOwn(v, 'shots') &&
+      isVideoPlan(v.videoPlan) &&
+      validateVideoPlan(v.videoPlan, assets as ProductionAsset[]) === null
+    );
+  if (v.schemaVersion !== undefined || Object.hasOwn(v, 'videoPlan')) return false;
   return (
     Array.isArray(v.shots) &&
     v.shots.length <= 500 &&

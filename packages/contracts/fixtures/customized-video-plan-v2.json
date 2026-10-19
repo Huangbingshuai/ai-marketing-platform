@@ -1,0 +1,256 @@
+{
+  "scriptText": "在桌边，拿起陶瓷杯。\n\n旁白：“把日常留给自己。”\n\n画面文字：一杯清晨",
+  "document": {
+    "schemaVersion": 2,
+    "assets": [
+      {
+        "id": "cup",
+        "kind": "PRODUCT",
+        "name": "陶瓷杯",
+        "description": "白色陶瓷杯",
+        "knownFacts": "陶瓷",
+        "designNotes": "",
+        "sourceText": "产品资料"
+      },
+      {
+        "id": "room",
+        "kind": "SCENE",
+        "name": "阅读室",
+        "description": "窗边木桌",
+        "knownFacts": "",
+        "designNotes": "",
+        "sourceText": "原稿"
+      }
+    ],
+    "videoPlan": {
+      "durationPolicy": {
+        "mode": "REFERENCE",
+        "seconds": 10
+      },
+      "timing": {
+        "explanation": "原句在两镜之间连续表达，定版独立呈现",
+        "estimatedSpeechSeconds": 5,
+        "uncertainty": "尚未实际配音或渲染"
+      },
+      "capability": {
+        "key": "TEXT_PLAN",
+        "status": "PENDING_MODEL_CHECK",
+        "minClipMs": 4000,
+        "maxClipMs": 15000,
+        "version": "test"
+      },
+      "sourceUnits": [
+        {
+          "id": "U0001",
+          "text": "在桌边，拿起陶瓷杯。",
+          "start": 0,
+          "end": 10,
+          "kind": "TEXT",
+          "speaker": ""
+        },
+        {
+          "id": "U0002",
+          "text": "把日常留给自己。",
+          "start": 16,
+          "end": 24,
+          "kind": "VOICE",
+          "speaker": "旁白"
+        },
+        {
+          "id": "U0003",
+          "text": "一杯清晨",
+          "start": 32,
+          "end": 36,
+          "kind": "ON_SCREEN_TEXT",
+          "speaker": ""
+        }
+      ],
+      "sources": [
+        {
+          "id": "script",
+          "revision": 1,
+          "hash": "script-hash"
+        },
+        {
+          "id": "catalog",
+          "revision": 1,
+          "hash": "catalog-hash"
+        },
+        {
+          "id": "brief",
+          "revision": 1,
+          "hash": "brief-hash"
+        }
+      ],
+      "events": [
+        {
+          "id": "event",
+          "description": "拿起杯子",
+          "sourceRefs": [
+            {
+              "unitId": "U0001",
+              "start": 0,
+              "end": 10
+            }
+          ]
+        }
+      ],
+      "scenes": [
+        {
+          "id": "scene",
+          "name": "阅读室",
+          "sceneAssetId": "room",
+          "setting": "清晨阅读室",
+          "spatialBaseline": "木桌靠窗"
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip-a",
+          "title": "拿起杯子",
+          "sceneId": "scene",
+          "shotIds": ["shot-a", "shot-b"],
+          "transition": "切到产品定版",
+          "startState": "杯在桌上",
+          "endState": "杯在手中"
+        },
+        {
+          "id": "clip-b",
+          "title": "独立产品定版",
+          "sceneId": "scene",
+          "shotIds": ["shot-c"],
+          "transition": "独立产品定版，不是物体回到前一场景",
+          "startState": "独立定版画面",
+          "endState": "定格"
+        }
+      ],
+      "shots": [
+        {
+          "id": "shot-a",
+          "title": "shot-a",
+          "shotType": "近景",
+          "cameraMovement": "固定",
+          "durationSeconds": 5,
+          "visual": "手持陶瓷杯",
+          "audio": "轻微环境声",
+          "atmosphere": "清晨自然光",
+          "information": "杯子与日常阅读",
+          "framing": "杯身与手部",
+          "angle": "平视",
+          "startState": "杯子在桌上",
+          "endState": "杯子被拿起",
+          "sourceEventIds": ["event"],
+          "bindings": [
+            {
+              "assetId": "cup",
+              "description": "白色陶瓷杯"
+            },
+            {
+              "assetId": "room",
+              "description": "窗边桌面"
+            }
+          ]
+        },
+        {
+          "id": "shot-b",
+          "title": "shot-b",
+          "shotType": "近景",
+          "cameraMovement": "固定",
+          "durationSeconds": 5,
+          "visual": "手持陶瓷杯",
+          "audio": "轻微环境声",
+          "atmosphere": "清晨自然光",
+          "information": "杯子与日常阅读",
+          "framing": "杯身与手部",
+          "angle": "平视",
+          "startState": "杯子在桌上",
+          "endState": "杯子被拿起",
+          "sourceEventIds": ["event"],
+          "bindings": [
+            {
+              "assetId": "cup",
+              "description": "白色陶瓷杯"
+            },
+            {
+              "assetId": "room",
+              "description": "窗边桌面"
+            }
+          ]
+        },
+        {
+          "id": "shot-c",
+          "title": "shot-c",
+          "shotType": "近景",
+          "cameraMovement": "固定",
+          "durationSeconds": 5,
+          "visual": "独立产品定版，白色杯身",
+          "audio": "轻微环境声",
+          "atmosphere": "清晨自然光",
+          "information": "杯子与日常阅读",
+          "framing": "杯身与手部",
+          "angle": "平视",
+          "startState": "独立定版画面",
+          "endState": "定格",
+          "sourceEventIds": ["event"],
+          "bindings": [
+            {
+              "assetId": "cup",
+              "description": "白色陶瓷杯"
+            },
+            {
+              "assetId": "room",
+              "description": "窗边桌面"
+            }
+          ]
+        }
+      ],
+      "cues": [
+        {
+          "id": "voice",
+          "kind": "VO",
+          "speaker": "旁白",
+          "sourceRef": {
+            "unitId": "U0002",
+            "start": 0,
+            "end": 8
+          },
+          "parts": [
+            {
+              "shotId": "shot-a",
+              "startMs": 0,
+              "endMs": 2500,
+              "textStart": 0,
+              "textEnd": 4
+            },
+            {
+              "shotId": "shot-b",
+              "startMs": 0,
+              "endMs": 3000,
+              "textStart": 4,
+              "textEnd": 8
+            }
+          ]
+        },
+        {
+          "id": "screen",
+          "kind": "ON_SCREEN_TEXT",
+          "speaker": "",
+          "sourceRef": {
+            "unitId": "U0003",
+            "start": 0,
+            "end": 4
+          },
+          "parts": [
+            {
+              "shotId": "shot-c",
+              "startMs": 0,
+              "endMs": 5000,
+              "textStart": 0,
+              "textEnd": 4
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

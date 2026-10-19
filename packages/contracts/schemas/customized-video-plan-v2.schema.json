@@ -1,0 +1,655 @@
+{
+  "$defs": {
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Assetid",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetId",
+        "description"
+      ],
+      "title": "Binding",
+      "type": "object"
+    },
+    "Capability": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "CONFIGURED",
+            "PENDING_MODEL_CHECK"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "minClipMs": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600000,
+          "title": "Minclipms",
+          "type": "integer"
+        },
+        "maxClipMs": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600000,
+          "title": "Maxclipms",
+          "type": "integer"
+        },
+        "version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "status",
+        "minClipMs",
+        "maxClipMs",
+        "version"
+      ],
+      "title": "Capability",
+      "type": "object"
+    },
+    "Clip": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "sceneId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Sceneid",
+          "type": "string"
+        },
+        "shotIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 500,
+          "minItems": 1,
+          "title": "Shotids",
+          "type": "array"
+        },
+        "transition": {
+          "maxLength": 20000,
+          "title": "Transition",
+          "type": "string"
+        },
+        "startState": {
+          "maxLength": 20000,
+          "title": "Startstate",
+          "type": "string"
+        },
+        "endState": {
+          "maxLength": 20000,
+          "title": "Endstate",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "sceneId",
+        "shotIds",
+        "transition",
+        "startState",
+        "endState"
+      ],
+      "title": "Clip",
+      "type": "object"
+    },
+    "Cue": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "DIALOGUE",
+            "VO",
+            "OS",
+            "ANNOUNCEMENT",
+            "ON_SCREEN_TEXT"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "speaker": {
+          "maxLength": 200,
+          "title": "Speaker",
+          "type": "string"
+        },
+        "sourceRef": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/CuePart"
+          },
+          "maxItems": 1000,
+          "minItems": 1,
+          "title": "Parts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "speaker",
+        "sourceRef",
+        "parts"
+      ],
+      "title": "Cue",
+      "type": "object"
+    },
+    "CuePart": {
+      "additionalProperties": false,
+      "properties": {
+        "shotId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Shotid",
+          "type": "string"
+        },
+        "startMs": {
+          "maximum": 3600000,
+          "minimum": 0,
+          "title": "Startms",
+          "type": "integer"
+        },
+        "endMs": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600000,
+          "title": "Endms",
+          "type": "integer"
+        },
+        "textStart": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Textstart",
+          "type": "integer"
+        },
+        "textEnd": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "Textend",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "shotId",
+        "startMs",
+        "endMs",
+        "textStart",
+        "textEnd"
+      ],
+      "title": "CuePart",
+      "type": "object"
+    },
+    "DurationPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "REFERENCE",
+            "FIXED"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "seconds": {
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mode",
+        "seconds"
+      ],
+      "title": "DurationPolicy",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        },
+        "sourceRefs": {
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Sourcerefs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "sourceRefs"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "Scene": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "sceneAssetId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Sceneassetid",
+          "type": "string"
+        },
+        "setting": {
+          "maxLength": 20000,
+          "title": "Setting",
+          "type": "string"
+        },
+        "spatialBaseline": {
+          "maxLength": 20000,
+          "title": "Spatialbaseline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "sceneAssetId",
+        "setting",
+        "spatialBaseline"
+      ],
+      "title": "Scene",
+      "type": "object"
+    },
+    "Shot": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "shotType": {
+          "maxLength": 200,
+          "title": "Shottype",
+          "type": "string"
+        },
+        "cameraMovement": {
+          "maxLength": 200,
+          "title": "Cameramovement",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "maximum": 3600,
+          "minimum": 0.001,
+          "title": "Durationseconds",
+          "type": "number"
+        },
+        "visual": {
+          "maxLength": 20000,
+          "title": "Visual",
+          "type": "string"
+        },
+        "audio": {
+          "maxLength": 20000,
+          "title": "Audio",
+          "type": "string"
+        },
+        "atmosphere": {
+          "maxLength": 20000,
+          "title": "Atmosphere",
+          "type": "string"
+        },
+        "information": {
+          "maxLength": 20000,
+          "title": "Information",
+          "type": "string"
+        },
+        "framing": {
+          "maxLength": 20000,
+          "title": "Framing",
+          "type": "string"
+        },
+        "angle": {
+          "maxLength": 20000,
+          "title": "Angle",
+          "type": "string"
+        },
+        "startState": {
+          "maxLength": 20000,
+          "title": "Startstate",
+          "type": "string"
+        },
+        "endState": {
+          "maxLength": 20000,
+          "title": "Endstate",
+          "type": "string"
+        },
+        "sourceEventIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Sourceeventids",
+          "type": "array"
+        },
+        "bindings": {
+          "items": {
+            "$ref": "#/$defs/Binding"
+          },
+          "maxItems": 100,
+          "title": "Bindings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "shotType",
+        "cameraMovement",
+        "durationSeconds",
+        "visual",
+        "audio",
+        "atmosphere",
+        "information",
+        "framing",
+        "angle",
+        "startState",
+        "endState",
+        "sourceEventIds",
+        "bindings"
+      ],
+      "title": "Shot",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "revision": {
+          "exclusiveMinimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "hash": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "hash"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "unitId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Unitid",
+          "type": "string"
+        },
+        "start": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "end": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "End",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "unitId",
+        "start",
+        "end"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "SourceUnit": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 20000,
+          "title": "Text",
+          "type": "string"
+        },
+        "start": {
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "end": {
+          "exclusiveMinimum": 0,
+          "maximum": 1000000,
+          "title": "End",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "TEXT",
+            "VOICE",
+            "ON_SCREEN_TEXT"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "speaker": {
+          "maxLength": 200,
+          "title": "Speaker",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "start",
+        "end",
+        "kind",
+        "speaker"
+      ],
+      "title": "SourceUnit",
+      "type": "object"
+    },
+    "Timing": {
+      "additionalProperties": false,
+      "properties": {
+        "explanation": {
+          "maxLength": 20000,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "estimatedSpeechSeconds": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Estimatedspeechseconds",
+          "type": "number"
+        },
+        "uncertainty": {
+          "maxLength": 20000,
+          "title": "Uncertainty",
+          "type": "string"
+        }
+      },
+      "required": [
+        "explanation",
+        "estimatedSpeechSeconds",
+        "uncertainty"
+      ],
+      "title": "Timing",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "durationPolicy": {
+      "$ref": "#/$defs/DurationPolicy"
+    },
+    "timing": {
+      "$ref": "#/$defs/Timing"
+    },
+    "capability": {
+      "$ref": "#/$defs/Capability"
+    },
+    "sourceUnits": {
+      "items": {
+        "$ref": "#/$defs/SourceUnit"
+      },
+      "maxItems": 5000,
+      "title": "Sourceunits",
+      "type": "array"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/Source"
+      },
+      "maxItems": 20,
+      "title": "Sources",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/Event"
+      },
+      "maxItems": 1000,
+      "title": "Events",
+      "type": "array"
+    },
+    "scenes": {
+      "items": {
+        "$ref": "#/$defs/Scene"
+      },
+      "maxItems": 200,
+      "minItems": 1,
+      "title": "Scenes",
+      "type": "array"
+    },
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/Clip"
+      },
+      "maxItems": 500,
+      "minItems": 1,
+      "title": "Clips",
+      "type": "array"
+    },
+    "shots": {
+      "items": {
+        "$ref": "#/$defs/Shot"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Shots",
+      "type": "array"
+    },
+    "cues": {
+      "items": {
+        "$ref": "#/$defs/Cue"
+      },
+      "maxItems": 2000,
+      "title": "Cues",
+      "type": "array"
+    }
+  },
+  "required": [
+    "durationPolicy",
+    "timing",
+    "capability",
+    "sourceUnits",
+    "sources",
+    "events",
+    "scenes",
+    "clips",
+    "shots",
+    "cues"
+  ],
+  "title": "VideoPlan",
+  "type": "object"
+}

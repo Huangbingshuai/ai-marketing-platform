@@ -75,6 +75,7 @@ export * from './customized-storyboard';
 
 export * from './customized-storyboard-generation';
 export * from './customized-production';
+export * from './customized-video-task';
 
 export * from './customized-script-routes';
 export * from './customized-brand-creation';

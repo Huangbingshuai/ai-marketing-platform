@@ -1,0 +1,355 @@
+{
+  "$defs": {
+    "ClipLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "sceneId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Sceneid",
+          "type": "string"
+        },
+        "durationSeconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Durationseconds",
+          "type": "number"
+        },
+        "eventIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Eventids",
+          "type": "array"
+        },
+        "transition": {
+          "maxLength": 20000,
+          "title": "Transition",
+          "type": "string"
+        },
+        "startState": {
+          "maxLength": 20000,
+          "title": "Startstate",
+          "type": "string"
+        },
+        "endState": {
+          "maxLength": 20000,
+          "title": "Endstate",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "sceneId",
+        "durationSeconds",
+        "eventIds",
+        "transition",
+        "startState",
+        "endState"
+      ],
+      "title": "ClipLayout",
+      "type": "object"
+    },
+    "CueAllocation": {
+      "additionalProperties": false,
+      "properties": {
+        "clipId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Clipid",
+          "type": "string"
+        },
+        "textStart": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Textstart",
+          "type": "integer"
+        },
+        "textEnd": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "Textend",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "clipId",
+        "textStart",
+        "textEnd"
+      ],
+      "title": "CueAllocation",
+      "type": "object"
+    },
+    "CueLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "DIALOGUE",
+            "VO",
+            "OS",
+            "ANNOUNCEMENT",
+            "ON_SCREEN_TEXT"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "speaker": {
+          "maxLength": 200,
+          "title": "Speaker",
+          "type": "string"
+        },
+        "sourceRef": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "allocations": {
+          "items": {
+            "$ref": "#/$defs/CueAllocation"
+          },
+          "maxItems": 500,
+          "minItems": 1,
+          "title": "Allocations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "speaker",
+        "sourceRef",
+        "allocations"
+      ],
+      "title": "CueLayout",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        },
+        "sourceRefs": {
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Sourcerefs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "sourceRefs"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "Scene": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "sceneAssetId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Sceneassetid",
+          "type": "string"
+        },
+        "setting": {
+          "maxLength": 20000,
+          "title": "Setting",
+          "type": "string"
+        },
+        "spatialBaseline": {
+          "maxLength": 20000,
+          "title": "Spatialbaseline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "sceneAssetId",
+        "setting",
+        "spatialBaseline"
+      ],
+      "title": "Scene",
+      "type": "object"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "unitId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Unitid",
+          "type": "string"
+        },
+        "start": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "end": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "End",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "unitId",
+        "start",
+        "end"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "Timing": {
+      "additionalProperties": false,
+      "properties": {
+        "explanation": {
+          "maxLength": 20000,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "estimatedSpeechSeconds": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Estimatedspeechseconds",
+          "type": "number"
+        },
+        "uncertainty": {
+          "maxLength": 20000,
+          "title": "Uncertainty",
+          "type": "string"
+        }
+      },
+      "required": [
+        "explanation",
+        "estimatedSpeechSeconds",
+        "uncertainty"
+      ],
+      "title": "Timing",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "feasible": {
+      "title": "Feasible",
+      "type": "boolean"
+    },
+    "inputIssue": {
+      "enum": [
+        "NONE",
+        "DURATION_CAPACITY_CONFLICT",
+        "ASSET_INPUT_GAP",
+        "SOURCE_CONSTRAINT_CONFLICT"
+      ],
+      "title": "Inputissue",
+      "type": "string"
+    },
+    "timing": {
+      "$ref": "#/$defs/Timing"
+    },
+    "suggestedSeconds": {
+      "maximum": 3600,
+      "minimum": 0,
+      "title": "Suggestedseconds",
+      "type": "number"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/Event"
+      },
+      "maxItems": 1000,
+      "title": "Events",
+      "type": "array"
+    },
+    "scenes": {
+      "items": {
+        "$ref": "#/$defs/Scene"
+      },
+      "maxItems": 200,
+      "title": "Scenes",
+      "type": "array"
+    },
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/ClipLayout"
+      },
+      "maxItems": 500,
+      "title": "Clips",
+      "type": "array"
+    },
+    "cues": {
+      "items": {
+        "$ref": "#/$defs/CueLayout"
+      },
+      "maxItems": 2000,
+      "title": "Cues",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary",
+    "feasible",
+    "inputIssue",
+    "timing",
+    "suggestedSeconds",
+    "events",
+    "scenes",
+    "clips",
+    "cues"
+  ],
+  "title": "DirectorPlan",
+  "type": "object"
+}

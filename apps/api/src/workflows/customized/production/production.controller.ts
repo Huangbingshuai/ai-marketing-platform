@@ -23,6 +23,8 @@ import {
   type OnModuleDestroy,
   Logger,
   UploadedFile,
+  UploadedFiles,
+  Res,
   UseInterceptors,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -39,34 +41,53 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, AnyFilesInterceptor } from '@nestjs/platform-express';
+import type { ServerResponse } from 'node:http';
 import {
   CUSTOMIZED_IMAGE_MAX_BYTES,
   CUSTOMIZED_IMAGE_REFERENCE_MAX_BYTES,
   type CustomizedImageSettings,
+  type VideoDurationPolicy,
+  type ProductionPromptValue,
+  CUSTOMIZED_VIDEO_MAX_BYTES,
+  SEEDANCE_MODEL_OPTIONS,
+  type CustomizedVideoRenderSettings,
 } from '@ai-marketing/contracts';
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { RawResponse } from '../../../common/raw-response.decorator';
 import { UploadTemporaryFileCleanupInterceptor } from '../../../platform/file/upload-temporary-file-cleanup.interceptor';
 import type { UploadedAssetFile } from '../../../platform/asset/asset.service';
 import { ProductionImageService } from './production-image.service';
+import { ProductionVideoService } from './production-video.service';
 import type {
   ProductionDocument,
   ProductionOperation,
   ProductionStep,
-  ProductionPrompt,
 } from '@ai-marketing/contracts';
 import { ProjectService } from '../../../platform/project/project.service';
 import { ProductionRepository } from './production.repository';
 class Scope {
   @IsUUID() workflowRunId!: string;
 }
+class PromptTaskScope extends Scope {
+  @IsString() @MaxLength(200) clipId!: string;
+}
+class VideoSettings extends PromptTaskScope {
+  @IsInt() @Min(0) expectedRevision!: number;
+  @IsObject() settings!: CustomizedVideoRenderSettings;
+}
+class VideoRead extends Scope {
+  @IsOptional() @IsString() @MaxLength(20) revision?: string;
+  @IsOptional() @IsIn(['0', '1']) poster?: string;
+  @IsOptional() @IsIn(['0', '1']) download?: string;
+}
 class SavePrompt extends Scope {
   @IsInt() @Min(0) expectedRevision!: number;
-  @IsObject() prompt!: ProductionPrompt;
+  @IsObject() prompt!: ProductionPromptValue;
 }
 class ReviewDraft {
   @IsInt() @Min(0) expectedRevision!: number;
+  @IsOptional() @IsString() @MaxLength(100) candidateHash?: string;
 }
 class Save extends Scope {
   @IsInt() @Min(0) expectedRevision!: number;
@@ -76,11 +97,14 @@ class Save extends Scope {
 }
 class Start extends Scope {
   @IsInt() @Min(0) expectedRevision!: number;
-  @IsIn(['ASSETS', 'SHOTS', 'PROMPT', 'IMAGE']) operation!: ProductionOperation;
+  @IsIn(['ASSETS', 'SHOTS', 'PROMPT', 'IMAGE', 'RENDER']) operation!: ProductionOperation;
+  @IsOptional() @IsObject() renderSettings?: CustomizedVideoRenderSettings;
   @IsOptional() @IsObject() imageSettings?: CustomizedImageSettings;
   @IsString() @MaxLength(200) idempotencyKey!: string;
   @IsOptional() @IsString() @MaxLength(200) shotId?: string;
   @IsOptional() @IsString() @MaxLength(200) targetAssetId?: string;
+  @IsOptional() @IsObject() durationPolicy?: VideoDurationPolicy;
+  @IsOptional() @IsObject() target?: { kind: 'CLIP'; id: string };
 }
 class Worker {
   @IsUUID() projectId!: string;
@@ -164,6 +188,14 @@ export class ProductionService implements OnModuleInit, OnModuleDestroy {
         503,
         'VALIDATION_ERROR',
       );
+    if (b.operation === 'RENDER' && !this.config.get<string>('CUSTOMIZED_PRODUCTION_WORKER_TOKEN'))
+      throw new ApiHttpException('视频制作Worker未配置，请联系管理员', 503, 'VALIDATION_ERROR');
+    const selected =
+      b.operation === 'RENDER'
+        ? SEEDANCE_MODEL_OPTIONS.find((m) => m.value === b.renderSettings?.capabilityKey)
+        : undefined;
+    if (b.operation === 'RENDER' && !selected)
+      throw new ApiHttpException('请选择可用的视频模型', 400, 'VALIDATION_ERROR');
     return this.repository.start(
       p,
       b.workflowRunId,
@@ -181,15 +213,51 @@ export class ProductionService implements OnModuleInit, OnModuleDestroy {
       },
       b.targetAssetId ?? null,
       b.imageSettings,
+      {
+        version: 2,
+        ...(b.durationPolicy ? { durationPolicy: b.durationPolicy } : {}),
+        ...(b.target ? { target: b.target } : {}),
+        ...(selected && b.renderSettings
+          ? {
+              render: {
+                settings: b.renderSettings,
+                model:
+                  this.config.get<string>(selected.configKey)?.trim() ||
+                  (selected.value === 'SEEDANCE_2_0'
+                    ? this.config.get<string>('SEEDANCE_MODEL')?.trim()
+                    : '') ||
+                  selected.model,
+              },
+            }
+          : {}),
+      },
     );
   }
   async task(p: string, id: string) {
     await this.projects.get(p);
     return this.repository.getTask(p, id);
   }
+  async promptTask(p: string, q: PromptTaskScope) {
+    await this.projects.get(p);
+    return this.repository.latestPromptTask(p, q.workflowRunId, q.clipId);
+  }
+  async candidate(p: string, id: string) {
+    await this.projects.get(p);
+    return this.repository.candidate(p, id);
+  }
   async prompt(p: string, b: SavePrompt) {
     await this.projects.get(p);
     return this.repository.savePrompt(p, b.workflowRunId, b.expectedRevision, b.prompt);
+  }
+  async videoSettings(p: string, b: VideoSettings) {
+    await this.projects.get(p);
+    return this.repository.saveVideoSettings(
+      p,
+      b.workflowRunId,
+      b.clipId,
+      b.expectedRevision,
+      b.settings,
+    );
   }
   async action(p: string, id: string, cancel: boolean) {
     await this.projects.get(p);
@@ -197,7 +265,7 @@ export class ProductionService implements OnModuleInit, OnModuleDestroy {
   }
   async reviewDraft(p: string, id: string, b: ReviewDraft) {
     await this.projects.get(p);
-    return this.repository.reviewDraft(p, id, b.expectedRevision);
+    return this.repository.reviewDraft(p, id, b.expectedRevision, b.candidateHash);
   }
 }
 @Controller('projects/:projectId/workflows/customized/production')
@@ -205,7 +273,33 @@ export class ProductionController {
   constructor(
     private readonly service: ProductionService,
     @Inject(ProductionImageService) private readonly images: ProductionImageService,
+    @Inject(ProductionVideoService) private readonly videos: ProductionVideoService,
   ) {}
+  @Put('video-settings') videoSettings(
+    @Param('projectId', ParseUUIDPipe) p: string,
+    @Body() b: VideoSettings,
+  ) {
+    return this.service.videoSettings(p, b);
+  }
+  @Get('videos/:clipId')
+  @RawResponse()
+  videoContent(
+    @Param('projectId', ParseUUIDPipe) p: string,
+    @Param('clipId') clipId: string,
+    @Query() q: VideoRead,
+    @Headers('range') range: string | undefined,
+    @Res({ passthrough: true }) response: ServerResponse,
+  ) {
+    return this.videos.content(
+      p,
+      q.workflowRunId,
+      clipId,
+      q.poster === '1',
+      range,
+      q.download === '1',
+      response,
+    );
+  }
   @Post('image-references')
   @UseInterceptors(
     FileInterceptor('image', {
@@ -222,6 +316,18 @@ export class ProductionController {
   }
   @Get() workspace(@Param('projectId', ParseUUIDPipe) p: string, @Query() q: Scope) {
     return this.service.workspace(p, q);
+  }
+  @Get('prompt-task') promptTask(
+    @Param('projectId', ParseUUIDPipe) p: string,
+    @Query() q: PromptTaskScope,
+  ) {
+    return this.service.promptTask(p, q);
+  }
+  @Get('tasks/:id/candidate') async candidate(
+    @Param('projectId', ParseUUIDPipe) p: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.service.candidate(p, id);
   }
   @Put() save(@Param('projectId', ParseUUIDPipe) p: string, @Body() b: Save) {
     return this.service.save(p, b);
@@ -292,7 +398,41 @@ export class ProductionWorkerController {
   constructor(
     private readonly repository: ProductionRepository,
     @Inject(ProductionImageService) private readonly images: ProductionImageService,
+    @Inject(ProductionVideoService) private readonly videos: ProductionVideoService,
   ) {}
+  @Get('tasks/:id/video-references/:index')
+  @RawResponse()
+  videoReference(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Headers('x-attempt-token') token: string,
+    @Query() q: Worker,
+    @Req() request: NodeWorkerRequest,
+  ) {
+    if (request.workerNode !== 'VIDEO') throw new UnauthorizedException('任务不属于视频制作Worker');
+    return this.videos.reference(q.projectId, id, token, index);
+  }
+  @Post('tasks/:id/video-output')
+  @UseInterceptors(
+    AnyFilesInterceptor({ limits: { files: 2, fileSize: CUSTOMIZED_VIDEO_MAX_BYTES } }),
+    UploadTemporaryFileCleanupInterceptor,
+  )
+  uploadVideo(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Headers('x-attempt-token') token: string,
+    @Body() b: Worker,
+    @Req() request: NodeWorkerRequest,
+    @UploadedFiles() files: Array<UploadedAssetFile & { fieldname: string }>,
+  ) {
+    if (request.workerNode !== 'VIDEO') throw new UnauthorizedException('任务不属于视频制作Worker');
+    return this.videos.upload(
+      b.projectId,
+      id,
+      token,
+      files.find((f) => f.fieldname === 'video'),
+      files.find((f) => f.fieldname === 'poster'),
+    );
+  }
   @Get('tasks/:id/references/:assetId/:version')
   @RawResponse()
   reference(

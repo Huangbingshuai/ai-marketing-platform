@@ -3,6 +3,7 @@ import {
   ASSET_EDITABLE_FIELDS,
   assetEvidenceValue,
   isProductionDocument,
+  productionShots,
   type ProductionAsset,
   type ProductionDocument,
   type ProductionInput,
@@ -53,7 +54,8 @@ export function validatePreparedAssets(
   output: ProductionDocument,
   input: ProductionInput,
 ): string | null {
-  if (!isProductionDocument(output) || output.shots.length) return '资产整理结果结构不正确';
+  if (!isProductionDocument(output) || productionShots(output).length)
+    return '资产整理结果结构不正确';
   const allowedIds = new Set(input.document.assets.map((a) => a.id));
   const ids = new Set(output.assets.map((a) => a.id));
   if (input.targetAssetId && (ids.size !== 1 || !ids.has(input.targetAssetId)))

@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "RenderReference": {
+      "properties": {
+        "objectId": {
+          "title": "Objectid",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "assetId": {
+          "title": "Assetid",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "storageKey": {
+          "title": "Storagekey",
+          "type": "string"
+        },
+        "mimeType": {
+          "title": "Mimetype",
+          "type": "string"
+        },
+        "sizeBytes": {
+          "exclusiveMaximum": 31457280,
+          "exclusiveMinimum": 0,
+          "title": "Sizebytes",
+          "type": "integer"
+        },
+        "sha256": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "objectId",
+        "name",
+        "assetId",
+        "version",
+        "storageKey",
+        "mimeType",
+        "sizeBytes",
+        "sha256"
+      ],
+      "title": "RenderReference",
+      "type": "object"
+    },
+    "RenderSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilityKey": {
+          "enum": [
+            "SEEDANCE_2_0",
+            "SEEDANCE_2_0_FAST",
+            "SEEDANCE_1_5_PRO",
+            "SEEDANCE_1_0"
+          ],
+          "title": "Capabilitykey",
+          "type": "string"
+        },
+        "ratio": {
+          "enum": [
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16",
+            "21:9",
+            "adaptive"
+          ],
+          "title": "Ratio",
+          "type": "string"
+        },
+        "resolution": {
+          "enum": [
+            "480p",
+            "720p",
+            "1080p",
+            "4k"
+          ],
+          "title": "Resolution",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capabilityKey",
+        "ratio",
+        "resolution"
+      ],
+      "title": "RenderSettings",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "settings": {
+      "$ref": "#/$defs/RenderSettings"
+    },
+    "model": {
+      "minLength": 1,
+      "title": "Model",
+      "type": "string"
+    },
+    "clipId": {
+      "title": "Clipid",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "seconds": {
+      "maximum": 30,
+      "minimum": 2,
+      "title": "Seconds",
+      "type": "integer"
+    },
+    "prompt": {
+      "maxLength": 50000,
+      "minLength": 1,
+      "title": "Prompt",
+      "type": "string"
+    },
+    "references": {
+      "items": {
+        "$ref": "#/$defs/RenderReference"
+      },
+      "maxItems": 30,
+      "title": "References",
+      "type": "array"
+    }
+  },
+  "required": [
+    "settings",
+    "model",
+    "clipId",
+    "title",
+    "seconds",
+    "prompt",
+    "references"
+  ],
+  "title": "RenderInput",
+  "type": "object"
+}

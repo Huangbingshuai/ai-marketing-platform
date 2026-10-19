@@ -55,6 +55,7 @@ import {
 } from './effect-branch-freshness';
 import type { EffectEditBeginOptions } from './effect-edit-session';
 import { selectedEffectTemplatePaths } from './effect-template-current-path';
+import { currentCustomizedVideoArtifacts } from './customized-production-freshness';
 import {
   finalOutputConfirmedProjectIds,
   finalOutputSavedBatchStale,
@@ -431,7 +432,7 @@ export class WorkflowWorkingService {
           { projectId, workflow: 'CUSTOMIZED' },
           'customized-tree',
           () => this.loadCustomizedBranchTree(projectId),
-          { assetBranch: 4, nodeLayout: 5 },
+          { assetBranch: 4, nodeLayout: 5, videoScope: 1 },
         )
       : this.loadCustomizedBranchTree(projectId);
   }
@@ -457,10 +458,14 @@ export class WorkflowWorkingService {
           createdAt: run.createdAt.toISOString(),
           isActive: run.id === visibleId,
           nodes: CUSTOMIZED_WORKFLOW_NODES.map((nodeId) => {
-            const artifacts = run.workingArtifacts.filter(
+            const nodeArtifacts = run.workingArtifacts.filter(
               (item) =>
                 item.nodeId !== 'DELIVERY' && customizedWorkflowNodeId(item.nodeId) === nodeId,
             );
+            const artifacts =
+              nodeId === 'SHOT_RENDER'
+                ? currentCustomizedVideoArtifacts(nodeArtifacts)
+                : nodeArtifacts;
             if (nodeId === 'SHOT_PROMPT') {
               const catalog = artifacts.find(
                 (item) => item.artifactKey === 'customized-asset-catalog',

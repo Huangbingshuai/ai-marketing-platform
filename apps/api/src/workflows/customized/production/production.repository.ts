@@ -6,6 +6,19 @@ import {
 } from './production-worker-policy';
 import { randomUUID } from 'node:crypto';
 import { assetExecutionDetail } from './asset-execution-detail';
+import { videoExecutionDetail } from './video-execution-detail';
+import { freezeVideoRender, renderSettingsNode, videoFileIssues } from './video-render.domain';
+import {
+  candidateDocument,
+  candidateForPreview,
+  clipPayload,
+  mergeVideoSection,
+  normalizeVideoPolicy,
+  validateFinalVideo,
+  validateFinalClipPrompt,
+  validateVideoSnapshot,
+  videoHash,
+} from './video-production.domain';
 import {
   recordAssetEdits,
   mergePreparedAssets,
@@ -14,9 +27,31 @@ import {
 import { Inject, Injectable } from '@nestjs/common';
 import {
   isCustomizedStoryboardScript,
+  isVideoDocument,
+  productionShots,
+  withProductionAssets,
+  isProductionClipPrompt,
+  validateClipPromptReferences,
+  isVideoDurationPolicy,
+  buildVideoSourceUnits,
+  CUSTOMIZED_VIDEO_STRATEGY,
+  CUSTOMIZED_VIDEO_LIMITS,
+  videoReadableText,
+  videoClipAssetIds,
+  type ProductionClipPrompt,
+  type ProductionPromptValue,
+  type ProductionVideoDocument,
+  type VideoDurationPolicy,
+  type ProductionShot,
+  type VideoAudit,
+  type VideoCandidate,
   isProductionDocument,
   isProductionPrompt,
   isCustomizedImageSettings,
+  isCustomizedVideoRenderSettings,
+  type CustomizedVideoRenderSettings,
+  type CustomizedVideoResult,
+  type CustomizedVideoFileInfo,
   normalizeCustomizedImportDraft,
   CUSTOMIZED_IMAGE_REFERENCE_MAX_BYTES,
   type CustomizedImageSettings,
@@ -26,7 +61,6 @@ import {
   type ProductionWorkspace,
   type ProductionTask,
   type ProductionStep,
-  type ProductionPrompt,
   type ProductionInput,
 } from '@ai-marketing/contracts';
 import type {
@@ -75,8 +109,36 @@ export const presentProductionTask = (t: CustomizedProductionTask): ProductionTa
         }
       : {}),
     ...(snapshot(t).imageSettings ? { imageSettings: snapshot(t).imageSettings } : {}),
+    ...(snapshot(t).videoRender
+      ? {
+          renderSettings: snapshot(t).videoRender!.settings,
+          target: { kind: 'CLIP' as const, id: snapshot(t).videoRender!.clipId },
+        }
+      : {}),
+    ...(snapshot(t).shotWorkflowVersion
+      ? {
+          shotWorkflowVersion: snapshot(t).shotWorkflowVersion,
+          ...(snapshot(t).promptWorkflowVersion
+            ? { promptWorkflowVersion: snapshot(t).promptWorkflowVersion }
+            : {}),
+          hasCandidate: !!candidateForPreview(saved),
+          target: snapshot(t).target,
+          ...(saved?.failureReason
+            ? { failureReason: saved.failureReason as NonNullable<ProductionTask['failureReason']> }
+            : {}),
+          ...(t.status === 'FAILED' && t.operation === 'SHOTS' && candidateDocument(saved)
+            ? {
+                reviewDraftState: saved?.manualDraftAdoptedRevision
+                  ? ('ADOPTED' as const)
+                  : ('AVAILABLE' as const),
+              }
+            : {}),
+        }
+      : {}),
     steps: steps.map((step) => {
-      const detail = assetExecutionDetail(step, snapshot(t), t.output);
+      const detail =
+        videoExecutionDetail(step, snapshot(t), t.output) ??
+        assetExecutionDetail(step, snapshot(t), t.output);
       return detail ? { ...step, detail } : step;
     }),
     ...(snapshot(t).assetWorkflowVersion
@@ -88,23 +150,50 @@ export const presentProductionTask = (t: CustomizedProductionTask): ProductionTa
     progress:
       t.status === 'COMPLETED'
         ? 100
-        : t.operation === 'IMAGE'
+        : snapshot(t).shotWorkflowVersion === 2
           ? Math.min(
               99,
               Math.round(
-                steps.filter((s) => s.id === 'SNAPSHOT' && s.status === 'SUCCEEDED').length * 10 +
-                  (Object.keys((t.output ?? {}) as object).length /
-                    Math.max(1, snapshot(t).imageSettings?.assetIds.length ?? 1)) *
-                    85,
+                steps.reduce(
+                  (n, s) =>
+                    n +
+                    (s.status === 'SUCCEEDED'
+                      ? ((
+                          {
+                            SNAPSHOT: 5,
+                            PLAN: 20,
+                            GENERATE: 40,
+                            REVIEW: 20,
+                            REPAIR: 10,
+                            SAVE: 5,
+                          } as Record<string, number>
+                        )[s.id] ?? 0)
+                      : s.id === 'GENERATE' &&
+                          Array.isArray(saved?.completedBatches) &&
+                          typeof saved?.batchCount === 'number'
+                        ? (40 * saved.completedBatches.length) / Math.max(1, saved.batchCount)
+                        : 0),
+                  0,
+                ),
               ),
             )
-          : Math.min(
-              99,
-              Math.round(
-                (steps.filter((s) => s.status === 'SUCCEEDED').length * 100) /
-                  Math.max(1, steps.length),
+          : t.operation === 'IMAGE'
+            ? Math.min(
+                99,
+                Math.round(
+                  steps.filter((s) => s.id === 'SNAPSHOT' && s.status === 'SUCCEEDED').length * 10 +
+                    (Object.keys((t.output ?? {}) as object).length /
+                      Math.max(1, snapshot(t).imageSettings?.assetIds.length ?? 1)) *
+                      85,
+                ),
+              )
+            : Math.min(
+                99,
+                Math.round(
+                  (steps.filter((s) => s.status === 'SUCCEEDED').length * 100) /
+                    Math.max(1, steps.length),
+                ),
               ),
-            ),
   };
 };
 @Injectable()
@@ -173,13 +262,25 @@ export class ProductionRepository {
       atmosphere: s.continuity,
       bindings: Object.values(s.assetRequirements ?? {}).flatMap((g) => g.items),
     }));
-    const confirmedDocument = {
-      assets:
-        (catalog?.payload as unknown as { assets: ProductionDocument['assets'] })?.assets ??
-        legacyAssets,
-      shots:
-        (plan?.payload as unknown as { shots: ProductionDocument['shots'] })?.shots ?? legacyShots,
-    };
+    const confirmedDocument: ProductionDocument =
+      isProductionDocument({
+        ...(plan?.payload as object),
+        assets:
+          (catalog?.payload as unknown as { assets: ProductionDocument['assets'] })?.assets ??
+          legacyAssets,
+      }) && (plan?.payload as Record<string, unknown>)?.schemaVersion === 2
+        ? {
+            ...(plan!.payload as unknown as ProductionVideoDocument),
+            assets:
+              (catalog?.payload as unknown as { assets: ProductionDocument['assets'] })?.assets ??
+              legacyAssets,
+          }
+        : {
+            assets:
+              (catalog?.payload as unknown as { assets: ProductionDocument['assets'] })?.assets ??
+              legacyAssets,
+            shots: (plan?.payload as unknown as { shots: ProductionShot[] })?.shots ?? legacyShots,
+          };
     const document =
       data?.sourceRevision === script.revision && isProductionDocument(data.document)
         ? data.document
@@ -238,17 +339,108 @@ export class ProductionRepository {
       assetsConfirmed: catalog?.freshness === 'CURRENT',
       shotsConfirmed: plan?.freshness === 'CURRENT',
       prompts: artifacts
-        .filter((a) => a.artifactKey.startsWith('customized-shot-prompt:'))
+        .filter(
+          (a) =>
+            a.artifactKey.startsWith('customized-shot-prompt:') ||
+            a.artifactKey.startsWith('customized-clip-prompt:'),
+        )
         .map((a) => ({
-          value: a.payload as unknown as ProductionPrompt,
+          value: a.payload as unknown as ProductionPromptValue,
           stale: a.freshness !== 'CURRENT',
           revision: a.revision,
         })),
+      videos: artifacts
+        .filter((a) => a.artifactKey.startsWith('customized-clip-video:'))
+        .map((a) => ({
+          value: a.payload as unknown as CustomizedVideoResult,
+          revision: a.revision,
+          stale: a.freshness !== 'CURRENT',
+        })),
+      videoSettings: (
+        await tx.workflowNodeState.findMany({
+          where: {
+            projectId: p,
+            workflowRunId: r,
+            nodeId: { startsWith: 'CUSTOMIZED_VIDEO_RENDER_SETTINGS:' },
+          },
+        })
+      ).flatMap((s) => {
+        const value = s.state as { clipId?: string; settings?: unknown };
+        return typeof value.clipId === 'string' && isCustomizedVideoRenderSettings(value.settings)
+          ? [{ clipId: value.clipId, revision: s.revision, settings: value.settings }]
+          : [];
+      }),
       tasks: tasks.map(presentProductionTask),
     };
   }
   workspace(p: string, r: string) {
     return this.db.$transaction((tx) => this.read(tx, p, r), { timeout: 15000 });
+  }
+  saveVideoSettings(
+    p: string,
+    r: string,
+    clipId: string,
+    revision: number,
+    settings: CustomizedVideoRenderSettings,
+  ) {
+    return this.db.$transaction(async (tx) => {
+      await lockCustomizedProject(tx, p);
+      const w = await this.read(tx, p, r);
+      if (
+        !isCustomizedVideoRenderSettings(settings) ||
+        !isVideoDocument(w.document) ||
+        !w.document.videoPlan.clips.some((c) => c.id === clipId)
+      )
+        invalid('渲染设置或当前分镜无效');
+      const nodeId = renderSettingsNode(clipId);
+      const old = await tx.workflowNodeState.findUnique({
+        where: { projectId_workflowRunId_nodeId: { projectId: p, workflowRunId: r, nodeId } },
+      });
+      if ((old?.revision ?? 0) !== revision)
+        return customizedConflict('渲染设置已变化，请重新加载');
+      const hash = workflowStateHash(settings);
+      if (old?.contentHash === hash) return { clipId, revision: old.revision, settings };
+      const state = await tx.workflowNodeState.upsert({
+        where: { projectId_workflowRunId_nodeId: { projectId: p, workflowRunId: r, nodeId } },
+        create: {
+          projectId: p,
+          workflowRunId: r,
+          nodeId,
+          state: json({ clipId, settings }),
+          contentHash: hash,
+          revision: 1,
+        },
+        update: {
+          state: json({ clipId, settings }),
+          contentHash: hash,
+          revision: { increment: 1 },
+        },
+      });
+      return { clipId, revision: state.revision, settings };
+    });
+  }
+  latestPromptTask(p: string, r: string, clipId: string): Promise<ProductionTask | null> {
+    return this.db.$transaction(async (tx) => {
+      await this.scope(tx, p, r);
+      const artifacts = await this.artifacts(tx, p, r);
+      const document = artifacts.find((a) => a.artifactKey === 'customized-video-plan')?.payload;
+      if (
+        !isProductionDocument(document) ||
+        !isVideoDocument(document) ||
+        !document.videoPlan.clips.some((c) => c.id === clipId)
+      )
+        return null;
+      const task = await tx.customizedProductionTask.findFirst({
+        where: {
+          projectId: p,
+          workflowRunId: r,
+          operation: 'PROMPT',
+          inputSnapshot: { path: ['target', 'id'], equals: clipId },
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      return task ? presentProductionTask(task) : null;
+    });
   }
   private async writeDraft(
     tx: Tx,
@@ -377,19 +569,44 @@ export class ProductionRepository {
         )
           return customizedConflict('当前制作任务执行中，请等待或取消后再编辑');
         // Each editor owns its section only, never overwrite the other node's data.
-        const value =
+        const value = mergeVideoSection(
+          w.document,
           section === 'ASSETS'
-            ? {
-                assets: recordAssetEdits(w.document.assets, document.assets),
-                shots: w.document.shots.map((s) => ({
-                  ...s,
-                  bindings: (
-                    document.shots.find((v) => v.id === s.id)?.bindings ?? s.bindings
-                  ).filter((b) => document.assets.some((a) => a.id === b.assetId)),
-                })),
-              }
-            : { assets: w.document.assets, shots: document.shots };
+            ? withProductionAssets(document, recordAssetEdits(w.document.assets, document.assets))
+            : document,
+          section,
+        );
         if (!isProductionDocument(value)) invalid('镜头引用的资产已发生变化');
+        if (section === 'SHOTS' && isVideoDocument(value)) {
+          const current = await this.artifacts(tx, p, r);
+          if (
+            videoHash(value.videoPlan.sourceUnits) !==
+            videoHash(buildVideoSourceUnits(w.script.story?.content ?? w.script.synopsis))
+          )
+            return customizedConflict('分镜来源正文已变化');
+          const required = [
+            w.source.artifactId,
+            ...current
+              .filter((a) =>
+                ['customized-brief', 'customized-asset-catalog'].includes(a.artifactKey),
+              )
+              .map((a) => a.id),
+          ];
+          if (
+            required.some((id) => !value.videoPlan.sources.some((s) => s.id === id)) ||
+            value.videoPlan.sources.some(
+              (s) =>
+                !current.some(
+                  (a) =>
+                    a.id === s.id &&
+                    a.revision === s.revision &&
+                    a.contentHash === s.hash &&
+                    a.freshness === 'CURRENT',
+                ),
+            )
+          )
+            return customizedConflict('分镜制作依据已变化，请重新生成');
+        }
         // Uploaded visual references must belong to this project and exact version.
         for (const a of value.assets)
           if (a.image) {
@@ -417,8 +634,8 @@ export class ProductionRepository {
           } else {
             if (
               !w.assetsConfirmed ||
-              !value.shots.length ||
-              value.shots.some((s) => !s.visual.trim())
+              !productionShots(value).length ||
+              productionShots(value).some((s) => !s.visual.trim())
             )
               invalid('请确认资产目录并补齐分镜画面');
             const objects = await this.artifacts(tx, p, r);
@@ -428,7 +645,11 @@ export class ProductionRepository {
               workflowStateHash(catalog.payload) !== workflowStateHash({ assets: value.assets })
             )
               return customizedConflict('资产目录有未确认修改，请先保存资产准备');
-            for (const s of value.shots)
+            const savedShots = isVideoDocument(value) ? value.videoPlan.shots : value.shots;
+            const brief = objects.find((a) => a.artifactKey === 'customized-brief');
+            if (isVideoDocument(value) && (!brief || brief.freshness !== 'CURRENT'))
+              return customizedConflict('信息卡已变化，请重新确认制作依据');
+            for (const s of savedShots)
               await this.commit(
                 tx,
                 p,
@@ -439,6 +660,7 @@ export class ProductionRepository {
                 s,
                 [
                   story,
+                  ...(isVideoDocument(value) && brief ? [brief] : []),
                   ...s.bindings
                     .map((b) =>
                       objects.find((a) => a.artifactKey === `customized-object:${b.assetId}`)!,
@@ -449,11 +671,53 @@ export class ProductionRepository {
             for (const a of artifacts.filter(
               (a) =>
                 a.artifactKey.startsWith('customized-shot:') &&
-                !value.shots.some((s) => `customized-shot:${s.id}` === a.artifactKey),
+                !savedShots.some((s) => `customized-shot:${s.id}` === a.artifactKey),
             ))
               await this.commit(tx, p, r, 'SHOT_RENDER', a.artifactKey, a.name, { removed: true }, [
                 story,
               ]);
+            if (isVideoDocument(value)) {
+              const current = await this.artifacts(tx, p, r);
+              for (const clip of value.videoPlan.clips)
+                await this.commit(
+                  tx,
+                  p,
+                  r,
+                  'SHOT_RENDER',
+                  `customized-video-clip:${clip.id}`,
+                  clip.title,
+                  clipPayload(value, clip.id),
+                  [
+                    story,
+                    ...(brief ? [brief] : []),
+                    ...clip.shotIds
+                      .map((id) => current.find((a) => a.artifactKey === `customized-shot:${id}`)!)
+                      .filter(Boolean),
+                    ...videoClipAssetIds(value.videoPlan, clip)
+                      .map((id) =>
+                        current.find((a) => a.artifactKey === `customized-object:${id}`)!,
+                      )
+                      .filter(Boolean),
+                  ],
+                );
+              for (const a of artifacts.filter(
+                (a) =>
+                  a.artifactKey.startsWith('customized-video-clip:') &&
+                  !value.videoPlan.clips.some(
+                    (c) => a.artifactKey === `customized-video-clip:${c.id}`,
+                  ),
+              ))
+                await this.commit(
+                  tx,
+                  p,
+                  r,
+                  'SHOT_RENDER',
+                  a.artifactKey,
+                  a.name,
+                  { removed: true },
+                  [story],
+                );
+            }
             await this.commit(
               tx,
               p,
@@ -461,7 +725,7 @@ export class ProductionRepository {
               'SHOT_RENDER',
               'customized-video-plan',
               '分镜制作',
-              { shots: value.shots },
+              isVideoDocument(value) ? value : { shots: value.shots },
               [story],
             );
           }
@@ -497,12 +761,54 @@ export class ProductionRepository {
       },
     });
   }
-  savePrompt(p: string, r: string, revision: number, prompt: ProductionPrompt) {
+  savePrompt(p: string, r: string, revision: number, prompt: ProductionPromptValue) {
     return this.db.$transaction(
       async (tx) => {
         await lockCustomizedProject(tx, p);
         const w = await this.read(tx, p, r),
-          shot = w.document.shots.find((s) => s.id === prompt.shotId);
+          shot = productionShots(w.document).find(
+            (s) => 'shotId' in prompt && s.id === prompt.shotId,
+          );
+        if ('target' in prompt) {
+          if (!isVideoDocument(w.document) || !isProductionClipPrompt(prompt, w.document.videoPlan))
+            return invalid('提示词与当前片段绑定不匹配');
+          const referenceIssue = validateClipPromptReferences(prompt, w.document);
+          if (referenceIssue) return invalid(referenceIssue);
+          const artifacts = await this.artifacts(tx, p, r),
+            source = artifacts.find(
+              (a) => a.artifactKey === `customized-video-clip:${prompt.target.id}`,
+            ),
+            old = artifacts.find(
+              (a) => a.artifactKey === `customized-clip-prompt:${prompt.target.id}`,
+            );
+          if (
+            !w.sourceReady ||
+            !source ||
+            source.freshness !== 'CURRENT' ||
+            workflowStateHash(source.payload) !==
+              workflowStateHash(clipPayload(w.document, prompt.target.id))
+          )
+            return customizedConflict('请先保存当前片段及绑定');
+          if ((old?.revision ?? 0) !== revision)
+            return customizedConflict('提示词已更新，本地文字保留，请重新加载后核对');
+          if (
+            await tx.customizedProductionTask.count({
+              where: { projectId: p, workflowRunId: r, status: { in: ['QUEUED', 'RUNNING'] } },
+            })
+          )
+            return customizedConflict('制作任务执行中，请稍后保存');
+          await this.commit(
+            tx,
+            p,
+            r,
+            'SHOT_RENDER',
+            `customized-clip-prompt:${prompt.target.id}`,
+            '片段提示词',
+            prompt,
+            [source],
+          );
+          return { accepted: true };
+        }
         if (!shot || !isProductionPrompt(prompt, shot)) invalid('提示词与当前镜头绑定不匹配');
         const artifacts = await this.artifacts(tx, p, r),
           source = artifacts.find((a) => a.artifactKey === `customized-shot:${prompt.shotId}`),
@@ -554,7 +860,27 @@ export class ProductionRepository {
     models: Snapshot['models'],
     targetAssetId: string | null = null,
     imageSettings?: CustomizedImageSettings,
+    videoSettings?: {
+      version?: 2;
+      durationPolicy?: VideoDurationPolicy;
+      target?: { kind: 'CLIP'; id: string };
+      render?: { settings: CustomizedVideoRenderSettings; model: string };
+    },
   ) {
+    if (
+      videoSettings?.durationPolicy !== undefined &&
+      !isVideoDurationPolicy(videoSettings.durationPolicy)
+    )
+      invalid('请选择有效的制作时长');
+    if (
+      videoSettings?.target &&
+      (!['PROMPT', 'RENDER'].includes(operation) ||
+        videoSettings.target.kind !== 'CLIP' ||
+        typeof videoSettings.target.id !== 'string' ||
+        !videoSettings.target.id.trim() ||
+        videoSettings.target.id.length > 200)
+    )
+      invalid('制作片段目标不正确');
     if (operation === 'IMAGE' && isCustomizedImageSettings(imageSettings) && imageSettings.inputs)
       imageSettings = {
         ...imageSettings,
@@ -578,6 +904,10 @@ export class ProductionRepository {
             previous.workflowRunId !== r ||
             previous.operation !== operation ||
             previous.shotId !== shotId ||
+            workflowStateHash(snapshot(previous).target ?? null) !==
+              workflowStateHash(videoSettings?.target ?? null) ||
+            workflowStateHash(snapshot(previous).videoRender?.settings ?? null) !==
+              workflowStateHash(videoSettings?.render?.settings ?? null) ||
             workflowStateHash(snapshot(previous).imageSettings ?? null) !==
               workflowStateHash(imageSettings ?? null) ||
             (snapshot(previous).targetAssetId ?? null) !== targetAssetId
@@ -615,6 +945,19 @@ export class ProductionRepository {
             return customizedConflict('请先保存并确认资产目录');
           source.push(catalog);
         }
+        const render =
+          operation === 'RENDER'
+            ? await freezeVideoRender(
+                tx,
+                p,
+                w,
+                artifacts,
+                videoSettings?.target?.id ?? '',
+                videoSettings?.render?.settings as CustomizedVideoRenderSettings,
+                videoSettings?.render?.model ?? '',
+              )
+            : undefined;
+        if (render) source.push(...render.sources);
         if (operation === 'IMAGE') {
           if (
             !isCustomizedImageSettings(imageSettings) ||
@@ -649,8 +992,32 @@ export class ProductionRepository {
               invalid('参考图片版本不可用，请移除后重新选择');
           }
         } else if (imageSettings) invalid('此任务不接受图片设置');
-        if (operation === 'PROMPT') {
-          const shot = w.document.shots.find((s) => s.id === shotId),
+        const videoV2 =
+          (operation === 'SHOTS' && videoSettings?.version === 2) ||
+          (operation === 'PROMPT' && isVideoDocument(w.document));
+        if (videoV2) {
+          if (!brief || brief.freshness !== 'CURRENT')
+            return customizedConflict('请先确认当前信息卡');
+          source.push(brief);
+        }
+        if (operation === 'PROMPT' && videoV2) {
+          if (shotId || videoSettings?.target?.kind !== 'CLIP' || !isVideoDocument(w.document))
+            invalid('请选择当前视频片段');
+          const targetId = videoSettings!.target!.id;
+          const a = artifacts.find(
+            (a) =>
+              a.artifactKey === `customized-video-clip:${targetId}` && a.freshness === 'CURRENT',
+          );
+          if (
+            !a ||
+            workflowStateHash(a.payload) !==
+              workflowStateHash(clipPayload(w.document as ProductionVideoDocument, targetId))
+          )
+            return customizedConflict('请先保存当前片段和分镜');
+          source.push(a);
+        } else if (operation === 'PROMPT') {
+          if (videoSettings?.target) invalid('旧版镜头不接受片段目标');
+          const shot = productionShots(w.document).find((s) => s.id === shotId),
             a = artifacts.find(
               (a) => a.artifactKey === `customized-shot:${shotId}` && a.freshness === 'CURRENT',
             );
@@ -667,7 +1034,41 @@ export class ProductionRepository {
           models,
           operation,
           shotId,
+          ...(videoV2
+            ? {
+                shotWorkflowVersion: 2 as const,
+                ...(operation === 'PROMPT' ? { promptWorkflowVersion: 3 as const } : {}),
+                strategyVersion: CUSTOMIZED_VIDEO_STRATEGY,
+                requestLimits: { ...CUSTOMIZED_VIDEO_LIMITS },
+                identitySeed: randomUUID(),
+                durationPolicy:
+                  operation === 'PROMPT' && isVideoDocument(w.document)
+                    ? w.document.videoPlan.durationPolicy
+                    : normalizeVideoPolicy(
+                        videoSettings?.durationPolicy,
+                        w.script.creation?.referenceDurationSeconds ?? 30,
+                      ),
+                sourceUnits: buildVideoSourceUnits(w.script.story?.content ?? w.script.synopsis),
+                renderCapability:
+                  operation === 'PROMPT' && isVideoDocument(w.document)
+                    ? w.document.videoPlan.capability
+                    : {
+                        key: 'TEXT_PLAN',
+                        status: 'PENDING_MODEL_CHECK' as const,
+                        minClipMs: 4000,
+                        maxClipMs: 15000,
+                        version: 'configured-2026-10-19',
+                      },
+                ...(videoSettings?.target ? { target: videoSettings.target } : {}),
+              }
+            : {}),
           ...(imageSettings ? { imageSettings } : {}),
+          ...(render
+            ? {
+                videoRender: render.input,
+                target: { kind: 'CLIP' as const, id: render.input.clipId },
+              }
+            : {}),
           ...(operation === 'ASSETS'
             ? { assetWorkflowVersion: 2 as const, targetAssetId, identitySeed: randomUUID() }
             : {}),
@@ -681,7 +1082,12 @@ export class ProductionRepository {
             idempotencyKey: key,
             inputSnapshot: json(input),
             steps: json(
-              productionStages(operation, input.assetWorkflowVersion).map((s) => ({
+              productionStages(
+                operation,
+                input.assetWorkflowVersion,
+                input.shotWorkflowVersion,
+                input.promptWorkflowVersion,
+              ).map((s) => ({
                 id: s.id,
                 status: 'PENDING',
                 title: s.label,
@@ -714,6 +1120,26 @@ export class ProductionRepository {
     )
       return customizedConflict('任务来源已变化，请基于当前内容重新生成');
     const state = await this.state(tx, t.projectId, t.workflowRunId);
+    if (input.videoRender) {
+      for (const reference of input.videoRender.references) {
+        const version = await tx.assetVersion.findFirst({
+          where: {
+            projectId: t.projectId,
+            assetId: reference.assetId,
+            version: reference.version,
+            storageKey: reference.storageKey,
+            sizeBytes: reference.sizeBytes,
+            status: { not: 'UNAVAILABLE' },
+            asset: {
+              archivedAt: null,
+              storageWorkflow: 'CUSTOMIZED',
+              workflowSpace: 'CUSTOMIZED_PROJECT',
+            },
+          },
+        });
+        if (!version) return customizedConflict('本镜引用图片版本已不可用');
+      }
+    }
     if (input.operation === 'IMAGE') {
       const current = (await this.read(tx, t.projectId, t.workflowRunId)).document;
       const withoutImages = (doc: ProductionDocument) => ({
@@ -753,13 +1179,77 @@ export class ProductionRepository {
       return presentProductionTask(t);
     });
   }
-  reviewDraft(p: string, id: string, expectedRevision: number) {
+  candidate(p: string, id: string) {
+    return this.db.$transaction(async (tx) => {
+      const t = await this.task(tx, p, id);
+      await this.scope(tx, p, t.workflowRunId);
+      const saved = t.output as Record<string, unknown> | null;
+      const document = candidateForPreview(saved);
+      if (!document) return missing();
+      const original = candidateForPreview({ value: saved?.value });
+      return {
+        document,
+        candidateHash: videoHash(document),
+        adopted: !!saved?.manualDraftAdoptedRevision,
+        validForDraft: !!candidateDocument(saved),
+        ...(original && videoHash(original) !== videoHash(document)
+          ? { originalDocument: original }
+          : {}),
+        issues: (((saved?.recheck ?? saved?.audit) as VideoAudit | undefined)?.findings ?? []).map(
+          (issue) => ({
+            ...issue,
+            title: videoReadableText(document.videoPlan, document.assets, issue.title),
+            impact: videoReadableText(document.videoPlan, document.assets, issue.impact),
+            suggestedFix: videoReadableText(
+              document.videoPlan,
+              document.assets,
+              issue.suggestedFix,
+            ),
+          }),
+        ),
+      } satisfies VideoCandidate;
+    });
+  }
+  reviewDraft(p: string, id: string, expectedRevision: number, candidateHash?: string) {
     return this.db.$transaction(
       async (tx) => {
         await lockCustomizedProject(tx, p);
         const t = await this.task(tx, p, id);
         const input = snapshot(t),
           saved = t.output as Record<string, unknown> | null;
+        if (t.status === 'FAILED' && t.operation === 'SHOTS' && input.shotWorkflowVersion === 2) {
+          const candidate = candidateDocument(saved);
+          if (!candidate || saved?.manualDraftAdoptedRevision)
+            return customizedConflict('没有可供核对的分镜草稿');
+          if (!candidateHash || candidateHash !== videoHash(candidate))
+            return customizedConflict('核对候选已经变化，请重新查看');
+          await this.valid(tx, t);
+          const issue = validateVideoSnapshot(candidate, input);
+          if (issue) invalid(issue);
+          if (
+            await tx.customizedProductionTask.count({
+              where: {
+                projectId: p,
+                workflowRunId: t.workflowRunId,
+                status: { in: ['QUEUED', 'RUNNING'] },
+              },
+            })
+          )
+            return customizedConflict('已有制作任务执行中');
+          const draft = await this.writeDraft(
+            tx,
+            p,
+            t.workflowRunId,
+            candidate,
+            input.sources[0]!.revision,
+            expectedRevision,
+          );
+          await tx.customizedProductionTask.update({
+            where: { id },
+            data: { output: json({ ...saved, manualDraftAdoptedRevision: draft.revision }) },
+          });
+          return { revision: draft.revision };
+        }
         if (
           t.status !== 'FAILED' ||
           t.operation !== 'ASSETS' ||
@@ -807,8 +1297,10 @@ export class ProductionRepository {
           p,
           t.workflowRunId,
           {
-            assets: mergePreparedAssets(input.document.assets, document.assets),
-            shots: input.document.shots,
+            ...withProductionAssets(
+              input.document,
+              mergePreparedAssets(input.document.assets, document.assets),
+            ),
           },
           input.sources[0]!.revision,
           expectedRevision,
@@ -892,6 +1384,206 @@ export class ProductionRepository {
       });
       return { accepted: true };
     });
+  }
+  videoRenderScope(p: string, id: string, token: string, allowCompleted = false) {
+    return this.db.$transaction(async (tx) => {
+      const row = await this.task(tx, p, id);
+      if (row.operation !== 'RENDER') invalid('不是视频渲染任务');
+      const t =
+        allowCompleted && row.status === 'COMPLETED' && row.attemptToken === token
+          ? row
+          : await this.lease(tx, p, id, token, 'VIDEO');
+      const project = await tx.project.findUniqueOrThrow({ where: { id: p } });
+      if (project.deletionState) return customizedConflict('项目正在删除');
+      return {
+        input: snapshot(t).videoRender!,
+        projectName: project.name,
+        result:
+          t.status === 'COMPLETED'
+            ? (t.output as { video?: CustomizedVideoResult })?.video
+            : undefined,
+      };
+    });
+  }
+  async videoFile(p: string, r: string, clipId: string, poster = false) {
+    return this.db.$transaction(async (tx) => {
+      await this.scope(tx, p, r);
+      const artifact = await tx.workingArtifact.findFirst({
+        where: {
+          projectId: p,
+          workflowRunId: r,
+          artifactKey: `customized-clip-video:${clipId}`,
+          availability: 'AVAILABLE',
+        },
+      });
+      const result = artifact?.payload as unknown as CustomizedVideoResult | undefined;
+      if (!result) return missing();
+      const file = await tx.fileObject.findFirst({
+        where: {
+          projectId: p,
+          id: poster ? result.posterFileObjectId : result.fileObjectId,
+          status: 'AVAILABLE',
+          artifactLinks: { some: { workingArtifactId: artifact!.id } },
+        },
+      });
+      if (!file) return missing();
+      return file;
+    });
+  }
+  acceptVideo(
+    p: string,
+    id: string,
+    token: string,
+    info: CustomizedVideoFileInfo,
+    files: {
+      video: { storageKey: string; sizeBytes: number; sha256: string };
+      poster: { storageKey: string; sizeBytes: number; sha256: string };
+    },
+  ) {
+    return this.db.$transaction(
+      async (tx) => {
+        await lockCustomizedProject(tx, p);
+        const row = await this.task(tx, p, id);
+        if (row.operation !== 'RENDER') invalid('不是视频渲染任务');
+        if (row.status === 'COMPLETED' && row.attemptToken === token)
+          return { stored: false, video: (row.output as { video: CustomizedVideoResult }).video };
+        const t = await this.lease(tx, p, id, token, 'VIDEO');
+        const input = snapshot(t),
+          render = input.videoRender!;
+        const issue = videoFileIssues(render.settings, render.seconds, info);
+        if (issue) invalid(issue);
+        if (!(t.output as { providerTaskId?: string } | null)?.providerTaskId)
+          invalid('缺少已保存的供应商任务');
+        const existing = await tx.workingArtifact.findFirst({
+          where: {
+            projectId: p,
+            workflowRunId: t.workflowRunId,
+            artifactKey: `customized-clip-video:${render.clipId}`,
+            availability: 'AVAILABLE',
+            freshness: 'CURRENT',
+          },
+          include: { files: { include: { fileObject: true } }, dependencies: true },
+        });
+        const oldVideo = existing?.payload as unknown as CustomizedVideoResult | undefined;
+        const identical =
+          !!oldVideo &&
+          workflowStateHash(oldVideo.settings) === workflowStateHash(render.settings) &&
+          oldVideo.durationSeconds === info.durationSeconds &&
+          oldVideo.width === info.width &&
+          oldVideo.height === info.height &&
+          existing!.files.some(
+            (f) => f.role === 'PRIMARY' && f.fileObject.sha256 === files.video.sha256,
+          ) &&
+          existing!.files.some(
+            (f) => f.role === 'POSTER' && f.fileObject.sha256 === files.poster.sha256,
+          ) &&
+          existing!.dependencies.length === input.sources.length &&
+          input.sources.every((s) =>
+            existing!.dependencies.some(
+              (d) =>
+                d.sourceArtifactId === s.id &&
+                d.sourceRevision === s.revision &&
+                d.sourceHash === s.hash,
+            ),
+          );
+        if (identical) {
+          await tx.customizedProductionTask.update({
+            where: { id },
+            data: {
+              status: 'COMPLETED',
+              leaseExpiresAt: null,
+              output: json({ ...((t.output as object) ?? {}), video: oldVideo }),
+              steps: json(
+                (t.steps as unknown as ProductionStep[]).map((s) => ({
+                  ...s,
+                  status: 'SUCCEEDED',
+                  ...(s.id === 'SAVE'
+                    ? { content: '视频内容与现有版本一致，已复用文件，不增加版本' }
+                    : {}),
+                })),
+              ),
+            },
+          });
+          return { stored: false, video: oldVideo! };
+        }
+        const records = await Promise.all(
+          (['video', 'poster'] as const).map((kind) =>
+            this.working.upsertFileObjectInTransaction(tx, p, t.workflowRunId, {
+              ...files[kind],
+              nodeId: 'SHOT_RENDER',
+              originalFileName: `${render.clipId}${kind === 'poster' ? '-poster.jpg' : '.mp4'}`,
+              mimeType: kind === 'poster' ? 'image/jpeg' : 'video/mp4',
+            }),
+          ),
+        );
+        const video: CustomizedVideoResult = {
+          ...info,
+          clipId: render.clipId,
+          taskId: id,
+          settings: render.settings,
+          fileObjectId: records[0]!.id,
+          posterFileObjectId: records[1]!.id,
+        };
+        const sources = (await this.artifacts(tx, p, t.workflowRunId)).filter((a) =>
+          input.sources.some((s) => s.id === a.id),
+        );
+        await this.working.commitValidatedArtifactsInTransaction(
+          tx,
+          p,
+          t.workflowRunId,
+          'SHOT_RENDER',
+          [
+            {
+              artifactKey: `customized-clip-video:${render.clipId}`,
+              input: {
+                kind: 'FILE',
+                name: `${render.title} · 分镜视频`.slice(0, 120),
+                directory: 'VIDEO_MATERIALS',
+                type: 'VIDEO_MATERIAL',
+                payload: video,
+                storageKey: records[0]!.storageKey,
+                mimeType: 'video/mp4',
+                sizeBytes: records[0]!.sizeBytes,
+                originalFileName: records[0]!.originalFileName,
+                fileChecksum: records[0]!.sha256,
+                files: records.map((f, i) => ({
+                  fileObjectId: f.id,
+                  role: i === 0 ? 'PRIMARY' : 'POSTER',
+                  sortOrder: i,
+                  originalFileName: f.originalFileName,
+                  mimeType: f.mimeType,
+                  sha256: f.sha256,
+                })),
+                dependencies: sources.map((a) => this.dependency(a)),
+              },
+            },
+          ],
+        );
+        await tx.customizedProductionTask.update({
+          where: { id },
+          data: {
+            status: 'COMPLETED',
+            leaseExpiresAt: null,
+            output: json({ ...((t.output as object) ?? {}), video }),
+            steps: json(
+              (t.steps as unknown as ProductionStep[]).map((s) => ({
+                ...s,
+                status: 'SUCCEEDED',
+                ...(s.id === 'REVIEW'
+                  ? {
+                      content: `视频已校验：${info.width}×${info.height}，${info.durationSeconds.toFixed(2)}秒`,
+                    }
+                  : s.id === 'SAVE'
+                    ? { content: `${render.title}的视频已原位保存，可播放和下载` }
+                    : {}),
+              })),
+            ),
+          },
+        });
+        return { stored: true, video };
+      },
+      { timeout: 30000 },
+    );
   }
   imageScope(p: string, id: string, token: string, objectId: string) {
     return this.db.$transaction(async (tx) => {
@@ -1044,6 +1736,45 @@ export class ProductionRepository {
         invalid('结果超过大小限制');
       if (t.operation === 'IMAGE' && (output !== undefined || step.id === 'GENERATE'))
         invalid('图片完成状态只能由已保存的文件更新');
+      if (t.operation === 'RENDER' && output !== undefined) {
+        const value = output as {
+          providerTaskId?: unknown;
+          createStarted?: unknown;
+          rateLimited?: unknown;
+          createRejected?: unknown;
+        };
+        const saved = (t.output ?? {}) as { providerTaskId?: string; createStarted?: boolean };
+        if (
+          !value ||
+          typeof value !== 'object' ||
+          Object.keys(value).some(
+            (k) =>
+              !['providerTaskId', 'createStarted', 'rateLimited', 'createRejected'].includes(k),
+          ) ||
+          (value.providerTaskId !== undefined &&
+            (typeof value.providerTaskId !== 'string' ||
+              !value.providerTaskId.trim() ||
+              value.providerTaskId.length > 255)) ||
+          (value.createStarted !== undefined && typeof value.createStarted !== 'boolean') ||
+          (value.rateLimited !== undefined && typeof value.rateLimited !== 'boolean') ||
+          (value.createRejected !== undefined && typeof value.createRejected !== 'boolean')
+        )
+          invalid('渲染检查点无效');
+        if (
+          saved.providerTaskId &&
+          value.providerTaskId &&
+          saved.providerTaskId !== value.providerTaskId
+        )
+          return customizedConflict('已提交的供应商任务不可替换');
+        if (
+          saved.createStarted &&
+          value.createStarted === false &&
+          value.rateLimited !== true &&
+          value.createRejected !== true
+        )
+          invalid('不可清除已提交请求的保护状态');
+        output = { ...saved, ...value };
+      }
       const steps = t.steps as unknown as ProductionStep[];
       const old = steps.find((s) => s.id === step.id)!;
       if (old.status === 'SUCCEEDED') return { accepted: true };
@@ -1067,6 +1798,7 @@ export class ProductionRepository {
         const t = await this.lease(tx, p, id, token, node),
           input = snapshot(t),
           steps = t.steps as unknown as ProductionStep[];
+        if (t.operation === 'RENDER') invalid('视频只能通过受保护的文件上传自动完成');
         if (t.operation === 'IMAGE') {
           const results = (t.output ?? {}) as Record<string, { assetId: string; version: number }>;
           if (
@@ -1101,26 +1833,57 @@ export class ProductionRepository {
         )
           return customizedConflict('内容尚未完成审校');
         if (input.operation === 'PROMPT') {
-          const shot = input.document.shots.find((s) => s.id === input.shotId)!;
-          if (!isProductionPrompt(output, shot)) invalid('提示词引用不匹配当前镜头');
-          const artifacts = await this.artifacts(tx, p, t.workflowRunId);
-          await this.commit(
-            tx,
-            p,
-            t.workflowRunId,
-            'SHOT_RENDER',
-            `customized-shot-prompt:${shot.id}`,
-            `镜头提示词 · ${shot.title}`,
-            output,
-            [
-              artifacts.find((a) => a.artifactKey === `customized-shot:${shot.id}`)!,
-              ...shot.bindings
-                .map((b) =>
-                  artifacts.find((a) => a.artifactKey === `customized-object:${b.assetId}`)!,
-                )
-                .filter(Boolean),
-            ],
-          );
+          if (input.shotWorkflowVersion === 2) {
+            const issue = validateFinalClipPrompt(
+              output,
+              input,
+              (t.output ?? {}) as Record<string, unknown>,
+            );
+            if (issue) invalid(issue);
+            if (
+              !isVideoDocument(input.document) ||
+              !isProductionClipPrompt(output, input.document.videoPlan) ||
+              output.target.id !== input.target?.id
+            )
+              invalid('片段提示词引用不匹配');
+            const prompt = output as ProductionClipPrompt;
+            const artifacts = await this.artifacts(tx, p, t.workflowRunId),
+              source = artifacts.find(
+                (a) => a.artifactKey === `customized-video-clip:${prompt.target.id}`,
+              )!;
+            if (!source) return customizedConflict('片段工作副本不存在');
+            await this.commit(
+              tx,
+              p,
+              t.workflowRunId,
+              'SHOT_RENDER',
+              `customized-clip-prompt:${prompt.target.id}`,
+              '片段提示词',
+              prompt,
+              [source],
+            );
+          } else {
+            const shot = productionShots(input.document).find((s) => s.id === input.shotId)!;
+            if (!isProductionPrompt(output, shot)) invalid('提示词引用不匹配当前镜头');
+            const artifacts = await this.artifacts(tx, p, t.workflowRunId);
+            await this.commit(
+              tx,
+              p,
+              t.workflowRunId,
+              'SHOT_RENDER',
+              `customized-shot-prompt:${shot.id}`,
+              `镜头提示词 · ${shot.title}`,
+              output,
+              [
+                artifacts.find((a) => a.artifactKey === `customized-shot:${shot.id}`)!,
+                ...shot.bindings
+                  .map((b) =>
+                    artifacts.find((a) => a.artifactKey === `customized-object:${b.assetId}`)!,
+                  )
+                  .filter(Boolean),
+              ],
+            );
+          }
         } else {
           const value = output as ProductionDocument;
           if (
@@ -1134,33 +1897,38 @@ export class ProductionRepository {
           }
           if (
             input.operation === 'SHOTS' &&
-            (!value.shots.length ||
+            (!productionShots(value).length ||
               workflowStateHash(value.assets) !== workflowStateHash(input.document.assets))
           )
             invalid('分镜不得修改已确认的资产目录');
           if (input.operation === 'SHOTS') {
-            const target =
-              input.script.story?.beats.reduce((n, b) => n + b.durationSeconds, 0) ||
-              input.script.shots.reduce((n, s) => n + s.durationSeconds, 0);
-            if (
-              target &&
-              Math.abs(value.shots.reduce((n, s) => n + s.durationSeconds, 0) - target) > 1
-            )
-              invalid('分镜总时长与故事不一致');
+            if (input.shotWorkflowVersion === 2) {
+              const issue = validateFinalVideo(
+                value,
+                input,
+                (t.output ?? {}) as Record<string, unknown>,
+              );
+              if (issue) invalid(issue);
+            } else {
+              const target =
+                input.script.story?.beats.reduce((n, b) => n + b.durationSeconds, 0) ||
+                input.script.shots.reduce((n, s) => n + s.durationSeconds, 0);
+              if (
+                target &&
+                Math.abs(
+                  productionShots(value).reduce((n, s) => n + s.durationSeconds, 0) - target,
+                ) > 1
+              )
+                invalid('分镜总时长与故事不一致');
+            }
           }
           // Re-extracting the catalog must never erase existing storyboards.
           const preserved =
             input.operation === 'ASSETS'
-              ? {
-                  ...value,
-                  assets: mergePreparedAssets(input.document.assets, value.assets),
-                  shots: input.document.shots.map((s) => ({
-                    ...s,
-                    bindings: s.bindings.filter((b) =>
-                      [...input.document.assets, ...value.assets].some((a) => a.id === b.assetId),
-                    ),
-                  })),
-                }
+              ? withProductionAssets(
+                  input.document,
+                  mergePreparedAssets(input.document.assets, value.assets),
+                )
               : value;
           let destination = t.workflowRunId;
           if (input.operation === 'ASSETS' && !input.targetAssetId) {
@@ -1227,7 +1995,13 @@ export class ProductionRepository {
   fail(p: string, id: string, token: string, retryable: boolean, node?: ProductionWorkerNode) {
     return this.db.$transaction(async (tx) => {
       const t = await this.lease(tx, p, id, token, node),
-        retry = retryable && t.attemptCount < 3;
+        saved = (t.output ?? {}) as {
+          createStarted?: boolean;
+          providerTaskId?: string;
+          createRejected?: boolean;
+        },
+        uncertain = t.operation === 'RENDER' && saved.createStarted && !saved.providerTaskId,
+        retry = retryable && !uncertain && t.attemptCount < 3;
       await tx.customizedProductionTask.update({
         where: { id },
         data: {
@@ -1239,9 +2013,13 @@ export class ProductionRepository {
           ),
           attemptToken: null,
           leaseExpiresAt: null,
-          errorMessage: retry
-            ? '服务暂时繁忙，正在等待自动重试'
-            : '本次制作未完成，已保存的内容仍然保留',
+          errorMessage: uncertain
+            ? '视频创建结果尚未确认，为避免重复计费已停止自动重试，已有视频保留'
+            : saved.createRejected
+              ? '视频服务未受理请求，请检查模型权限与配置，已有视频保留'
+              : retry
+                ? '服务暂时繁忙，正在等待自动重试'
+                : '本次制作未完成，已保存的内容仍然保留',
         },
       });
       if (retry) await this.enqueue(tx, t, t.attemptCount * 15000);
@@ -1292,7 +2070,10 @@ export class ProductionRepository {
         await lockCustomizedProject(tx, row.projectId);
         const t = await this.task(tx, row.projectId, row.id);
         if (t.status !== 'RUNNING' || !t.leaseExpiresAt || t.leaseExpiresAt > new Date()) return;
-        const retry = t.attemptCount < 3;
+        const saved = (t.output ?? {}) as { createStarted?: boolean; providerTaskId?: string };
+        const retry =
+          t.attemptCount < 3 &&
+          !(t.operation === 'RENDER' && saved.createStarted && !saved.providerTaskId);
         await tx.customizedProductionTask.update({
           where: { id: t.id },
           data: {

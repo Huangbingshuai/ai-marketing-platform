@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "ClipTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "CLIP",
+          "title": "Kind",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "ClipTarget",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "target": {
+      "$ref": "#/$defs/ClipTarget"
+    },
+    "content": {
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Content",
+      "type": "string"
+    },
+    "assetIds": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Assetids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "target",
+    "content",
+    "assetIds"
+  ],
+  "title": "ClipPrompt",
+  "type": "object"
+}

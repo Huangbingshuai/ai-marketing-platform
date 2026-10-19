@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { it, expect, vi } from 'vitest';
 import {
   emptyCustomizedBrief,
+  productionShots,
   PRODUCTION_STAGES,
   type CustomizedStoryboardScript,
   type ProductionDocument,
@@ -173,7 +174,7 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       const r = published.workflowRunId,
         initial = await repo.workspace(p, r);
       expect(initial.sourceReady).toBe(true);
-      expect(initial.document.shots).toHaveLength(0);
+      expect(productionShots(initial.document)).toHaveLength(0);
       await expect(repo.workspace(other, r)).rejects.toThrow();
       const reviewTask = await repo.start(p, r, 0, 'ASSETS', randomUUID(), null, {
         creative: 'controlled',
@@ -376,8 +377,12 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       doc.assets[0]!.description = '陶瓷杯，外观待确认';
       revision = (await repo.save(p, r, revision, doc, 'ASSETS', true)).revision;
       const after = await repo.workspace(p, r);
-      expect(after.prompts.find((v) => v.value.shotId === 's1')?.stale).toBe(true);
-      expect(after.prompts.find((v) => v.value.shotId === 's2')?.stale).toBe(false);
+      expect(after.prompts.find((v) => 'shotId' in v.value && v.value.shotId === 's1')?.stale).toBe(
+        true,
+      );
+      expect(after.prompts.find((v) => 'shotId' in v.value && v.value.shotId === 's2')?.stale).toBe(
+        false,
+      );
       await expect(repo.savePrompt(p, r, 99, { ...output, content: '人工文字' })).rejects.toThrow();
       const canceled = await repo.start(p, r, revision, 'SHOTS', randomUUID(), null, models),
         lease = await repo.claim(p, canceled.id);
@@ -476,12 +481,14 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       await expect(
         repo.complete(p, recovery.id, secondLease.attemptToken!, catalogResult, 'VIDEO'),
       ).rejects.toThrow('任务不属于');
-      expect((await repo.workspace(p, r)).document.shots).toHaveLength(2);
+      expect(productionShots((await repo.workspace(p, r)).document)).toHaveLength(2);
       // A second object change must now affect only its dependent prompt.
       doc.assets[1]!.description = '阅读室，窗边有木桌';
       revision = (await repo.save(p, r, revision, doc, 'ASSETS', true)).revision;
       const secondChange = await repo.workspace(p, r);
-      expect(secondChange.prompts.find((v) => v.value.shotId === 's2')?.stale).toBe(true);
+      expect(
+        secondChange.prompts.find((v) => 'shotId' in v.value && v.value.shotId === 's2')?.stale,
+      ).toBe(true);
       const modern = await repo.start(p, r, revision, 'ASSETS', randomUUID(), null, models, 'cup');
       expect(modern.assetWorkflowVersion).toBe(2);
       expect(modern.steps.some((s) => s.id === 'INVENTORY')).toBe(true);
@@ -525,7 +532,7 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       await repo.complete(p, modern.id, modernLease.attemptToken!, result, 'ASSETS');
       const restored = await repo.workspace(p, r);
       expect(restored.document.assets).toHaveLength(2);
-      expect(restored.document.shots).toHaveLength(2);
+      expect(productionShots(restored.document)).toHaveLength(2);
       expect(restored.document.assets.find((a) => a.id === 'cup')?.description).toBe(
         cup.description,
       );

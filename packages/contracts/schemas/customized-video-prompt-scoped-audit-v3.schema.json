@@ -1,0 +1,355 @@
+{
+  "$defs": {
+    "Check": {
+      "additionalProperties": false,
+      "properties": {
+        "dimension": {
+          "enum": [
+            "原稿兑现",
+            "时间容量",
+            "镜头表达",
+            "产品事实",
+            "动作与空间",
+            "素材绑定",
+            "模型能力"
+          ],
+          "title": "Dimension",
+          "type": "string"
+        },
+        "conclusion": {
+          "maxLength": 20000,
+          "title": "Conclusion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dimension",
+        "conclusion"
+      ],
+      "title": "Check",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "entity": {
+          "enum": [
+            "SHOT",
+            "CLIP",
+            "SCENE",
+            "CUE",
+            "EVENT",
+            "SOURCE",
+            "TIMING",
+            "PROMPT"
+          ],
+          "title": "Entity",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "field": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity",
+        "id",
+        "field"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "ERROR",
+            "WARNING"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "FACT",
+            "COVERAGE",
+            "CAPACITY",
+            "STATE",
+            "SPACE",
+            "SHOT_STRUCTURE",
+            "BINDING",
+            "CAPABILITY"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "impact": {
+          "maxLength": 20000,
+          "title": "Impact",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "affectedShotIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Affectedshotids",
+          "type": "array"
+        },
+        "affectedClipIds": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 500,
+          "title": "Affectedclipids",
+          "type": "array"
+        },
+        "suggestedFix": {
+          "maxLength": 20000,
+          "title": "Suggestedfix",
+          "type": "string"
+        },
+        "repairKind": {
+          "enum": [
+            "FIELDS",
+            "STRUCTURE",
+            "INPUT"
+          ],
+          "title": "Repairkind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "category",
+        "title",
+        "impact",
+        "evidence",
+        "affectedShotIds",
+        "affectedClipIds",
+        "suggestedFix",
+        "repairKind"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "PromptQuote": {
+      "additionalProperties": false,
+      "properties": {
+        "issueId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Issueid",
+          "type": "string"
+        },
+        "excerpt": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issueId",
+        "excerpt"
+      ],
+      "title": "PromptQuote",
+      "type": "object"
+    },
+    "Resolution": {
+      "additionalProperties": false,
+      "properties": {
+        "issueId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Issueid",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "RESOLVED",
+            "PARTIAL",
+            "UNRESOLVED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "explanation": {
+          "maxLength": 20000,
+          "title": "Explanation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issueId",
+        "status",
+        "evidence",
+        "explanation"
+      ],
+      "title": "Resolution",
+      "type": "object"
+    },
+    "SeverityChange": {
+      "additionalProperties": false,
+      "properties": {
+        "issueId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Issueid",
+          "type": "string"
+        },
+        "fromSeverity": {
+          "enum": [
+            "ERROR",
+            "WARNING"
+          ],
+          "title": "Fromseverity",
+          "type": "string"
+        },
+        "toSeverity": {
+          "enum": [
+            "ERROR",
+            "WARNING"
+          ],
+          "title": "Toseverity",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "NEW_EVIDENCE",
+            "INITIAL_REVIEW_CORRECTION"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "explanation": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "issueId",
+        "fromSeverity",
+        "toSeverity",
+        "reason",
+        "explanation",
+        "evidence"
+      ],
+      "title": "SeverityChange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 20000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/Check"
+      },
+      "maxItems": 7,
+      "minItems": 7,
+      "title": "Checks",
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "maxItems": 100,
+      "title": "Findings",
+      "type": "array"
+    },
+    "resolutions": {
+      "items": {
+        "$ref": "#/$defs/Resolution"
+      },
+      "maxItems": 100,
+      "title": "Resolutions",
+      "type": "array"
+    },
+    "severityChanges": {
+      "items": {
+        "$ref": "#/$defs/SeverityChange"
+      },
+      "maxItems": 100,
+      "title": "Severitychanges",
+      "type": "array"
+    },
+    "promptEvidence": {
+      "items": {
+        "$ref": "#/$defs/PromptQuote"
+      },
+      "maxItems": 100,
+      "title": "Promptevidence",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary",
+    "checks",
+    "findings",
+    "resolutions",
+    "severityChanges",
+    "promptEvidence"
+  ],
+  "title": "PromptScopedAudit",
+  "type": "object"
+}

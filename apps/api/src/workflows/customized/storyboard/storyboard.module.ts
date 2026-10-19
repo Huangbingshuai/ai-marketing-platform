@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { FileModule } from '../../../platform/file/file.module';
 import { AssetModule } from '../../../platform/asset/asset.module';
 import { ProductionImageService } from '../production/production-image.service';
+import { ProductionVideoService } from '../production/production-video.service';
 import { ProductionRepository } from '../production/production.repository';
 import {
   ProductionService,
@@ -26,6 +27,7 @@ import { StoryboardWorkerController, StoryboardWorkerGuard } from './storyboard-
     ProductionService,
     ProductionWorkerGuard,
     ProductionImageService,
+    ProductionVideoService,
   ],
   controllers: [
     StoryboardController,

@@ -3,7 +3,7 @@ import { customizedConflict } from '../../../platform/workflow/customized-branch
 export type ProductionWorkerNode = 'ASSETS' | 'VIDEO';
 
 export function productionQueue(operation: string) {
-  if (!['ASSETS', 'SHOTS', 'PROMPT', 'IMAGE'].includes(operation))
+  if (!['ASSETS', 'SHOTS', 'PROMPT', 'IMAGE', 'RENDER'].includes(operation))
     return customizedConflict('未知制作任务类型');
   return ['ASSETS', 'IMAGE'].includes(operation)
     ? 'customized.assets.requested'
