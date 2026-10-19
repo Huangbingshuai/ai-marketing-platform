@@ -4,8 +4,12 @@ import type {
   ProductionOperation,
   ProductionTask,
   ProductionWorkspace,
-  ProductionPrompt,
+  ProductionPromptValue,
+  VideoDurationPolicy,
+  VideoCandidate,
   CustomizedImageSettings,
+  CustomizedVideoRenderSettings,
+  CustomizedVideoSettingsDraft,
   Asset,
 } from '@ai-marketing/contracts';
 import { requestJson } from '../../../api/http-client';
@@ -30,7 +34,7 @@ export const productionApi = {
     p: string,
     r: string,
     expectedRevision: number,
-    prompt: ProductionPrompt,
+    prompt: ProductionPromptValue,
     signal?: AbortSignal,
   ) => call(p, '/prompt', 'PUT', { workflowRunId: r, expectedRevision, prompt }, signal),
   workspace: (p: string, r: string, signal?: AbortSignal) =>
@@ -60,6 +64,7 @@ export const productionApi = {
     signal?: AbortSignal,
     targetAssetId?: string,
     imageSettings?: CustomizedImageSettings,
+    videoSettings?: { durationPolicy?: VideoDurationPolicy; target?: { kind: 'CLIP'; id: string }; renderSettings?: CustomizedVideoRenderSettings },
   ) =>
     call<ProductionTask>(
       p,
@@ -72,10 +77,29 @@ export const productionApi = {
         shotId,
         targetAssetId,
         imageSettings,
+        ...videoSettings,
         idempotencyKey: crypto.randomUUID(),
       },
       signal,
     ),
   task: (p: string, id: string, signal?: AbortSignal) =>
     call<ProductionTask>(p, `/tasks/${id}`, 'GET', undefined, signal),
+  promptTask: (p: string, r: string, clipId: string, signal?: AbortSignal) =>
+    call<ProductionTask | null>(
+      p,
+      `/prompt-task?workflowRunId=${encodeURIComponent(r)}&clipId=${encodeURIComponent(clipId)}`,
+      'GET',
+      undefined,
+      signal,
+    ),
+  videoSettings: (p: string, r: string, clipId: string, revision: number, settings: CustomizedVideoRenderSettings, signal?: AbortSignal) => call<CustomizedVideoSettingsDraft>(p, '/video-settings', 'PUT', { workflowRunId: r, clipId, expectedRevision: revision, settings }, signal),
+  candidate: (p: string, id: string, signal?: AbortSignal) =>
+    call<VideoCandidate>(p, `/tasks/${id}/candidate`, 'GET', undefined, signal),
+  reviewDraft: (
+    p: string,
+    id: string,
+    expectedRevision: number,
+    candidateHash: string,
+    signal?: AbortSignal,
+  ) => call(p, `/tasks/${id}/review-draft`, 'POST', { expectedRevision, candidateHash }, signal),
 };

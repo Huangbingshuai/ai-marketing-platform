@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import {
   Clapperboard,
   Plus,
@@ -8,16 +8,19 @@ import {
   ArrowDown,
   RefreshCw,
   Sparkles,
-  Save,
   SlidersHorizontal,
 } from '@lucide/vue';
 import { WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   productionStages,
+  isVideoDocument,
+  productionShots,
   type ProductionWorkspace,
   type ProductionDocument,
   type ProductionAsset,
   type ProductionOperation,
+  type ProductionTask,
+  type VideoCandidate,
   type CustomizedImageSettings,
 } from '@ai-marketing/contracts';
 import WorkflowPageLoading from '../../../platform/workflow/components/WorkflowPageLoading.vue';
@@ -34,13 +37,41 @@ import ProductionAssetStudio from './ProductionAssetStudio.vue';
 import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
 import ProductionShotRenderPanel from './ProductionShotRenderPanel.vue';
 import ProductionShotDirectory from './ProductionShotDirectory.vue';
+import ProductionVideoWorkbench from './ProductionVideoWorkbench.vue';
+import ProductionCandidateReview from './ProductionCandidateReview.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
-import { productionNodeTasks, productionWorkflowTask } from './production-workflow-selection';
+import ProductionTaskActivity from './ProductionTaskActivity.vue';
+import {
+  productionNodeTasks,
+  productionPageProgressTask,
+  productionWorkflowTask,
+} from './production-workflow-selection';
+const ProductionPromptEditor = defineAsyncComponent(() => import('./ProductionPromptEditor.vue'));
 const props = defineProps<{ projectId: string; workflowRunId: string; mode: 'ASSETS' | 'SHOTS' }>();
 const emit = defineEmits<{ back: []; next: []; saved: []; published: [runId: string] }>();
 const workspace = ref<ProductionWorkspace | null>(null),
   document = ref<ProductionDocument>({ assets: [], shots: [] });
+const videoWorkbench = ref<{
+  flushPendingEdits: () => Promise<boolean>;
+  hasDirty: boolean;
+  addShot: () => void;
+} | null>(null);
+const videoDocument = computed(() => (isVideoDocument(document.value) ? document.value : null));
+const legacyShots = computed(() => productionShots(document.value));
+const rawShots = computed(() =>
+  isVideoDocument(document.value) ? document.value.videoPlan.shots : document.value.shots,
+);
+const candidateReview = ref<{ taskId: string; value: VideoCandidate } | null>(null);
+const candidateBusy = ref(false);
+const detailPage = ref(1);
+const detailSections = computed(
+  () =>
+    graphDetail.value?.detail?.sections.slice((detailPage.value - 1) * 12, detailPage.value * 12) ??
+    [],
+);
+
+const sectionValue = (d: ProductionDocument) => (isVideoDocument(d) ? d.videoPlan : d.shots);
 const promptText = ref(''),
   promptBase = ref('');
 const editing = ref(false);
@@ -48,6 +79,7 @@ const shotRenderPanel = ref<{ open: () => void } | null>(null);
 const loading = ref(true),
   busy = ref(false),
   error = ref(''),
+  saveFailed = ref(false),
   pollingInterrupted = ref(false),
   notice = ref(''),
   kind = ref<ProductionAsset['kind']>('PRODUCT'),
@@ -55,6 +87,55 @@ const loading = ref(true),
   graphOpen = ref(false),
   graphNode = ref('SNAPSHOT'),
   graphTaskId = ref('');
+const graphScope = ref<ProductionOperation | null>(null),
+  graphClipId = ref(''),
+  graphLoading = ref(false),
+  graphError = ref('');
+let graphController = new AbortController();
+const graphOperation = computed(() => graphScope.value ?? props.mode);
+function openWorkflow(task?: ProductionTask) {
+  graphController.abort();
+  graphLoading.value = false;
+  graphError.value = '';
+  graphScope.value = task?.operation ?? props.mode;
+  graphClipId.value = task?.target?.id ?? '';
+  graphTaskId.value = task?.id ?? '';
+  graphNode.value = 'SNAPSHOT';
+  graphOpen.value = true;
+}
+async function openPromptWorkflow(clipId: string) {
+  graphController.abort();
+  graphController = new AbortController();
+  const scope = graphController;
+  graphScope.value = 'PROMPT';
+  graphClipId.value = clipId;
+  graphTaskId.value = '';
+  graphNode.value = 'SNAPSHOT';
+  graphOpen.value = true;
+  graphLoading.value = true;
+  graphError.value = '';
+  try {
+    const task = await productionApi.promptTask(
+      props.projectId,
+      props.workflowRunId,
+      clipId,
+      scope.signal,
+    );
+    if (scope !== graphController || scope.signal.aborted || !workspace.value) return;
+    if (task) {
+      workspace.value.tasks = [task, ...workspace.value.tasks.filter((t) => t.id !== task.id)];
+      graphTaskId.value = task.id;
+    }
+  } catch (e) {
+    if (scope === graphController && !isAbortError(e))
+      graphError.value = e instanceof Error ? e.message : '工作流查询失败';
+  } finally {
+    if (scope === graphController) graphLoading.value = false;
+  }
+}
+watch(graphOpen, (open) => {
+  if (!open) graphController.abort();
+});
 const mergeSource = ref(''),
   mergeTarget = ref('');
 const assetPreview = ref<ProductionAsset | null>(null);
@@ -88,6 +169,11 @@ function prepareImages(assets: ProductionAsset[]) {
 }
 function prepareImage(asset: ProductionAsset) {
   assetPreview.value = null;
+  if (props.mode === 'SHOTS') {
+    // Use normal node navigation so unsaved shot/prompt edits are protected.
+    emit('back');
+    return;
+  }
   prepareImages([asset]);
 }
 async function generateImages(settings: CustomizedImageSettings) {
@@ -151,6 +237,7 @@ const labels: Record<ProductionAsset['kind'], string> = {
   PROP: '道具',
 };
 let controller = new AbortController(),
+  promptRefreshSequence = 0,
   poll: ReturnType<typeof setTimeout> | undefined,
   autosave: ReturnType<typeof setTimeout> | undefined,
   baseline = '',
@@ -166,6 +253,7 @@ const assetsPending = computed(
 const promptDirty = computed(() => promptText.value !== promptBase.value);
 const tasks = computed(() => productionNodeTasks(workspace.value?.tasks ?? [], props.mode));
 const running = computed(() => tasks.value.find((t) => ['RUNNING', 'QUEUED'].includes(t.status)));
+const pageProgress = computed(() => productionPageProgressTask(tasks.value, props.mode));
 // Images can also be requested from the video library. Refresh those results
 // silently without borrowing asset progress or locking the video workbench.
 const backgroundImage = computed(() =>
@@ -177,25 +265,33 @@ const backgroundImage = computed(() =>
 );
 const pollingTask = computed(() => running.value ?? backgroundImage.value);
 const shot = computed(
-  () => document.value.shots.find((s) => s.id === selectedShotId.value) ?? document.value.shots[0],
+  () => legacyShots.value.find((s) => s.id === selectedShotId.value) ?? legacyShots.value[0],
 );
 const prompt = computed(() =>
   workspace.value?.prompts.find((p) => 'shotId' in p.value && p.value.shotId === shot.value?.id),
 );
 const graphTasks = computed(() =>
-  tasks.value.filter((t) =>
-    props.mode === 'ASSETS' ? t.operation === 'ASSETS' : ['SHOTS', 'PROMPT'].includes(t.operation),
+  tasks.value.filter(
+    (t) =>
+      t.operation === graphOperation.value &&
+      (!graphClipId.value || t.target?.id === graphClipId.value),
   ),
 );
 const graphTask = computed(() =>
-  props.mode === 'ASSETS'
-    ? productionWorkflowTask(tasks.value, 'ASSETS', graphTaskId.value)
-    : (graphTasks.value.find((t) => t.id === graphTaskId.value) ?? graphTasks.value[0]),
+  productionWorkflowTask(
+    graphTasks.value,
+    graphOperation.value,
+    graphTaskId.value,
+    graphClipId.value || undefined,
+  ),
 );
 const graphStages = computed(() =>
   productionStages(
-    graphTask.value?.operation ?? props.mode,
+    graphOperation.value,
     graphTask.value?.assetWorkflowVersion ?? (graphTask.value ? undefined : 2),
+    graphTask.value?.shotWorkflowVersion ?? (graphOperation.value === 'PROMPT' ? 2 : undefined),
+    graphTask.value?.promptWorkflowVersion ??
+      (graphOperation.value === 'PROMPT' && !graphTask.value ? 2 : undefined),
   ).filter((s) => !graphTask.value || graphTask.value.steps.some((step) => step.id === s.id)),
 );
 const graphRows = computed(() =>
@@ -238,6 +334,10 @@ const graphNodes = computed(() =>
   }),
 );
 const graphDetail = computed(() => graphTask.value?.steps.find((s) => s.id === graphNode.value));
+watch(
+  () => [graphNode.value, graphTask.value?.id],
+  () => (detailPage.value = 1),
+);
 watch(graphStages, (stages) => {
   if (!stages.some((s) => s.id === graphNode.value)) graphNode.value = stages[0]?.id ?? 'SNAPSHOT';
 });
@@ -249,12 +349,14 @@ const boundAssets = computed(
 );
 async function load(quiet = false) {
   clearTimeout(autosave);
+  clearTimeout(legacyPromptAutosave);
   controller.abort();
   controller = new AbortController();
   const scope = controller;
   clearTimeout(poll);
   if (!quiet) loading.value = true;
   error.value = '';
+  saveFailed.value = false;
   pollingInterrupted.value = false;
   try {
     const result = await productionApi.workspace(
@@ -269,12 +371,16 @@ async function load(quiet = false) {
     // Missing confirmed output alone does not imply an edit session.
     // Restore editing only when the persisted draft differs from that output.
     editing.value =
-      JSON.stringify(props.mode === 'ASSETS' ? result.document.assets : result.document.shots) !==
       JSON.stringify(
-        props.mode === 'ASSETS' ? result.confirmedDocument.assets : result.confirmedDocument.shots,
+        props.mode === 'ASSETS' ? result.document.assets : sectionValue(result.document),
+      ) !==
+      JSON.stringify(
+        props.mode === 'ASSETS'
+          ? result.confirmedDocument.assets
+          : sectionValue(result.confirmedDocument),
       );
-    if (!document.value.shots.some((s) => s.id === selectedShotId.value))
-      selectedShotId.value = document.value.shots[0]?.id ?? '';
+    if (!legacyShots.value.some((s) => s.id === selectedShotId.value))
+      selectedShotId.value = legacyShots.value[0]?.id ?? '';
     schedule();
   } catch (e) {
     if (scope === controller && !isAbortError(e))
@@ -300,7 +406,13 @@ async function refreshTask() {
     pollingInterrupted.value = false;
     workspace.value.tasks = workspace.value.tasks.map((t) => (t.id === result.id ? result : t));
     if (['RUNNING', 'QUEUED'].includes(result.status)) {
-      if (result.operation === 'IMAGE' && !dirty.value && !promptDirty.value && !editing.value) {
+      if (
+        result.operation === 'IMAGE' &&
+        !dirty.value &&
+        !promptDirty.value &&
+        !videoWorkbench.value?.hasDirty &&
+        !editing.value
+      ) {
         const refreshed = await productionApi.workspace(
           props.projectId,
           props.workflowRunId,
@@ -308,7 +420,7 @@ async function refreshTask() {
         );
         if (scope !== controller) return;
         // A silent image refresh must not replace edits begun during the request.
-        if (dirty.value || promptDirty.value || editing.value) {
+        if (dirty.value || promptDirty.value || videoWorkbench.value?.hasDirty || editing.value) {
           if (workspace.value) workspace.value.tasks = refreshed.tasks;
           schedule();
           return;
@@ -330,8 +442,20 @@ async function refreshTask() {
         emit('published', result.publishedWorkflowRunId);
         return;
       }
-      if (!dirty.value && !promptDirty.value && !editing.value) await load();
-      else notice.value = '任务已结束，保存当前修改后可重新加载结果';
+      // An untouched persisted draft may restore edit mode. That flag alone
+      // must not keep the previous generation on screen after this task ends.
+      if (!dirty.value && !promptDirty.value && !videoWorkbench.value?.hasDirty) {
+        await load(true);
+        // The final node has no manual confirmation step. Only a newly completed
+        // user-triggered generation is finalized here; merely opening is read-only.
+        if (
+          props.mode === 'SHOTS' &&
+          result.operation === 'SHOTS' &&
+          result.status === 'COMPLETED' &&
+          editing.value
+        )
+          await save();
+      } else notice.value = '任务已结束，保存当前修改后可重新加载结果';
     }
   } catch (e) {
     if (scope === controller && !isAbortError(e)) {
@@ -352,7 +476,7 @@ async function mergeAssets() {
     }))
   )
     return;
-  document.value.shots.forEach((s) => {
+  rawShots.value.forEach((s) => {
     const seen = new Set<string>();
     s.bindings = s.bindings
       .map((b) => ({ ...b, assetId: b.assetId === source.id ? target.id : b.assetId }))
@@ -376,13 +500,17 @@ async function cancelEdit() {
     }))
   )
     return;
-  const section = props.mode === 'ASSETS' ? 'assets' : 'shots';
-  document.value[section] = clone(workspace.value.confirmedDocument[section]) as never;
+  if (props.mode === 'ASSETS')
+    document.value.assets = clone(workspace.value.confirmedDocument.assets);
+  else
+    document.value = { ...clone(workspace.value.confirmedDocument), assets: document.value.assets };
   if (props.mode === 'ASSETS') {
     // Restore affected references without discarding unrelated shot edits.
     const ids = new Set(document.value.assets.map((a) => a.id));
-    document.value.shots.forEach((s) => {
-      const original = workspace.value!.confirmedDocument.shots.find((v) => v.id === s.id);
+    rawShots.value.forEach((s) => {
+      const original = productionShots(workspace.value!.confirmedDocument).find(
+        (v) => v.id === s.id,
+      );
       if (original) s.bindings = clone(original.bindings.filter((b) => ids.has(b.assetId)));
     });
   }
@@ -396,6 +524,7 @@ async function save(confirm = true) {
   if (!workspace.value || busy.value || running.value) return false;
   busy.value = true;
   error.value = '';
+  saveFailed.value = false;
   const scope = controller;
   try {
     const value = clone(document.value);
@@ -418,6 +547,7 @@ async function save(confirm = true) {
     }
     return true;
   } catch (e) {
+    if (scope === controller && props.mode === 'SHOTS') saveFailed.value = true;
     if (scope === controller && !isAbortError(e))
       error.value = e instanceof Error ? e.message : '保存失败，本地修改已保留';
     return false;
@@ -425,13 +555,20 @@ async function save(confirm = true) {
     if (scope === controller) busy.value = false;
   }
 }
-async function generate(operation: ProductionOperation, shotId?: string, targetAssetId?: string) {
+async function generate(
+  operation: ProductionOperation,
+  shotId?: string,
+  targetAssetId?: string,
+  clipId?: string,
+) {
   if (!workspace.value || busy.value || running.value || imageSubmitting.value) return;
+  if (videoWorkbench.value && !(await videoWorkbench.value.flushPendingEdits())) return;
   if (promptDirty.value && !(await savePrompt())) return;
-  if (dirty.value && !(await save())) return;
+  // A restored draft is already the local baseline but is not yet confirmed.
+  if ((dirty.value || (operation === 'PROMPT' && editing.value)) && !(await save())) return;
   if (
     (operation === 'ASSETS' && document.value.assets.length) ||
-    (operation === 'SHOTS' && document.value.shots.length)
+    (operation === 'SHOTS' && legacyShots.value.length)
   ) {
     if (
       !(await requestActionConfirmation({
@@ -464,9 +601,15 @@ async function generate(operation: ProductionOperation, shotId?: string, targetA
       shotId,
       scope.signal,
       targetAssetId,
+      undefined,
+      {
+        ...(clipId ? { target: { kind: 'CLIP' as const, id: clipId } } : {}),
+      },
     );
     if (scope !== controller) return;
     workspace.value.tasks = [t, ...workspace.value.tasks];
+    graphScope.value = t.operation;
+    graphClipId.value = t.target?.id ?? '';
     graphTaskId.value = t.id;
     schedule();
   } catch (e) {
@@ -499,11 +642,15 @@ async function removeAsset(id: string) {
   )
     return;
   document.value.assets = document.value.assets.filter((a) => a.id !== id);
-  document.value.shots.forEach((s) => (s.bindings = s.bindings.filter((b) => b.assetId !== id)));
+  rawShots.value.forEach((s) => (s.bindings = s.bindings.filter((b) => b.assetId !== id)));
 }
 function addShot() {
+  if (videoDocument.value) {
+    videoWorkbench.value?.addShot();
+    return;
+  }
   const id = crypto.randomUUID();
-  document.value.shots.push({
+  legacyShots.value.push({
     id,
     title: '新镜头',
     shotType: '近景',
@@ -528,16 +675,17 @@ async function removeShot() {
     }))
   )
     return;
+  if (isVideoDocument(document.value)) return;
   document.value.shots = document.value.shots.filter((s) => s.id !== shot.value?.id);
-  selectedShotId.value = document.value.shots[0]?.id ?? '';
+  selectedShotId.value = legacyShots.value[0]?.id ?? '';
 }
 function moveShot(offset: number) {
   if (!shot.value) return;
-  const i = document.value.shots.indexOf(shot.value),
+  const i = legacyShots.value.indexOf(shot.value),
     j = i + offset;
-  if (j < 0 || j >= document.value.shots.length) return;
-  const [s] = document.value.shots.splice(i, 1);
-  document.value.shots.splice(j, 0, s!);
+  if (j < 0 || j >= legacyShots.value.length) return;
+  const [s] = legacyShots.value.splice(i, 1);
+  legacyShots.value.splice(j, 0, s!);
 }
 function toggleBinding(a: ProductionAsset) {
   if (!shot.value) return;
@@ -550,12 +698,9 @@ function editShotBinding(asset: ProductionAsset) {
   editing.value = true;
   toggleBinding(asset);
 }
-function updateShotDuration(seconds: number) {
-  if (shot.value && editing.value && !busy.value && !running.value)
-    shot.value.durationSeconds = seconds;
-}
 async function savePrompt() {
   if (!shot.value || busy.value || running.value) return false;
+  if (!promptDirty.value) return true;
   const content = promptText.value;
   const selectedId = shot.value.id;
   if (dirty.value && !(await save())) return false;
@@ -575,11 +720,11 @@ async function savePrompt() {
       scope.signal,
     );
     if (scope !== controller) return false;
-    promptBase.value = promptText.value;
-    await load();
-    emit('saved');
+    promptBase.value = content;
+    await refreshPrompts();
     return true;
   } catch (e) {
+    if (scope === controller) saveFailed.value = true;
     if (scope === controller && shot.value?.id === selectedId) promptText.value = content;
     if (!isAbortError(e))
       error.value = e instanceof Error ? e.message : '提示词保存失败，本地文字已保留';
@@ -598,9 +743,101 @@ async function openShotProduction(id: string) {
   await nextTick();
   shotRenderPanel.value?.open();
 }
+async function viewCandidate() {
+  const task = graphTask.value,
+    scope = controller;
+  if (!task || candidateBusy.value) return;
+  candidateBusy.value = true;
+  try {
+    const value = await productionApi.candidate(props.projectId, task.id, scope.signal);
+    if (scope === controller && graphTask.value?.id === task.id) {
+      graphOpen.value = false;
+      candidateReview.value = { taskId: task.id, value };
+    }
+  } catch (e) {
+    if (scope === controller && !isAbortError(e))
+      error.value = e instanceof Error ? e.message : '候选读取失败';
+  } finally {
+    if (scope === controller) candidateBusy.value = false;
+  }
+}
+async function adoptCandidate() {
+  const candidate = candidateReview.value,
+    scope = controller;
+  if (!candidate || !workspace.value || candidateBusy.value) return;
+  candidateReview.value = null;
+  graphOpen.value = false;
+  await nextTick();
+  if (
+    !(await requestActionConfirmation({
+      title: '转入人工核对草稿？',
+      description:
+        '未通过的AI候选不会自动确认。请根据具体问题修改，再保存修改；任务仍保留未完成状态。',
+      confirmLabel: '转入草稿',
+    }))
+  ) {
+    if (scope === controller) candidateReview.value = candidate;
+    return;
+  }
+  if (scope !== controller || graphTask.value?.id !== candidate.taskId) return;
+  candidateBusy.value = true;
+  try {
+    await productionApi.reviewDraft(
+      props.projectId,
+      candidate.taskId,
+      workspace.value.draftRevision,
+      candidate.value.candidateHash,
+      scope.signal,
+    );
+    if (scope !== controller) return;
+    candidateReview.value = null;
+    graphOpen.value = false;
+    await load(true);
+    editing.value = true;
+    notice.value = '已转入人工核对草稿，AI任务仍未通过';
+  } catch (e) {
+    if (scope === controller && !isAbortError(e))
+      error.value = e instanceof Error ? e.message : '转入草稿失败';
+  } finally {
+    candidateBusy.value = false;
+  }
+}
+watch(
+  () => graphTask.value?.id,
+  () => {
+    candidateReview.value = null;
+  },
+);
 async function flushPendingEdits() {
+  if (videoWorkbench.value && !(await videoWorkbench.value.flushPendingEdits())) return false;
   if (promptDirty.value && !(await savePrompt())) return false;
-  return !dirty.value || (await save(false));
+  return !dirty.value || (await save(props.mode === 'SHOTS'));
+}
+async function refreshPrompts() {
+  const scope = controller;
+  const sequence = ++promptRefreshSequence;
+  try {
+    const result = await productionApi.workspace(
+      props.projectId,
+      props.workflowRunId,
+      scope.signal,
+    );
+    if (scope !== controller || sequence !== promptRefreshSequence || !workspace.value) return;
+    // Prompt commits do not own the editable plan. Never replace new typing.
+    workspace.value.prompts = result.prompts;
+    workspace.value.tasks = result.tasks;
+    workspace.value.videos = result.videos ?? [];
+    workspace.value.videoSettings = result.videoSettings ?? [];
+    emit('saved');
+  } catch (e) {
+    if (scope === controller && sequence === promptRefreshSequence && !isAbortError(e))
+      error.value = '内容已保存，最新状态查询暂时中断';
+  }
+}
+async function retrySave() {
+  if (!videoWorkbench.value && promptDirty.value && !(await savePrompt())) return;
+  if (videoWorkbench.value && !(await videoWorkbench.value.flushPendingEdits())) return;
+  if (dirty.value || editing.value) await save();
 }
 watch(
   () => [shot.value?.id, prompt.value?.revision],
@@ -613,11 +850,17 @@ watch(
   () => shot.value?.id,
   () => {
     shotParamsOpen.value = false;
+    graphController.abort();
+    graphOpen.value = false;
+    graphScope.value = null;
+    graphClipId.value = '';
+    graphTaskId.value = '';
+    graphError.value = '';
     assetPreview.value = null;
   },
 );
 function beforeUnload(e: BeforeUnloadEvent) {
-  if (dirty.value || promptDirty.value) {
+  if (dirty.value || promptDirty.value || videoWorkbench.value?.hasDirty) {
     e.preventDefault();
     e.returnValue = '';
   }
@@ -627,16 +870,42 @@ watch(
   document,
   () => {
     clearTimeout(autosave);
-    if (loading.value || !editing.value || running.value || !dirty.value || error.value) return;
+    if (
+      loading.value ||
+      (props.mode !== 'SHOTS' && !editing.value) ||
+      running.value ||
+      !dirty.value ||
+      error.value
+    )
+      return;
     autosave = setTimeout(() => {
-      if (!disposed && !busy.value) void save(false);
+      if (!disposed && !busy.value) void save(props.mode === 'SHOTS');
     }, 900);
   },
   { deep: true },
 );
+let legacyPromptAutosave: ReturnType<typeof setTimeout> | undefined;
+watch([promptText, busy], () => {
+  clearTimeout(legacyPromptAutosave);
+  if (
+    !videoDocument.value &&
+    props.mode === 'SHOTS' &&
+    !busy.value &&
+    !running.value &&
+    promptDirty.value &&
+    !error.value
+  )
+    legacyPromptAutosave = setTimeout(() => void savePrompt(), 900);
+});
 watch(
   () => [props.projectId, props.workflowRunId, props.mode],
   () => {
+    graphController.abort();
+    graphOpen.value = false;
+    graphScope.value = null;
+    graphClipId.value = '';
+    graphTaskId.value = '';
+    graphError.value = '';
     imageSubmission++;
     imageSubmitting.value = false;
     imageDialogOpen.value = false;
@@ -648,10 +917,12 @@ watch(
   { immediate: true },
 );
 onBeforeUnmount(() => {
+  graphController.abort();
   disposed = true;
   controller.abort();
   clearTimeout(poll);
   clearTimeout(autosave);
+  clearTimeout(legacyPromptAutosave);
   window.removeEventListener('beforeunload', beforeUnload);
 });
 defineExpose({ flushPendingEdits });
@@ -673,12 +944,13 @@ defineExpose({ flushPendingEdits });
           {{
             mode === 'ASSETS'
               ? '统一产品、人物与空间定义，图片可以稍后准备'
-              : '分镜、资产绑定与镜头提示词'
+              : '分镜创作、素材绑定、提示词与逐镜视频'
           }}
         </p>
       </div>
       <div class="actions extraction-heading__actions">
         <WorkflowNodeEditActions
+          v-if="mode === 'ASSETS'"
           :editing="editing"
           :temporary="true"
           :disabled="busy || !!running || !workspace"
@@ -688,8 +960,8 @@ defineExpose({ flushPendingEdits });
           @cancel="cancelEdit"
           @save="save()"
         />
-        <button v-if="mode === 'SHOTS' && editing" :disabled="busy || !!running" @click="addShot">
-          <Plus :size="15" />添加镜头
+        <button v-if="mode === 'SHOTS'" :disabled="busy || !!running" @click="addShot">
+          <Plus :size="15" />添加分镜
         </button>
         <WorkflowExtractionActions
           :disabled="
@@ -699,14 +971,10 @@ defineExpose({ flushPendingEdits });
             (mode === 'SHOTS' && !workspace?.assetsConfirmed)
           "
           :running="running?.operation === mode"
-          :reextract="mode === 'ASSETS' ? !!document.assets.length : !!document.shots.length"
+          :reextract="mode === 'ASSETS' ? !!document.assets.length : !!legacyShots.length"
           :label="mode === 'ASSETS' ? 'AI 整理资产' : 'AI 生成分镜'"
           @extract="generate(mode)"
-          @details="
-            graphTaskId = '';
-            graphNode = 'SNAPSHOT';
-            graphOpen = true;
-          "
+          @details="openWorkflow()"
         />
       </div>
     </header>
@@ -714,8 +982,8 @@ defineExpose({ flushPendingEdits });
       v-if="error"
       title="操作未完成"
       :message="error"
-      action="重新加载"
-      @action="load"
+      :action="saveFailed ? '重试' : '重新加载'"
+      @action="saveFailed ? retrySave() : load()"
     />
     <WorkflowExtractionFeedback
       v-if="pollingInterrupted && !error"
@@ -733,30 +1001,25 @@ defineExpose({ flushPendingEdits });
     />
     <!-- 总时长沿用脚本创作及已有制作策略，不在视频制作重复设置。 -->
     <WorkflowRunProgress
-      v-if="running"
-      :progress="running.progress"
+      v-if="pageProgress"
+      :progress="pageProgress.progress"
       :summary="
-        running.operation === 'ASSETS'
+        pageProgress.operation === 'ASSETS'
           ? '正在整理资产定义'
-          : running.operation === 'IMAGE'
+          : pageProgress.operation === 'IMAGE'
             ? '正在生成资产图片'
-            : running.operation === 'SHOTS'
-              ? '正在创作连续分镜'
-              : '正在生成当前镜头提示词'
+            : '正在创作连续分镜'
       "
       :terminal="false"
-      :action-label="running.operation === 'IMAGE' ? '' : '查看工作流'"
-      @show-details="
-        graphTaskId = running.id;
-        graphOpen = true;
-      "
+      :action-label="pageProgress.operation === 'IMAGE' ? '' : '查看工作流'"
+      @show-details="openWorkflow(pageProgress)"
     />
     <template v-if="workspace">
       <ProductionAssetStudio
         v-if="mode === 'ASSETS'"
         :project-id="projectId"
         :assets="document.assets"
-        :shots="document.shots"
+        :shots="legacyShots"
         :editing="editing"
         :locked="busy || !!running || imageSubmitting"
         @edit="editing = true"
@@ -767,12 +1030,49 @@ defineExpose({ flushPendingEdits });
         @regenerate="generate('ASSETS', undefined, $event)"
         @images="prepareImages"
       />
+      <ProductionVideoWorkbench
+        v-else-if="videoDocument"
+        ref="videoWorkbench"
+        :project-id="projectId"
+        :workflow-run-id="workflowRunId"
+        :document="videoDocument"
+        :workspace="workspace"
+        :editing="true"
+        :locked="busy || !!running"
+        :dirty="dirty"
+        :save-plan="() => save()"
+        @generate="generate('PROMPT', undefined, undefined, $event)"
+        @workflow="openPromptWorkflow"
+        @render-workflow="openWorkflow"
+        @settings-saved="
+          workspace.videoSettings = [
+            $event,
+            ...(workspace.videoSettings ?? []).filter((s) => s.clipId !== $event.clipId),
+          ]
+        "
+        @render-started="
+          workspace.tasks = [$event, ...workspace.tasks.filter((t) => t.id !== $event.id)];
+          error = '';
+          schedule();
+        "
+        @refresh="refreshPrompts"
+        @edit="editing = true"
+        @preview="assetPreview = $event"
+        @prepare="prepareImage"
+        @error="error = $event"
+        @save-error="
+          saveFailed = !!$event;
+          error = $event;
+        "
+        @update-plan="videoDocument && (videoDocument.videoPlan = $event)"
+      />
       <div v-else class="video-workspace">
         <ProductionShotDirectory
-          :shots="document.shots"
+          :shots="legacyShots"
           :assets="document.assets"
           :selected-id="shot?.id ?? ''"
           :locked="busy || !!running"
+          v-bind="legacyShots.length ? { unit: '片段' as const } : {}"
           @select="selectShot"
           @produce="openShotProduction"
         />
@@ -782,7 +1082,6 @@ defineExpose({ flushPendingEdits });
               <header class="inspector-heading">
                 <h3>旧版片段描述</h3>
                 <button
-                  v-if="editing"
                   class="compact-icon"
                   :disabled="busy || !!running"
                   aria-label="编辑镜头参数"
@@ -796,13 +1095,13 @@ defineExpose({ flushPendingEdits });
                 v-model="shot.visual"
                 label="画面描述"
                 multiline
-                :readonly="busy || !!running || !editing"
+                :readonly="busy || !!running"
               />
               <WorkflowInformationField
                 v-model="shot.atmosphere"
                 label="氛围"
                 multiline
-                :readonly="busy || !!running || !editing"
+                :readonly="busy || !!running"
               />
             </section>
             <ProductionReferenceLibrary
@@ -821,16 +1120,6 @@ defineExpose({ flushPendingEdits });
               <span v-if="prompt?.stale || dirty" class="prompt-stale">待更新</span>
               <div class="prompt-actions">
                 <button
-                  v-if="promptDirty"
-                  class="compact-icon"
-                  :disabled="busy || !!running || !promptText.trim()"
-                  aria-label="保存提示词"
-                  title="保存提示词"
-                  @click="savePrompt"
-                >
-                  <Save :size="14" />
-                </button>
-                <button
                   class="compact-button"
                   :disabled="busy || !!running || !workspace.shotsConfirmed"
                   @click="generate('PROMPT', shot.id)"
@@ -841,11 +1130,19 @@ defineExpose({ flushPendingEdits });
                 </button>
               </div>
             </header>
-            <textarea
+            <ProductionTaskActivity
+              :task="tasks.find((t) => t.operation === 'PROMPT' && t.shotId === shot?.id)"
+              label="当前片段提示词生成进度"
+            />
+            <ProductionPromptEditor
               v-model="promptText"
-              aria-label="视频提示词"
+              label="视频提示词"
+              :project-id="projectId"
+              :scope-id="shot.id"
+              :assets="boundAssets.map((b) => b.asset)"
               :readonly="busy || !!running"
               placeholder="输入视频提示词"
+              @blur="savePrompt"
             />
           </section>
         </main>
@@ -859,12 +1156,12 @@ defineExpose({ flushPendingEdits });
           ref="shotRenderPanel"
           :project-id="projectId"
           :shot="shot"
-          :index="document.shots.findIndex((s) => s.id === shot?.id) + 1"
+          :index="legacyShots.findIndex((s) => s.id === shot?.id) + 1"
           :assets="boundAssets.map((b) => b.asset)"
           :prompt="prompt?.value.content ?? ''"
           :locked="busy || !!running"
-          :editing="editing"
-          @duration="updateShotDuration"
+          :editing="true"
+          unit="片段"
           @preview="assetPreview = $event"
         />
       </div>
@@ -917,31 +1214,31 @@ defineExpose({ flushPendingEdits });
         <WorkflowInformationField
           v-model="shot.title"
           label="镜头名称"
-          :readonly="busy || !!running || !editing"
+          :readonly="busy || !!running"
         />
         <div class="asset-facts">
           <WorkflowInformationField
             v-model="shot.shotType"
             label="景别"
-            :readonly="busy || !!running || !editing"
+            :readonly="busy || !!running"
           />
           <WorkflowInformationField
             v-model="shot.cameraMovement"
             label="运镜"
-            :readonly="busy || !!running || !editing"
+            :readonly="busy || !!running"
           />
         </div>
         <WorkflowInformationField
           v-model="shot.dialogue"
           label="台词与旁白"
           multiline
-          :readonly="busy || !!running || !editing"
+          :readonly="busy || !!running"
         />
         <WorkflowInformationField
           v-model="shot.audio"
           label="声音"
           multiline
-          :readonly="busy || !!running || !editing"
+          :readonly="busy || !!running"
         />
         <details v-if="shot.bindings.length">
           <summary>本镜素材呈现</summary>
@@ -951,29 +1248,17 @@ defineExpose({ flushPendingEdits });
             v-model="binding.description"
             :label="document.assets.find((a) => a.id === binding.assetId)?.name || '素材'"
             multiline
-            :readonly="busy || !!running || !editing"
+            :readonly="busy || !!running"
           />
         </details>
         <div class="actions">
-          <button
-            :disabled="busy || !!running || !editing"
-            aria-label="上移镜头"
-            @click="moveShot(-1)"
-          >
+          <button :disabled="busy || !!running" aria-label="上移镜头" @click="moveShot(-1)">
             <ArrowUp :size="14" />上移
           </button>
-          <button
-            :disabled="busy || !!running || !editing"
-            aria-label="下移镜头"
-            @click="moveShot(1)"
-          >
+          <button :disabled="busy || !!running" aria-label="下移镜头" @click="moveShot(1)">
             <ArrowDown :size="14" />下移
           </button>
-          <button
-            :disabled="busy || !!running || !editing"
-            aria-label="删除镜头"
-            @click="removeShot"
-          >
+          <button :disabled="busy || !!running" aria-label="删除镜头" @click="removeShot">
             <Trash2 :size="14" />删除
           </button>
         </div>
@@ -1002,23 +1287,64 @@ defineExpose({ flushPendingEdits });
     </WorkflowInformationDialog>
     <WorkflowExecutionGraphDialog
       :open="graphOpen"
-      :title="mode === 'ASSETS' ? '当前资产整理工作流' : '当前制作工作流'"
+      :title="
+        graphOperation === 'PROMPT'
+          ? '当前分镜提示词工作流'
+          : graphOperation === 'RENDER'
+            ? '当前分镜视频渲染工作流'
+            : mode === 'ASSETS'
+              ? '当前资产整理工作流'
+              : '当前分镜生成工作流'
+      "
       eyebrow="执行详情"
-      description="查看本次任务的实际内容与审校结果"
+      :description="
+        graphOperation === 'RENDER'
+          ? '查看实际渲染依据、生成进度与视频文件校验结果'
+          : '查看本次任务的实际内容与审校结果'
+      "
       :rows="graphRows"
       :nodes="graphNodes"
       :selected="graphNode"
       @select="graphNode = $event"
       @close="graphOpen = false"
     >
-      <article v-if="graphDetail" class="execution-content">
+      <div
+        v-if="graphTask?.status === 'FAILED' || graphTask?.status === 'CANCELLED'"
+        class="actions execution-actions"
+      >
+        <button
+          v-if="
+            graphTask.hasCandidate &&
+            graphTask.operation === 'SHOTS' &&
+            graphTask.shotWorkflowVersion === 2
+          "
+          :disabled="candidateBusy"
+          @click="viewCandidate"
+        >
+          查看未完成候选
+        </button>
+      </div>
+      <WorkflowPageLoading
+        v-if="graphLoading"
+        title="正在读取提示词工作流…"
+        description="读取当前分镜的真实执行记录"
+        icon="extraction"
+      />
+      <WorkflowExtractionFeedback
+        v-else-if="graphError"
+        title="工作流查询未完成"
+        :message="graphError"
+        action="重试"
+        @action="openPromptWorkflow(graphClipId)"
+      />
+      <article v-else-if="graphDetail" class="execution-content">
         <template v-if="graphDetail.detail">
           <h3>{{ graphDetail.detail.title }}</h3>
           <p v-if="graphDetail.detail.summary" class="execution-summary">
             {{ graphDetail.detail.summary }}
           </p>
           <section
-            v-for="(section, index) in graphDetail.detail.sections"
+            v-for="(section, index) in detailSections"
             :key="index"
             class="execution-business-section"
           >
@@ -1030,6 +1356,16 @@ defineExpose({ flushPendingEdits });
               </template>
             </dl>
           </section>
+          <div v-if="graphDetail.detail.sections.length > 12" class="detail-pagination">
+            <button :disabled="detailPage <= 1" @click="detailPage--">上一页</button
+            ><span>{{ detailPage }} / {{ Math.ceil(graphDetail.detail.sections.length / 12) }}</span
+            ><button
+              :disabled="detailPage * 12 >= graphDetail.detail.sections.length"
+              @click="detailPage++"
+            >
+              下一页
+            </button>
+          </div>
           <p
             v-if="!graphDetail.detail.sections.length && graphDetail.detail.emptyMessage"
             class="execution-empty"
@@ -1042,11 +1378,34 @@ defineExpose({ flushPendingEdits });
           <p>{{ graphDetail.content || '此步骤尚未产生内容' }}</p>
         </template>
       </article>
-      <p v-else>开始整理后，可查看每一步生成的内容与核对结果。</p></WorkflowExecutionGraphDialog
+      <p v-else>
+        {{
+          graphOperation === 'PROMPT'
+            ? '当前分镜尚未生成提示词，生成后可查看各阶段的实际内容。'
+            : '开始生成后，可查看每一步的实际内容与核对结果。'
+        }}
+      </p></WorkflowExecutionGraphDialog
     >
+    <ProductionCandidateReview
+      :candidate="candidateReview?.value ?? null"
+      :busy="candidateBusy"
+      @close="candidateReview = null"
+      @adopt="adoptCandidate"
+    />
   </section>
 </template>
 <style scoped>
+.execution-actions {
+  margin-bottom: 18px;
+}
+.detail-pagination {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+  font-size: 12px;
+  color: #748aa4;
+}
 .execution-summary {
   color: #73829a;
   font-size: 13px;
@@ -1113,7 +1472,8 @@ defineExpose({ flushPendingEdits });
   justify-content: flex-end;
   flex-wrap: wrap;
 }
-.production-page button {
+.production-page button,
+.execution-actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1128,11 +1488,13 @@ defineExpose({ flushPendingEdits });
   font: inherit;
   font-size: 12px;
 }
-.production-page button:disabled {
+.production-page button:disabled,
+.execution-actions button:disabled {
   opacity: 0.5;
   cursor: default;
 }
-.production-page button:focus-visible {
+.production-page button:focus-visible,
+.execution-actions button:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
 }

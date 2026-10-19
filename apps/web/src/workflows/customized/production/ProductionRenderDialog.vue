@@ -182,7 +182,7 @@ const title = computed(() =>
       >
       <div v-if="type === 'VIDEO'" class="unavailable">
         <CircleHelp :size="18" />
-        <p>视频渲染服务尚未接通。分镜、素材绑定与提示词可正常编辑和保存。</p>
+        <p>历史分镜请先重新整理为新版完整分镜，再在右侧选择模型并生成视频。</p>
       </div>
       <p v-if="type === 'IMAGE' && !valid" role="alert">
         请补齐公共形象描述，每次最多生成 20 项资产。

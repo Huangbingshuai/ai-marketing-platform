@@ -63,6 +63,33 @@ describe('Huobao-style production inspector', () => {
     );
     expect(html.match(/aria-disabled="true"/g)).toHaveLength(3);
   });
+  it('offers asset preparation only for bound missing images and keeps ready references previewable', async () => {
+    const html = await renderToString(
+      createSSRApp(Library, {
+        projectId: 'p',
+        assets: [
+          assets[0]!,
+          { ...assets[1]!, image: { assetId: 'image', version: 1 } },
+          assets[2]!,
+        ],
+        shot: {
+          ...shot,
+          bindings: [
+            { assetId: 'p', description: '' },
+            { assetId: 'c', description: '' },
+          ],
+        },
+        locked: false,
+      }),
+    );
+    expect(html).toContain('未生成');
+    expect(html).toContain('可使用');
+    expect(html).toContain('未绑定');
+    expect(html).toContain('aria-label="前往资产准备生成充电器图片"');
+    expect(html).not.toContain('aria-label="前往资产准备生成周越图片"');
+    expect(html).not.toContain('aria-label="前往资产准备生成候车区图片"');
+    expect(html).toContain('aria-label="预览周越图片"');
+  });
   it('keeps only player, bound reference images and duration/generation in the right inspector', async () => {
     const html = (
       await renderToString(
@@ -81,7 +108,8 @@ describe('Huobao-style production inspector', () => {
     expect(html).toContain('绑定参考图');
     expect(html).toContain('分镜时长');
     expect(html).toContain('aria-label="生成当前分镜视频"');
-    expect(html).toMatch(/aria-label="分镜时长"[^>]*readonly/);
+    expect(html).toContain('分镜时长：5秒，沿用已确认分镜');
+    expect(html).not.toContain('type="number"');
     for (const extra of ['生成历史', '输出设置', '当前镜头预览', '渲染前设置', '视频分辨率'])
       expect(html).not.toContain(extra);
     expect(html).not.toContain('<video');

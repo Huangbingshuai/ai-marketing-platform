@@ -1,9 +1,19 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { Video } from '@lucide/vue';
-import type { ProductionAsset, ProductionShot } from '@ai-marketing/contracts';
+import { computed, ref, watch } from 'vue';
+import { Video, Download, Loader2, Workflow, Settings2, Clock3 } from '@lucide/vue';
+import {
+  customizedVideoRenderIssues,
+  type ProductionAsset,
+  type ProductionShot,
+  type CustomizedVideoResult,
+  type CustomizedVideoRenderSettings,
+  type ProductionTask,
+} from '@ai-marketing/contracts';
+import { apiUrl } from '../../../api/http-client';
+import WorkflowVideoRenderSettings from '../../../platform/workflow/components/WorkflowVideoRenderSettings.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
+import ProductionTaskActivity from './ProductionTaskActivity.vue';
 const props = defineProps<{
   projectId: string;
   shot: ProductionShot;
@@ -12,41 +22,181 @@ const props = defineProps<{
   locked: boolean;
   editing: boolean;
   index: number;
+  unit?: '片段' | '分镜';
+  workflowRunId?: string;
+  clipId?: string;
+  video?: { value: CustomizedVideoResult; revision: number; stale: boolean } | undefined;
+  renderTask?: ProductionTask | undefined;
+  settings?: CustomizedVideoRenderSettings;
+  settingsSaving?: boolean;
+  renderSubmitting?: boolean;
+  promptReady?: boolean;
 }>();
-const emit = defineEmits<{ preview: [asset: ProductionAsset]; duration: [seconds: number] }>();
+const emit = defineEmits<{
+  preview: [asset: ProductionAsset];
+  'update-settings': [settings: CustomizedVideoRenderSettings];
+  render: [];
+  workflow: [task: ProductionTask];
+}>();
 const renderOpen = ref(false);
-function updateDuration(event: Event) {
-  if (props.locked || !props.editing) return;
-  const value = Number((event.target as HTMLInputElement).value);
-  if (Number.isFinite(value) && value > 0 && value <= 3600) emit('duration', value);
+const controls = ref<HTMLElement>(),
+  playerFailed = ref(false);
+const active = computed(
+  () => !!props.renderTask && ['QUEUED', 'RUNNING'].includes(props.renderTask.status),
+);
+const mediaUrl = computed(() =>
+  props.video && props.workflowRunId && props.clipId
+    ? apiUrl(
+        `/projects/${encodeURIComponent(props.projectId)}/workflows/customized/production/videos/${encodeURIComponent(props.clipId)}?workflowRunId=${encodeURIComponent(props.workflowRunId)}&revision=${props.video.revision}`,
+      )
+    : '',
+);
+const status = computed(() =>
+  active.value
+    ? props.renderTask?.status === 'QUEUED'
+      ? '排队中'
+      : '生成中'
+    : props.renderTask?.status === 'FAILED'
+      ? '生成失败'
+      : props.video
+        ? props.video.stale
+          ? '待更新'
+          : '已完成'
+        : '待生成',
+);
+const issues = computed(() => [
+  ...(!props.promptReady || !props.prompt.trim() ? ['请先生成或保存本镜提示词'] : []),
+  ...(props.assets.some((a) => !a.image)
+    ? ['本镜引用的素材尚缺少参考图，请先准备图片或调整引用']
+    : []),
+  ...(props.settings
+    ? customizedVideoRenderIssues(props.settings, props.shot.durationSeconds, props.assets.length)
+    : []),
+]);
+const disabled = computed(
+  () =>
+    props.locked ||
+    props.settingsSaving ||
+    props.renderSubmitting ||
+    active.value ||
+    !!issues.value.length,
+);
+watch(mediaUrl, () => {
+  playerFailed.value = false;
+});
+function render() {
+  if (!props.workflowRunId || !props.clipId) {
+    renderOpen.value = true;
+    return;
+  }
+  if (!disabled.value) emit('render');
 }
+const referenceImages = computed(() => props.assets.filter((asset) => !!asset.image));
 defineExpose({
   open: () => {
-    renderOpen.value = true;
+    if (props.workflowRunId && props.clipId)
+      controls.value?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    else renderOpen.value = true;
   },
 });
 </script>
 <template>
   <aside class="render-panel" aria-label="逐镜渲染">
-    <section class="player-card">
+    <section class="player-card" :aria-busy="active">
       <header>
-        <h3>分镜 {{ String(index).padStart(2, '0') }}</h3>
-        <span class="status"><i />待生成</span><small>{{ shot.durationSeconds }}s</small>
+        <h3>{{ unit ?? '分镜' }} {{ String(index).padStart(2, '0') }}</h3>
+        <button
+          v-if="renderTask"
+          type="button"
+          class="render-workflow"
+          aria-label="查看当前分镜视频工作流"
+          title="查看视频工作流"
+          @click="emit('workflow', renderTask)"
+        >
+          <Workflow :size="13" />
+        </button>
+        <span class="status" :class="{ active, failed: renderTask?.status === 'FAILED' }"
+          ><i />{{ status }}</span
+        ><small>{{ video?.value.durationSeconds?.toFixed(1) ?? shot.durationSeconds }}s</small>
       </header>
-      <div class="player-stage">
-        <Video :size="24" :stroke-width="1.4" /><strong>暂无视频</strong><span>生成后在此预览</span>
-        <button type="button" :disabled="locked" @click="renderOpen = true">生成视频</button>
+      <div v-if="mediaUrl" class="video-player">
+        <video
+          :key="mediaUrl"
+          :src="mediaUrl"
+          :poster="`${mediaUrl}&poster=1`"
+          controls
+          playsinline
+          preload="metadata"
+          @error="playerFailed = true"
+        />
+        <p v-if="playerFailed" role="alert">暂时无法播放视频，请刷新后重试</p>
+        <a :href="`${mediaUrl}&download=1`" download aria-label="下载当前分镜视频"
+          ><Download :size="13" />下载视频</a
+        >
       </div>
+      <div v-else class="player-stage">
+        <Loader2 v-if="active" :size="24" class="spinner" />
+        <Video v-else :size="24" :stroke-width="1.4" />
+        <strong>{{ active ? '正在生成视频' : '暂无视频' }}</strong>
+        <span>{{ active ? '生成完成后在此预览' : '生成后在此预览' }}</span>
+        <button v-if="!active" type="button" :disabled="disabled" @click="render">生成视频</button>
+      </div>
+      <ProductionTaskActivity
+        class="render-activity"
+        :task="renderTask"
+        label="当前分镜视频渲染进度"
+      />
     </section>
+    <footer ref="controls" aria-label="视频配置">
+      <header class="configuration-heading">
+        <h3><Settings2 :size="14" />视频配置</h3>
+        <span
+          class="fixed-duration"
+          :aria-label="`分镜时长：${shot.durationSeconds}秒，沿用已确认分镜`"
+          title="沿用已确认分镜时长"
+        >
+          <Clock3 :size="13" /><strong>{{ shot.durationSeconds }}</strong
+          ><span>秒</span>
+        </span>
+      </header>
+      <WorkflowVideoRenderSettings
+        v-if="settings"
+        :model-value="settings"
+        :disabled="locked || settingsSaving || renderSubmitting || active"
+        @update:model-value="emit('update-settings', $event)"
+      />
+      <small v-if="settingsSaving" role="status">正在保存渲染设置…</small>
+      <p v-if="!active && issues.length && workflowRunId" class="render-hint">{{ issues[0] }}</p>
+      <p v-if="renderTask?.status === 'FAILED'" class="render-error" role="alert">
+        {{ renderTask.errorMessage || '本次视频生成未完成，已有视频保留' }}
+      </p>
+      <button
+        class="generate-button"
+        type="button"
+        :disabled="disabled"
+        :aria-label="`生成当前${unit ?? '分镜'}视频`"
+        @click="render"
+      >
+        <Loader2 v-if="active || renderSubmitting" :size="14" class="spinner" />{{
+          renderSubmitting
+            ? '正在提交…'
+            : active
+              ? '正在生成视频'
+              : video
+                ? '重新生成视频'
+                : '生成视频'
+        }}
+      </button>
+    </footer>
     <div class="inspector-body">
       <section class="bound-section">
         <header>
           <h3>绑定参考图</h3>
-          <span class="count">{{ assets.length }}</span>
+          <span class="count">{{ referenceImages.length }}</span>
         </header>
-        <div v-if="assets.length" class="reference-strip">
+        <div v-if="referenceImages.length" class="reference-strip">
           <button
-            v-for="asset in assets"
+            v-for="asset in referenceImages"
             :key="asset.id"
             type="button"
             :disabled="!asset.image"
@@ -59,37 +209,11 @@ defineExpose({
             }}</small>
           </button>
         </div>
-        <p v-else>未绑定参考图</p>
+        <p v-else>
+          {{ assets.length ? '提示词引用的素材尚未准备参考图' : '提示词尚未引用参考图' }}
+        </p>
       </section>
     </div>
-    <footer>
-      <div class="duration">
-        <label for="shot-render-duration">分镜时长</label
-        ><span
-          ><input
-            id="shot-render-duration"
-            aria-label="分镜时长"
-            type="number"
-            min="0.1"
-            max="3600"
-            step="0.1"
-            :value="shot.durationSeconds"
-            :readonly="!editing"
-            :disabled="locked"
-            @change="updateDuration"
-          />s</span
-        >
-      </div>
-      <button
-        class="generate-button"
-        type="button"
-        :disabled="locked"
-        :aria-label="`生成当前分镜视频`"
-        @click="renderOpen = true"
-      >
-        生成视频
-      </button>
-    </footer>
     <ProductionRenderDialog
       :open="renderOpen"
       type="VIDEO"
@@ -125,6 +249,22 @@ h3 {
   padding: 13px 12px;
   border-bottom: 1px solid #e5eaf1;
 }
+.render-workflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: #7187ab;
+  border: 1px solid #e1e7f1;
+  border-radius: 7px;
+  background: #fff;
+  cursor: pointer;
+}
+.render-workflow:hover {
+  color: #315fd8;
+  border-color: #9db7f0;
+}
 .status {
   display: flex;
   align-items: center;
@@ -138,6 +278,62 @@ h3 {
   height: 5px;
   background: currentColor;
   border-radius: 50%;
+}
+.status.active {
+  color: #486cce;
+}
+.status.failed,
+.render-error {
+  color: #b75b50;
+}
+.video-player {
+  display: grid;
+  background: #edf1f7;
+}
+.render-activity {
+  padding: 12px;
+  border-bottom: 1px solid #e5eaf1;
+}
+.video-player video {
+  display: block;
+  width: 100%;
+  max-height: 350px;
+  background: #182235;
+}
+.video-player a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  padding: 9px 12px;
+  text-decoration: none;
+  color: #4d6f9f;
+  font-size: 11px;
+}
+.render-hint,
+.render-error,
+.video-player p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.render-hint {
+  color: #8190a7;
+}
+.generate-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.spinner {
+  animation: video-spin 1s linear infinite;
+}
+@keyframes video-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 header > small {
   color: #9aa5b6;
@@ -179,7 +375,9 @@ button {
   font-size: 11px;
 }
 .inspector-body {
-  flex: 1;
+  flex: 0 1 auto;
+  max-height: 240px;
+  border-top: 1px solid #e2e8f2;
   min-height: 0;
   overflow-y: auto;
   padding: 16px 14px;
@@ -228,40 +426,49 @@ button {
 footer {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 14px 12px;
-  border-top: 1px solid #e2e8f2;
-  background: #f5f8fd;
+  gap: 14px;
+  margin: 12px;
+  padding: 14px;
+  border: 1px solid #dfe6f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 5px #243b5b04;
 }
-.duration {
+.configuration-heading {
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf1f6;
+}
+.configuration-heading h3 {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border: 1px solid #dce5f5;
-  border-radius: 8px;
-  background: #edf3ff;
-  font-size: 11px;
-  color: #6a80a3;
+  gap: 7px;
+  font-size: 12px;
+  color: #294566;
 }
-.duration > span {
+.configuration-heading h3 svg {
+  color: #6f88ac;
+}
+.fixed-duration {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  padding: 5px 8px;
+  border: 1px solid #e6ecf4;
+  border-radius: 7px;
+  background: #f6f8fc;
+  font-size: 11px;
+  color: #788ba5;
+  white-space: nowrap;
 }
-.duration input {
-  width: 53px;
-  padding: 3px 5px;
-  border: 1px solid #dae3f2;
-  border-radius: 5px;
-  background: #fff;
-  color: #49658b;
-  font: inherit;
-  text-align: right;
+.fixed-duration strong {
+  color: #355477;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .generate-button {
   width: 100%;
+  min-height: 40px;
   padding: 9px 12px;
   border: 0;
   border-radius: 8px;

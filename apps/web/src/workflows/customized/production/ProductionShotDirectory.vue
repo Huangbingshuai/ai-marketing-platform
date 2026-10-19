@@ -2,31 +2,62 @@
 import { computed } from 'vue';
 import { Video } from '@lucide/vue';
 import type { ProductionAsset, ProductionShot } from '@ai-marketing/contracts';
+import type { CustomizedVideoResult, ProductionTask } from '@ai-marketing/contracts';
+import { apiUrl } from '../../../api/http-client';
 const props = defineProps<{
   shots: ProductionShot[];
   assets: ProductionAsset[];
   selectedId?: string;
   locked: boolean;
+  unit?: '片段' | '分镜';
+  shotCounts?: Record<string, number>;
+  videos?: { value: CustomizedVideoResult; revision: number; stale: boolean }[];
+  renderTasks?: ProductionTask[];
+  projectId?: string;
+  workflowRunId?: string;
 }>();
 defineEmits<{ select: [id: string]; produce: [id: string] }>();
-type VideoState = 'waiting' | 'generating' | 'done' | 'failed';
+type VideoState = 'waiting' | 'generating' | 'done' | 'failed' | 'stale';
 const rows = computed(() => {
   const assets = new Map(props.assets.map((asset) => [asset.id, asset]));
-  return props.shots.map((shot, index) => ({
-    shot,
-    index,
-    heading: `【镜头${index + 1}】${shot.shotType ? `${shot.shotType}：` : ''}${shot.visual || shot.title || '未命名镜头'}`,
-    context:
-      shot.bindings.map((b) => assets.get(b.assetId)).find((a) => a?.kind === 'SCENE')?.name || '',
-    // Video rendering has no result/task contract yet. Prompt completion is not a rendered video.
-    state: 'waiting' as VideoState,
-  }));
+  return props.shots.map((shot, index) => {
+    const result = props.videos?.find((v) => v.value.clipId === shot.id);
+    const task = props.renderTasks?.find(
+      (t) => t.operation === 'RENDER' && t.target?.id === shot.id,
+    );
+    return {
+      shot,
+      index,
+      heading: props.unit
+        ? `【${props.unit}${index + 1}】${shot.title}`
+        : `【镜头${index + 1}】${shot.shotType ? `${shot.shotType}：` : ''}${shot.visual || shot.title || '未命名镜头'}`,
+      context:
+        shot.bindings.map((b) => assets.get(b.assetId)).find((a) => a?.kind === 'SCENE')?.name ||
+        '',
+      state: (task && ['QUEUED', 'RUNNING'].includes(task.status)
+        ? 'generating'
+        : task?.status === 'FAILED'
+          ? 'failed'
+          : result
+            ? result.stale
+              ? 'stale'
+              : 'done'
+            : 'waiting') as VideoState,
+      poster:
+        result && props.projectId && props.workflowRunId
+          ? apiUrl(
+              `/projects/${encodeURIComponent(props.projectId)}/workflows/customized/production/videos/${encodeURIComponent(shot.id)}?workflowRunId=${encodeURIComponent(props.workflowRunId)}&poster=1&revision=${result.revision}`,
+            )
+          : '',
+    };
+  });
 });
 const labels: Record<VideoState, string> = {
   waiting: '待生成',
   generating: '生成中',
   done: '已完成',
   failed: '失败',
+  stale: '待更新',
 };
 const number = (index: number) => String(index + 1).padStart(2, '0');
 </script>
@@ -34,7 +65,7 @@ const number = (index: number) => String(index + 1).padStart(2, '0');
   <aside class="shot-task-directory" aria-label="视频任务列表">
     <header>
       <h3>视频任务列表</h3>
-      <p>按镜头顺序 · {{ shots.length }} 个任务</p>
+      <p>按{{ unit ?? '镜头' }}顺序 · {{ shots.length }} 个任务</p>
     </header>
     <ol aria-label="分镜任务" class="shot-task-list">
       <li
@@ -46,12 +77,16 @@ const number = (index: number) => String(index + 1).padStart(2, '0');
           class="shot-select"
           type="button"
           :aria-current="row.shot.id === selectedId ? 'true' : undefined"
-          :aria-label="`选择镜头${number(row.index)}：${row.shot.title || '未命名镜头'}`"
+          :aria-label="`选择${unit ?? '镜头'}${number(row.index)}：${row.shot.title || '未命名镜头'}`"
           :title="row.heading"
           @click="$emit('select', row.shot.id)"
         >
-          <span class="shot-preview" aria-label="尚无视频预览"
-            ><Video :size="20" :stroke-width="1.3" />
+          <span class="shot-preview" :aria-label="row.poster ? '视频封面' : '尚无视频预览'"
+            ><img v-if="row.poster" :src="row.poster" :alt="row.shot.title" loading="lazy" /><Video
+              v-else
+              :size="20"
+              :stroke-width="1.3"
+            />
             <span class="shot-index">#{{ number(row.index) }}</span>
           </span>
           <span class="shot-copy">
@@ -59,6 +94,7 @@ const number = (index: number) => String(index + 1).padStart(2, '0');
             <span class="shot-meta"
               ><span :class="['shot-state', row.state]"><i />{{ labels[row.state] }}</span>
               <span class="separator">·</span><span>{{ row.shot.durationSeconds }}s</span>
+              <span v-if="shotCounts">· {{ shotCounts[row.shot.id] }} 镜</span>
               <span v-if="row.context" class="shot-context">· {{ row.context }}</span>
             </span>
           </span>
@@ -67,7 +103,7 @@ const number = (index: number) => String(index + 1).padStart(2, '0');
           class="shot-produce"
           type="button"
           :disabled="locked"
-          :aria-label="`打开镜头${number(row.index)}制作`"
+          :aria-label="`打开${unit ?? '镜头'}${number(row.index)}制作`"
           title="查看本镜制作设置"
           @click="$emit('produce', row.shot.id)"
         >
@@ -85,6 +121,23 @@ const number = (index: number) => String(index + 1).padStart(2, '0');
   border-radius: 12px;
   background: #fafbfd;
   color: #304663;
+}
+.shot-preview img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.shot-state.done {
+  color: #3b9b85;
+}
+.shot-state.generating {
+  color: #5276d5;
+}
+.shot-state.failed,
+.shot-state.stale {
+  color: #bb8746;
 }
 header {
   padding: 12px;

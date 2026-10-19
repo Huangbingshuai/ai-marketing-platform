@@ -29,6 +29,6 @@ export const customizedWorkflowNodes = [
     label: '视频制作',
     status: '待接入',
     title: '视频制作',
-    description: '按故事与资产目录拆镜、绑定素材并逐镜创作提示词',
+    description: '按故事与资产目录拆镜，绑定素材、创作提示词并生成逐镜视频',
   },
 ].map((node, index) => ({ ...node, id: CUSTOMIZED_WORKFLOW_NODES[index]! }));

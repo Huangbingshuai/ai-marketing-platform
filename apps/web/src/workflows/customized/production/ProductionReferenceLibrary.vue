@@ -80,6 +80,8 @@ function toggle(asset: ProductionAsset) {
                 class="goto-generate"
                 type="button"
                 :disabled="locked"
+                :aria-label="`前往资产准备生成${asset.name}图片`"
+                title="前往资产准备生成图片"
                 @click.stop="$emit('prepare', asset)"
               >
                 去生成 →
