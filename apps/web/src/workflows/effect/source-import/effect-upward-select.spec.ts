@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import selectSource from './components/EffectUpwardCreatableSelect.vue?raw';
+import selectSource from '../../../platform/workflow/components/WorkflowCreatableSelect.vue?raw';
 
 describe('upward creatable select overlay', () => {
   it('teleports its fixed menu outside scrollable dialog ancestors', () => {

@@ -1,4 +1,4 @@
-import { EFFECT_PROMPT_RENDER_CAPABILITIES } from '@ai-marketing/contracts';
+import { EFFECT_PROMPT_RENDER_CAPABILITIES, SEEDANCE_MODEL_OPTIONS } from '@ai-marketing/contracts';
 import type {
   EffectSegmentRenderSettings,
   SeedanceRatio,
@@ -14,14 +14,7 @@ export type RenderModelOption = {
   defaultResolution: SeedanceResolution;
 };
 
-export const effectSegmentRenderModels: readonly RenderModelOption[] = (
-  [
-    ['SEEDANCE_1_5_PRO', 'Doubao-Seedance-2.5'],
-    ['SEEDANCE_2_0', 'Doubao-Seedance-2.0'],
-    ['SEEDANCE_1_0', 'Doubao-Seedance-2.0-mini'],
-    ['SEEDANCE_2_0_FAST', 'Doubao-Seedance-2.0-fast'],
-  ] as const
-).map(([value, label]) => ({
+export const effectSegmentRenderModels: readonly RenderModelOption[] = SEEDANCE_MODEL_OPTIONS.map(({value, label}) => ({
   value,
   label,
   ...EFFECT_PROMPT_RENDER_CAPABILITIES[value],
