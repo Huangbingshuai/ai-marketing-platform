@@ -29,7 +29,7 @@ def test_multi_view_layout_is_shared_with_contracts_and_preserves_custom_prompts
 
 
 def test_custom_inputs_are_scoped_and_reference_versions_are_bounded() -> None:
-    item = {'assetId': 'product', 'prompt': '杯子', 'references': [{'assetId': 'b3cc83ca-c891-4b04-b660-9a593a86e1da', 'version': 2}]}
+    item: dict[str, Any] = {'assetId': 'product', 'prompt': '杯子', 'references': [{'assetId': 'b3cc83ca-c891-4b04-b660-9a593a86e1da', 'version': 2}]}
     value = {**SETTINGS, 'assetIds': ['product'], 'inputs': [item]}
     assert ImageSettings.model_validate(value).inputs
     for inputs in ([], [{**item, 'assetId': 'room'}], [{**item, 'prompt': ' '}],

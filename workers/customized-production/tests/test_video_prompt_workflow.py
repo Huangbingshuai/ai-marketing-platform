@@ -6,7 +6,29 @@ import pytest
 from customized_production_runtime.video_prompt import reference_header, time_windows, validate_prompt_presentation, validate_prompt_audit_evidence
 from customized_production_runtime.video_models import PromptAudit, PromptScopedAudit
 from customized_production_runtime.video_pipeline import run_video
+from customized_production_runtime.video_pipeline import assets_projection
 from test_video_v2 import FakeApi, snapshot, clean_audit
+
+
+def test_prompt_projection_carries_only_explicit_text_ownership_without_image_addresses() -> None:
+    fixture=json.loads((Path(__file__).resolve().parents[3] / 'packages/contracts/fixtures/customized-asset-image-ownership.json').read_text(encoding='utf-8'))
+    fixture['assets'][0]['image']={'assetId':'fixed-parent-image','version':7}
+    rows=assets_projection(fixture['assets'])
+    for id,parent in fixture['detailParents'].items():
+        row=next(a for a in rows if a['id']==id)
+        assert row['imageOwnership']['sourceObjectId']==parent
+        assert row['imageOwnership']['sourceName']==next(a['name'] for a in rows if a['id']==parent)
+    assert all('image' not in a and 'storageKey' not in a for a in rows)
+    assert all('imageOwnership' not in a for a in rows if a['id'] in fixture['eligibleIds'])
+
+
+def test_parent_reference_identity_is_not_allowed_in_visible_prompt_prose() -> None:
+    parent='asset-12345678-1234-4234-8234-123456789abc'
+    context: dict[str, Any]={'clip':{'title':'受控镜头'},'shots':[],'cues':[], 'timeWindows':time_windows(3),
+        'assets':[{'id':'detail','kind':'PROP','name':'木边柜','imageOwnership':{'sourceObjectId':parent,'sourceName':'门口','treatment':'SCENE_DETAIL'}}]}
+    value={'assetIds':['detail'],'content':f'道具：@木边柜。\n0–3秒：@木边柜旁边。\n声音与画面文字安排\n{parent}'}
+    with pytest.raises(ValueError,match='request-internal'):
+        validate_prompt_presentation(value,context)
 
 
 def test_readable_reference_header_and_exact_fractional_time_windows() -> None:
@@ -17,7 +39,7 @@ def test_readable_reference_header_and_exact_fractional_time_windows() -> None:
 
 def test_actual_mentions_are_a_subset_and_audio_times_are_not_extra_picture_windows() -> None:
     context={'referenceHeader':'产品：@杯；场景：@房间。','timeWindows':time_windows(5), 'clip':{'id':'clip-a','title':'杯'},'shots':[], 'cues':[], 'assets':[{'id':'cup','kind':'PRODUCT','name':'杯'},{'id':'room','kind':'SCENE','name':'房间'}]}
-    value={'assetIds':['cup'], 'content':'产品：@杯。\n0–3秒：@杯特写。\n3–5秒：保持静止。\n声音与画面文字安排\n0–5秒：旁白完整保留。'}
+    value: dict[str, Any]={'assetIds':['cup'], 'content':'产品：@杯。\n0–3秒：@杯特写。\n3–5秒：保持静止。\n声音与画面文字安排\n0–5秒：旁白完整保留。'}
     validate_prompt_presentation(value, context)
     with pytest.raises(ValueError, match='exactly match'):
         validate_prompt_presentation(value | {'assetIds':['cup','room']}, context)

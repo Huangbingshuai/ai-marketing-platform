@@ -94,6 +94,8 @@ export type ProductionInput = {
   imageSettings?: CustomizedImageSettings;
   videoRender?: CustomizedVideoRenderInput;
   shotWorkflowVersion?: 2;
+  /** New SHOTS tasks only; absent historical snapshots retain their original prompts. */
+  shotBenefitPolicyVersion?: 1;
   promptWorkflowVersion?: 2 | 3;
   strategyVersion?: string;
   durationPolicy?: VideoDurationPolicy;

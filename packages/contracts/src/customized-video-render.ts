@@ -90,6 +90,9 @@ export type CustomizedVideoRenderInput = {
   references: {
     objectId: string;
     name: string;
+    /** Explicit detail ownership; omitted for independent and historical references. */
+    sourceObjectId?: string;
+    sourceName?: string;
     assetId: string;
     version: number;
     storageKey: string;

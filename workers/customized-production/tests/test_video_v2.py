@@ -282,7 +282,7 @@ def test_request_reference_compaction_is_lossless_and_leaves_business_text_untou
     from customized_production_runtime.video_identity import compact_references, rewrite
     data = snapshot()
     original_id = 'asset-01234567-0123-4123-8123-0123456789ab'
-    context = {'assets': [{'id': original_id, 'description': '正文原样保留：'+original_id}], 'target': {'kind': 'CLIP','id':'REF1'}, 'bindings':[{'assetId':original_id,'description':'REF1是原文，不替换'}], 'affectedShotIds':[original_id], 'sourceRef':{'unitId':'U0001','start':0,'end':8}}
+    context: dict[str, Any] = {'assets': [{'id': original_id, 'description': '正文原样保留：'+original_id}], 'target': {'kind': 'CLIP','id':'REF1'}, 'bindings':[{'assetId':original_id,'description':'REF1是原文，不替换'}], 'affectedShotIds':[original_id], 'sourceRef':{'unitId':'U0001','start':0,'end':8}}
     compact, restore = compact_references(context)
     assert compact['assets'][0]['id'] != original_id
     assert compact['assets'][0]['description'] == context['assets'][0]['description']
@@ -402,9 +402,9 @@ async def test_new_strategy_uses_scoped_review_and_reuses_its_saved_result(strat
 def test_timing_patch_keeps_existing_visuals_ids_and_unaffected_cues() -> None:
     data = snapshot(); data['strategyVersion'] = '2026-10-19-capacity-clips.5'
     before = data['document']['videoPlan']
-    fields = {name:None for name in ['title','shotType','cameraMovement','visual','audio','atmosphere','information','framing','angle','startState','endState','bindings']}
+    fields: dict[str, Any] = {name:None for name in ['title','shotType','cameraMovement','visual','audio','atmosphere','information','framing','angle','startState','endState','bindings']}
     fields.update(shotId='shot-a',durationSeconds=6)
-    patch={'baseHash':fingerprint(before),'issueIds':['capacity-1'],'fields':[fields],'ranges':[],'timingExplanation':'原画面与原话保留，延长自然动作。','cueUpdates':[{'cueId':before['cues'][0]['id'],'parts':copy.deepcopy(before['cues'][0]['parts'])}]}
+    patch: dict[str, Any]={'baseHash':fingerprint(before),'issueIds':['capacity-1'],'fields':[fields],'ranges':[],'timingExplanation':'原画面与原话保留，延长自然动作。','cueUpdates':[{'cueId':before['cues'][0]['id'],'parts':copy.deepcopy(before['cues'][0]['parts'])}]}
     result=apply_repair(before,patch,clean_audit() | {'findings':[finding(before)]},data)
     assert result['shots'][0]['durationSeconds']==6
     assert result['shots'][0]['visual']==before['shots'][0]['visual']

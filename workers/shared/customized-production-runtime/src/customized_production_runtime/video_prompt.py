@@ -47,16 +47,22 @@ def validate_prompt_presentation(value: dict[str, Any], context: dict[str, Any])
     # Request-local machine labels are not presentation text. Preserve genuine
     # source text that happens to contain the same literal, rather than guessing.
     _, aliases = compact_references(context)
+    business_assets = []
+    for asset in context['assets']:
+        readable = {k:v for k,v in asset.items() if k not in ('id', 'imageOwnership')}
+        if asset.get('imageOwnership'):
+            readable['imageOwnership'] = {k:v for k,v in asset['imageOwnership'].items() if k != 'sourceObjectId'}
+        business_assets.append(readable)
     business = json.dumps({'clipTitle':context['clip']['title'], 'shots':[
         {k:v for k,v in s.items() if k not in ('id','sourceEventIds','bindings')} for s in context['shots']],
-        'assets':[{k:v for k,v in a.items() if k!='id'} for a in context['assets']],
+        'assets':business_assets,
         'speech':[c['sourceText'] for c in context['cues']]}, ensure_ascii=False)
     for literal in [*aliases, *aliases.values()]:
         if literal not in business and re.search(r'(?<![A-Za-z0-9_-])' + re.escape(literal) + r'(?![A-Za-z0-9_-])', content):
             raise ValueError('prompt prose contains a request-internal reference; use the actual asset or storyboard name')
 
 
-PROMPT_INSTRUCTION = '''只转换当前已确认分镜，不重新写故事、拆分其他任务或修改上游。assets是本镜候选素材，按实际画面需要选择引用，不要求用完。第一行按角色、产品、场景、道具的顺序列出实际引用的素材，格式“角色：@素材全名；产品：@素材全名；场景：@素材全名；道具：@素材全名。”，同类用“、”分隔，省略未引用类别；同类按assets顺序。referenceHeader仅示范完整候选集的写法，不能机械照抄。完全不引用时首行为“参考素材：无。”。不写内部ID、REF标记、字段标签或模型参数。
+PROMPT_INSTRUCTION = '''只转换当前已确认分镜，不重新写故事、拆分其他任务或修改上游。assets是本镜候选素材，按实际画面需要选择引用，不要求用完。imageOwnership表示随指定父场景/人物准备的细节，引用该对象时渲染会使用父图中对应细节，不要求单独生图，不额外强制引用未绑定父对象，不声称已看过图片。第一行按角色、产品、场景、道具的顺序列出实际引用的素材，格式“角色：@素材全名；产品：@素材全名；场景：@素材全名；道具：@素材全名。”，同类用“、”分隔，省略未引用类别；同类按assets顺序。referenceHeader仅示范完整候选集的写法，不能机械照抄。完全不引用时首行为“参考素材：无。”。不写内部ID、REF标记、字段标签或模型参数。
 随后每个timeWindows对应一行，格式为“0–3秒：画面内容”。时间段连续完整覆盖本镜，最后一段可不足3秒。分段是同一视频的时间安排，不意味着必须每3秒切镜；仅兑现已确认描述中的画面变化。每段写具体可见动作、准确机位/构图、合理运镜、光线与氛围，必要时以“切到”连接已有变化。不堆抽象情绪或新增产品事实。
 各段使用@素材全名引用实际使用的参考对象，首段建立空间与主体关系。只从本镜实际绑定素材选取，不把整个素材库写进来；assetIds精确返回正文@引用的ID，未引用的候选不得放入assetIds。已确认画面中的对象可以文字描述，但不强制为每个普通背景物绑定参考图。
 原稿声音和画面文字在时间段之后单列“声音与画面文字安排”，按performanceTimeline和cues.sourceText完整逐字保留原句及实际时间窗；performanceTimeline是已确认的时间依据，优先于画面描述末尾顺带提及文字的句子顺序。声音可跨画面连续，不在每段重说整句，不创作额外台词。屏显原文和开始/结束时间只在此区域安排，画面段落不另写字幕浮现、消失或新的出现时间，避免同一屏显有两个冲突的安排。环境声/动作音可以按已确认动作写入画面段落，不虚构说话。target原样返回。
@@ -72,11 +78,18 @@ def validate_prompt_audit_evidence(audit: dict[str, Any], prompt: dict[str, Any]
     quotes = audit.get('promptEvidence')
     if not isinstance(quotes, list):
         raise ValueError('promptEvidence is required for the actual prompt review')
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+    covered: set[str] = set()
     findings = {f['id']: f for f in audit['findings']}
     for quote in quotes:
-        if quote['issueId'] in seen or quote['issueId'] not in findings or not quote['excerpt'].strip() or quote['excerpt'] not in prompt['content']:
+        if quote['issueId'] not in findings:
+            raise ValueError('prompt review quote refers to an unknown finding')
+        if not quote['excerpt'].strip() or quote['excerpt'] not in prompt['content']:
             raise ValueError('review excerpt must be a verbatim quote from current prompt.content, not upstream visual or invented text')
-        seen.add(quote['issueId'])
-    if any(f['repairKind'] != 'INPUT' and f['id'] not in seen for f in findings.values()):
+        pair = (quote['issueId'], quote['excerpt'])
+        if pair in seen:
+            raise ValueError('duplicate prompt review quote for the same finding and excerpt')
+        seen.add(pair)
+        covered.add(quote['issueId'])
+    if any(f['repairKind'] != 'INPUT' and f['id'] not in covered for f in findings.values()):
         raise ValueError('every prompt finding needs its exact current prompt.content excerpt')

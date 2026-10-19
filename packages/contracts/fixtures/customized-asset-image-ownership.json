@@ -1,0 +1,288 @@
+{
+  "assets": [
+    {
+      "id": "room-a",
+      "kind": "SCENE",
+      "name": "清晨家门口",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "room-b",
+      "kind": "SCENE",
+      "name": "城市人行道",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "room-c",
+      "kind": "SCENE",
+      "name": "办公室区域",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "room-d",
+      "kind": "SCENE",
+      "name": "水槽边",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "prop-0",
+      "kind": "PROP",
+      "name": "独立物件0",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "prop-1",
+      "kind": "PROP",
+      "name": "独立物件1",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "prop-2",
+      "kind": "PROP",
+      "name": "独立物件2",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "prop-3",
+      "kind": "PROP",
+      "name": "独立物件3",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "prop-4",
+      "kind": "PROP",
+      "name": "独立物件4",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "prop-5",
+      "kind": "PROP",
+      "name": "独立物件5",
+      "description": "受控公共定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "受控测试",
+        "treatment": "INDEPENDENT",
+        "parentId": null,
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "detail-a",
+      "kind": "PROP",
+      "name": "木边柜",
+      "description": "受控附属定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "随父场景",
+        "treatment": "SCENE_DETAIL",
+        "parentId": "room-a",
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "detail-b",
+      "kind": "PROP",
+      "name": "通勤人群",
+      "description": "受控附属定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "随父场景",
+        "treatment": "SCENE_DETAIL",
+        "parentId": "room-b",
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "detail-c",
+      "kind": "PROP",
+      "name": "木质桌面",
+      "description": "受控附属定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "随父场景",
+        "treatment": "SCENE_DETAIL",
+        "parentId": "room-c",
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    },
+    {
+      "id": "detail-d",
+      "kind": "PROP",
+      "name": "细水流",
+      "description": "受控附属定义",
+      "knownFacts": "",
+      "designNotes": "",
+      "sourceText": "受控脚本",
+      "preparation": {
+        "aliases": [],
+        "usage": "随父场景",
+        "treatment": "SCENE_DETAIL",
+        "parentId": "room-d",
+        "sources": [],
+        "details": [],
+        "questions": [],
+        "images": []
+      }
+    }
+  ],
+  "eligibleIds": [
+    "room-a",
+    "room-b",
+    "room-c",
+    "room-d",
+    "prop-0",
+    "prop-1",
+    "prop-2",
+    "prop-3",
+    "prop-4",
+    "prop-5"
+  ],
+  "detailParents": {
+    "detail-a": "room-a",
+    "detail-b": "room-b",
+    "detail-c": "room-c",
+    "detail-d": "room-d"
+  }
+}

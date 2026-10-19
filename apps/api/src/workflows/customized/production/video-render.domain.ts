@@ -6,6 +6,7 @@ import {
   isVideoDocument,
   videoClipMs,
   videoPromptReferences,
+  resolveCustomizedAssetImageSource,
   type CustomizedVideoRenderInput,
   type CustomizedVideoRenderSettings,
   type ProductionWorkspace,
@@ -57,17 +58,28 @@ export async function freezeVideoRender(
   if (!isProductionClipPrompt(prompt, document.videoPlan) || !clip) throw new Error('unreachable');
   const refs = videoPromptReferences(prompt.content, document.assets).assetIds;
   const seconds = videoClipMs(document.videoPlan, clip) / 1000;
-  const issues = customizedVideoRenderIssues(settings, seconds, refs.length);
+  const resolved = refs.map((objectId) => {
+    const result = resolveCustomizedAssetImageSource(document.assets, objectId);
+    if (!result.ok) renderInvalid('参考对象归属无效，请在当前资产目录核对父对象');
+    if (!result.ok) throw new Error('unreachable');
+    return { objectId, source: result.source };
+  });
+  const imageCount = new Set(
+    resolved.map(({ source }) =>
+      source.image ? `${source.image.assetId}:${source.image.version}` : source.id,
+    ),
+  ).size;
+  const issues = customizedVideoRenderIssues(settings, seconds, imageCount);
   if (issues.length) renderInvalid(issues.join('；'));
   const references: CustomizedVideoRenderInput['references'] = [];
-  for (const objectId of refs) {
+  for (const { objectId, source } of resolved) {
     const asset = document.assets.find((a) => a.id === objectId)!;
-    if (!asset.image) renderInvalid(`请先生成“${asset.name}”的参考图，或从提示词中移除该引用`);
+    if (!source.image) renderInvalid(`请先生成“${source.name}”的参考图，或从提示词中移除该引用`);
     const version = await tx.assetVersion.findFirst({
       where: {
         projectId,
-        assetId: asset.image!.assetId,
-        version: asset.image!.version,
+        assetId: source.image!.assetId,
+        version: source.image!.version,
         status: { not: 'UNAVAILABLE' },
         mimeType: { in: ['image/png', 'image/jpeg', 'image/webp'] },
         asset: {
@@ -78,17 +90,18 @@ export async function freezeVideoRender(
       },
     });
     if (!version?.storageKey || version.sizeBytes <= 0 || version.sizeBytes >= 30 * 1024 * 1024)
-      renderInvalid(`“${asset.name}”的参考图不可用，请重新准备图片`);
+      renderInvalid(`“${source.name}”的参考图不可用，请重新准备图片`);
     const file = await tx.fileObject.findFirst({
       where: { projectId, storageKey: version!.storageKey, status: 'AVAILABLE' },
     });
     if (!file || file.sizeBytes !== version!.sizeBytes || !/^[a-f0-9]{64}$/i.test(file.sha256))
-      renderInvalid(`“${asset.name}”缺少可校验的图片版本，请重新准备图片`);
+      renderInvalid(`“${source.name}”缺少可校验的图片版本，请重新准备图片`);
     references.push({
       objectId,
       name: asset.name,
-      assetId: asset.image!.assetId,
-      version: asset.image!.version,
+      ...(source.id !== objectId ? { sourceObjectId: source.id, sourceName: source.name } : {}),
+      assetId: source.image!.assetId,
+      version: source.image!.version,
       storageKey: version!.storageKey,
       mimeType: version!.mimeType,
       sizeBytes: version!.sizeBytes,

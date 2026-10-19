@@ -12,6 +12,7 @@ from .video_prompt import reference_header, time_windows, validate_prompt_presen
 from .video_models import DirectorPlan, ShotBatch, Audit, ScopedAudit, PromptAudit, PromptScopedAudit, Repair, TimingRepair, ClipPrompt
 from .video_review import repair_context as scoped_repair_context, review_context as delta_review_context, finish_review, performance_timeline
 from .video_domain import fingerprint, ms, excerpt, validate_director, validate_plan, validate_audit, apply_repair, validate_prompt, identity_prefix, align_clip_boundaries
+from .video_benefit_policy import DIRECTOR_BENEFIT, SHOTS_BENEFIT, REVIEW_BENEFIT, REPAIR_BENEFIT
 
 T = TypeVar('T', bound=Model)
 
@@ -46,7 +47,10 @@ REVIEW_CONSISTENCY = '\n首审必须一次分清：同一连续动作内明确�
 SCOPED_RECHECK = '\n本次为局部修改独立复核，不重新给未改全片打分。只重新审阅result中的真实改动和相邻衔接；范围外未改WARNING由系统原样保留。全局原句/事件覆盖及引用的确定性校验已完成，不要求result片段子集独自涵盖整片。previousFindings是首审问题账本：同一问题沿用原id，不用新id重提。原ERROR逐项写resolutions和当前实际证据。若旧问题确需改变级别，severityChanges必须关联原issueId、原/新级别、准确当前证据及具体原因；NEW_EVIDENCE必须是真实变化，首审错判则用INITIAL_REVIEW_CORRECTION明确说明首审哪里错。不能以“这次再看觉得更严重”作为新证据。没有级别变化时severityChanges为空。checks七项各用一句话说明本次改动的核对结果，正常范围无需复述；summary简短总结实际修订，不重复全文。'
 
 def assets_projection(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{k: a[k] for k in ('id', 'kind', 'name', 'description', 'knownFacts', 'designNotes') if k in a} for a in assets]
+    from .asset_image_source import text_image_ownership
+    ownership = text_image_ownership(assets)
+    return [{**{k: a[k] for k in ('id', 'kind', 'name', 'description', 'knownFacts', 'designNotes') if k in a},
+        **({'imageOwnership': ownership[a['id']]} if a['id'] in ownership else {})} for a in assets]
 
 
 def scope_plan(plan: dict[str, Any], seed: str) -> dict[str, Any]:
@@ -110,6 +114,10 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
     snapshot = claim['input']
     stored: dict[str, Any] = copy.deepcopy(claim.get('output') or {})
     operation = snapshot['operation']
+    policy_version = snapshot.get('shotBenefitPolicyVersion')
+    if operation == 'SHOTS' and policy_version is not None and (type(policy_version) is not int or policy_version != 1):
+        raise ValueError('unsupported shot benefit policy version')
+    benefit_policy = operation == 'SHOTS' and snapshot.get('shotBenefitPolicyVersion') == 1
     scoped_review = snapshot.get('strategyVersion') in {'2026-10-19-capacity-clips.4', '2026-10-19-capacity-clips.5', '2026-10-19-capacity-clips.6','2026-10-19-capacity-clips.7'}
     timing_repair = snapshot.get('strategyVersion') in {'2026-10-19-capacity-clips.5', '2026-10-19-capacity-clips.6','2026-10-19-capacity-clips.7'}
     timeline_review = snapshot.get('strategyVersion') in {'2026-10-19-capacity-clips.6','2026-10-19-capacity-clips.7'}
@@ -121,6 +129,8 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
         review_instruction += '\nperformanceTimeline是代码从当前原句与cueParts确定性展开的实际时间窗，from/to是片段内秒数，allocatedSeconds才是该段原话真实获得的时间，不是全片或整片段时长。时间容量逐一阅读voiceWindows中的原话与实际秒数，包含型号、单位、停顿和动作配合；不能以全片或片段总时长笼统判定所有口播来得及。允许声音连续跨镜、画外延续和正常语速，不拿统一字符速度或假想最慢操作作硬门槛。若片段后半仍有时间却把长句挤在前几秒，优先建议在现有片段内重排声音，仍不足才延时或重分片段；不改原话。performanceTimeline是只读展开，不是新的持久化实体；引用证据时直接选各时间窗自带的evidence，指向原始CUE.parts、CUE.sourceRef及SHOT.durationSeconds，不把allocatedSeconds或voiceWindows等派生字段当成原始字段。'
     if single_task:
         review_instruction += '\n本次一条视频任务对应一份完整分镜，clip与shot一对一。分镜是完整视频生成单元，一份画面描述可有必要的机位/画面变化，不另拆可编辑子镜头；不能仅因同一分镜描述有明确切镜判结构错误。原句、动作、声音时间窗与素材都按这份完整分镜核对。'
+    if benefit_policy:
+        review_instruction += REVIEW_BENEFIT
     limits = snapshot.get('requestLimits') or {'maxSourceCharacters': 40000, 'maxModelInputCharacters': 120000, 'maxBatches': 60, 'maxClips': 120, 'maxShots': 500, 'maxBatchSeconds': 60}
     lock = asyncio.Lock()
     statuses = {s['id']: s['status'] for s in claim['steps']}
@@ -161,8 +171,16 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
 
     async def ask(key: str, node: str, stage: str, model: str, schema: type[T], context: dict[str, Any], instruction: str, validate: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:
         corrected_key = key + 'Corrected'
+        async def validate_corrected() -> None:
+            try:
+                validate(copy.deepcopy(stored[corrected_key]))
+            except (ValueError, KeyError, StopIteration) as error:
+                stored.setdefault('mechanicalErrors', {})[corrected_key] = str(error)[:1000]
+                stored['failureReason'] = 'INVALID_CANDIDATE'
+                await persist(node, 'FAILED', '结构或引用仍需核对', '纠正后的证据或引用仍未通过校验，已保留候选和检查点，不再追加纠错调用。')
+                raise
         if corrected_key in stored:
-            validate(copy.deepcopy(stored[corrected_key]))
+            await validate_corrected()
             stored[key] = copy.deepcopy(stored[corrected_key])
             return copy.deepcopy(stored[key])
         if key not in stored:
@@ -186,7 +204,7 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
             if corrected_key not in stored:
                 stored[corrected_key] = await generate_candidate(node, stage + '_CORRECT', model, schema, {**context, 'candidate': stored[key], 'mechanicalError': str(error)[:1000]}, instruction + '\n只修正所报告的结构/引用错误，正常语义保持，不新增一轮创作。')
                 await persist(node, 'RUNNING', '结构纠正候选已保存', '正在验证纠正后的候选。')
-            validate(copy.deepcopy(stored[corrected_key]))
+            await validate_corrected()
             stored[key] = stored[corrected_key]
         return copy.deepcopy(stored[key])
 
@@ -268,6 +286,8 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
     if single_task:
         director_instruction = director_instruction.replace('一个clip对应未来一次视频生成，包含多个真实连续镜头。', '一个clip对应一次独立视频任务，也就是一份完整分镜，后续只输出一个对应shot。')
         director_instruction += '\n一个clip是一份完整分镜和一次独立视频任务，后续不再细分可编辑子镜头；按主观看事件和完整原话安排这份分镜的容量。需要独立描述/生成的画面另建clip，不能把多个需分别编辑的分镜套入一个clip。必要连贯画面变化可在一份完整分镜中自然表达，不机械按每个动作建任务。'
+    if benefit_policy:
+        director_instruction += DIRECTOR_BENEFIT
     raw_plan = await ask('directorCandidate', 'PLAN', 'VIDEO_DIRECTOR', snapshot['models']['creative'], DirectorPlan, base, director_instruction, lambda v: validate_director(v, snapshot))
     if not raw_plan['feasible']:
         stored['plan'] = raw_plan
@@ -346,6 +366,8 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
                 instruction = instruction.replace('电影镜头是连续观察，一个镜头内不能又写硬切到另一机位；需要切镜就生成下一shot，放进同一个适合的clip。', '一个clip就是左侧一条视频任务，只能输出一条对应shot作为完整分镜；必要画面变化写在同一份visual中，不输出子镜头。')
                 instruction = instruction.replace('按内容选择镜头数量，不强制每片段2-4镜，不固定景别配额，不堆运镜。', '每份规划恰好输出一份完整分镜，不固定景别配额，不堆运镜。')
                 instruction += '\n每个clip的shotIds必须只有一个ID，shots数量等于本批clip数量。一份完整分镜统一维护名称、画面描述、氛围、完整时长和实际素材，cueParts使用分镜内相对时间。复杂动作应拆为另一条独立任务时先由导演规划决定，不在当前分镜里追加多个子镜头。'
+            if benefit_policy:
+                instruction += SHOTS_BENEFIT
             raw = await ask(f'batch{index}', 'GENERATE', 'VIDEO_SHOTS', snapshot['models']['detail'], ShotBatch, context, instruction, validate_batch)
             done=stored.setdefault('completedBatches',[])
             if index not in done:
@@ -388,6 +410,8 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
             repair_instruction = REPAIR + ('\n若镜头数量、画面和片段归属无需变化，优先fields.durationSeconds调整现有镜长、cueUpdates调整已有原句的实际落点；不要为了调秒数重新输出完整镜头。cueUpdates每项返回该原句在受影响片段内的全部parts；范围外自动保留。字段只填有实际修改的内容，其余null。只有确需拆并、换镜或重分片段才用ranges。' if timing_repair else '')
             if single_task:
                 repair_instruction += '\n保持一个clip恰好对应一个shot的一对一关系。必要拆分时拆成独立clip及各自完整分镜，不在一个clip下生成多个子镜头；普通内容问题优先fields原位修正，保持正常任务身份。'
+            if benefit_policy:
+                repair_instruction += REPAIR_BENEFIT
             patch = await ask('repairCandidate', 'REPAIR', 'VIDEO_REPAIR', snapshot['models']['creative'], TimingRepair if timing_repair else Repair, repair_input, repair_instruction, lambda v: apply_repair(plan, v, audit, snapshot))
             revised = apply_repair(plan, patch, audit, snapshot)
             stored['revised'] = {'schemaVersion': 2, 'assets': snapshot['document']['assets'], 'videoPlan': revised}

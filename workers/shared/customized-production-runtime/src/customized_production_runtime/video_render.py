@@ -25,6 +25,8 @@ class RenderSettings(BaseModel):
 class RenderReference(BaseModel):
     objectId: str
     name: str
+    sourceObjectId: str = ''
+    sourceName: str = ''
     assetId: str
     version: int = Field(ge=1)
     storageKey: str
@@ -44,14 +46,34 @@ class RenderInput(BaseModel):
     references: list[RenderReference] = Field(max_length=30)
 
 
+def reference_slots(value: RenderInput) -> tuple[list[tuple[int, RenderReference]], dict[str, int]]:
+    unique: list[tuple[int, RenderReference]] = []
+    slots: dict[tuple[str, int], int] = {}
+    objects: dict[str, int] = {}
+    for index, reference in enumerate(value.references):
+        if reference.objectId in objects or bool(reference.sourceObjectId) != bool(reference.sourceName):
+            raise ValueError('invalid logical reference identity')
+        key = (reference.assetId, reference.version)
+        if key not in slots:
+            slots[key] = len(unique) + 1
+            unique.append((index, reference))
+        else:
+            first = unique[slots[key] - 1][1]
+            if (first.sha256, first.storageKey, first.sizeBytes, first.mimeType) != (reference.sha256, reference.storageKey, reference.sizeBytes, reference.mimeType):
+                raise ValueError('shared image version metadata mismatch')
+        objects[reference.objectId] = slots[key]
+    return unique, objects
+
+
 def render_text(value: RenderInput) -> str:
     # Only the provider boundary gets numbered references. User text stays @name.
-    names = {reference.name: index + 1 for index, reference in enumerate(value.references)}
+    _, slots = reference_slots(value)
+    names = {reference.name: f'图片{slots[reference.objectId]}' + (f'中的{reference.name}' if reference.sourceObjectId else '') for reference in value.references}
     if not names:
         return value.prompt
     pattern = re.compile('@(' + '|'.join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + ')')
-    content = pattern.sub(lambda match: f'图片{names[match.group(1)]}', value.prompt)
-    mapping = '；'.join(f'图片{index + 1}对应{reference.name}' for index, reference in enumerate(value.references))
+    content = pattern.sub(lambda match: names[match.group(1)], value.prompt)
+    mapping = '；'.join(f'图片{slots[reference.objectId]}对应{reference.sourceName or reference.name}' + (f'，{reference.name}为其中细节' if reference.sourceObjectId else '') for reference in value.references)
     return (
         f'参考图对应关系：{mapping}。\n'
         '参考图是资产设定板，不是本镜的起始帧或完整画面。只取每张图所对应对象的外观与材质，'
@@ -100,6 +122,7 @@ async def upload(api: Any, video: bytes, poster: bytes) -> None:
 
 async def run_video(api: Any, _provider: Any, claim: dict[str, Any]) -> None:
     value = RenderInput.model_validate(claim['input']['videoRender'])
+    unique, _ = reference_slots(value)
     saved = dict(claim.get('output') or {})
     provider_id = saved.get('providerTaskId')
     if saved.get('createStarted') and not provider_id:
@@ -107,7 +130,7 @@ async def run_video(api: Any, _provider: Any, claim: dict[str, Any]) -> None:
     await checkpoint(api, 'SNAPSHOT', 'SUCCEEDED', f'{value.title} · {value.seconds}秒 · {value.settings.ratio} · {value.settings.resolution}\n本次实际引用：' + '、'.join(r.name for r in value.references))
     images: list[str] = []
     if not provider_id:
-        for index, reference in enumerate(value.references):
+        for index, reference in unique:
             response = await request(api.client, 'GET', f'video-references/{index}', headers={'x-attempt-token': api.token}, params={'projectId': api.project}, timeout=60)
             data = response.content
             if len(data) != reference.sizeBytes or hashlib.sha256(data).hexdigest().lower() != reference.sha256.lower():

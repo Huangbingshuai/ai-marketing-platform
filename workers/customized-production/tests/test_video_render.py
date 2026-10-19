@@ -4,6 +4,8 @@ from ai_runtime.responses import ProviderError
 from customized_production_runtime import video_render as render
 from pathlib import Path
 import json
+import hashlib
+from types import SimpleNamespace
 
 
 def input_value() -> dict[str, Any]:
@@ -27,6 +29,65 @@ def test_numbered_reference_compilation_keeps_original_text() -> None:
     assert '多视角是同一实体的不同角度' in text
     assert '不从场景图额外带入正文未要求的商品、道具或人物' in text
     assert render.render_text(render.RenderInput.model_validate(input_value())) == input_value()['prompt']
+
+
+def shared_parent_input() -> dict[str, Any]:
+    value=input_value()
+    value['prompt']='@木边柜位于@清晨家门口，随后展示@木边柜。'
+    common={'assetId':'fixed-parent','version':7,'storageKey':'parent-version-7','mimeType':'image/png','sizeBytes':3,'sha256':hashlib.sha256(b'png').hexdigest()}
+    value['references']=[{**common,'objectId':'detail','name':'木边柜','sourceObjectId':'scene','sourceName':'清晨家门口'},
+        {**common,'objectId':'scene','name':'清晨家门口'}]
+    return value
+
+
+def test_detail_and_scene_share_one_number_without_rewriting_user_prompt() -> None:
+    value=shared_parent_input()
+    parsed=render.RenderInput.model_validate(value)
+    unique,slots=render.reference_slots(parsed)
+    assert len(unique)==1 and slots=={'detail':1,'scene':1}
+    text=render.render_text(parsed)
+    assert '图片1中的木边柜位于图片1，随后展示图片1中的木边柜。' in text
+    assert '图片2' not in text and '木边柜为其中细节' in text
+    assert parsed.prompt==value['prompt'] and 'parent-version-7' not in text
+
+
+@pytest.mark.parametrize('broken',['hash','version-metadata','identity','source-pair'])
+def test_invalid_shared_reference_metadata_fails_before_provider(broken: str) -> None:
+    value=shared_parent_input()
+    if broken=='hash': value['references'][1]['sha256']='f'*64
+    if broken=='version-metadata': value['references'][1]['sizeBytes']=99
+    if broken=='identity': value['references'][1]['objectId']='detail'
+    if broken=='source-pair': del value['references'][0]['sourceName']
+    with pytest.raises(ValueError): render.reference_slots(render.RenderInput.model_validate(value))
+
+
+@pytest.mark.asyncio
+async def test_shared_parent_download_and_provider_image_are_sent_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    api=Api()
+    api.client=object()  # type: ignore[attr-defined]
+    api.token='controlled'  # type: ignore[attr-defined]
+    api.project='project'  # type: ignore[attr-defined]
+    paths: list[str]=[]
+    async def request(client: Any,method: str,path: str,**kwargs: Any) -> Any:
+        paths.append(path)
+        return SimpleNamespace(content=b'png')
+    class Transport:
+        def __init__(self,**kwargs: Any) -> None: pass
+        async def render_request(self,payload: Any,*args: Any) -> Any:
+            images=[c for c in payload['content'] if c['type']=='image_url']
+            assert len(images)==1
+            assert '图片1中的木边柜' in payload['content'][0]['text']
+            return SimpleNamespace(content=b'video')
+        async def aclose(self) -> None: pass
+    async def poster(video: bytes) -> bytes: return b'poster'
+    async def upload(*args: Any) -> None: pass
+    monkeypatch.setenv('ARK_API_KEY','controlled-test-only')
+    monkeypatch.setattr(render,'request',request)
+    monkeypatch.setattr(render,'SeedanceTransport',Transport)
+    monkeypatch.setattr(render,'poster_for',poster)
+    monkeypatch.setattr(render,'upload',upload)
+    await render.run_video(api,None,{'input':{'videoRender':shared_parent_input()}})
+    assert paths==['video-references/0']
 
 
 class Api:

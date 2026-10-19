@@ -1,4 +1,5 @@
 import { createAssetBranch } from './production-asset-branch';
+import { applyImageOnlyPlanRebase } from './image-only-plan-rebase';
 import {
   assertWorkerOperation,
   productionQueue,
@@ -48,6 +49,7 @@ import {
   isProductionDocument,
   isProductionPrompt,
   isCustomizedImageSettings,
+  customizedAssetImageSelectionIssue,
   isCustomizedVideoRenderSettings,
   type CustomizedVideoRenderSettings,
   type CustomizedVideoResult,
@@ -625,12 +627,15 @@ export class ProductionRepository {
             });
             if (!exists) invalid('图片版本不存在或不属于当前项目');
           }
-        const state = await this.writeDraft(tx, p, r, value, w.source.revision, revision);
+        let state = await this.writeDraft(tx, p, r, value, w.source.revision, revision);
         if (confirm) {
           const artifacts = await this.artifacts(tx, p, r),
             story = artifacts.find((a) => a.id === w.source.artifactId)!;
           if (section === 'ASSETS') {
             await this.commitAssets(tx, p, r, value);
+            const rebased = await applyImageOnlyPlanRebase(tx, this.working, p, r, value);
+            if (rebased)
+              state = await this.writeDraft(tx, p, r, rebased, w.source.revision, state.revision);
           } else {
             if (
               !w.assetsConfirmed ||
@@ -895,7 +900,7 @@ export class ProductionRepository {
     return this.db.$transaction(
       async (tx) => {
         await lockCustomizedProject(tx, p);
-        const w = await this.read(tx, p, r);
+        let w = await this.read(tx, p, r);
         const previous = await tx.customizedProductionTask.findUnique({
           where: { projectId_idempotencyKey: { projectId: p, idempotencyKey: key } },
         });
@@ -921,6 +926,14 @@ export class ProductionRepository {
           where: { projectId: p, workflowRunId: r, status: { in: ['QUEUED', 'RUNNING'] } },
         });
         if (active) return customizedConflict('已有制作任务执行中，请等待完成');
+        if (operation === 'PROMPT' || operation === 'RENDER') {
+          const rebased = await applyImageOnlyPlanRebase(tx, this.working, p, r, w.document);
+          if (rebased) {
+            const state = await this.writeDraft(tx, p, r, rebased, w.source.revision, revision);
+            revision = state.revision;
+            w = { ...w, document: rebased, draftRevision: revision };
+          }
+        }
         const artifacts = await this.artifacts(tx, p, r);
         const source = [artifacts.find((a) => a.id === w.source.artifactId)!];
         if (
@@ -966,6 +979,11 @@ export class ProductionRepository {
             )
           )
             invalid('请选择有效的生图模型、尺寸和已填写公共形象的资产');
+          const selectionIssue = customizedAssetImageSelectionIssue(
+            w.document.assets,
+            imageSettings!.assetIds,
+          );
+          if (selectionIssue) invalid(selectionIssue);
           if (!brief || brief.freshness !== 'CURRENT')
             return customizedConflict('品牌信息已变化，请先确认创作依据');
           source.push(brief);
@@ -1037,6 +1055,7 @@ export class ProductionRepository {
           ...(videoV2
             ? {
                 shotWorkflowVersion: 2 as const,
+                ...(operation === 'SHOTS' ? { shotBenefitPolicyVersion: 1 as const } : {}),
                 ...(operation === 'PROMPT' ? { promptWorkflowVersion: 3 as const } : {}),
                 strategyVersion: CUSTOMIZED_VIDEO_STRATEGY,
                 requestLimits: { ...CUSTOMIZED_VIDEO_LIMITS },

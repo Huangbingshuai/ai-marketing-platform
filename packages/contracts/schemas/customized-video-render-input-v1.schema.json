@@ -10,6 +10,16 @@
           "title": "Name",
           "type": "string"
         },
+        "sourceObjectId": {
+          "default": "",
+          "title": "Sourceobjectid",
+          "type": "string"
+        },
+        "sourceName": {
+          "default": "",
+          "title": "Sourcename",
+          "type": "string"
+        },
         "assetId": {
           "title": "Assetid",
           "type": "string"
@@ -56,44 +66,22 @@
       "additionalProperties": false,
       "properties": {
         "capabilityKey": {
-          "enum": [
-            "SEEDANCE_2_0",
-            "SEEDANCE_2_0_FAST",
-            "SEEDANCE_1_5_PRO",
-            "SEEDANCE_1_0"
-          ],
+          "enum": ["SEEDANCE_2_0", "SEEDANCE_2_0_FAST", "SEEDANCE_1_5_PRO", "SEEDANCE_1_0"],
           "title": "Capabilitykey",
           "type": "string"
         },
         "ratio": {
-          "enum": [
-            "16:9",
-            "4:3",
-            "1:1",
-            "3:4",
-            "9:16",
-            "21:9",
-            "adaptive"
-          ],
+          "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
           "title": "Ratio",
           "type": "string"
         },
         "resolution": {
-          "enum": [
-            "480p",
-            "720p",
-            "1080p",
-            "4k"
-          ],
+          "enum": ["480p", "720p", "1080p", "4k"],
           "title": "Resolution",
           "type": "string"
         }
       },
-      "required": [
-        "capabilityKey",
-        "ratio",
-        "resolution"
-      ],
+      "required": ["capabilityKey", "ratio", "resolution"],
       "title": "RenderSettings",
       "type": "object"
     }
@@ -137,15 +125,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "settings",
-    "model",
-    "clipId",
-    "title",
-    "seconds",
-    "prompt",
-    "references"
-  ],
+  "required": ["settings", "model", "clipId", "title", "seconds", "prompt", "references"],
   "title": "RenderInput",
   "type": "object"
 }

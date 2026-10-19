@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 import re
 
-SCALARS = frozenset({'id', 'assetId', 'sceneAssetId', 'sceneId', 'shotId', 'cueId', 'clipId', 'unitId', 'issueId'})
+SCALARS = frozenset({'id', 'assetId', 'sourceObjectId', 'sceneAssetId', 'sceneId', 'shotId', 'cueId', 'clipId', 'unitId', 'issueId'})
 ARRAYS = frozenset({'assetIds', 'shotIds', 'sourceEventIds', 'eventIds', 'affectedShotIds', 'affectedClipIds', 'clipIds', 'issueIds'})
 
 
