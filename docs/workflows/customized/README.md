@@ -16,6 +16,8 @@
 - [五镜视频真实付费、耗时与质量记录](evidence/2026-10-19-五镜视频真实付费与配置优化.md)
 - [逐镜提示词与行内素材引用验收](evidence/2026-10-19-五镜提示词付费与行内素材引用验收.md)
 - [提示词与视频任务进度分区](evidence/2026-10-19-视频制作任务进度分区.md)
+- [信息提炼运行时校验修复](evidence/2026-10-19-信息提炼DTO运行时校验修复.md)
+- [提炼差异候选与未知事实修复](evidence/2026-10-19-提炼差异候选范围与未知事实修复.md) · [候选前端验收](evidence/2026-10-19-提炼片段候选前端验收.md)
 - [资产准备 Worker](../../../workers/customized-assets/README.md) · [视频制作 Worker](../../../workers/customized-production/README.md)
 
 ## 历史设计与实施记录
