@@ -17,7 +17,7 @@ docs/
    │  ├─ guides/                 # 通俗说明和操作说明
    │  ├─ deployment/             # 该工作流专属部署方案
    │  └─ evidence/               # 浏览器与验收证据
-   ├─ customized/                # 定制类七节点工作流
+   ├─ customized/                # 定制类五节点工作流
    └─ fission/
       ├─ clone/                  # 爆款复刻
       ├─ avatar/                 # 数字人口播
@@ -31,6 +31,8 @@ docs/
 - [本地开发与运行](development/local-development.md)
 - [项目、草稿、工作副本与资产](project-assets/README.md)
 - [工作流文档](workflows/README.md)
+
+截至2026-10-19，定制类五节点主流程已开发完成，包含资产图片及逐镜视频渲染；各节点完整局部更新及少量 Bug 仍待完善。当前能力、剩余工作和真实付费质量记录见[定制类文档](workflows/customized/README.md)。
 
 ## 新文档放置规则
 

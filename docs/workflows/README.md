@@ -3,7 +3,7 @@
 五条工作流严格隔离：
 
 - [效果类](effect/README.md)：六节点批量效果素材生产。
-- [定制类](customized/README.md)：七节点品牌定制生产。
+- [定制类](customized/README.md)：五节点品牌定制生产；主流程已开发完成，各节点局部更新及少量 Bug 待完善。
 - 裂变类：
   - [爆款复刻](fission/clone/README.md)
   - [数字人口播](fission/avatar/README.md)
