@@ -11,7 +11,9 @@ import {
   Query,
 } from '@nestjs/common';
 import { CustomizedExtractionService } from './customized-extraction.service';
-import type {
+// Nest query/body validation needs concrete DTO classes in decorator metadata.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import {
   ConfirmCustomizedExtractionDto,
   ExtractionScopeDto,
   StartCustomizedExtractionDto,
