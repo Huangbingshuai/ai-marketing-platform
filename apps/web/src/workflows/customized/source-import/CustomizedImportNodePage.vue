@@ -48,6 +48,7 @@ import EffectWorkflowBranchTree from '../../effect/source-import/components/Effe
 import EffectWorkflowCanvas from '../../effect/source-import/components/EffectWorkflowCanvas.vue';
 import EffectUpwardCreatableSelect from '../../effect/source-import/components/EffectUpwardCreatableSelect.vue';
 import { customizedWorkflowNodes } from '../customized-workflow';
+import { customizedProductionNavigationRun } from '../customized-production-navigation';
 import CustomizedInfoExtractionNodePage from '../information-extraction/CustomizedExtractionWorkspace.vue';
 import CustomizedStoryboardWorkspace from '../storyboard/CustomizedStoryboardWorkspace.vue';
 import CustomizedProductionWorkspace from '../production/CustomizedProductionWorkspace.vue';
@@ -432,6 +433,7 @@ const save = async (): Promise<boolean> => {
 const extractionWorkspace = ref<InstanceType<typeof CustomizedInfoExtractionNodePage> | null>(null);
 const storyboardWorkspace = ref<InstanceType<typeof CustomizedStoryboardWorkspace> | null>(null);
 const productionWorkspace = ref<InstanceType<typeof CustomizedProductionWorkspace> | null>(null);
+const assetFocus = ref<{ runId: string; assetId: string } | null>(null);
 const flushPendingEdits = async (): Promise<boolean> => {
   if (productionWorkspace.value && !(await productionWorkspace.value.flushPendingEdits()))
     return false;
@@ -460,6 +462,17 @@ const reload = async () => {
   pendingFiles.value = [];
   await load();
 };
+let navigationRequest = 0;
+const continueScript = async (scriptRunId: string, step: number) => {
+  await selectBranch({
+    workflowRunId: customizedProductionNavigationRun(
+      branchTree.value,
+      workflowRunId.value,
+      scriptRunId,
+    ),
+    nodeId: customizedWorkflowNodes[step]!.id,
+  });
+};
 const selectStep = async (step: number) => {
   if (
     step < 0 ||
@@ -469,17 +482,27 @@ const selectStep = async (step: number) => {
     step === activeStep.value
   )
     return;
+  const request = ++navigationRequest;
+  const originRun = workflowRunId.value,
+    originStep = activeStep.value;
+  const current = () =>
+    !disposed &&
+    request === navigationRequest &&
+    workflowRunId.value === originRun &&
+    activeStep.value === originStep;
   if (activeStep.value === 2 && step > 2) {
     const runId = await storyboardWorkspace.value?.nextRunId();
-    if (runId)
-      await selectBranch({ workflowRunId: runId, nodeId: customizedWorkflowNodes[step]!.id });
+    if (!current()) return;
+    if (runId) await continueScript(runId, step);
     else actionError.value = '请先保存当前脚本，并确认其来源有效，再进入后续节点。';
     return;
   }
   if (step > 2 && activeStep.value < 2) {
     if (!(await flushPendingEdits())) return;
+    if (!current()) return;
     try {
       const catalog = await storyboardApi.workspace(projectId, workflowRunId.value);
+      if (!current()) return;
       const selected =
         catalog.scripts.find((s) => s.id === catalog.selectedScriptId) ?? catalog.scripts[0];
       if (
@@ -491,12 +514,9 @@ const selectStep = async (step: number) => {
         actionError.value = '请先选择并保存完整脚本，再进入制作。';
         return;
       }
-      await selectBranch({
-        workflowRunId: selected.workflowRunId,
-        nodeId: customizedWorkflowNodes[step]!.id,
-      });
+      await continueScript(selected.workflowRunId, step);
     } catch (e) {
-      actionError.value = e instanceof Error ? e.message : '脚本目录暂时不可用';
+      if (current()) actionError.value = e instanceof Error ? e.message : '脚本目录暂时不可用';
     }
     return;
   }
@@ -504,6 +524,7 @@ const selectStep = async (step: number) => {
   transitioning.value = true;
   try {
     if (!(await flushPendingEdits())) return;
+    if (!current()) return;
     activeStep.value = step;
     window.scrollTo({ top: 0, behavior: 'smooth' });
     nodeActivation.enqueue({ runId: workflowRunId.value, step });
@@ -522,6 +543,15 @@ const resumeWorkflowNode = async (nodeId: string): Promise<boolean> => {
   await selectStep(index);
   return activeStep.value === index;
 };
+const prepareAsset = async (assetId: string) => {
+  const runId = workflowRunId.value;
+  await selectStep(3);
+  if (!disposed && activeStep.value === 3 && workflowRunId.value === runId)
+    assetFocus.value = { runId, assetId };
+};
+watch(workflowRunId, () => {
+  assetFocus.value = null;
+});
 defineExpose({ flushPendingEdits, resumeWorkflowNode, workflowRunId });
 
 const beginEdit = async () => {
@@ -1116,7 +1146,7 @@ onBeforeUnmount(() => {
         :viewed-run-id="storyboardViewedRunId"
         @back="selectStep(1)"
         @viewing="storyboardViewedRunId = $event"
-        @next="selectBranch({ workflowRunId: $event, nodeId: 'SHOT_PROMPT' })"
+        @next="continueScript($event, 3)"
         @published="loadBranchTree()"
         @deleted="onStoryboardDeleted"
       />
@@ -1127,6 +1157,9 @@ onBeforeUnmount(() => {
         :project-id="projectId"
         :workflow-run-id="workflowRunId"
         :mode="activeStep === 3 ? 'ASSETS' : 'SHOTS'"
+        :focus-asset-id="assetFocus?.runId === workflowRunId ? assetFocus.assetId : null"
+        @prepare-asset="prepareAsset"
+        @asset-focus-handled="assetFocus = null"
         @back="selectStep(activeStep - 1)"
         @next="selectStep(activeStep + 1)"
         @saved="loadBranchTree()"

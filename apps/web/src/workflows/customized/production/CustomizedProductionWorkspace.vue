@@ -15,6 +15,8 @@ import {
   productionStages,
   isVideoDocument,
   productionShots,
+  customizedAssetImageSelectionIssue,
+  isCustomizedImageSettings,
   type ProductionWorkspace,
   type ProductionDocument,
   type ProductionAsset,
@@ -31,7 +33,7 @@ import WorkflowExtractionActions from '../../../platform/workflow/components/Wor
 import WorkflowExtractionFeedback from '../../../platform/workflow/components/WorkflowExtractionFeedback.vue';
 import WorkflowExecutionGraphDialog from '../../../platform/workflow/components/WorkflowExecutionGraphDialog.vue';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
-import { isAbortError } from '../../../api/http-client';
+import { isAbortError, safeApiErrorMessage } from '../../../api/http-client';
 import { productionApi } from './production.api';
 import ProductionAssetStudio from './ProductionAssetStudio.vue';
 import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
@@ -42,14 +44,33 @@ import ProductionCandidateReview from './ProductionCandidateReview.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionTaskActivity from './ProductionTaskActivity.vue';
+import ProductionPromptTaskFeedback from './ProductionPromptTaskFeedback.vue';
 import {
   productionNodeTasks,
   productionPageProgressTask,
   productionWorkflowTask,
 } from './production-workflow-selection';
+import {
+  imageSource,
+  independentlyPrepared,
+  referenceImageSources,
+} from './production-asset-images';
 const ProductionPromptEditor = defineAsyncComponent(() => import('./ProductionPromptEditor.vue'));
-const props = defineProps<{ projectId: string; workflowRunId: string; mode: 'ASSETS' | 'SHOTS' }>();
-const emit = defineEmits<{ back: []; next: []; saved: []; published: [runId: string] }>();
+const props = defineProps<{
+  projectId: string;
+  workflowRunId: string;
+  mode: 'ASSETS' | 'SHOTS';
+  focusAssetId?: string | null;
+}>();
+const emit = defineEmits<{
+  back: [];
+  next: [];
+  saved: [];
+  published: [runId: string];
+  prepareAsset: [assetId: string];
+  assetFocusHandled: [];
+}>();
+const assetStudio = ref<InstanceType<typeof ProductionAssetStudio> | null>(null);
 const workspace = ref<ProductionWorkspace | null>(null),
   document = ref<ProductionDocument>({ assets: [], shots: [] });
 const videoWorkbench = ref<{
@@ -93,46 +114,68 @@ const graphScope = ref<ProductionOperation | null>(null),
   graphError = ref('');
 let graphController = new AbortController();
 const graphOperation = computed(() => graphScope.value ?? props.mode);
-function openWorkflow(task?: ProductionTask) {
+function openWorkflow(task?: ProductionTask, focusFailure = false) {
   graphController.abort();
   graphLoading.value = false;
   graphError.value = '';
   graphScope.value = task?.operation ?? props.mode;
   graphClipId.value = task?.target?.id ?? '';
   graphTaskId.value = task?.id ?? '';
-  graphNode.value = 'SNAPSHOT';
+  graphNode.value = focusFailure
+    ? (task?.steps.find((s) => s.status === 'FAILED')?.id ?? 'SNAPSHOT')
+    : 'SNAPSHOT';
   graphOpen.value = true;
 }
-async function openPromptWorkflow(clipId: string) {
+async function openPromptWorkflow(clipId: string, taskId?: string) {
   graphController.abort();
   graphController = new AbortController();
   const scope = graphController;
   graphScope.value = 'PROMPT';
   graphClipId.value = clipId;
-  graphTaskId.value = '';
+  graphTaskId.value = taskId ?? '';
   graphNode.value = 'SNAPSHOT';
   graphOpen.value = true;
   graphLoading.value = true;
   graphError.value = '';
   try {
-    const task = await productionApi.promptTask(
-      props.projectId,
-      props.workflowRunId,
-      clipId,
-      scope.signal,
-    );
+    const task = taskId
+      ? await productionApi.task(props.projectId, taskId, scope.signal)
+      : await productionApi.promptTask(props.projectId, props.workflowRunId, clipId, scope.signal);
     if (scope !== graphController || scope.signal.aborted || !workspace.value) return;
     if (task) {
-      workspace.value.tasks = [task, ...workspace.value.tasks.filter((t) => t.id !== task.id)];
+      if (
+        task.operation !== 'PROMPT' ||
+        task.target?.id !== clipId ||
+        (taskId && task.id !== taskId)
+      )
+        throw new Error('该执行记录不属于当前分镜，请重新加载后查看');
+      // Reading an exact failed record must not promote it ahead of a newer attempt.
+      workspace.value.tasks = taskId
+        ? workspace.value.tasks.some((t) => t.id === task.id)
+          ? workspace.value.tasks.map((t) => (t.id === task.id ? task : t))
+          : [...workspace.value.tasks, task]
+        : [task, ...workspace.value.tasks.filter((t) => t.id !== task.id)];
       graphTaskId.value = task.id;
+      if (taskId) graphNode.value = task.steps.find((s) => s.status === 'FAILED')?.id ?? 'SNAPSHOT';
     }
   } catch (e) {
     if (scope === graphController && !isAbortError(e))
-      graphError.value = e instanceof Error ? e.message : '工作流查询失败';
+      graphError.value = safeApiErrorMessage(e, '工作流查询失败，请重试');
   } finally {
     if (scope === graphController) graphLoading.value = false;
   }
 }
+watch(
+  [() => props.focusAssetId, () => props.mode, loading, assetStudio],
+  () => {
+    if (!props.focusAssetId || props.mode !== 'ASSETS' || loading.value || !assetStudio.value)
+      return;
+    if (!assetStudio.value.openAsset(props.focusAssetId))
+      error.value = '该资产已不在当前目录，请重新选择';
+    emit('assetFocusHandled');
+  },
+  { flush: 'post' },
+);
 watch(graphOpen, (open) => {
   if (!open) graphController.abort();
 });
@@ -163,18 +206,32 @@ function prepareImages(assets: ProductionAsset[]) {
     !assets.length
   )
     return;
+  if (assets.length === 1 && !independentlyPrepared(document.value.assets, assets[0]!)) {
+    const owner = imageSource(document.value.assets, assets[0]!);
+    if (owner) assetStudio.value?.openAsset(owner.id);
+    else error.value = '资产制作归属待核对，请先编辑定义';
+    return;
+  }
+  const independent = assets.filter((a) => independentlyPrepared(document.value.assets, a));
+  if (!independent.length) return;
   imageError.value = '';
-  imageAssets.value = assets;
+  imageAssets.value = independent;
   imageDialogOpen.value = true;
 }
 function prepareImage(asset: ProductionAsset) {
   assetPreview.value = null;
-  if (props.mode === 'SHOTS') {
-    // Use normal node navigation so unsaved shot/prompt edits are protected.
-    emit('back');
+  const owner = imageSource(document.value.assets, asset);
+  if (!owner) {
+    error.value = '资产制作归属待核对，请先编辑定义';
     return;
   }
-  prepareImages([asset]);
+  if (props.mode === 'SHOTS') {
+    // Use normal node navigation so unsaved shot/prompt edits are protected.
+    emit('prepareAsset', owner.id);
+    return;
+  }
+  if (owner.id !== asset.id) assetStudio.value?.openAsset(owner.id);
+  else prepareImages([owner]);
 }
 async function generateImages(settings: CustomizedImageSettings) {
   if (
@@ -191,11 +248,28 @@ async function generateImages(settings: CustomizedImageSettings) {
   imageSubmitting.value = true;
   imageError.value = '';
   try {
+    const issue = customizedAssetImageSelectionIssue(document.value.assets, settings.assetIds);
+    if (issue) {
+      imageError.value = issue;
+      return;
+    }
+    if (!isCustomizedImageSettings(settings)) {
+      imageError.value = '图片设置与所选资产不一致，请重新核对';
+      return;
+    }
     if ((dirty.value || !workspace.value.assetsConfirmed || editing.value) && !(await save(true))) {
       imageError.value = error.value || '请先保存资产定义';
       return;
     }
     if (project !== props.projectId || run !== props.workflowRunId || disposed) return;
+    const refreshedIssue = customizedAssetImageSelectionIssue(
+      document.value.assets,
+      settings.assetIds,
+    );
+    if (refreshedIssue) {
+      imageError.value = refreshedIssue;
+      return;
+    }
     // save() refreshes the scope; bind this request to the refreshed current Run.
     const active = controller;
     const task = await productionApi.start(
@@ -269,6 +343,14 @@ const shot = computed(
 );
 const prompt = computed(() =>
   workspace.value?.prompts.find((p) => 'shotId' in p.value && p.value.shotId === shot.value?.id),
+);
+const legacyPromptTask = computed(() =>
+  tasks.value.find((t) => t.operation === 'PROMPT' && t.shotId === shot.value?.id),
+);
+const legacyPromptIncomplete = computed(
+  () =>
+    !!legacyPromptTask.value &&
+    ['FAILED', 'PARTIAL', 'CANCELLED'].includes(legacyPromptTask.value.status),
 );
 const graphTasks = computed(() =>
   tasks.value.filter(
@@ -1017,6 +1099,7 @@ defineExpose({ flushPendingEdits });
     <template v-if="workspace">
       <ProductionAssetStudio
         v-if="mode === 'ASSETS'"
+        ref="assetStudio"
         :project-id="projectId"
         :assets="document.assets"
         :shots="legacyShots"
@@ -1124,15 +1207,17 @@ defineExpose({ flushPendingEdits });
                   :disabled="busy || !!running || !workspace.shotsConfirmed"
                   @click="generate('PROMPT', shot.id)"
                 >
-                  <RefreshCw v-if="prompt" :size="12" /><Sparkles v-else :size="12" />{{
-                    prompt ? '重新生成' : 'AI 生成'
-                  }}
+                  <RefreshCw v-if="prompt || legacyPromptIncomplete" :size="12" /><Sparkles
+                    v-else
+                    :size="12"
+                  />{{ prompt || legacyPromptIncomplete ? '重新生成' : 'AI 生成' }}
                 </button>
               </div>
             </header>
-            <ProductionTaskActivity
-              :task="tasks.find((t) => t.operation === 'PROMPT' && t.shotId === shot?.id)"
-              label="当前片段提示词生成进度"
+            <ProductionTaskActivity :task="legacyPromptTask" label="当前片段提示词生成进度" />
+            <ProductionPromptTaskFeedback
+              :task="legacyPromptTask"
+              @workflow="openWorkflow(legacyPromptTask, true)"
             />
             <ProductionPromptEditor
               v-model="promptText"
@@ -1157,7 +1242,12 @@ defineExpose({ flushPendingEdits });
           :project-id="projectId"
           :shot="shot"
           :index="legacyShots.findIndex((s) => s.id === shot?.id) + 1"
-          :assets="boundAssets.map((b) => b.asset)"
+          :assets="
+            referenceImageSources(
+              document.assets,
+              boundAssets.map((b) => b.asset),
+            )
+          "
           :prompt="prompt?.value.content ?? ''"
           :locked="busy || !!running"
           :editing="true"
@@ -1188,6 +1278,7 @@ defineExpose({ flushPendingEdits });
       :settings="previousImageSettings"
       type="IMAGE"
       :assets="imageAssets"
+      :catalog="document.assets"
       :busy="imageSubmitting"
       :error="imageError"
       @generate="generateImages"
@@ -1334,8 +1425,8 @@ defineExpose({ flushPendingEdits });
         v-else-if="graphError"
         title="工作流查询未完成"
         :message="graphError"
-        action="重试"
-        @action="openPromptWorkflow(graphClipId)"
+        action="重新查询"
+        @action="openPromptWorkflow(graphClipId, graphTaskId || undefined)"
       />
       <article v-else-if="graphDetail" class="execution-content">
         <template v-if="graphDetail.detail">

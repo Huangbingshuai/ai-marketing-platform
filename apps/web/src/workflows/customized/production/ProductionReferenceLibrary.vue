@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import type { ProductionAsset, ProductionShot } from '@ai-marketing/contracts';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
+import { imageSource, imageOwnershipLabel } from './production-asset-images';
 const props = defineProps<{
   projectId: string;
   assets: ProductionAsset[];
@@ -20,6 +21,15 @@ const categories = [
   { id: 'PROP', name: '道具', short: '道具' },
 ];
 const bound = (id: string) => props.shot.bindings.some((b) => b.assetId === id);
+const source = (asset: ProductionAsset) => imageSource(props.assets, asset);
+function preview(asset: ProductionAsset) {
+  const owner = source(asset);
+  if (owner?.image) emit('preview', owner);
+}
+function prepare(asset: ProductionAsset) {
+  const owner = source(asset);
+  if (owner && !props.locked) emit('prepare', owner);
+}
 const count = computed(() => props.assets.filter((a) => bound(a.id)).length);
 const groups = computed(() =>
   categories
@@ -57,13 +67,13 @@ function toggle(asset: ProductionAsset) {
             <button
               class="reference-thumb"
               type="button"
-              :disabled="!asset.image"
-              :aria-label="`预览${asset.name}图片`"
-              @click.stop="asset.image && $emit('preview', asset)"
+              :disabled="!source(asset)?.image"
+              :aria-label="`预览${source(asset)?.name || asset.name}图片`"
+              @click.stop="preview(asset)"
             >
               <ProductionAssetVisual
-                v-if="asset.image"
-                :asset="asset"
+                v-if="source(asset)?.image"
+                :asset="source(asset)!"
                 :project-id="projectId"
                 compact
               />
@@ -73,16 +83,29 @@ function toggle(asset: ProductionAsset) {
               <strong>{{ asset.name }}</strong>
               <small
                 >{{ group.short }} ·
-                {{ bound(asset.id) ? (asset.image ? '可使用' : '未生成') : '未绑定' }}</small
+                {{
+                  !source(asset)
+                    ? '归属待核对'
+                    : bound(asset.id)
+                      ? source(asset)?.image
+                        ? '可使用'
+                        : '未生成'
+                      : '未绑定'
+                }}</small
+              >
+              <small
+                v-if="source(asset) && source(asset)?.id !== asset.id"
+                :title="imageOwnershipLabel(assets, asset)"
+                >{{ imageOwnershipLabel(assets, asset) }}</small
               >
               <button
-                v-if="bound(asset.id) && !asset.image"
+                v-if="bound(asset.id) && source(asset) && !source(asset)?.image"
                 class="goto-generate"
                 type="button"
                 :disabled="locked"
-                :aria-label="`前往资产准备生成${asset.name}图片`"
+                :aria-label="`前往资产准备生成${source(asset)?.name}图片`"
                 title="前往资产准备生成图片"
-                @click.stop="$emit('prepare', asset)"
+                @click.stop="prepare(asset)"
               >
                 去生成 →
               </button>
@@ -202,6 +225,8 @@ button {
   font-size: 10px;
   color: #8f9db0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .goto-generate {
   justify-self: start;

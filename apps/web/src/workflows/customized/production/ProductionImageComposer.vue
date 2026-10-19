@@ -48,15 +48,60 @@ const resolution = ref<CustomizedImageSettings['resolution']>('2K'),
   ratio = ref<CustomizedImageSettings['ratio']>('auto');
 const references = ref<Reference[]>([]),
   uploading = ref(false),
-  uploadError = ref('');
+  uploadError = ref(''),
+  scopeNotice = ref(''),
+  basisChanged = ref(false);
 const panel = ref<'images' | 'models' | 'parameters' | ''>('');
 let scope = new AbortController();
 const modelName = computed(() => CUSTOMIZED_IMAGE_MODELS.find((m) => m.id === model.value)!.label);
 const dimensions = computed(() =>
   ratio.value === 'auto' ? null : CUSTOMIZED_IMAGE_DIMENSIONS[resolution.value][ratio.value],
 );
-const locked = computed(() => props.busy || uploading.value);
-const valid = computed(() => !!text.value.trim() && text.value.length <= 10000 && !locked.value);
+const locked = computed(() => props.busy || uploading.value || basisChanged.value);
+const identity = computed(() =>
+  JSON.stringify([props.projectId, props.workflowRunId, props.asset.id]),
+);
+const preset = computed(() => {
+  const input = props.settings?.inputs?.find((i) => i.assetId === props.asset.id);
+  return {
+    prompt: input?.prompt ?? defaultAssetImagePrompt(props.asset),
+    model: props.settings?.model ?? CUSTOMIZED_IMAGE_MODELS[0].id,
+    resolution: props.settings?.resolution ?? '2K',
+    ratio: props.settings?.ratio ?? 'auto',
+    references: input?.references ?? [],
+  };
+});
+// Compare generation inputs, not object identity or preview/ownership projections.
+const basis = computed(() =>
+  JSON.stringify(
+    {
+      definition: {
+        kind: props.asset.kind,
+        name: props.asset.name,
+        description: props.asset.description,
+        knownFacts: props.asset.knownFacts,
+        designNotes: props.asset.designNotes,
+        sourceText: props.asset.sourceText,
+        imageRequirements: props.asset.imageRequirements ?? '',
+        preparation: props.asset.preparation ?? null,
+      },
+      preset: preset.value,
+    },
+    (_key, value: unknown) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+        : value,
+  ),
+);
+const valid = computed(
+  () =>
+    (!props.asset.preparation ||
+      (props.asset.preparation.treatment === 'INDEPENDENT' &&
+        props.asset.preparation.parentId === null)) &&
+    !!text.value.trim() &&
+    text.value.length <= 10000 &&
+    !locked.value,
+);
 function resize() {
   void nextTick(() => {
     if (editor.value) {
@@ -65,27 +110,49 @@ function resize() {
     }
   });
 }
+function loadPreset() {
+  const input = preset.value;
+  text.value = input.prompt;
+  model.value = input.model;
+  resolution.value = input.resolution;
+  ratio.value = input.ratio;
+  references.value = input.references.map((r, index) => ({
+    ...r,
+    name:
+      props.brandReferences?.find((b) => b.assetId === r.assetId && b.version === r.version)
+        ?.name ?? `参考图 ${index + 1}`,
+    source: '已选参考图',
+  }));
+  resize();
+}
+function reviewBasis(useLatest: boolean) {
+  if (props.busy || uploading.value || !basisChanged.value) return;
+  if (useLatest) loadPreset();
+  basisChanged.value = false;
+  uploadError.value = '';
+  scopeNotice.value = useLatest
+    ? '已载入最新设置，请核对参考图片后生成。'
+    : '已沿用本次输入，请核对参考图片后生成。';
+}
 watch(
-  () => [props.projectId, props.workflowRunId, props.asset.id],
-  () => {
+  [identity, basis],
+  (next, previous) => {
     scope.abort();
     scope = new AbortController();
     panel.value = '';
     uploading.value = false;
     uploadError.value = '';
-    const input = props.settings?.inputs?.find((i) => i.assetId === props.asset.id);
-    text.value = input?.prompt ?? defaultAssetImagePrompt(props.asset);
-    model.value = props.settings?.model ?? CUSTOMIZED_IMAGE_MODELS[0].id;
-    resolution.value = props.settings?.resolution ?? '2K';
-    ratio.value = props.settings?.ratio ?? 'auto';
-    references.value = (input?.references ?? []).map((r, index) => ({
-      ...r,
-      name:
-        props.brandReferences?.find((b) => b.assetId === r.assetId && b.version === r.version)
-          ?.name ?? `参考图 ${index + 1}`,
-      source: '已选参考图',
-    }));
-    resize();
+    if (previous?.[0] && previous[0] === next[0]) {
+      basisChanged.value = true;
+      scopeNotice.value =
+        '资产定义或已保存的生图设置已更新。本次输入已保留，未完成上传已停止，请重新核对后再生成。';
+    } else {
+      basisChanged.value = false;
+      loadPreset();
+      scopeNotice.value = previous?.[0]
+        ? '已切换制作对象或工作流，本次输入已重新载入，原上传已停止。请核对提示词和参考图片。'
+        : '';
+    }
   },
   { immediate: true },
 );
@@ -169,18 +236,28 @@ async function upload(event: Event) {
     uploadError.value = '请选择不超过 10 MB 的 PNG、JPG 或 WebP 图片';
     return;
   }
-  const active = scope;
+  const active = scope,
+    uploadIdentity = identity.value,
+    uploadBasis = basis.value,
+    projectId = props.projectId,
+    workflowRunId = props.workflowRunId;
+  const current = () =>
+    active === scope &&
+    !active.signal.aborted &&
+    identity.value === uploadIdentity &&
+    basis.value === uploadBasis;
   uploading.value = true;
   panel.value = '';
   try {
     for (const file of files) {
+      if (!current()) return;
       const asset = await productionApi.uploadImageReference(
-        props.projectId,
-        props.workflowRunId,
+        projectId,
+        workflowRunId,
         file,
         active.signal,
       );
-      if (active !== scope) return;
+      if (!current()) return;
       if (!asset.currentVersion) throw new Error('图片版本未返回，请重新上传');
       const reference = {
         assetId: asset.id,
@@ -191,10 +268,10 @@ async function upload(event: Event) {
       if (!selected(reference)) references.value.push(reference);
     }
   } catch (e) {
-    if (active === scope && !isAbortError(e))
+    if (current() && !isAbortError(e))
       uploadError.value = e instanceof Error ? e.message : '参考图片上传失败，请重试';
   } finally {
-    if (active === scope) uploading.value = false;
+    if (current()) uploading.value = false;
   }
 }
 function submit() {
@@ -312,7 +389,7 @@ function submit() {
         <header>
           <strong>参考图片</strong><span>最多 {{ CUSTOMIZED_IMAGE_REFERENCE_LIMIT }} 张</span>
         </header>
-        <button type="button" class="upload-action" @click="fileInput?.click()">
+        <button type="button" class="upload-action" :disabled="locked" @click="fileInput?.click()">
           <Upload :size="17" />上传图片<small>PNG / JPG / WebP · 10 MB 内</small>
         </button>
         <h4>资料导入中的品牌素材</h4>
@@ -323,6 +400,7 @@ function submit() {
             type="button"
             :aria-pressed="selected(reference)"
             :class="{ selected: selected(reference) }"
+            :disabled="locked"
             @click="chooseBrand(reference)"
           >
             <ProductionAssetVisual
@@ -346,6 +424,7 @@ function submit() {
           :key="item.id"
           type="button"
           :aria-pressed="item.id === model"
+          :disabled="locked"
           @click="
             model = item.id;
             panel = '';
@@ -373,6 +452,7 @@ function submit() {
             :key="item"
             type="button"
             :aria-pressed="ratio === item"
+            :disabled="locked"
             :class="{ active: ratio === item }"
             @click="ratio = item"
           >
@@ -399,6 +479,7 @@ function submit() {
             :key="item"
             type="button"
             :aria-pressed="resolution === item"
+            :disabled="locked"
             :class="{ active: resolution === item }"
             @click="resolution = item"
           >
@@ -413,8 +494,20 @@ function submit() {
         type="file"
         accept="image/png,image/jpeg,image/webp"
         multiple
+        :disabled="locked"
         @change="upload"
       />
+    </div>
+    <div v-if="scopeNotice" class="composer-notice" :role="basisChanged ? 'alert' : 'status'">
+      <p>{{ scopeNotice }}</p>
+      <div v-if="basisChanged">
+        <button type="button" :disabled="busy || uploading" @click="reviewBasis(false)">
+          沿用本次输入
+        </button>
+        <button type="button" :disabled="busy || uploading" @click="reviewBasis(true)">
+          载入最新设置
+        </button>
+      </div>
     </div>
     <div class="composer-meta">
       <span>参考图片仅用于本次生成 · 生成成功前保留原图</span
@@ -436,6 +529,38 @@ function submit() {
 <style scoped>
 .image-composer-workspace {
   color: #273b55;
+}
+.composer-notice {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid #dce5f3;
+  border-radius: 10px;
+  background: #f5f8fd;
+  color: #526984;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.composer-notice p {
+  margin: 0;
+}
+.composer-notice > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.composer-notice button {
+  padding: 6px 10px;
+  border: 1px solid #d4dfef;
+  border-radius: 7px;
+  color: #42659a;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.composer-notice button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .current-image {
   margin: 0 0 20px;

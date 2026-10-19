@@ -126,8 +126,10 @@ describe('clip workbench', () => {
       expect(html).not.toContain('片段编排');
       expect(html).not.toContain('添加镜头');
       expect(html).not.toContain('片段内镜头');
-      expect(html).not.toContain('开始状态');
-      expect(html).not.toContain('结束状态');
+      expect(main).not.toContain('开始状态');
+      expect(main).not.toContain('结束状态');
+      expect(html).toContain('开始状态');
+      expect(html).toContain('结束状态');
       expect(html).toContain('分镜视频提示词');
       expect(html).toContain('查看当前分镜提示词工作流');
       expect(html).not.toContain('原稿声音与画面文字');

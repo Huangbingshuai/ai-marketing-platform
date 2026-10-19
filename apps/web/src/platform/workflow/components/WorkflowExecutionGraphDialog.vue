@@ -75,24 +75,100 @@ watch(
   { immediate: true },
 );
 let trigger: HTMLElement | null = null;
+let focusObserver: MutationObserver | undefined;
+let focusGeneration = 0;
+let disposed = false;
 const node = (id: string) => props.nodes.find((n) => n.id === id)!;
+function ownsFocusLayer() {
+  const root = panel.value;
+  if (!root) return false;
+  // A native or teleported inner dialog owns its own focus and Escape key.
+  if (
+    [...document.querySelectorAll<HTMLElement>('dialog[open]')].some(
+      (el) => el.getClientRects().length && !el.contains(root),
+    )
+  )
+    return false;
+  const dialogs = [
+    ...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'),
+  ].filter((el) => el.getClientRects().length);
+  const top = dialogs.at(-1);
+  return !top || top === root || top.contains(root);
+}
+function recoverFocus() {
+  if (disposed || !props.open || !ownsFocusLayer()) return;
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLElement &&
+    active !== document.body &&
+    active !== document.documentElement &&
+    active.isConnected &&
+    active.getClientRects().length &&
+    !active.matches(':disabled') &&
+    !active.closest('[hidden], [inert]')
+  )
+    return;
+  (closeButton.value ?? panel.value)?.focus();
+}
+function observeFocus() {
+  focusObserver?.disconnect();
+  if (!panel.value || typeof MutationObserver === 'undefined') return;
+  focusObserver = new MutationObserver(() => {
+    void nextTick(recoverFocus);
+  });
+  focusObserver.observe(panel.value, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['disabled', 'hidden', 'inert', 'style', 'class', 'tabindex'],
+  });
+}
+function restoreTriggerFocus() {
+  if (
+    ownsFocusLayer() &&
+    trigger?.isConnected &&
+    trigger.getClientRects().length &&
+    !trigger.matches(':disabled') &&
+    !trigger.closest('[hidden], [inert]')
+  )
+    trigger.focus();
+}
 function keydown(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.isComposing || !ownsFocusLayer()) return;
+  const owner =
+    event.target instanceof Element
+      ? event.target.closest('dialog[open], [role="dialog"][aria-modal="true"]')
+      : null;
+  if (owner && owner !== panel.value) return;
   if (event.key === 'Escape') {
     event.preventDefault();
+    event.stopPropagation();
     emit('close');
   }
   if (event.key === 'Tab') {
     const controls = [
       ...(panel.value?.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), select:not(:disabled), a[href], summary, [tabindex="0"]',
+        'button, input:not([type="hidden"]), select, textarea, a[href], summary, [contenteditable="true"], [tabindex]',
       ) ?? []),
-    ].filter((el) => el.getClientRects().length);
+    ].filter(
+      (el) =>
+        el.tabIndex >= 0 &&
+        el.getClientRects().length &&
+        !el.matches(':disabled') &&
+        !el.closest('[hidden], [inert]'),
+    );
     const first = controls[0],
       last = controls.at(-1);
-    if (
-      event.shiftKey &&
-      (document.activeElement === first || !panel.value?.contains(document.activeElement))
+    if (!first) {
+      event.preventDefault();
+      panel.value?.focus();
+    } else if (
+      !panel.value?.contains(document.activeElement) ||
+      document.activeElement === panel.value
     ) {
+      event.preventDefault();
+      (event.shiftKey ? last : first)?.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last?.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -114,20 +190,28 @@ function keydown(event: KeyboardEvent) {
 watch(
   () => props.open,
   async (open) => {
+    const generation = ++focusGeneration;
+    focusObserver?.disconnect();
     if (open) {
       trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       await nextTick();
+      if (disposed || !props.open || generation !== focusGeneration) return;
+      observeFocus();
+      if (!ownsFocusLayer()) return;
       closeButton.value?.focus();
     } else {
-      if (trigger?.isConnected) trigger.focus();
+      restoreTriggerFocus();
       trigger = null;
     }
   },
   { immediate: true },
 );
 onBeforeUnmount(() => {
+  disposed = true;
+  focusGeneration++;
+  focusObserver?.disconnect();
   observer?.disconnect();
-  if (props.open && trigger?.isConnected) trigger.focus();
+  if (props.open) restoreTriggerFocus();
 });
 </script>
 <template>

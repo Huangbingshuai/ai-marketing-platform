@@ -403,7 +403,7 @@ it.each(['ASSETS', 'SHOTS'] as const)(
       prompts: [],
       tasks: [],
     } as ProductionWorkspace);
-    const back = vi.fn();
+    const prepareAsset = vi.fn();
     let state: Record<string, unknown> = {};
     const app = renderer.createApp(
       {
@@ -413,14 +413,15 @@ it.each(['ASSETS', 'SHOTS'] as const)(
           return h('div');
         },
       },
-      { projectId: 'project', workflowRunId: 'run', mode, onBack: back },
+      { projectId: 'project', workflowRunId: 'run', mode, onPrepareAsset: prepareAsset },
     );
     app.provide(ssrContextKey, { modules: new Set() });
     app.mount(node());
     try {
       await settle();
       (state.prepareImage as (value: typeof asset) => void)(asset);
-      expect(back).toHaveBeenCalledTimes(mode === 'SHOTS' ? 1 : 0);
+      expect(prepareAsset).toHaveBeenCalledTimes(mode === 'SHOTS' ? 1 : 0);
+      if (mode === 'SHOTS') expect(prepareAsset).toHaveBeenCalledWith(asset.id);
       expect(state.imageDialogOpen).toBe(mode === 'ASSETS');
       expect(state.document).toEqual(document);
       expect(productionApi.start).not.toHaveBeenCalled();

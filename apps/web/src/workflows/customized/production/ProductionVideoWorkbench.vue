@@ -27,6 +27,8 @@ import ProductionShotDirectory from './ProductionShotDirectory.vue';
 import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
 import ProductionShotRenderPanel from './ProductionShotRenderPanel.vue';
 import ProductionTaskActivity from './ProductionTaskActivity.vue';
+import ProductionPromptTaskFeedback from './ProductionPromptTaskFeedback.vue';
+import { referenceImageSources } from './production-asset-images';
 const ProductionPromptEditor = defineAsyncComponent(() => import('./ProductionPromptEditor.vue'));
 
 const props = defineProps<{
@@ -41,7 +43,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   generate: [clipId: string];
-  workflow: [clipId: string];
+  workflow: [clipId: string, taskId?: string];
   refresh: [];
   edit: [];
   preview: [asset: ProductionAsset];
@@ -96,6 +98,9 @@ const promptTask = computed(() =>
 );
 const generatingPrompt = computed(
   () => !!promptTask.value && ['QUEUED', 'RUNNING'].includes(promptTask.value.status),
+);
+const promptIncomplete = computed(
+  () => !!promptTask.value && ['FAILED', 'PARTIAL', 'CANCELLED'].includes(promptTask.value.status),
 );
 watch(
   () => clip.value?.id,
@@ -302,6 +307,8 @@ function updateTask(
     | 'angle'
     | 'cameraMovement'
     | 'framing'
+    | 'startState'
+    | 'endState'
     | 'atmosphere'
     | 'audio',
   value: string,
@@ -448,8 +455,11 @@ defineExpose({
               @click="emit('generate', clip.id)"
             >
               <Loader2 v-if="generatingPrompt" :size="13" class="prompt-spinner" />
-              <RefreshCw v-else-if="prompt" :size="13" /><Sparkles v-else :size="13" />{{
-                generatingPrompt ? '正在生成' : prompt ? '重新生成' : 'AI 生成'
+              <RefreshCw v-else-if="prompt || promptIncomplete" :size="13" /><Sparkles
+                v-else
+                :size="13"
+              />{{
+                generatingPrompt ? '正在生成' : prompt || promptIncomplete ? '重新生成' : 'AI 生成'
               }}
             </button>
             <button aria-label="查看当前分镜提示词工作流" @click="emit('workflow', clip.id)">
@@ -458,6 +468,10 @@ defineExpose({
           </div>
         </header>
         <ProductionTaskActivity :task="promptTask" label="当前分镜提示词生成进度" />
+        <ProductionPromptTaskFeedback
+          :task="promptTask"
+          @workflow="emit('workflow', clip.id, $event)"
+        />
         <ProductionPromptEditor
           v-model="promptText"
           :project-id="projectId"
@@ -482,7 +496,7 @@ defineExpose({
       :prompt-ready="!!prompt && (!prompt.stale || promptDirty)"
       :shot="clipPreview"
       :index="plan.clips.findIndex((c) => c.id === clip?.id) + 1"
-      :assets="promptAssets"
+      :assets="referenceImageSources(document.assets, promptAssets)"
       :prompt="promptText"
       :locked="locked || saving"
       :editing="true"
@@ -506,6 +520,8 @@ defineExpose({
             { key: 'angle', label: '观察角度' },
             { key: 'cameraMovement', label: '运镜' },
             { key: 'framing', label: '构图与起落幅' },
+            { key: 'startState', label: '开始状态' },
+            { key: 'endState', label: '结束状态' },
             { key: 'audio', label: '环境声与动作音' },
           ] as const"
           :key="f.key"

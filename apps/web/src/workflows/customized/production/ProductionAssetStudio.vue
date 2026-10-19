@@ -21,6 +21,7 @@ import WorkflowInformationDialog from '../../../platform/workflow/components/Wor
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionAssetPreparation from './ProductionAssetPreparation.vue';
+import { imageSource, independentlyPrepared, imageOwnershipLabel } from './production-asset-images';
 const props = defineProps<{
   projectId: string;
   assets: ProductionAsset[];
@@ -51,6 +52,15 @@ const detailId = ref(''),
   detailEditing = ref(false);
 const adding = ref(false);
 const selected = computed(() => props.assets.find((a) => a.id === detailId.value));
+const source = (asset: ProductionAsset) => imageSource(props.assets, asset);
+const independent = (asset: ProductionAsset) => independentlyPrepared(props.assets, asset);
+const imageLabel = (asset: ProductionAsset) => imageOwnershipLabel(props.assets, asset);
+const draftCatalog = computed(() =>
+  props.assets.map((a) => (a.id === draft.value?.id ? draft.value : a)),
+);
+const validOwnership = computed(
+  () => !draft.value || !!imageSource(draftCatalog.value, draft.value),
+);
 const filtered = computed(() =>
   props.assets.filter(
     (a) =>
@@ -59,7 +69,8 @@ const filtered = computed(() =>
         `${a.name} ${a.description}`
           .toLocaleLowerCase()
           .includes(keyword.value.trim().toLocaleLowerCase())) &&
-      (filter.value === 'ALL' || (filter.value === 'READY' ? !!a.image : !a.image)),
+      (filter.value === 'ALL' ||
+        (filter.value === 'READY' ? !!source(a)?.image : independent(a) && !a.image)),
   ),
 );
 const groups = computed(() =>
@@ -67,7 +78,8 @@ const groups = computed(() =>
     .map((c) => ({ ...c, assets: filtered.value.filter((a) => a.kind === c.id) }))
     .filter((c) => c.assets.length),
 );
-const ready = computed(() => props.assets.filter((a) => a.image).length);
+const ready = computed(() => props.assets.filter((a) => independent(a) && a.image).length);
+const independentlyFiltered = computed(() => filtered.value.filter(independent));
 const usage = (id: string) => props.shots.filter((s) => s.bindings.some((b) => b.assetId === id));
 function openDetail(a: ProductionAsset) {
   detailId.value = a.id;
@@ -85,14 +97,31 @@ function regenerateSelected() {
   emit('regenerate', id);
 }
 function apply() {
-  if (!draft.value?.name.trim() || props.locked) return;
+  if (!draft.value?.name.trim() || props.locked || !validOwnership.value) return;
   emit('update', JSON.parse(JSON.stringify(draft.value)));
   detailId.value = '';
 }
 function render(items: ProductionAsset[]) {
+  if (props.locked) return;
+  if (items.length === 1 && !independent(items[0]!)) {
+    const owner = source(items[0]!);
+    if (owner) openDetail(owner);
+    return;
+  }
   detailId.value = '';
-  if (!props.locked) emit('images', items);
+  const valid = items.filter(independent);
+  if (valid.length) emit('images', valid);
 }
+function openAsset(id: string) {
+  const asset = props.assets.find((a) => a.id === id);
+  if (!asset) return false;
+  category.value = 'ALL';
+  keyword.value = '';
+  filter.value = 'ALL';
+  openDetail(asset);
+  return true;
+}
+defineExpose({ openAsset });
 function add() {
   adding.value = true;
   keyword.value = '';
@@ -162,7 +191,7 @@ watch(
         </button>
         <button
           class="studio-button primary"
-          :disabled="!filtered.length || locked"
+          :disabled="!independentlyFiltered.length || locked"
           @click="render(filtered)"
         >
           <ImagePlus :size="16" />批量生成图片
@@ -190,17 +219,20 @@ watch(
                 :aria-label="`查看${a.name || '未命名资产'}`"
                 @click="openDetail(a)"
               >
-                <ProductionAssetVisual :asset="a" :project-id="projectId" /><span
-                  class="cover-type"
-                  >{{ g.name }}</span
+                <ProductionAssetVisual
+                  :asset="source(a) || { ...a, image: null }"
+                  :project-id="projectId"
+                /><span class="cover-type">{{ g.name }}</span
                 ><span class="cover-open"><ArrowUpRight :size="15" /></span>
               </button>
               <div class="card-copy">
                 <div class="card-title">
                   <h4>{{ a.name || '未命名资产' }}</h4>
-                  <span :class="['image-badge', { ready: !!a.image }]">{{
-                    a.image ? '已有图片' : '待备图'
-                  }}</span>
+                  <span
+                    :class="['image-badge', { ready: !!source(a)?.image }]"
+                    :title="imageLabel(a)"
+                    >{{ imageLabel(a) }}</span
+                  >
                 </div>
                 <p>{{ a.description || '补充形象与特征，让每个镜头使用同一对象。' }}</p>
                 <small>{{
@@ -210,8 +242,14 @@ watch(
               <footer>
                 <button class="studio-button text-button" @click="openDetail(a)">
                   <Pencil :size="14" />查看定义</button
-                ><button class="studio-button" :disabled="locked" @click="render([a])">
-                  <ImagePlus :size="14" />{{ a.image ? '重新生成' : '生成图片' }}
+                ><button
+                  class="studio-button"
+                  :disabled="locked || !source(a)"
+                  @click="render([a])"
+                >
+                  <ImagePlus :size="14" />{{
+                    !independent(a) ? '查看所属资产' : a.image ? '重新生成' : '生成图片'
+                  }}
                 </button>
               </footer>
             </article>
@@ -250,12 +288,21 @@ watch(
   >
     <div v-if="selected && draft" class="asset-detail">
       <div class="detail-preview">
-        <ProductionAssetVisual :asset="selected" :project-id="projectId" />
+        <ProductionAssetVisual
+          :asset="source(selected) || { ...selected, image: null }"
+          :project-id="projectId"
+        />
         <div>
-          <strong>{{ selected.image ? '已关联图片' : '图片待准备' }}</strong>
+          <strong>{{ imageLabel(selected) }}</strong>
           <p>先确定公共形象，图片无需立即生成。</p>
-          <button class="studio-button" :disabled="locked" @click="render([selected])">
-            <ImagePlus :size="15" />{{ selected.image ? '重新生成图片' : '生成图片' }}
+          <button
+            class="studio-button"
+            :disabled="locked || !source(selected) || detailEditing"
+            @click="render([selected])"
+          >
+            <ImagePlus :size="15" />{{
+              !independent(selected) ? '查看所属资产' : selected.image ? '重新生成图片' : '生成图片'
+            }}
           </button>
         </div>
       </div>
@@ -315,6 +362,7 @@ watch(
       />
       <ProductionAssetPreparation
         :asset="draft"
+        :assets="assets"
         :readonly="!detailEditing || locked"
         @update="draft.preparation = $event"
       />
@@ -356,7 +404,7 @@ watch(
         <button
           v-if="detailEditing"
           class="studio-button primary"
-          :disabled="locked || !draft.name.trim()"
+          :disabled="locked || !draft.name.trim() || !validOwnership"
           @click="apply"
         >
           应用到草稿</button
