@@ -1,0 +1,71 @@
+{
+  "taskId": "c505219a-23ef-41e6-8359-5f8e7200e4f4",
+  "calls": [
+    {
+      "stage": "PRODUCTION_PLAN",
+      "model": "doubao-seed-2-1-pro-260915",
+      "inputTokens": 8866,
+      "outputTokens": 1054,
+      "totalTokens": 9920,
+      "latencyMs": 32257,
+      "attempts": 1
+    },
+    {
+      "stage": "PRODUCTION_SHOTS",
+      "model": "doubao-seed-2-1-turbo-260628",
+      "inputTokens": 10528,
+      "outputTokens": 3897,
+      "totalTokens": 14425,
+      "latencyMs": 59536,
+      "attempts": 1
+    },
+    {
+      "stage": "PRODUCTION_REVIEW",
+      "model": "doubao-seed-2-1-pro-260915",
+      "inputTokens": 12031,
+      "outputTokens": 2394,
+      "totalTokens": 14425,
+      "latencyMs": 78627,
+      "attempts": 1
+    },
+    {
+      "stage": "PRODUCTION_REPAIR",
+      "model": "doubao-seed-2-1-pro-260915",
+      "inputTokens": 15654,
+      "outputTokens": 3784,
+      "totalTokens": 19438,
+      "latencyMs": 87544,
+      "attempts": 1,
+      "note": "before checkpoint fix; typed result lost at outer validation"
+    },
+    {
+      "stage": "PRODUCTION_REPAIR",
+      "model": "doubao-seed-2-1-pro-260915",
+      "promptVersion": "customized-storyboard-20261012-sparse-repair",
+      "inputTokens": 15905,
+      "outputTokens": 4017,
+      "totalTokens": 19922,
+      "latencyMs": 111651,
+      "attempts": 1,
+      "reasoningTokens": 1491
+    },
+    {
+      "stage": "PRODUCTION_RECHECK",
+      "model": "doubao-seed-2-1-pro-260915",
+      "promptVersion": "customized-storyboard-20261012-sparse-repair",
+      "inputTokens": 12746,
+      "outputTokens": 2063,
+      "totalTokens": 14809,
+      "latencyMs": 76767,
+      "attempts": 1,
+      "reasoningTokens": 1645
+    }
+  ],
+  "notes": [
+    "Safe stage metadata only; excludes credential failures, billing amount unknown.",
+    "One successful generation diagnostic replay did not preserve usage; one Turbo authentication diagnostic used 75 tokens."
+  ],
+  "recordedTotalTokens": 92939,
+  "recordedModelLatencyMs": 446382,
+  "logicalFinalPipelineLatencyMs": 358838
+}

@@ -1,0 +1,42 @@
+[
+  {
+    "clip": "c1",
+    "videoSeconds": 9.041667,
+    "width": 1280,
+    "height": 720,
+    "sizeBytes": 4984630,
+    "sha256": "9b1cd3a7f54bb8ca667414f1eb1a30555281191d2fe3ff1d2ed9fac0603eff78"
+  },
+  {
+    "clip": "c2",
+    "videoSeconds": 8.041667,
+    "width": 1280,
+    "height": 720,
+    "sizeBytes": 3468164,
+    "sha256": "00108660317e50af965120235de1a68dee5cf657bb914030d1f0623fd72a6517"
+  },
+  {
+    "clip": "c3",
+    "videoSeconds": 7.041667,
+    "width": 1280,
+    "height": 720,
+    "sizeBytes": 3192139,
+    "sha256": "fd131725adaa7ac727c72f4f86f34f689233667c2c039b94be9353f91b100432"
+  },
+  {
+    "clip": "c4",
+    "videoSeconds": 14.041667,
+    "width": 1280,
+    "height": 720,
+    "sizeBytes": 3941739,
+    "sha256": "d91fb3533f371f83458f5f2a0c89134944051af00e67bfec60d313a365614400"
+  },
+  {
+    "clip": "c5",
+    "videoSeconds": 6.041667,
+    "width": 1280,
+    "height": 720,
+    "sizeBytes": 3608530,
+    "sha256": "a791f5525f2926756705b73482c294d05788dcb9f55cbac5107494a238d3b9de"
+  }
+]
