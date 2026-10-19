@@ -2,7 +2,7 @@
 import { onBeforeUnmount, ref, watch } from 'vue';
 import type { CustomizedExtractionWorkspace, ExtractionNodeDetail } from '@ai-marketing/contracts';
 import { CUSTOMIZED_EXTRACTION_NODES } from '@ai-marketing/contracts';
-import { ApiClientError, isAbortError } from '../../../api/http-client';
+import { ApiClientError, isAbortError, safeApiErrorMessage } from '../../../api/http-client';
 import { pollAsyncTask } from '../../../platform/workflow/poll-async-task';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import { extractionApi } from './customized-extraction.api';
@@ -70,7 +70,7 @@ async function recover() {
   feedback.value = '';
   await load();
 }
-const errorText = (e: unknown) => (e instanceof Error ? e.message : '操作未完成，请重试');
+const errorText = (e: unknown) => safeApiErrorMessage(e, '操作未完成，请重试');
 function apply(data: CustomizedExtractionWorkspace) {
   if (workspace.value?.task?.id !== data.task?.id) closeGraph();
   workspace.value = data;

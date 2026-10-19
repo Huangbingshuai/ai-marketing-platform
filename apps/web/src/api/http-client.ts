@@ -34,6 +34,20 @@ export class ApiClientError extends Error {
   }
 }
 
+/** Keep transport/validator details out of user-facing feedback. */
+export const safeApiErrorMessage = (error: unknown, fallback: string): string => {
+  if (!(error instanceof Error)) return fallback;
+  if (error instanceof ApiClientError && error.status >= 500) return fallback;
+  const message = error.message.trim();
+  if (
+    /\b(?:property\s+\S+\s+should not exist|\S+\s+must be\b|\S+\s+should not be empty)\b/iu.test(
+      message,
+    )
+  )
+    return '系统暂时无法处理当前请求，请重新加载后重试。';
+  return /\p{Script=Han}/u.test(message) ? message : fallback;
+};
+
 const responsePayload = async (response: Response): Promise<ApiErrorPayload> => {
   try {
     return (await response.json()) as ApiErrorPayload;

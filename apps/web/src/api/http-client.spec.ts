@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiClientError, isNetworkError, requestJson, requestRaw } from './http-client';
+import {
+  ApiClientError,
+  isNetworkError,
+  requestJson,
+  requestRaw,
+  safeApiErrorMessage,
+} from './http-client';
 import { readRequestGeneration } from './read-request-generation';
 import { advanceAuthGeneration } from './auth-events';
 
@@ -10,6 +16,34 @@ afterEach(() => {
 });
 
 describe('HTTP client', () => {
+  it('presents validator failures in Chinese without changing the API error metadata', () => {
+    const error = new ApiClientError('property workflowRunId should not exist', 400, {
+      code: 'BAD_REQUEST',
+      requestId: 'request-validation',
+    });
+    expect(safeApiErrorMessage(error, '读取失败')).toBe(
+      '系统暂时无法处理当前请求，请重新加载后重试。',
+    );
+    expect(error).toMatchObject({
+      status: 400,
+      code: 'BAD_REQUEST',
+      requestId: 'request-validation',
+      message: 'property workflowRunId should not exist',
+    });
+    expect(
+      safeApiErrorMessage(new ApiClientError('workflowRunId must be a UUID', 400), '读取失败'),
+    ).toBe('系统暂时无法处理当前请求，请重新加载后重试。');
+  });
+  it('keeps actionable Chinese conflicts and uses the supplied fallback for internal failures', () => {
+    expect(
+      safeApiErrorMessage(new ApiClientError('内容已更新，本地修改已保留', 409), '读取失败'),
+    ).toBe('内容已更新，本地修改已保留');
+    expect(safeApiErrorMessage(new ApiClientError('数据库内部错误', 500), '读取失败')).toBe(
+      '读取失败',
+    );
+    expect(safeApiErrorMessage(new TypeError('Failed to fetch'), '读取失败')).toBe('读取失败');
+    expect(safeApiErrorMessage(null, '读取失败')).toBe('读取失败');
+  });
   it('ignores a late unauthorized response after a new login has completed', async () => {
     const dispatchEvent = vi.fn();
     vi.stubGlobal('window', { dispatchEvent });

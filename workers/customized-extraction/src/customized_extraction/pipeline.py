@@ -26,6 +26,7 @@ from .quality import (
     review_candidate,
     FINAL_REVIEW_INSTRUCTION,
     complete_conflict_alternatives,
+    CONFLICT_POLICY_VERSION,
 )
 
 
@@ -76,6 +77,22 @@ def validate_provenance(candidate: Candidate, documents: list[dict[str, Any]]) -
                 "issue identifiers or document references are invalid"
             )
         issue_ids.add(issue.id)
+        if issue.resolution is not None:
+            r = issue.resolution
+            current = getattr(candidate.fields, issue.field)
+            if r.baseValue != current or current.count(r.before) != 1:
+                raise ProvenanceError("conflict resolution base is invalid")
+            start = current.find(r.before)
+            compiled = [
+                current[:start] + value + current[start + len(r.before) :]
+                for value in r.replacements
+            ]
+            if (
+                any(not value.strip() for value in r.replacements)
+                or len(set(r.replacements)) != len(r.replacements)
+                or compiled != issue.alternatives
+            ):
+                raise ProvenanceError("conflict resolution does not match alternatives")
 
 
 class State(TypedDict):
@@ -101,7 +118,11 @@ class Pipeline:
         # Old unfinished tasks may reuse parsing/extraction, but cannot bypass the new raw audit.
         semantic = self.checkpoints.get(("SEMANTIC_REFINEMENT", ""), {})
         summary = semantic.get("auditSummary") if isinstance(semantic, dict) else None
-        if not isinstance(summary, dict) or summary.get("schemaVersion") != 1:
+        if (
+            not isinstance(summary, dict)
+            or summary.get("schemaVersion") != 1
+            or semantic.get("conflictPolicyVersion") != CONFLICT_POLICY_VERSION
+        ):
             self.checkpoints.pop(("SEMANTIC_REFINEMENT", ""), None)
             self.checkpoints.pop(("NORMALIZATION", ""), None)
         self.semaphore = asyncio.Semaphore(concurrency)
@@ -294,11 +315,18 @@ class Pipeline:
                     document_candidate = Candidate.model_validate(
                         self.checkpoints[("DOCUMENT_EXTRACT", doc["assetId"])]
                     )
+
                     async def chunk_progress(completed: int, total: int) -> None:
                         async with progress_lock:
-                            audit_progress["auditProgress"] = {"completed": completed, "total": total}
+                            audit_progress["auditProgress"] = {
+                                "completed": completed,
+                                "total": total,
+                            }
                             await self.checkpoint(
-                                "SEMANTIC_REFINEMENT", doc["assetId"], dict(audit_progress), "RUNNING"
+                                "SEMANTIC_REFINEMENT",
+                                doc["assetId"],
+                                dict(audit_progress),
+                                "RUNNING",
                             )
 
                     report, count = await audit_document(
@@ -314,7 +342,11 @@ class Pipeline:
                     await self.checkpoint(
                         "SEMANTIC_REFINEMENT",
                         doc["assetId"],
-                        {"auditReport": report.model_dump(), "chunkCount": count, **audit_progress},
+                        {
+                            "auditReport": report.model_dump(),
+                            "chunkCount": count,
+                            **audit_progress,
+                        },
                     )
                     await progress(doc)
                     return report, count
@@ -382,11 +414,14 @@ class Pipeline:
             validate_provenance(fused, self.input["documents"])
             await self.checkpoint(node, "", fused.model_dump())
         elif node == "SEMANTIC_REFINEMENT":
+
             async def save_activity(output: dict[str, Any], status: str) -> None:
                 await self.checkpoint(node, "", output, status)
 
             self.activity = activity = SemanticActivity(save_activity)
-            await activity.counter("RAW_AUDIT", "DOCUMENT")(0, len(self.input["documents"]))
+            await activity.counter("RAW_AUDIT", "DOCUMENT")(
+                0, len(self.input["documents"])
+            )
             candidate = Candidate.model_validate(self.checkpoints[("FUSION", "")])
             reports, chunk_count, document_count = await self.audit_documents(candidate)
             await activity.set("RAW_AUDIT", "SUCCEEDED")
@@ -398,7 +433,9 @@ class Pipeline:
             context_fields = {f.field for f in audit.findings} | {
                 i.field for i in candidate.issues
             }
-            await activity.set("EVIDENCE_RECHECK", "RUNNING" if context_fields else "SKIPPED")
+            await activity.set(
+                "EVIDENCE_RECHECK", "RUNNING" if context_fields else "SKIPPED"
+            )
             context = (
                 await collect_repair_context(
                     self.provider,
@@ -424,7 +461,9 @@ class Pipeline:
             )
             if context_fields:
                 await activity.set("EVIDENCE_RECHECK", "SUCCEEDED")
-            await activity.set("TARGETED_REPAIR", "RUNNING" if audit.findings else "SKIPPED")
+            await activity.set(
+                "TARGETED_REPAIR", "RUNNING" if audit.findings else "SKIPPED"
+            )
             candidate = await repair_candidate(
                 self.provider,
                 self.model_semaphore,
@@ -477,7 +516,9 @@ class Pipeline:
             if has_facts:
                 await activity.set("FINAL_REVIEW", "SUCCEEDED")
             new_issue_fields = {i.field for i in candidate.issues} - context_fields
-            await activity.set("CONFLICT_EVIDENCE", "RUNNING" if new_issue_fields else "SKIPPED")
+            await activity.set(
+                "CONFLICT_EVIDENCE", "RUNNING" if new_issue_fields else "SKIPPED"
+            )
             if new_issue_fields:
                 context.extend(
                     await collect_repair_context(
@@ -503,7 +544,10 @@ class Pipeline:
                     )
                 )
                 await activity.set("CONFLICT_EVIDENCE", "SUCCEEDED")
-            await activity.set("CONFLICT_COMPLETION", "RUNNING" if candidate.issues else "SKIPPED")
+            had_issues = bool(candidate.issues)
+            await activity.set(
+                "CONFLICT_COMPLETION", "RUNNING" if had_issues else "SKIPPED"
+            )
             candidate = await complete_conflict_alternatives(
                 self.provider,
                 self.model_semaphore,
@@ -513,16 +557,19 @@ class Pipeline:
                     for doc in self.input["documents"]
                 ],
                 context,
-                activity.counter("CONFLICT_COMPLETION", "ISSUE") if candidate.issues else None,
+                activity.counter("CONFLICT_COMPLETION", "ISSUE")
+                if candidate.issues
+                else None,
             )
             validate_provenance(candidate, self.input["documents"])
-            if candidate.issues:
+            if had_issues:
                 await activity.set("CONFLICT_COMPLETION", "SUCCEEDED")
             await self.checkpoint(
                 node,
                 "",
                 {
                     **candidate.model_dump(),
+                    "conflictPolicyVersion": CONFLICT_POLICY_VERSION,
                     "activity": activity.snapshot(),
                     "auditSummary": {
                         "schemaVersion": 1,

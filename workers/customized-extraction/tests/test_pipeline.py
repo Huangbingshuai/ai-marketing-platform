@@ -22,6 +22,8 @@ from customized_extraction.models import (
     RepairContext,
     RawAuditReport,
     ConflictAlternatives,
+    ConflictFieldPlan,
+    ConflictPlanReview,
 )
 from customized_extraction.pipeline import Pipeline, PartialFailure, validate_provenance
 from customized_extraction.api import Api
@@ -85,6 +87,42 @@ class FakeProvider:
             return model.model_validate({"issues": []})
         if model is RepairContext:
             return model.model_validate({"facts": []})
+        if model is ConflictFieldPlan:
+            payload = json.loads(content)
+            return model.model_validate(
+                {
+                    "decisions": [
+                        {
+                            "id": issue["id"],
+                            "kind": "CONFLICT",
+                            "reason": "受控净含量冲突",
+                            "anchor": payload["currentValue"],
+                            "choices": [
+                                {"replacement": value}
+                                for value in [
+                                    "200g，保质期12个月",
+                                    "250g，保质期12个月",
+                                ]
+                            ],
+                        }
+                        for issue in payload["issues"]
+                    ]
+                }
+            )
+        if model is ConflictPlanReview:
+            return model.model_validate(
+                {
+                    "verdicts": [
+                        {
+                            "id": decision["id"],
+                            "valid": True,
+                            "reason": "受控原文核对通过",
+                        }
+                        for field in json.loads(content)
+                        for decision in field["plan"]["decisions"]
+                    ]
+                }
+            )
         if model is ConflictAlternatives:
             return model.model_validate(
                 {
@@ -383,6 +421,8 @@ async def test_review_can_complete_existing_conflict_candidates_without_duplicat
                 RawAuditReport,
                 RepairContext,
                 ConflictAlternatives,
+                ConflictFieldPlan,
+                ConflictPlanReview,
             ):
                 return await super().generate(stage, instruction, content, model)
             assert (
@@ -413,7 +453,10 @@ async def test_review_can_complete_existing_conflict_candidates_without_duplicat
             for key in ("fields", "fieldSources", "issues")
         }
     )
-    assert reviewed.issues == [repaired]
+    assert len(reviewed.issues) == 1
+    assert reviewed.issues[0].id == repaired.id
+    assert reviewed.issues[0].alternatives == repaired.alternatives
+    assert reviewed.issues[0].resolution is not None
 
 
 @pytest.mark.asyncio
@@ -468,6 +511,8 @@ async def test_review_requires_explicit_valid_decision_to_dismiss_conflict(
                 RawAuditReport,
                 RepairContext,
                 ConflictAlternatives,
+                ConflictFieldPlan,
+                ConflictPlanReview,
             ):
                 return await super().generate(stage, instruction, content, model)
             return model.model_validate(decision)
@@ -500,5 +545,6 @@ async def test_review_requires_explicit_valid_decision_to_dismiss_conflict(
             }
         )
         assert len(actual.issues) == remaining
-        assert weight in actual.issues
+        assert actual.issues[0].id == weight.id
+        assert actual.issues[0].alternatives == weight.alternatives
         assert actual.fields == candidate.fields

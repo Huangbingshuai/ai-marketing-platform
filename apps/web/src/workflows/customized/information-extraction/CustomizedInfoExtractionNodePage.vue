@@ -4,6 +4,9 @@ import WorkflowExtractionActions from '../../../platform/workflow/components/Wor
 import WorkflowExtractionFeedback from '../../../platform/workflow/components/WorkflowExtractionFeedback.vue';
 import {
   CUSTOMIZED_EXTRACTION_NODES,
+  applyCustomizedBriefIssueAlternative,
+  isCustomizedBriefIssueResolution,
+  type CustomizedBriefIssue,
   type CustomizedExtractionTask,
   type ExtractionNodeDetail,
 } from '@ai-marketing/contracts';
@@ -71,6 +74,21 @@ const emit = defineEmits<{
 const sourcesOpen = ref(false);
 const workflowOpen = ref(false);
 const selectedSourceIds = ref<string[] | null>(null);
+const candidateErrors = ref<Record<string, string>>({});
+const candidateSelection = ref<{ issueId: string; index: number } | null>(null);
+const candidatePreview = computed(() => {
+  const selection = candidateSelection.value;
+  const issue = props.view.issues.find((item) => item.id === selection?.issueId);
+  if (!selection || !issue || issue.alternatives[selection.index] === undefined) return null;
+  const current = props.view.fields[issue.field];
+  const applied = applyCustomizedBriefIssueAlternative(current, issue, selection.index);
+  const usable = applied.ok && props.view.status !== 'STALE' && props.sourceConfirmed;
+  return {
+    current,
+    value: applied.ok && usable ? applied.value : issue.alternatives[selection.index]!,
+    applied: usable,
+  };
+});
 let sourceTrigger: HTMLElement | null = null;
 watch(
   () => [props.projectId, props.workflowRunId],
@@ -78,6 +96,8 @@ watch(
     sourcesOpen.value = false;
     workflowOpen.value = false;
     selectedSourceIds.value = null;
+    candidateErrors.value = {};
+    candidateSelection.value = null;
   },
 );
 const running = computed(() => props.view.status === 'RUNNING' || props.view.status === 'QUEUED');
@@ -203,15 +223,45 @@ const acknowledgeIssue = (id: string) => {
       issues: props.view.issues.filter((issue) => issue.id !== id),
     });
 };
-const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, value: string) => {
+const scopedReplacements = (issue: CustomizedBriefIssue): string[] =>
+  isCustomizedBriefIssueResolution(issue.resolution) &&
+  issue.resolution.replacements.length === issue.alternatives.length
+    ? issue.resolution.replacements
+    : [];
+const previewAlternative = (issueId: string, index: number) => {
+  candidateSelection.value = { issueId, index };
+};
+const useAlternative = (id: string, index: number) => {
   if (!editable.value) return;
+  const issue = props.view.issues.find((item) => item.id === id);
+  if (!issue) return;
+  if (props.view.status === 'STALE') {
+    candidateErrors.value = {
+      ...candidateErrors.value,
+      [id]: '来源资料已变化，请核对当前字段后手动处理；当前填写已保留。',
+    };
+    return;
+  }
+  const result = applyCustomizedBriefIssueAlternative(props.view.fields[issue.field], issue, index);
+  if (!result.ok) {
+    const messages = {
+      LEGACY: '历史候选未标注修改范围，请查看完整候选后手动填写，或确认保留当前填写。',
+      INVALID: '该候选的修改范围无法校验，请对照来源手动处理；当前填写未修改。',
+      STALE: '原片段已变化或在当前字段中出现多次，请手动核对；当前填写未修改。',
+    };
+    candidateErrors.value = { ...candidateErrors.value, [id]: messages[result.reason] };
+    return;
+  }
+  const field = issue.field;
   emit('update:view', {
     ...props.view,
-    fields: { ...props.view.fields, [field]: value },
+    fields: { ...props.view.fields, [field]: result.value },
     issues: props.view.issues.filter((issue) => issue.id !== id),
     fieldSources: { ...props.view.fieldSources, [field]: [] },
     suggestions: props.view.suggestions.filter((key) => key !== field),
   });
+  delete candidateErrors.value[id];
+  if (candidateSelection.value?.issueId === id) candidateSelection.value = null;
 };
 
 // Execution status and details are supplied by the API-backed workspace adapter.
@@ -235,14 +285,14 @@ const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, val
       <WorkflowEditingBanner
         v-if="view.temporary"
         node-label="信息提炼"
-        description="修改先保留在编辑副本中；保存版本后用于分镜创作，取消编辑返回原版本。"
+        description="修改先保留在编辑副本中；保存版本后用于脚本创作，取消编辑返回原版本。"
       />
       <header class="extraction-heading">
         <div class="extraction-heading__title">
           <span>02</span>
           <div>
             <h2 id="customized-extraction-title">视频创作信息卡</h2>
-            <p>整理品牌信息、产品信息与视觉约束，确认后用于分镜创作</p>
+            <p>整理品牌信息、产品信息与视觉约束，确认后用于脚本创作</p>
           </div>
         </div>
         <div class="extraction-heading__actions">
@@ -278,7 +328,7 @@ const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, val
         <AlertCircle :size="17" />
         <div>
           <strong>上游资料已更新</strong>
-          <p>旧结果仍可查看，重新提炼并保存版本后继续分镜创作。</p>
+          <p>旧结果仍可查看，重新提炼并保存版本后继续脚本创作。</p>
         </div>
       </div>
       <WorkflowExtractionFeedback
@@ -373,16 +423,60 @@ const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, val
                   :message="issue.message"
                   tone="warning"
                 />
+                <div v-if="scopedReplacements(issue).length" class="candidate-options">
+                  <details class="candidate-scope">
+                    <summary>查看本次修改片段</summary>
+                    <p>{{ issue.resolution?.before || '当前字段为空' }}</p>
+                  </details>
+                  <article
+                    v-for="(replacement, index) in scopedReplacements(issue)"
+                    :key="index"
+                    class="candidate-option"
+                  >
+                    <p>{{ replacement }}</p>
+                    <div class="issue-actions">
+                      <button
+                        type="button"
+                        :disabled="!editable"
+                        :aria-label="`采用候选 ${index + 1}`"
+                        @click="useAlternative(issue.id, index)"
+                      >
+                        采用此项
+                      </button>
+                      <button
+                        type="button"
+                        :aria-label="`查看候选 ${index + 1} 完整字段`"
+                        @click="previewAlternative(issue.id, index)"
+                      >
+                        查看完整字段
+                      </button>
+                    </div>
+                  </article>
+                </div>
+                <template v-else-if="issue.alternatives.length">
+                  <p class="candidate-help">
+                    {{
+                      issue.resolution
+                        ? '候选修改范围无法校验，请查看完整候选并手动核对。'
+                        : '历史候选未标注修改范围，请对照完整候选手动填写，或保留当前填写。'
+                    }}
+                  </p>
+                  <div class="issue-actions">
+                    <button
+                      v-for="(_option, index) in issue.alternatives"
+                      :key="index"
+                      type="button"
+                      @click="previewAlternative(issue.id, index)"
+                    >
+                      查看候选 {{ index + 1 }}
+                    </button>
+                  </div>
+                </template>
+                <p v-if="candidateErrors[issue.id]" class="candidate-error" role="status">
+                  {{ candidateErrors[issue.id] }}
+                </p>
                 <div class="issue-actions">
                   <button type="button" @click="openSources(issue.sourceIds)">查看来源</button
-                  ><button
-                    v-for="option in issue.alternatives"
-                    :key="option"
-                    type="button"
-                    :disabled="!editable"
-                    @click="useAlternative(issue.id, issue.field, option)"
-                  >
-                    采用：{{ option }}</button
                   ><button type="button" :disabled="!editable" @click="acknowledgeIssue(issue.id)">
                     确认保留当前填写
                   </button>
@@ -397,7 +491,7 @@ const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, val
       </div>
       <WorkflowNodeFooter
         back-label="上一步：资料导入"
-        next-label="下一步：分镜创作"
+        next-label="下一步：脚本创作"
         :show-validate="false"
         :next-disabled="!ready"
         @back="emit('back')"
@@ -405,6 +499,23 @@ const useAlternative = (id: string, field: CustomizedExtractionTextFieldKey, val
       />
     </template>
 
+    <WorkflowInformationDialog
+      :open="!!candidatePreview"
+      title="候选完整字段"
+      description="仅供核对；查看不会修改当前填写或解决待确认事项。"
+      @close="candidateSelection = null"
+    >
+      <template v-if="candidatePreview">
+        <h3>当前填写</h3>
+        <p class="candidate-full-text">{{ candidatePreview.current || '当前字段为空' }}</p>
+        <h3>
+          {{
+            candidatePreview.applied ? '仅采用本候选后的完整字段' : '原候选完整字段（需手动核对）'
+          }}
+        </h3>
+        <p class="candidate-full-text">{{ candidatePreview.value }}</p>
+      </template>
+    </WorkflowInformationDialog>
     <WorkflowInformationDialog
       :open="sourcesOpen"
       title="来源资料"
@@ -726,6 +837,46 @@ button:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+.candidate-options {
+  display: grid;
+  gap: 10px;
+}
+.candidate-option {
+  padding: 12px;
+  border: 1px solid #dce5f3;
+  border-radius: 10px;
+  background: #fff;
+}
+.candidate-option > p,
+.candidate-scope p {
+  margin: 0;
+  max-height: 6em;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  font-size: 12px;
+}
+.candidate-scope,
+.candidate-help {
+  color: #7c8ba2;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.candidate-scope summary {
+  cursor: pointer;
+}
+.candidate-error {
+  color: #9a6609;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.candidate-full-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+  font-size: 13px;
 }
 .issue-actions button {
   height: auto;

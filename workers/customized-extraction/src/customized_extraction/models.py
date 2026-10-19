@@ -45,6 +45,13 @@ class Sources(StrictModel):
     targetAudience: list[Source]
 
 
+class ConflictResolution(StrictModel):
+    schemaVersion: Literal[1]
+    baseValue: str = Field(max_length=50000)
+    before: str = Field(max_length=50000)
+    replacements: list[str] = Field(min_length=2)
+
+
 class Issue(StrictModel):
     id: str
     field: Literal[
@@ -64,6 +71,7 @@ class Issue(StrictModel):
     sourceIds: list[str]
     alternatives: list[str]
     blocking: bool
+    resolution: ConflictResolution | None = None
 
 
 class Candidate(StrictModel):
@@ -149,6 +157,34 @@ class ConflictAlternatives(StrictModel):
 
     commonFacts: list[str]
     choices: list[ConflictChoice] = Field(min_length=2)
+
+
+class ScopedConflictChoice(StrictModel):
+    replacement: str = Field(min_length=1, max_length=50000)
+
+
+class ConflictDecision(StrictModel):
+    id: str = Field(min_length=1, max_length=200)
+    kind: Literal["CONFLICT", "DISMISS", "INFORMATION"]
+    reason: str = Field(min_length=1, max_length=1000)
+    anchor: str = Field(max_length=50000)
+    choices: list[ScopedConflictChoice]
+
+
+class ConflictFieldPlan(StrictModel):
+    """Private semantic decisions; the public Issue contract remains unchanged."""
+
+    decisions: list[ConflictDecision] = Field(min_length=1)
+
+
+class ConflictScopeVerdict(StrictModel):
+    id: str = Field(min_length=1, max_length=200)
+    valid: bool
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ConflictPlanReview(StrictModel):
+    verdicts: list[ConflictScopeVerdict] = Field(min_length=1)
 
 
 class QueueMessage(StrictModel):

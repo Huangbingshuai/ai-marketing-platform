@@ -40,6 +40,54 @@ const setup = () => {
   return { repository, service, candidate };
 };
 describe('customized extraction result validation', () => {
+  it('accepts exact scoped candidates and rejects an unrelated base or inconsistent patch', async () => {
+    const { service, repository, candidate } = setup();
+    const before = '青梅酱';
+    candidate.issues = [
+      {
+        id: 'name',
+        field: 'productName',
+        message: '产品名记录冲突',
+        blocking: true,
+        sourceIds: ['doc'],
+        alternatives: ['青梅酱', '青梅果酱'],
+        resolution: {
+          schemaVersion: 1,
+          baseValue: before,
+          before,
+          replacements: ['青梅酱', '青梅果酱'],
+        },
+      },
+    ];
+    await service.complete('p', 't', 'attempt', candidate);
+    expect(repository.complete).toHaveBeenCalledOnce();
+    candidate.issues[0]!.resolution!.baseValue = '另一字段';
+    await expect(service.complete('p', 't', 'attempt', candidate)).rejects.toThrow('局部候选');
+    candidate.issues[0]!.resolution!.baseValue = before;
+    candidate.issues[0]!.alternatives = [];
+    await expect(service.complete('p', 't', 'attempt', candidate)).rejects.toThrow('局部候选');
+    candidate.issues[0]!.alternatives = ['无关整段', '青梅果酱'];
+    await expect(service.complete('p', 't', 'attempt', candidate)).rejects.toThrow('局部候选');
+  });
+  it('rejects overlapping patch scopes even if each replacement is individually valid', async () => {
+    const { service, candidate } = setup();
+    const issue = {
+      id: 'name',
+      field: 'productName' as const,
+      message: '记录冲突',
+      blocking: true,
+      sourceIds: ['doc'],
+      alternatives: ['青梅酱', '青梅果酱'],
+      resolution: {
+        schemaVersion: 1 as const,
+        baseValue: '青梅酱',
+        before: '青梅酱',
+        replacements: ['青梅酱', '青梅果酱'],
+      },
+    };
+    candidate.issues = [issue, { ...issue, id: 'another' }];
+    await expect(service.complete('p', 't', 'attempt', candidate)).rejects.toThrow('范围重叠');
+  });
   it('accepts contract fields with pinned document provenance, without adding empty fields', async () => {
     const { service, repository, candidate } = setup();
     await service.complete('p', 't', 'attempt', candidate);

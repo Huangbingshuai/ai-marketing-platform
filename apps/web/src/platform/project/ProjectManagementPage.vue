@@ -114,7 +114,7 @@ const WORKFLOW_NAV_ITEMS: ReadonlyArray<{
     value: 'CUSTOMIZED',
     label: '定制类',
     title: '定制类 AI 视频生产',
-    description: 'Brief、分镜、资产绑定、逐镜渲染与交付',
+    description: '资料导入、信息提炼、脚本创作、资产准备与视频制作',
   },
   {
     value: 'FISSION',

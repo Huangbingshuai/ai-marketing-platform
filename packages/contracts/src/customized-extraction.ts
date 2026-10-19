@@ -76,7 +76,77 @@ export type CustomizedBriefIssue = {
   sourceIds: string[];
   alternatives: string[];
   blocking: boolean;
+  /** Optional on historical results. Apply only the unique exact fragment, never the whole field. */
+  resolution?: CustomizedBriefIssueResolution | null;
 };
+export type CustomizedBriefIssueResolution = {
+  schemaVersion: 1;
+  /** Frozen generated field value, before manual overrides or earlier issue choices. */
+  baseValue: string;
+  before: string;
+  /** Index-aligned with the existing complete-field alternatives. */
+  replacements: string[];
+};
+
+export function isCustomizedBriefIssueResolution(
+  value: unknown,
+): value is CustomizedBriefIssueResolution {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Object.keys(v).length === 4 &&
+    v.schemaVersion === 1 &&
+    typeof v.baseValue === 'string' &&
+    v.baseValue.length <= 50000 &&
+    typeof v.before === 'string' &&
+    v.before.length <= 50000 &&
+    Array.isArray(v.replacements) &&
+    v.replacements.length >= 2 &&
+    v.replacements.every((s) => typeof s === 'string' && !!s.trim() && s.length <= 50000) &&
+    new Set(v.replacements).size === v.replacements.length
+  );
+}
+
+/** Exact patch application keeps unrelated manual edits and earlier disjoint choices intact. */
+export function applyCustomizedBriefIssueAlternative(
+  currentValue: string,
+  issue: CustomizedBriefIssue,
+  index: number,
+): { ok: true; value: string } | { ok: false; reason: 'LEGACY' | 'INVALID' | 'STALE' } {
+  const r = issue.resolution;
+  if (r == null) return { ok: false, reason: 'LEGACY' };
+  if (
+    !isCustomizedBriefIssueResolution(r) ||
+    !Number.isInteger(index) ||
+    index < 0 ||
+    r.replacements.length !== issue.alternatives.length ||
+    index >= r.replacements.length
+  )
+    return { ok: false, reason: 'INVALID' };
+  const start = r.baseValue.indexOf(r.before);
+  if (start < 0 || start !== r.baseValue.lastIndexOf(r.before) || (!r.before && r.baseValue !== ''))
+    return { ok: false, reason: 'INVALID' };
+  if (
+    r.replacements.some(
+      (replacement, i) =>
+        r.baseValue.slice(0, start) + replacement + r.baseValue.slice(start + r.before.length) !==
+        issue.alternatives[i],
+    )
+  )
+    return { ok: false, reason: 'INVALID' };
+  const currentStart = currentValue.indexOf(r.before);
+  if (
+    currentStart < 0 ||
+    currentStart !== currentValue.lastIndexOf(r.before) ||
+    (!r.before && currentValue !== '')
+  )
+    return { ok: false, reason: 'STALE' };
+  const value =
+    currentValue.slice(0, currentStart) +
+    r.replacements[index]! +
+    currentValue.slice(currentStart + r.before.length);
+  return value.length <= 50000 ? { ok: true, value } : { ok: false, reason: 'INVALID' };
+}
 export type CustomizedBriefCandidate = {
   fields: CustomizedBrief;
   fieldSources: Partial<Record<CustomizedBriefField, CustomizedBriefSource[]>>;

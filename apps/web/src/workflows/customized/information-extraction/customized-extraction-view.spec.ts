@@ -99,7 +99,8 @@ describe('customized extraction presentation', () => {
     const html = await renderToString(createSSRApp(CustomizedInfoExtractionNodePage, props));
     for (const title of ['品牌基础信息', '产品核心信息']) expect(html).toContain(title);
     expect(html).toContain('AI 提炼功能待接入');
-    expect(html).toContain('下一步：分镜创作');
+    expect(html).toContain('下一步：脚本创作');
+    expect(html).toContain('确认后用于脚本创作');
     expect(html).toContain('readonly');
     expect(html).not.toContain('客户');
     for (const removed of [

@@ -17,7 +17,8 @@ from customized_extraction.models import (
     LABELS,
     RepairContext,
     RawAuditReport,
-    ConflictAlternatives,
+    ConflictFieldPlan,
+    ConflictPlanReview,
 )
 from customized_extraction.pipeline import validate_provenance, PartialFailure
 from customized_extraction.provider import Provider
@@ -578,7 +579,15 @@ def test_shared_conflict_facts_survive_every_choice_without_rewriting_other_fiel
         async def generate(
             self, stage: str, instruction: str, content: str, model: type[T]
         ) -> T:
-            assert model is ConflictAlternatives
+            if model is ConflictPlanReview:
+                return model.model_validate(
+                    {
+                        "verdicts": [
+                            {"id": "weight", "valid": True, "reason": "受控依据核对"}
+                        ]
+                    }
+                )
+            assert model is ConflictFieldPlan
             payload = json.loads(content)
             assert payload["documentValues"][0]["value"] == "200g，保质期12个月"
             assert all(
@@ -588,10 +597,17 @@ def test_shared_conflict_facts_survive_every_choice_without_rewriting_other_fiel
             )
             return model.model_validate(
                 {
-                    "commonFacts": ["保质期12个月"],
-                    "choices": [
-                        {"conflictingFacts": ["净含量200g/瓶"]},
-                        {"conflictingFacts": ["净含量250g/瓶"]},
+                    "decisions": [
+                        {
+                            "id": "weight",
+                            "kind": "CONFLICT",
+                            "reason": "净含量不同，保质期共同",
+                            "anchor": "",
+                            "choices": [
+                                {"replacement": "净含量200g/瓶；保质期12个月"},
+                                {"replacement": "净含量250g/瓶；保质期12个月"},
+                            ],
+                        }
                     ],
                 }
             )

@@ -12,6 +12,8 @@ import {
   CUSTOMIZED_BRIEF_LABELS,
   isCustomizedBrief,
   normalizeCustomizedBrief,
+  applyCustomizedBriefIssueAlternative,
+  isCustomizedBriefIssueResolution,
   type CustomizedBriefCandidate,
   type CustomizedExtractionWorkspace,
   type ExtractionNodeDetail,
@@ -241,6 +243,7 @@ export class CustomizedExtractionService implements OnModuleInit, OnModuleDestro
         invalid('提炼来源映射无效');
     }
     const issueIds = new Set<string>();
+    const resolutionRanges: Array<{ field: string; start: number; end: number }> = [];
     for (const issue of candidate.issues) {
       if (
         !issue ||
@@ -260,6 +263,21 @@ export class CustomizedExtractionService implements OnModuleInit, OnModuleDestro
       )
         invalid('资料差异结构无效');
       issueIds.add(issue.id);
+      if (issue.resolution != null) {
+        const resolution = issue.resolution;
+        if (!isCustomizedBriefIssueResolution(resolution) ||
+            resolution.baseValue !== candidate.fields[issue.field] ||
+            issue.alternatives.length !== resolution.replacements.length ||
+            !issue.alternatives.every((_value, index) =>
+              applyCustomizedBriefIssueAlternative(resolution.baseValue, issue, index).ok))
+          invalid('资料差异局部候选无效');
+        const start = resolution.baseValue.indexOf(resolution.before);
+        const end = start + resolution.before.length;
+        if (resolutionRanges.some((range) => range.field === issue.field &&
+            ((range.start === start && range.end === end) || Math.max(start, range.start) < Math.min(end, range.end))))
+          invalid('资料差异局部候选范围重叠');
+        resolutionRanges.push({ field: issue.field, start, end });
+      }
     }
     const fields = normalizeCustomizedBrief(candidate.fields);
     for (const [key, value] of Object.entries(fields))
