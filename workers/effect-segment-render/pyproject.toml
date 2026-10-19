@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Seedance worker for effect-workflow segment rendering"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "ai-runtime",
   "aio-pika>=9.5.7,<10",
   "httpx>=0.28.1,<1",
   "pydantic>=2.12.5,<3",
@@ -36,9 +37,12 @@ testpaths = ["tests"]
 python_version = "3.12"
 strict = true
 packages = ["effect_segment_render"]
-mypy_path = ["src"]
+mypy_path = ["src", "../shared/ai-runtime/src"]
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = ["aio_pika.*"]
 ignore_missing_imports = true
+
+[tool.uv.sources]
+ai-runtime = { path = "../shared/ai-runtime", editable = true }

@@ -263,6 +263,10 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
       ARK_API_KEY: ${ARK_API_KEY:-}
+      SEEDANCE_BASE_URL: ${SEEDANCE_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-${ARK_API_KEY:-}}
+      CUSTOMIZED_VIDEO_RENDER_TIMEOUT_SECONDS: ${CUSTOMIZED_VIDEO_RENDER_TIMEOUT_SECONDS:-900}
+      SEEDANCE_POLL_INTERVAL_SECONDS: ${SEEDANCE_POLL_INTERVAL_SECONDS:-8}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -271,7 +275,8 @@ services:
   effect-segment-render-worker:
     profiles: ['effect-segment-render']
     build:
-      context: ./workers/effect-segment-render
+      context: ./workers
+      dockerfile: effect-segment-render/Dockerfile
     environment:
       INTERNAL_API_BASE_URL: http://host.docker.internal:${API_PORT:-3000}/api
       EFFECT_SEGMENT_RENDER_WORKER_TOKEN: ${EFFECT_SEGMENT_RENDER_WORKER_TOKEN:-local-effect-segment-render-worker-token}

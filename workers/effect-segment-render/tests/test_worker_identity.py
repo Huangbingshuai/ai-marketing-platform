@@ -26,7 +26,7 @@ def test_compose_and_container_entry_use_the_same_worker_identity() -> None:
     compose = (REPOSITORY_ROOT / "compose.yaml").read_text(encoding="utf-8")
     assert "\n  effect-segment-render-worker:\n" in compose
     assert "\n  seedance-worker:\n" not in compose
-    assert "context: ./workers/effect-segment-render\n" in compose
-    assert 'CMD ["/app/.venv/bin/effect-segment-render-worker"]' in (
+    assert "dockerfile: effect-segment-render/Dockerfile\n" in compose
+    assert 'CMD ["/app/effect-segment-render/.venv/bin/effect-segment-render-worker"]' in (
         WORKER_ROOT / "Dockerfile"
     ).read_text(encoding="utf-8")

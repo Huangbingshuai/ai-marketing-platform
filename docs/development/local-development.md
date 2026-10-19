@@ -114,9 +114,9 @@ docker compose --profile customized-assets --profile customized-production up -d
 docker compose --profile customized-assets --profile customized-production ps customized-assets-worker customized-production-worker
 ```
 
-两者使用各自目录的 Dockerfile 和 uv.lock，只安装轻量共享执行依赖。资产队列为 `customized.assets.requested`；视频制作队列仍为 `customized.production.requested`，仅处理分镜/逐镜 Prompt。并发、超时和请求次数分别由 `CUSTOMIZED_ASSETS_*` / `CUSTOMIZED_PRODUCTION_*` 配置，默认 2 / 300 秒 / 2 次。启动消费者会消费真实消息；旧队列资产任务由 API Outbox 转交，不重新创建业务任务。
+两者使用各自目录的 Dockerfile 和 uv.lock，复用轻量共享执行依赖。视频制作镜像另安装 FFmpeg，API 环境须提供 ffprobe。资产队列为 `customized.assets.requested`；视频制作队列仍为 `customized.production.requested`，处理分镜、逐镜 Prompt 和逐镜视频。并发、超时和请求次数分别由 `CUSTOMIZED_ASSETS_*` / `CUSTOMIZED_PRODUCTION_*` 配置，默认 2 / 300 秒 / 2 次。启动消费者会消费真实消息；旧队列资产任务由 API Outbox 转交，不重新创建业务任务。
 
-受控测试与启动边界见[资产 Worker](../../workers/customized-assets/README.md)、[视频制作 Worker](../../workers/customized-production/README.md)。素材交付后端尚未实现，暂不启动空消费者。资产图片和视频渲染尚未接通。
+受控测试与启动边界见[资产 Worker](../../workers/customized-assets/README.md)、[视频制作 Worker](../../workers/customized-production/README.md)。素材交付后端尚未实现，暂不启动空消费者。资产图片及逐镜视频已接通。视频制作 Compose 并发为1，渲染使用效果类相同的 Seedance 模型配置；`CUSTOMIZED_VIDEO_RENDER_TIMEOUT_SECONDS` 默认900秒，`SEEDANCE_POLL_INTERVAL_SECONDS` 默认8秒。整片合成及交付未接通。
 
 ## 效果类片段渲染 Worker
 

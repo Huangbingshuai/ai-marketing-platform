@@ -50,7 +50,18 @@ class ShotList(Model):
     shots: Annotated[list[ProductionShot], Field(min_length=1, max_length=500)]
 
 
-def scoped_shot_repair(shots: list[dict[str, Any]]) -> type[ShotList]:
+def scoped_shot_list(asset_ids: set[str]) -> type[ShotList]:
+    class ScopedShotList(ShotList):
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            schema = super().model_json_schema(*args, **kwargs)
+            schema['$defs']['Binding']['properties']['assetId']['enum'] = sorted(asset_ids)
+            return schema
+
+    return ScopedShotList
+
+
+def scoped_shot_repair(shots: list[dict[str, Any]], asset_ids: set[str] | None = None) -> type[ShotList]:
     allowed = {s['id'] for s in shots}
     duration = sum(s['durationSeconds'] for s in shots)
 
@@ -59,6 +70,8 @@ def scoped_shot_repair(shots: list[dict[str, Any]]) -> type[ShotList]:
         def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
             schema = super().model_json_schema(*args, **kwargs)
             schema['$defs']['ProductionShot']['properties']['id']['enum'] = sorted(allowed)
+            if asset_ids is not None:
+                schema['$defs']['Binding']['properties']['assetId']['enum'] = sorted(asset_ids)
             schema['properties']['shots'].update(minItems=len(allowed), maxItems=len(allowed))
             return schema
 
@@ -158,6 +171,10 @@ def describe(operation: str, value: dict[str, Any]) -> str:
 
 
 async def run(api: Api, provider: Provider, claim: dict[str, Any]) -> None:
+    if claim['input'].get('shotWorkflowVersion') == 2 and claim['input']['operation'] in ('SHOTS', 'PROMPT'):
+        from .video_pipeline import run_video
+        await run_video(api, provider, claim)
+        return
     if claim['input'].get('assetWorkflowVersion') == 2 and claim['input']['operation'] == 'ASSETS':
         from .asset_pipeline import run_assets
         await run_assets(api, provider, claim)
@@ -185,7 +202,7 @@ async def run(api: Api, provider: Provider, claim: dict[str, Any]) -> None:
         instruction = '从完整故事整理产品、人物、场景、道具四类共用定义。产品始终独立。相同实体复用existingDefinitions中的稳定id，旧定义仅用于身份对齐不当作事实来源，不同场景或角色不误合并。description为公共外观；产品description和knownFacts仅写简报明确的特征，未说明的结构位置、接口细节不得擅自确定；designNotes写允许创作的设定或待确认内容，明确标为设计方案而非真实产品事实。sourceText引用故事或简报依据。人物、场景与道具可补充故事所需的创作设定，保持动作和连接关系可执行。imageRequirements按实际形态逐行给出以后制作图片所需的视角、表情姿态、材质/界面细节或空间光影要求，未知产品结构仍标待确认，不借制作要求新增产品事实；软件不要机械套实物三视图。这些只是制作要求，不能声称图片已生成。不要生成分镜；不要把品牌Logo想象成产品外观。'
     else:
         context = {'story': story_context(snapshot['script']), 'assets': text_assets(snapshot['document']['assets']), 'brief': snapshot['brief'], 'targetDurationSeconds': target_duration(snapshot)}
-        schema = ShotList
+        schema = scoped_shot_list({a['id'] for a in snapshot['document']['assets']})
         instruction = '根据完整故事和已确认资产目录拆分为连续分镜，时长合计与目标相等。镜头之间动作和空间衔接自然，给出画面、景别、运镜、对白、声音、氛围。产品事实与结构位置以brief及已确认资产为准，故事或plan中的未经确认细节不能覆盖它们。先核对每镜实际时间容量，不在短镜头塞入长广播、对白与多步操作；可以缩短广播或调整各镜时长。省略耗时操作时必须明确实际剪辑切点、哪些操作不展示、切后哪种完成状态可见，不能只写快速利落、压缩动作或跟拍来假装时间省略。接线需说明两端已连接或实际接入过程，收纳前须先将充电器从电源插座拔离，再合插脚；省略动作须明确交代省略后的状态，不能让物体瞬移。bindings仅绑定当前镜头实际出场或需要参考的对象，禁止把全部目录塞进每镜。只引用给定资产id，共用外观不能随镜头跳变。'
     context['operation'] = operation
     if snapshot['script'].get('creation'):
@@ -239,7 +256,7 @@ async def run(api: Api, provider: Provider, claim: dict[str, Any]) -> None:
                         return
                     del chunks[key]
                 async with semaphore:
-                    result = await provider.generate('PRODUCTION_SHOTS', snapshot['models']['detail'], ShotList,
+                    result = await provider.generate('PRODUCTION_SHOTS', snapshot['models']['detail'], schema,
                         {**context, 'currentSegment': segment.model_dump(), 'previousSegment': segments[index-1].model_dump() if index else None, 'nextSegment': segments[index+1].model_dump() if index+1 < len(segments) else None},
                         instruction+'本次只生成currentSegment；这批镜头时长合计严格等于该段时长。完整故事与相邻段落仅用于确保衔接，不重复生成其镜头。')
                 data = result.model_dump()
@@ -286,17 +303,29 @@ async def run(api: Api, provider: Provider, claim: dict[str, Any]) -> None:
                     if not affected <= {s['id'] for s in value['shots']}:
                         raise ValueError('review refers to unknown shots')
                     value = {'shots': [s for s in value['shots'] if s['id'] in affected]}
-                repair_schema = scoped_shot_repair(value['shots']) if operation == 'SHOTS' else schema
+                repair_schema = scoped_shot_repair(value['shots'], {a['id'] for a in snapshot['document']['assets']}) if operation == 'SHOTS' else schema
                 repair_instruction = ('仅修订result.shots中的准确镜头ID，保持这些镜头数量；其合计时长必须等于repairDurationSeconds，可重新分配各镜时长，不能使用完整影片目标作为局部合计。input和continuityContext只用于事实与前后衔接，不重新拆分故事，不输出其中其他镜头。需要省略耗时操作时，必须明确实际剪辑切点、哪些动作不展示，以及切后可见的完成状态；不能用快速、压缩动作或连贯跟拍代替时间省略。保留关键观看事件，不用增加更多动作来修复容量问题。补足产品连接和断开状态，产品事实以brief为准，bindings只引用本镜实际出场对象。'
                                       if operation == 'SHOTS' else instruction)
-                revised = (await provider.generate('PRODUCTION_REPAIR',snapshot['models']['creative'],repair_schema,{'input':context,'result':value,'review':review.model_dump(), 'continuityContext': original if partial else None, 'repairDurationSeconds': sum(s['durationSeconds'] for s in value['shots']) if operation == 'SHOTS' else None},'按具体问题定向修订，保持正常内容和对象身份。'+repair_instruction)).model_dump()
+                if 'repairCandidate' in stored:
+                    revised = stored['repairCandidate']
+                else:
+                    revised = (await provider.generate('PRODUCTION_REPAIR',snapshot['models']['creative'],repair_schema,{'input':context,'result':value,'review':review.model_dump(), 'continuityContext': original if partial else None, 'repairDurationSeconds': sum(s['durationSeconds'] for s in value['shots']) if operation == 'SHOTS' else None},'按具体问题定向修订，保持正常内容和对象身份。'+repair_instruction)).model_dump()
+                    # Persist the typed candidate before outer identity, binding,
+                    # and timing checks. An invalid candidate is not adopted;
+                    # resuming must not purchase the same repair again.
+                    stored = {**stored, 'repairCandidate': revised}
+                    await step(repair_node, 'RUNNING', '修订候选已保存', '正在校验修订候选的镜头身份、时长与对象引用，尚未采用。', stored)
                 if partial:
                     if {s['id'] for s in revised['shots']} != affected:
                         raise ValueError('repair changed shot identities')
                     changed = {s['id']: s for s in revised['shots']}
                     revised = {'shots': [changed.get(s['id'], s) for s in original['shots']]}
                 value = revised
-            check_output(operation,value,snapshot)
+            try:
+                check_output(operation,value,snapshot)
+            except ValueError:
+                await step(repair_node, 'FAILED', '修订结果需核对', '修订候选已保留，镜头结构、时长或对象引用未通过校验，未采用或提交。恢复不会重复生成该候选。', stored)
+                raise
             stored = {**stored,'value':value,'revised':value}
             await step(repair_node,'RUNNING','修订内容',describe(operation,value),stored)
             recheck = Audit.model_validate(stored['recheck']) if 'recheck' in stored else await provider.generate('PRODUCTION_RECHECK',snapshot['models']['creative'],Audit,{'input':context,'result':value,'previousIssues':review.issues},'独立复核修订后的完整结果，核查previousIssues是否实际解决。'+audit_instruction)

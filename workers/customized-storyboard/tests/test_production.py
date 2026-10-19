@@ -194,3 +194,82 @@ async def test_scoped_repair_preserves_unaffected_shots_and_rechecks_full_result
     assert len(shots) == 2 and sum(s['durationSeconds'] for s in shots) == 30
     assert shots[0]['visual'] == '水持续倒入杯中'
     assert shots[1]['visual'] == SHOT['visual']
+
+
+def test_shot_requests_fence_binding_ids_without_changing_base_contract() -> None:
+    from customized_production_runtime.pipeline import scoped_shot_list, ShotList
+    for model in (scoped_shot_list({'cup', 'unrelated'}), scoped_shot_repair([SHOT], {'cup', 'unrelated'})):
+        assert model.model_json_schema()['$defs']['Binding']['properties']['assetId']['enum'] == ['cup', 'unrelated']
+    assert 'enum' not in ShotList.model_json_schema()['$defs']['Binding']['properties']['assetId']
+
+
+def repair_claim() -> dict[str, Any]:
+    return {
+        'input': snapshot('SHOTS'),
+        'output': {
+            'plan': {'summary': '倒水', 'segments': [{'content': '倒水', 'durationSeconds': 30}]},
+            'value': {'shots': [SHOT]},
+            'audit': {'summary': '动作需明确', 'issues': ['明确水流'], 'affectedIds': ['s1']},
+        },
+        'steps': [{'id': node, 'status': 'SUCCEEDED' if node in {'SNAPSHOT', 'PLAN', 'GENERATE', 'REVIEW'} else 'PENDING'}
+                  for node in ['SNAPSHOT', 'PLAN', 'GENERATE', 'REVIEW', 'REPAIR', 'SAVE']],
+    }
+
+
+def resume_checkpoints(api: Api, claim: dict[str, Any]) -> None:
+    for path, body in api.calls:
+        if path == 'checkpoint':
+            claim['steps'] = [body['step'] if item['id'] == body['step']['id'] else item for item in claim['steps']]
+            if 'output' in body:
+                claim['output'] = body['output']
+
+
+@pytest.mark.asyncio
+async def test_invalid_repair_candidate_is_retained_and_not_repurchased_on_resume() -> None:
+    class InvalidRepair:
+        calls = 0
+
+        async def generate(self, stage: str, model: str, schema: Any, context: Any, instruction: str) -> Any:
+            assert stage == 'PRODUCTION_REPAIR'
+            self.calls += 1
+            # Emulate a provider that did not enforce the request JSON Schema.
+            return schema.model_validate({'shots': [{**SHOT, 'bindings': [{'assetId': 'not-in-catalog', 'description': '错误引用'}]}]})
+
+    api, provider, claim = Api(), InvalidRepair(), repair_claim()
+    for _ in range(2):
+        with pytest.raises(ValueError, match='invalid shot binding'):
+            await run(api, provider, claim)  # type: ignore[arg-type]
+        resume_checkpoints(api, claim)
+    assert provider.calls == 1
+    assert claim['output']['repairCandidate']['shots'][0]['bindings'][0]['assetId'] == 'not-in-catalog'
+    assert 'revised' not in claim['output']
+    assert claim['output']['value']['shots'] == [SHOT]
+    assert next(s for s in claim['steps'] if s['id'] == 'REPAIR')['status'] == 'FAILED'
+    assert not any(path == 'complete' for path, _ in api.calls)
+
+
+@pytest.mark.asyncio
+async def test_recheck_failure_resumes_saved_repair_without_new_repair_call() -> None:
+    class RetryRecheck:
+        calls: list[str]
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def generate(self, stage: str, model: str, schema: Any, context: Any, instruction: str) -> Any:
+            self.calls.append(stage)
+            if stage == 'PRODUCTION_REPAIR':
+                return schema.model_validate({'shots': [{**SHOT, 'visual': '水流持续落入杯中'}]})
+            assert stage == 'PRODUCTION_RECHECK'
+            if self.calls.count(stage) == 1:
+                raise TimeoutError('controlled recheck outage')
+            return schema.model_validate({'summary': '完整结果复核通过', 'issues': []})
+
+    api, provider, claim = Api(), RetryRecheck(), repair_claim()
+    with pytest.raises(TimeoutError):
+        await run(api, provider, claim)  # type: ignore[arg-type]
+    resume_checkpoints(api, claim)
+    await run(api, provider, claim)  # type: ignore[arg-type]
+    assert provider.calls == ['PRODUCTION_REPAIR', 'PRODUCTION_RECHECK', 'PRODUCTION_RECHECK']
+    assert api.calls[-1][0] == 'complete'
+    assert api.calls[-1][1]['output']['shots'][0]['visual'] == '水流持续落入杯中'

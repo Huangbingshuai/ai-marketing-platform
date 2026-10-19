@@ -6,14 +6,15 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_NO_DEV=1
 
-WORKDIR /app
+WORKDIR /app/effect-segment-render
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Retries=3 update \
     && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-COPY pyproject.toml uv.lock ./
+COPY shared/ai-runtime /app/shared/ai-runtime
+COPY effect-segment-render/pyproject.toml effect-segment-render/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
-COPY src ./src
+COPY effect-segment-render/src ./src
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
-CMD ["/app/.venv/bin/effect-segment-render-worker"]
+CMD ["/app/effect-segment-render/.venv/bin/effect-segment-render-worker"]

@@ -4,9 +4,9 @@ from ai_runtime.http import InternalApiError
 from customized_production_runtime.consumer import WORKERS, execute, validate_claim
 
 
-def test_video_worker_accepts_only_its_two_internal_operations() -> None:
+def test_video_worker_accepts_only_its_three_internal_operations() -> None:
     worker = WORKERS['VIDEO']
-    assert worker.operations == ('SHOTS', 'PROMPT')
+    assert worker.operations == ('SHOTS', 'PROMPT', 'RENDER')
     assert worker.queue == 'customized.production.requested'
     with pytest.raises(ValueError):
         validate_claim(worker, {'input': {'operation': 'ASSETS'}})
