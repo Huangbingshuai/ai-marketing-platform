@@ -29,7 +29,7 @@ const items: ProductionAsset[] = [
   {
     id: 'cup',
     kind: 'PRODUCT',
-    name: '白釉随行杯',
+    name: '白釉随行杯 SW-C01（燕麦白款）',
     description: '白釉陶瓷杯，统一杯身、杯口与把手结构。',
     knownFacts: '白釉外观',
     designNotes: '柔和中性光线',
@@ -47,6 +47,25 @@ const items: ProductionAsset[] = [
     sourceText: '受控测试资料',
     imageRequirements: '同一空间不同方向',
     image: { assetId: 'room-image', version: 1 },
+  },
+  {
+    id: 'bag',
+    kind: 'PROP',
+    name: '日常通勤帆布包（宽肩带与内置收纳袋）',
+    description:
+      '用于随身携带杯具、电脑与日常物品，保持包身结构、肩带比例与帆布材质统一。较长描述用于验证两行截断后仍与其他卡片对齐。',
+    knownFacts: '',
+    designNotes: '',
+    sourceText: '受控布局测试资料',
+  },
+  {
+    id: 'cable',
+    kind: 'PROP',
+    name: '数据线',
+    description: '',
+    knownFacts: '',
+    designNotes: '',
+    sourceText: '受控布局测试资料',
   },
 ];
 createApp({

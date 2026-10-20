@@ -19,6 +19,7 @@ function harness(assets = structuredClone(fixture.assets) as ProductionAsset[]) 
     customizedProductionTask: {
       findUnique: vi.fn().mockResolvedValue(null),
       findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
       create,
     },
     jobOutbox: { create: vi.fn() },

@@ -43,6 +43,7 @@ function harness(operation = 'PROMPT', status = 'FAILED') {
       findFirst: vi.fn(async () => row),
       update,
       count: vi.fn(async () => 0),
+      findMany: vi.fn(async () => [] as (typeof row)[]),
     },
   };
   const db = { $transaction: (fn: (value: typeof tx) => Promise<unknown>) => fn(tx) };
@@ -161,7 +162,7 @@ describe('explicit mechanical Prompt recovery', () => {
       const h = harness();
       const before = structuredClone(h.row);
       if (block === 'source') h.valid.mockRejectedValue(new Error('source or draft changed'));
-      else h.tx.customizedProductionTask.count.mockResolvedValue(1);
+      else h.tx.customizedProductionTask.findMany.mockResolvedValue([h.row]);
       await expect(h.repo.action('project', 'task', false)).rejects.toThrow();
       expect(h.row).toEqual(before);
       expect(h.update).not.toHaveBeenCalled();

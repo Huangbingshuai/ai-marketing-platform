@@ -6,7 +6,11 @@ import type {
   StoryboardWorkspace,
 } from '@ai-marketing/contracts';
 import Page from './source-import/CustomizedImportNodePage.vue';
-import { customizedProductionNavigationRun } from './customized-production-navigation';
+import {
+  customizedProductionNavigationRun,
+  customizedScriptRun,
+  customizedScriptSelectionRun,
+} from './customized-production-navigation';
 const api = vi.hoisted(() => ({
   overview: vi.fn(),
   tree: vi.fn(),
@@ -146,6 +150,120 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('ordinary customized production navigation', () => {
+  it('resolves selected script paths using current, remembered, then latest valid descendants', () => {
+    const data = {
+      ...tree,
+      branches: [
+        ...tree.branches,
+        { ...branch('other-assets', 'other-script', 'SHOT_PROMPT'), createdAt: '2026-10-19' },
+        { ...branch('other-assets-2', 'other-script', 'SHOT_PROMPT'), createdAt: '2026-10-20' },
+      ],
+    };
+    expect(customizedScriptRun(data, 'video')).toBe('script');
+    expect(customizedScriptSelectionRun(data, 'video', 'script', 'assets')).toBe('video');
+    expect(customizedScriptSelectionRun(data, 'assets', 'other-script')).toBe('other-assets-2');
+    expect(customizedScriptSelectionRun(data, 'assets', 'other-script', 'other-assets')).toBe(
+      'other-assets',
+    );
+    expect(customizedScriptSelectionRun(data, 'assets', 'other-script', 'video')).toBe(
+      'other-assets-2',
+    );
+    expect(customizedScriptSelectionRun(data, 'assets', 'missing-script', 'deleted')).toBe(
+      'missing-script',
+    );
+    expect(
+      customizedScriptRun({ ...data, branches: [branch('loop', 'loop', 'SHOT_PROMPT')] }, 'loop'),
+    ).toBeNull();
+  });
+  function dynamicServer() {
+    let activeRun = 'assets';
+    let currentNode = 'SHOT_PROMPT';
+    const data = {
+      ...tree,
+      branches: [...tree.branches, branch('other-assets', 'other-script', 'SHOT_PROMPT')],
+    };
+    api.overview.mockImplementation(async () => ({
+      data: {
+        run: {
+          id: activeRun,
+          projectId: 'project',
+          workflow: 'CUSTOMIZED',
+          workflowSpace: 'CUSTOMIZED_PROJECT',
+          currentNodeId: currentNode,
+        },
+        nodeStates: [],
+      },
+    }));
+    api.tree.mockImplementation(async () => ({
+      data: {
+        ...data,
+        activeWorkflowRunId: activeRun,
+        branches: data.branches.map((b) => ({ ...b, isActive: b.workflowRunId === activeRun })),
+      },
+    }));
+    api.activate.mockImplementation(async (_project: string, run: string, nodeId: string) => {
+      activeRun = run;
+      currentNode = nodeId;
+      return {};
+    });
+    return { data };
+  }
+  it('switches A → B → A and restores the exact chosen production descendant after refresh', async () => {
+    dynamicServer();
+    const state = await mount();
+    await call(state, 'activateScriptSelection', 'other-script');
+    expect(state.workflowRunId).toBe('other-assets');
+    expect(state.activeStep).toBe(2);
+    expect(state.storyboardViewedRunId).toBe('other-script');
+    await call(state, 'continueScript', 'other-script', 4);
+    expect(state.workflowRunId).toBe('other-assets');
+    expect(state.activeStep).toBe(4);
+    await call(state, 'activateScriptSelection', 'script');
+    expect(state.workflowRunId).toBe('assets');
+    expect(state.activeStep).toBe(2);
+    await call(state, 'selectBranch', { workflowRunId: 'video', nodeId: 'SHOT_RENDER' });
+    expect(state.workflowRunId).toBe('video');
+    await call(state, 'activateScriptSelection', 'other-script');
+    await call(state, 'activateScriptSelection', 'script');
+    expect(state.workflowRunId).toBe('video');
+    const refreshed = await mount();
+    expect(refreshed.workflowRunId).toBe('video');
+    expect(refreshed.activeStep).toBe(2);
+    expect(api.put).not.toHaveBeenCalled();
+  });
+  it('serializes activation and prevents superseded replies from reloading an obsolete script', async () => {
+    dynamicServer();
+    const state = await mount();
+    let resolve!: () => void;
+    api.activate.mockImplementationOnce(
+      () =>
+        new Promise<void>((done) => {
+          resolve = done;
+        }),
+    );
+    let latest = true;
+    const first = call(state, 'activateScriptSelection', 'other-script', () => latest);
+    await settle();
+    latest = false;
+    const second = call(state, 'activateScriptSelection', 'script', () => true, true);
+    resolve();
+    expect(await first).toBe(false);
+    expect(await second).toBe(true);
+    expect(state.workflowRunId).toBe('script');
+    expect(api.activate.mock.calls.map((args) => args[1])).toEqual(['other-assets', 'script']);
+  });
+  it('preserves current path on activation failure and uses exact tree script targets', async () => {
+    dynamicServer();
+    const state = await mount();
+    api.activate.mockRejectedValueOnce(new Error('offline'));
+    expect(await call(state, 'activateScriptSelection', 'other-script')).toBe(false);
+    expect(state.workflowRunId).toBe('assets');
+    expect(state.activeStep).toBe(3);
+    expect(state.branchError).toContain('切换脚本分支失败');
+    await call(state, 'selectBranch', { workflowRunId: 'other-script', nodeId: 'STORYBOARD' });
+    expect(state.workflowRunId).toBe('other-script');
+    expect(api.activate).toHaveBeenLastCalledWith('project', 'other-script', 'STORYBOARD');
+  });
   it('keeps exact script descendants, including multiple production forks, and rejects unrelated or corrupt ancestry', () => {
     expect(customizedProductionNavigationRun(tree, 'assets', 'script')).toBe('assets');
     expect(customizedProductionNavigationRun(tree, 'video', 'script')).toBe('video');

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { productionTasksConflict } from '@ai-marketing/contracts';
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import {
   Clapperboard,
@@ -222,7 +223,7 @@ async function retryTask(taskId: string) {
     target.status !== 'FAILED' ||
     !['PROMPT', 'RENDER'].includes(target.operation) ||
     busy.value ||
-    running.value ||
+    activeTasks.value.some((task) => productionTasksConflict(target, task)) ||
     imageSubmitting.value ||
     retryingTaskId.value
   )
@@ -446,6 +447,16 @@ const assetsPending = computed(
 const promptDirty = computed(() => promptText.value !== promptBase.value);
 const tasks = computed(() => productionNodeTasks(workspace.value?.tasks ?? [], props.mode));
 const running = computed(() => tasks.value.find((t) => ['RUNNING', 'QUEUED'].includes(t.status)));
+const activeTasks = computed(() =>
+  (workspace.value?.tasks ?? []).filter((t) => ['RUNNING', 'QUEUED'].includes(t.status)),
+);
+const wholeTaskRunning = computed(() =>
+  tasks.value.some(
+    (t) =>
+      ['RUNNING', 'QUEUED'].includes(t.status) &&
+      (!['PROMPT', 'RENDER'].includes(t.operation) || !t.target),
+  ),
+);
 const pageProgress = computed(() => productionPageProgressTask(tasks.value, props.mode));
 // Images can also be requested from the video library. Refresh those results
 // silently without borrowing asset progress or locking the video workbench.
@@ -602,10 +613,18 @@ async function refreshTask() {
     current = pollingTask.value;
   if (!current) return;
   try {
-    const result = await productionApi.task(props.projectId, current.id, scope.signal);
+    const results = await Promise.all(
+      activeTasks.value.map((task) => productionApi.task(props.projectId, task.id, scope.signal)),
+    );
+    const result =
+      results.find((task) => !['RUNNING', 'QUEUED'].includes(task.status)) ??
+      results.find((task) => task.id === current.id);
+    if (!result) return;
     if (scope !== controller || !workspace.value) return;
     pollingInterrupted.value = false;
-    workspace.value.tasks = workspace.value.tasks.map((t) => (t.id === result.id ? result : t));
+    workspace.value.tasks = workspace.value.tasks.map(
+      (t) => results.find((updated) => updated.id === t.id) ?? t,
+    );
     if (['RUNNING', 'QUEUED'].includes(result.status)) {
       if (
         result.operation === 'IMAGE' &&
@@ -656,7 +675,10 @@ async function refreshTask() {
           editing.value
         )
           await save();
-      } else notice.value = '任务已结束，保存当前修改后可重新加载结果';
+      } else {
+        notice.value = '任务已结束，保存当前修改后可重新加载结果';
+        schedule();
+      }
     }
   } catch (e) {
     if (scope === controller && !isAbortError(e)) {
@@ -762,7 +784,18 @@ async function generate(
   targetAssetId?: string,
   clipId?: string,
 ) {
-  if (!workspace.value || busy.value || running.value || imageSubmitting.value) return;
+  if (
+    !workspace.value ||
+    busy.value ||
+    imageSubmitting.value ||
+    activeTasks.value.some((task) =>
+      productionTasksConflict(
+        { operation, target: clipId ? { kind: 'CLIP', id: clipId } : undefined },
+        task,
+      ),
+    )
+  )
+    return;
   if (videoWorkbench.value && !(await videoWorkbench.value.flushPendingEdits())) return;
   if (promptDirty.value && !(await savePrompt())) return;
   // A restored draft is already the local baseline but is not yet confirmed.
@@ -973,7 +1006,7 @@ async function adoptCandidate() {
     !(await requestActionConfirmation({
       title: '转入人工核对草稿？',
       description:
-        '未通过的AI候选不会自动确认。请根据具体问题修改，再保存修改；任务仍保留未完成状态。',
+        '转入后，页面中的编辑会自动保存。请逐项核对已有问题；转入操作不会自动修复问题，AI 任务仍保留未通过状态。',
       confirmLabel: '转入草稿',
     }))
   ) {
@@ -1240,7 +1273,8 @@ defineExpose({ flushPendingEdits });
         :document="videoDocument"
         :workspace="workspace"
         :editing="true"
-        :locked="busy || !!running"
+        :locked="busy || wholeTaskRunning"
+        :plan-locked="busy || !!running"
         :dirty="dirty"
         :retrying-task-id="retryingTaskId"
         :retry-error="retryError"

@@ -258,3 +258,38 @@ async def test_recheck_receives_original_suggestions_as_well_as_required_finding
     assert api.completed is not None
     assert {f['severity'] for f in provider.previous} == {'REQUIRED', 'SUGGESTION'}
     assert api.completed['assets'][2]['designNotes'] == '允许设计'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('protection', [None, [], ['description']])
+async def test_script_seed_can_be_repaired_without_unlocking_legacy_or_manual_assets(protection: list[str] | None) -> None:
+    seed = {'id': 'script-product', 'kind': 'PRODUCT', 'name': 'G65', 'description': '脚本中的产品',
+            'knownFacts': '', 'designNotes': '', 'sourceText': '脚本资产定义，使用前请核对'}
+    if protection is not None:
+        seed['manualFields'] = protection
+    claim = fixture()
+    claim['input']['document']['assets'] = [seed]
+
+    class SeedProvider(Provider):
+        async def generate(self, stage: str, model: str, schema: Any, context: dict[str, Any], instruction: str) -> Any:
+            result = await super().generate(stage, model, schema, context, instruction)
+            if stage == 'ASSET_INVENTORY':
+                value = result.model_dump()
+                value['objects'][0]['existingId'] = seed['id']
+                return schema.model_validate(value)
+            return result
+
+    api = Api(claim)
+    provider = SeedProvider(repair=True)
+    if protection == []:
+        await run_assets(api, provider, claim)  # type: ignore[arg-type]
+        assert api.completed['assets'][0]['description'] == '灰色外壳'
+        assert 'ASSET_REPAIR' in provider.calls
+        assert 'ASSET_RECHECK' in provider.calls
+    else:
+        with pytest.raises(ValueError, match='protected'):
+            await run_assets(api, provider, claim)  # type: ignore[arg-type]
+        assert api.completed is None
+        assert 'ASSET_REPAIR' not in provider.calls
+        assert claim['output']['batches']['PRODUCT:0'][0]['description'] == seed['description']
+    assert seed['description'] == '脚本中的产品'

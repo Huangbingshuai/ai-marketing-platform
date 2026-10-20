@@ -19,6 +19,7 @@ function harness(previous: Record<string, unknown> | null = null) {
     customizedProductionTask: {
       findUnique: vi.fn().mockResolvedValue(previous),
       findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
       create,
     },
   };

@@ -77,7 +77,7 @@ describe('customized adapter for the shared effect branch tree', () => {
     expect(layout.edges.map((e) => e.key)).toContain('script:STORYBOARD:-->assets-b:SHOT_PROMPT:-');
     expect(layout.nodes.filter((n) => n.nodeId === 'SHOT_PROMPT')[0]!.artifactCount).toBe(8);
   });
-  it('includes all sibling scripts under the active brief, with only the viewed script marked current', () => {
+  it('highlights only the active script path, without highlighting sibling scripts', () => {
     const data = tree([
       branch('root', null, null, [0, 1]),
       branch('script-a', 'root', 'STORYBOARD', [0, 1, 2, 3], true),
@@ -93,7 +93,7 @@ describe('customized adapter for the shared effect branch tree', () => {
       layout.nodes
         .filter((n) => n.nodeId === 'STORYBOARD' && n.onActivePath)
         .map((n) => n.workflowRunId),
-    ).toEqual(['script-a', 'script-b']);
+    ).toEqual(['script-a']);
     expect(layout.nodes.filter((n) => n.isCurrentStage).map((n) => n.workflowRunId)).toEqual([
       'script-b',
     ]);
@@ -105,7 +105,7 @@ describe('customized adapter for the shared effect branch tree', () => {
     expect(data.activeWorkflowRunId).toBe('script-a');
     expect(data.branches.find((b) => b.isActive)?.workflowRunId).toBe('script-a');
   });
-  it('includes the script collection when the active Run is still the brief head', () => {
+  it('does not pretend that any script is active while still on the brief head', () => {
     const layout = buildCustomizedBranchLayout(
       tree([
         branch('root', null, null, [0, 1], true),
@@ -113,9 +113,9 @@ describe('customized adapter for the shared effect branch tree', () => {
         branch('script-b', 'root', 'STORYBOARD', [0, 1, 2]),
       ]),
     );
-    expect(layout.nodes.filter((n) => n.nodeId === 'STORYBOARD').every((n) => n.onActivePath)).toBe(
-      true,
-    );
+    expect(
+      layout.nodes.filter((n) => n.nodeId === 'STORYBOARD').every((n) => !n.onActivePath),
+    ).toBe(true);
     expect(layout.nodes.filter((n) => n.nodeId === 'STORYBOARD' && n.isCurrentStage)).toEqual([]);
   });
   it('does not label an arbitrary sibling current when the viewed downstream node has no artifact', async () => {

@@ -1,15 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import {
-  ArrowUp,
-  ChevronDown,
-  ImagePlus,
-  X,
-  Check,
-  Loader2,
-  Link2,
-  Upload,
-} from '@lucide/vue';
+import { ArrowUp, ChevronDown, ImagePlus, X, Check, Loader2, Link2, Upload } from '@lucide/vue';
 import { BaseButton } from '@ai-marketing/ui';
 import {
   CUSTOMIZED_IMAGE_MODELS,

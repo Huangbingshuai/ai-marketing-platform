@@ -263,7 +263,9 @@ export class ProductionRepository {
       description: a.description,
       knownFacts: '',
       designNotes: '',
-      sourceText: '旧脚本资产定义，使用前请核对',
+      sourceText: '脚本资产定义，使用前请核对',
+      // Script inputs are source material, not edits made in asset preparation.
+      manualFields: [],
     }));
     const legacyShots = script.payload.shots.map((s) => ({
       id: s.id,
@@ -809,11 +811,7 @@ export class ProductionRepository {
             return customizedConflict('请先保存当前片段及绑定');
           if ((old?.revision ?? 0) !== revision)
             return customizedConflict('提示词已更新，本地文字保留，请重新加载后核对');
-          if (
-            await tx.customizedProductionTask.count({
-              where: { projectId: p, workflowRunId: r, status: { in: ['QUEUED', 'RUNNING'] } },
-            })
-          )
+          if (await this.hasTaskConflict(tx, p, r, { operation: 'PROMPT', target: prompt.target }))
             return customizedConflict('制作任务执行中，请稍后保存');
           await this.commit(
             tx,
@@ -935,8 +933,9 @@ export class ProductionRepository {
         }
         if (revision !== w.draftRevision || !w.sourceReady)
           return customizedConflict('创作依据已变化，请重新加载');
-        const active = await tx.customizedProductionTask.findFirst({
-          where: { projectId: p, workflowRunId: r, status: { in: ['QUEUED', 'RUNNING'] } },
+        const active = await this.hasTaskConflict(tx, p, r, {
+          operation,
+          target: videoSettings?.target,
         });
         if (active) return customizedConflict('已有制作任务执行中，请等待完成');
         if (operation === 'PROMPT' || operation === 'RENDER') {
@@ -1134,6 +1133,28 @@ export class ProductionRepository {
         return presentProductionTask(t);
       },
       { timeout: 15000 },
+    );
+  }
+  private async hasTaskConflict(
+    tx: Tx,
+    projectId: string,
+    workflowRunId: string,
+    requested: ProductionTaskScope,
+    excludeId?: string,
+  ) {
+    const active = await tx.customizedProductionTask.findMany({
+      where: {
+        projectId,
+        workflowRunId,
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+        status: { in: ['QUEUED', 'RUNNING'] },
+      },
+    });
+    return active.some((task) =>
+      productionTasksConflict(requested, {
+        operation: task.operation,
+        target: snapshot(task).target,
+      }),
     );
   }
   private async valid(tx: Tx, t: CustomizedProductionTask) {
@@ -2080,14 +2101,13 @@ export class ProductionRepository {
       if (!cancel) {
         await this.valid(tx, t);
         if (
-          await tx.customizedProductionTask.count({
-            where: {
-              projectId: p,
-              workflowRunId: t.workflowRunId,
-              id: { not: id },
-              status: { in: ['QUEUED', 'RUNNING'] },
-            },
-          })
+          await this.hasTaskConflict(
+            tx,
+            p,
+            t.workflowRunId,
+            { operation: t.operation, target: snapshot(t).target },
+            id,
+          )
         )
           return customizedConflict('已有制作任务运行中');
       }
@@ -2145,3 +2165,4 @@ export class ProductionRepository {
       });
   }
 }
+import { productionTasksConflict, type ProductionTaskScope } from '@ai-marketing/contracts';

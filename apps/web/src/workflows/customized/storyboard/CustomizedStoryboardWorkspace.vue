@@ -24,6 +24,7 @@ const props = defineProps<{
   briefConfirmed: boolean;
   scopeReadonly: boolean;
   viewedRunId?: string | null;
+  activateScript?: (runId: string, isCurrent: () => boolean, exact: boolean) => Promise<boolean>;
 }>();
 const emit = defineEmits<{
   back: [];
@@ -83,6 +84,7 @@ let controller = new AbortController(),
 let writing: Promise<boolean> = Promise.resolve(true),
   settingsBaseline = '',
   conflict = false;
+let selectionRequest = 0;
 const removedScripts = new Set<string>();
 const current = (scope: AbortController) =>
   !disposed && scope === controller && !scope.signal.aborted;
@@ -161,6 +163,16 @@ async function load() {
     if (!current(scope)) return;
     apply(value, true);
     if (value.selectedScriptId !== draft.value.activeScriptId) await flush();
+    if (!current(scope)) return;
+    if (currentRecord.value?.workflowRunId && props.activateScript) {
+      const request = selectionRequest;
+      await props.activateScript(
+        currentRecord.value.workflowRunId,
+        () => current(scope) && request === selectionRequest,
+        false,
+      );
+      if (!current(scope)) return;
+    }
     savedMessage.value = currentRecord.value?.confirmedRevision
       ? `当前脚本版本 ${currentRecord.value.confirmedRevision}`
       : '尚未保存正式脚本';
@@ -509,15 +521,33 @@ async function remove() {
     });
   await writing;
 }
-async function select(id: string) {
-  if (!draft.value.scripts.some((s) => s.id === id) || !(await flushPendingEdits())) return false;
+async function select(id: string, exact = false) {
+  const request = ++selectionRequest,
+    scope = controller,
+    previous = draft.value.activeScriptId,
+    latest = () => current(scope) && request === selectionRequest;
+  if (!draft.value.scripts.some((s) => s.id === id) || !(await flushPendingEdits()) || !latest())
+    return false;
   if (!draft.value.scripts.some((s) => s.id === id)) return false;
   draft.value.activeScriptId = id;
-  return flush();
+  if (!(await flush()) || !latest()) {
+    if (latest()) draft.value.activeScriptId = previous;
+    return false;
+  }
+  const runId = currentRecord.value?.workflowRunId;
+  if (runId && props.activateScript && !(await props.activateScript(runId, latest, exact))) {
+    if (latest()) {
+      draft.value.activeScriptId = previous;
+      await flush();
+      error.value = '分支切换未完成，已保留原脚本，请重试。';
+    }
+    return false;
+  }
+  return true;
 }
 async function selectByRun(runId: string) {
   const record = workspace.value?.scripts.find((s) => s.workflowRunId === runId);
-  return record ? select(record.id) : false;
+  return record ? select(record.id, true) : false;
 }
 async function flushPendingEdits() {
   if (!(await page.value?.guardEditor())) return false;

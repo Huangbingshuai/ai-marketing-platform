@@ -303,6 +303,17 @@ class TimingRepair(Model):
     cueUpdates: Annotated[list[CueParts], Field(max_length=2000)] = []
 
 
+class ScreenTextReferenceUpdate(Model):
+    cueId: Id
+    sourceRef: SourceRef
+    text: Annotated[str, Field(min_length=1, max_length=20000)]
+
+
+class ScreenTextReferenceRepair(Model):
+    baseHash: Id
+    updates: Annotated[list[ScreenTextReferenceUpdate], Field(min_length=1, max_length=1000)]
+
+
 class ClipTarget(Model):
     kind: Literal["CLIP"]
     id: Id

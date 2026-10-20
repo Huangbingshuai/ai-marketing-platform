@@ -27,6 +27,44 @@ const workspace = (d: ProductionVideoDocument) =>
     draftRevision: 1,
   }) as unknown as ProductionWorkspace;
 describe('clip workbench', () => {
+  it('keeps another clip actionable while freezing plan edits and the active clip', async () => {
+    const d = fixture(),
+      w = workspace(d);
+    const render = async (id: string) => {
+      w.tasks = [
+        {
+          id: 'active',
+          shotId: null,
+          errorMessage: null,
+          operation: 'RENDER',
+          target: { kind: 'CLIP', id },
+          status: 'RUNNING',
+          progress: 50,
+          steps: [],
+        },
+      ] as ProductionWorkspace['tasks'];
+      return renderToString(
+        createSSRApp(Workbench, {
+          projectId: 'p',
+          workflowRunId: 'r',
+          document: d,
+          workspace: w,
+          editing: true,
+          locked: false,
+          planLocked: true,
+          dirty: false,
+          savePlan: async () => true,
+        }),
+      );
+    };
+    const other = await render('clip-b');
+    const current = await render('clip-a');
+    const generateButton = (html: string) =>
+      html.split('class="prompt-section"')[1]!.split('</button>')[0]!;
+    expect(generateButton(other)).not.toContain('disabled');
+    expect(generateButton(current)).toContain('disabled');
+    expect(other).toMatch(/disabled[^>]*aria-label="编辑分镜参数"/);
+  });
   it('keeps current prompt progress inside the prompt editor and ignores other clip tasks', async () => {
     const d = fixture(),
       w = workspace(d);

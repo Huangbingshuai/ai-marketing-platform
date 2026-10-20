@@ -120,17 +120,20 @@ async def consume(role: str) -> None:
     connection = await aio_pika.connect_robust(required('RABBITMQ_URL'))
     try:
         channel = await connection.channel(publisher_confirms=True)
-        await channel.set_qos(prefetch_count=1)
+        task_limit = max(1, min(4, int(os.getenv(f'{prefix}_TASK_CONCURRENCY', '4')))) if role == 'VIDEO' else 1
+        await channel.set_qos(prefetch_count=task_limit)
         queue = await channel.declare_queue(worker.queue, durable=True)
-        logging.info('Node worker ready node=%s queue=%s', role, worker.queue)
-        async with queue.iterator() as messages:
-            async for message in messages:
+        logging.info('Node worker ready node=%s queue=%s task_concurrency=%s', role, worker.queue, task_limit)
+        semaphore = asyncio.Semaphore(task_limit)
+
+        async def process_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+            try:
                 async with message.process(requeue=True, ignore_processed=True):
                     try:
                         event = QueueMessage.model_validate_json(message.body)
                     except ValueError:
                         logging.error('Invalid node task message')
-                        continue
+                        return
                     api = Api(url, token, event.projectId, event.runId, worker.namespace)
                     task_context.set(event.runId)
                     try:
@@ -143,6 +146,20 @@ async def consume(role: str) -> None:
                         await asyncio.sleep(2)
                     finally:
                         await api.close()
+            except Exception as error:
+                # The message context requeues this delivery. Do not cancel other
+                # independent paid requests merely because one delivery failed.
+                logging.error('Node delivery interrupted type=%s', type(error).__name__)
+                await asyncio.sleep(2)
+            finally:
+                semaphore.release()
+
+        async with queue.iterator() as messages:
+            async with asyncio.TaskGroup() as group:
+                async for message in messages:
+                    await semaphore.acquire()
+                    group.create_task(process_message(message))
+
     finally:
         await provider.close()
         await connection.close()

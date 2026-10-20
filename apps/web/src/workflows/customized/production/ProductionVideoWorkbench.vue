@@ -38,6 +38,7 @@ const props = defineProps<{
   workspace: ProductionWorkspace;
   editing: boolean;
   locked: boolean;
+  planLocked?: boolean;
   dirty: boolean;
   savePlan: () => Promise<boolean>;
   retryingTaskId?: string;
@@ -99,6 +100,14 @@ const renderTask = computed(() =>
 const promptTask = computed(() =>
   props.workspace.tasks.find((t) => t.operation === 'PROMPT' && t.target?.id === clip.value?.id),
 );
+const clipLocked = computed(
+  () =>
+    props.locked ||
+    props.workspace.tasks.some(
+      (t) => ['QUEUED', 'RUNNING'].includes(t.status) && t.target?.id === clip.value?.id,
+    ),
+);
+const planLocked = computed(() => props.locked || props.planLocked);
 const generatingPrompt = computed(
   () => !!promptTask.value && ['QUEUED', 'RUNNING'].includes(promptTask.value.status),
 );
@@ -119,7 +128,7 @@ watch(
 async function saveSettings(): Promise<boolean> {
   clearTimeout(settingsAutosave);
   if (!settingsDirty.value) return true;
-  if (settingsSaving.value || !clip.value || props.locked) return false;
+  if (settingsSaving.value || !clip.value || clipLocked.value) return false;
   const scope = controller,
     id = clip.value.id,
     value = { ...renderSettings.value };
@@ -150,14 +159,14 @@ watch(
   renderSettings,
   () => {
     clearTimeout(settingsAutosave);
-    if (settingsDirty.value && !props.locked)
+    if (settingsDirty.value && !clipLocked.value)
       settingsAutosave = setTimeout(() => void saveSettings(), 600);
   },
   { deep: true },
 );
 async function renderVideo() {
   if (
-    props.locked ||
+    clipLocked.value ||
     rendering.value ||
     !clip.value ||
     !(await saveSettings()) ||
@@ -230,7 +239,7 @@ watch(
 async function savePrompt(automatic = false): Promise<boolean> {
   clearTimeout(promptAutosave);
   if (!promptDirty.value) return true;
-  if (props.locked || saving.value || !clip.value || !promptText.value.trim()) return false;
+  if (clipLocked.value || saving.value || !clip.value || !promptText.value.trim()) return false;
   if (videoPromptReferences(promptText.value, boundAssets.value).unknown.length) {
     if (!automatic) emit('save-error', '请先完成 @素材引用，当前文字已保留');
     return false;
@@ -272,9 +281,9 @@ async function savePrompt(automatic = false): Promise<boolean> {
     if (scope === controller) saving.value = false;
   }
 }
-watch([promptText, () => props.locked], () => {
+watch([promptText, () => clipLocked.value], () => {
   clearTimeout(promptAutosave);
-  if (!props.locked && !saving.value && promptDirty.value)
+  if (!clipLocked.value && !saving.value && promptDirty.value)
     promptAutosave = setTimeout(() => void savePrompt(true), 900);
 });
 async function selectClip(id: string) {
@@ -289,7 +298,7 @@ async function produce(id: string) {
   panel.value?.open();
 }
 function mutateTask(change: (task: VideoShot, value: VideoPlan) => void) {
-  if (props.locked || !clip.value) return;
+  if (planLocked.value || !clip.value) return;
   emit('edit');
   const value = mergeVideoTaskShots(plan.value, clip.value.id);
   const current = value.clips.find((c) => c.id === clip.value!.id)!;
@@ -334,7 +343,7 @@ function updateBinding(assetId: string, value: string) {
   });
 }
 function addShot() {
-  if (props.locked) return;
+  if (planLocked.value) return;
   const scene = plan.value.scenes[0];
   if (!scene) {
     emit('error', '请先生成分镜，再补充分镜任务');
@@ -418,7 +427,7 @@ defineExpose({
         <section class="shot-copy">
           <header>
             <h3>分镜描述</h3>
-            <button :disabled="locked" aria-label="编辑分镜参数" @click="parameters = true">
+            <button :disabled="planLocked" aria-label="编辑分镜参数" @click="parameters = true">
               <SlidersHorizontal :size="15" />
             </button>
           </header>
@@ -426,14 +435,14 @@ defineExpose({
             :model-value="task.visual"
             label="画面描述"
             multiline
-            :readonly="locked"
+            :readonly="planLocked"
             @update:model-value="updateTask('visual', $event)"
           />
           <WorkflowInformationField
             :model-value="task.atmosphere"
             label="氛围"
             multiline
-            :readonly="locked"
+            :readonly="planLocked"
             @update:model-value="updateTask('atmosphere', $event)"
           />
         </section>
@@ -441,7 +450,7 @@ defineExpose({
           :project-id="projectId"
           :assets="document.assets"
           :shot="clipPreview"
-          :locked="locked"
+          :locked="planLocked"
           @toggle="toggleBinding"
           @preview="emit('preview', $event)"
           @prepare="emit('prepare', $event)"
@@ -454,7 +463,7 @@ defineExpose({
           <small v-if="saving" role="status">正在自动保存…</small>
           <div>
             <button
-              :disabled="locked || saving || !workspace.shotsConfirmed"
+              :disabled="clipLocked || saving || !workspace.shotsConfirmed"
               @click="emit('generate', clip.id)"
             >
               <Loader2 v-if="generatingPrompt" :size="13" class="prompt-spinner" />
@@ -473,7 +482,7 @@ defineExpose({
         <ProductionTaskActivity :task="promptTask" label="当前分镜提示词生成进度" />
         <ProductionTaskFailureFeedback
           :task="promptTask"
-          :disabled="locked || saving"
+          :disabled="clipLocked || saving"
           :retrying="retryingTaskId === promptTask?.id"
           :retry-error="retryError?.taskId === promptTask?.id ? retryError?.message : undefined"
           @workflow="emit('workflow', clip.id, $event)"
@@ -484,7 +493,7 @@ defineExpose({
           :project-id="projectId"
           :scope-id="clip.id"
           :assets="boundAssets"
-          :readonly="locked || saving"
+          :readonly="clipLocked || saving"
           @blur="savePrompt()"
         />
       </section>
@@ -507,7 +516,7 @@ defineExpose({
       :index="plan.clips.findIndex((c) => c.id === clip?.id) + 1"
       :assets="referenceImageSources(document.assets, promptAssets)"
       :prompt="promptText"
-      :locked="locked || saving"
+      :locked="clipLocked || saving"
       :editing="true"
       unit="分镜"
       @workflow="emit('render-workflow', $event)"
@@ -539,7 +548,7 @@ defineExpose({
           :model-value="task[f.key]"
           :label="f.label"
           multiline
-          :readonly="locked"
+          :readonly="planLocked"
           @update:model-value="updateTask(f.key, $event)"
         />
         <label
@@ -548,7 +557,7 @@ defineExpose({
             type="number"
             min="0.1"
             step="0.1"
-            :disabled="locked"
+            :disabled="planLocked"
             @change="duration(Number(($event.target as HTMLInputElement).value))"
         /></label>
         <WorkflowInformationField
@@ -557,7 +566,7 @@ defineExpose({
           :model-value="b.description"
           :label="document.assets.find((a) => a.id === b.assetId)?.name ?? '对象状态'"
           multiline
-          :readonly="locked"
+          :readonly="planLocked"
           @update:model-value="updateBinding(b.assetId, $event)"
         />
       </div>

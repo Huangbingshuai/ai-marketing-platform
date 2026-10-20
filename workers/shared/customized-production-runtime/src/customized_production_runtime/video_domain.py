@@ -15,6 +15,7 @@ from .video_models import (
     Repair,
     TimingRepair,
     ClipPrompt,
+    ScreenTextReferenceRepair,
 )
 from .mechanical_validation import MechanicalValidationError
 
@@ -393,11 +394,37 @@ def validate_audit(
         raise MechanicalValidationError(issues)
 
 
+def screen_reference_targets(plan: dict[str, Any], audit: dict[str, Any]) -> set[str]:
+    return {
+        evidence["id"]
+        for finding in audit["findings"] if finding["severity"] == "ERROR"
+        for evidence in finding["evidence"]
+        if evidence["entity"] == "CUE" and evidence["field"] == "sourceRef"
+        and any(cue["id"] == evidence["id"] and cue["kind"] == "ON_SCREEN_TEXT" for cue in plan["cues"])
+    }
+
+
+def validate_screen_reference_repair(
+    raw: dict[str, Any], plan: dict[str, Any], audit: dict[str, Any]
+) -> dict[str, Any]:
+    repair = ScreenTextReferenceRepair.model_validate(raw).model_dump()
+    targets = screen_reference_targets(plan, audit)
+    if repair["baseHash"] != fingerprint(plan):
+        raise ValueError("screen reference repair belongs to another candidate")
+    if not targets or {update["cueId"] for update in repair["updates"]} != targets or len(repair["updates"]) != len(targets):
+        raise ValueError("screen reference repair must cover exactly the reviewed ON_SCREEN_TEXT cues")
+    for update in repair["updates"]:
+        if not update["text"].strip() or excerpt(update["sourceRef"], plan["sourceUnits"]) != update["text"]:
+            raise ValueError(f"screen reference repair quote must exactly match its immutable source range: cue={update['cueId']}")
+    return repair
+
+
 def apply_repair(
     original: dict[str, Any],
     raw: dict[str, Any],
     audit: dict[str, Any],
     snapshot: dict[str, Any],
+    screen_reference_repair: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     patch = (
         (
@@ -418,6 +445,7 @@ def apply_repair(
     errors = {f["id"]: f for f in audit["findings"] if f["severity"] == "ERROR"}
     if set(patch["issueIds"]) != set(errors) or len(patch["issueIds"]) != len(errors):
         raise ValueError("repair must address precisely the original errors")
+    reference_updates = validate_screen_reference_repair(screen_reference_repair, original, audit)["updates"] if screen_reference_repair is not None else []
     value = copy.deepcopy(original)
     shot_ids = {sid for f in errors.values() for sid in f["affectedShotIds"]}
     affected_clips = {cid for f in errors.values() for cid in f["affectedClipIds"]}
@@ -559,6 +587,15 @@ def apply_repair(
             p for p in cue["parts"] if p["shotId"] not in shot_ids
         ] + copy.deepcopy(update["parts"])
         cue["parts"].sort(key=lambda p: (ordered.index(p["shotId"]), p["startMs"]))
+    # Only an explicit, validated AI source selection authorizes this projection.
+    # ON_SCREEN_TEXT is displayed in full at every existing time window; speech
+    # allocation, time windows and all unrelated cues remain untouched.
+    for update in reference_updates:
+        cue = next(c for c in value["cues"] if c["id"] == update["cueId"])
+        cue["sourceRef"] = copy.deepcopy(update["sourceRef"])
+        for part in cue["parts"]:
+            part["textStart"] = 0
+            part["textEnd"] = len(update["text"])
     scene_ids = {c["sceneId"] for c in value["clips"]}
     value["scenes"] = [s for s in new_scenes.values() if s["id"] in scene_ids]
     value["timing"]["explanation"] = (

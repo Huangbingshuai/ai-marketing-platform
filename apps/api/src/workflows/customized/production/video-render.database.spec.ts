@@ -115,6 +115,57 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
         undefined,
         args,
       );
+      // A queued render only freezes its own clip. Other clips can create
+      // prompts and render, but retries and whole-plan edits remain scoped.
+      const promptB = await repo.start(
+        p,
+        r,
+        w.draftRevision,
+        'PROMPT',
+        'parallel-prompt-b',
+        null,
+        models,
+        null,
+        undefined,
+        { target: { kind: 'CLIP', id: 'clip-b' } },
+      );
+      await expect(
+        repo.start(p, r, w.draftRevision, 'PROMPT', 'conflict-a', null, models, null, undefined, {
+          target: { kind: 'CLIP', id: 'clip-a' },
+        }),
+      ).rejects.toThrow('已有制作任务');
+      await expect(
+        repo.start(p, r, w.draftRevision, 'SHOTS', 'conflict-plan', null, models),
+      ).rejects.toThrow('已有制作任务');
+      await repo.action(p, promptB.id, true);
+      await repo.action(p, promptB.id, false);
+      await repo.action(p, promptB.id, true);
+      await repo.savePrompt(p, r, 0, {
+        target: { kind: 'CLIP', id: 'clip-b' },
+        content: '杯子静置在桌上。',
+        assetIds: [],
+      });
+      const renderB = await repo.start(
+        p,
+        r,
+        w.draftRevision,
+        'RENDER',
+        'parallel-render-b',
+        null,
+        models,
+        null,
+        undefined,
+        { ...args, target: { kind: 'CLIP', id: 'clip-b' } },
+      );
+      await expect(repo.action(p, promptB.id, false)).rejects.toThrow('已有制作任务');
+      await expect(
+        repo.savePrompt(p, r, 1, {
+          target: { kind: 'CLIP', id: 'clip-b' },
+          content: '杯子在晨光下。',
+          assetIds: [],
+        }),
+      ).rejects.toThrow('制作任务执行中');
+      await repo.action(p, renderB.id, true);
       expect(
         (
           await repo.start(

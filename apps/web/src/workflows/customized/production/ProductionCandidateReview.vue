@@ -25,7 +25,10 @@ const document = computed(() =>
 <template>
   <WorkflowInformationDialog :open="!!candidate" title="核对未完成分镜" @close="emit('close')">
     <template v-if="candidate && document">
-      <p>任务尚未通过。这里仅查看已保存候选；转入草稿后仍需逐项核对并明确保存修改。</p>
+      <p>
+        任务尚未通过。这里仅查看已保存候选。转入草稿后，页面中的编辑会自动保存；已有问题仍需逐项核对，转入操作不会自动修复问题或使
+        AI 审校通过。
+      </p>
       <div v-if="candidate.originalDocument" class="candidate-actions">
         <button :aria-pressed="original" @click="original = true">修订前</button>
         <button :aria-pressed="!original" @click="original = false">修订候选</button>

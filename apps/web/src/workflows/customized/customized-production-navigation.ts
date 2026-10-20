@@ -23,3 +23,46 @@ export function customizedProductionNavigationRun(
   }
   return scriptRunId;
 }
+
+export function customizedScriptRun(
+  tree: CustomizedWorkflowBranchTreeData | null,
+  runId: string,
+): string | null {
+  const byId = new Map(tree?.branches.map((branch) => [branch.workflowRunId, branch]));
+  const seen = new Set<string>();
+  let current = byId.get(runId);
+  while (current && !seen.has(current.workflowRunId)) {
+    if (current.forkNodeId === 'STORYBOARD') return current.workflowRunId;
+    seen.add(current.workflowRunId);
+    if (!current.parentWorkflowRunId) break;
+    current = byId.get(current.parentWorkflowRunId);
+  }
+  return null;
+}
+
+/** A script selection resumes its existing production path, never a sibling script. */
+export function customizedScriptSelectionRun(
+  tree: CustomizedWorkflowBranchTreeData | null,
+  currentRunId: string,
+  scriptRunId: string,
+  rememberedRunId?: string,
+): string {
+  if (customizedScriptRun(tree, currentRunId) === scriptRunId) return currentRunId;
+  if (rememberedRunId && customizedScriptRun(tree, rememberedRunId) === scriptRunId)
+    return rememberedRunId;
+  return (
+    tree?.branches
+      .filter(
+        (branch) =>
+          branch.workflowRunId !== scriptRunId &&
+          customizedScriptRun(tree, branch.workflowRunId) === scriptRunId,
+      )
+      .sort(
+        (a, b) =>
+          b.createdAt.localeCompare(a.createdAt) ||
+          CUSTOMIZED_WORKFLOW_NODES.indexOf(b.forkNodeId!) -
+            CUSTOMIZED_WORKFLOW_NODES.indexOf(a.forkNodeId!) ||
+          a.workflowRunId.localeCompare(b.workflowRunId),
+      )[0]?.workflowRunId ?? scriptRunId
+  );
+}

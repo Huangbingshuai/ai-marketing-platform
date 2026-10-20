@@ -29,6 +29,7 @@ from .video_models import (
     TimingRepair,
     ClipPrompt,
     PromptMechanicalRecovery,
+    ScreenTextReferenceRepair,
 )
 from .mechanical_validation import MechanicalValidationError, validate_review_correction
 from .video_review import (
@@ -50,6 +51,8 @@ from .video_domain import (
     align_clip_boundaries,
     shot_duration_step,
     validate_duration_step,
+    screen_reference_targets,
+    validate_screen_reference_repair,
 )
 from .video_benefit_policy import (
     DIRECTOR_BENEFIT,
@@ -410,6 +413,13 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
             stored[key] = copy.deepcopy(stored[corrected_key])
             return copy.deepcopy(stored[key])
         if key not in stored:
+            if key == "screenReferenceCandidate":
+                if stored.get("screenReferenceRequestStarted"):
+                    stored["failureReason"] = "INVALID_CANDIDATE"
+                    await persist("REPAIR", "FAILED", "原文范围修订结果未确认", "已保留原候选及请求检查点，不会自动重复购买引用修订。")
+                    raise ValueError("screen reference request result unknown; refusing repeated purchase")
+                stored["screenReferenceRequestStarted"] = True
+                await persist("REPAIR", "RUNNING", "原文范围修订", "仅定位已指出的画面文字原句，原分镜与已完成步骤保留。")
             title = {
                 "PLAN": "导演规划与容量核对",
                 "GENERATE": "分场创作与绑定",
@@ -1047,17 +1057,43 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
             if benefit_policy:
                 repair_instruction += REPAIR_BENEFIT
             repair_instruction += duration_instruction
-            patch = await ask(
-                "repairCandidate",
-                "REPAIR",
-                "VIDEO_REPAIR",
-                snapshot["models"]["creative"],
-                TimingRepair if timing_repair else Repair,
-                repair_input,
-                repair_instruction,
-                lambda v: apply_repair(plan, v, audit, snapshot),
+            reference_repair = None
+            reference_targets = screen_reference_targets(plan, audit)
+            if reference_targets:
+                reference_repair = await ask(
+                    "screenReferenceCandidate", "REPAIR", "VIDEO_SCREEN_REFERENCE_REPAIR",
+                    snapshot["models"]["creative"], ScreenTextReferenceRepair,
+                    {"candidateHash": fingerprint(plan), "immutableSourceUnits": base["immutableSourceUnits"],
+                     "cues": [cue | {"currentText": excerpt(cue["sourceRef"], plan["sourceUnits"])} for cue in plan["cues"] if cue["id"] in reference_targets],
+                     "review": [finding for finding in errors if any(e["entity"] == "CUE" and e["id"] in reference_targets and e["field"] == "sourceRef" for e in finding["evidence"])]},
+                    "只修复独立审校明确指出的ON_SCREEN_TEXT原文引用。baseHash照抄candidateHash，updates准确覆盖全部输入cues且每个一次。逐条从immutableSourceUnits定位实际要求上屏的原句，sourceRef的start含/end不含，按当前unit.text的Unicode字符索引；text必须与该区间逐字相同。不得改写、补造文字或以标题/邻句代替原句，不修改语音、镜头、时长或其他CUE。代码会将完整显示范围同步为0到新原句长度；无需通过改小parts来伪装修复。",
+                    lambda v: validate_screen_reference_repair(v, plan, audit),
+                )
+            reference_only = bool(reference_targets) and all(
+                finding["repairKind"] == "FIELDS"
+                and any(e["entity"] == "CUE" and e["field"] == "sourceRef" and e["id"] in reference_targets for e in finding["evidence"])
+                and all((e["entity"] == "SOURCE" and e["field"] == "text") or (e["entity"] == "CUE" and e["field"] == "sourceRef" and e["id"] in reference_targets) for e in finding["evidence"])
+                for finding in errors
             )
-            revised = apply_repair(plan, patch, audit, snapshot)
+            if reference_only:
+                # Old patches cannot express sourceRef changes. Keep those paid
+                # candidates and budgets; only supply the missing typed repair.
+                patch = copy.deepcopy(stored.get("repairCandidateCorrected") or stored.get("repairCandidate") or {
+                    "baseHash": fingerprint(plan), "issueIds": [finding["id"] for finding in errors],
+                    "fields": [], "ranges": [], "cueUpdates": [],
+                    "timingExplanation": "仅修订已指出的画面文字原文引用，镜头与时间安排保持。",
+                })
+            else:
+                patch = await ask(
+                    "repairCandidate", "REPAIR", "VIDEO_REPAIR", snapshot["models"]["creative"],
+                    TimingRepair if timing_repair else Repair, repair_input, repair_instruction,
+                    lambda v: apply_repair(plan, v, audit, snapshot, reference_repair),
+                )
+            revised = apply_repair(plan, patch, audit, snapshot, reference_repair)
+            if reference_repair is not None:
+                stored["screenReferenceRepairApplied"] = {"baseHash": fingerprint(plan), "cueIds": sorted(reference_targets)}
+                if stored.get("failureReason") == "INVALID_CANDIDATE":
+                    stored.pop("failureReason")
             stored["revised"] = {
                 "schemaVersion": 2,
                 "assets": snapshot["document"]["assets"],
@@ -1090,6 +1126,13 @@ async def run_video(api: Api, provider: Provider, claim: dict[str, Any]) -> None
                 for s in plan["shots"]
                 if s["id"] not in new_shots
             ]
+            stored["changes"].extend(
+                {"label": "画面文字原文引用", "before": excerpt(old["sourceRef"], plan["sourceUnits"]),
+                 "after": excerpt(cue["sourceRef"], revised["sourceUnits"])}
+                for cue in revised["cues"]
+                for old in plan["cues"]
+                if old["id"] == cue["id"] and old["sourceRef"] != cue["sourceRef"]
+            )
             await persist(
                 "REPAIR",
                 "RUNNING",

@@ -39,6 +39,19 @@ def test_custom_inputs_are_scoped_and_reference_versions_are_bounded() -> None:
             ImageSettings.model_validate({**value, 'inputs': inputs})
 
 
+def test_default_image_prompt_preserves_structured_design_and_unknown_boundaries() -> None:
+    asset = {'id': 'product', 'kind': 'CHARACTER', 'name': '林晓', 'description': '编辑部新同事',
+        'preparation': {'details': [{'key': 'styling', 'value': '浅米色衬衫、深灰西装裤、银圈手表'}],
+            'images': [{'name': '人物设定', 'purpose': '跨镜一致', 'requirements': '同一服装的正侧背面'}],
+            'questions': [{'field': 'structure', 'question': '连接方式未确认', 'impact': '不得画螺纹与拆装'}]}}
+    prompt = image_prompt(asset, {}, ImageSettings.model_validate(SETTINGS))
+    for text in ['深灰西装裤', '银圈手表', '同一服装的正侧背面', '不得画螺纹与拆装']:
+        assert text in prompt
+    custom = ImageSettings.model_validate({**SETTINGS, 'assetIds': ['product'],
+        'inputs': [{'assetId': 'product', 'prompt': '只拍面部特写', 'references': []}]})
+    assert '深灰西装裤' not in image_prompt(asset, {}, custom)
+
+
 @pytest.mark.asyncio
 async def test_reference_images_are_sent_inline_without_remote_url_fetches() -> None:
     references = ['data:image/png;base64,' + base64.b64encode(PNG).decode()]

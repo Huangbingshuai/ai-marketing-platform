@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "ScreenTextReferenceUpdate": {
+      "additionalProperties": false,
+      "properties": {
+        "cueId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Cueid",
+          "type": "string"
+        },
+        "sourceRef": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "text": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": ["cueId", "sourceRef", "text"],
+      "title": "ScreenTextReferenceUpdate",
+      "type": "object"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "unitId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Unitid",
+          "type": "string"
+        },
+        "start": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "end": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "End",
+          "type": "integer"
+        }
+      },
+      "required": ["unitId", "start", "end"],
+      "title": "SourceRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "baseHash": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Basehash",
+      "type": "string"
+    },
+    "updates": {
+      "items": {
+        "$ref": "#/$defs/ScreenTextReferenceUpdate"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Updates",
+      "type": "array"
+    }
+  },
+  "required": ["baseHash", "updates"],
+  "title": "ScreenTextReferenceRepair",
+  "type": "object"
+}

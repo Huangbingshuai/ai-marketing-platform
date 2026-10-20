@@ -48,7 +48,11 @@ import EffectWorkflowBranchTree from '../../effect/source-import/components/Effe
 import EffectWorkflowCanvas from '../../effect/source-import/components/EffectWorkflowCanvas.vue';
 import EffectUpwardCreatableSelect from '../../effect/source-import/components/EffectUpwardCreatableSelect.vue';
 import { customizedWorkflowNodes } from '../customized-workflow';
-import { customizedProductionNavigationRun } from '../customized-production-navigation';
+import {
+  customizedProductionNavigationRun,
+  customizedScriptRun,
+  customizedScriptSelectionRun,
+} from '../customized-production-navigation';
 import CustomizedInfoExtractionNodePage from '../information-extraction/CustomizedExtractionWorkspace.vue';
 import CustomizedStoryboardWorkspace from '../storyboard/CustomizedStoryboardWorkspace.vue';
 import CustomizedProductionWorkspace from '../production/CustomizedProductionWorkspace.vue';
@@ -652,28 +656,72 @@ const closeBranchTree = () => {
   branchOpen.value = false;
   branchController?.abort();
 };
+const scriptPaths = new Map<string, string>();
+let scriptPathWriting: Promise<boolean> = Promise.resolve(true);
+const activateScriptSelection = (
+  scriptRunId: string,
+  isCurrent: () => boolean = () => !disposed,
+  exact = false,
+): Promise<boolean> => {
+  const operation = scriptPathWriting
+    .catch(() => false)
+    .then(async () => {
+      if (disposed || !isCurrent()) return false;
+      const previousScript = customizedScriptRun(branchTree.value, workflowRunId.value);
+      if (previousScript) scriptPaths.set(previousScript, workflowRunId.value);
+      const targetRunId = exact
+        ? scriptRunId
+        : customizedScriptSelectionRun(
+            branchTree.value,
+            workflowRunId.value,
+            scriptRunId,
+            scriptPaths.get(scriptRunId),
+          );
+      if (targetRunId === workflowRunId.value && activeStep.value === 2) {
+        storyboardViewedRunId.value = scriptRunId;
+        return true;
+      }
+      branchSwitching.value = true;
+      branchError.value = '';
+      try {
+        await nodeActivation.drain();
+        if (disposed || !isCurrent()) return false;
+        await activateCustomizedBranch(projectId, targetRunId, 'STORYBOARD');
+        // Serial activation preserves server ordering; a superseded response may
+        // not reload the old page or overwrite the newer local selection.
+        if (disposed || !isCurrent()) return false;
+        storyboardViewedRunId.value = scriptRunId;
+        scriptPaths.set(scriptRunId, targetRunId);
+        branchOpen.value = false;
+        await load();
+        return !disposed && !loadError.value;
+      } catch (error) {
+        if (!disposed && isCurrent()) {
+          branchError.value = safeError(error, '切换脚本分支失败，请重试');
+          actionError.value = branchError.value;
+        }
+        return false;
+      } finally {
+        if (!disposed) branchSwitching.value = false;
+      }
+    });
+  scriptPathWriting = operation;
+  return operation;
+};
 const selectBranch = async (target: { workflowRunId: string; nodeId: string }) => {
   const step = customizedWorkflowNodes.findIndex((node) => node.id === target.nodeId);
   if (step < 0 || busy.value || branchSwitching.value) return;
+  if (target.nodeId === 'STORYBOARD') {
+    if (storyboardWorkspace.value)
+      await storyboardWorkspace.value.selectByRun(target.workflowRunId);
+    else if (await flushPendingEdits())
+      await activateScriptSelection(target.workflowRunId, () => !disposed, true);
+    return;
+  }
   branchSwitching.value = true;
   try {
     if (!(await flushPendingEdits())) return;
     await nodeActivation.drain();
-    // A script card selects a view in the shared workspace. Only navigation
-    // into a downstream node activates the selected script's storage Run.
-    if (target.nodeId === 'STORYBOARD') {
-      if (storyboardWorkspace.value) {
-        if (!(await storyboardWorkspace.value.selectByRun(target.workflowRunId))) return;
-      } else {
-        storyboardViewedRunId.value = target.workflowRunId;
-        activeStep.value = step;
-        nodeActivation.enqueue({ runId: workflowRunId.value, step });
-      }
-      branchOpen.value = false;
-      branchController?.abort();
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      return;
-    }
     const switchedRun = workflowRunId.value !== target.workflowRunId;
     if (switchedRun) await activateCustomizedBranch(projectId, target.workflowRunId, target.nodeId);
     if (disposed) return;
@@ -911,7 +959,7 @@ onBeforeUnmount(() => {
       :project-name="context.currentProject.value?.name ?? '当前项目'"
       :tree="null"
       :alternate-layout="branchLayout"
-      navigation-description="同一信息卡下的脚本共同属于当前工作流。点击脚本查看，进入下一节点时使用所选脚本。"
+      navigation-description="切换脚本会同步当前分支，后续资产准备和视频制作沿用所选路径。"
       :alternate-stages="customizedBranchStages"
       workflow-label="定制类"
       :active-workflow-run-id="branchTree?.activeWorkflowRunId"
@@ -1144,6 +1192,7 @@ onBeforeUnmount(() => {
         :brief-confirmed="confirmedSteps.includes(1)"
         :scope-readonly="Boolean(activeRun?.isTemporaryBranch)"
         :viewed-run-id="storyboardViewedRunId"
+        :activate-script="activateScriptSelection"
         @back="selectStep(1)"
         @viewing="storyboardViewedRunId = $event"
         @next="continueScript($event, 3)"

@@ -48,11 +48,7 @@ export function buildCustomizedBranchLayout(
       const state = branch.nodes.find((node) => node.nodeId === stage.nodeId);
       if (!state?.artifactCount) continue;
       const onActivePath = Boolean(
-        active &&
-        (stage.nodeId === 'STORYBOARD'
-          ? ownerAt(active.workflowRunId, 1)?.workflowRunId ===
-            ownerAt(branch.workflowRunId, 1)?.workflowRunId
-          : ownerAt(active.workflowRunId, stageIndex)?.workflowRunId === branch.workflowRunId),
+        active && ownerAt(active.workflowRunId, stageIndex)?.workflowRunId === branch.workflowRunId,
       );
       nodes.push({
         key: `${branch.workflowRunId}:${stage.key}:-`,

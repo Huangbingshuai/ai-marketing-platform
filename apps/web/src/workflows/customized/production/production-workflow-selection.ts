@@ -12,9 +12,7 @@ export function productionPageProgressTask(
   mode: 'ASSETS' | 'SHOTS',
 ) {
   return productionNodeTasks(tasks, mode).find(
-    (task) =>
-      ['QUEUED', 'RUNNING'].includes(task.status) &&
-      task.operation === mode,
+    (task) => ['QUEUED', 'RUNNING'].includes(task.status) && task.operation === mode,
   );
 }
 export function productionWorkflowTask(

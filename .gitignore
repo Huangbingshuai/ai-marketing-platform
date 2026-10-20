@@ -12,6 +12,8 @@ coverage/
 apps/api/src/generated/
 .local-storage/
 .tmp/
+# 私有运营手册含登录凭据，不进入版本库
+/docs/运营手册/
 .venv/
 **/.venv/
 **/__pycache__/

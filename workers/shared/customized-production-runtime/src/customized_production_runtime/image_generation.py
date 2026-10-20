@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ai_runtime.http import InternalApiError, request, unwrap
 from ai_runtime.responses import ProviderError
 from .asset_image_source import image_source
+from .asset_pipeline import FIELD_NAMES
 
 MAX_BYTES = 30 * 1024 * 1024
 IMAGE_LAYOUTS: dict[str, str] = json.loads(Path(__file__).with_name('asset_image_layout.json').read_text(encoding='utf-8'))
@@ -72,6 +73,7 @@ def image_prompt(asset: dict[str, Any], brief: dict[str, Any], settings: ImageSe
             f"视觉统一规则：{brief.get('visualConsistencyRules', '')}",
             f"画面禁用元素：{brief.get('avoidedElements', '')}"])
     kind = {'PRODUCT': '产品', 'CHARACTER': '人物', 'SCENE': '场景', 'PROP': '道具'}[asset['kind']]
+    preparation = asset.get('preparation') or {}
     return '\n'.join([
         f'为定制品牌视频制作一张{kind}多视角设定图，画幅{settings.ratio}。',
         IMAGE_LAYOUTS['common'],
@@ -82,6 +84,9 @@ def image_prompt(asset: dict[str, Any], brief: dict[str, Any], settings: ImageSe
         f"对象名称：{asset['name']}", f"公共形象：{asset['description']}",
         f"已知事实：{asset.get('knownFacts', '')}", f"设计设定：{asset.get('designNotes', '')}",
         f"图片制作要求：{asset.get('imageRequirements', '')}",
+        *[f"{FIELD_NAMES[d['key']]}：{d['value']}" for d in preparation.get('details', [])],
+        *[f"具体视图要求 · {i['name']}：{i['purpose']}\n{i['requirements']}" for i in preparation.get('images', [])],
+        *[f"待确认 · {q['question']}\n限制与影响：{q['impact']}" for q in preparation.get('questions', [])],
         f"品牌调性：{brief.get('brandTone', '')}",
         f"视觉统一规则：{brief.get('visualConsistencyRules', '')}",
         f"画面禁用元素：{brief.get('avoidedElements', '')}",
@@ -156,7 +161,7 @@ async def run_image(api: Any, provider: Any, claim: dict[str, Any]) -> None:
             continue
         source = image_source(snapshot['document']['assets'], asset['id'])
         if source['id'] in parent_details:
-            parent_details[source['id']].append({k: asset[k] for k in ('name', 'description', 'knownFacts', 'designNotes') if k in asset})
+            parent_details[source['id']].append({k: asset[k] for k in ('name', 'description', 'knownFacts', 'designNotes', 'imageRequirements', 'preparation') if k in asset})
     saved = claim.get('output') or {}
     model_name = 'Seedream 5.0 Pro' if '-pro-' in settings.model else 'Seedream 5.0 Flash'
     summary = [f'制作设置：{model_name} · {settings.resolution} · {settings.ratio}']

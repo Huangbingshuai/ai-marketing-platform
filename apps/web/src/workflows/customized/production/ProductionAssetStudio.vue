@@ -240,7 +240,7 @@ watch(
               </button>
               <div class="card-copy">
                 <div class="card-title">
-                  <h4>{{ a.name || '未命名资产' }}</h4>
+                  <h4 :title="a.name || '未命名资产'">{{ a.name || '未命名资产' }}</h4>
                   <ProductionImageStatus
                     v-if="
                       imageActivityRunning(activity(a)) ||
@@ -317,24 +317,14 @@ watch(
     <div v-if="selected && draft" class="asset-detail">
       <div class="detail-heading">
         <h3>资产定义</h3>
-        <button
-          class="studio-button"
-          :disabled="locked"
-          @click="regenerateSelected"
-        >
+        <button class="studio-button" :disabled="locked" @click="regenerateSelected">
           重新整理此项
         </button>
       </div>
       <div class="detail-fields">
-        <WorkflowInformationField
-          v-model="draft.name"
-          label="资产名称"
-          :readonly="locked"
-        /><label class="category-field"
-          >资产类别<select
-            v-model="draft.kind"
-            :disabled="locked || !!draft.preparation"
-          >
+        <WorkflowInformationField v-model="draft.name" label="资产名称" :readonly="locked" /><label
+          class="category-field"
+          >资产类别<select v-model="draft.kind" :disabled="locked || !!draft.preparation">
             <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select></label
         >
@@ -600,6 +590,8 @@ watch(
   gap: 16px;
 }
 .visual-card {
+  display: flex;
+  flex-direction: column;
   border: 1px solid #e4e9f0;
   border-radius: 13px;
   overflow: hidden;
@@ -613,6 +605,7 @@ watch(
   box-shadow: 0 5px 18px #273a5710;
 }
 .cover {
+  flex-shrink: 0;
   position: relative;
   width: 100%;
   border: 0;
@@ -645,6 +638,7 @@ watch(
   color: #7e8da3;
 }
 .card-copy {
+  flex: 1;
   padding: 15px 15px 12px;
 }
 .card-title {
@@ -652,10 +646,17 @@ watch(
   align-items: start;
   justify-content: space-between;
   gap: 9px;
+  min-height: 42px;
 }
 .card-title h4 {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 21px;
   color: #2b3e59;
   margin: 0;
 }
@@ -679,20 +680,27 @@ watch(
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  min-height: 43px;
+  height: 43.2px;
   margin: 10px 0;
 }
 .card-copy small {
+  display: block;
+  line-height: 16px;
   font-size: 10px;
   color: #9aa6b7;
 }
 .visual-card footer {
+  margin-top: auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid #edf0f5;
   background: #fdfdfe;
+}
+.visual-card footer > .studio-button:last-child {
+  min-width: 110px;
 }
 .studio-button {
   display: inline-flex;

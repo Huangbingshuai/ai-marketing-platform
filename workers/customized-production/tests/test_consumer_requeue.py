@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import asyncio
 from typing import Any
 import pytest
 from aio_pika.message import ProcessContext
@@ -43,9 +44,14 @@ async def test_requeued_message_is_not_acked_again_and_next_message_still_runs(m
         async def close(self) -> None:pass
     async def connect(*args:Any,**kwargs:Any) -> Connection:return Connection()
     calls=[]
+    both_started = asyncio.Event()
     async def execute(*args:Any) -> None:
         calls.append(1)
-        if len(calls)==1:raise InternalApiError('temporary',retryable=True)
+        first_call = len(calls) == 1
+        if len(calls) == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        if first_call:raise InternalApiError('temporary',retryable=True)
     async def no_sleep(*args:Any) -> None:pass
     monkeypatch.setattr(consumer,'required',lambda name:'controlled-test')
     monkeypatch.setattr(consumer,'Provider',Adapter)

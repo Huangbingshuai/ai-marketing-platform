@@ -26,6 +26,8 @@ API 复用效果类 `SEEDANCE_MODEL_2_5 / SEEDANCE_MODEL_2_0 / SEEDANCE_MODEL_2_
 
 `CUSTOMIZED_PRODUCTION_CONCURRENCY` 默认 2，`CUSTOMIZED_PRODUCTION_TIMEOUT_SECONDS` 默认 300，`CUSTOMIZED_PRODUCTION_MAX_ATTEMPTS` 默认 2；模型配置冻结在任务中。Ark、RabbitMQ 和内部 API 配置由环境注入，不在日志输出正文或密钥。运行依赖[共享底座](../shared/customized-production-runtime/README.md)，视频渲染额外安装 FFmpeg。
 
+`CUSTOMIZED_PRODUCTION_TASK_CONCURRENCY` 默认 4，范围 1–4，控制独立消息并行数；与上述文本模型调用并发分开。不同片段的 Prompt 和 Render 可以重叠执行，同片段及整份分镜任务由 API 在项目事务锁内互斥。每个消息独立持有租约、供应商身份和确认/重排状态，单项失败不取消其他片段。资产 Worker 仍逐个消费消息。
+
 ```powershell
 docker compose --profile customized-production build customized-production-worker
 docker compose --profile customized-production up -d --no-deps customized-production-worker

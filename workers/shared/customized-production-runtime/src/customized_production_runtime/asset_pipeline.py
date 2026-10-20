@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-from typing import Any
+from typing import Any, cast
 from .api import Api
 from .provider import Provider
 from .asset_models import Inventory, Definitions, AssetAudit, AssetRepair, DETAIL_KEYS
@@ -149,6 +149,15 @@ def validate_audit(audit: dict[str, Any], assets: list[dict[str, Any]]) -> None:
     if any(f['assetId'] not in ids for f in audit['findings']):
         raise ValueError('audit outside asset scope')
 
+def audit_schema(assets: list[dict[str, Any]]) -> type[AssetAudit]:
+    class ScopedAudit(AssetAudit):
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            schema = super().model_json_schema(*args, **kwargs)
+            schema['$defs']['Finding']['properties']['assetId']['enum'] = [a['id'] for a in assets]
+            return schema
+    return ScopedAudit
+
 def apply_repair(assets: list[dict[str, Any]], repair: dict[str, Any], audit: dict[str, Any], snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     patches = AssetRepair.model_validate(repair).model_dump()['patches']
     allowed = {(f['assetId'], f['field']) for f in audit['findings'] if f['severity'] == 'REQUIRED'}
@@ -192,6 +201,30 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
     async def checkpoint(node: str, status: str, title: str, content: str) -> None:
         await api.call('PUT', 'checkpoint', {'step': {'id': node, 'status': status, 'title': title, 'content': content}, 'output': stored})
         steps[node]['status'] = status
+
+    async def checked_audit(key: str, stage: str, node: str, values: list[dict[str, Any]], inputs: dict[str, Any], instruction: str) -> dict[str, Any]:
+        schema = audit_schema(values)
+        if key not in stored:
+            result = await provider.generate(stage, snapshot['models']['creative'], schema, inputs, instruction)
+            stored[key] = result.model_dump()
+            await checkpoint(node, 'RUNNING', '核对审校引用', '审校结果已保留，正在核对问题所指对象。')
+        try:
+            validate_audit(stored[key], values)
+        except ValueError:
+            correction_key = key + 'ScopeCorrectionAttempted'
+            if stored.get(correction_key):
+                await checkpoint(node, 'FAILED', '审校引用需要核对', '审校引用未通过对象范围校验，已有资产与审校结果保留。')
+                raise
+            stored[correction_key] = True
+            stored[key + 'Original'] = copy.deepcopy(stored[key])
+            await checkpoint(node, 'RUNNING', '修正审校引用', '正在核对问题对应的准确对象，仅修正不合法的引用。')
+            result = await provider.generate(stage + '_SCOPE', snapshot['models']['creative'], schema,
+                {**inputs, 'candidate': stored[key]},
+                '审校结果引用了目录外的对象。逐条对照当前assets，使用其准确id定位问题，不按近名猜测，不删除尚未解决的问题，不改写资产。遗漏对象问题定位最相关的已有对象preparation字段并说明遗漏。保留问题、依据与严重程度；只纠正引用和必要的定位说明。')
+            stored[key] = result.model_dump()
+            await checkpoint(node, 'RUNNING', '核对修正后的审校引用', '已保留引用修正结果，正在重新校验。')
+            validate_audit(stored[key], values)
+        return cast(dict[str, Any], stored[key])
 
     if steps['SNAPSHOT']['status'] != 'SUCCEEDED':
         await checkpoint('SNAPSHOT', 'SUCCEEDED', '本次创作依据', snapshot['script']['name']+'\n'+snapshot['script'].get('story', {}).get('content', snapshot['script'].get('synopsis', '')))
@@ -325,16 +358,15 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
         '发现遗漏时定位最相关对象preparation字段并说明缺失对象；遗漏动作必需的独立对象仍属于必须修正的问题，不能用待确认说明掩盖。受保护字段存在冲突应指出，不允许自动重写。')
     if steps['REVIEW']['status'] != 'SUCCEEDED':
         await checkpoint('REVIEW', 'RUNNING', '全局独立审校', '正在核对实际对象、事实依据和制作要求')
-        audit = await provider.generate('ASSET_REVIEW', snapshot['models']['creative'], AssetAudit,
-            {**context, 'inventory': inventory, 'assets': assets}, audit_instruction)
-        stored['audit'] = audit.model_dump()
-        validate_audit(stored['audit'], assets)
+        audit = AssetAudit.model_validate(await checked_audit('audit', 'ASSET_REVIEW', 'REVIEW', assets,
+            {**context, 'inventory': inventory, 'assets': assets}, audit_instruction))
         await checkpoint('REVIEW', 'SUCCEEDED', '审校结论', audit.summary+'\n'+'\n'.join(next(a['name'] for a in assets if a['id']==f.assetId)+'：'+f.issue+'；依据：'+f.basis for f in audit.findings))
     if steps['REPAIR']['status'] != 'SUCCEEDED':
         required = [f for f in stored['audit']['findings'] if f['severity'] == 'REQUIRED']
         if required:
             # Never repeatedly pay for a repair/recheck that already failed semantic review.
-            if stored.get('recheck', {}).get('findings') and any(f['severity']=='REQUIRED' for f in stored['recheck']['findings']):
+            previous_findings = stored.get('recheck', {}).get('findings', [])
+            if previous_findings and all(f['assetId'] in assets_by_id for f in previous_findings) and any(f['severity']=='REQUIRED' for f in previous_findings):
                 raise ValueError('asset review still has unresolved issues')
             if 'revised' not in stored:
                 old = {a['id']: a for a in existing}
@@ -355,12 +387,9 @@ async def run_assets(api: Api, provider: Provider, claim: dict[str, Any]) -> Non
                 stored['repairChanges'] = changes
                 await checkpoint('REPAIR', 'RUNNING', '修改内容', changes)
             assets = stored['revised']
-            if 'recheck' not in stored:
-                audit = await provider.generate('ASSET_RECHECK', snapshot['models']['creative'], AssetAudit,
-                    {**context, 'assets': assets, 'previousFindings': stored['audit']['findings']}, '核查原问题是否解决，复核修订后的完整目录。对照首次审校全部结论，解释确有新依据的问题；不能仅因未修改原建议就将其升级为必须修改。'+audit_instruction)
-                stored['recheck'] = audit.model_dump()
-                validate_audit(stored['recheck'], assets)
-                await checkpoint('REPAIR', 'RUNNING', '复核结论', stored.get('repairChanges', '')+'\n\n'+audit.summary+'\n'+'\n'.join(f.issue for f in audit.findings))
+            audit = AssetAudit.model_validate(await checked_audit('recheck', 'ASSET_RECHECK', 'REPAIR', assets,
+                {**context, 'assets': assets, 'previousFindings': stored['audit']['findings']}, '核查原问题是否解决，复核修订后的完整目录。对照首次审校全部结论，解释确有新依据的问题；不能仅因未修改原建议就将其升级为必须修改。'+audit_instruction))
+            await checkpoint('REPAIR', 'RUNNING', '复核结论', stored.get('repairChanges', '')+'\n\n'+audit.summary+'\n'+'\n'.join(f.issue for f in audit.findings))
             if any(f['severity'] == 'REQUIRED' for f in stored['recheck']['findings']):
                 raise ValueError('asset review still has unresolved issues')
         stored['final'] = {'assets': assets, 'shots': []}
