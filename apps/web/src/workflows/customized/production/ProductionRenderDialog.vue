@@ -88,6 +88,7 @@ const title = computed(() =>
 </script>
 <template>
   <WorkflowInformationDialog
+    :class="{ 'asset-image-dialog': type === 'IMAGE' }"
     :open="open"
     :title="title"
     description="核对本次制作内容"
@@ -227,6 +228,14 @@ const title = computed(() =>
   </WorkflowInformationDialog>
 </template>
 <style scoped>
+.asset-image-dialog {
+  width: min(1320px, calc(100vw - 64px));
+}
+@media (max-width: 680px) {
+  .asset-image-dialog {
+    width: calc(100vw - 20px);
+  }
+}
 .image-production-layout {
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);

@@ -7,7 +7,6 @@ import {
   X,
   Check,
   Loader2,
-  RotateCcw,
   Link2,
   Upload,
 } from '@lucide/vue';
@@ -509,12 +508,6 @@ function submit() {
         </button>
       </div>
     </div>
-    <div class="composer-meta">
-      <span>参考图片仅用于本次生成 · 生成成功前保留原图</span
-      ><button type="button" :disabled="locked" @click="text = defaultAssetImagePrompt(asset)">
-        <RotateCcw :size="13" />恢复默认提示词
-      </button>
-    </div>
     <p v-if="text.length > 10000" class="composer-error" role="alert">
       提示词最多 10000 字，请精简后生成。
     </p>
@@ -570,7 +563,7 @@ function submit() {
   overflow: hidden;
 }
 .current-image :deep(.asset-visual) {
-  height: 270px;
+  height: clamp(270px, 42dvh, 460px);
   aspect-ratio: auto;
   background: #f4f6f8;
 }
@@ -907,25 +900,6 @@ function submit() {
   font: inherit;
   font-size: 12px;
 }
-.composer-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: 12px 2px 0;
-  font-size: 11px;
-  color: #97a5b8;
-}
-.composer-meta button {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: #7b92b2;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  font: inherit;
-}
 .composer-error {
   font-size: 12px;
   color: #b74b41;
@@ -987,9 +961,6 @@ textarea:disabled {
   }
   .toolbar-options {
     gap: 3px;
-  }
-  .composer-meta {
-    font-size: 10px;
   }
   .image-picker {
     left: 8px;

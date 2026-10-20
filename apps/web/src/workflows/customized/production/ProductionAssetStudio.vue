@@ -48,8 +48,7 @@ const category = ref('ALL'),
   keyword = ref(''),
   filter = ref('ALL');
 const detailId = ref(''),
-  draft = ref<ProductionAsset | null>(null),
-  detailEditing = ref(false);
+  draft = ref<ProductionAsset | null>(null);
 const adding = ref(false);
 const selected = computed(() => props.assets.find((a) => a.id === detailId.value));
 const source = (asset: ProductionAsset) => imageSource(props.assets, asset);
@@ -81,14 +80,11 @@ const groups = computed(() =>
 const ready = computed(() => props.assets.filter((a) => independent(a) && a.image).length);
 const independentlyFiltered = computed(() => filtered.value.filter(independent));
 const usage = (id: string) => props.shots.filter((s) => s.bindings.some((b) => b.assetId === id));
-function openDetail(a: ProductionAsset) {
+function editDefinition(a: ProductionAsset) {
+  if (props.locked) return;
   detailId.value = a.id;
   draft.value = JSON.parse(JSON.stringify(a));
-  detailEditing.value = false;
-}
-function beginEdit() {
   emit('edit');
-  detailEditing.value = true;
 }
 function regenerateSelected() {
   const id = selected.value?.id;
@@ -105,7 +101,7 @@ function render(items: ProductionAsset[]) {
   if (props.locked) return;
   if (items.length === 1 && !independent(items[0]!)) {
     const owner = source(items[0]!);
-    if (owner) openDetail(owner);
+    if (owner) emit('images', [owner]);
     return;
   }
   detailId.value = '';
@@ -118,7 +114,7 @@ function openAsset(id: string) {
   category.value = 'ALL';
   keyword.value = '';
   filter.value = 'ALL';
-  openDetail(asset);
+  render([asset]);
   return true;
 }
 defineExpose({ openAsset });
@@ -135,10 +131,7 @@ watch(
     if (adding.value) {
       const added = props.assets.find((a) => !previous.split('|').includes(a.id));
       adding.value = false;
-      if (added) {
-        openDetail(added);
-        detailEditing.value = true;
-      }
+      if (added) editDefinition(added);
     }
   },
 );
@@ -216,8 +209,8 @@ watch(
             <article v-for="a in g.assets" :key="a.id" class="visual-card">
               <button
                 class="cover"
-                :aria-label="`查看${a.name || '未命名资产'}`"
-                @click="openDetail(a)"
+                :aria-label="`制作${a.name || '未命名资产'}图片`"
+                @click="render([a])"
               >
                 <ProductionAssetVisual
                   :asset="source(a) || { ...a, image: null }"
@@ -240,8 +233,8 @@ watch(
                 }}</small>
               </div>
               <footer>
-                <button class="studio-button text-button" @click="openDetail(a)">
-                  <Pencil :size="14" />查看定义</button
+                <button class="studio-button text-button" @click="editDefinition(a)">
+                  <Pencil :size="14" />编辑定义</button
                 ><button
                   class="studio-button"
                   :disabled="locked || !source(a)"
@@ -280,55 +273,27 @@ watch(
       </div>
     </main>
   </div>
-  <WorkflowInformationDialog
-    :open="!!selected"
-    :title="selected?.name || '资产详情'"
-    description="公共定义供所有关联镜头复用，本镜动作在视频制作中设置。"
-    @close="detailId = ''"
-  >
+  <WorkflowInformationDialog :open="!!selected" title="编辑资产定义" @close="detailId = ''">
     <div v-if="selected && draft" class="asset-detail">
-      <div class="detail-preview">
-        <ProductionAssetVisual
-          :asset="source(selected) || { ...selected, image: null }"
-          :project-id="projectId"
-        />
-        <div>
-          <strong>{{ imageLabel(selected) }}</strong>
-          <p>先确定公共形象，图片无需立即生成。</p>
-          <button
-            class="studio-button"
-            :disabled="locked || !source(selected) || detailEditing"
-            @click="render([selected])"
-          >
-            <ImagePlus :size="15" />{{
-              !independent(selected) ? '查看所属资产' : selected.image ? '重新生成图片' : '生成图片'
-            }}
-          </button>
-        </div>
-      </div>
       <div class="detail-heading">
         <h3>资产定义</h3>
         <button
-          v-if="!detailEditing"
           class="studio-button"
           :disabled="locked"
           @click="regenerateSelected"
         >
           重新整理此项
         </button>
-        <button v-if="!detailEditing" class="studio-button" :disabled="locked" @click="beginEdit">
-          <Pencil :size="14" />编辑定义
-        </button>
       </div>
       <div class="detail-fields">
         <WorkflowInformationField
           v-model="draft.name"
           label="资产名称"
-          :readonly="!detailEditing || locked"
+          :readonly="locked"
         /><label class="category-field"
           >资产类别<select
             v-model="draft.kind"
-            :disabled="!detailEditing || locked || !!draft.preparation"
+            :disabled="locked || !!draft.preparation"
           >
             <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select></label
@@ -338,32 +303,32 @@ watch(
         v-model="draft.description"
         label="公共形象与特征"
         multiline
-        :readonly="!detailEditing || locked"
+        :readonly="locked"
       />
       <div class="detail-fields">
         <WorkflowInformationField
           v-model="draft.knownFacts"
           label="已确认信息"
           multiline
-          :readonly="!detailEditing || locked"
+          :readonly="locked"
         /><WorkflowInformationField
           v-model="draft.designNotes"
           label="设计与待确认内容"
           multiline
-          :readonly="!detailEditing || locked"
+          :readonly="locked"
         />
       </div>
       <WorkflowInformationField
         :model-value="draft.imageRequirements ?? ''"
         label="图像制作要求"
         multiline
-        :readonly="!detailEditing || locked"
+        :readonly="locked"
         @update:model-value="draft.imageRequirements = $event"
       />
       <ProductionAssetPreparation
         :asset="draft"
         :assets="assets"
-        :readonly="!detailEditing || locked"
+        :readonly="locked"
         @update="draft.preparation = $event"
       />
       <details>
@@ -372,7 +337,7 @@ watch(
           v-model="draft.sourceText"
           label="故事与简报依据"
           multiline
-          :readonly="!detailEditing || locked"
+          :readonly="locked"
         />
         <p>
           {{
@@ -402,13 +367,12 @@ watch(
           </button>
         </div>
         <button
-          v-if="detailEditing"
           class="studio-button primary"
           :disabled="locked || !draft.name.trim() || !validOwnership"
           @click="apply"
         >
           应用到草稿</button
-        ><button v-else class="studio-button" @click="detailId = ''">关闭</button>
+        ><button class="studio-button" @click="detailId = ''">取消</button>
       </footer>
     </div>
   </WorkflowInformationDialog>
@@ -734,24 +698,6 @@ watch(
   display: grid;
   gap: 20px;
 }
-.detail-preview {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 24px;
-  align-items: center;
-}
-.detail-preview :deep(.asset-visual) {
-  border-radius: 12px;
-}
-.detail-preview strong {
-  font-size: 14px;
-  color: #435a77;
-}
-.detail-preview p {
-  font-size: 12px;
-  color: #8795a8;
-  line-height: 1.8;
-}
 .detail-heading {
   display: flex;
   justify-content: space-between;
@@ -839,8 +785,7 @@ button:focus-visible {
 }
 @media (max-width: 600px) {
   .visual-grid,
-  .detail-fields,
-  .detail-preview {
+  .detail-fields {
     grid-template-columns: 1fr;
   }
   .catalog-toolbar {
@@ -857,9 +802,6 @@ button:focus-visible {
   }
   .catalog-main {
     padding: 14px;
-  }
-  .detail-preview :deep(.asset-visual) {
-    max-height: 180px;
   }
   .visual-grid {
     grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));

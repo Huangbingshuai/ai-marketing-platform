@@ -142,7 +142,7 @@ describe('asset image ownership interactions', () => {
     expect(state.valid).toBe(false);
     expect(generate).not.toHaveBeenCalled();
   });
-  it('opens the parent definition rather than generating an attached object', () => {
+  it('opens image production for the parent without independently generating the attached object', () => {
     const assets = catalog(),
       images = vi.fn();
     const state = mount(Studio, {
@@ -154,12 +154,39 @@ describe('asset image ownership interactions', () => {
       onImages: images,
     });
     call(state, 'render', [assets[10]!]);
-    expect(state.detailId).toBe('s0');
-    expect(images).not.toHaveBeenCalled();
+    expect(state.detailId).toBe('');
+    expect(images).toHaveBeenCalledWith([assets[0]]);
     call(state, 'render', assets);
     expect(images).toHaveBeenCalledWith(assets.slice(0, 10));
     state.filter = 'MISSING';
     expect(state.filtered).toHaveLength(10);
+  });
+  it('opens image production directly on asset navigation and keeps definition editing explicit', () => {
+    const assets = catalog(),
+      images = vi.fn(),
+      edit = vi.fn(),
+      update = vi.fn();
+    const state = mount(Studio, {
+      projectId: 'p',
+      assets,
+      shots: [],
+      editing: false,
+      locked: false,
+      onImages: images,
+      onEdit: edit,
+      onUpdate: update,
+    });
+    expect(call(state, 'openAsset', 's0')).toBe(true);
+    expect(images).toHaveBeenCalledWith([assets[0]]);
+    expect(state.detailId).toBe('');
+    expect(edit).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(call(state, 'openAsset', 'missing')).toBe(false);
+    call(state, 'editDefinition', assets[10]);
+    expect(state.detailId).toBe('d0');
+    expect(edit).toHaveBeenCalledOnce();
+    expect(update).not.toHaveBeenCalled();
+    expect(assets[10]!.preparation?.parentId).toBe('s0');
   });
   it('uses exact parent images, deduplicates right-panel references and blocks invalid ancestry', () => {
     const parent = { ...asset('scene'), image: { assetId: 'image', version: 2 } };
