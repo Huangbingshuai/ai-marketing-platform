@@ -14,10 +14,12 @@ export type RenderModelOption = {
   defaultResolution: SeedanceResolution;
 };
 
-export const effectSegmentRenderModels: readonly RenderModelOption[] = SEEDANCE_MODEL_OPTIONS.map(({value, label}) => ({
-  value,
-  label,
-  ...EFFECT_PROMPT_RENDER_CAPABILITIES[value],
-  defaultRatio: 'adaptive',
-  defaultResolution: '720p',
-}));
+export const effectSegmentRenderModels: readonly RenderModelOption[] = SEEDANCE_MODEL_OPTIONS.map(
+  ({ value, label }) => ({
+    value,
+    label,
+    ...EFFECT_PROMPT_RENDER_CAPABILITIES[value],
+    defaultRatio: 'adaptive',
+    defaultResolution: '720p',
+  }),
+);

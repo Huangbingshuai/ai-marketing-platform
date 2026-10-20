@@ -51,7 +51,7 @@
 | `packages/ui`           | 共享 Vue UI 组件                                                                                   |
 | `workers/*`             | Python 异步任务；复用受保护内部 API、租约和供应商适配，不跨工作流导入内部模块                      |
 | `references/prototypes` | 冻结视觉/交互基线，不作为运行时代码                                                                |
-| `docs`                  | 按 `architecture / project-assets / development / workflows` 归属；运营手册放 `docs/运营手册`       |
+| `docs`                  | 按 `architecture / project-assets / development / workflows` 归属；运营手册放 `docs/运营手册`      |
 
 外部能力经 Ark、Seedance 等适配器接入，不在页面或业务服务中直接绑定厂商协议。Worker 使用 LangGraph、Pydantic、httpx 等；具体依赖以所属清单为准，不为局部需求引入第二套底座。
 

@@ -15,10 +15,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "assetId",
-        "description"
-      ],
+      "required": ["assetId", "description"],
       "title": "Binding",
       "type": "object"
     },
@@ -69,15 +66,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "title",
-        "sceneId",
-        "shotIds",
-        "transition",
-        "startState",
-        "endState"
-      ],
+      "required": ["id", "title", "sceneId", "shotIds", "transition", "startState", "endState"],
       "title": "Clip",
       "type": "object"
     },
@@ -115,13 +104,7 @@
           "type": "integer"
         }
       },
-      "required": [
-        "shotId",
-        "startMs",
-        "endMs",
-        "textStart",
-        "textEnd"
-      ],
+      "required": ["shotId", "startMs", "endMs", "textStart", "textEnd"],
       "title": "CuePart",
       "type": "object"
     },
@@ -144,10 +127,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "cueId",
-        "parts"
-      ],
+      "required": ["cueId", "parts"],
       "title": "CueParts",
       "type": "object"
     },
@@ -290,11 +270,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "clips",
-    "shots",
-    "cueParts"
-  ],
+  "required": ["clips", "shots", "cueParts"],
   "title": "ShotBatch",
   "type": "object"
 }

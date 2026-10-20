@@ -22,10 +22,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "dimension",
-        "conclusion"
-      ],
+      "required": ["dimension", "conclusion"],
       "title": "Check",
       "type": "object"
     },
@@ -33,16 +30,7 @@
       "additionalProperties": false,
       "properties": {
         "entity": {
-          "enum": [
-            "SHOT",
-            "CLIP",
-            "SCENE",
-            "CUE",
-            "EVENT",
-            "SOURCE",
-            "TIMING",
-            "PROMPT"
-          ],
+          "enum": ["SHOT", "CLIP", "SCENE", "CUE", "EVENT", "SOURCE", "TIMING", "PROMPT"],
           "title": "Entity",
           "type": "string"
         },
@@ -59,11 +47,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "entity",
-        "id",
-        "field"
-      ],
+      "required": ["entity", "id", "field"],
       "title": "Evidence",
       "type": "object"
     },
@@ -77,10 +61,7 @@
           "type": "string"
         },
         "severity": {
-          "enum": [
-            "ERROR",
-            "WARNING"
-          ],
+          "enum": ["ERROR", "WARNING"],
           "title": "Severity",
           "type": "string"
         },
@@ -143,11 +124,7 @@
           "type": "string"
         },
         "repairKind": {
-          "enum": [
-            "FIELDS",
-            "STRUCTURE",
-            "INPUT"
-          ],
+          "enum": ["FIELDS", "STRUCTURE", "INPUT"],
           "title": "Repairkind",
           "type": "string"
         }
@@ -177,11 +154,7 @@
           "type": "string"
         },
         "status": {
-          "enum": [
-            "RESOLVED",
-            "PARTIAL",
-            "UNRESOLVED"
-          ],
+          "enum": ["RESOLVED", "PARTIAL", "UNRESOLVED"],
           "title": "Status",
           "type": "string"
         },
@@ -200,12 +173,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "issueId",
-        "status",
-        "evidence",
-        "explanation"
-      ],
+      "required": ["issueId", "status", "evidence", "explanation"],
       "title": "Resolution",
       "type": "object"
     }
@@ -243,12 +211,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "summary",
-    "checks",
-    "findings",
-    "resolutions"
-  ],
+  "required": ["summary", "checks", "findings", "resolutions"],
   "title": "Audit",
   "type": "object"
 }

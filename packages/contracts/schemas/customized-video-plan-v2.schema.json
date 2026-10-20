@@ -15,10 +15,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "assetId",
-        "description"
-      ],
+      "required": ["assetId", "description"],
       "title": "Binding",
       "type": "object"
     },
@@ -32,10 +29,7 @@
           "type": "string"
         },
         "status": {
-          "enum": [
-            "CONFIGURED",
-            "PENDING_MODEL_CHECK"
-          ],
+          "enum": ["CONFIGURED", "PENDING_MODEL_CHECK"],
           "title": "Status",
           "type": "string"
         },
@@ -58,13 +52,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "key",
-        "status",
-        "minClipMs",
-        "maxClipMs",
-        "version"
-      ],
+      "required": ["key", "status", "minClipMs", "maxClipMs", "version"],
       "title": "Capability",
       "type": "object"
     },
@@ -115,15 +103,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "title",
-        "sceneId",
-        "shotIds",
-        "transition",
-        "startState",
-        "endState"
-      ],
+      "required": ["id", "title", "sceneId", "shotIds", "transition", "startState", "endState"],
       "title": "Clip",
       "type": "object"
     },
@@ -137,13 +117,7 @@
           "type": "string"
         },
         "kind": {
-          "enum": [
-            "DIALOGUE",
-            "VO",
-            "OS",
-            "ANNOUNCEMENT",
-            "ON_SCREEN_TEXT"
-          ],
+          "enum": ["DIALOGUE", "VO", "OS", "ANNOUNCEMENT", "ON_SCREEN_TEXT"],
           "title": "Kind",
           "type": "string"
         },
@@ -165,13 +139,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "id",
-        "kind",
-        "speaker",
-        "sourceRef",
-        "parts"
-      ],
+      "required": ["id", "kind", "speaker", "sourceRef", "parts"],
       "title": "Cue",
       "type": "object"
     },
@@ -209,13 +177,7 @@
           "type": "integer"
         }
       },
-      "required": [
-        "shotId",
-        "startMs",
-        "endMs",
-        "textStart",
-        "textEnd"
-      ],
+      "required": ["shotId", "startMs", "endMs", "textStart", "textEnd"],
       "title": "CuePart",
       "type": "object"
     },
@@ -223,10 +185,7 @@
       "additionalProperties": false,
       "properties": {
         "mode": {
-          "enum": [
-            "REFERENCE",
-            "FIXED"
-          ],
+          "enum": ["REFERENCE", "FIXED"],
           "title": "Mode",
           "type": "string"
         },
@@ -237,10 +196,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "mode",
-        "seconds"
-      ],
+      "required": ["mode", "seconds"],
       "title": "DurationPolicy",
       "type": "object"
     },
@@ -268,11 +224,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "id",
-        "description",
-        "sourceRefs"
-      ],
+      "required": ["id", "description", "sourceRefs"],
       "title": "Event",
       "type": "object"
     },
@@ -308,13 +260,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "name",
-        "sceneAssetId",
-        "setting",
-        "spatialBaseline"
-      ],
+      "required": ["id", "name", "sceneAssetId", "setting", "spatialBaseline"],
       "title": "Scene",
       "type": "object"
     },
@@ -448,11 +394,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "revision",
-        "hash"
-      ],
+      "required": ["id", "revision", "hash"],
       "title": "Source",
       "type": "object"
     },
@@ -478,11 +420,7 @@
           "type": "integer"
         }
       },
-      "required": [
-        "unitId",
-        "start",
-        "end"
-      ],
+      "required": ["unitId", "start", "end"],
       "title": "SourceRef",
       "type": "object"
     },
@@ -513,11 +451,7 @@
           "type": "integer"
         },
         "kind": {
-          "enum": [
-            "TEXT",
-            "VOICE",
-            "ON_SCREEN_TEXT"
-          ],
+          "enum": ["TEXT", "VOICE", "ON_SCREEN_TEXT"],
           "title": "Kind",
           "type": "string"
         },
@@ -527,14 +461,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "text",
-        "start",
-        "end",
-        "kind",
-        "speaker"
-      ],
+      "required": ["id", "text", "start", "end", "kind", "speaker"],
       "title": "SourceUnit",
       "type": "object"
     },
@@ -558,11 +485,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "explanation",
-        "estimatedSpeechSeconds",
-        "uncertainty"
-      ],
+      "required": ["explanation", "estimatedSpeechSeconds", "uncertainty"],
       "title": "Timing",
       "type": "object"
     }

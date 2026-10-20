@@ -15,10 +15,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "kind",
-        "id"
-      ],
+      "required": ["kind", "id"],
       "title": "ClipTarget",
       "type": "object"
     }
@@ -45,11 +42,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "target",
-    "content",
-    "assetIds"
-  ],
+  "required": ["target", "content", "assetIds"],
   "title": "ClipPrompt",
   "type": "object"
 }

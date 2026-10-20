@@ -5,25 +5,21 @@ import { ProductionVideoService } from './production-video.service';
 it('serves a scoped byte range with full-file size and download headers', async () => {
   const projects = { get: vi.fn().mockResolvedValue({}) };
   const repository = {
-    videoFile: vi
-      .fn()
-      .mockResolvedValue({
-        storageKey: 'controlled-key',
-        sizeBytes: 8,
-        mimeType: 'video/mp4',
-        originalFileName: '杯.mp4',
-      }),
+    videoFile: vi.fn().mockResolvedValue({
+      storageKey: 'controlled-key',
+      sizeBytes: 8,
+      mimeType: 'video/mp4',
+      originalFileName: '杯.mp4',
+    }),
   };
   const storage = {
-    open: vi
-      .fn()
-      .mockResolvedValue({
-        stream: Readable.from(Buffer.from('vi')),
-        sizeBytes: 8,
-        start: 2,
-        end: 3,
-        contentLength: 2,
-      }),
+    open: vi.fn().mockResolvedValue({
+      stream: Readable.from(Buffer.from('vi')),
+      sizeBytes: 8,
+      start: 2,
+      end: 3,
+      contentLength: 2,
+    }),
   };
   const response = { setHeader: vi.fn(), statusCode: 200 };
   const service = new ProductionVideoService(

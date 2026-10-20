@@ -87,11 +87,7 @@
           "type": "integer"
         }
       },
-      "required": [
-        "clipId",
-        "textStart",
-        "textEnd"
-      ],
+      "required": ["clipId", "textStart", "textEnd"],
       "title": "CueAllocation",
       "type": "object"
     },
@@ -105,13 +101,7 @@
           "type": "string"
         },
         "kind": {
-          "enum": [
-            "DIALOGUE",
-            "VO",
-            "OS",
-            "ANNOUNCEMENT",
-            "ON_SCREEN_TEXT"
-          ],
+          "enum": ["DIALOGUE", "VO", "OS", "ANNOUNCEMENT", "ON_SCREEN_TEXT"],
           "title": "Kind",
           "type": "string"
         },
@@ -133,13 +123,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "id",
-        "kind",
-        "speaker",
-        "sourceRef",
-        "allocations"
-      ],
+      "required": ["id", "kind", "speaker", "sourceRef", "allocations"],
       "title": "CueLayout",
       "type": "object"
     },
@@ -167,11 +151,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "id",
-        "description",
-        "sourceRefs"
-      ],
+      "required": ["id", "description", "sourceRefs"],
       "title": "Event",
       "type": "object"
     },
@@ -207,13 +187,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "name",
-        "sceneAssetId",
-        "setting",
-        "spatialBaseline"
-      ],
+      "required": ["id", "name", "sceneAssetId", "setting", "spatialBaseline"],
       "title": "Scene",
       "type": "object"
     },
@@ -239,11 +213,7 @@
           "type": "integer"
         }
       },
-      "required": [
-        "unitId",
-        "start",
-        "end"
-      ],
+      "required": ["unitId", "start", "end"],
       "title": "SourceRef",
       "type": "object"
     },
@@ -267,11 +237,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "explanation",
-        "estimatedSpeechSeconds",
-        "uncertainty"
-      ],
+      "required": ["explanation", "estimatedSpeechSeconds", "uncertainty"],
       "title": "Timing",
       "type": "object"
     }
