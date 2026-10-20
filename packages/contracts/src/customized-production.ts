@@ -194,6 +194,8 @@ export type ProductionTask = {
   errorMessage: string | null;
   shotId: string | null;
   imageSettings?: CustomizedImageSettings;
+  /** Read-only object IDs whose generated files are already persisted for this task. */
+  completedImageAssetIds?: string[];
   renderSettings?: CustomizedVideoRenderSettings;
   reviewDraftState?: 'AVAILABLE' | 'ADOPTED';
   /** Successful asset extraction publishes this aggregate asset branch. */

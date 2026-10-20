@@ -199,6 +199,17 @@ const previousImageSettings = computed(
     )?.imageSettings,
 );
 const imageDialogOpen = ref(false);
+const imageDialogTaskId = ref('');
+const imageDialogSettings = ref<CustomizedImageSettings>();
+const imageDialogTask = computed(() =>
+  workspace.value?.tasks.find((t) => t.id === imageDialogTaskId.value && t.operation === 'IMAGE'),
+);
+const imageDialogRunning = computed(
+  () => !!imageDialogTask.value && ['QUEUED', 'RUNNING'].includes(imageDialogTask.value.status),
+);
+const imageDialogAssets = computed(() =>
+  imageAssets.value.map((a) => document.value.assets.find((v) => v.id === a.id) ?? a),
+);
 const imageSubmitting = ref(false),
   imageError = ref('');
 const retryingTaskId = ref('');
@@ -287,14 +298,29 @@ async function retryTask(taskId: string) {
 }
 let imageSubmission = 0;
 function prepareImages(assets: ProductionAsset[]) {
-  if (
-    busy.value ||
-    running.value ||
-    backgroundImage.value ||
-    imageSubmitting.value ||
-    !assets.length
-  )
+  if (busy.value || imageSubmitting.value || !assets.length) return;
+  if (running.value && running.value.operation !== 'IMAGE') return;
+  const activeImage = running.value?.operation === 'IMAGE' ? running.value : backgroundImage.value;
+  if (activeImage) {
+    if (
+      assets.length === 1 &&
+      !activeImage.imageSettings?.assetIds.includes(
+        imageSource(document.value.assets, assets[0]!)?.id ?? assets[0]!.id,
+      )
+    )
+      return;
+    imageAssets.value =
+      assets.length === 1
+        ? assets
+        : document.value.assets.filter((a) => activeImage.imageSettings?.assetIds.includes(a.id));
+    imageDialogTaskId.value = activeImage.id;
+    imageDialogSettings.value = activeImage.imageSettings
+      ? clone(activeImage.imageSettings)
+      : undefined;
+    imageError.value = '';
+    imageDialogOpen.value = true;
     return;
+  }
   if (assets.length === 1 && !independentlyPrepared(document.value.assets, assets[0]!)) {
     const owner = imageSource(document.value.assets, assets[0]!);
     if (owner) assetStudio.value?.openAsset(owner.id);
@@ -305,6 +331,10 @@ function prepareImages(assets: ProductionAsset[]) {
   if (!independent.length) return;
   imageError.value = '';
   imageAssets.value = independent;
+  imageDialogTaskId.value = '';
+  imageDialogSettings.value = previousImageSettings.value
+    ? clone(previousImageSettings.value)
+    : undefined;
   imageDialogOpen.value = true;
 }
 function prepareImage(asset: ProductionAsset) {
@@ -373,7 +403,7 @@ async function generateImages(settings: CustomizedImageSettings) {
     );
     if (active !== controller || !workspace.value) return;
     workspace.value.tasks = [task, ...workspace.value.tasks];
-    imageDialogOpen.value = false;
+    imageDialogTaskId.value = task.id;
     schedule();
   } catch (e) {
     if (submission === imageSubmission && !isAbortError(e))
@@ -1082,6 +1112,8 @@ watch(
     retryingTaskId.value = '';
     retryError.value = null;
     imageDialogOpen.value = false;
+    imageDialogTaskId.value = '';
+    imageDialogSettings.value = undefined;
     imageError.value = '';
     assetPreview.value = null;
     shotParamsOpen.value = false;
@@ -1159,7 +1191,7 @@ defineExpose({ flushPendingEdits });
       @action="saveFailed ? retrySave() : load()"
     />
     <WorkflowExtractionFeedback
-      v-if="pollingInterrupted && !error"
+      v-if="pollingInterrupted && !error && running?.operation !== 'IMAGE'"
       tone="information"
       title="正在恢复进度查询"
       message="查询暂时中断，后台任务仍会继续；连接恢复后自动更新。"
@@ -1176,15 +1208,9 @@ defineExpose({ flushPendingEdits });
     <WorkflowRunProgress
       v-if="pageProgress"
       :progress="pageProgress.progress"
-      :summary="
-        pageProgress.operation === 'ASSETS'
-          ? '正在整理资产定义'
-          : pageProgress.operation === 'IMAGE'
-            ? '正在生成资产图片'
-            : '正在创作连续分镜'
-      "
+      :summary="pageProgress.operation === 'ASSETS' ? '正在整理资产定义' : '正在创作连续分镜'"
       :terminal="false"
-      :action-label="pageProgress.operation === 'IMAGE' ? '' : '查看工作流'"
+      action-label="查看工作流"
       @show-details="openWorkflow(pageProgress)"
     />
     <template v-if="workspace">
@@ -1196,6 +1222,8 @@ defineExpose({ flushPendingEdits });
         :shots="legacyShots"
         :editing="editing"
         :locked="busy || !!running || imageSubmitting"
+        :image-tasks="tasks"
+        :image-interrupted="pollingInterrupted"
         @edit="editing = true"
         @update="updateAsset"
         @add="createAsset"
@@ -1375,11 +1403,14 @@ defineExpose({ flushPendingEdits });
       :project-id="projectId"
       :workflow-run-id="workflowRunId"
       :brand-references="workspace?.brandImageReferences"
-      :settings="previousImageSettings"
+      :settings="imageDialogSettings"
       type="IMAGE"
-      :assets="imageAssets"
+      :assets="imageDialogAssets"
       :catalog="document.assets"
-      :busy="imageSubmitting"
+      :busy="imageSubmitting || imageDialogRunning"
+      :submitting="imageSubmitting"
+      :task="imageDialogTask"
+      :interrupted="pollingInterrupted"
       :error="imageError"
       @generate="generateImages"
       @close="imageDialogOpen = false"

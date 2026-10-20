@@ -14,7 +14,9 @@ it('reserves page-wide progress for bulk authoring and keeps clip jobs local', (
     { id: 'shots', operation: 'SHOTS', status: 'COMPLETED' },
   ] as ProductionTask[];
   expect(productionPageProgressTask(tasks, 'SHOTS')).toBeUndefined();
-  expect(productionPageProgressTask(tasks, 'ASSETS')?.id).toBe('image');
+  expect(productionPageProgressTask(tasks, 'ASSETS')).toBeUndefined();
+  tasks.push({ id: 'assets', operation: 'ASSETS', status: 'RUNNING' } as ProductionTask);
+  expect(productionPageProgressTask(tasks, 'ASSETS')?.id).toBe('assets');
   tasks.push({ id: 'new-shots', operation: 'SHOTS', status: 'QUEUED' } as ProductionTask);
   expect(productionPageProgressTask(tasks, 'SHOTS')?.id).toBe('new-shots');
 });

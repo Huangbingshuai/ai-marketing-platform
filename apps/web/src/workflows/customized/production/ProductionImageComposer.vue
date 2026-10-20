@@ -26,6 +26,8 @@ import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import { productionApi } from './production.api';
 import { defaultAssetImagePrompt } from './production-image-input';
 import { isAbortError } from '../../../api/http-client';
+import { imageActivityRunning, type ImageActivity } from './production-image-activity';
+import ProductionImageStatus from './ProductionImageStatus.vue';
 
 const props = defineProps<{
   asset: ProductionAsset;
@@ -34,6 +36,9 @@ const props = defineProps<{
   brandReferences?: { assetId: string; version: number; name: string }[] | undefined;
   settings?: CustomizedImageSettings | undefined;
   busy?: boolean | undefined;
+  submitting?: boolean | undefined;
+  activity?: ImageActivity | undefined;
+  interrupted?: boolean | undefined;
   error?: string | undefined;
 }>();
 const emit = defineEmits<{ generate: [settings: CustomizedImageSettings]; close: [] }>();
@@ -56,7 +61,12 @@ const modelName = computed(() => CUSTOMIZED_IMAGE_MODELS.find((m) => m.id === mo
 const dimensions = computed(() =>
   ratio.value === 'auto' ? null : CUSTOMIZED_IMAGE_DIMENSIONS[resolution.value][ratio.value],
 );
-const locked = computed(() => props.busy || uploading.value || basisChanged.value);
+const locked = computed(
+  () => props.busy || imageActivityRunning(props.activity) || uploading.value || basisChanged.value,
+);
+const generating = computed(
+  () => props.submitting || imageActivityRunning(props.activity) || (props.busy && !props.activity),
+);
 const identity = computed(() =>
   JSON.stringify([props.projectId, props.workflowRunId, props.asset.id]),
 );
@@ -294,9 +304,25 @@ function submit() {
 <template>
   <div class="image-composer-workspace">
     <figure class="current-image">
-      <ProductionAssetVisual :asset="asset" :project-id="projectId" />
+      <div class="current-image-preview" :aria-busy="generating">
+        <ProductionAssetVisual :asset="asset" :project-id="projectId" />
+        <div v-if="generating" class="image-generation-overlay">
+          <div>
+            <ProductionImageStatus
+              :activity="activity"
+              :submitting="submitting || (!activity && busy)"
+              :interrupted="interrupted"
+            />
+            <small>{{ asset.image ? '完成前保留当前图片' : '图片生成后会显示在这里' }}</small>
+          </div>
+        </div>
+      </div>
       <figcaption>
-        <span>{{ asset.image ? '当前图片' : '图片待生成' }}</span
+        <ProductionImageStatus
+          v-if="activity && !imageActivityRunning(activity)"
+          :activity="activity"
+        />
+        <span v-else>{{ asset.image ? '当前图片' : '图片待生成' }}</span
         ><span>{{ asset.name }}</span>
       </figcaption>
     </figure>
@@ -511,15 +537,51 @@ function submit() {
     <p v-if="text.length > 10000" class="composer-error" role="alert">
       提示词最多 10000 字，请精简后生成。
     </p>
-    <p v-if="uploadError || error" class="composer-error" role="alert">
-      {{ uploadError || error }}
+    <p
+      v-if="uploadError || error || activity?.state === 'FAILED'"
+      class="composer-error"
+      role="alert"
+    >
+      {{
+        uploadError ||
+        error ||
+        activity?.error ||
+        '本次图片未生成完成，提示词和原图已保留，可重新生成。'
+      }}
     </p>
     <footer>
-      <button type="button" :disabled="busy" @click="emit('close')">返回工作台</button>
+      <span v-if="busy" class="generation-hint">可关闭此窗口，生成会继续</span>
+      <button type="button" @click="emit('close')">返回工作台</button>
     </footer>
   </div>
 </template>
 <style scoped>
+.current-image-preview {
+  position: relative;
+}
+.image-generation-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #f5f8fc66;
+}
+.image-generation-overlay > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 22px;
+  background: #ffffffed;
+  border: 1px solid #e3eaf4;
+  border-radius: 12px;
+  box-shadow: 0 6px 24px #243e6010;
+}
+.image-generation-overlay small,
+.generation-hint {
+  color: #7a8ba3;
+  font-size: 12px;
+}
 .image-composer-workspace {
   color: #273b55;
 }
@@ -907,6 +969,9 @@ function submit() {
 }
 footer {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: flex-end;
   margin-top: 18px;
 }

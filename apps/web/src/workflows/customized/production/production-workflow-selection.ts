@@ -14,8 +14,7 @@ export function productionPageProgressTask(
   return productionNodeTasks(tasks, mode).find(
     (task) =>
       ['QUEUED', 'RUNNING'].includes(task.status) &&
-      task.operation !== 'PROMPT' &&
-      task.operation !== 'RENDER',
+      task.operation === mode,
   );
 }
 export function productionWorkflowTask(

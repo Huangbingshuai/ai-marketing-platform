@@ -16,18 +16,22 @@ import {
   Check,
   Pencil,
 } from '@lucide/vue';
-import type { ProductionAsset, ProductionShot } from '@ai-marketing/contracts';
+import type { ProductionAsset, ProductionShot, ProductionTask } from '@ai-marketing/contracts';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
 import WorkflowInformationField from '../../../platform/workflow/components/WorkflowInformationField.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionAssetPreparation from './ProductionAssetPreparation.vue';
 import { imageSource, independentlyPrepared, imageOwnershipLabel } from './production-asset-images';
+import { assetImageActivity, imageActivityRunning } from './production-image-activity';
+import ProductionImageStatus from './ProductionImageStatus.vue';
 const props = defineProps<{
   projectId: string;
   assets: ProductionAsset[];
   shots: ProductionShot[];
   editing: boolean;
   locked: boolean;
+  imageTasks?: ProductionTask[];
+  imageInterrupted?: boolean;
 }>();
 const emit = defineEmits<{
   update: [asset: ProductionAsset];
@@ -54,6 +58,13 @@ const selected = computed(() => props.assets.find((a) => a.id === detailId.value
 const source = (asset: ProductionAsset) => imageSource(props.assets, asset);
 const independent = (asset: ProductionAsset) => independentlyPrepared(props.assets, asset);
 const imageLabel = (asset: ProductionAsset) => imageOwnershipLabel(props.assets, asset);
+const activity = (asset: ProductionAsset) =>
+  assetImageActivity(props.imageTasks ?? [], source(asset)?.id ?? asset.id);
+const imageRunning = computed(() =>
+  props.imageTasks?.some(
+    (t) => t.operation === 'IMAGE' && ['QUEUED', 'RUNNING'].includes(t.status),
+  ),
+);
 const draftCatalog = computed(() =>
   props.assets.map((a) => (a.id === draft.value?.id ? draft.value : a)),
 );
@@ -98,7 +109,7 @@ function apply() {
   detailId.value = '';
 }
 function render(items: ProductionAsset[]) {
-  if (props.locked) return;
+  if (props.locked && !imageRunning.value) return;
   if (items.length === 1 && !independent(items[0]!)) {
     const owner = source(items[0]!);
     if (owner) emit('images', [owner]);
@@ -184,10 +195,10 @@ watch(
         </button>
         <button
           class="studio-button primary"
-          :disabled="!independentlyFiltered.length || locked"
+          :disabled="!independentlyFiltered.length || (locked && !imageRunning)"
           @click="render(filtered)"
         >
-          <ImagePlus :size="16" />批量生成图片
+          <ImagePlus :size="16" />{{ imageRunning ? '查看生成状态' : '批量生成图片' }}
         </button>
       </div>
       <div class="catalog-status">
@@ -210,6 +221,8 @@ watch(
               <button
                 class="cover"
                 :aria-label="`制作${a.name || '未命名资产'}图片`"
+                :aria-busy="imageActivityRunning(activity(a))"
+                :disabled="(locked && !imageActivityRunning(activity(a))) || !source(a)"
                 @click="render([a])"
               >
                 <ProductionAssetVisual
@@ -217,11 +230,28 @@ watch(
                   :project-id="projectId"
                 /><span class="cover-type">{{ g.name }}</span
                 ><span class="cover-open"><ArrowUpRight :size="15" /></span>
+                <span
+                  v-if="imageActivityRunning(activity(a))"
+                  class="image-working-cover"
+                  :aria-label="`${a.name}图片生成中`"
+                >
+                  <ProductionImageStatus :activity="activity(a)" :interrupted="imageInterrupted" />
+                </span>
               </button>
               <div class="card-copy">
                 <div class="card-title">
                   <h4>{{ a.name || '未命名资产' }}</h4>
+                  <ProductionImageStatus
+                    v-if="
+                      imageActivityRunning(activity(a)) ||
+                      activity(a)?.state === 'FAILED' ||
+                      activity(a)?.state === 'CANCELLED'
+                    "
+                    :activity="activity(a)"
+                    :interrupted="imageInterrupted"
+                  />
                   <span
+                    v-else
                     :class="['image-badge', { ready: !!source(a)?.image }]"
                     :title="imageLabel(a)"
                     >{{ imageLabel(a) }}</span
@@ -233,15 +263,25 @@ watch(
                 }}</small>
               </div>
               <footer>
-                <button class="studio-button text-button" @click="editDefinition(a)">
+                <button
+                  class="studio-button text-button"
+                  :disabled="locked"
+                  @click="editDefinition(a)"
+                >
                   <Pencil :size="14" />编辑定义</button
                 ><button
                   class="studio-button"
-                  :disabled="locked || !source(a)"
+                  :disabled="(locked && !imageActivityRunning(activity(a))) || !source(a)"
                   @click="render([a])"
                 >
                   <ImagePlus :size="14" />{{
-                    !independent(a) ? '查看所属资产' : a.image ? '重新生成' : '生成图片'
+                    imageActivityRunning(activity(a))
+                      ? '查看生成状态'
+                      : !independent(a)
+                        ? '制作所属资产'
+                        : a.image
+                          ? '重新生成'
+                          : '生成图片'
                   }}
                 </button>
               </footer>
@@ -378,6 +418,20 @@ watch(
   </WorkflowInformationDialog>
 </template>
 <style scoped>
+.image-working-cover {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #f3f6fa70;
+}
+.image-working-cover :deep(.image-status) {
+  padding: 9px 13px;
+  border: 1px solid #e2e9f3;
+  border-radius: 9px;
+  background: #fffffff0;
+  box-shadow: 0 3px 14px #243e600a;
+}
 .asset-detail :deep(.information-field textarea) {
   min-height: 100px;
 }

@@ -696,3 +696,112 @@ it('recovers a failed progress read without failing the task or retaining a stal
   await vi.advanceTimersByTimeAsync(30000);
   expect(productionApi.task).toHaveBeenCalledTimes(3);
 });
+
+it('keeps image generation in its dialog, reopens the active task without another POST and refreshes its preview', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  const asset = {
+    id: 'cup',
+    kind: 'PRODUCT' as const,
+    name: '随行杯',
+    description: '白釉',
+    knownFacts: '',
+    designNotes: '',
+    sourceText: '',
+    image: { assetId: 'old', version: 1 },
+  };
+  const document: ProductionDocument = { assets: [asset], shots: [] };
+  const initial = {
+    script: { name: '随行杯' },
+    sourceReady: true,
+    assetsConfirmed: true,
+    document,
+    confirmedDocument: document,
+    draftRevision: 1,
+    prompts: [],
+    tasks: [],
+  } as unknown as ProductionWorkspace;
+  const settings = {
+    model: 'doubao-seedream-5-0-pro-260628' as const,
+    resolution: '2K' as const,
+    ratio: '1:1' as const,
+    assetIds: ['cup'],
+    inputs: [{ assetId: 'cup', prompt: '人工调整的提示词', references: [] }],
+  };
+  const queued: ProductionTask = {
+    id: 'image',
+    operation: 'IMAGE',
+    status: 'QUEUED',
+    progress: 0,
+    steps: [],
+    shotId: null,
+    errorMessage: null,
+    imageSettings: settings,
+    completedImageAssetIds: [],
+  };
+  const completed: ProductionTask = {
+    ...queued,
+    status: 'COMPLETED',
+    progress: 100,
+    completedImageAssetIds: ['cup'],
+  };
+  vi.mocked(productionApi.workspace).mockResolvedValue(initial);
+  let resolve!: (task: ProductionTask) => void;
+  vi.mocked(productionApi.start).mockReturnValueOnce(
+    new Promise<ProductionTask>((yes) => {
+      resolve = yes;
+    }),
+  );
+  let state: Record<string, unknown> = {};
+  const app = renderer.createApp(
+    {
+      ...Workspace,
+      render(this: { $: { setupState: Record<string, unknown> } }) {
+        state = this.$.setupState;
+        return h('div');
+      },
+    },
+    { projectId: 'p', workflowRunId: 'r', mode: 'ASSETS' },
+  );
+  app.provide(ssrContextKey, { modules: new Set() });
+  app.mount(node());
+  const call = (key: string, ...args: unknown[]) =>
+    (state[key] as (...values: unknown[]) => unknown)(...args);
+  try {
+    await settle();
+    call('prepareImages', [asset]);
+    const request = call('generateImages', settings);
+    call('generateImages', settings);
+    expect(productionApi.start).toHaveBeenCalledTimes(1);
+    resolve(queued);
+    await request;
+    await settle();
+    expect(state.imageDialogOpen).toBe(true);
+    expect(state.imageDialogRunning).toBe(true);
+    expect(state.pageProgress).toBeUndefined();
+    state.imageDialogOpen = false;
+    call('prepareImages', [asset]);
+    await settle();
+    expect(state.imageDialogOpen).toBe(true);
+    expect(state.imageDialogSettings).toEqual(settings);
+    expect(productionApi.start).toHaveBeenCalledTimes(1);
+    vi.mocked(productionApi.task).mockResolvedValueOnce(completed);
+    vi.mocked(productionApi.workspace).mockResolvedValueOnce({
+      ...initial,
+      document: { assets: [{ ...asset, image: { assetId: 'new-image', version: 1 } }], shots: [] },
+      tasks: [completed],
+      draftRevision: 2,
+    });
+    await call('refreshTask');
+    await settle();
+    expect(state.imageDialogOpen).toBe(true);
+    expect(state.imageDialogRunning).toBe(false);
+    expect((state.imageDialogAssets as ProductionDocument['assets'])[0]!.image?.assetId).toBe(
+      'new-image',
+    );
+    expect(state.imageDialogSettings).toEqual(settings);
+    expect(state.pageProgress).toBeUndefined();
+  } finally {
+    app.unmount();
+  }
+});

@@ -10,11 +10,14 @@ import {
   type CustomizedImageSettings,
   type ProductionAsset,
   type ProductionShot,
+  type ProductionTask,
 } from '@ai-marketing/contracts';
 import WorkflowInformationDialog from '../../../platform/workflow/components/WorkflowInformationDialog.vue';
 import ProductionImageComposer from './ProductionImageComposer.vue';
 import { defaultAssetImagePrompt } from './production-image-input';
 import { independentlyPrepared, imageOwnershipLabel } from './production-asset-images';
+import { assetImageActivity } from './production-image-activity';
+import ProductionImageStatus from './ProductionImageStatus.vue';
 const props = defineProps<{
   open: boolean;
   type: 'IMAGE' | 'VIDEO';
@@ -25,6 +28,9 @@ const props = defineProps<{
   ratio?: string;
   resolution?: string;
   busy?: boolean;
+  submitting?: boolean;
+  task?: ProductionTask | undefined;
+  interrupted?: boolean;
   error?: string;
   projectId?: string;
   workflowRunId?: string;
@@ -39,10 +45,20 @@ const selectedIds = ref<string[]>([]);
 const catalog = computed(() => props.catalog ?? props.assets);
 const eligible = (asset: ProductionAsset) => independentlyPrepared(catalog.value, asset);
 const eligibleAssets = computed(() => props.assets.filter(eligible));
+const activity = (id: string) => assetImageActivity(props.task ? [props.task] : [], id);
 watch(
   () => props.open,
   (open) => {
     if (!open) return;
+    if (props.task?.imageSettings) {
+      selectedIds.value = props.task.imageSettings.assetIds.filter((id) =>
+        eligibleAssets.value.some((a) => a.id === id),
+      );
+      model.value = props.task.imageSettings.model;
+      imageResolution.value = props.task.imageSettings.resolution;
+      imageRatio.value = props.task.imageSettings.ratio;
+      return;
+    }
     const missing = eligibleAssets.value.filter((a) => !a.image);
     selectedIds.value = (props.assets.length > 1 && missing.length ? missing : eligibleAssets.value)
       .slice(0, 20)
@@ -109,6 +125,9 @@ const title = computed(() =>
       :brand-references="brandReferences"
       :settings="settings"
       :busy="busy"
+      :submitting="submitting"
+      :activity="activity(singleAsset.id)"
+      :interrupted="interrupted"
       :error="error"
       @generate="emit('generate', $event)"
       @close="emit('close')"
@@ -175,7 +194,12 @@ const title = computed(() =>
                 :disabled="busy || !eligible(a)"
               /><strong>{{ a.name }}</strong></label
             >
-            <span class="image-state">{{
+            <ProductionImageStatus
+              v-if="task?.imageSettings?.assetIds.includes(a.id)"
+              :activity="activity(a.id)"
+              :interrupted="interrupted"
+            />
+            <span v-else class="image-state">{{
               !eligible(a)
                 ? imageOwnershipLabel(catalog, a)
                 : a.image
@@ -209,13 +233,20 @@ const title = computed(() =>
       <p v-if="type === 'IMAGE' && !valid" role="alert">
         {{ selectionIssue || '请补齐公共形象描述，每次最多生成 20 项资产。' }}
       </p>
-      <p v-if="error" class="generation-error" role="alert">{{ error }}</p>
+      <p v-if="error || task?.status === 'FAILED'" class="generation-error" role="alert">
+        {{ error || task?.errorMessage || '本次图片未生成完成，已有图片仍然保留。' }}
+      </p>
+      <p v-if="busy" class="generation-hint" role="status">
+        可以返回工作台查看其他资产，图片会在生成后自动更新。
+      </p>
       <footer>
         <button @click="$emit('close')">返回工作台</button
         ><BaseButton v-if="type === 'IMAGE'" :disabled="!valid" :loading="busy" @click="submit">
           <ImagePlus v-if="!busy" :size="16" />{{
             busy
-              ? '正在提交'
+              ? submitting
+                ? '正在提交'
+                : '正在生成图片'
               : singleAsset
                 ? singleAsset.image
                   ? '重新生成此图片'

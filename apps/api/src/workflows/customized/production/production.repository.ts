@@ -112,6 +112,18 @@ export const presentProductionTask = (t: CustomizedProductionTask): ProductionTa
         }
       : {}),
     ...(snapshot(t).imageSettings ? { imageSettings: snapshot(t).imageSettings } : {}),
+    ...(t.operation === 'IMAGE'
+      ? {
+          completedImageAssetIds: (snapshot(t).imageSettings?.assetIds ?? []).filter(
+            (id) =>
+              Object.hasOwn(saved ?? {}, id) &&
+              typeof (saved![id] as { assetId?: unknown } | null)?.assetId === 'string' &&
+              !!(saved![id] as { assetId: string }).assetId.trim() &&
+              Number.isInteger((saved![id] as { version?: unknown } | null)?.version) &&
+              Number((saved![id] as { version?: unknown }).version) > 0,
+          ),
+        }
+      : {}),
     ...(snapshot(t).videoRender
       ? {
           renderSettings: snapshot(t).videoRender!.settings,
