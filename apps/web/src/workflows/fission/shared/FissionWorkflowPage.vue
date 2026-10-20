@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { GitBranch, Replace, UserRound } from '@lucide/vue';
-import { ref, watch } from 'vue';
+import { inject, ref, watch } from 'vue';
+import { projectContextKey } from '../../../platform/project/project-context';
 import LocalReplaceWorkspace from '../local-replace/LocalReplaceWorkspace.vue';
+import FissionCloneWorkspace from '../clone/FissionCloneWorkspace.vue';
 const props = withDefaults(
   defineProps<{
     projectId?: string;
@@ -17,14 +19,19 @@ const props = withDefaults(
   },
 );
 const savedModule = localStorage.getItem('ai-marketing.fission.active-module');
+const projectContext = inject(projectContextKey, null);
 const active = ref(
   props.initialModule ||
-    (savedModule && ['clone', 'avatar', 'replace'].includes(savedModule) ? savedModule : 'replace'),
+    (savedModule && ['clone', 'avatar', 'replace'].includes(savedModule) ? savedModule : 'clone'),
 );
 watch(active, (value) => localStorage.setItem('ai-marketing.fission.active-module', value));
+const cloneWorkspace = ref<InstanceType<typeof FissionCloneWorkspace>>();
 const workspace = ref<InstanceType<typeof LocalReplaceWorkspace>>();
 defineExpose({
-  flushPendingEdits: async () => workspace.value?.flushPendingEdits() ?? true,
+  flushPendingEdits: async () =>
+    active.value === 'clone'
+      ? (cloneWorkspace.value?.flushPendingEdits() ?? true)
+      : (workspace.value?.flushPendingEdits() ?? true),
   workflowRunId: '',
 });
 </script>
@@ -47,8 +54,13 @@ defineExpose({
         ><em>›</em>
       </button>
     </nav>
+    <FissionCloneWorkspace
+      v-if="active === 'clone' && projectContext"
+      ref="cloneWorkspace"
+      :key="projectId || 'clone-preview'"
+    />
     <LocalReplaceWorkspace
-      v-if="active === 'replace'"
+      v-else-if="active === 'replace'"
       ref="workspace"
       :key="projectId || 'preview'"
       :project-id="projectId"
@@ -58,7 +70,7 @@ defineExpose({
     <section v-else class="fission-placeholder">
       <GitBranch :size="36" />
       <h2>{{ active === 'clone' ? '爆款视频复刻' : '数字人口播' }}</h2>
-      <p>此模块尚未接入。</p>
+      <p>{{ active === 'clone' ? '请从系统项目工作台打开此工作流。' : '此模块尚未接入。' }}</p>
       <button class="lr-btn primary" @click="active = 'replace'">返回局部元素替换</button>
     </section>
   </div>

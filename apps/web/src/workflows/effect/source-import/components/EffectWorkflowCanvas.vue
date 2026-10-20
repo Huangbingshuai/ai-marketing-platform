@@ -7,6 +7,7 @@ const props = withDefaults(
   defineProps<{
     activeStep: number;
     staleCounts?: readonly number[];
+    completedSteps?: readonly number[] | null;
     // Absence selects the effect workflow's built-in nodes.
     // eslint-disable-next-line vue/require-default-prop
     nodes?: readonly { label: string; status: string; title: string; description: string }[];
@@ -20,6 +21,7 @@ const props = withDefaults(
     workflowLabel: '效果类',
     workflowNumber: '01',
     staleCounts: () => [],
+    completedSteps: null,
   },
 );
 const emit = defineEmits<{ select: [step: number]; branches: [] }>();
@@ -80,6 +82,7 @@ const statusText = (index: number) =>
 
 const nodeState = (index: number): NodeState => {
   if (index === props.activeStep) return 'current';
+  if (props.completedSteps) return props.completedSteps.includes(index) ? 'completed' : 'ready';
   if (index < props.activeStep) return 'completed';
   return 'ready';
 };
