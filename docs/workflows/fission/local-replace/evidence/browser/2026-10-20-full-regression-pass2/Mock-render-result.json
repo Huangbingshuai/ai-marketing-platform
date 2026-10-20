@@ -1,0 +1,57 @@
+{
+  "mock": true,
+  "notice": "前端演示，不包含真实生成视频",
+  "project": "广味食品 · 广式腊味夏季投放",
+  "workflow": "FISSION_LOCAL_REPLACE",
+  "source": {
+    "id": "mock-food-v4",
+    "name": "广式腊肠效果投放成片_v4.mp4",
+    "project": "广味食品 · 广式腊味夏季投放",
+    "version": "v4",
+    "duration": 32,
+    "ratio": "9:16",
+    "workflow": "效果类",
+    "kind": "项目成片"
+  },
+  "range": {
+    "start": 4,
+    "end": 16
+  },
+  "bindings": {
+    "person": "person-chef",
+    "product": "product-sausage",
+    "scene": "scene-kitchen"
+  },
+  "quality": [
+    {
+      "name": "光影匹配",
+      "score": 95,
+      "threshold": 85
+    },
+    {
+      "name": "透视关系",
+      "score": 95,
+      "threshold": 85
+    },
+    {
+      "name": "色彩风格",
+      "score": 94,
+      "threshold": 85
+    },
+    {
+      "name": "边缘接缝",
+      "score": 93,
+      "threshold": 85
+    },
+    {
+      "name": "结构保真",
+      "score": 100,
+      "threshold": 100
+    },
+    {
+      "name": "音画同步",
+      "score": 96,
+      "threshold": 90
+    }
+  ]
+}

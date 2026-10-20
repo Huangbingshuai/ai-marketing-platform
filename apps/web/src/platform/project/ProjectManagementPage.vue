@@ -28,6 +28,7 @@ import { authSession, logout } from '../auth/auth-state';
 import richiLogoColor from '../../assets/richi-logo-color.png';
 import EffectImportNodePage from '../../workflows/effect/source-import/EffectImportNodePage.vue';
 import CustomizedImportNodePage from '../../workflows/customized/source-import/CustomizedImportNodePage.vue';
+import FissionWorkflowPage from '../../workflows/fission/shared/FissionWorkflowPage.vue';
 import { createProject, deleteProject, listProjects } from './api/project.api';
 import { requestActionConfirmation } from '../../shared/composables/action-confirmation';
 import { presentProjectBinding, projectContextKey, projectCreationScope } from './project-context';
@@ -66,6 +67,10 @@ const customizedNode = ref<{
   workflowRunId: string;
 } | null>(null);
 const workflowSwitchBusy = ref(false);
+const fissionNode = ref<{
+  flushPendingEdits: () => Promise<boolean>;
+  workflowRunId: string;
+} | null>(null);
 const exitBusy = ref(false);
 const logoutBusy = ref(false);
 const signOut = async (): Promise<void> => {
@@ -136,7 +141,7 @@ const activeNode = computed(() =>
     ? effectNode.value
     : activeWorkflow.value === 'CUSTOMIZED'
       ? customizedNode.value
-      : null,
+      : fissionNode.value,
 );
 const activateWorkflow = async (workflow: AssetWorkflow): Promise<boolean> => {
   if (workflow === activeWorkflow.value) return true;
@@ -319,6 +324,11 @@ const removeProject = async (project: Project): Promise<void> => {
 
 const resumeWorkflowNode = async (nodeId: string): Promise<void> => {
   if (projectEntryBusy.value || !activeNode.value) return;
+  if (
+    !('resumeWorkflowNode' in activeNode.value) ||
+    typeof activeNode.value.resumeWorkflowNode !== 'function'
+  )
+    return;
   const resumed = await activeNode.value.resumeWorkflowNode(nodeId);
   if (!resumed) return;
   assetDrawerOpen.value = false;
@@ -588,7 +598,13 @@ onBeforeUnmount(() => {
       </span>
     </div>
     <main :aria-label="`${activeWorkflowMeta.label}工作流`">
-      <section v-if="!currentProject" class="workflow-state" role="status">
+      <FissionWorkflowPage
+        v-if="activeWorkflow === 'FISSION'"
+        ref="fissionNode"
+        :project-id="currentProject?.id ?? ''"
+        :project-name="currentProject?.name ?? ''"
+      />
+      <section v-else-if="!currentProject" class="workflow-state" role="status">
         <span class="workflow-state-icon">
           <Target v-if="activeWorkflow === 'EFFECT'" :size="30" />
           <Sparkles v-else-if="activeWorkflow === 'CUSTOMIZED'" :size="30" />
@@ -618,14 +634,6 @@ onBeforeUnmount(() => {
         :key="currentProject.id"
         ref="customizedNode"
       />
-      <section v-else class="workflow-state workflow-state-ready" role="status">
-        <span class="workflow-state-icon">
-          <GitBranch :size="30" />
-        </span>
-        <h2>已切换到{{ activeWorkflowMeta.label }}工作流</h2>
-        <p>当前项目：{{ currentProject.name }}</p>
-        <small>{{ activeWorkflowMeta.description }}。具体业务页面将在对应工作流模块中接入。</small>
-      </section>
     </main>
     <AssetDrawer
       :open="assetDrawerOpen"
