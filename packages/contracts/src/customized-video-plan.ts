@@ -270,6 +270,17 @@ const unique = (v: { id: string }[]) => new Set(v.map((x) => x.id)).size === v.l
 export const videoMilliseconds = (seconds: number) => Math.round(seconds * 1000);
 export const videoTotalMs = (plan: Pick<VideoPlan, 'shots'>) =>
   plan.shots.reduce((n, s) => n + videoMilliseconds(s.durationSeconds), 0);
+/** Frozen AI-generation rule only; historical/manual plans keep their existing precision. */
+export function validateVideoShotDurationStep(
+  plan: Pick<VideoPlan, 'shots'>,
+  stepMs: unknown,
+): string | null {
+  if (stepMs === undefined) return null;
+  if (stepMs !== 1000) return '不支持的分镜时长步长';
+  return plan.shots.some((s) => !Number.isInteger(s.durationSeconds))
+    ? '本次生成的完整分镜时长必须为整数秒，声音与文字落点可保留毫秒'
+    : null;
+}
 export const videoClipShots = (plan: VideoPlan, clip: VideoClip) =>
   clip.shotIds.map((id) => plan.shots.find((s) => s.id === id)!).filter(Boolean);
 export const videoClipMs = (plan: VideoPlan, clip: VideoClip) =>

@@ -2,16 +2,19 @@
 
 ## 目标
 
-项目保持一个代码仓库，但前端、后端和异步 Worker 分别运行、分别构建。三大业务工作流在前后端内部采用相同名称隔离，方便单人开发时快速定位代码，也方便后续使用独立 Codex worktree 并行开发。
+项目保持一个代码仓库，但前端、后端和异步 Worker 分别运行、分别构建。系统固定五条工作流：效果类、定制类、爆款复刻、数字人口播、局部元素替换。它们在前后端内部按工作流目录隔离，方便定位代码并避免业务状态串用。
 
 ## 运行单元
 
-| 运行单元        | 目录                            | 职责                                 |
-| --------------- | ------------------------------- | ------------------------------------ |
-| Web             | `apps/web`                      | 页面、交互状态、调用 API             |
-| API             | `apps/api`                      | 业务规则、数据库、创建异步任务       |
-| 片段渲染 Worker | `workers/effect-segment-render` | 效果类素材渲染、返修及 Seedance 轮询 |
-| Media Worker    | `workers/media-worker`          | FFmpeg、媒体探测和合成               |
+| 运行单元 | 目录 | 职责 |
+| --- | --- | --- |
+| Web | `apps/web` | 页面、交互状态、调用 API |
+| API | `apps/api` | 业务规则、数据库、创建异步任务 |
+| 效果类 Worker | `workers/effect-*` | 信息提炼、Prompt 生成、素材渲染、模板混剪与包装 |
+| 定制类 Worker | `workers/customized-*` | 信息提炼、脚本创作、资产图片及逐镜视频制作 |
+| 媒体 Worker | `workers/media-worker` | FFmpeg、媒体探测和合成 |
+
+Worker 的实际启动 profile、队列与配置以 [`compose.yaml`](../../compose.yaml)、[`compose.production.yaml`](../../compose.production.yaml) 及各 Worker README 为准；本表按职责分组，不代表每个目录都是独立常驻进程。
 
 ## 前后端协作规则
 
@@ -21,9 +24,9 @@ Vue Web
    ▼
 NestJS API
    │ RabbitMQ
-   ├───────────────┐
-   ▼               ▼
-Seedance Worker   Media Worker
+   ├──────────────────┐
+   ▼                  ▼
+Workflow Workers   Media Worker
 ```
 
 1. 前端不得导入 `apps/api` 下的任何文件。
@@ -48,7 +51,7 @@ apps/api/src/workflows/             # NestJS 模块、领域服务、Repository
 └─ fission/{shared,clone,avatar,local-replace}/
 ```
 
-效果类、定制类和裂变类不能直接引用彼此的内部代码。跨工作流复用业务产物时，必须先进入项目资产库，再由目标工作流通过资产 API 读取。
+效果类、定制类及三条裂变工作流不能直接引用彼此的内部代码。跨工作流复用业务产物时，必须先进入项目资产库，再由目标工作流通过资产 API 读取。
 
 ## 公共平台边界
 

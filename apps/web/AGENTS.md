@@ -20,6 +20,15 @@
 - 告警与错误使用去重后的安全中文文案，不在拓扑卡、来源卡和详情区重复堆叠同一原因。
 - 新增弹窗支持键盘操作、ESC 关闭和焦点恢复。
 
+## 共享组件与复用边界
+
+- 复用前按职责查找：基础控件看 `packages/ui/src/`；项目、文件和工作流通用能力看 `apps/web/src/platform/`；只服务单条流程的能力放在 `apps/web/src/workflows/<workflow>/shared/`。
+- 常用共享组件入口：`WorkflowNodeFooter.vue`、`WorkflowRunProgress.vue` 位于 `packages/ui/src/`；工作流级组件位于 `apps/web/src/platform/workflow/components/`，包括 `WorkflowNodeEditActions.vue`、`WorkflowEditingBanner.vue`、`WorkflowExecutionGraphDialog.vue`、`WorkflowSellingPointsEditor.vue`、`WorkflowVideoRenderSettings.vue`；资料导入组件位于 `apps/web/src/platform/file/components/`。
+- 不把“参考效果类”当作实现说明。描述复用时标注组件名或路径，以及它负责的交互；若只是外观相似，先核对状态、数据契约、提交点和键盘行为是否一致。
+- `apps/web/src/workflows/effect/` 中的页面、Store、节点状态与样式默认是效果类专属。`apps/web/src/workflows/effect/source-import/components/EffectWorkflowCanvas.vue`、`EffectWorkflowBranchTree.vue` 也承载流程画布/分支语义；跨流程使用前须核对输入契约和导航行为，不能借用效果类业务状态。
+- 多个流程确有相同交互时，提取共享的展示与交互部分；业务字段、任务状态、API、revision 和分支规则仍由各自工作流维护。不要复制组件，也不要为追求通用而合并不同语义。
+- 组件目录或所有权变化时同步更新此索引。工作流指南记录具体调用和流程差异，不重复抄写通用复用原则。
+
 ## 原型还原
 
 - 正式 UI 必须优先复用现有设计令牌、布局组件和交互模式。

@@ -1,7 +1,8 @@
 """Versioned video-production contracts. JSON Schemas are checked into packages/contracts."""
+
 from __future__ import annotations
-from typing import Annotated, Literal
-from pydantic import Field
+from typing import Annotated, Literal, Any
+from pydantic import Field, model_validator
 from .models import Model, Id, Text, Short
 from .pipeline import Binding
 
@@ -21,7 +22,7 @@ class SourceUnit(Model):
     text: Text
     start: Annotated[int, Field(ge=0, le=1000000)]
     end: Annotated[int, Field(gt=0, le=1000000)]
-    kind: Literal['TEXT', 'VOICE', 'ON_SCREEN_TEXT']
+    kind: Literal["TEXT", "VOICE", "ON_SCREEN_TEXT"]
     speaker: Short
 
 
@@ -77,14 +78,14 @@ class CuePart(Model):
 
 class Cue(Model):
     id: Id
-    kind: Literal['DIALOGUE', 'VO', 'OS', 'ANNOUNCEMENT', 'ON_SCREEN_TEXT']
+    kind: Literal["DIALOGUE", "VO", "OS", "ANNOUNCEMENT", "ON_SCREEN_TEXT"]
     speaker: Short
     sourceRef: SourceRef
     parts: Annotated[list[CuePart], Field(min_length=1, max_length=1000)]
 
 
 class DurationPolicy(Model):
-    mode: Literal['REFERENCE', 'FIXED']
+    mode: Literal["REFERENCE", "FIXED"]
     seconds: Annotated[float, Field(ge=1, le=3600)]
 
 
@@ -96,7 +97,7 @@ class Timing(Model):
 
 class Capability(Model):
     key: Id
-    status: Literal['CONFIGURED', 'PENDING_MODEL_CHECK']
+    status: Literal["CONFIGURED", "PENDING_MODEL_CHECK"]
     minClipMs: PositiveMillis
     maxClipMs: PositiveMillis
     version: Id
@@ -140,7 +141,7 @@ class CueAllocation(Model):
 
 class CueLayout(Model):
     id: Id
-    kind: Literal['DIALOGUE', 'VO', 'OS', 'ANNOUNCEMENT', 'ON_SCREEN_TEXT']
+    kind: Literal["DIALOGUE", "VO", "OS", "ANNOUNCEMENT", "ON_SCREEN_TEXT"]
     speaker: Short
     sourceRef: SourceRef
     allocations: Annotated[list[CueAllocation], Field(min_length=1, max_length=500)]
@@ -149,7 +150,12 @@ class CueLayout(Model):
 class DirectorPlan(Model):
     summary: Text
     feasible: bool
-    inputIssue: Literal['NONE', 'DURATION_CAPACITY_CONFLICT', 'ASSET_INPUT_GAP', 'SOURCE_CONSTRAINT_CONFLICT']
+    inputIssue: Literal[
+        "NONE",
+        "DURATION_CAPACITY_CONFLICT",
+        "ASSET_INPUT_GAP",
+        "SOURCE_CONSTRAINT_CONFLICT",
+    ]
     timing: Timing
     suggestedSeconds: Annotated[float, Field(ge=0, le=3600)]
     events: Annotated[list[Event], Field(max_length=1000)]
@@ -170,48 +176,67 @@ class ShotBatch(Model):
 
 
 class Evidence(Model):
-    entity: Literal['SHOT', 'CLIP', 'SCENE', 'CUE', 'EVENT', 'SOURCE', 'TIMING', 'PROMPT']
+    entity: Literal[
+        "SHOT", "CLIP", "SCENE", "CUE", "EVENT", "SOURCE", "TIMING", "PROMPT"
+    ]
     id: Id
     field: Id
 
 
 class Finding(Model):
     id: Id
-    severity: Literal['ERROR', 'WARNING']
-    category: Literal['FACT', 'COVERAGE', 'CAPACITY', 'STATE', 'SPACE', 'SHOT_STRUCTURE', 'BINDING', 'CAPABILITY']
+    severity: Literal["ERROR", "WARNING"]
+    category: Literal[
+        "FACT",
+        "COVERAGE",
+        "CAPACITY",
+        "STATE",
+        "SPACE",
+        "SHOT_STRUCTURE",
+        "BINDING",
+        "CAPABILITY",
+    ]
     title: Short
     impact: Text
     evidence: Annotated[list[Evidence], Field(min_length=1, max_length=30)]
     affectedShotIds: Annotated[list[Id], Field(max_length=1000)]
     affectedClipIds: Annotated[list[Id], Field(max_length=500)]
     suggestedFix: Text
-    repairKind: Literal['FIELDS', 'STRUCTURE', 'INPUT']
+    repairKind: Literal["FIELDS", "STRUCTURE", "INPUT"]
 
 
 class Resolution(Model):
     issueId: Id
-    status: Literal['RESOLVED', 'PARTIAL', 'UNRESOLVED']
+    status: Literal["RESOLVED", "PARTIAL", "UNRESOLVED"]
     evidence: Annotated[list[Evidence], Field(min_length=1, max_length=30)]
     explanation: Text
 
 
 class Check(Model):
-    dimension: Literal['原稿兑现','时间容量','镜头表达','产品事实','动作与空间','素材绑定','模型能力']
+    dimension: Literal[
+        "原稿兑现",
+        "时间容量",
+        "镜头表达",
+        "产品事实",
+        "动作与空间",
+        "素材绑定",
+        "模型能力",
+    ]
     conclusion: Text
 
 
 class Audit(Model):
     summary: Text
-    checks: Annotated[list[Check], Field(min_length=7,max_length=7)]
+    checks: Annotated[list[Check], Field(min_length=7, max_length=7)]
     findings: Annotated[list[Finding], Field(max_length=100)]
     resolutions: Annotated[list[Resolution], Field(max_length=100)]
 
 
 class SeverityChange(Model):
     issueId: Id
-    fromSeverity: Literal['ERROR', 'WARNING']
-    toSeverity: Literal['ERROR', 'WARNING']
-    reason: Literal['NEW_EVIDENCE', 'INITIAL_REVIEW_CORRECTION']
+    fromSeverity: Literal["ERROR", "WARNING"]
+    toSeverity: Literal["ERROR", "WARNING"]
+    reason: Literal["NEW_EVIDENCE", "INITIAL_REVIEW_CORRECTION"]
     explanation: Annotated[str, Field(min_length=1, max_length=1000)]
     evidence: Annotated[list[Evidence], Field(min_length=1, max_length=30)]
 
@@ -279,7 +304,7 @@ class TimingRepair(Model):
 
 
 class ClipTarget(Model):
-    kind: Literal['CLIP']
+    kind: Literal["CLIP"]
     id: Id
 
 
@@ -287,3 +312,17 @@ class ClipPrompt(Model):
     target: ClipTarget
     content: Annotated[str, Field(min_length=1, max_length=20000)]
     assetIds: Annotated[list[Id], Field(max_length=100)]
+
+
+class PromptMechanicalRecovery(Model):
+    version: Literal[1]
+    epoch: Annotated[int, Field(ge=1, le=9007199254740991, strict=True)]
+    phase: Literal["audit", "recheck"]
+    history: list[dict[str, Any]]
+
+    @model_validator(mode="before")
+    @classmethod
+    def strict_version(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or type(value.get("version")) is not int:
+            raise ValueError("invalid mechanical recovery version")
+        return value

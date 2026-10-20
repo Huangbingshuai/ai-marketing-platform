@@ -20,6 +20,7 @@ import {
   isProductionClipPrompt,
   validateClipPromptReferences,
   validatePromptAuditEvidence,
+  validateVideoShotDurationStep,
   type ProductionClipPrompt,
 } from '@ai-marketing/contracts';
 
@@ -41,6 +42,10 @@ export function validateVideoSnapshot(document: unknown, input: ProductionInput)
   if (!isProductionDocument(document) || !isVideoDocument(document))
     return '新版制作结果结构不完整';
   const p = document.videoPlan;
+  if (input.operation === 'SHOTS') {
+    const durationIssue = validateVideoShotDurationStep(p, input.shotDurationStepMs);
+    if (durationIssue) return durationIssue;
+  }
   if (videoHash(document.assets) !== videoHash(input.document.assets))
     return '分镜不能修改已确认的资产目录';
   if (

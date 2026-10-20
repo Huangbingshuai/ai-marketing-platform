@@ -96,6 +96,8 @@ export type ProductionInput = {
   shotWorkflowVersion?: 2;
   /** New SHOTS tasks only; absent historical snapshots retain their original prompts. */
   shotBenefitPolicyVersion?: 1;
+  /** New V2 SHOTS only; complete storyboard durations use whole seconds. Cue windows remain milliseconds. */
+  shotDurationStepMs?: 1000;
   promptWorkflowVersion?: 2 | 3;
   strategyVersion?: string;
   durationPolicy?: VideoDurationPolicy;

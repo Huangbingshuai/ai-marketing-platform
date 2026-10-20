@@ -75,7 +75,9 @@ export function customizedVideoRenderIssues(
     max = extended ? 30 : capability.maxDurationSeconds;
   const issues: string[] = [];
   if (!Number.isInteger(seconds) || seconds < min || seconds > max)
-    issues.push(`该模型支持${min}–${max}秒，当前分镜为${seconds}秒，请调整分镜或选择兼容模型`);
+    issues.push(
+      `该模型支持${min}–${max}整数秒，当前分镜为${seconds}秒，请在分镜参数中明确调整时长`,
+    );
   if (!Number.isInteger(images) || images < 0 || images > (extended ? 30 : 9))
     issues.push(`该模型最多支持${extended ? 30 : 9}张参考图，请调整引用或选择兼容模型`);
   return issues;

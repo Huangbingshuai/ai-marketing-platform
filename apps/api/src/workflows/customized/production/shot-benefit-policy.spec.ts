@@ -86,6 +86,7 @@ describe('new SHOTS benefit policy snapshot', () => {
       shotWorkflowVersion: 2,
       strategyVersion: '2026-10-19-capacity-clips.7',
       shotBenefitPolicyVersion: 1,
+      shotDurationStepMs: 1000,
     });
     expect(input.promptWorkflowVersion).toBeUndefined();
     expect(h.enqueue).toHaveBeenCalledTimes(1);

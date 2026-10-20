@@ -1,0 +1,42 @@
+[
+  {
+    "name": "audit epoch",
+    "value": {
+      "version": 1,
+      "epoch": 1,
+      "phase": "audit",
+      "history": [{ "epoch": 0, "candidate": { "findings": [] } }]
+    },
+    "valid": true
+  },
+  {
+    "name": "recheck epoch",
+    "value": { "version": 1, "epoch": 2, "phase": "recheck", "history": [] },
+    "valid": true
+  },
+  {
+    "name": "boolean version",
+    "value": { "version": true, "epoch": 1, "phase": "audit", "history": [] },
+    "valid": false
+  },
+  {
+    "name": "boolean epoch",
+    "value": { "version": 1, "epoch": true, "phase": "audit", "history": [] },
+    "valid": false
+  },
+  {
+    "name": "invalid phase",
+    "value": { "version": 1, "epoch": 1, "phase": "render", "history": [] },
+    "valid": false
+  },
+  {
+    "name": "missing history",
+    "value": { "version": 1, "epoch": 1, "phase": "audit" },
+    "valid": false
+  },
+  {
+    "name": "unknown metadata",
+    "value": { "version": 1, "epoch": 1, "phase": "audit", "history": [], "unknown": true },
+    "valid": false
+  }
+]

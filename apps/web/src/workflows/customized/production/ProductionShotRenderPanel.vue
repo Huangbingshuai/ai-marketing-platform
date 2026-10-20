@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { Video, Download, Loader2, Workflow, Settings2, Clock3 } from '@lucide/vue';
+import { Video, Download, Loader2, Workflow, Settings2, Clock3, Pencil } from '@lucide/vue';
 import {
   customizedVideoRenderIssues,
+  isCustomizedVideoRenderSettings,
   type ProductionAsset,
   type ProductionShot,
   type CustomizedVideoResult,
@@ -14,6 +15,7 @@ import WorkflowVideoRenderSettings from '../../../platform/workflow/components/W
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
 import ProductionTaskActivity from './ProductionTaskActivity.vue';
+import ProductionTaskFailureFeedback from './ProductionTaskFailureFeedback.vue';
 const props = defineProps<{
   projectId: string;
   shot: ProductionShot;
@@ -31,12 +33,16 @@ const props = defineProps<{
   settingsSaving?: boolean;
   renderSubmitting?: boolean;
   promptReady?: boolean;
+  retrying?: boolean;
+  retryError?: string | undefined;
 }>();
 const emit = defineEmits<{
   preview: [asset: ProductionAsset];
   'update-settings': [settings: CustomizedVideoRenderSettings];
   render: [];
   workflow: [task: ProductionTask];
+  retry: [taskId: string];
+  'edit-duration': [];
 }>();
 const renderOpen = ref(false);
 const controls = ref<HTMLElement>(),
@@ -73,6 +79,22 @@ const issues = computed(() => [
     ? customizedVideoRenderIssues(props.settings, props.shot.durationSeconds, props.assets.length)
     : []),
 ]);
+const fractionalDurationHint = computed(() => {
+  const seconds = props.shot.durationSeconds;
+  if (
+    !props.settings ||
+    !isCustomizedVideoRenderSettings(props.settings) ||
+    !Number.isFinite(seconds) ||
+    Number.isInteger(seconds) ||
+    !customizedVideoRenderIssues(props.settings, seconds, 0).length
+  )
+    return null;
+  return `当前模型仅支持整数秒，当前${props.clipId ? '分镜' : '片段'}为${seconds}秒。${
+    props.clipId
+      ? '请点击上方时长，在「分镜参数」的「分镜时长（秒）」中调整。'
+      : '请先整理为新版分镜，再核对并调整时长。'
+  }`;
+});
 const disabled = computed(
   () =>
     props.locked ||
@@ -150,7 +172,20 @@ defineExpose({
     <footer ref="controls" aria-label="视频配置">
       <header class="configuration-heading">
         <h3><Settings2 :size="14" />视频配置</h3>
+        <button
+          v-if="clipId"
+          type="button"
+          class="fixed-duration duration-editor"
+          :aria-label="`编辑分镜时长：${shot.durationSeconds}秒`"
+          title="打开分镜参数，编辑分镜时长"
+          :disabled="locked || settingsSaving || renderSubmitting || active"
+          @click="emit('edit-duration')"
+        >
+          <Clock3 :size="13" /><strong>{{ shot.durationSeconds }}</strong
+          ><span>秒</span><Pencil :size="11" />
+        </button>
         <span
+          v-else
           class="fixed-duration"
           :aria-label="`分镜时长：${shot.durationSeconds}秒，沿用已确认分镜`"
           title="沿用已确认分镜时长"
@@ -166,10 +201,20 @@ defineExpose({
         @update:model-value="emit('update-settings', $event)"
       />
       <small v-if="settingsSaving" role="status">正在保存渲染设置…</small>
-      <p v-if="!active && issues.length && workflowRunId" class="render-hint">{{ issues[0] }}</p>
-      <p v-if="renderTask?.status === 'FAILED'" class="render-error" role="alert">
-        {{ renderTask.errorMessage || '本次视频生成未完成，已有视频保留' }}
+      <p
+        v-if="!active && (fractionalDurationHint || issues.length) && workflowRunId"
+        class="render-hint"
+      >
+        {{ fractionalDurationHint || issues[0] }}
       </p>
+      <ProductionTaskFailureFeedback
+        :task="renderTask"
+        :disabled="locked || settingsSaving || renderSubmitting"
+        :retrying="retrying"
+        :retry-error="retryError"
+        @workflow="renderTask && emit('workflow', renderTask)"
+        @retry="emit('retry', $event)"
+      />
       <button
         class="generate-button"
         type="button"
@@ -465,6 +510,21 @@ footer {
   color: #355477;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+.duration-editor {
+  cursor: pointer;
+}
+.duration-editor:hover:not(:disabled) {
+  border-color: #aec3e4;
+  color: #456fa8;
+}
+.duration-editor:focus-visible {
+  outline: 2px solid #6d95e8;
+  outline-offset: 2px;
+}
+.duration-editor:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 .generate-button {
   width: 100%;

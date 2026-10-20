@@ -7,7 +7,7 @@ import type {
   ProductionWorkspace,
   ProductionVideoDocument,
 } from '@ai-marketing/contracts';
-import Feedback from './ProductionPromptTaskFeedback.vue';
+import Feedback from './ProductionTaskFailureFeedback.vue';
 import Workbench from './ProductionVideoWorkbench.vue';
 import Workspace from './CustomizedProductionWorkspace.vue';
 import { productionApi } from './production.api';
@@ -129,7 +129,7 @@ describe('per-storyboard prompt failure feedback', () => {
             ? '查看未完成详情'
             : '查看失败详情',
       );
-      expect(html).toContain('重新生成');
+      expect(html).toContain(status === 'CANCELLED' ? '重新生成' : '核对任务来源');
       if (status === 'CANCELLED') {
         expect(html).toContain('information');
         expect(html).not.toContain('本次制作未完成');

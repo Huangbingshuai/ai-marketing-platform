@@ -1,0 +1,527 @@
+/* Integration and responsive corrections on top of frozen prototype styles. */
+.fas-style-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 9px;
+}
+.fas-style-section-title > span {
+  max-width: 150px;
+  color: #718096;
+  font-size: 7px;
+  line-height: 1.5;
+}
+.fas-topbar > .fas-btn.primary {
+  height: 40px;
+  border-radius: 10px;
+}
+.avatar-marquee {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  border: 1px solid #2563eb;
+  background: #2563eb22;
+  pointer-events: none;
+}
+.fas-studio svg,
+.fas-modal-mask svg {
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.fas-btn,
+.fas-render-dock > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.fas-wide-import {
+  width: 100%;
+  cursor: pointer;
+}
+.fas-studio button:focus-visible,
+.fas-modal-mask button:focus-visible,
+.fas-clip:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+.fas-range input {
+  width: 100%;
+  accent-color: #2563eb;
+}
+.fas-meta-list {
+  font-size: 9px;
+}
+.fas-meta-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf1f6;
+}
+.fas-meta-list dt {
+  color: #718096;
+}
+.fas-meta-list dd {
+  margin: 0;
+  max-width: 180px;
+  text-align: right;
+  line-height: 1.6;
+}
+.avatar-audition {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #f4f7fb;
+  color: #2563eb;
+  text-align: left;
+}
+.avatar-audition > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.avatar-audition b {
+  font-size: 9px;
+}
+.avatar-audition small {
+  font-size: 8px;
+  color: #718096;
+}
+.avatar-seek {
+  width: 100%;
+  height: 12px;
+  margin: 0 0 5px;
+  accent-color: #2563eb;
+}
+.avatar-timeline-label {
+  padding: 5px 8px;
+  background: #2563eb;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 8px;
+  white-space: nowrap;
+}
+.avatar-zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: #718096;
+  font-size: 11px;
+}
+.avatar-zoom input {
+  width: 80px;
+  accent-color: #2563eb;
+}
+.avatar-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 1px;
+  background: #2563eb;
+  pointer-events: none;
+}
+.avatar-trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  background: #ffffff30;
+}
+.avatar-trim.left {
+  left: 0;
+}
+.avatar-trim.right {
+  right: 0;
+}
+.fas-subtitle-style-section .fas-inline-actions {
+  grid-template-columns: repeat(3, 1fr);
+}
+.fas-subtitle-style-section button.active {
+  background: #eaf2ff;
+  color: #2563eb;
+}
+.fas-preview-subtitle {
+  touch-action: none;
+  cursor: move;
+}
+.fas-toast {
+  position: fixed;
+  z-index: 11000;
+  bottom: 28px;
+  top: auto;
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  padding: 12px 18px;
+  border-radius: 8px;
+  background: #172033;
+  color: #fff;
+  font-size: 12px;
+  box-shadow: 0 8px 24px #17203320;
+}
+.fas-render-dock > button {
+  grid-column: 3;
+  justify-self: end;
+}
+@media (max-width: 900px) {
+  .fas-render-dock > button {
+    grid-column: 2;
+  }
+  .fas-render-dock > .fas-mini-progress {
+    display: none;
+  }
+}
+.avatar-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 12px 16px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff1f2;
+  color: #b91c1c;
+  font-size: 12px;
+}
+.avatar-error button {
+  border: 1px solid #fecaca;
+  border-radius: 5px;
+  padding: 6px 10px;
+  background: #fff;
+  color: #b91c1c;
+}
+.avatar-export-success {
+  color: #148768;
+  font-size: 12px;
+}
+.fas-export-modal {
+  width: min(490px, calc(100vw - 32px));
+  border-radius: 14px;
+  background: #fff;
+  color: #172033;
+  overflow: hidden;
+}
+.fas-export-modal > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #dbe4ef;
+  background: #f8fafd;
+}
+.fas-export-modal > header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fas-export-modal > header b {
+  font-size: 15px;
+}
+.fas-export-modal > header small {
+  font-size: 10px;
+  color: #718096;
+}
+.fas-export-modal > header button {
+  border: 0;
+  background: transparent;
+  color: #718096;
+}
+.fas-export-modal > main {
+  padding: 8px 20px 20px;
+}
+.fas-export-modal > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid #dbe4ef;
+}
+.fas-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: #17203365;
+  backdrop-filter: blur(3px);
+}
+.fas-modal-mask > section {
+  max-height: 92vh;
+  overflow: auto;
+  --blue: #2563eb;
+  --line: #dbe4ef;
+  --muted: #718096;
+  font-family:
+    Inter,
+    PingFang SC,
+    Microsoft YaHei,
+    system-ui,
+    sans-serif;
+}
+.fas-modal-mask button,
+.fas-modal-mask input,
+.fas-modal-mask select,
+.fas-modal-mask textarea {
+  font: inherit;
+}
+.fas-modal-mask .fas-field {
+  font-size: 10px;
+}
+.fas-modal-mask .fas-btn {
+  font-size: 10px;
+}
+.fas-avatar-reference-upload {
+  cursor: pointer;
+}
+.fas-artifact-modal > header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fas-artifact-modal > header b {
+  font-size: 15px;
+}
+.fas-artifact-modal > header small {
+  font-size: 10px;
+  color: #718096;
+}
+.fas-studio .fas-field input[type='checkbox'],
+.fas-modal-mask .fas-field input[type='checkbox'] {
+  width: auto;
+  height: auto;
+  accent-color: #2563eb;
+}
+.fas-avatar-item > i:empty {
+  background: #e2e8f0;
+}
+@media (min-width: 901px) and (max-width: 1180px) {
+  .fas-workspace {
+    grid-template-columns: 260px minmax(240px, 1fr) 240px;
+  }
+  .fas-brand {
+    min-width: 210px;
+  }
+  .fas-save-state {
+    max-width: 190px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+@media (max-width: 900px) {
+  .fas-studio {
+    grid-template-rows: 48px 875px 265px 84px 60px;
+    min-height: 1332px;
+  }
+  .fas-topbar {
+    gap: 6px;
+  }
+  .fas-brand {
+    min-width: 0;
+    flex: 1;
+  }
+  .fas-save-state {
+    display: none;
+  }
+  .fas-topbar > .fas-btn {
+    font-size: 9px;
+    padding: 0 7px;
+  }
+  .fas-artifact-entry-bar {
+    margin: 6px 6px 0;
+    padding: 8px;
+  }
+  .fas-artifact-entry-bar > div {
+    min-width: 0;
+  }
+  .fas-artifact-entry-bar > em {
+    margin-left: 0;
+  }
+  .fas-artifact-entry-bar > .fas-btn {
+    height: 30px;
+  }
+  .fas-render-dock {
+    gap: 6px;
+  }
+  .fas-render-dock > button {
+    padding: 0 8px;
+  }
+  .fas-artifact-modal > main {
+    grid-template-columns: 1fr;
+  }
+  .fas-timeline-hint {
+    display: none;
+  }
+}
+@media (max-width: 520px) {
+  .fas-workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: 430px 430px;
+  }
+  .fas-brand b {
+    font-size: 10px;
+  }
+  .fas-brand small {
+    font-size: 6px;
+  }
+  .fas-brand > span {
+    width: 25px;
+    height: 25px;
+  }
+  .fas-topbar {
+    padding: 0 6px;
+  }
+  .fas-topbar > .fas-btn {
+    font-size: 8px;
+    height: 32px;
+    max-width: 94px;
+    white-space: normal;
+  }
+  .fas-player-panel > header {
+    padding: 5px;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+  }
+  .fas-player-panel > header b {
+    font-size: 9px;
+  }
+  .fas-player-panel > header span {
+    font-size: 6px;
+  }
+  .fas-video-frame {
+    max-width: 100%;
+    height: 88%;
+    max-height: 300px;
+  }
+  .fas-person strong {
+    width: 60px;
+    height: 70px;
+  }
+  .fas-player-controls {
+    padding: 6px;
+  }
+  .fas-player-controls span {
+    min-width: 0;
+    font-size: 7px;
+  }
+  .fas-player-controls em {
+    display: none;
+  }
+  .fas-player-controls button {
+    width: 24px;
+  }
+  .fas-resource-panel {
+    padding: 6px;
+  }
+  .fas-avatar-item {
+    grid-template-columns: 30px minmax(0, 1fr) 12px;
+    gap: 4px;
+    padding: 5px;
+  }
+  .fas-avatar-face {
+    width: 30px;
+    height: 35px;
+  }
+  .fas-avatar-item b {
+    font-size: 8px;
+  }
+  .fas-avatar-item > i {
+    width: 12px;
+    height: 12px;
+  }
+  .fas-avatar-item small,
+  .fas-avatar-item em {
+    font-size: 6px;
+  }
+  .fas-wide-import {
+    font-size: 7px;
+    gap: 3px;
+    min-height: 30px;
+    height: auto;
+  }
+  .fas-panel-head small {
+    font-size: 7px;
+  }
+  .fas-search {
+    padding: 0 5px;
+  }
+  .fas-search input {
+    width: 70px;
+    font-size: 8px;
+  }
+  .fas-background-grid {
+    grid-template-columns: 1fr;
+  }
+  .fas-choice-list button {
+    grid-template-columns: 25px 1fr 12px;
+    gap: 4px;
+    padding: 5px;
+  }
+  .fas-choice-list button > i {
+    width: 25px;
+    height: 28px;
+  }
+  .fas-timeline-toolbar {
+    gap: 2px;
+    flex-wrap: wrap;
+  }
+  .fas-timeline-toolbar > button {
+    padding: 0 5px;
+  }
+  .avatar-zoom {
+    display: none;
+  }
+  .fas-artifact-entry-bar b {
+    font-size: 10px;
+  }
+  .fas-artifact-entry-bar small {
+    font-size: 7px;
+  }
+  .fas-artifact-entry-bar > div {
+    flex-basis: calc(100% - 55px);
+  }
+  .fas-artifact-entry-bar > em {
+    font-size: 7px;
+  }
+  .fas-artifact-entry-bar > .fas-btn {
+    font-size: 8px;
+  }
+  .fas-artifact-entry-icon {
+    width: 28px;
+    height: 28px;
+  }
+  .fas-artifact-modal > footer {
+    flex-wrap: wrap;
+  }
+  .fas-artifact-fields {
+    grid-template-columns: 1fr;
+  }
+  .fas-avatar-generator-body {
+    padding: 12px;
+  }
+  .fas-avatar-generator-modal > footer {
+    gap: 5px;
+    padding: 10px;
+  }
+  .fas-avatar-generator-modal > footer button {
+    padding: 0 10px;
+    font-size: 10px;
+  }
+}

@@ -380,6 +380,229 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
           { target: { kind: 'CLIP', id: 'clip-a' } },
         ),
       ).rejects.toThrow('创作依据已变化');
+      // C16: explicit duration saves must not invalidate another clip's Prompt/video.
+      await repo.savePrompt(p, r, 0, {
+        target: { kind: 'CLIP', id: 'clip-b' },
+        content: '@陶瓷杯定版。',
+        assetIds: ['cup'],
+      });
+      const neighborPrompt = await db.workingArtifact.findFirstOrThrow({
+        where: { projectId: p, workflowRunId: r, artifactKey: 'customized-clip-prompt:clip-b' },
+      });
+      const neighborClip = await db.workingArtifact.findFirstOrThrow({
+        where: { projectId: p, workflowRunId: r, artifactKey: 'customized-video-clip:clip-b' },
+      });
+      const neighborVideo = await db.workingArtifact.create({
+        data: {
+          projectId: p,
+          workflowRunId: r,
+          nodeId: 'SHOT_RENDER',
+          artifactKey: 'customized-clip-video:clip-b',
+          name: 'C16受控视频依赖占位',
+          kind: 'STRUCTURED',
+          directory: 'SCRIPTS',
+          type: 'STORYBOARD_SCRIPT',
+          payload: { sentinel: 'C16-current' },
+          contentHash: workflowStateHash({ sentinel: 'C16-current' }),
+        },
+      });
+      for (const source of [neighborPrompt, neighborClip])
+        await db.workingArtifactDependency.create({
+          data: {
+            projectId: p,
+            workflowRunId: r,
+            dependentArtifactId: neighborVideo.id,
+            sourceType: 'WORKING_ARTIFACT',
+            sourceArtifactId: source.id,
+            sourceNodeId: source.nodeId,
+            sourceKey: source.artifactKey,
+            sourceRevision: source.revision,
+            sourceHash: source.contentHash,
+          },
+        });
+      const neighborsBefore = [neighborPrompt, neighborClip, neighborVideo];
+      w = await repo.workspace(p, r);
+      for (const duration of [10.5, 11]) {
+        d = structuredClone(w.document) as ProductionVideoDocument;
+        d.videoPlan.shots[0]!.durationSeconds = duration;
+        await repo.save(p, r, w.draftRevision, d, 'SHOTS', true);
+        w = await repo.workspace(p, r);
+        expect((w.document as ProductionVideoDocument).videoPlan.shots[0]!.durationSeconds).toBe(
+          duration,
+        );
+        expect(
+          w.prompts.find((v) => 'target' in v.value && v.value.target.id === 'clip-a')!.stale,
+        ).toBe(true);
+        for (const before of neighborsBefore) {
+          const after = await db.workingArtifact.findUniqueOrThrow({ where: { id: before.id } });
+          expect(after.freshness).toBe('CURRENT');
+          expect(after.revision).toBe(before.revision);
+          expect(after.contentHash).toBe(before.contentHash);
+          expect(after.payload).toEqual(before.payload);
+        }
+      }
+      const timingRows = await db.workingArtifact.findMany({
+        where: { projectId: p, workflowRunId: r },
+        orderBy: { artifactKey: 'asc' },
+      });
+      const sameDuration = await repo.save(p, r, w.draftRevision, w.document, 'SHOTS', true);
+      expect(sameDuration.revision).toBe(w.draftRevision);
+      expect(
+        await db.workingArtifact.findMany({
+          where: { projectId: p, workflowRunId: r },
+          orderBy: { artifactKey: 'asc' },
+        }),
+      ).toEqual(timingRows);
+      expect(await db.workingArtifact.findUnique({ where: { id: siblingArtifact.id } })).toEqual(
+        siblingArtifact,
+      );
+      // C17: real locked explicit retry archives once, keeps the Task/sources,
+      // and rejects old-attempt callbacks before they can replace the output.
+      const recoveryTask = await repo.start(
+        p,
+        r,
+        w.draftRevision,
+        'PROMPT',
+        randomUUID(),
+        null,
+        { creative: 'controlled', detail: 'controlled' },
+        null,
+        undefined,
+        { target: { kind: 'CLIP', id: 'clip-b' } },
+      );
+      const firstClaim = await repo.claim(p, recoveryTask.id, 'VIDEO');
+      const frozenRecovery = await db.customizedProductionTask.findUniqueOrThrow({
+        where: { id: recoveryTask.id },
+      });
+      const auditCandidate = {
+        summary: '受控审校',
+        checks: [],
+        resolutions: [],
+        promptEvidence: [],
+        findings: [
+          {
+            id: 'A1',
+            severity: 'ERROR',
+            category: 'COVERAGE',
+            repairKind: 'FIELDS',
+            title: '受控问题',
+            impact: '受控影响',
+            suggestedFix: '核对引用',
+            evidence: [{ entity: 'PROMPT', id: 'clip-b', field: 'content' }],
+            affectedShotIds: [],
+            affectedClipIds: ['clip-b'],
+          },
+        ],
+      };
+      const failedAudit = {
+        value: {
+          target: { kind: 'CLIP', id: 'clip-b' },
+          content: '受控原提示词',
+          assetIds: ['cup'],
+        },
+        audit: auditCandidate,
+        auditCorrected: {
+          ...auditCandidate,
+          promptEvidence: [{ issueId: 'A1', excerpt: '受控不匹配原句' }],
+        },
+        mechanicalErrors: { audit: 'invalid field', auditCorrected: 'invalid quote' },
+        corrections: { audit: 1 },
+        failureReason: 'INVALID_CANDIDATE',
+      };
+      const failedStep = {
+        id: 'REVIEW',
+        status: 'FAILED' as const,
+        title: '受控审校',
+        content: '受控机械失败',
+      };
+      await repo.checkpoint(
+        p,
+        recoveryTask.id,
+        firstClaim.attemptToken!,
+        failedStep,
+        failedAudit,
+        'VIDEO',
+      );
+      await repo.fail(p, recoveryTask.id, firstClaim.attemptToken!, false, 'VIDEO');
+      const taskCount = await db.customizedProductionTask.count({ where: { projectId: p } });
+      const recoveryArtifacts = await db.workingArtifact.findMany({
+        where: { projectId: p },
+        orderBy: { id: 'asc' },
+      });
+      await Promise.all([
+        repo.action(p, recoveryTask.id, false),
+        repo.action(p, recoveryTask.id, false),
+      ]);
+      let recovered = await db.customizedProductionTask.findUniqueOrThrow({
+        where: { id: recoveryTask.id },
+      });
+      expect(recovered.inputSnapshot).toEqual(frozenRecovery.inputSnapshot);
+      expect(recovered.output).toMatchObject({
+        value: failedAudit.value,
+        mechanicalRecovery: { epoch: 1, phase: 'audit' },
+      });
+      const firstOutput = recovered.output as Record<string, unknown>;
+      expect((firstOutput.mechanicalRecovery as { history: unknown[] }).history).toHaveLength(1);
+      await expect(
+        repo.checkpoint(
+          p,
+          recoveryTask.id,
+          firstClaim.attemptToken!,
+          failedStep,
+          failedAudit,
+          'VIDEO',
+        ),
+      ).rejects.toThrow('租约失效');
+      const nextClaim = await repo.claim(p, recoveryTask.id, 'VIDEO');
+      await expect(
+        repo.checkpoint(
+          p,
+          recoveryTask.id,
+          firstClaim.attemptToken!,
+          failedStep,
+          failedAudit,
+          'VIDEO',
+        ),
+      ).rejects.toThrow('租约失效');
+      await expect(
+        repo.checkpoint(
+          p,
+          recoveryTask.id,
+          nextClaim.attemptToken!,
+          failedStep,
+          failedAudit,
+          'VIDEO',
+        ),
+      ).rejects.toThrow('恢复轮次不匹配');
+      await repo.checkpoint(
+        p,
+        recoveryTask.id,
+        nextClaim.attemptToken!,
+        failedStep,
+        {
+          ...firstOutput,
+          auditCorrected: failedAudit.auditCorrected,
+          corrections: { audit: 1 },
+          mechanicalErrors: { auditCorrected: 'still invalid quote' },
+          failureReason: 'INVALID_CANDIDATE',
+        },
+        'VIDEO',
+      );
+      await repo.fail(p, recoveryTask.id, nextClaim.attemptToken!, false, 'VIDEO');
+      await repo.action(p, recoveryTask.id, false);
+      recovered = await db.customizedProductionTask.findUniqueOrThrow({
+        where: { id: recoveryTask.id },
+      });
+      expect(recovered.output).toMatchObject({ mechanicalRecovery: { epoch: 2 } });
+      expect(
+        ((recovered.output as Record<string, unknown>).mechanicalRecovery as { history: unknown[] })
+          .history,
+      ).toHaveLength(2);
+      expect(await db.customizedProductionTask.count({ where: { projectId: p } })).toBe(taskCount);
+      expect(
+        await db.workingArtifact.findMany({ where: { projectId: p }, orderBy: { id: 'asc' } }),
+      ).toEqual(recoveryArtifacts);
+      await repo.action(p, recoveryTask.id, true);
       // A real text definition change must keep downstream content stale and reject PROMPT.
       d = structuredClone(w.document) as ProductionVideoDocument;
       d.assets[0]!.description += ' 实际文字定义变化';
@@ -401,7 +624,7 @@ it.skipIf(process.env.CUSTOMIZED_PRODUCTION_DATABASE_TEST !== '1')(
       ).rejects.toThrow('请先保存当前片段和分镜');
       expect(await db.customizedProductionTask.count({ where: { projectId: p } })).toBe(count);
       expect((await repo.workspace(p, r)).prompts[0]!.stale).toBe(true);
-      expect(outbox).toHaveBeenCalledTimes(2);
+      expect(outbox).toHaveBeenCalledTimes(5);
       expect(await db.workflowRun.count({ where: { projectId: p } })).toBe(2);
       expect(await db.jobOutbox.count({ where: { projectId: p } })).toBe(0);
     } finally {

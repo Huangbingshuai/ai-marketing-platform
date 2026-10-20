@@ -50,6 +50,36 @@ const input = (d: ProductionVideoDocument, text: string) =>
     script: { story: { content: text } },
   }) as unknown as ProductionInput;
 describe('video task source and review fences', () => {
+  it('enforces whole seconds only for marked SHOTS callbacks and preserves historical/PROMPT snapshots', () => {
+    const { document: d, scriptText } = fixture(),
+      i = input(d, scriptText);
+    i.operation = 'SHOTS';
+    d.videoPlan.shots[0]!.durationSeconds += 0.5;
+    const original = structuredClone(d);
+    expect(validateVideoSnapshot(d, i)).toBeNull();
+    i.shotDurationStepMs = 1000;
+    expect(validateVideoSnapshot(d, i)).toContain('整数秒');
+    expect(validateFinalVideo(d, i, {})).toContain('整数秒');
+    expect(d).toEqual(original);
+    i.operation = 'PROMPT';
+    expect(validateVideoSnapshot(d, i)).toBeNull();
+    i.operation = 'SHOTS';
+    d.videoPlan.shots[0]!.durationSeconds += 0.5;
+    d.videoPlan.cues[0]!.parts[0]!.startMs = 125;
+    expect(validateVideoSnapshot(d, i)).toBeNull();
+    i.shotDurationStepMs = 500 as 1000;
+    expect(validateVideoSnapshot(d, i)).toContain('不支持');
+  });
+
+  it('duration edits change only their own clip input, leaving sibling Prompt/video sources unchanged', () => {
+    const { document: d } = fixture();
+    const sibling = clipPayload(d, 'clip-b');
+    const changed = videoHash(clipPayload(d, 'clip-a'));
+    d.videoPlan.shots[0]!.durationSeconds += 1;
+    expect(videoHash(clipPayload(d, 'clip-a'))).not.toBe(changed);
+    expect(clipPayload(d, 'clip-b')).toEqual(sibling);
+  });
+
   it('requires current-prompt quotation evidence for V3 callbacks and keeps V2 compatible', () => {
     const { document: d, scriptText } = fixture(),
       i = input(d, scriptText);

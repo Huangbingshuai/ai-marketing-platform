@@ -4,6 +4,7 @@ import { inject, ref, watch } from 'vue';
 import { projectContextKey } from '../../../platform/project/project-context';
 import LocalReplaceWorkspace from '../local-replace/LocalReplaceWorkspace.vue';
 import FissionCloneWorkspace from '../clone/FissionCloneWorkspace.vue';
+import AvatarWorkspace from '../avatar/AvatarWorkspace.vue';
 const props = withDefaults(
   defineProps<{
     projectId?: string;
@@ -26,12 +27,15 @@ const active = ref(
 );
 watch(active, (value) => localStorage.setItem('ai-marketing.fission.active-module', value));
 const cloneWorkspace = ref<InstanceType<typeof FissionCloneWorkspace>>();
+const avatarWorkspace = ref<InstanceType<typeof AvatarWorkspace>>();
 const workspace = ref<InstanceType<typeof LocalReplaceWorkspace>>();
 defineExpose({
   flushPendingEdits: async () =>
     active.value === 'clone'
       ? (cloneWorkspace.value?.flushPendingEdits() ?? true)
-      : (workspace.value?.flushPendingEdits() ?? true),
+      : active.value === 'avatar'
+        ? (avatarWorkspace.value?.flushPendingEdits() ?? true)
+        : (workspace.value?.flushPendingEdits() ?? true),
   workflowRunId: '',
 });
 </script>
@@ -67,10 +71,18 @@ defineExpose({
       :project-name="projectName"
       :preview="preview"
     />
+    <AvatarWorkspace
+      v-else-if="active === 'avatar'"
+      ref="avatarWorkspace"
+      :key="projectId || 'avatar-preview'"
+      :project-id="projectId"
+      :project-name="projectName"
+      :preview="preview"
+    />
     <section v-else class="fission-placeholder">
       <GitBranch :size="36" />
-      <h2>{{ active === 'clone' ? '爆款视频复刻' : '数字人口播' }}</h2>
-      <p>{{ active === 'clone' ? '请从系统项目工作台打开此工作流。' : '此模块尚未接入。' }}</p>
+      <h2>爆款视频复刻</h2>
+      <p>请从系统项目工作台打开此工作流。</p>
       <button class="lr-btn primary" @click="active = 'replace'">返回局部元素替换</button>
     </section>
   </div>

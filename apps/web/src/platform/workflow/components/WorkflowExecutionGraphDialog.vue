@@ -123,15 +123,26 @@ function observeFocus() {
     attributeFilter: ['disabled', 'hidden', 'inert', 'style', 'class', 'tabindex'],
   });
 }
-function restoreTriggerFocus() {
+function restoreTriggerFocus(origin = trigger) {
+  if (!origin || typeof document === 'undefined') return;
+  // The v-if panel ref may already be cleared when the close watcher runs.
+  const otherDialog = [
+    ...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"][aria-modal="true"]'),
+  ].some(
+    (el) =>
+      el !== panel.value &&
+      el.getClientRects().length &&
+      !(origin && el.contains(origin)) &&
+      !(panel.value && el.contains(panel.value)),
+  );
   if (
-    ownsFocusLayer() &&
-    trigger?.isConnected &&
-    trigger.getClientRects().length &&
-    !trigger.matches(':disabled') &&
-    !trigger.closest('[hidden], [inert]')
+    !otherDialog &&
+    origin?.isConnected &&
+    origin.getClientRects().length &&
+    !origin.matches(':disabled') &&
+    !origin.closest('[hidden], [inert]')
   )
-    trigger.focus();
+    origin.focus();
 }
 function keydown(event: KeyboardEvent) {
   if (event.defaultPrevented || event.isComposing || !ownsFocusLayer()) return;
@@ -200,7 +211,11 @@ watch(
       if (!ownsFocusLayer()) return;
       closeButton.value?.focus();
     } else {
-      restoreTriggerFocus();
+      const origin = trigger;
+      // Let nested dialogs finish their own teardown/focus restoration first.
+      await nextTick();
+      if (disposed || props.open || generation !== focusGeneration) return;
+      restoreTriggerFocus(origin);
       trigger = null;
     }
   },
@@ -208,10 +223,14 @@ watch(
 );
 onBeforeUnmount(() => {
   disposed = true;
-  focusGeneration++;
+  const generation = ++focusGeneration,
+    origin = trigger;
   focusObserver?.disconnect();
   observer?.disconnect();
-  if (props.open) restoreTriggerFocus();
+  if (origin)
+    void nextTick(() => {
+      if (generation === focusGeneration) restoreTriggerFocus(origin);
+    });
 });
 </script>
 <template>

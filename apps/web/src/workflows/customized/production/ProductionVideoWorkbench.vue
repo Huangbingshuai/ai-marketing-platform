@@ -27,7 +27,7 @@ import ProductionShotDirectory from './ProductionShotDirectory.vue';
 import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
 import ProductionShotRenderPanel from './ProductionShotRenderPanel.vue';
 import ProductionTaskActivity from './ProductionTaskActivity.vue';
-import ProductionPromptTaskFeedback from './ProductionPromptTaskFeedback.vue';
+import ProductionTaskFailureFeedback from './ProductionTaskFailureFeedback.vue';
 import { referenceImageSources } from './production-asset-images';
 const ProductionPromptEditor = defineAsyncComponent(() => import('./ProductionPromptEditor.vue'));
 
@@ -40,10 +40,13 @@ const props = defineProps<{
   locked: boolean;
   dirty: boolean;
   savePlan: () => Promise<boolean>;
+  retryingTaskId?: string;
+  retryError?: { taskId: string; message: string } | null;
 }>();
 const emit = defineEmits<{
   generate: [clipId: string];
   workflow: [clipId: string, taskId?: string];
+  retry: [taskId: string];
   refresh: [];
   edit: [];
   preview: [asset: ProductionAsset];
@@ -468,9 +471,13 @@ defineExpose({
           </div>
         </header>
         <ProductionTaskActivity :task="promptTask" label="当前分镜提示词生成进度" />
-        <ProductionPromptTaskFeedback
+        <ProductionTaskFailureFeedback
           :task="promptTask"
+          :disabled="locked || saving"
+          :retrying="retryingTaskId === promptTask?.id"
+          :retry-error="retryError?.taskId === promptTask?.id ? retryError?.message : undefined"
           @workflow="emit('workflow', clip.id, $event)"
+          @retry="emit('retry', $event)"
         />
         <ProductionPromptEditor
           v-model="promptText"
@@ -493,6 +500,8 @@ defineExpose({
       :settings="renderSettings"
       :settings-saving="settingsSaving"
       :render-submitting="rendering"
+      :retrying="retryingTaskId === renderTask?.id"
+      :retry-error="retryError?.taskId === renderTask?.id ? retryError?.message : undefined"
       :prompt-ready="!!prompt && (!prompt.stale || promptDirty)"
       :shot="clipPreview"
       :index="plan.clips.findIndex((c) => c.id === clip?.id) + 1"
@@ -505,6 +514,8 @@ defineExpose({
       @preview="emit('preview', $event)"
       @update-settings="renderSettings = $event"
       @render="renderVideo"
+      @retry="emit('retry', $event)"
+      @edit-duration="parameters = true"
     />
     <WorkflowInformationDialog
       :open="parameters && !!task"

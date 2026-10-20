@@ -1,5 +1,6 @@
 import { createAssetBranch } from './production-asset-branch';
 import { applyImageOnlyPlanRebase } from './image-only-plan-rebase';
+import { beginPromptMechanicalRecovery } from './prompt-mechanical-recovery';
 import {
   assertWorkerOperation,
   productionQueue,
@@ -1055,7 +1056,9 @@ export class ProductionRepository {
           ...(videoV2
             ? {
                 shotWorkflowVersion: 2 as const,
-                ...(operation === 'SHOTS' ? { shotBenefitPolicyVersion: 1 as const } : {}),
+                ...(operation === 'SHOTS'
+                  ? { shotBenefitPolicyVersion: 1 as const, shotDurationStepMs: 1000 as const }
+                  : {}),
                 ...(operation === 'PROMPT' ? { promptWorkflowVersion: 3 as const } : {}),
                 strategyVersion: CUSTOMIZED_VIDEO_STRATEGY,
                 requestLimits: { ...CUSTOMIZED_VIDEO_LIMITS },
@@ -1753,6 +1756,16 @@ export class ProductionRepository {
         invalid('执行步骤不正确');
       if (JSON.stringify(output ?? null).length > 2_000_000 || step.content.length > 100000)
         invalid('结果超过大小限制');
+      if (t.operation === 'PROMPT' && output !== undefined) {
+        const prior = (t.output ?? {}) as Record<string, unknown>;
+        const next =
+          output && typeof output === 'object' ? (output as Record<string, unknown>) : {};
+        if (
+          workflowStateHash(prior.mechanicalRecovery ?? null) !==
+          workflowStateHash(next.mechanicalRecovery ?? null)
+        )
+          return customizedConflict('机械恢复轮次不匹配，已有检查点保留');
+      }
       if (t.operation === 'IMAGE' && (output !== undefined || step.id === 'GENERATE'))
         invalid('图片完成状态只能由已保存的文件更新');
       if (t.operation === 'RENDER' && output !== undefined) {
@@ -2066,6 +2079,19 @@ export class ProductionRepository {
         )
           return customizedConflict('已有制作任务运行中');
       }
+      let recoveryOutput: Record<string, unknown> | null = null;
+      if (!cancel) {
+        try {
+          recoveryOutput = beginPromptMechanicalRecovery(
+            t.operation,
+            t.status,
+            t.steps as unknown as ProductionStep[],
+            t.output,
+          );
+        } catch (error) {
+          invalid(error instanceof Error ? error.message : '机械恢复记录不可用');
+        }
+      }
       const updated = await tx.customizedProductionTask.update({
         where: { id },
         data: {
@@ -2074,6 +2100,7 @@ export class ProductionRepository {
           leaseExpiresAt: null,
           errorMessage: null,
           ...(!cancel ? { attemptCount: 0 } : {}),
+          ...(recoveryOutput ? { output: json(recoveryOutput) } : {}),
         },
       });
       if (!cancel) await this.enqueue(tx, updated);

@@ -37,7 +37,9 @@ type TestDocument = {
 };
 let doc: TestDocument;
 class TestElement {
-  constructor() { markRaw(this); }
+  constructor() {
+    markRaw(this);
+  }
   parent: TestElement | null = null;
   visible = true;
   isConnected = true;
@@ -113,7 +115,11 @@ async function mount() {
     body,
     documentElement: html,
     querySelectorAll: (selector: string) =>
-      selector === 'dialog[open]' ? doc.native : doc.dialogs,
+      selector.startsWith('dialog[open],')
+        ? [...doc.native, ...doc.dialogs]
+        : selector === 'dialog[open]'
+          ? doc.native
+          : doc.dialogs,
   });
   const props = reactive({
     open: true,
@@ -144,8 +150,9 @@ async function mount() {
     (state[method] as (...args: unknown[]) => void)(...args);
   return { props, state, root, close, trigger, closed, call };
 }
-afterEach(() => {
+afterEach(async () => {
   cleanups.splice(0).forEach((fn) => fn());
+  await settle();
   TestObserver.all = [];
   vi.unstubAllGlobals();
 });

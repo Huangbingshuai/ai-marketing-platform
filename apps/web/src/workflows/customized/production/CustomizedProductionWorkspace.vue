@@ -33,7 +33,12 @@ import WorkflowExtractionActions from '../../../platform/workflow/components/Wor
 import WorkflowExtractionFeedback from '../../../platform/workflow/components/WorkflowExtractionFeedback.vue';
 import WorkflowExecutionGraphDialog from '../../../platform/workflow/components/WorkflowExecutionGraphDialog.vue';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
-import { isAbortError, safeApiErrorMessage } from '../../../api/http-client';
+import {
+  ApiClientError,
+  isAbortError,
+  isNetworkError,
+  safeApiErrorMessage,
+} from '../../../api/http-client';
 import { productionApi } from './production.api';
 import ProductionAssetStudio from './ProductionAssetStudio.vue';
 import ProductionReferenceLibrary from './ProductionReferenceLibrary.vue';
@@ -44,7 +49,7 @@ import ProductionCandidateReview from './ProductionCandidateReview.vue';
 import ProductionRenderDialog from './ProductionRenderDialog.vue';
 import ProductionAssetVisual from './ProductionAssetVisual.vue';
 import ProductionTaskActivity from './ProductionTaskActivity.vue';
-import ProductionPromptTaskFeedback from './ProductionPromptTaskFeedback.vue';
+import ProductionTaskFailureFeedback from './ProductionTaskFailureFeedback.vue';
 import {
   productionNodeTasks,
   productionPageProgressTask,
@@ -196,6 +201,90 @@ const previousImageSettings = computed(
 const imageDialogOpen = ref(false);
 const imageSubmitting = ref(false),
   imageError = ref('');
+const retryingTaskId = ref('');
+const retryError = ref<{ taskId: string; message: string } | null>(null);
+async function retryTask(taskId: string) {
+  const target = workspace.value?.tasks.find((t) => t.id === taskId);
+  if (
+    props.mode !== 'SHOTS' ||
+    !target ||
+    target.status !== 'FAILED' ||
+    !['PROMPT', 'RENDER'].includes(target.operation) ||
+    busy.value ||
+    running.value ||
+    imageSubmitting.value ||
+    retryingTaskId.value
+  )
+    return;
+  retryError.value = null;
+  const latest = workspace.value?.tasks.find(
+    (t) =>
+      t.operation === target.operation &&
+      (target.target ? t.target?.id === target.target.id : t.shotId === target.shotId),
+  );
+  if (latest?.id !== taskId) {
+    retryError.value = { taskId, message: '当前已有新的执行记录，请重新查看当前任务。' };
+    return;
+  }
+  if (dirty.value || promptDirty.value || videoWorkbench.value?.hasDirty) {
+    retryError.value = {
+      taskId,
+      message: '当前修改尚未保存，已保留本地内容；原任务仅按原快照继续，请先核对修改与任务来源。',
+    };
+    return;
+  }
+  const scope = controller,
+    projectId = props.projectId,
+    runId = props.workflowRunId;
+  busy.value = true;
+  retryingTaskId.value = taskId;
+  const current = () =>
+    scope === controller &&
+    !scope.signal.aborted &&
+    !disposed &&
+    props.projectId === projectId &&
+    props.workflowRunId === runId &&
+    !!workspace.value;
+  const accept = (resumed: ProductionTask) => {
+    if (!current()) return;
+    if (
+      resumed.id !== taskId ||
+      resumed.operation !== target.operation ||
+      resumed.target?.id !== target.target?.id ||
+      resumed.shotId !== target.shotId
+    )
+      throw new Error('任务返回范围不匹配，请重新查询后核对');
+    workspace.value!.tasks = [resumed, ...workspace.value!.tasks.filter((t) => t.id !== taskId)];
+    schedule();
+  };
+  try {
+    const resumed = await productionApi.retry(projectId, taskId, scope.signal);
+    accept(resumed);
+  } catch (e) {
+    if (scope === controller && !isAbortError(e))
+      retryError.value = {
+        taskId,
+        message: safeApiErrorMessage(e, '本次任务暂时无法继续，请核对来源后重试；当前内容已保留。'),
+      };
+    if (current() && (isNetworkError(e) || (e instanceof ApiClientError && e.status >= 500))) {
+      // The POST may have succeeded. Reconcile with a read; never replay it automatically.
+      try {
+        const observed = await productionApi.task(projectId, taskId, scope.signal);
+        if (current() && ['QUEUED', 'RUNNING', 'COMPLETED'].includes(observed.status)) {
+          accept(observed);
+          retryError.value = null;
+        }
+      } catch {
+        /* Preserve the safe retry message and all local content. */
+      }
+    }
+  } finally {
+    if (scope === controller) {
+      retryingTaskId.value = '';
+      busy.value = false;
+    }
+  }
+}
 let imageSubmission = 0;
 function prepareImages(assets: ProductionAsset[]) {
   if (
@@ -990,6 +1079,8 @@ watch(
     graphError.value = '';
     imageSubmission++;
     imageSubmitting.value = false;
+    retryingTaskId.value = '';
+    retryError.value = null;
     imageDialogOpen.value = false;
     imageError.value = '';
     assetPreview.value = null;
@@ -1123,9 +1214,12 @@ defineExpose({ flushPendingEdits });
         :editing="true"
         :locked="busy || !!running"
         :dirty="dirty"
+        :retrying-task-id="retryingTaskId"
+        :retry-error="retryError"
         :save-plan="() => save()"
         @generate="generate('PROMPT', undefined, undefined, $event)"
         @workflow="openPromptWorkflow"
+        @retry="retryTask"
         @render-workflow="openWorkflow"
         @settings-saved="
           workspace.videoSettings = [
@@ -1215,9 +1309,15 @@ defineExpose({ flushPendingEdits });
               </div>
             </header>
             <ProductionTaskActivity :task="legacyPromptTask" label="当前片段提示词生成进度" />
-            <ProductionPromptTaskFeedback
+            <ProductionTaskFailureFeedback
               :task="legacyPromptTask"
+              :disabled="busy || !!running"
+              :retrying="retryingTaskId === legacyPromptTask?.id"
+              :retry-error="
+                retryError?.taskId === legacyPromptTask?.id ? retryError?.message : undefined
+              "
               @workflow="openWorkflow(legacyPromptTask, true)"
+              @retry="retryTask"
             />
             <ProductionPromptEditor
               v-model="promptText"

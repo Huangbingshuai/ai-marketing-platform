@@ -24,6 +24,14 @@ async function call<T>(
   return (await requestJson<ApiResponse<T>>(base(p) + path, { method, body, signal })).data;
 }
 export const productionApi = {
+  retry: (p: string, taskId: string, signal?: AbortSignal) =>
+    call<ProductionTask>(
+      p,
+      `/tasks/${encodeURIComponent(taskId)}/retry`,
+      'POST',
+      undefined,
+      signal,
+    ),
   uploadImageReference: (p: string, r: string, file: File, signal?: AbortSignal) => {
     const form = new FormData();
     form.set('workflowRunId', r);
@@ -64,7 +72,11 @@ export const productionApi = {
     signal?: AbortSignal,
     targetAssetId?: string,
     imageSettings?: CustomizedImageSettings,
-    videoSettings?: { durationPolicy?: VideoDurationPolicy; target?: { kind: 'CLIP'; id: string }; renderSettings?: CustomizedVideoRenderSettings },
+    videoSettings?: {
+      durationPolicy?: VideoDurationPolicy;
+      target?: { kind: 'CLIP'; id: string };
+      renderSettings?: CustomizedVideoRenderSettings;
+    },
   ) =>
     call<ProductionTask>(
       p,
@@ -92,7 +104,21 @@ export const productionApi = {
       undefined,
       signal,
     ),
-  videoSettings: (p: string, r: string, clipId: string, revision: number, settings: CustomizedVideoRenderSettings, signal?: AbortSignal) => call<CustomizedVideoSettingsDraft>(p, '/video-settings', 'PUT', { workflowRunId: r, clipId, expectedRevision: revision, settings }, signal),
+  videoSettings: (
+    p: string,
+    r: string,
+    clipId: string,
+    revision: number,
+    settings: CustomizedVideoRenderSettings,
+    signal?: AbortSignal,
+  ) =>
+    call<CustomizedVideoSettingsDraft>(
+      p,
+      '/video-settings',
+      'PUT',
+      { workflowRunId: r, clipId, expectedRevision: revision, settings },
+      signal,
+    ),
   candidate: (p: string, id: string, signal?: AbortSignal) =>
     call<VideoCandidate>(p, `/tasks/${id}/candidate`, 'GET', undefined, signal),
   reviewDraft: (
